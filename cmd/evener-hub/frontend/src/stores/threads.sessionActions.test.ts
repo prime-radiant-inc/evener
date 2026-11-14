@@ -5,6 +5,7 @@ import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../threadTestUtils
 import "fake-indexeddb/auto";
 import {
   type AnyNotification,
+  ErrorTranscriptHistoryFailed,
   hydrateThread,
   type NotesHumanSetResponse,
   RequestTimeoutError,
@@ -34,11 +35,13 @@ import {
   scheduledHydrationRetries,
 } from "./threadHydrationTestUtils";
 import {
+  consumedQueueEntriesFor,
   installHydrationRetrySchedulerForTests,
   readMutationPersistence,
   resetThreadsStoreForTests,
   retryBlockedMutation,
   setMutationStorageForTests,
+  settleDisplayCopy,
   threadsStore,
 } from "./threads";
 import { ConflictError } from "./threadsErrors";
@@ -236,6 +239,446 @@ describe("Manager start-time projection", () => {
     await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active"));
     expect(threadsStore.getState().threads.get(ref)).toMatchObject({ ref, manager: true });
   });
+});
+
+test("an ignored history frame keeps the accepted copy until a visible item settles it", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  const settleSpy = vi.spyOn(storage, "settleApplied");
+
+  const history = (epoch: number, bootGeneration = "1") => ({
+    method: "history/updated" as const,
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      bootGeneration,
+      epoch,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: "turn_m1", status: "inProgress", itemsView: "full", version: 1 }],
+      items: [
+        {
+          id: "item_m1",
+          turnId: "turn_m1",
+          type: "userMessage",
+          text: "hello",
+          clientMutationId: "m1",
+          version: 1,
+        },
+      ],
+    },
+  });
+
+  // An older epoch is ignored by the history state machine, so the item never
+  // enters the model. Settlement must not delete the only pending copy.
+  fake.emitNotification(history(0));
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+
+  // An older boot generation is ignored by the same state machine even at an
+  // equal epoch: its snapshot is from a daemon this history already replaced,
+  // so the frame proves nothing about what the current transcript holds.
+  fake.emitNotification(history(1, "0"));
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+
+  // The same item on the current epoch becomes visible, and only then settles.
+  fake.emitNotification(history(1));
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m1")) === undefined);
+  expect(await storage.getOptimistic("m1")).toBeUndefined();
+  storage.close();
+});
+
+test("a failed history read keeps the accepted copy when a frame names its identity", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("thread/read", () => {
+    throw new WireError("thread history failed", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+  });
+  await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow();
+  await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.history?.failed).toBeDefined());
+  const settleSpy = vi.spyOn(storage, "settleApplied");
+
+  fake.emitNotification({
+    method: "history/updated",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: "turn_m1", status: "inProgress", itemsView: "full", version: 1 }],
+      items: [
+        {
+          id: "item_m1",
+          turnId: "turn_m1",
+          type: "userMessage",
+          text: "hello",
+          clientMutationId: "m1",
+          version: 1,
+        },
+      ],
+    },
+  });
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+  storage.close();
+});
+
+test("an authoritative hydration keeps the confirmed queue lineage on the retained copy", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "queued" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued" }] },
+  });
+  await storage.markAttempted("m1");
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1 },
+        pendingMutations: [
+          {
+            clientMutationId: "m1",
+            method: "turn/queue",
+            executionState: "accepted",
+            projectionState: "pending",
+            queueEntryIds: ["q1"],
+          },
+        ],
+      },
+    }),
+  );
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m1"))?.queueEntryIds?.[0] === "q1");
+
+  expect((await storage.getOptimistic("m1"))?.queueEntryIds).toEqual(["q1"]);
+  storage.close();
+});
+
+test("a queue frame during a read keeps the published snapshot stale", async () => {
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1 },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+  expect(threadsStore.getState().mutationSnapshotRefs.has("ref_a")).toBe(true);
+
+  const read = deferred<ThreadReadResponse>();
+  const started = deferred<void>();
+  fake.on("thread/read", () => {
+    started.resolve();
+    return read.promise;
+  });
+  const reading = threadsStore.getState().refreshThread("ref_a");
+  await started.promise;
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 2 } },
+  });
+  read.resolve(
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 2 },
+      },
+    }),
+  );
+  await reading;
+
+  expect(threadsStore.getState().mutationSnapshotRefs.has("ref_a")).toBe(false);
+});
+
+test("a queue frame keeps the content of a consumed row this client never owned", async () => {
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: ["m9"], texts: ["queued elsewhere"] },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const read = deferred<ThreadReadResponse>();
+  const started = deferred<void>();
+  fake.on("thread/read", () => {
+    started.resolve();
+    return read.promise;
+  });
+  const reading = threadsStore.getState().refreshThread("ref_a");
+  await started.promise;
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      queue: { revision: 2, depth: 0, ids: [] },
+      consumedClientMutationIds: ["m9"],
+    },
+  });
+  read.resolve(
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 2, depth: 0, ids: [] },
+      },
+    }),
+  );
+  await reading;
+
+  expect(consumedQueueEntriesFor("ref_a")).toEqual([
+    expect.objectContaining({ entryId: "q1", text: "queued elsewhere" }),
+  ]);
+  expect(consumedQueueEntriesFor("ref_a")).toBe(consumedQueueEntriesFor("ref_a"));
+});
+
+test("a queue frame keeps the content of a row a promotion removed without naming it", async () => {
+  // An older daemon omits consumedClientMutationIds on promotion. The message
+  // is no longer queued and nothing records it here, so the disappearance is
+  // the only evidence it left the queue. Without carrying it the row vanishes
+  // for the rest of the delivery wait.
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: ["m9"], texts: ["queued elsewhere"] },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      queue: { revision: 2, depth: 0, ids: [] },
+    },
+  });
+
+  expect(consumedQueueEntriesFor("ref_a")).toEqual([
+    expect.objectContaining({ entryId: "q1", text: "queued elsewhere" }),
+  ]);
+});
+
+// A cancellation from an older daemon names no consumed ids at all, so no
+// consumed frame ever carried the entry. Its only evidence is the provenance
+// state's retired input list, which must settle the retained copy on its own
+// or the canceled message stays an actionless Delivering row until reconnect.
+test("a retired input settles a retained copy no consumed frame named", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m9" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m9", input: [{ type: "text", text: "queued elsewhere" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued elsewhere" }] },
+  });
+  await storage.markAttempted("m9");
+  expect(await storage.settleReceipt("m9", "pending", ["q1"])).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 1 },
+        pendingMutations: [],
+      },
+    }),
+  );
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // The daemon retires the input with no queue frame: an older daemon's
+  // cancellation looks exactly like this.
+  fake.emitNotification({
+    method: "thread/conversation-provenance/changed",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      provenance: {
+        version: 1,
+        authoritative: true,
+        revision: 2,
+        instanceId: "inc",
+        admittedInputs: [],
+        retiredInputs: ["client:m9"],
+        frontiers: [],
+      },
+    },
+  } as never);
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m9")) === undefined);
+
+  expect(await storage.getOptimistic("m9")).toBeUndefined();
+});
+
+test("an authoritative hydration retires an absent retained queue source", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "queued" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued" }] },
+  });
+  await storage.markAttempted("m1");
+  expect(await storage.settleReceipt("m1", "pending", ["q1"])).toBe(true);
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        mutationStateAuthoritative: true,
+        queue: { revision: 2 },
+        pendingMutations: [],
+      },
+      turns: [
+        {
+          id: "turn_replacement",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_replacement",
+              turnId: "turn_replacement",
+              type: "userMessage",
+              text: "queued",
+              clientMutationId: "replacement",
+              version: 1,
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  fake.on("turn/queue", (params) => ({
+    receipt: { ...mutationReceipt(params.clientMutationId), projectionState: "removed" },
+  }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await flushIndexedDBUntil(async () => (await storage.getOptimistic("m1")) === undefined);
+
+  expect(await storage.getOptimistic("m1")).toBeUndefined();
+  storage.close();
+});
+
+test("queue evidence keeps the accepted display copy without settling it", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
+  const settleSpy = vi.spyOn(storage, "settleApplied");
+
+  fake.emitNotification({
+    method: "thread/queueChanged",
+    params: {
+      threadId: "thr_ref_a",
+      ref: "ref_a",
+      queue: {
+        revision: 1,
+        depth: 1,
+        ids: ["q1"],
+        clientMutationIds: ["m1"],
+        texts: ["hello"],
+        preview: ["hello"],
+      },
+    },
+  });
+  await flushIndexedDBUntil(() => false);
+  expect(settleSpy).not.toHaveBeenCalled();
+  expect(await storage.getOptimistic("m1")).toBeDefined();
+  storage.close();
+});
+
+test("settleDisplayCopy retires a retained queue display copy", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+  setMutationStorageForTests(storage);
+  connectMutationClient();
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "hello" }] },
+  });
+  await storage.markAttempted(outbox.clientMutationId);
+  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
+  await settleDisplayCopy(outbox.clientMutationId, "ref_a");
+  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeUndefined();
+  storage.close();
 });
 
 describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/rename/compact/shutdown/clearThread/forkFromTurn)", () => {
@@ -1570,6 +2013,30 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
+  test("a queue receipt's confirmed lineage reaches the accepted copy", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        ...mutationReceipt(params.clientMutationId),
+        projectionState: "pending",
+        queueEntryIds: ["entry_1"],
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued text");
+    await flushIndexedDBUntil(async () => {
+      const [accepted] = await storage.listOptimistic("ref_a");
+      return accepted?.queueEntryIds?.includes("entry_1") === true;
+    });
+
+    const [accepted] = await storage.listOptimistic("ref_a");
+    expect(accepted?.queueEntryIds).toEqual(["entry_1"]);
+    storage.close();
+  });
+
   test("queue includes a base64 image attachment when provided", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
@@ -1650,10 +2117,10 @@ describe("useThreadsStore.drainAsSteer", () => {
   });
 
   // A drain's own thread/queueChanged push names the client mutation ids it
-  // consumed (issue #1704), so the client settles those optimistic turn/queue
-  // records by positive evidence -- never by inferring consumption from
-  // sequence order.
-  test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
+  // consumed (issue #1704). The frame proves the transition, not that the
+  // replacement is visible, so the record survives until an authoritative
+  // snapshot shows it is no longer queued, pending, or recorded.
+  test("a queueChanged naming consumed ids keeps the record until an authoritative snapshot", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({
       receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
@@ -1679,11 +2146,129 @@ describe("useThreadsStore.drainAsSteer", () => {
       },
     });
 
-    let settled = false;
-    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
-      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
+    await flushIndexedDBUntil(() => false);
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          mutationStateAuthoritative: true,
+          queue: { revision: 8 },
+        },
+        turns: [
+          {
+            id: "turn_replacement",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "item_replacement",
+                turnId: "turn_replacement",
+                type: "userMessage",
+                text: "queued",
+                clientMutationId: "replacement",
+                version: 1,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(async () => (await inspector.getOptimistic(record.clientMutationId)) === undefined);
+
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeUndefined();
+    inspector.close();
+  });
+
+  test("a consumed queue row requests an authoritative refresh and stays until it resolves", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
+    }));
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
     }
-    expect(settled).toBe(true);
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    const read = deferred<ThreadReadResponse>();
+    const readsBefore = fake.calls.filter((call) => call.method === "thread/read").length;
+    fake.on("thread/read", () => read.promise);
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    });
+    await flushUntil(() => fake.calls.filter((call) => call.method === "thread/read").length > readsBefore);
+    expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(readsBefore);
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+
+    read.resolve(
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          mutationStateAuthoritative: true,
+          queue: { revision: 8 },
+          pendingMutations: [
+            {
+              clientMutationId: "replacement",
+              method: "turn/promoteQueuedAsSteer",
+              executionState: "accepted",
+              projectionState: "pending",
+              queueEntryIds: ["q1"],
+            },
+          ],
+        },
+      }),
+    );
+    await flushIndexedDBUntil(() => false);
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+    inspector.close();
+  });
+
+  test("a consumed queue row survives a failed authoritative read", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", { projectionState: "pending" }),
+    }));
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    const notification = {
+      method: "thread/queueChanged" as const,
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    };
+    fake.emitNotification(notification);
+    await flushIndexedDBUntil(() => false);
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
+
+    fake.on("thread/read", () => {
+      throw new Error("authoritative read failed");
+    });
+    await expect(threadsStore.getState().refreshThread("ref_a")).rejects.toThrow();
+    expect(await inspector.getOptimistic(record.clientMutationId)).toBeDefined();
     inspector.close();
   });
 

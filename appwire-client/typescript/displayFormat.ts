@@ -6,6 +6,28 @@ const TOKEN_UNITS = [
   ["B", 1_000_000_000],
 ] as const;
 
+const TOKEN_COUNT_PATTERN = /^\s*([0-9][0-9,]*)(?:\.([0-9]+))?\s*([kKmM])?\s*$/;
+const MAX_TOKEN_LIMIT = 2_147_483_647;
+
+// Parses a human-entered token count ("250000", "250,000", "250k", "1.13k",
+// "0.29M") by base-10 digit shifting without floating-point multiplication.
+// Returns null when empty, non-positive, fractional after shifting, or above
+// MaxInt32 (2_147_483_647).
+export function parseTokenCount(raw: string): number | null {
+  const match = TOKEN_COUNT_PATTERN.exec(raw);
+  if (!match) return null;
+  const wholeDigits = (match[1] ?? "").replace(/,/g, "");
+  const fracDigits = match[2] ?? "";
+  const suffix = (match[3] ?? "").toUpperCase();
+  const shift = suffix === "M" ? 6 : suffix === "K" ? 3 : 0;
+  if (fracDigits.length > shift) return null;
+  const combined = `${wholeDigits}${fracDigits.padEnd(shift, "0")}`.replace(/^0+/, "");
+  if (combined === "" || combined.length > 10) return null;
+  const value = Number(combined);
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_TOKEN_LIMIT) return null;
+  return value;
+}
+
 // A token count the way both clients print it (spec 5): 999, 1.2K, 39.8K,
 // 412K, 46M, 1.5B. One decimal below 100 of a unit, none from 100 up; a count
 // that would round to 1000 of a unit reads as one of the next; B is the last
@@ -20,6 +42,39 @@ export function formatTokenCount(n: number): string {
     if (Number.parseFloat(text) < 1000) break;
   }
   return text;
+}
+
+export interface EffectiveContextStatus {
+  ceiling: number;
+  pressure: number;
+  remaining: number;
+  hasCustomThreshold: boolean;
+}
+
+// effectiveContextStatus computes the active context ceiling, pressure, and
+// remaining headroom for session status surfaces. When compactionThreshold is
+// positive, the gauge measures against that threshold instead of the physical
+// contextWindow.
+export function effectiveContextStatus(model: {
+  contextUsed: number;
+  contextWindow: number;
+  contextPressure?: number;
+  compactionThreshold?: number;
+}): EffectiveContextStatus {
+  if (model.compactionThreshold !== undefined && model.compactionThreshold > 0) {
+    return {
+      ceiling: model.compactionThreshold,
+      pressure: model.contextUsed / model.compactionThreshold,
+      remaining: Math.max(0, model.compactionThreshold - model.contextUsed),
+      hasCustomThreshold: true,
+    };
+  }
+  return {
+    ceiling: model.contextWindow,
+    pressure: model.contextPressure ?? (model.contextWindow > 0 ? model.contextUsed / model.contextWindow : 0),
+    remaining: Math.max(0, model.contextWindow - model.contextUsed),
+    hasCustomThreshold: false,
+  };
 }
 
 // Floors at 1ms, then uses decimal or whole seconds as durations grow.

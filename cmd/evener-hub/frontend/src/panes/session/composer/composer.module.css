@@ -90,7 +90,7 @@
   width: 80px;
   height: 80px;
   border: 1px solid var(--edge);
-  border-radius: var(--radius-chip);
+  border-radius: var(--radius-control);
   overflow: hidden;
   background: var(--surface-inset);
   transition: border-color var(--motion-duration-overlay);

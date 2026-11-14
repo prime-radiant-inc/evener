@@ -23,35 +23,40 @@ secret-scan:
 ## trigger: Required CI (via make lint); local pre-merge.
 ## requires: None beyond the Go toolchain; deterministic, no provider calls.
 ## fails-when: Any TOML file has a non-snake_case key.
-# lint-naming, lint-internal, and lint-golangci run the prebuilt evener-dev
-# binary instead of `go run ./cmd/evener-dev/bin` so the serial LINT_TARGETS
-# chain pays one compile (via the build-dev prerequisite, which make runs
-# once per `make lint` since build-dev is .PHONY) instead of three. The
-# binary is built from the same source, so verdicts are identical.
+# lint-naming and lint-internal run the prebuilt evener-dev binary instead of
+# `go run ./cmd/evener-dev/bin` so the serial LINT_TARGETS chain pays one
+# compile (via the build-dev prerequisite, which make runs once per
+# `make lint` since build-dev is .PHONY) instead of two. The binary is built
+# from the same source, so verdicts are identical. lint-golangci no longer
+# needs the binary: its recipe invokes golangci-lint directly.
 lint-naming: build-dev
 	$(call run_quiet_lint,./evener-dev tomlcheck)
 
-## The compile floor for the //go:build evenerfuzz sources: host go vet and a
-## host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on
-## non-Linux hosts and a GOOS=windows go vet that holds the build-tag
-## discipline the untagged sources get from static-build's cross-vet. See "Why
-## two tagged lint passes exist" in docs/developing-evener/linting.md for the
-## full rationale.
+## The compile floor for the //go:build evenerfuzz sources: host go vet, a
+## GOOS=windows go vet that holds the build-tag discipline the untagged
+## sources get from static-build's cross-vet, and a host tagliatelle-only
+## golangci-lint pass — each as one invocation over
+## WORKSPACE_LINT_PATTERNS, because go.work resolves cross-module patterns
+## and the old per-module loops paid process startup and package loading
+## nine times over per regime. Off Linux, both the vet and the tagliatelle
+## pass repeat with GOOS=linux: agent/execenv's runtime_edges and
+## securepath_edge_program fuzz tests are tagged evenerfuzz && linux and are
+## otherwise invisible to a macOS checkout. See "Why two tagged lint passes
+## exist" in docs/developing-evener/linting.md for the full rationale.
 ## proves: Every evenerfuzz-tagged source across FUZZ_GO_MODULES still
 ##   compiles for the host, Linux, and Windows and passes its struct-tag
 ##   casing floor, catching a production signature change that strands a
 ##   tagged call site, and a Unix-only tagged source that never declared its
 ##   constraint.
-## trigger: Required CI (via make lint); local pre-merge. ~4s warm across the
-##   workspace on Linux; the GOOS=linux pass runs only off Linux, the
-##   GOOS=windows vet everywhere.
+## trigger: Required CI (via make lint); local pre-merge. ~140s cold, ~10s
+##   warm across the workspace on Linux; the GOOS=linux passes run only off
+##   Linux, the GOOS=windows vet everywhere.
 ## requires: golangci-lint. Reads .golangci.yml's casing rules, carve-outs,
 ##   and exclusions via --enable-only tagliatelle.
-## fails-when: host, GOOS=linux, or GOOS=windows go vet -tags evenerfuzz fails
-##   for any module, or either host or GOOS=linux tagliatelle reports a casing
-##   violation.
+## fails-when: host, GOOS=linux, or GOOS=windows go vet -tags evenerfuzz
+##   fails, or host or GOOS=linux tagliatelle reports a casing violation.
 lint-evenerfuzz:
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags evenerfuzz ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags evenerfuzz ./...); done; fi; if [ "$$host_goos" != windows ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=windows go vet -tags evenerfuzz ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle ./...); done; fi)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; go vet -tags evenerfuzz $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != linux ]; then GOOS=linux go vet -tags evenerfuzz $(WORKSPACE_LINT_PATTERNS); fi; if [ "$$host_goos" != windows ]; then GOOS=windows go vet -tags evenerfuzz $(WORKSPACE_LINT_PATTERNS); fi; golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != linux ]; then GOOS=linux golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle $(WORKSPACE_LINT_PATTERNS); fi)
 
 # lint-eval is the same compile floor for the //go:build eval sources: the
 # live-provider eval suites (context-compaction quality, forced notes). This tag
@@ -59,24 +64,25 @@ lint-evenerfuzz:
 # []summarizationRoute in June stranded the comparison eval's judge, and nothing
 # said so for six weeks. RUNNING these is not gate-shaped at any price: they
 # spend real money against a real provider, so compilation is the whole gate.
-# FUZZ_GO_MODULES is the full workspace list, and the floor wants all of it: eval
-# sources sit only under agent/ today, and a floor is worth nothing in the module
-# where the next one lands. ~3.5s warm, the same order as the evenerfuzz pass.
+# The floor covers the full workspace list: eval sources sit only under agent/
+# today, and a floor is worth nothing in the module where the next one lands.
 # It carries the same tagliatelle pass under its own tag, for the reason
 # lint-evenerfuzz's comment gives.
 ## The compile floor for the //go:build eval sources: host go vet and a host
-## tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on
-## non-Linux hosts.
+## tagliatelle-only golangci-lint pass, each as one invocation over
+## WORKSPACE_LINT_PATTERNS.
 ## proves: The eval-tagged live-provider suites (context-compaction quality,
-##   forced notes) still compile for the host and Linux.
-## trigger: Required CI (via make lint); local pre-merge. ~3.5s warm on Linux;
-##   the extra cross-GOOS pass runs only off Linux.
+##   forced notes) still compile for the host and Linux and pass their
+##   struct-tag casing floor.
+## trigger: Required CI (via make lint); local pre-merge. ~95s cold (the
+##   eval tag compiles nowhere else, so most runs measure it near-cold),
+##   seconds warm on Linux; the extra cross-GOOS pass runs only off Linux.
 ## requires: golangci-lint. Covers all of FUZZ_GO_MODULES, since eval
 ##   sources could land in any module.
-## fails-when: host or GOOS=linux go vet -tags eval fails for any module, or
-##   either host or GOOS=linux tagliatelle reports a casing violation.
+## fails-when: host or GOOS=linux go vet -tags eval fails, or host or
+##   GOOS=linux tagliatelle reports a casing violation.
 lint-eval:
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; for m in $(FUZZ_GO_MODULES); do (cd $$m && go vet -tags eval ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux go vet -tags eval ./...); done; fi; for m in $(FUZZ_GO_MODULES); do (cd $$m && golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...); done; if [ "$$host_goos" != linux ]; then for m in $(FUZZ_GO_MODULES); do (cd $$m && GOOS=linux golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle ./...); done; fi)
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; go vet -tags eval $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != linux ]; then GOOS=linux go vet -tags eval $(WORKSPACE_LINT_PATTERNS); fi; golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != linux ]; then GOOS=linux golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle $(WORKSPACE_LINT_PATTERNS); fi)
 
 # lint-internal fails if any exported symbol in execsupport, the agent (and its
 # diagnostic/execenv/mcpconfig/plugin/provider/schema/skill/task/transcript
@@ -95,9 +101,9 @@ lint-eval:
 lint-internal: build-dev
 	$(call run_quiet_lint,./evener-dev internalcheck)
 
-# golangci-lint across every module (./... is per-module under go.work).
-# The runner lives in Go (cmd/evener-dev); MODULES and LINT_PARALLEL keep the
-# interface run-module-lint.sh shipped with.
+# golangci-lint across every workspace module as one invocation per build
+# regime (./... is per-module under go.work, so the invocation names every
+# module through WORKSPACE_LINT_PATTERNS).
 #
 # FUZZ_GO_MODULES, not GO_MODULES: the sweep has to cover the fuzz module too.
 # It is excluded from the test gate (its targets run through `make fuzz`), but
@@ -111,15 +117,16 @@ lint-internal: build-dev
 # with snake_case surfaces; .golangci-appwire.yml retains only the exact
 # wire files/fields and holds the other half of the split.
 #
-# The module-lint sweep runs a second time with GOOS=darwin whenever the host
-# is not darwin. golangci-lint compiles only the files its GOOS selects, so a
-# Linux CI host's pass compiles no _darwin.go file and a darwin-only finding
-# reaches main unlinted, first failing the gate for whoever next runs it on a
-# Mac (agent/execenv/process_boundary_darwin.go arrived with five findings this
+# The sweep runs a second time with GOOS=darwin whenever the host is not
+# darwin. golangci-lint compiles only the files its GOOS selects, so a Linux
+# CI host's pass compiles no _darwin.go file and a darwin-only finding reaches
+# main unlinted, first failing the gate for whoever next runs it on a Mac
+# (agent/execenv/process_boundary_darwin.go arrived with five findings this
 # way, #2847). The separately scoped AppWire/voice pass runs on the host.
-## golangci-lint across every workspace module, plus the second
-## AppWire/voice camelCase pass over explicitly scoped wire files. The module sweep
-## repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI.
+## golangci-lint across every workspace module in one invocation per build
+## regime, plus the second AppWire/voice camelCase pass over explicitly
+## scoped wire files. The sweep repeats with GOOS=darwin off darwin so
+## _darwin.go files are linted in CI.
 ## See "The AppWire and voice camelCase regimes" in
 ## docs/developing-evener/linting.md.
 ## proves: golangci-lint's full ruleset (struct-tag casing, formatting,
@@ -128,12 +135,12 @@ lint-internal: build-dev
 ##   darwin-only source is linted on a Linux host (#2928); and AppWire/voice
 ##   camelCase holds without exempting unrelated snake_case surfaces.
 ## trigger: Required CI (via make lint); local pre-merge.
-## requires: golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so
-##   the fuzz module's ordinary Go is covered too.
-## fails-when: golangci-lint fails for any module, under the host GOOS or, off
-##   darwin, under GOOS=darwin.
-lint-golangci: build-dev
-	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; MODULES="$(FUZZ_GO_MODULES)" ./evener-dev dev module-lint; if [ "$$host_goos" != darwin ]; then MODULES="$(FUZZ_GO_MODULES)" GOOS=darwin ./evener-dev dev module-lint; fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/... ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore)
+## requires: golangci-lint. Sweeps FUZZ_GO_MODULES, not GO_MODULES, so the
+##   fuzz module's ordinary Go is covered too.
+## fails-when: golangci-lint fails for the host GOOS or, off darwin, under
+##   GOOS=darwin.
+lint-golangci:
+	$(call run_quiet_lint,set -e; export GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)"; host_goos="$$(go env GOOS)"; golangci-lint run --allow-parallel-runners $(WORKSPACE_LINT_PATTERNS); if [ "$$host_goos" != darwin ]; then GOOS=darwin golangci-lint run --allow-parallel-runners $(WORKSPACE_LINT_PATTERNS); fi; golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml ./server/... ./agent ./cmd/evener-hub ./cmd/evener-hub/internal/hubcore)
 
 ## Remove the current worktree's golangci-lint cache without touching sibling
 ## worktrees or the user's global golangci-lint cache.

@@ -6,6 +6,7 @@ import { OverlayPanel } from "../dialog/OverlayPanel";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import { usePortalDocument } from "../internal/usePortalDocument";
+import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
 
 export interface DirectoryPickerProps {
@@ -41,11 +42,7 @@ const CLASS = {
 };
 
 export function DirectoryIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 3h4l2 2h6v8H2V3Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-    </svg>
-  );
+  return <ToolIcon kind="folder" size={16} />;
 }
 
 /** The selected directory is committed once. Navigation, typing and creation

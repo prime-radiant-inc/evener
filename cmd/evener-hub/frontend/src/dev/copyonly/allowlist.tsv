@@ -1,4 +1,5 @@
 file	test	reason
+appwire-client/typescript/state/mutation/pendingMessages.test.ts	a contentless drain keeps a nonempty display fallback	Deliberate keep: the legacy ghost's "[queued messages]" placeholder is the specified copy for a drain whose combined input has not arrived.
 appwire-client/typescript/displayFormat.test.ts	firstLine: takes the first line of a multi-line string	False positive: fixture text in, its first line out (#4424).
 cmd/evener-hub/frontend/src/accessibleNameTestUtils.test.tsx	an aria-label override replaces the content	Tests the name-computation helper itself; "Override" is a fixture fed in and read back out (#4436).
 cmd/evener-hub/frontend/src/notifications/title.test.ts	title on, count 0: no prefix	Pure function: the base title is a fixture passed through; the claim is that no count prefix is added (#4436).

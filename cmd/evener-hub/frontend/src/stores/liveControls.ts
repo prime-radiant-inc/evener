@@ -1,7 +1,7 @@
 // The web's one derivation of what a session may be asked to do, and its
 // press-time reading of it.
 //
-// Every control surface (the composer's Stop/Steer/Send, the queue strip's
+// Every control surface (the composer's Stop/Steer/Send, the pending stack's
 // drain and promote, the palette's session commands) derives a session's
 // controls from the SDK's sessionControls over the wire's status, the harness's
 // capabilities and the queue depth: controlsFor. A render offers a control from

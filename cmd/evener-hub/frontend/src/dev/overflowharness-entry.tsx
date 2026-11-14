@@ -70,7 +70,7 @@ const intentTailMode = params.get("intenttail") === "1";
 // runs for local sessions.
 const panelsMode = params.get("panels") === "1";
 const aboutOverviewMode = panelsMode && params.get("activity") === "about";
-// ?heldtail=1: the trailing held-steer ghost fixture for the stack's column
+// ?heldtail=1: the trailing pending-stack fixture for its column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.

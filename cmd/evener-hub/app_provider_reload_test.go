@@ -89,16 +89,17 @@ func TestProviderFileObserverPublishesToOpenClients(t *testing.T) {
 		t.Fatal("server did not retain the recovery owner")
 	}
 	broadcaster := newRecordingBroadcaster()
+	n.OnCommitted(func(change noticeCommitted) { dispatchNoticeCommitted(broadcaster, change) })
 	ctx, cancel := context.WithCancel(context.Background())
 	ticks := make(chan time.Time)
 	observed := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
-			result := n.watchRead(ctx, broadcaster)
+		n.runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
+			result := n.watchRead(ctx)
 			observed <- struct{}{}
 			return result
-		}, broadcaster)
+		})
 		close(done)
 	}()
 	<-observed
@@ -149,7 +150,8 @@ func TestProviderFileWatcherDoesNotEchoInstanceWrite(t *testing.T) {
 	})
 	defer hub.Close()
 	// The initial observation belongs to startup, before this client connects.
-	web.notices.watchRead(context.Background(), newRecordingBroadcaster())
+	web.notices.OnCommitted(func(noticeCommitted) {})
+	web.notices.watchRead(context.Background())
 	client := dialHubRPCInitialized(t, hub)
 	var resp appwire.InstanceListResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
@@ -159,13 +161,14 @@ func TestProviderFileWatcherDoesNotEchoInstanceWrite(t *testing.T) {
 	assertInstanceBroadcastShape(t, appwire.MethodEvenerInstanceCreate, waitForAuthUpdatedRaw(t, client), "tab-a")
 	generation := f.ctl.reg.Generation()
 	broadcaster := newRecordingBroadcaster()
-	web.notices.watchRead(context.Background(), broadcaster)
+	web.notices.OnCommitted(func(change noticeCommitted) { dispatchNoticeCommitted(broadcaster, change) })
+	web.notices.watchRead(context.Background())
 	if f.ctl.reg.Generation() != generation || len(broadcaster.broadcasts()) != 0 {
 		t.Fatal("watcher reloaded and announced an already-notified instance write")
 	}
 	// A later external edit still needs the unowned broadcast.
 	writeProvidersToml(t, filepath.Dir(f.tomlPath), "[providers.external]\nbase = \"anthropic\"\n")
-	web.notices.watchRead(context.Background(), broadcaster)
+	web.notices.watchRead(context.Background())
 	got := broadcaster.broadcasts()
 	if len(got) != 1 || got[0].method != appwire.NotifyEvenerAuthUpdated {
 		t.Fatalf("external edit broadcasts = %+v", got)

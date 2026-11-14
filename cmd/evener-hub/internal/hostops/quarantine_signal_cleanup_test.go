@@ -30,22 +30,11 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 	// epoch's custody whose rename never landed (no aside).
 	writeRawStore(t, path, 0o600, validStoreJSON)
 	stamp := quarantineStamp(time.Now().UTC().Add(time.Second))
-	boundary := `[{"kind":"local-markerless","platform":"linux","nonce":"n"}]`
-	custody := `{"quarantineEpoch":2,"quarantinedFile":` + jsonString(path) + `,` +
-		`"custodiedAt":"2026-09-26T00:00:00Z","recordIds":[{"recordId":"00000000000000000009","host":"hB"}],` +
-		`"allocatorHighWaterMark":9,` +
-		`"fences":[{"recordId":"00000000000000000009","host":"hB","kind":"restart","clientOperationId":"op-hB",` +
-		`"generation":3,"incarnationId":"inc-hB","quarantine":false,"boundary":` + boundary + `}],` +
-		`"ownership":[{"quarantineRecordId":"00000000000000000009","host":"hB","kind":"restart","clientOperationId":"op-hB",` +
-		`"generation":3,"highWaterMark":3,"incarnationId":"inc-hB"}]}`
 	secondCustodyPath := quarantineCustodyPath(path, stamp)
-	if err := os.WriteFile(secondCustodyPath, []byte(custody), 0o600); err != nil {
+	if err := os.WriteFile(secondCustodyPath, validCustodyBody(t, path, nil), 0o600); err != nil {
 		t.Fatalf("WriteFile(custody): %v", err)
 	}
-	intent := `{"corruptFile":` + jsonString(path) + `,"custodyFile":` + jsonString(secondCustodyPath) +
-		`,"asideFile":` + jsonString(quarantineAsidePath(path, stamp)) +
-		`,"quarantinedAt":"2026-09-26T00:00:00Z","quarantineEpoch":2}`
-	if err := os.WriteFile(quarantineIntentPath(path), []byte(intent), 0o600); err != nil {
+	if err := os.WriteFile(quarantineIntentPath(path), validIntentBody(t, path, stamp, nil), 0o600); err != nil {
 		t.Fatalf("WriteFile(intent): %v", err)
 	}
 	if err := forgetStore(path); err != nil {

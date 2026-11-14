@@ -18,8 +18,8 @@ import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import {
   useBlockedMutationEntries,
   useCanceledMutationEntries,
+  useEditablePendingMutationIds,
   usePendingTurnEntries,
-  useQueueStripMutationIds,
   useRecoveryEntries,
 } from "../../composer/queue/pendingTurnsStore";
 import { heldSteerEntries } from "./PendingRowStack";
@@ -40,8 +40,8 @@ const ANNOUNCEMENTS: Record<HeldSteerOutcome, string> = {
 };
 
 export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JSX.Element {
-  const queueStripIds = useQueueStripMutationIds(sessionRef);
-  const held = heldSteerEntries(usePendingTurnEntries(sessionRef), queueStripIds);
+  const editableIds = useEditablePendingMutationIds(sessionRef);
+  const held = heldSteerEntries(usePendingTurnEntries(sessionRef), editableIds);
   const recovery = useRecoveryEntries(sessionRef);
   const blocked = useBlockedMutationEntries(sessionRef);
   const canceled = useCanceledMutationEntries(sessionRef);
@@ -69,7 +69,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     const disappeared = [...prev.ids].filter(
       (id) =>
         !ids.has(id) &&
-        (!queueStripIds.has(id) ||
+        (!editableIds.has(id) ||
           canceled.some((record) => record.clientMutationId === id) ||
           blocked.some((record) => record.clientMutationId === id)),
     );
@@ -93,7 +93,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     } else if (appeared) {
       announce(["held"]);
     }
-  }, [sessionRef, held, recovery, blocked, canceled, model, queueStripIds]);
+  }, [sessionRef, held, recovery, blocked, canceled, model, editableIds]);
 
   return (
     <div

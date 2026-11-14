@@ -123,6 +123,7 @@ type toolDeps struct {
 	// the handler.
 	requestSkillCompaction func(ctx context.Context, note, instructions string, selection schema.SkillReloadSelection) (uint64, error)
 	pressure               func() float64
+	hasFoldableHistory     func() bool
 
 	// skillInventory exposes the session's successful-activation inventory so
 	// the compact tool can validate a reload selection.
@@ -261,25 +262,19 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
-	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
+	transitionTerminal   func(goal.Status, string) (goal.Snapshot, goal.SetTerminalResult)
 }
 
 // Store returns the session's goal store, initializing it if needed.
 func (g goalGuard) Store() *goal.Store { return g.getOrCreateGoalStore() }
 
-// SetTerminal commits through the owning Session when available, keeping the
-// mutation and its GOAL_UPDATED event ordered. Direct test constructions fall
-// back to the store-only behavior they had before live goal updates.
-func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, bool) {
-	if g.setTerminal != nil {
-		return g.setTerminal(status, reason)
+// TransitionTerminal transitions the goal store terminal status through the
+// owning Session when available.
+func (g goalGuard) TransitionTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, goal.SetTerminalResult) {
+	if g.transitionTerminal != nil {
+		return g.transitionTerminal(status, reason)
 	}
-	store := g.Store()
-	if !store.SetTerminal(status, reason, now) {
-		return goal.Snapshot{}, false
-	}
-	snap, _ := store.Snapshot()
-	return snap, true
+	return g.Store().TransitionTerminal(status, reason, now)
 }
 
 // notesGuard is a thin facade over the session's shared-notes store. It uses
@@ -351,7 +346,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
-			setTerminal:          s.setGoalTerminal,
+			transitionTerminal:   s.transitionGoalTerminal,
 		},
 		notesGuard: notesGuard{
 			mutateAgentNote: s.mutateAgentNoteSerialized,
@@ -385,6 +380,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		requestSkillCompaction: s.requestSkillCompaction,
 		pressure:               s.contextPressure,
+		hasFoldableHistory:     s.hasFoldableHistory,
 		skillInventory:         s.skillInventorySnapshot,
 		setCommunicateTerminal: s.acceptCommunicateTerminal,
 		runningJobIDs:          func() []string { return sessionRunningWorkIDs(s) },
@@ -486,6 +482,12 @@ func registerMinimalWorktreeTools(reg *tool.Registry, s *Session) error {
 
 func registerCoreTools(reg *tool.Registry, s *Session) error {
 	deps := newToolDeps(s)
+	register := reg.Register
+	if deps.registerTool != nil {
+		register = func(registered tool.RegisteredTool) error {
+			return deps.registerTool(reg, registered)
+		}
+	}
 	if err := registerFileTools(reg, deps); err != nil {
 		return err
 	}
@@ -497,6 +499,11 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	}
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
+	}
+	for _, rt := range transcriptTools(deps) {
+		if err := register(rt); err != nil {
+			return err
+		}
 	}
 	if err := registerDelegateTool(reg, s); err != nil {
 		return err
@@ -520,17 +527,6 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 		registerAskTool(reg, s, deps)
 	}
 	registerSkillTool(reg, deps)
-	register := reg.Register
-	if deps.registerTool != nil {
-		register = func(registered tool.RegisteredTool) error {
-			return deps.registerTool(reg, registered)
-		}
-	}
-	for _, rt := range transcriptTools(deps) {
-		if err := register(rt); err != nil {
-			return err
-		}
-	}
 	for _, rt := range doctorTools(deps) {
 		if err := register(rt); err != nil {
 			return err

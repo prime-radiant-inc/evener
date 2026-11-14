@@ -20,6 +20,13 @@ working procedure.
 - **Widgets:** `src/widgets/`, imported only through the barrel
   `src/widgets/index.ts`. The props each widget accepts are listed in §3 of
   the design-system spec and typed in each widget's `index.tsx`.
+- **Shared surface recipes:** `src/styles/surface.module.css` owns the boxes
+  more than one widget or pane draws and that are not a `Card`: the grouped
+  surface and its hairline-divided rows, the transcript's tool card, and the
+  field seat behind a glyph. `src/styles/railseat.module.css` owns the
+  transcript's icon-rail seat. A stylesheet `composes:` these, one class per
+  `composes` line, instead of restating the declarations; a layoutguard case
+  that loads a composing stylesheet lists the shared module in its `cssFiles`.
 - **Galleries:** run the frontend dev server (`npm run dev` in
   `cmd/evener-hub/frontend`) and open `/dev/widgets` (every widget, every
   state, both themes), `/dev/surfaces` (composed surfaces), and `/dev/type`

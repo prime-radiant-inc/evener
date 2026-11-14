@@ -108,6 +108,7 @@
     "ImageDetail": "overlay/glob:gpt-6*",
     "InputModalities": "overlay/glob:gpt-6*",
     "MaxTokensField": "overlay/provider",
+    "Protocol": "snapshot/provider",
     "Reasoning": "overlay/glob:gpt-6*",
     "ReasoningControls": "derived",
     "ReasoningSummary": "overlay/glob:gpt-6*",

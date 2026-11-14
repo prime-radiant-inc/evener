@@ -10,22 +10,33 @@ export interface ShortcutListItem {
   label: ReactNode;
 }
 
+/** table is the reference listing: two aligned columns, chords against their
+ * descriptions. inline is the aside under a cold pane's one action: a centred
+ * row of chord-and-description pairs at caption size that wraps between
+ * pairs, never inside one. */
+export type ShortcutListLayout = "table" | "inline";
+
 export interface ShortcutListProps {
   items: ShortcutListItem[];
+  layout?: ShortcutListLayout;
 }
 
 const BASE_CLASS = {
-  list: requireClass(styles.list, "shortcutlist.module.css", "list"),
   item: requireClass(styles.item, "shortcutlist.module.css", "item"),
   keys: requireClass(styles.keys, "shortcutlist.module.css", "keys"),
   label: requireClass(styles.label, "shortcutlist.module.css", "label"),
 };
 
-/** A reference list of keyboard shortcuts: each chord (a KeyHint) as the
- * term, the action it performs as its definition. */
-export function ShortcutList({ items }: ShortcutListProps) {
+const LAYOUT_CLASS: Record<ShortcutListLayout, string> = {
+  table: requireClass(styles.table, "shortcutlist.module.css", "table"),
+  inline: requireClass(styles.inline, "shortcutlist.module.css", "inline"),
+};
+
+/** A list of keyboard shortcuts: each chord (a KeyHint) as the term, the
+ * action it performs as its definition, in either layout. */
+export function ShortcutList({ items, layout = "table" }: ShortcutListProps) {
   return (
-    <dl className={BASE_CLASS.list}>
+    <dl className={LAYOUT_CLASS[layout]} data-layout={layout}>
       {items.map((item, i) => (
         // The same chord legitimately appears twice with different meanings
         // (context-dependent bindings), and a label may be rich content, so

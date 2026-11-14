@@ -1,5 +1,5 @@
 // The shared held-steer test harness (steering-ghost spec §2/§5): the
-// fixtures HeldSteerStack.test.tsx and HeldSteerAnnouncements.test.tsx both
+// fixtures PendingMessageStack.test.tsx and HeldSteerAnnouncements.test.tsx both
 // seed through - a wire-shaped thread, a connected FakeClient, hydrate for
 // status/reflection, and seedHeld, which writes a real durable outbox row
 // through the same storage every submission path uses and settles the shared

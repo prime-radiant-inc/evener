@@ -72,7 +72,7 @@ export function WelcomeContent({ note, showNewSession, showResume = true, showHi
       )}
       {showHints && (
         <div className={CLASS.hints}>
-          <ShortcutList items={CHORD_HINTS} />
+          <ShortcutList layout="inline" items={CHORD_HINTS} />
           <p className={CLASS.hintFooter}>
             <KeyHint keys={["?"]} /> inside the command palette shows all shortcuts.
           </p>

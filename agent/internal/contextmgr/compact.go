@@ -121,6 +121,19 @@ func (cm *Manager) MaybeCompact(
 	sysPromptChars int,
 	emitFn func(events.EventKind, events.EventData),
 ) {
+	cm.compactWithCheckpoint(ctx, history, sysPromptChars, emitFn, "checkpoint", func(h []schema.Turn, preserve int, meta *CompactionMeta) ([]schema.Turn, []schema.Turn) {
+		return checkpointFold(h, preserve, meta, cm.resultToolName())
+	})
+}
+
+func (cm *Manager) compactWithCheckpoint(
+	ctx context.Context,
+	history *[]schema.Turn,
+	sysPromptChars int,
+	emitFn func(events.EventKind, events.EventData),
+	checkpointLayer string,
+	fold func([]schema.Turn, int, *CompactionMeta) ([]schema.Turn, []schema.Turn),
+) {
 	// One profile snapshot covers the window check and every diagnostic below:
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
@@ -137,10 +150,11 @@ func (cm *Manager) MaybeCompact(
 	pressure := func() (float64, *provider.Profile) { return cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := pressure()
+	th := cm.thresholdsFor(prof)
 	// Window-independent tripwire (issue #4564): force at least checkpoint
 	// pressure when it fires; see unknownWindowTripwireFires.
-	if cm.unknownWindowTripwireFires(prof) && p < cm.CheckpointThreshold {
-		p = cm.CheckpointThreshold
+	if cm.unknownWindowTripwireFires(prof) && p < th.checkpoint {
+		p = th.checkpoint
 	}
 	compacted := false
 
@@ -148,27 +162,28 @@ func (cm *Manager) MaybeCompact(
 	// between-layer pressure() calls use char/4 (which reflects in-place
 	// mutations). Without this, stale lastInputTokens causes both layers
 	// to cascade in a single pass.
-	if p >= cm.CheckpointThreshold {
+	if p >= th.checkpoint {
 		cm.resetMeasurement()
 	}
 
-	// Layer 1: Deterministic checkpoint at the configured trigger.
+	// Layer 1: Checkpoint at the configured trigger.
 	// checkpointed is what this pass's checkpoint folded, which a summary
 	// completing the same fold reads the partner's messages from.
 	var checkpointed []schema.Turn
-	if p >= cm.CheckpointThreshold {
-		cm.applyLayer(ctx, emitFn, history, prof, "checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
+	if p >= th.checkpoint {
+		cm.applyLayer(ctx, emitFn, history, prof, checkpointLayer, schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
 			var folded []schema.Turn
-			h, folded = checkpointFold(h, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
+			h, folded = fold(h, cm.PreserveRecentTurns, cm.metaFor(ctx))
 			checkpointed = folded
 			return h, nil
 		}, true)
 		compacted = true
 		p, prof = pressure()
+		th = cm.thresholdsFor(prof)
 	}
 
 	// Layer 2: LLM summarization at the backstop.
-	if p >= cm.SummarizeThreshold && cm.client != nil {
+	if p >= th.summarize && cm.client != nil {
 		if cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, "", checkpointed)
 		}, true) {
@@ -239,8 +254,7 @@ func discloseAssumedWindow(cm *Manager, prof *provider.Profile, emitFn func(even
 func (cm *Manager) unknownWindowTripwireFires(captured *provider.Profile) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	_, unknown := effectiveWindowOf(cm.profile)
-	return unknown && sameProfileTarget(captured, cm.profile) && cm.lastInputTokens >= UnknownWindowInputTripwire
+	return assumptionStillGoverns(captured, cm.profile) && cm.lastInputTokens >= UnknownWindowInputTripwire
 }
 
 // assumptionStillGoverns reports whether an assumption-state captured under
@@ -256,7 +270,7 @@ func (cm *Manager) unknownWindowTripwireFires(captured *provider.Profile) bool {
 // lock; both consult the current profile through this one predicate.
 func assumptionStillGoverns(captured, current *provider.Profile) bool {
 	_, assumed := effectiveWindowOf(current)
-	return assumed && sameProfileTarget(captured, current)
+	return assumed && current.CompactionThreshold() == 0 && sameProfileTarget(captured, current)
 }
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.

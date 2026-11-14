@@ -12,7 +12,7 @@ export default function SpeakerAvatarGallerySection() {
           <SpeakerAvatar speaker="user" />
         </div>
         <div className={styles.row}>
-          <p className={styles.rowLabel}>agent (skill)</p>
+          <p className={styles.rowLabel}>agent (evener mark)</p>
           <SpeakerAvatar speaker="agent" />
         </div>
         <div className={styles.row}>

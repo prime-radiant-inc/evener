@@ -63,8 +63,9 @@ test("secondary declares visible button chrome (fill + border), unlike quiet", (
     "",
   );
   const rule = /\.secondary\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain("border-color: var(--edge-strong)");
+  expect(rule).toContain("border-color: var(--edge)");
   expect(rule).toContain("background: var(--surface-1)");
+  expect(rule).toContain("box-shadow: var(--shadow-card)");
   expect(css).toMatch(
     /\.secondary:hover:not\(:disabled\):not\(\[aria-disabled="true"\]\)\s*\{[^}]*background: var\(--hover-1\)/,
   );

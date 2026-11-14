@@ -36,3 +36,21 @@ func TestTestRunIsTestExample(t *testing.T) {
 		t.Errorf("TestRun=%q, want %q", TestRun, want)
 	}
 }
+
+// TestShardSkipJoinsOnlyPresentSides pins the combinator the shell lib's
+// gate_shard_skip exposes: the gate skip, a caller's skip as a parenthesized
+// alternative, and no empty alternative when either side is empty.
+func TestShardSkipJoinsOnlyPresentSides(t *testing.T) {
+	for _, tc := range []struct {
+		gate, user, want string
+	}{
+		{"(gate)", "(user)", "(gate)|((user))"},
+		{"(gate)", "", "(gate)"},
+		{"", "(user)", "(user)"},
+		{"", "", ""},
+	} {
+		if got := ShardSkip(tc.gate, tc.user); got != tc.want {
+			t.Errorf("ShardSkip(%q, %q) = %q, want %q", tc.gate, tc.user, got, tc.want)
+		}
+	}
+}

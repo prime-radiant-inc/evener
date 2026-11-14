@@ -3,7 +3,8 @@
  * the declarations live here once and each widget's own module composes them
  * (see pathfield.module.css) rather than copying them.
  *
- * Control-shaped (32px + one hairline edge, matching Input/Select) so the
+ * Control-shaped (32px + one hairline edge that strengthens on hover and
+ * focus, matching Input/Select) so the
  * trigger scans as one of the form's controls, and it FILLS its container the
  * way Input/Select do (width: 100%, box-sizing so the border stays inside
  * that width) rather than hugging its value - a form control whose width
@@ -17,7 +18,7 @@
   width: 100%;
   height: 32px;
   padding: 0 var(--space-3);
-  border: 1px solid var(--edge-strong);
+  border: 1px solid var(--edge);
   border-radius: var(--radius-control);
   background: var(--field);
   box-shadow: var(--shadow-inset-field);

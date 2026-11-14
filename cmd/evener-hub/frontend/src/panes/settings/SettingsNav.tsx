@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useIsMobile } from "../../shell/useIsMobile";
 import { Chevron, EmptyState, Eyebrow, Input, ListRow } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { matchesSettingsSection, SETTINGS_CLUSTERS, SETTINGS_SECTIONS, type SettingsSection } from "./sections";
@@ -15,8 +16,9 @@ const CLASS = {
   nav: requireClass(styles.nav, "settings.module.css", "nav"),
   filterRow: requireClass(styles.filterRow, "settings.module.css", "filterRow"),
   clusterHeader: requireClass(styles.clusterHeader, "settings.module.css", "clusterHeader"),
-  link: requireClass(styles.link, "settings.module.css", "link"),
-  linkActive: requireClass(styles.linkActive, "settings.module.css", "linkActive"),
+  clusterRows: requireClass(styles.clusterRows, "settings.module.css", "clusterRows"),
+  clusterRowsGrouped: requireClass(styles.clusterRowsGrouped, "settings.module.css", "clusterRowsGrouped"),
+  navRow: requireClass(styles.navRow, "settings.module.css", "navRow"),
   linkChevron: requireClass(styles.linkChevron, "settings.module.css", "linkChevron"),
 };
 
@@ -30,20 +32,19 @@ function NavLink({
   onNavigate: (id: string) => void;
 }) {
   return (
-    <div className={active ? CLASS.linkActive : undefined}>
+    // The selected look is ListRow's own, keyed on aria-current. This wrapper
+    // is layout only: the phone list's row inset and hairline, and the anchor
+    // for its drill-in chevron.
+    <div className={CLASS.navRow}>
       <ListRow
         variant="plain"
         aria-current={active ? "page" : undefined}
         onSelect={() => onNavigate(section.id)}
-        label={
-          <span className={CLASS.link}>
-            <span>{section.label}</span>
-            <span className={CLASS.linkChevron} aria-hidden="true" data-testid="settings-nav-chevron">
-              <Chevron direction="right" size={16} />
-            </span>
-          </span>
-        }
+        label={section.label}
       />
+      <span className={CLASS.linkChevron} aria-hidden="true" data-testid="settings-nav-chevron">
+        <Chevron direction="right" size={16} />
+      </span>
     </div>
   );
 }
@@ -54,6 +55,7 @@ function NavLink({
  */
 export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
   const [filter, setFilter] = useState("");
+  const isMobile = useIsMobile();
 
   const matching = SETTINGS_SECTIONS.filter((section) => matchesSettingsSection(section, filter));
 
@@ -86,9 +88,11 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
             <div className={CLASS.clusterHeader} data-section={cluster.id}>
               <Eyebrow>{cluster.label}</Eyebrow>
             </div>
-            {sections.map((section) => (
-              <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
-            ))}
+            <div className={isMobile ? CLASS.clusterRowsGrouped : CLASS.clusterRows}>
+              {sections.map((section) => (
+                <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
+              ))}
+            </div>
           </div>
         );
       })}

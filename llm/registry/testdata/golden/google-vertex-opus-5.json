@@ -99,6 +99,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/row",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "Sampling": "snapshot/row",
@@ -108,6 +109,7 @@
     "ThinkingShape": "derived",
     "Tools": "snapshot/row",
     "WebSearch": "overlay/provider",
+    "WireID": "snapshot/row",
     "model": "row:claude-opus-5"
   },
   "default_model": "gemini-3.8-flash",

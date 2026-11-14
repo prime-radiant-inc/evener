@@ -24,6 +24,8 @@ import {
   Popover,
   RadioGroup,
   Skeleton,
+  StatusDot,
+  ToolIcon,
   Tooltip,
   Tree,
   type TreeProps,
@@ -99,7 +101,9 @@ const CLASS = {
   header: requireClass(styles.header, "Rail.module.css", "header"),
   identity: requireClass(styles.identity, "Rail.module.css", "identity"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
+  mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
+  brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -272,6 +276,16 @@ function projectsTierFor(
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
   return <Tree {...props} releaseModifierKeys={!isMobile} />;
+}
+
+// The evener mark on the rail's accent tile: the same ToolIcon glyph the
+// transcript's agent avatar wears, so the two are one mark.
+function EvenerMark() {
+  return (
+    <span className={CLASS.mark} aria-hidden="true" data-testid="rail-mark">
+      <ToolIcon kind="mark" />
+    </span>
+  );
 }
 
 function RailSection({
@@ -1003,41 +1017,45 @@ function NavigationRail({
       <div className={CLASS.header}>
         <div className={CLASS.identity}>
           <div data-testid="rail-brand" className={CLASS.brand}>
+            <EvenerMark />
             <span data-testid="rail-wordmark" className={CLASS.wordmark}>
               evener
             </span>
-            <IconButton
-              data-testid="rail-settings"
-              label="Settings"
-              icon={<GearIcon />}
-              variant="quiet"
-              size="md"
-              onClick={() => navigate("/settings")}
-            />
-            <Tooltip label="Search sessions and commands">
+            <div className={CLASS.brandActions}>
               <IconButton
-                data-testid="rail-search"
-                data-search-trigger="true"
-                label="Search"
-                icon={<SearchIcon />}
+                data-testid="rail-settings"
+                label="Settings"
+                icon={<GearIcon />}
                 variant="quiet"
                 size="md"
+                onClick={() => navigate("/settings")}
               />
-            </Tooltip>
-            {onHide && (
-              <IconButton
-                data-rail-toggle=""
-                label="Hide sidebar"
-                icon={<SidebarIcon />}
-                variant="quiet"
-                size="md"
-                onClick={onHide}
-              />
-            )}
+              <Tooltip label="Search sessions and commands">
+                <IconButton
+                  data-testid="rail-search"
+                  data-search-trigger="true"
+                  label="Search"
+                  icon={<SearchIcon />}
+                  variant="quiet"
+                  size="md"
+                />
+              </Tooltip>
+              {onHide && (
+                <IconButton
+                  data-rail-toggle=""
+                  label="Hide sidebar"
+                  icon={<SidebarIcon />}
+                  variant="quiet"
+                  size="md"
+                  onClick={onHide}
+                />
+              )}
+            </div>
           </div>
           {needsYou > 0 && (
             <span className={CLASS.needsYou} data-testid="rail-needs-you">
               <Chip tone="attention" kind="needs-you">
+                <StatusDot state="needs-you" decorative />
                 {needsYou} needs you
               </Chip>
             </span>

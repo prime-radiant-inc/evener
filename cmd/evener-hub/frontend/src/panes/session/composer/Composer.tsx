@@ -100,7 +100,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { useBuiltinSubmission } from "./useBuiltinSubmission";
+import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -110,7 +110,7 @@ export interface ComposerProps {
   // Whether this composer's pane is the workspace's focused one. Mount
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
-  focused: boolean;
+  focused?: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
   // The seat's own chrome already renders this conversation's activity counts
@@ -118,6 +118,7 @@ export interface ComposerProps {
   // not mount a second set of chips beside the status chrome.
   ownsActivityCounts?: boolean;
   source: ComposerSourceState;
+  submission?: ComposerSubmission;
   // An in-progress IME composition, reported for the floating attention
   // control's visibility. Focus alone never counts: a session open autofocuses
   // this editor, and hiding the control then would take it away before the
@@ -150,15 +151,26 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({
+export function Composer(props: ComposerProps) {
+  if (props.submission !== undefined) return <ComposerWithSubmission {...props} submission={props.submission} />;
+  return <ComposerWithOwnSubmission {...props} />;
+}
+
+function ComposerWithOwnSubmission(props: ComposerProps) {
+  const submission = useBuiltinSubmission(props.source, props.paneId);
+  return <ComposerWithSubmission {...props} submission={submission} />;
+}
+
+function ComposerWithSubmission({
   ref,
   paneId,
-  focused,
+  focused = false,
   mountAutofocus = true,
   ownsActivityCounts = false,
   source,
+  submission,
   onEditingChange,
-}: ComposerProps) {
+}: ComposerProps & { submission: ComposerSubmission }) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -263,7 +275,7 @@ export function Composer({
     persistDraft,
     writeDraft,
   } = source;
-  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId);
+  const { actions, sessionBuiltins, submitBuiltin } = submission;
   const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);

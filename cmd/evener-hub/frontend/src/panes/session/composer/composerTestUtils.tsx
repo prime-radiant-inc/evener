@@ -304,7 +304,7 @@ export function textarea(): HTMLDivElement {
 
 // The composer's controls are addressed by their stable data-testid, not by
 // accessible name: two different buttons in this tree start with "Steer"
-// (this component's own and QueueStrip's "Steer queue now"), and the
+// (this component's own and the pending stack's "Steer queue now"), and the
 // submit button's own name tracks the send/queue routing and the keyboard
 // hint. The accessible names are still a real contract - see the dedicated
 // "spoken name" tests below - they just aren't how tests navigate.

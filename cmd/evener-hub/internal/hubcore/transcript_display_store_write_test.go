@@ -188,12 +188,16 @@ func TestTranscriptDisplayStoreOnCommittedFollowsThePublishedState(t *testing.T)
 	afterRename.OnCommitted(func(changed appwire.TranscriptDisplayChangedParams) {
 		after = append(after, changed)
 	})
-	if _, err := afterRename.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+	_, patchErr := afterRename.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
 		Layout:           appwire.TranscriptViewportDesktop,
 		ExpectedRevision: 0,
 		Config:           config,
-	}); err == nil {
+	})
+	if patchErr == nil {
 		t.Fatal("post-rename failure returned no error")
+	}
+	if !errors.Is(patchErr, ErrWriteApplied) {
+		t.Fatalf("post-rename error %v does not report ErrWriteApplied", patchErr)
 	}
 	if len(after) != 1 || after[0].Revision != 1 || !reflect.DeepEqual(after[0].Config, config) {
 		t.Fatalf("committed = %#v, want the applied revision-1 value", after)

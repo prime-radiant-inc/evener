@@ -452,10 +452,10 @@ test("the failure badge is an absolute overlay anchored to the icon glyph's box,
   expect(badgeRule).not.toMatch(/height:\s*\d/);
   expect(badgeRule).toMatch(/inset-block-end:\s*calc\(\(10px - var\(--tool-row-icon-size\)\) \/ 2\)/);
   expect(css).not.toMatch(/\.failureBadge > \[role="img"\]/);
-  // The slot is the badge's positioning context and carries the icon size the
-  // insets read, next to the gutter pull it composes.
+  // The slot is the badge's positioning context - the field seat it composes
+  // positions it - and carries the icon size the insets read.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(slotRule).toContain("position: relative");
+  expect(slotRule).toContain('composes: fieldSeatBehind from "../../../styles/surface.module.css"');
   expect(slotRule).toContain("--tool-row-icon-size:");
 });
 
@@ -674,7 +674,7 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   const css = rowCss();
   const iconRule = css.match(/\.rowIcon\s*\{([^}]*)\}/);
   expect(iconRule).not.toBe(null);
-  // The avatar-column slot geometry (50% opacity, --speaker-avatar-size wide,
+  // The avatar-column slot geometry (--speaker-avatar-size wide,
   // margin-right net of the row's own column-gap so the rationale lands on the
   // content edge) lives in the shared icon-rail seat
   // (styles/railseat.module.css), pinned there by
@@ -682,12 +682,12 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   // of its own, so its seat cannot drift from the notification head's status
   // glyph or the Loader's rail row.
   expect(iconRule?.[1]).toContain('composes: seat from "../../../styles/railseat.module.css"');
-  // The breakpoint-gated gutter pull rides the SLOT (the row's flex item, and
-  // the failure badge's positioning context), so the slot and the seat
-  // together still place the icon: one pull, one owner.
+  // The pull rides the SLOT (the row's flex item, and the failure badge's
+  // positioning context) into the seat column the row itself reserves, so
+  // the slot and the seat together still place the icon: one pull, one owner.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/);
   expect(slotRule).not.toBe(null);
-  expect(slotRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
+  expect(slotRule?.[1]).toContain('composes: columnPull from "../../../styles/railseat.module.css"');
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");
@@ -1109,7 +1109,7 @@ test("the complete prefix anchors correctly even when the bare target text recur
 
 // Associativity rhythm (Jesse's review call): the gap between a rationale
 // and the call it executes must read TIGHTER than the gap between separate
-// calls - 16px outside (.call padding), and inside now NO row gap at all plus
+// calls - 16px plus a divider outside (.call padding), and inside NO row gap plus
 // the title line-height on both lines, so the inter-line gap is only the two
 // tightened half-leadings. Before this the inside gap was a 4px row-gap over
 // the body's 1.5 line-height, which read nearly as loose as a separate call.
@@ -1120,7 +1120,8 @@ test("the rationale-to-call gap is tightened to line-leading only, still tighter
   expect(css).toMatch(/\.demoted\s*\{[^}]*line-height:\s*var\(--line-height-title\)/);
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
-  expect(call![1]).toContain("padding: var(--rhythm-item) 0");
+  expect(call![1]).toContain('composes: toolRowInsets from "../../../styles/surface.module.css"');
+  expect(call![1]).toContain("padding: var(--tool-card-row-pad) var(--tool-card-inset)");
 });
 
 // The intent is the agent's stated rationale for the call - commentary on

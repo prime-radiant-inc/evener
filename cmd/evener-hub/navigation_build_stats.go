@@ -1,7 +1,7 @@
 package hub
 
 import (
-	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -60,15 +60,28 @@ func (s *navigationBuildStats) countNavigationSessions(metas []schema.SessionMet
 	s.ArchivedRoots = s.ArchivedRootsInActiveProjects + s.ArchivedRootsInArchivedProjects
 }
 
-func (s navigationBuildStats) fields() string {
-	return fmt.Sprintf("total=%s inputs=%s resolve=%s tree=%s projection=%s fingerprints=%s next_states=%s restarts=%d "+
-		"metas=%d subagents=%d roots=%d archived_roots=%d archived_roots_archived_projects=%d archived_roots_active_projects=%d "+
-		"dirs=%d live=%d resources=%d",
-		s.Total.Round(time.Millisecond), s.Inputs.Round(time.Millisecond), s.Resolve.Round(time.Millisecond),
-		s.Tree.Round(time.Millisecond), s.Projection.Round(time.Millisecond), s.Fingerprints.Round(time.Millisecond),
-		s.NextStates.Round(time.Millisecond), s.Restarts,
-		s.Metas, s.Subagents, s.Roots, s.ArchivedRoots, s.ArchivedRootsInArchivedProjects, s.ArchivedRootsInActiveProjects,
-		s.Dirs, s.Live, s.Resources)
+// attrs renders the build's timing and session counts as structured fields, so
+// a log sink (and a test) reads each value by name instead of parsing prose.
+func (s navigationBuildStats) attrs() []any {
+	return []any{
+		"total", s.Total.Round(time.Millisecond),
+		"inputs", s.Inputs.Round(time.Millisecond),
+		"resolve", s.Resolve.Round(time.Millisecond),
+		"tree", s.Tree.Round(time.Millisecond),
+		"projection", s.Projection.Round(time.Millisecond),
+		"fingerprints", s.Fingerprints.Round(time.Millisecond),
+		"next_states", s.NextStates.Round(time.Millisecond),
+		"restarts", s.Restarts,
+		"metas", s.Metas,
+		"subagents", s.Subagents,
+		"roots", s.Roots,
+		"archived_roots", s.ArchivedRoots,
+		"archived_roots_archived_projects", s.ArchivedRootsInArchivedProjects,
+		"archived_roots_active_projects", s.ArchivedRootsInActiveProjects,
+		"dirs", s.Dirs,
+		"live", s.Live,
+		"resources", s.Resources,
+	}
 }
 
 // navigationBuildStatsLog decides which builds get a log line and writes it.
@@ -76,13 +89,13 @@ func (s navigationBuildStats) fields() string {
 // last-logged time is guarded.
 type navigationBuildStatsLog struct {
 	mu         sync.Mutex // guards lastLogged
-	logf       func(format string, args ...any)
+	log        *slog.Logger
 	slow       time.Duration // zero means navigationBuildStatsSlow
 	lastLogged time.Time     // the last line, or the service's start
 }
 
 func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time.Time) {
-	if l.logf == nil {
+	if l.log == nil {
 		return
 	}
 	l.mu.Lock()
@@ -95,19 +108,19 @@ func (l *navigationBuildStatsLog) completed(stats navigationBuildStats, now time
 		return
 	}
 	l.lastLogged = now
-	l.logf("navigation build: %s", stats.fields())
+	l.log.Info("navigation build", append([]any{"event", "completed"}, stats.attrs()...)...)
 }
 
 func (l *navigationBuildStatsLog) timedOut(stats navigationBuildStats) {
-	if l.logf == nil {
+	if l.log == nil {
 		return
 	}
-	l.logf("navigation build timed out in %s: %s", stats.phase, stats.fields())
+	l.log.Info("navigation build timed out", append([]any{"event", "timeout", "phase", stats.phase}, stats.attrs()...)...)
 }
 
 func (l *navigationBuildStatsLog) failed(stats navigationBuildStats, err error) {
-	if l.logf == nil {
+	if l.log == nil {
 		return
 	}
-	l.logf("navigation build failed in %s: %s error=%q", stats.phase, stats.fields(), err.Error())
+	l.log.Info("navigation build failed", append(append([]any{"event", "failed", "phase", stats.phase}, stats.attrs()...), "error", err)...)
 }

@@ -743,11 +743,11 @@ test("an empty rejected drain is a notice, not a restored draft", async () => {
   expect(screen.getByText(/queue revision changed/)).toBeDefined();
 });
 
-test("mount restore leaves an ownerless legacy row to the queue strip", async () => {
+test("mount restore leaves an ownerless legacy row to the pending stack", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   // Rows written before composition owners existed carry no seat. Automatic
-  // restoration must not inject them into a fresh pane; the queue strip's
+  // restoration must not inject them into a fresh pane; the pending stack's
   // explicit Edit still reaches them.
   await seedRejectedRecovery(storage, "ref_a", "legacy text", {}, null);
   await mountComposer("ref_a", { status: { type: "idle" } });

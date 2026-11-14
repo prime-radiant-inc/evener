@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 // skillguard — the sixth browser guard: drives the PRODUCTION hub web app
 // (AppShell → Session → Composer) in headless Chrome against a REAL hub URL
 // served by a REAL evener-hub WebServer with REAL `evener serve` daemons
@@ -22,8 +23,16 @@
 // shared dev server.
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import {
+  connectOnlyPage,
+  createStartupDeadline,
+  devtoolsHttpURL,
+  evaluate,
+  navigateTo,
+  REFUSED_BUTTON_SELECTOR,
+  waitForHttp,
+} from "../browserGuardCdp.mjs";
 import {
   CHROME_ANNOUNCEMENT_DEADLINE_MS,
   chromeProfileEnvironment,
@@ -35,15 +44,6 @@ import {
   parseChromeDevToolsAnnouncement,
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
-import {
-  connectOnlyPage,
-  createStartupDeadline,
-  devtoolsHttpURL,
-  evaluate,
-  navigateTo,
-  REFUSED_BUTTON_SELECTOR,
-  waitForHttp,
-} from "../browserGuardCdp.mjs";
 import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
@@ -137,6 +137,14 @@ const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 // comes back fails with the last reading that stood in for a baseline.
 const TURN_BASELINE_RETRY_MS = envMillis("SKILLGUARD_TURN_BASELINE_TIMEOUT_MS", 45_000);
 
+// A page that stopped answering rejects every Runtime.evaluate poll. One
+// rejection is unobserved time (a CDP hiccup, a navigation in flight), but a
+// continuous run is evidence about the page itself: waiting out the full
+// missing-condition timeout would name only the condition and hide the
+// rejection. The ordinary deadline remains the backstop for a page that is
+// still answering "not yet".
+export const EVALUATE_FAILURE_FAIL_FAST_MS = envMillis("SKILLGUARD_EVALUATE_FAILURE_FAIL_FAST_MS", 2_000);
+
 // selectAll feeds a replacement edit -- the queue journey selects the draft a
 // queued entry returned and types over it -- so a caret the editor left at the
 // end of the text instead of the whole selection would send the next typeText
@@ -220,8 +228,9 @@ function editorText(root) {
     if (node.nodeName === "BR") return node.classList.contains("ProseMirror-trailingBreak") ? "" : "\n";
     return [...node.childNodes].map(read).join("");
   };
-  return [...root.childNodes].map((node, index) =>
-    (index > 0 && node.nodeName === "P" ? "\n" : "") + read(node)).join("");
+  return [...root.childNodes]
+    .map((node, index) => (index > 0 && node.nodeName === "P" ? "\n" : "") + read(node))
+    .join("");
 }
 
 // Runs in the page. Scrolls el into view and returns its center while el is
@@ -229,7 +238,9 @@ function editorText(root) {
 // would land on that something, as a real press would.
 function uncoveredCenter(el, block) {
   el.scrollIntoView({ block });
-  const r = el.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+  const r = el.getBoundingClientRect(),
+    x = r.x + r.width / 2,
+    y = r.y + r.height / 2;
   return el.contains(document.elementFromPoint(x, y)) ? { x, y } : null;
 }
 
@@ -256,19 +267,15 @@ function selectEditorRange(editor, start, end) {
   if (!positions.has(start) || !positions.has(end)) throw new Error(`invalid editor boundary ${start}-${end}`);
   editor.focus();
   const range = document.createRange();
-  range.setStart(...positions.get(start)); range.setEnd(...positions.get(end));
-  const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+  range.setStart(...positions.get(start));
+  range.setEnd(...positions.get(end));
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 export class Driver {
-  constructor({
-    url,
-    artifactDir,
-    controlPath,
-    milestonePath,
-    spawnChrome = spawn,
-    chromeBinary = null,
-  }) {
+  constructor({ url, artifactDir, controlPath, milestonePath, spawnChrome = spawn, chromeBinary = null }) {
     this.url = url;
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
@@ -297,7 +304,10 @@ export class Driver {
 
   milestone(name, detail = {}) {
     this.milestoneCount = (this.milestoneCount ?? 0) + 1;
-    appendFileSync(this.milestonePath, `${JSON.stringify({ milestone: name, at: new Date().toISOString(), detail })}\n`);
+    appendFileSync(
+      this.milestonePath,
+      `${JSON.stringify({ milestone: name, at: new Date().toISOString(), detail })}\n`,
+    );
   }
 
   control(command) {
@@ -332,7 +342,8 @@ export class Driver {
     let lineBuffer = "";
     const announced = new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`chrome never announced its DevTools endpoint after ${CHROME_ANNOUNCEMENT_DEADLINE_MS}ms`)),
+        () =>
+          reject(new Error(`chrome never announced its DevTools endpoint after ${CHROME_ANNOUNCEMENT_DEADLINE_MS}ms`)),
         CHROME_ANNOUNCEMENT_DEADLINE_MS,
       );
       const finish = (fn, value) => {
@@ -340,7 +351,10 @@ export class Driver {
         fn(value);
       };
       this.chrome.once("exit", (code, signal) => {
-        finish(reject, new Error(`chrome exited before DevTools readiness (code ${code ?? "?"}, signal ${signal ?? "none"})`));
+        finish(
+          reject,
+          new Error(`chrome exited before DevTools readiness (code ${code ?? "?"}, signal ${signal ?? "none"})`),
+        );
       });
       this.chrome.once("error", (error) => finish(reject, error));
       this.chrome.stderr.on("data", (chunk) => {
@@ -469,9 +483,11 @@ export class Driver {
     const caret = before.start + text.length;
     await this.send("Input.insertText", { text });
     try {
-      await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
+      await this.waitPage(
+        `(() => { const state = ${this.composerEditStateExpr(ref)};
         return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
-        { label: `native edit ${JSON.stringify(want)} with caret ${caret}` });
+        { label: `native edit ${JSON.stringify(want)} with caret ${caret}` },
+      );
     } catch (error) {
       const after = await evaluate(this.send, this.composerEditStateExpr(ref));
       throw new Error(`${error.message}; native state ${JSON.stringify({ before, after })}`, { cause: error });
@@ -491,9 +507,11 @@ export class Driver {
     const caret = before.start + inserted.length;
     await this.send("Input.insertText", { text });
     try {
-      await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
+      await this.waitPage(
+        `(() => { const state = ${this.composerEditStateExpr(ref)};
         return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
-        { label: `separated edit ${JSON.stringify(want)} with caret ${caret}` });
+        { label: `separated edit ${JSON.stringify(want)} with caret ${caret}` },
+      );
     } catch (error) {
       const after = await evaluate(this.send, this.composerEditStateExpr(ref));
       throw new Error(`${error.message}; native state ${JSON.stringify({ before, after })}`, { cause: error });
@@ -501,19 +519,25 @@ export class Driver {
   }
 
   async selectRange(ref, start, end = start) {
-    const selected = await evaluate(this.send, `(async () => {
+    const selected = await evaluate(
+      this.send,
+      `(async () => {
       const editor = ${this.editorExpr(ref)};
       if (!editor) return false;
       const changed = new Promise((resolve) => document.addEventListener("selectionchange", resolve, { once: true }));
       (${selectEditorRange.toString()})(editor, ${start}, ${end});
       await changed;
       return true;
-    })()`);
+    })()`,
+    );
     check(selected, `selectRange(${ref}): editor missing`);
   }
 
   async moveCaret(ref, key) {
-    const changed = evaluate(this.send, `new Promise((resolve) => document.addEventListener("selectionchange", () => resolve(true), { once: true }))`);
+    const changed = evaluate(
+      this.send,
+      `new Promise((resolve) => document.addEventListener("selectionchange", () => resolve(true), { once: true }))`,
+    );
     await this.press(ref, key);
     await changed;
   }
@@ -558,13 +582,16 @@ export class Driver {
   // DataTransfer, which is the payload a real Ctrl+C would have put on the
   // clipboard.
   async copySelection(ref) {
-    return evaluate(this.send, `(() => {
+    return evaluate(
+      this.send,
+      `(() => {
       const editor = ${this.editorExpr(ref)};
       if (!editor) return null;
       const dt = new DataTransfer();
       editor.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true }));
       return dt.getData("text/plain");
-    })()`);
+    })()`,
+    );
   }
 
   // pasteText delivers `text` the way a real Ctrl+V would: a `paste` event
@@ -572,13 +599,16 @@ export class Driver {
   // editor so its own paste handler imports it. The edit it causes is awaited
   // by the caller's waitPage, exactly as the native chord was.
   async pasteText(ref, text) {
-    return evaluate(this.send, `(() => {
+    return evaluate(
+      this.send,
+      `(() => {
       const editor = ${this.editorExpr(ref)};
       if (!editor) return null;
       const dt = new DataTransfer();
       dt.setData("text/plain", ${JSON.stringify(text)});
       return editor.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
-    })()`);
+    })()`,
+    );
   }
 
   // press sends a real key to one session's composer. The CDP event goes to
@@ -598,7 +628,9 @@ export class Driver {
         return { restored: !already, focused: document.activeElement === ta }; })()`,
     );
     if (!focused || focused.error) {
-      throw new Error(`press(${ref}, ${key}): ${focused ? focused.error : "no result from the page (navigated or disconnected?)"}`);
+      throw new Error(
+        `press(${ref}, ${key}): ${focused ? focused.error : "no result from the page (navigated or disconnected?)"}`,
+      );
     }
     if (!focused.focused) throw new Error(`press(${ref}, ${key}): the composer would not take focus`);
     if (focused.restored) console.error(`skillguard: ${ref}: focus was elsewhere before ${key}; restored it`);
@@ -649,8 +681,20 @@ export class Driver {
     const box = await this.elementBox(full);
     if (!box) throw new Error(`click: no element matches ${full}`);
     await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
-    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
-    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1 });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: box.x,
+      y: box.y,
+      button: "left",
+      clickCount: 1,
+    });
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: box.x,
+      y: box.y,
+      button: "left",
+      clickCount: 1,
+    });
   }
 
   async clickAt(x, y) {
@@ -676,7 +720,8 @@ export class Driver {
     if (result === "missing") throw new Error(`clickByText: no button labeled ${JSON.stringify(text)}`);
     if (result === "disabled") throw new Error(`clickByText: button ${JSON.stringify(text)} is disabled`);
     if (result === "covered") throw new Error(`clickByText: button ${JSON.stringify(text)} is covered at its center`);
-    if (result !== "clicked") throw new Error(`clickByText: unexpected result ${JSON.stringify(result)} for ${JSON.stringify(text)}`);
+    if (result !== "clicked")
+      throw new Error(`clickByText: unexpected result ${JSON.stringify(result)} for ${JSON.stringify(text)}`);
   }
 
   // ---- page state (each returns plain JSON values) ----
@@ -743,6 +788,13 @@ export class Driver {
   // loaded moment the wait was widened to survive. It is accounted for ONCE:
   // re-extending on every hold would let a flapping condition postpone the
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
+  //
+  // A stopped page and a missing panel are different failures. A rejected
+  // evaluate is not a reading, but a CONTINUOUS run of them means the page
+  // itself stopped answering; after EVALUATE_FAILURE_FAIL_FAST_MS the wait
+  // fails with the rejection instead of waiting out the missing-condition
+  // deadline. A healthy page that answers "not yet" still times out as before,
+  // and its error now says whether any polls failed on the way.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0, observe = true } = {}) {
     const startedAt = Date.now();
     // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
@@ -768,14 +820,24 @@ export class Driver {
     let readAt = startedAt;
     // How much unobserved time may still be refunded to the deadline.
     let refundLeft = settleMs;
+    // Failed evaluate polls, total and consecutive: the witness a timeout
+    // attaches, and the proof that the page stopped answering.
+    let failedPolls = 0;
+    let failureStreak = 0;
+    let failureStartedAt = null;
+    let lastEvaluateError = null;
     for (;;) {
       let errored = false;
-      const value = await evaluate(this.send, exprSource).catch(() => {
+      const value = await evaluate(this.send, exprSource).catch((error) => {
         errored = true;
+        lastEvaluateError = error instanceof Error ? error.message : String(error);
         return null;
       });
       const now = Date.now();
       if (errored) {
+        failedPolls += 1;
+        failureStreak += 1;
+        failureStartedAt ??= now;
         const unobserved = now - readAt;
         if (heldSince !== null) {
           heldSince += unobserved;
@@ -783,6 +845,9 @@ export class Driver {
           refundLeft -= refund;
           deadline += refund;
         }
+      } else {
+        failureStreak = 0;
+        failureStartedAt = null;
       }
       readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
@@ -805,9 +870,21 @@ export class Driver {
         // action produced around for the waits that outlive it.
         const toast = await evaluate(this.send, this.toastExpr()).catch(() => "");
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
-        const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
+        const pollFailures =
+          failedPolls > 0
+            ? `; ${failedPolls} evaluate poll${failedPolls === 1 ? "" : "s"} failed, last: ${lastEvaluateError}`
+            : "";
+        const settle =
+          settleMs > 0
+            ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})`
+            : "";
         throw new Error(
-          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}${pollFailures}`,
+        );
+      }
+      if (failureStartedAt !== null && now - failureStartedAt >= EVALUATE_FAILURE_FAIL_FAST_MS) {
+        throw new Error(
+          `page stopped answering: ${failureStreak} consecutive Runtime.evaluate failures over ${now - failureStartedAt}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}; last: ${lastEvaluateError}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -897,9 +974,9 @@ export class Driver {
   // brings the tail into view first (withTranscriptTail).
   queueStripExpr(ref = null) {
     return `(() => {
-      const strip = ${this.queueStripRootExpr(ref)};
-      if (!strip) return null;
-      const rows = [...strip.querySelectorAll("li")].map((li) => ({
+      const stack = ${this.queueStripRootExpr(ref)};
+      if (!stack) return null;
+      const rows = [...stack.querySelectorAll("[data-testid='pending-message-row']")].map((li) => ({
         text: li.textContent,
         kind: li.dataset.kind ?? null,
         busy: li.dataset.busy ?? null,
@@ -1005,7 +1082,11 @@ export class Driver {
     const [composer, rail, queue, toast, durable, drafts, transcript] = await Promise.all(files);
     appendFileSync(
       path.join(this.artifactDir, `${name}.dump.json`),
-      JSON.stringify({ at: new Date().toISOString(), composer, rail, queue, toast, durable, drafts, transcript }, null, 2),
+      JSON.stringify(
+        { at: new Date().toISOString(), composer, rail, queue, toast, durable, drafts, transcript },
+        null,
+        2,
+      ),
     );
   }
 
@@ -1073,7 +1154,9 @@ export class Driver {
     const row = `/${name}`;
     // Click the skill's own row, not a keyboard commit, so the scenario never
     // depends on highlight ordering.
-    const point = await this.waitPage(this.slashRowPointExpr(row), { label: `slash menu row ${row} present and uncovered` });
+    const point = await this.waitPage(this.slashRowPointExpr(row), {
+      label: `slash menu row ${row} present and uncovered`,
+    });
     await this.clickAt(point.x, point.y);
     await this.waitPage(
       `(() => { const pane = ${this.paneScopeExpr(ref)};
@@ -1095,7 +1178,8 @@ export class Driver {
     await this.press(ref, "Backspace");
     await this.assertComposerDraft(ref, "atomic Backspace", {
       text: before.text.slice(0, at) + before.text.slice(at + SKILL_NAME.length + 1),
-      chips: before.chips.filter((chip) => chip !== `/${SKILL_NAME}`), tiles: before.tiles,
+      chips: before.chips.filter((chip) => chip !== `/${SKILL_NAME}`),
+      tiles: before.tiles,
     });
   }
 
@@ -1147,7 +1231,12 @@ export class Driver {
   // placeholder, submitDisabled and steerVisible are not compared -- they
   // describe the control, not what it sends.
   async assertComposerDraft(ref, action, expect) {
-    if (!expect || typeof expect.text !== "string" || !Array.isArray(expect.chips) || typeof expect.tiles !== "number") {
+    if (
+      !expect ||
+      typeof expect.text !== "string" ||
+      !Array.isArray(expect.chips) ||
+      typeof expect.tiles !== "number"
+    ) {
       throw new Error(`${action}(${ref}): pass the {text, chips, tiles} this action means to send`);
     }
     const state = await this.composerState(ref);
@@ -1395,14 +1484,11 @@ export class Driver {
   }
 
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
-    await this.waitPage(
-      this.turnIdleExpr(ref),
-      {
-        timeoutMs,
-        settleMs: TURN_IDLE_SETTLE_MS,
-        label: `previous turn ended and stayed idle for ${ref}`,
-      },
-    );
+    await this.waitPage(this.turnIdleExpr(ref), {
+      timeoutMs,
+      settleMs: TURN_IDLE_SETTLE_MS,
+      label: `previous turn ended and stayed idle for ${ref}`,
+    });
   }
 
   // clearComposerDraft takes one session's composer to the state a fresh
@@ -1624,7 +1710,9 @@ export class Driver {
   // collected from a pane the release never touched.
   async waitForContinuationReply(text, turnsBefore, { timeoutMs = 30000, ref = this.sessionA } = {}) {
     if (!Array.isArray(turnsBefore)) {
-      throw new Error("waitForContinuationReply needs the turnIds() captured before the release that dispatches the continuation");
+      throw new Error(
+        "waitForContinuationReply needs the turnIds() captured before the release that dispatches the continuation",
+      );
     }
     const expr = `(() => {
       const pane = ${this.paneScopeExpr(ref)};
@@ -1683,7 +1771,8 @@ export class Driver {
         label: `${label} click to take effect (attempt ${attempt}/${attempts})`,
       }).catch(() => false);
       if (landed) return;
-      if (attempt < attempts) console.error(`skillguard: ${label}: click ${attempt} had no observed effect; re-clicking`);
+      if (attempt < attempts)
+        console.error(`skillguard: ${label}: click ${attempt} had no observed effect; re-clicking`);
     }
     const diagnosis = await evaluate(
       this.send,
@@ -1700,13 +1789,17 @@ export class Driver {
   // Finding, hit-testing and pressing in one page turn keeps the pressed
   // element the one that was checked.
   async clickQueueRowControl({ rowText, label, ref = null }) {
-    const selector = `button[aria-label="${label}"]`;
+    // A row control names itself either with aria-label or with its own
+    // visible text: the queue strip used labelled icon buttons, and the
+    // pending stack renders worded buttons. Match on both, so the guard
+    // presses the same action whichever surface carries the row.
     const result = await evaluate(
       this.send,
       `(() => {
         const strip = ${this.queueStripRootExpr(ref)};
         if (!strip) return "missing";
-        const button = [...strip.querySelectorAll(${JSON.stringify(selector)})]
+        const button = [...strip.querySelectorAll("button")]
+          .filter((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent ?? "").trim() === ${JSON.stringify(label)})
           .find((candidate) => (candidate.closest("li")?.textContent ?? "").includes(${JSON.stringify(rowText)}));
         if (!button) return "missing";
         if (button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
@@ -1719,7 +1812,8 @@ export class Driver {
     if (result === "missing") throw new Error(`clickQueueRowControl: no ${label} control on ${where}`);
     if (result === "disabled") throw new Error(`clickQueueRowControl: ${label} is disabled on ${where}`);
     if (result === "covered") throw new Error(`clickQueueRowControl: ${label} is covered at its center on ${where}`);
-    if (result !== "clicked") throw new Error(`clickQueueRowControl: unexpected result ${result} for ${label} on ${where}`);
+    if (result !== "clicked")
+      throw new Error(`clickQueueRowControl: unexpected result ${result} for ${label} on ${where}`);
   }
 
   // True while the stack still holds a row carrying rowText. The queue edit
@@ -1786,10 +1880,10 @@ export class Driver {
   async waitForReply(ref, prose, { timeoutMs = 25000 } = {}) {
     const expr = `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`;
     try {
-      await this.waitPage(
-        this.withTranscriptTail(ref, expr),
-        { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
-      );
+      await this.waitPage(this.withTranscriptTail(ref, expr), {
+        timeoutMs,
+        label: `the reply to ${JSON.stringify(prose)} in ${ref}`,
+      });
     } catch (error) {
       throw await this.dumpPageState(ref, error);
     }
@@ -1893,7 +1987,10 @@ async function runInlineEditing(driver) {
   await driver.selectRange(ref, firstStart);
   await driver.typeText(ref, "/skill-1");
   await driver.completeSkill(ref, "skill-1");
-  check((await driver.composerState(ref)).text === "Run /skill-1 and then ", "completion doubled the existing separator");
+  check(
+    (await driver.composerState(ref)).text === "Run /skill-1 and then ",
+    "completion doubled the existing separator",
+  );
   await driver.selectRange(ref, TWO_SKILLS.indexOf("/skill-2"));
   await driver.typeText(ref, "/skill-2");
   await driver.completeSkill(ref, "skill-2");
@@ -1928,7 +2025,10 @@ async function runInlineEditing(driver) {
 
   await driver.selectRange(ref, firstStart, firstEnd);
   await driver.typeText(ref, "REPLACED");
-  await driver.assertComposerDraft(ref, "selection replaces whole atom", { ...removed, text: "Run REPLACED and then /skill-2" });
+  await driver.assertComposerDraft(ref, "selection replaces whole atom", {
+    ...removed,
+    text: "Run REPLACED and then /skill-2",
+  });
   await driver.press(ref, "z", modifier);
   await driver.assertComposerDraft(ref, "undo selection replacement", two);
 
@@ -1938,17 +2038,15 @@ async function runInlineEditing(driver) {
   await driver.typeTextAgainstAtom(ref, "BEFORE_", "before");
   await driver.selectRange(ref, firstEnd + "BEFORE_".length + 1);
   await driver.typeTextAgainstAtom(ref, "_AFTER", "after");
-  await driver.assertComposerDraft(ref, "typing around atom", { ...two, text: "Run BEFORE_ /skill-1 _AFTER and then /skill-2" });
-  await driver.selectRange(
-    ref,
-    firstEnd + "BEFORE_".length + 1,
-    firstEnd + "BEFORE_".length + 1 + "_AFTER".length + 1,
-  );
+  await driver.assertComposerDraft(ref, "typing around atom", {
+    ...two,
+    text: "Run BEFORE_ /skill-1 _AFTER and then /skill-2",
+  });
+  await driver.selectRange(ref, firstEnd + "BEFORE_".length + 1, firstEnd + "BEFORE_".length + 1 + "_AFTER".length + 1);
   await driver.press(ref, "Backspace");
   await driver.selectRange(ref, firstStart, firstStart + "BEFORE_".length + 1);
   await driver.press(ref, "Backspace");
   await driver.assertComposerDraft(ref, "surrounding edits preserve atoms", two);
-
 
   // The OS clipboard needs a permission the guard's Chrome does not have on
   // macOS (#1669), so the milestone drives the same two events the browser
@@ -1964,9 +2062,11 @@ async function runInlineEditing(driver) {
   await driver.typeText(ref, " ");
   await driver.pasteText(ref, copied);
   const pastedText = `${TWO_SKILLS} ${TWO_SKILLS}`;
-  await driver.waitPage(`(() => { const state = ${driver.composerStateExpr(ref)};
+  await driver.waitPage(
+    `(() => { const state = ${driver.composerStateExpr(ref)};
     return state && state.text === ${JSON.stringify(pastedText)} ? state : null; })()`,
-    { label: "native clipboard preserves canonical display text" });
+    { label: "native clipboard preserves canonical display text" },
+  );
   await driver.assertComposerDraft(ref, "paste text without importing activation", { ...two, text: pastedText });
   await driver.selectRange(ref, TWO_SKILLS.length, pastedText.length);
   await driver.press(ref, "Backspace");
@@ -1979,7 +2079,8 @@ async function runInlineEditing(driver) {
   await driver.selectRange(ref, secondStart);
   const longText = "WRAP_SCROLL_14k ".repeat(160);
   await driver.typeText(ref, longText);
-  const layout = await driver.waitPage(`(() => {
+  const layout = await driver.waitPage(
+    `(() => {
     const editor = ${driver.editorExpr(ref)};
     const chips = [...editor.querySelectorAll("[data-testid='composer-skill-chip']")];
     const rect = editor.getBoundingClientRect();
@@ -1992,9 +2093,19 @@ async function runInlineEditing(driver) {
       heightBounded: rect.height <= window.innerHeight * 0.5,
       atoms: chips.map((chip) => ({ rects: chip.getClientRects().length, width: chip.getBoundingClientRect().width, inside: chip.getBoundingClientRect().right <= rect.right + 1 })),
       scrollTop: editor.scrollTop, scrollHeight: editor.scrollHeight, clientHeight: editor.clientHeight };
-  })()`, { label: "composer wrapping and scrollable overflow" });
-  check(layout.wrapped && layout.chipWrapped && layout.heightBounded && layout.atoms.length === 2 && !layout.horizontalOverflow && layout.atoms.every((a) => a.rects === 1 && a.width > 0 && a.inside) && layout.scrollTop > 0,
-    `inline wrap/scroll layout failed: ${JSON.stringify(layout)}`);
+  })()`,
+    { label: "composer wrapping and scrollable overflow" },
+  );
+  check(
+    layout.wrapped &&
+      layout.chipWrapped &&
+      layout.heightBounded &&
+      layout.atoms.length === 2 &&
+      !layout.horizontalOverflow &&
+      layout.atoms.every((a) => a.rects === 1 && a.width > 0 && a.inside) &&
+      layout.scrollTop > 0,
+    `inline wrap/scroll layout failed: ${JSON.stringify(layout)}`,
+  );
   driver.milestone("inline-layout", layout);
   // Remove only the wrapping prose, retaining both original atoms.
   await driver.selectRange(ref, secondStart, secondStart + longText.length);
@@ -2005,8 +2116,18 @@ async function runInlineEditing(driver) {
   // 229 code must not submit the message or accept a slash completion.
   await driver.focusComposer(ref);
   await driver.send("Input.imeSetComposition", { text: "あ", selectionStart: 1, selectionEnd: 1 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
-  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 229,
+  });
+  await driver.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 229,
+  });
   await driver.send("Input.insertText", { text: "あ" });
   // Composed straight against the last chip, which is exactly where a token
   // character has to be separated from it.
@@ -2014,7 +2135,12 @@ async function runInlineEditing(driver) {
   const ime = await driver.composerState(ref);
   check(!ime.steerVisible, `IME Enter started a turn: ${JSON.stringify(ime)}`);
   const durable = await evaluate(driver.send, driver.durableRecordsExpr());
-  check(![...durable.outbox, ...durable.optimistic, ...durable.recovery].some((record) => JSON.stringify(record.input).includes("あ")), "IME Enter persisted a submit");
+  check(
+    ![...durable.outbox, ...durable.optimistic, ...durable.recovery].some((record) =>
+      JSON.stringify(record.input).includes("あ"),
+    ),
+    "IME Enter persisted a submit",
+  );
   driver.milestone("inline-ime", ime);
   await driver.press(ref, "Backspace");
   await driver.assertComposerDraft(ref, "composition cleanup", { ...two, text: `${TWO_SKILLS} ` });
@@ -2031,8 +2157,10 @@ async function runInlineEditing(driver) {
   // Match on the submitted prose: every scripted turn replies with the same
   // sentinel, so only the turn carrying this sentence is evidence of its reply.
   await driver.waitForReply(ref, TWO_SKILLS);
-  await driver.waitPage(`(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => el.textContent.includes(${JSON.stringify(TWO_SKILLS)})) ? true : null)()`,
-    { label: "exact two-reference sentence in visible transcript" });
+  await driver.waitPage(
+    `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => el.textContent.includes(${JSON.stringify(TWO_SKILLS)})) ? true : null)()`,
+    { label: "exact two-reference sentence in visible transcript" },
+  );
 }
 
 async function runScenarios(driver) {
@@ -2052,23 +2180,38 @@ async function runScenarios(driver) {
   // daemon's rendezvous entry, so every hold/release lands on the daemon that
   // actually owns the driven session.
   const rowRefs = new Set(rows.rows.map((row) => row.ref));
-  check(rowRefs.has(driver.pinnedSessionA), `rail has no session ${driver.pinnedSessionA}: ${JSON.stringify(rows.rows)}`);
-  check(rowRefs.has(driver.pinnedSessionB), `rail has no session ${driver.pinnedSessionB}: ${JSON.stringify(rows.rows)}`);
+  check(
+    rowRefs.has(driver.pinnedSessionA),
+    `rail has no session ${driver.pinnedSessionA}: ${JSON.stringify(rows.rows)}`,
+  );
+  check(
+    rowRefs.has(driver.pinnedSessionB),
+    `rail has no session ${driver.pinnedSessionB}: ${JSON.stringify(rows.rows)}`,
+  );
   driver.sessionA = driver.pinnedSessionA;
   driver.sessionB = driver.pinnedSessionB;
   driver.milestone("sessions-visible", { sessionA: driver.sessionA, sessionB: driver.sessionB, rows: rows.rows });
 
   // Actual owner inventories come from two real daemon cwd roots. A controller
   // plugin shares the owners' plugin name but has a different command body.
-  for (const [ref, owner, other] of [[driver.sessionA, "alpha", "beta"], [driver.sessionB, "beta", "alpha"], [driver.sessionA, "alpha", "beta"]]) {
+  for (const [ref, owner, other] of [
+    [driver.sessionA, "alpha", "beta"],
+    [driver.sessionB, "beta", "alpha"],
+    [driver.sessionA, "alpha", "beta"],
+  ]) {
     await driver.openSession(ref);
     await driver.focusComposer(ref);
     await driver.typeText(ref, "/");
-    const rows = await driver.waitPage(`(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
+    const rows = await driver.waitPage(
+      `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
       const rows = menu ? [...menu.querySelectorAll("button")].map((b) => b.textContent) : [];
       return rows.some((row) => row.includes(${JSON.stringify(`/owner-${owner}`)})) ? rows : null; })()`,
-      { label: `owning ${owner} project command in live completion` });
-    check(!rows.some((row) => row.includes(`/owner-${other}`) || row.includes("controller-only")), `wrong owner inventory: ${JSON.stringify(rows)}`);
+      { label: `owning ${owner} project command in live completion` },
+    );
+    check(
+      !rows.some((row) => row.includes(`/owner-${other}`) || row.includes("controller-only")),
+      `wrong owner inventory: ${JSON.stringify(rows)}`,
+    );
     await driver.clearComposerDraft(ref);
     if (driver.ownerCommandsSent?.has(owner)) {
       driver.milestone("owner-alpha-returned", { ref, rows });
@@ -2080,8 +2223,10 @@ async function runScenarios(driver) {
       label: `project command selection for ${owner}`,
     });
     await driver.clickAt(point.x, point.y);
-    await driver.waitPage(`(() => { const pane = ${driver.paneScopeExpr(ref)}; return pane?.querySelector("[data-testid='composer-command-chip']")?.textContent === ${JSON.stringify(`/owner-${owner}`)} ? true : null; })()`,
-      { label: `project command atom for ${owner}` });
+    await driver.waitPage(
+      `(() => { const pane = ${driver.paneScopeExpr(ref)}; return pane?.querySelector("[data-testid='composer-command-chip']")?.textContent === ${JSON.stringify(`/owner-${owner}`)} ? true : null; })()`,
+      { label: `project command atom for ${owner}` },
+    );
     const text = `OWNER_PROSE_${owner} /owner-${owner} `;
     driver.milestone(`owner-${owner}-command`, { ref, rows });
     await driver.clickSubmit(ref, { text, chips: [], tiles: 0 });
@@ -2098,7 +2243,10 @@ async function runScenarios(driver) {
   await driver.typeText(driver.sessionA, PROSE.canonical);
   await driver.selectSkillChip(driver.sessionA);
   let state = await driver.composerState(driver.sessionA);
-  check(state.chips.length === 1 && state.chips[0].includes(SKILL_NAME), `chip missing after selection: ${JSON.stringify(state)}`);
+  check(
+    state.chips.length === 1 && state.chips[0].includes(SKILL_NAME),
+    `chip missing after selection: ${JSON.stringify(state)}`,
+  );
   check(state.text === inlineText(PROSE.canonical), `selection changed the prose: ${JSON.stringify(state.text)}`);
   driver.milestone("chip-added", state);
   await driver.removeSkillChip(driver.sessionA);
@@ -2157,7 +2305,10 @@ async function runScenarios(driver) {
     { label: "the switched-back composer restores its durable draft" },
   );
   check(state.text === inlineText(PROSE.draft), `draft text did not survive the switch: ${JSON.stringify(state)}`);
-  check(state.chips.some((c) => c.includes(SKILL_NAME)), `draft chips did not survive the switch: ${JSON.stringify(state)}`);
+  check(
+    state.chips.some((c) => c.includes(SKILL_NAME)),
+    `draft chips did not survive the switch: ${JSON.stringify(state)}`,
+  );
   driver.milestone("draft-remounted", { ...state, storage: await evaluate(driver.send, driver.draftStorageExpr()) });
   // Select-all clears the text and inline atoms in one operation.
   await driver.focusComposer(driver.sessionA);
@@ -2210,11 +2361,12 @@ async function runScenarios(driver) {
   // click is effect-verified and retried: the stack re-renders as its
   // durable record settles and a single-shot click can be lost outright.
   await driver.clickQueueStripControl({
-    locate: () => driver.clickQueueRowControl({
-      rowText: PROSE.queue1,
-      label: "Edit message",
-      ref: driver.sessionA,
-    }),
+    locate: () =>
+      driver.clickQueueRowControl({
+        rowText: PROSE.queue1,
+        label: "Edit message",
+        ref: driver.sessionA,
+      }),
     // The press restores the text to the composer synchronously and then
     // cancels the durable queue entry. Waiting only for the composer text
     // released the guard while that cancel was still updating the entry, so a
@@ -2384,7 +2536,10 @@ async function runScenariosPart2(driver) {
   check(attachState.tiles === 1, `attachment tile lost across chip edits: ${JSON.stringify(attachState)}`);
   check(attachState.text.includes("[image 1]"), `attachment anchor missing: ${JSON.stringify(attachState.text)}`);
   driver.milestone("attachment-preserved", attachState);
-  await driver.clickSubmit(driver.sessionA, draft(attachState.text, { chips: attachState.chips, tiles: attachState.tiles }));
+  await driver.clickSubmit(
+    driver.sessionA,
+    draft(attachState.text, { chips: attachState.chips, tiles: attachState.tiles }),
+  );
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("attachment-submitted", {
     prose: PROSE.attachment,
@@ -2418,7 +2573,10 @@ async function runScenariosPart2(driver) {
       `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`),
     { label: "pending rows with failing request" },
   );
-  check(queue.rows.some((row) => row.text.includes(PROSE.fail)), `queue missing ${PROSE.fail}: ${JSON.stringify(queue)}`);
+  check(
+    queue.rows.some((row) => row.text.includes(PROSE.fail)),
+    `queue missing ${PROSE.fail}: ${JSON.stringify(queue)}`,
+  );
   driver.milestone("fail-queued", {
     rows: queue.rows,
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
@@ -2480,7 +2638,10 @@ async function runScenariosPart2(driver) {
   driver.control("release");
   await driver.waitForReply(driver.sessionA, PROSE.delay);
   const keptState = await driver.composerState(driver.sessionA);
-  check(keptState.text.includes(PROSE.delayExtra), `delayed commit clobbered the newer draft: ${JSON.stringify(keptState)}`);
+  check(
+    keptState.text.includes(PROSE.delayExtra),
+    `delayed commit clobbered the newer draft: ${JSON.stringify(keptState)}`,
+  );
   check(keptState.chips.length === 0, `delayed commit restored the removed chip: ${JSON.stringify(keptState)}`);
   driver.milestone("delay-commit-kept", keptState);
   await driver.focusComposer(driver.sessionA);
@@ -2491,7 +2652,12 @@ async function runScenariosPart2(driver) {
   // Turn-end barrier: the offline submit must persist as a turn/start
   // mutation, so the delayed-send turn must be fully over.
   await driver.waitForTurnIdle(driver.sessionA);
-  await driver.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  await driver.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: 0,
+    uploadThroughput: 0,
+  });
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.transport);
   await driver.selectSkillChip(driver.sessionA);
@@ -2510,7 +2676,12 @@ async function runScenariosPart2(driver) {
   );
   const offlineState = await driver.composerState(driver.sessionA);
   driver.milestone("net-failed-kept", { durable: offlineDurable, composer: offlineState });
-  await driver.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await driver.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
   // Connectivity restored: the outbox retries (the window's online event and
   // the heartbeat's reconnect both wake it) and the same durable mutation is
   // delivered exactly once.
@@ -2522,8 +2693,7 @@ async function runScenariosPart2(driver) {
 // Minimal 1x1 PNG fixture (a transparent pixel), written into the artifact
 // directory so DOM.setFileInputFiles can hand the browser a real local file.
 async function writeFixtureImage(dir) {
-  const pngBase64 =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
   const filePath = path.join(dir, "skillguard-fixture.png");
   writeFileSync(filePath, Buffer.from(pngBase64, "base64"));
   return filePath;
@@ -2607,7 +2777,9 @@ async function main() {
     await runScenarios(driver);
     await runScenariosPart2(driver);
     driver.milestone("done", {});
-    console.log(`skillguard ok: production composer driven through the real hub (${driver.milestoneCount ?? 0} milestones at ${driver.milestonePath})`);
+    console.log(
+      `skillguard ok: production composer driven through the real hub (${driver.milestoneCount ?? 0} milestones at ${driver.milestonePath})`,
+    );
   } catch (error) {
     console.error(`skillguard FAIL: ${error instanceof Error ? error.message : String(error)}`);
     try {

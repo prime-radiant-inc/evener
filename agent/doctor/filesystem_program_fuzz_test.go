@@ -336,7 +336,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 		t.Fatal("missing session in existing bucket unexpectedly resolved")
 	}
 	originalOpen := openDoctorTranscriptFile
-	openDoctorTranscriptFile = func(string) (io.ReadCloser, error) { return nil, errors.New("scripted transcript read failure") }
+	openDoctorTranscriptFile = func(string) (io.ReadSeekCloser, error) { return nil, errors.New("scripted transcript read failure") }
 	if _, err := Count(fixture.base, fixture.rootSID, "tool"); err == nil {
 		t.Fatal("Count unreadable transcript unexpectedly succeeded")
 	}

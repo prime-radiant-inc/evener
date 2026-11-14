@@ -19,22 +19,6 @@ function mobileBlock(css: string): string {
   return block?.[1] ?? "";
 }
 
-// FIX 3a (real-browser report): the selected nav item's text used
-// var(--accent) - the raw hue, meant for glyphs/borders, not text
-// (tokens.css's own "-ink companions" comment) - which read at borderline
-// contrast against --accent-bg's own pale tint in the light theme, close
-// enough to the neutral grey .link:hover wash that a real user read the
-// selected item as barely distinguishable from a merely-hovered one.
-// --accent-ink is the AA-derived text form of the same hue (the same
-// substitution toast.module.css already makes for text on this exact
-// --accent-bg fill).
-test("the selected nav item's text uses the AA-derived --accent-ink, not the raw --accent hue", () => {
-  const css = readModuleCss(import.meta.url, "settings.module.css");
-  const linkActiveRule = /\.linkActive\s*\{[^}]*\}/.exec(css);
-  expect(linkActiveRule).not.toBeNull();
-  expect(linkActiveRule?.[0]).toMatch(/color:\s*var\(--accent-ink\)/);
-});
-
 test("renders a nav landmark labelled Settings sections", () => {
   render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
@@ -207,16 +191,20 @@ test("clearing the filter re-shows every link", async () => {
 // to the top of its own scroll, and no "active" row (there is no content
 // beside it for a highlight to refer to). jsdom has no layout, so the
 // geometry half of this is asserted against the CSS source - the same idiom
-// as the FIX 3a contrast test at the top of this file and iconbutton.test.tsx's
-// own --tap-min checks.
+// as iconbutton.test.tsx's own --tap-min checks.
 
 test("every section link carries a drill-in chevron affordance, decorative only", () => {
   render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   const links = screen.getAllByRole("button");
   expect(links).toHaveLength(SETTINGS_SECTIONS.length);
   for (const link of links) {
-    const chevron = within(link).getByTestId("settings-nav-chevron");
+    // The chevron sits beside the row's button, never inside it: the button's
+    // accessible name stays the section's label alone.
+    const row = link.parentElement;
+    expect(row).not.toBeNull();
+    const chevron = within(row as HTMLElement).getByTestId("settings-nav-chevron");
     expect(chevron.getAttribute("aria-hidden")).toBe("true");
+    expect(link.contains(chevron)).toBe(false);
   }
 });
 
@@ -227,14 +215,9 @@ test("a null activeId marks no link current - the mobile list has no active row"
   }
 });
 
-test("mobile: the list takes the full width, not the desktop 200px rail", () => {
+test("mobile: the list takes the full width, not the desktop rail width", () => {
   const nav = /\.nav\s*\{([^}]*)\}/.exec(mobileBlock(readCss()))?.[1] ?? "";
   expect(nav).toContain("width: 100%");
-});
-
-test("mobile: list rows meet the 44px --tap-min touch floor", () => {
-  const link = /\.link\s*\{([^}]*)\}/.exec(mobileBlock(readCss()))?.[1] ?? "";
-  expect(link).toContain("min-height: var(--tap-min)");
 });
 
 test("mobile: the drill-in chevron shows only below the breakpoint", () => {

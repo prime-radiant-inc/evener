@@ -11,6 +11,7 @@ import {
   useThreadsStore,
 } from "../../../stores/threads";
 import { useToasts } from "../../../widgets";
+import type { PendingActionContext } from "../pending/actionContext";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
 import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
@@ -238,7 +239,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // failure with its reason instead.
     // Mount restoration is seat-owned: only a row this pane's durable
     // composer seat authored is a candidate, so a fresh pane never injects
-    // another pane's (or a legacy, ownerless) row. QueueStrip's explicit
+    // another pane's (or a legacy, ownerless) row. pending stack's explicit
     // Edit/Retry/Send-now still reach every row.
     // The entries arrive sorted ascending by intent sequence; a pane that
     // bounced more than one composition restores the NEWEST one - the user's
@@ -250,7 +251,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       if (entry.compositionOwnerId !== source.compositionOwnerId) continue;
       // An empty rejected drain is a notice, not a draft: activating it loads
       // an empty composer that the persistence effect immediately discards,
-      // so the click only flashes recovery state. The queue strip already
+      // so the click only flashes recovery state. The pending stack already
       // shows the refusal and its reason (lifecycle ruling 2026-11-09, issue
       // #1436).
       if (recoveredCompositionIsEmpty(recoveryComposerDraft(entry))) continue;
@@ -300,13 +301,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   // parks the cursor at the very end, and the textarea is refocused - same
   // as legacy's own ta.focus() call.
   //
-  // QueueStrip uses this behavior when a queued entry is moved back into
+  // pending stack uses this behavior when a queued entry is moved back into
   // the composer for editing.
   //
   // `attachments` is accepted for signature symmetry but never restored: a
   // queued entry's edit keeps image attachments out of the composer per
   // parity (contracts-composer-queue-pending.md:122, parity-m5-
-  // composer.md:102) - dropped image attachments surface via QueueStrip's
+  // composer.md:102) - dropped image attachments surface via pending stack's
   // own durable queue state. `skillNames` restores the entry's selections
   // as chips (union with the current draft's chips, deduped by name): a
   // queued skill selection must survive the edit round-trip, not silently
@@ -375,16 +376,16 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   // submitAction wraps every method in submitWithPendingTracking (the wave's
   // own beyond-parity decision - w5-task-3-report.md: "T2's own send/steer
   // submissions should wrap their threadsStore.send/.steer calls in
-  // submitWithPendingTracking the same way QueueStrip's own drain handler
+  // submitWithPendingTracking the same way pending stack's own drain handler
   // wraps drainAsSteer... that's what makes optimistic pending genuinely
-  // uniform across all four methods"), exactly mirroring QueueStrip.tsx's
+  // uniform across all four methods"), exactly mirroring pending stack.tsx's
   // own handleDrain shape.
   //
   // Toast/bookkeeping split, reconciled against pendingTurnsStore's own
   // documented contract (its submitWithPendingTracking doc comment: onFailure
   // is for toasting, "rethrowing so the caller's OWN catch can still run its
   // own non-toast bookkeeping"): the toast lives ENTIRELY inside onFailure
-  // (same as QueueStrip's own handleDrain), and the outer catch below only
+  // (same as pending stack's own handleDrain), and the outer catch below only
   // ever re-runs the isQueuedDrainPartial state-clearing (never a second
   // toast) - so a failure surfaces exactly once regardless of which branch
   // it takes. Before this reconciliation, both sides pushed a toast for the

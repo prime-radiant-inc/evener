@@ -1,7 +1,7 @@
 # timing-tsv-lib.sh — the test-timing-budget ratchet's row contract, in one
 # place. Sourced, never executed.
 #
-# The ratchet's comparison (scripts/gate/test-timing-budget.sh, compare.py)
+# The ratchet's comparison (`evener-dev timing-compare`)
 # reads four tab-separated row kinds:
 #
 #   PKG  <package>                    one per package-level terminal event

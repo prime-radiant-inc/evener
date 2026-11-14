@@ -32,18 +32,26 @@ export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export {
   commandMarkers,
-  imagePlaceholder,
   normalizeText,
   outboxRecordPreview,
   ownPendingSend,
   ownPendingTurnInput,
+  parseImagePlaceholder,
   pendingEntryPreview,
-  queueEntryPreviewText,
+  queueEntryAt,
   reconcilePendingEntries,
+  recordedInputLineage,
   reflectedMutationIds,
   skillMarkers,
-  truncateForDisplay,
 } from "./pendingEntries";
+export type {
+  ConsumedQueueEntry,
+  PendingMessage,
+  PendingMessageImage,
+  PendingMessageState,
+  PendingMessagesInput,
+} from "./pendingMessages";
+export { projectPendingMessages, transcriptMutationIds } from "./pendingMessages";
 export type {
   PendingTurnsDraftPort,
   PendingTurnsState,

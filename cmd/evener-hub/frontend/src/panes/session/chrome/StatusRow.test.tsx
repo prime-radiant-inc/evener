@@ -61,6 +61,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -717,6 +718,50 @@ test("context has one meter semantic with wide and compact visual variants", () 
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
   expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getAllByRole("meter")).toHaveLength(1);
+});
+
+test("uses compactionThreshold as the gauge ceiling, percentage, and tone when compactionThreshold > 0", () => {
+  const { rerender } = render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({
+        contextUsed: 200_000,
+        contextWindow: 1_000_000,
+        contextPressure: 0.2,
+        contextAssumed: false,
+        compactionThreshold: 250_000,
+      })}
+      now={1_000_000}
+    />,
+  );
+  const hiddenMeter = screen.getByRole("meter");
+  expect(hiddenMeter.getAttribute("value")).toBe("200000");
+  expect(hiddenMeter.getAttribute("max")).toBe("250000");
+  const visualMeter = screen.getByTestId("status-row-context-meter").querySelector('[role="meter"]');
+  expect(visualMeter?.getAttribute("aria-valuenow")).toBe("200000");
+  expect(visualMeter?.getAttribute("aria-valuemax")).toBe("250000");
+  expect(screen.getByTestId("status-row-context-percent").textContent).toBe("80%");
+  expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
+  expect(hiddenMeter.getAttribute("aria-label") ?? "").toContain("1000000");
+
+  rerender(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({
+        contextUsed: 200_000,
+        contextWindow: 277_778,
+        contextPressure: 200_000 / 277_778,
+        contextAssumed: true,
+        compactionThreshold: 250_000,
+      })}
+      now={1_000_000}
+    />,
+  );
+  const assumedLabel = screen.getByRole("meter").getAttribute("aria-label") ?? "";
+  expect(assumedLabel).toContain("200000");
+  expect(assumedLabel).toContain("250000");
+  expect(assumedLabel).not.toContain("277778");
+  expect(assumedLabel).not.toContain("~");
 });
 
 test.each(["ended", "closed", "notLoaded"] as const)(

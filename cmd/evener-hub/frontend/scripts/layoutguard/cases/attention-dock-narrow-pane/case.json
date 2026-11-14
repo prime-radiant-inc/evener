@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "panes/session/session.module.css",
     "panes/session/nextNeedsYou.module.css",
     "widgets/button/button.module.css",

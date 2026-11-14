@@ -26,5 +26,5 @@
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  margin-left: 4px;
+  margin-left: var(--space-1);
 }

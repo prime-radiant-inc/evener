@@ -1002,7 +1002,7 @@ func TestGlobGrepOffIdentical(t *testing.T) {
 
 // TestSandboxGrepSearchesOneNamedFile: a sandboxed grep whose path names a
 // file searches that file the way the unsandboxed walk does (#4137): no
-// filename prefix on content or count lines, "." for files-with-matches, and
+// filename prefix on content or count lines, its workspace-relative path for files-with-matches (#6176), and
 // the same dotfile, glob-filter, and skip rules. A masked file stays refused.
 func TestSandboxGrepSearchesOneNamedFile(t *testing.T) {
 	t.Parallel()
@@ -1029,7 +1029,7 @@ func TestSandboxGrepSearchesOneNamedFile(t *testing.T) {
 				want string
 			}{
 				{mode: "content", want: "2:needle one\n4:needle two"},
-				{mode: "files_with_matches", want: "."},
+				{mode: "files_with_matches", want: filepath.FromSlash("sub/p.md")},
 				{mode: "count", want: "2"},
 			} {
 				got, err := env.Grep(t.Context(), "needle", file, "", false, 100, tc.mode)

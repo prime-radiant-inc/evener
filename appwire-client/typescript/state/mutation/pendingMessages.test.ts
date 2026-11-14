@@ -1,0 +1,1144 @@
+// @vitest-environment node
+
+import { expect, test } from "vitest";
+import type { InputItem, PendingMutation } from "../../types.gen";
+import { type PendingMessagesInput, projectPendingMessages } from "./pendingMessages";
+import type { MutationOptimisticRecord, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
+import { outboxRecord, recoveryRecord, threadModel } from "./testing";
+
+const identity = (record: { originClientId?: string }): boolean => record.originClientId === undefined;
+const NOTHING_SUBMITTED_HERE: ReadonlyMap<string, number> = new Map();
+
+function textInput(text: string): InputItem[] {
+  return [{ type: "text", text }];
+}
+
+function local(
+  id: string,
+  method = "turn/queue",
+  text = "hello",
+  overrides: Partial<MutationOutboxRecord> = {},
+): MutationOutboxRecord {
+  return outboxRecord({
+    clientMutationId: id,
+    targetRef: "ref_a",
+    method,
+    payload: { ref: "ref_a", input: textInput(text), clientMutationId: id },
+    optimisticDisplay: { method, input: textInput(text) },
+    ...overrides,
+  });
+}
+
+function accepted(
+  id: string,
+  method = "turn/start",
+  text = "hello",
+  overrides: Partial<MutationOptimisticRecord> = {},
+): MutationOptimisticRecord {
+  const { state: _state, ...base } = local(id, method, text);
+  return { ...base, state: "accepted", ...overrides };
+}
+
+function recovery(
+  id: string,
+  kind: MutationRecoveryRecord["recoveryKind"],
+  method = "turn/start",
+  text = "hello",
+  overrides: Partial<MutationRecoveryRecord> = {},
+): MutationRecoveryRecord {
+  return recoveryRecord({
+    ...local(id, method, text),
+    recoveryKind: kind,
+    ...overrides,
+  });
+}
+
+function pending(id: string, method: string, text: string, overrides: Partial<PendingMutation> = {}): PendingMutation {
+  return {
+    clientMutationId: id,
+    method,
+    input: textInput(text),
+    executionState: "accepted",
+    projectionState: "pending",
+    ...overrides,
+  };
+}
+
+function project(overrides: Partial<PendingMessagesInput> = {}) {
+  return projectPendingMessages({
+    ref: "ref_a",
+    outbox: [],
+    optimistic: [],
+    recovery: [],
+    model: threadModel(),
+    submittedHere: NOTHING_SUBMITTED_HERE,
+    isOwnMutationRecord: identity,
+    ...overrides,
+  });
+}
+
+test("a daemon queue row and its local pending row project as one message", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ outbox: [local("m1")], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "m1",
+    method: "queue",
+    state: "queued",
+    text: "hello",
+    queueIndex: 0,
+    queueEntryId: "q1",
+  });
+});
+
+test("a queue row keeps the daemon's mentions when it merges with the local row", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+      mentions: [[{ kind: "skill", name: "review", offset: 0 }]],
+    },
+  });
+  const rows = project({ outbox: [local("m1")], model });
+  expect(rows[0]?.mentions).toEqual([{ kind: "skill", name: "review", offset: 0 }]);
+});
+
+test("a text item's selected mentions survive into the pending row", () => {
+  const record = local("m1", "turn/start", "hello", {
+    payload: {
+      ref: "ref_a",
+      input: [{ type: "text", text: "hello", mentions: [{ kind: "command", name: "ship", offset: 0 }] }],
+      clientMutationId: "m1",
+    },
+    optimisticDisplay: {
+      method: "turn/start",
+      input: [{ type: "text", text: "hello", mentions: [{ kind: "command", name: "ship", offset: 0 }] }],
+    },
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows[0]?.mentions).toEqual([{ kind: "command", name: "ship", offset: 0 }]);
+});
+
+test("a visible transcript item suppresses its queue row even when the queue snapshot still lists it", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+    turns: [
+      {
+        id: "t1",
+        status: "inProgress",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "hello", clientMutationId: "m1" }],
+      },
+    ],
+  });
+  expect(project({ model })).toEqual([]);
+});
+
+test("a visible transcript item suppresses its local pending row", () => {
+  const model = threadModel({
+    turns: [
+      {
+        id: "t1",
+        status: "inProgress",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "hello", clientMutationId: "m1" }],
+      },
+    ],
+  });
+  expect(project({ outbox: [local("m1", "turn/start")], model })).toEqual([]);
+});
+
+test("a drain's authoritative queueEntryIds suppress the consumed queue rows", () => {
+  const model = threadModel({
+    queue: {
+      depth: 2,
+      revision: 4,
+      ids: ["q1", "q2"],
+      clientMutationIds: ["m1", "m2"],
+      texts: ["one", "two"],
+      preview: ["one", "two"],
+    },
+    pendingMutations: [
+      pending("m3", "turn/drainAsSteer", "three", {
+        queueEntryIds: ["q1", "q2"],
+      }),
+    ],
+  });
+  const rows = project({
+    model,
+    outbox: [local("m3", "turn/drainAsSteer", "three")],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m3", method: "drain", state: "steering" });
+  expect(rows[0]!.text).toBe("three");
+});
+
+test("a multi-entry drain merges every retained original into one row", () => {
+  const drain = local("m3", "turn/drainAsSteer", "three", { queueEntryIds: ["q1", "q2"] });
+  const rows = project({
+    optimistic: [
+      accepted("m1", "turn/queue", "one", { queueEntryIds: ["q1"] }),
+      accepted("m2", "turn/queue", "two", { queueEntryIds: ["q2"] }),
+    ],
+    outbox: [drain],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ method: "drain", state: "sending", text: "three" });
+  expect(rows[0]?.queueEntryIds).toEqual(["q1", "q2"]);
+});
+
+test("an accepted source retires when a complete snapshot shows its queue entry delivered", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 5, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued",
+            clientMutationId: "m1",
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+  });
+  expect(rows).toEqual([]);
+});
+
+test("an accepted source stays until the snapshot is current again", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 5, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued", clientMutationId: "m2" }],
+      },
+    ],
+  });
+  const rows = project({
+    optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: false,
+  });
+  expect(rows).toHaveLength(1);
+});
+
+test("a consumed queue row this client never owned stays visible", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+  });
+  const rows = project({
+    model,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "queue:q1", text: "queued elsewhere", state: "delivering" });
+  expect(rows[0]?.queueEntryIds).toEqual(["q1"]);
+});
+
+test("a carried consumed row leaves once a current snapshot records the delivery", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued elsewhere", clientMutationId: "m9" }],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+test("a carried row stays while the recorded mutation owns no queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "other", clientMutationId: "other" }],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+});
+
+// A drain or promotion records ITS OWN mutation id, and names the entries it
+// owns in pendingMutations. The consumed entry's id never reaches the
+// transcript, so ownership is what retires the carried row.
+test("a carried row leaves once a recorded mutation owns its queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [pending("consumer", "turn/promoteQueuedAsSteer", "queued elsewhere", { queueEntryIds: ["q1"] })],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          { id: "i1", turnId: "t1", type: "userMessage", text: "queued elsewhere", clientMutationId: "consumer" },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+test("a carried row stays while its recorded owner is still only pending", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [pending("consumer", "turn/promoteQueuedAsSteer", "queued elsewhere", { queueEntryIds: ["q1"] })],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+});
+
+// An older daemon promotes without queueEntryIds, so the pending mutation
+// cannot name the entry it consumed. The recorded item's lineage is the only
+// remaining proof, and it speaks in conversation INPUT ids: the daemon derives
+// them from the client mutation that produced the entry. Comparing them
+// against the queue ENTRY id matches nothing and leaves a duplicate row.
+test("a carried row leaves on lineage alone when the promotion names no queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            // The daemon records a promotion as steering with source "user";
+            // SteeringItem renders that through UserMessageView, so it is a
+            // visible replacement just as a userMessage item is.
+            type: "steering",
+            source: "user",
+            text: "queued elsewhere",
+            clientMutationId: "consumer",
+            conversationInputIds: ["client:m9"],
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+// A canceled message is never recorded. The daemon reports it in the
+// provenance state's retiredInputs, which is the only durable evidence the
+// row has that nothing more will arrive.
+test("a carried row leaves once the daemon retires its input", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    conversationProvenance: {
+      version: 1,
+      authoritative: true,
+      revision: 2,
+      instanceId: "inc-1",
+      admittedInputs: [],
+      retiredInputs: ["client:m9"],
+      frontiers: [],
+    },
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "canceled elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+test("a carried row stays while the daemon has retired a different input", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    conversationProvenance: {
+      version: 1,
+      authoritative: true,
+      revision: 2,
+      instanceId: "inc-1",
+      admittedInputs: [],
+      retiredInputs: ["client:other"],
+      frontiers: [],
+    },
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    consumedQueueEntries: [
+      {
+        entryId: "q1",
+        clientMutationId: "m9",
+        text: "queued elsewhere",
+        textComplete: true,
+        imageCount: 0,
+        skillNames: [],
+        commandNames: [],
+      },
+    ],
+  });
+  expect(rows).toHaveLength(1);
+});
+
+// A session with any earlier turn already has transcript identities. Hiding a
+// source row must depend on THIS message's identity being visible, not on the
+// model having some transcript at all: a message cancelled by another client
+// is never recorded, and the weak rule deleted it on the strength of an
+// unrelated turn.
+test("an unrelated earlier turn does not make a canceled queue row look delivered", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "turn_earlier",
+        status: "completed",
+        items: [
+          {
+            id: "i_earlier",
+            turnId: "turn_earlier",
+            type: "userMessage",
+            text: "earlier",
+            clientMutationId: "unrelated",
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    optimistic: [accepted("canceled-elsewhere", "turn/queue", "gone", { queueEntryIds: ["q1"] })],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "canceled-elsewhere", text: "gone" });
+});
+
+// Stop cancels an unattempted queue row, but the daemon leaves the entry in
+// its queue. Taking the queue's state for the merged row rendered the canceled
+// message as "Queued, sends when this turn ends" with actions that no longer
+// apply, so the local terminal state has to win.
+test("a queue row canceled by Stop keeps its canceled state while the daemon still lists it", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 7,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["stopped"],
+      preview: ["stopped"],
+    },
+  } as Parameters<typeof threadModel>[0]);
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    optimistic: [accepted("m1", "turn/queue", "stopped", { queueEntryIds: ["q1"] })],
+    // Stop leaves the outbox row behind in the canceled state; the optimistic
+    // accepted copy is what the daemon already reflected.
+    outbox: [local("m1", "turn/queue", "stopped", { state: "canceled", queueEntryIds: ["q1"] })],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "canceled" });
+});
+
+test("an accepted source stays while the daemon still projects its queue entry", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 5, ids: [] },
+    pendingMutations: [pending("m2", "turn/promoteQueuedAsSteer", "queued", { queueEntryIds: ["q1"] })],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "other", clientMutationId: "m3" }],
+      },
+    ],
+  });
+  const rows = project({
+    optimistic: [accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] })],
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.queueEntryIds).toContain("q1");
+});
+
+test.each(["turn/promoteQueuedAsSteer", "turn/drainAsSteer"])(
+  "an accepted %s keeps its own row after consuming a queue entry",
+  (method) => {
+    const model = threadModel({
+      queue: { depth: 0, revision: 5, ids: [] },
+      pendingMutations: [],
+      turns: [
+        {
+          id: "t1",
+          status: "completed",
+          items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "other", clientMutationId: "m3" }],
+        },
+      ],
+    });
+    const rows = project({
+      optimistic: [accepted("m2", method, "consuming", { queueEntryIds: ["q1"] })],
+      model,
+      mutationStateAuthoritative: true,
+      mutationSnapshotCurrent: true,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe("m2");
+  },
+);
+
+test("a promote row suppresses its queue entry", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 3,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["the message"],
+      preview: ["the message"],
+    },
+    pendingMutations: [
+      pending("m2", "turn/promoteQueuedAsSteer", "the message", {
+        queueEntryIds: ["q1"],
+      }),
+    ],
+  });
+  const rows = project({
+    model,
+    outbox: [local("m2", "turn/promoteQueuedAsSteer", "the message")],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m2", method: "promote", state: "steering" });
+});
+
+test("an accepted send with no daemon pending entry and no visible item stays as a delivering row", () => {
+  const rows = project({ optimistic: [accepted("m1")] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "delivering", text: "hello" });
+});
+
+test("two messages with identical text stay two rows", () => {
+  const rows = project({ outbox: [local("m1", "turn/start"), local("m2", "turn/start")] });
+  expect(rows.map((row) => row.id)).toEqual(["m1", "m2"]);
+});
+
+test("a legacy queue row without clientMutationIds merges with the pending mutation by queue entry id", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+    pendingMutations: [pending("m1", "turn/queue", "hello", { queueEntryIds: ["q1"] })],
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", method: "queue", state: "queued", queueIndex: 0 });
+});
+
+test("a queue row with no mutation identity still renders once", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "queue:q1",
+    method: "queue",
+    state: "queued",
+    queueIndex: 0,
+    textComplete: true,
+  });
+});
+
+test("a legacy queue row with no texts array keeps its preview but is not editable", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: undefined,
+      preview: ["truncated…"],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "queue:q1", text: "truncated…", textComplete: false });
+});
+
+test("a legacy queue row with complete text merges with its one local queue row", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({
+    model,
+    outbox: [
+      local("m1", "turn/queue", "hello", {
+        optimisticDisplay: {
+          method: "turn/queue",
+          input: [{ type: "text", text: "hello", mentions: [{ kind: "skill", name: "review", offset: 0 }] }],
+        },
+      }),
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", text: "hello", queueEntryId: "q1" });
+  expect(rows[0]?.mentions).toEqual([{ kind: "skill", name: "review", offset: 0 }]);
+});
+
+test("a Stop-canceled local row does not absorb an identical legacy queue row", () => {
+  const canceled = local("m1", "turn/queue", "same", { state: "canceled", attempted: false });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: ["same"],
+      preview: ["same"],
+    },
+  });
+  const rows = project({ model, outbox: [canceled] });
+  expect(rows).toHaveLength(2);
+  expect(rows.some((row) => row.id === "m1" && row.state === "canceled")).toBe(true);
+  expect(rows.some((row) => row.queueEntryId === "q1")).toBe(true);
+});
+
+test("a preview-only legacy row keeps its named skill marker", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: undefined,
+      preview: ["[1 skill]"],
+      skillNames: [["pkg:probe"]],
+    },
+  });
+  const rows = project({ model });
+  expect(rows[0]?.displayText).toBe("[skill: pkg:probe]");
+  expect(rows[0]?.textComplete).toBe(false);
+});
+
+test("a legacy queue preview never merges with a different full local text", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      texts: undefined,
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, outbox: [local("m1", "turn/queue", "hello world")] });
+  expect(rows.map((row) => row.id).sort()).toEqual(["m1", "queue:q1"]);
+});
+
+test("two identical legacy queue rows pair with two local rows in order", () => {
+  const model = threadModel({
+    queue: {
+      depth: 2,
+      revision: 2,
+      ids: ["q1", "q2"],
+      texts: ["hello", "hello"],
+      preview: ["hello", "hello"],
+    },
+  });
+  const rows = project({
+    model,
+    outbox: [local("m1", "turn/queue", "hello"), local("m2", "turn/queue", "hello")],
+  });
+  expect(rows).toHaveLength(2);
+  expect(rows.map((row) => row.id).sort()).toEqual(["m1", "m2"]);
+  expect(rows.every((row) => row.queueEntryId !== undefined)).toBe(true);
+});
+
+test("a queue row whose literal text is the image placeholder stays text-bearing", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["[image]"],
+      preview: ["[image]"],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  // The message is ordinary text a user can still Edit, not an image-bearing
+  // row the Edit rule refuses.
+  expect(rows[0]).toMatchObject({ state: "queued", text: "[image]", imageCount: 0, textComplete: true });
+});
+
+test("a legacy queue row merges with an accepted local copy", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, optimistic: [accepted("m1", "turn/queue", "hello")] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "queued", queueEntryId: "q1" });
+  expect(rows[0]?.optimistic).toBeDefined();
+});
+
+test("a legacy queue row merges with a blocked local row", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({
+    model,
+    outbox: [local("m1", "turn/queue", "hello", { state: "blockedUnknown" })],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", state: "queued", queueEntryId: "q1" });
+});
+
+test("a legacy row with the same text but different image content stays separate", () => {
+  const input: InputItem[] = [
+    { type: "text", text: "hello" },
+    { type: "image", mediaType: "image/png", data: "AAAA" },
+  ];
+  const record = outboxRecord({
+    clientMutationId: "m1",
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/queue", input },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ model, outbox: [record] });
+  expect(rows.map((row) => row.id).sort()).toEqual(["m1", "queue:q1"]);
+});
+
+test("a retargeted Stop-canceled row stays visible under the displayed ref", () => {
+  const record = local("m1", "turn/start", "hello", {
+    state: "canceled",
+    targetRef: "ref_b",
+    displayedRef: "ref_a",
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", ref: "ref_a", state: "canceled", text: "hello" });
+});
+
+test("a Retry-minted row is suppressed by its wire id", () => {
+  const record = local("fresh", "turn/start", "hello", {
+    payload: { ref: "ref_a", input: textInput("hello"), clientMutationId: "m1" },
+  });
+  expect(project({ outbox: [record], deliveredHere: new Set(["m1"]) })).toEqual([]);
+});
+
+test("a Retry-minted row merges with its wire-id queue row", () => {
+  const record = local("fresh", "turn/start", "hello", {
+    payload: { ref: "ref_a", input: textInput("hello"), clientMutationId: "m1" },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  const rows = project({ outbox: [record], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", text: "hello", queueEntryId: "q1" });
+});
+
+test("durable local and recovery states map to their pending states", () => {
+  const rows = project({
+    outbox: [
+      local("m1", "turn/start", "waiting", { state: "submitting", attempted: false }),
+      local("m2", "turn/start", "sending", { state: "submitting", attempted: true }),
+      local("m3", "turn/start", "uncertain", { state: "blockedUnknown" }),
+      local("m4", "turn/start", "canceled", { state: "canceled" }),
+    ],
+    recovery: [recovery("m5", "rejected"), recovery("m6", "orphaned")],
+  });
+  expect(Object.fromEntries(rows.map((row) => [row.id, row.state]))).toEqual({
+    m1: "waiting",
+    m2: "sending",
+    m3: "uncertain",
+    m4: "canceled",
+    m5: "refused",
+    m6: "orphaned",
+  });
+});
+
+test("an edited recovery survives delivery of the attempt it was edited from", () => {
+  const edited = recovery("m1", "rejected", "turn/start", "edited request", {
+    compositionRevision: 1,
+    composerText: "edited request",
+  });
+  const rows = project({ recovery: [edited], transcriptIds: new Set(["m1"]) });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.text).toBe("edited request");
+});
+
+test("an edited recovery does not attach itself to the original authoritative row", () => {
+  const original = local("m1", "turn/start", "original");
+  const edited = recovery("m1", "rejected", "turn/start", "edited", { compositionRevision: 1 });
+  const rows = project({ outbox: [original], recovery: [edited] });
+  expect(rows).toHaveLength(2);
+  expect(rows.find((row) => row.id === "m1")?.recovery).toBeUndefined();
+  expect(rows.find((row) => row.recovery !== undefined)?.id).not.toBe("m1");
+});
+
+test("an edited recovery's text does not become the queued original's content", () => {
+  const original = local("m1", "turn/queue", "original");
+  const edited = recovery("m1", "rejected", "turn/queue", "edited", { compositionRevision: 1 });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["daemon"],
+      preview: ["daemon"],
+    },
+  });
+  const rows = project({ model, outbox: [original], recovery: [edited] });
+  const originalRow = rows.find((row) => row.id === "m1");
+  expect(originalRow?.text).toBe("original");
+  expect(originalRow?.recovery).toBeUndefined();
+});
+
+test("a confirmed queue entry joins a later promotion to the same row", () => {
+  const original = accepted("m1", "turn/queue", "queued", { queueEntryIds: ["q1"] });
+  const model = threadModel({
+    queue: { depth: 0, revision: 2 },
+    pendingMutations: [pending("m2", "turn/promoteQueuedAsSteer", "queued", { queueEntryIds: ["q1"] })],
+  });
+  const rows = project({ optimistic: [original], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", method: "promote", state: "steering", text: "queued" });
+});
+
+test("a canceled promotion keeps its own row instead of merging with its expected queue entry", () => {
+  const promote = local("m2", "turn/promoteQueuedAsSteer", "steering", {
+    state: "canceled",
+    payload: {
+      ref: "ref_a",
+      input: textInput("steering"),
+      clientMutationId: "m2",
+      expectedEntryId: "q1",
+    },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["queued"],
+      preview: ["queued"],
+    },
+  });
+  const rows = project({ outbox: [promote], model });
+  expect(rows).toHaveLength(2);
+  expect(rows.find((row) => row.id === "m1")).toMatchObject({ state: "queued", queueEntryId: "q1" });
+  expect(rows.find((row) => row.id === "m2")).toMatchObject({ state: "canceled" });
+  expect(rows.find((row) => row.id === "m2")?.outbox).toBeDefined();
+});
+
+test("an in-flight promotion shows once in place of the queue row it expects", () => {
+  const promote = local("m2", "turn/promoteQueuedAsSteer", "steering", {
+    payload: {
+      ref: "ref_a",
+      input: textInput("steering"),
+      clientMutationId: "m2",
+      expectedEntryId: "q1",
+    },
+  });
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["queued"],
+      preview: ["queued"],
+    },
+  });
+  const rows = project({ outbox: [promote], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m2", method: "promote", queueEntryId: "q1" });
+  expect(rows[0]?.queueEntryIds).toEqual(["q1"]);
+});
+
+test("a refused queue cancellation stays visible as a control failure", () => {
+  const failed = recovery("m1", "rejected", "turn/cancelQueued", "", {
+    recoveryReason: "the queue moved",
+  });
+  const rows = project({ recovery: [failed], transcriptIds: new Set(["m1"]) });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    state: "refused",
+    interrupt: true,
+    controlFailure: "cancel",
+    reason: "the queue moved",
+  });
+});
+
+test("a queue resting after Stop projects as held", () => {
+  const model = threadModel({
+    status: { type: "idle" },
+    queue: {
+      depth: 1,
+      revision: 2,
+      ids: ["q1"],
+      clientMutationIds: ["m1"],
+      texts: ["hello"],
+      preview: ["hello"],
+    },
+  });
+  expect(project({ model })).toMatchObject([{ id: "m1", state: "held" }]);
+});
+
+test("a contentless drain keeps a nonempty display fallback", () => {
+  const drain = local("m1", "turn/drainAsSteer", "", {
+    payload: { ref: "ref_a", expectedQueueRevision: 1, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+  });
+  const rows = project({ outbox: [drain] });
+  expect(rows[0]?.displayText).toBe("[queued messages]");
+});
+
+test("image bytes and selections survive into the pending row", () => {
+  const input: InputItem[] = [
+    { type: "text", text: "look" },
+    { type: "image", mediaType: "image/png", data: "AAAA", name: "a.png" },
+    { type: "skill", name: "pkg:probe" },
+    { type: "command", name: "compact" },
+  ];
+  const record = outboxRecord({
+    clientMutationId: "m1",
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows[0]).toMatchObject({
+    text: "look",
+    displayText: "look [skill: pkg:probe] [command: compact]",
+    images: [{ src: "data:image/png;base64,AAAA", name: "a.png" }],
+    skillNames: ["pkg:probe"],
+    commandNames: ["compact"],
+  });
+});
+
+test("a skill-only row displays its marker while keeping the raw text empty", () => {
+  const input: InputItem[] = [{ type: "skill", name: "pkg:probe" }];
+  const record = outboxRecord({
+    clientMutationId: "m1",
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input, clientMutationId: "m1" },
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  const rows = project({ outbox: [record] });
+  expect(rows[0]).toMatchObject({
+    text: "",
+    displayText: "[skill: pkg:probe]",
+    skillNames: ["pkg:probe"],
+  });
+});
+
+test("a delivered identity recorded earlier cannot resurrect after a bounded read drops the item", () => {
+  expect(project({ outbox: [local("m1", "turn/start")], deliveredHere: new Set(["m1"]) })).toEqual([]);
+});
+
+test("authoritative pending input replaces the local preview for the same identity", () => {
+  const model = threadModel({ pendingMutations: [pending("m1", "turn/steer", "new")] });
+  const rows = project({ outbox: [local("m1", "turn/steer", "old")], model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "m1", text: "new", state: "steering" });
+});
+
+test("known submission times order first, unknown times after them", () => {
+  const model = threadModel({ pendingMutations: [pending("m3", "turn/steer", "foreign")] });
+  const rows = project({
+    model,
+    outbox: [
+      local("m2", "turn/start", "second", { createdAt: 20 }),
+      local("m1", "turn/start", "first", { createdAt: 10 }),
+    ],
+  });
+  expect(rows.map((row) => row.id)).toEqual(["m1", "m2", "m3"]);
+});

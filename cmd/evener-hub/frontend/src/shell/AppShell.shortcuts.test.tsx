@@ -560,7 +560,8 @@ test("Alt+Shift+Arrow live-session navigation is suppressed from an editable tar
 
   const input = document.createElement("input");
   document.body.appendChild(input);
-  input.focus();
+  // Focus leaves the rail row the click focused, which the tree tracks.
+  act(() => input.focus());
   try {
     await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
     expect(window.location.pathname).toBe("/s/local%3Alive-a");

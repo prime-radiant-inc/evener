@@ -29,14 +29,15 @@ func MemoryDefinition(base llm.ToolDefinition, name string) llm.ToolDefinition {
 		param["description"] = "File or directory to search, relative to the scope root; blank searches the whole scope."
 	}
 	base.Parameters["required"] = append(base.Parameters["required"].([]string), "scope")
+	if name == "memory_read" && !strings.Contains(base.Description, "Reading MEMORY.md") {
+		base.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
+	}
 	base.Description = "Operate on a relative path in the bound personal or project memory wiki. " + base.Description
 	return base
 }
 
 func DefMemoryRead() llm.ToolDefinition {
-	read := DefReadFile()
-	read.Description += " Reading MEMORY.md at the scope root returns the whole generated index."
-	return MemoryDefinition(read, "memory_read")
+	return MemoryDefinition(DefReadFile(), "memory_read")
 }
 
 func DefMemoryDelete() llm.ToolDefinition {
@@ -84,6 +85,31 @@ func DefReadFile() llm.ToolDefinition {
 			"required": []string{"file_path"},
 		},
 	}
+}
+
+// DefReadFileNativeVision returns read_file tailored for Regime 1: neither images
+// nor PDFs run the side-channel. vision_prompt is omitted from advertised
+// properties and the description omits the vision_prompt sentence (#6190).
+func DefReadFileNativeVision() llm.ToolDefinition {
+	def := DefReadFile()
+	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis."
+	props := def.Parameters["properties"].(map[string]any)
+	delete(props, "vision_prompt")
+	return def
+}
+
+// DefReadFilePDFVisionOnly returns read_file tailored for Regime 2: images are
+// native inline, while PDFs use the side-channel. vision_prompt is kept and
+// scoped to PDF files in both the tool description and parameter description (#6190).
+func DefReadFilePDFVisionOnly() llm.ToolDefinition {
+	def := DefReadFile()
+	def.Description = "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading a PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file."
+	props := def.Parameters["properties"].(map[string]any)
+	props["vision_prompt"] = map[string]any{
+		"type":        "string",
+		"description": "PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate.",
+	}
+	return def
 }
 
 func DefWriteFile() llm.ToolDefinition {
@@ -438,10 +464,14 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 
 // DefModelList exposes a bounded read-only view of a startup-frozen model
 // snapshot. Cursor values are opaque and snapshot-authenticated by the agent.
+// Paging never re-enumerates a provider, so the description names the
+// recovery paths for one whose startup enumeration failed: a delegate model
+// override is checked against that provider's live listing at spawn
+// (selectSubagentModel), and a resumed session captures a new snapshot.
 func DefModelList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "model_list",
-		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated. Paging never re-enumerates providers: one whose status kind is failure or timeout keeps that status for this session. To use one of its models once the problem clears, pass provider/model as the delegate model override; the spawn lists that provider again and names its current models if the requested one is not offered. A resumed session captures a new snapshot.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -919,7 +949,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "task_list",
-		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
+		Description: "Manage your task list. A bare call (or empty add/update) returns the current list. Use add to append new tasks (type, the field named description <10 words, detailed prompt, optional depends_on/reasoning_effort) and update to change existing tasks (id plus optional status, notes, depends_on, reasoning_effort) — both in the same call when useful. Newly added tasks stay open until started. When you mark a task done, the next eligible task auto-starts and its prompt is injected. Use depends_on to express ordering and notes to record what happened. Only one task may be in_progress at a time; to start a new one, complete or defer the current one in the same update array.",
 		// Strict is explicitly false: the OpenAI Responses adapter defaults
 		// strict=true when unset and force-requires every nested property,
 		// which would force strict-mode models to emit "status": "" (enum
@@ -934,7 +964,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 			"properties": map[string]any{
 				"add": map[string]any{
 					"type":        "array",
-					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort.",
+					"description": "Tasks to add. Omit or [] for none. Each: type, the field named description (<10 words), a detailed prompt, optional depends_on (IDs of existing tasks, or of earlier tasks in this same add array which get sequential IDs), and optional reasoning_effort. Newly added tasks stay open until started.",
 					"items": map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,
@@ -942,7 +972,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							"type": map[string]any{
 								"type":        "string",
 								"enum":        []string{"research", "implement", "verify", "fix"},
-								"description": "Task type. Use 'fix' for targeted remediation after a specific failure or review finding.",
+								"description": "Task type (default implement). Use 'fix' for targeted remediation after a specific failure or review finding.",
 							},
 							"description": map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":      map[string]any{"type": "string", "description": "Full, self-contained instruction for the task."},
@@ -953,7 +983,7 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 							},
 							"reasoning_effort": reasoningSchema,
 						},
-						"required": []string{"type", "description", "prompt"},
+						"required": []string{"description", "prompt"},
 					},
 				},
 				"update": map[string]any{
@@ -1181,6 +1211,19 @@ func DefManageWorktree() llm.ToolDefinition {
 					"type":        "number",
 					"description": "For prune: also release delegate-lane locks whose parent session provably cannot act as the disposer — its own disposal already ran (the store records the delegate's isolation disposal), or the session is gone or inactive at least this many days. Removal still requires the ordinary unchanged/merged gates; a released lane with unmerged work stays put, unlocked and visible to the merge and force paths. 0 (default) keeps the locked-lane rule absolute. A positive value below the supported minimum (one minute plus the refresh cadence's tick, ~0.00072 days) is refused: the activity evidence a live tree refreshes is only as fresh as that window, so a shorter threshold could release a lane under a running delegate.",
 				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"default":     15,
+					"minimum":     1,
+					"maximum":     15,
+					"description": "For list: maximum worktree entries to return under the managed root (default 15, at most 15).",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"default":     0,
+					"minimum":     0,
+					"description": "For list: 0-based start index into worktrees under the managed root (default 0). Use next_offset to advance.",
+				},
 			},
 			"required": []string{"operation"},
 		},
@@ -1247,7 +1290,7 @@ func DefReadTranscript() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, job:<job_id>, or artifact:<id>."},
+				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current (default when omitted), job:<job_id>, or artifact:<id>."},
 				"format":         map[string]any{"type": []any{"string", "null"}, "enum": []any{"outline", "markdown", "jsonl", nil}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
 				"range":          map[string]any{"type": []any{"string", "null"}, "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". doctor_evener transcript uses the same turn numbers. Omit for the default last 40, or for just the expanded turn with expand_turn."},
 				"expand_turn":    map[string]any{"type": []any{"integer", "null"}, "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Without range the markdown shows only Turn N and its paired tool results; with range it shows that window plus Turn N. Continue with offset_bytes from the returned handle."},
@@ -1280,7 +1323,7 @@ func DefAskUserNamed(resultTool string) llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "ask_user",
 		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `" + resultTool + "` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
-			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
+			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first.\n" +
 			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
 			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +
 			"First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.",

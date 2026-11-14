@@ -935,7 +935,40 @@ test.each(["dark", "light"])("primary button normal and hover text clear AA in %
   const hoverBackground = oklabMix(tokenColor(mix[1]), tokenColor(mix[3]), Number(mix[2]) / 100);
   expect(contrastRatio(foreground, hoverBackground), `${theme} hover contrast`).toBeGreaterThanOrEqual(4.5);
   expect(hoverBackground).not.toEqual(background);
+
+  // Pressed is a further step from the same two tokens: still AA, and
+  // distinct from both resting and hover.
+  const pressed = declarationInRule(
+    css,
+    'primary:active:not\\(:disabled\\):not\\(\\[aria-disabled="true"\\]\\)',
+    "background",
+  );
+  const pressedMix = /^color-mix\(in oklab, (var\(--[\w-]+\)) (\d+)%, (var\(--[\w-]+\))\)$/.exec(pressed ?? "");
+  if (!pressedMix) throw new Error(`Unsupported pressed color: ${pressed}`);
+  const pressedBackground = oklabMix(tokenColor(pressedMix[1]), tokenColor(pressedMix[3]), Number(pressedMix[2]) / 100);
+  expect(contrastRatio(foreground, pressedBackground), `${theme} pressed contrast`).toBeGreaterThanOrEqual(4.5);
+  expect(pressedBackground).not.toEqual(background);
+  expect(pressedBackground).not.toEqual(hoverBackground);
 });
+
+// --on-accent is the text and glyph role on a solid --accent fill (the
+// primary button, the agent's mark). The accent turns from a deep indigo in
+// light to a pale one in dark, so the role turns with it; this pins the pair
+// itself rather than any one widget's use of it. The fill must also stand
+// off the grounds it sits on (3:1, the non-text bar) or the filled action
+// would dissolve into the page.
+test.each(THEME_BLOCKS)(
+  "--on-accent clears 4.5:1 on --accent, and the fill stands off its grounds, in $name",
+  (theme) => {
+    const accent = parseHexColor(resolvedTokenColor(theme.block, "--accent"));
+    const onAccent = parseHexColor(resolvedTokenColor(theme.block, "--on-accent"));
+    expect(contrastRatio(onAccent, accent), `${theme.name} --on-accent on --accent`).toBeGreaterThanOrEqual(4.5);
+    for (const groundName of ["--surface-0", "--surface-canvas", "--surface-1"]) {
+      const ground = parseHexColor(resolvedTokenColor(theme.block, groundName));
+      expect(contrastRatio(accent, ground), `${theme.name} --accent on ${groundName}`).toBeGreaterThanOrEqual(3);
+    }
+  },
+);
 
 test("the four -ink companions clear 4.5:1 on their theme's lightest text grounds", () => {
   const themes = [

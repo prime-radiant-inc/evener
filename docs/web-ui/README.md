@@ -13,7 +13,8 @@ Design documentation for the web hub (`cmd/evener-hub`).
   the [editorial-instrument rationale](design-system.md#design-model-an-editorial-instrument):
   conversation for understanding, evidence for verification and controls for intervention.
   It records behavioral consequences, tradeoffs and review questions, then tokens,
-  the editorial system (cool neutral paper/ink, serif reading, flat structure), inline tool/delegate
+  the editorial system (cool neutral paper/ink with an indigo accent, serif reading, a flat
+  frame with rounded, quietly raised objects), inline tool/delegate
   grammar and provenance, source coverage, type, space, motion, the cadence instrument,
   and the widget library under
   `cmd/evener-hub/frontend/src/widgets/`.
@@ -62,8 +63,8 @@ settings; remote launches cannot write controller credentials.
 
 Provider connection and model choice never start a session. A person explicitly
 chooses the session model and selects **Start**. Start may also create a blank
-session, whose task is written later. The Effective access summary beside Start
-comes from launch resolution; an explicit Advanced sandbox override wins over
+session, whose task is written later. The Effective access summary, a tile under
+the task card beside the working-directory tile, comes from launch resolution; an explicit Advanced sandbox override wins over
 the Access mode choice. Its Change action opens this form's Advanced controls and
 focuses the setting that owns the displayed value. Task prose does not grant or
 restrict tool permissions.

@@ -213,7 +213,7 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     expect(fresh?.clientMutationId).not.toBe(row.clientMutationId);
     // A canceled predecessor provably never left any tab, so the fresh row
     // carries its OWN wire id, and the old row is removed - §6's removal on
-    // explicit Retry - so its chip leaves the canceled strip and a second
+    // explicit Retry - so its row leaves the pending stack and a second
     // press cannot mint the same send twice.
     expect(fresh?.payload.clientMutationId).toBe(fresh?.clientMutationId);
     expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
@@ -453,7 +453,7 @@ describe("retargeted resend rows' displayed-ref fence", () => {
     );
     // The retargeted-fenced carve-out is deleted: a crossed resend still
     // mints its row - born-canceled, keyed to the destination, carrying the
-    // displayed ref - so the canceled strip's displayedRef match keeps the
+    // displayed ref - so the pending stack's displayedRef match keeps the
     // composition visible in the session the user is looking at, and the
     // press answers sent with the recovery row consumed.
     expect(result.status).toBe("sent");
@@ -485,7 +485,7 @@ describe("retargeted resend rows' displayed-ref fence", () => {
       { stopEpoch: 0, displayedRef: DISPLAYED },
     );
     // The crossed ordinary send commits born-canceled in the SAME session:
-    // the row surfaces in that session's queue strip with its Retry
+    // the row surfaces in that session's pending stack with its Retry
     // affordance (§6's display), the recovery row is consumed, and the press
     // answers sent - the non-retargeted case's consistency the fenced outcome
     // must not swallow.

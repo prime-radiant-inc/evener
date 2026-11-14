@@ -1,8 +1,8 @@
 # web-queue-then-completes: type during a turn, queued message runs after
 
 **What this covers**: kata `111a` (web). While a turn is in flight the
-composer's **Send** routes to the queue instead of starting a turn; the queue
-strip shows what is waiting; and when the active turn completes the daemon
+composer's **Send** routes to the queue instead of starting a turn; the
+pending stack shows what is waiting; and when the active turn completes the daemon
 pops the head of the queue and runs it as a **fresh user turn** — not as a
 steer. The user-facing complement to the agent-level
 `TestSession_Enqueue_DrainsAfterTurnCompletes` unit (kata `111a` backend).
@@ -121,7 +121,7 @@ rm -rf "$tmpdir"
   this design rejected (`Composer.tsx:383-388`). Only the tooltip says which
   timing applies, and the tooltip is portalled in on hover/focus only
   (`widgets/tooltip/index.tsx:186-192`), so do not assert on it without
-  hovering. The strip's depth is what shows the effect.
+  hovering. The stack's row count is what shows the effect.
 - **The queue window opens on the status flip alone.** Send/queue
   availability keys on `statusType === "active"` and deliberately does *not*
   wait for `activeTurnId` (`appwire-client/typescript/sendQueueAvailability.ts` header);

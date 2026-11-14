@@ -118,9 +118,17 @@ func (read *sessionActivityRead) watchesPage(ctx context.Context, params appwire
 	return result, nil
 }
 func projectRetainedSessionWatch(owner, receiver string, record *jobstore.WatchRecord, index *sessionActivityJobIndex) appwire.SessionWatch {
-	cfg := &watchConfig{watchID: record.WatchID, target: record.Target, sourcePublic: record.Source, createdAt: index.Created[record.WatchID]}
+	target := record.Target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
+	cfg := &watchConfig{watchID: record.WatchID, target: target, sourcePublic: record.Source, createdAt: index.Created[record.WatchID]}
 	if snapshot := index.Configs[record.WatchID]; snapshot != nil {
-		cfg.target = snapshot.Target
+		snapTarget := snapshot.Target
+		if snapTarget == runtimeMessageAliasCaller {
+			snapTarget = "self"
+		}
+		cfg.target = snapTarget
 		cfg.outputMatch = activitybound.Truncate(snapshot.OutputMatch, activityMaxDelegateProseRunes)
 		cfg.progressIntervalMS = snapshot.ProgressIntervalMS
 		cfg.note = activitybound.Truncate(snapshot.Note, activityMaxDelegateProseRunes)
@@ -155,7 +163,11 @@ func projectRetainedSessionWatch(owner, receiver string, record *jobstore.WatchR
 	return appwire.SessionWatch{SourceRef: encodeRef("", owner), OwnerRef: encodeRef("", receiver), ReceiverRef: encodeRef("", receiver), State: state, Watch: info}
 }
 func watchInfoFromStatus(status WatchStatusInfo) appwire.EvenerWatchInfo {
-	result := appwire.EvenerWatchInfo{ID: status.ID, Source: activitybound.Truncate(status.Source, activityMaxLabelRunes), Target: activitybound.Truncate(status.Target, activityMaxLabelRunes), SendTo: activitybound.Truncate(status.SendTo, activityMaxLabelRunes), Note: activitybound.Truncate(status.Note, activityMaxDelegateProseRunes), OutputMatch: activitybound.Truncate(status.OutputMatch, activityMaxDelegateProseRunes), Events: append([]string(nil), status.Events...), WildcardEvents: status.WildcardEvents, Deliveries: status.Deliveries, DeliveryTimes: append([]string(nil), status.DeliveryTimes...), CreatedAt: status.CreatedAt, Active: status.Active, EndReason: activitybound.Truncate(status.EndReason, activityMaxDelegateProseRunes)}
+	target := status.Target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
+	result := appwire.EvenerWatchInfo{ID: status.ID, Source: activitybound.Truncate(status.Source, activityMaxLabelRunes), Target: activitybound.Truncate(target, activityMaxLabelRunes), SendTo: activitybound.Truncate(status.SendTo, activityMaxLabelRunes), Note: activitybound.Truncate(status.Note, activityMaxDelegateProseRunes), OutputMatch: activitybound.Truncate(status.OutputMatch, activityMaxDelegateProseRunes), Events: append([]string(nil), status.Events...), WildcardEvents: status.WildcardEvents, Deliveries: status.Deliveries, DeliveryTimes: append([]string(nil), status.DeliveryTimes...), CreatedAt: status.CreatedAt, Active: status.Active, EndReason: activitybound.Truncate(status.EndReason, activityMaxDelegateProseRunes)}
 	for _, cadence := range status.Cadence {
 		result.Cadence = append(result.Cadence, appwire.EvenerWatchCadence{Kind: cadence.Kind, Seconds: cadence.Seconds, DerivedNextFireAt: cadence.DerivedNextFireAt, Every: cadence.Every, Filter: activitybound.Truncate(cadence.Filter, activityMaxLabelRunes)})
 	}

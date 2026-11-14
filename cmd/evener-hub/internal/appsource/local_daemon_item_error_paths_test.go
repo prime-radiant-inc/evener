@@ -2,7 +2,6 @@ package appsource
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -52,44 +51,15 @@ func unexpectedReadCall(int, appwire.ThreadReadParams) (appwire.ThreadReadRespon
 }
 
 func (d *scriptedItemDaemon) dial(context.Context, string, *http.Client, http.Header) (appwire.Transport, error) {
-	transport := newScriptedAppwireTransport(nil)
-	transport.send = func(_ context.Context, msg appwire.Message) error {
-		if msg.Request == nil {
-			return nil
-		}
-		request := msg.Request
-		reply := func(response any, err error) error {
-			if err != nil {
-				if wire, ok := errors.AsType[appwire.WireError](err); ok {
-					transport.recv <- appwire.ErrorMessage(request.ID, wire)
-					return nil
-				}
-				return err
-			}
-			transport.recv <- appwire.ResponseMessage(request.ID, response)
-			return nil
-		}
-		switch request.Method {
-		case appwire.MethodThreadRead:
-			var params appwire.ThreadReadParams
-			if err := json.Unmarshal(request.Params, &params); err != nil {
-				return err
-			}
-			response, err := d.read(d.nextReadCall(), params)
-			return reply(response, err)
-		case appwire.MethodThreadTurnsList:
-			var params appwire.ThreadTurnsListParams
-			if err := json.Unmarshal(request.Params, &params); err != nil {
-				return err
-			}
-			response, err := d.page(d.nextPageCall(), params)
-			return reply(response, err)
-		default:
-			transport.recv <- appwire.ResponseMessage(request.ID, appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion})
-			return nil
-		}
-	}
-	return transport, nil
+	return newScriptedItemTransport(
+		func(params appwire.ThreadReadParams) (any, error) {
+			return d.read(d.nextReadCall(), params)
+		},
+		func(params appwire.ThreadTurnsListParams) (any, error) {
+			return d.page(d.nextPageCall(), params)
+		},
+		false,
+	), nil
 }
 
 func newScriptedItemSource(t *testing.T, daemon *scriptedItemDaemon, threadID string) *LocalDaemonSource {

@@ -14,26 +14,15 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/internal/imagerepair"
+	"primeradiant.com/evener/llm/internal/transporttest"
 	"primeradiant.com/evener/llm/registry"
 )
-
-// noHTTPServer fails the test the moment any request reaches it, so a test
-// proving "the error is returned before the wire" cannot silently start doing
-// network I/O.
-func noHTTPServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("no HTTP exchange was expected: the error must short-circuit the call")
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
 
 // TestCompleteRejectsUnshapeableToolChoice pins the build error surfacing from
 // the recovery loop's own body build: a named tool choice without a name never
 // reaches the wire.
 func TestCompleteRejectsUnshapeableToolChoice(t *testing.T) {
-	srv := noHTTPServer(t)
+	srv := transporttest.NoHTTPServer(t)
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "named"}
@@ -47,7 +36,7 @@ func TestCompleteRejectsUnshapeableToolChoice(t *testing.T) {
 // marshal guard: a provider option the body cannot serialize fails the call
 // before any request is sent — no retry, no partial body.
 func TestImageRecoveryUnserializableBodyFailsBeforeTheWire(t *testing.T) {
-	srv := noHTTPServer(t)
+	srv := transporttest.NoHTTPServer(t)
 	req := userReq("hi")
 	req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"fuzz_opt": make(chan int)}}
 	if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, liveRes(srv, nil)); err == nil {

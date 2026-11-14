@@ -1,32 +1,25 @@
+/* The flat card: a rounded surface whose edge is a 1px ring drawn in the
+ * shadow, not a border, so the ring costs no box size. */
 .card {
   padding: var(--space-4);
-  background: var(--surface-0);
-  border-radius: 0;
-  box-shadow: var(--shadow-card);
+  background: var(--surface-1);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-card-ringed);
 }
 
-/* squircle-proto: continuous (Apple-style) corner curvature where the engine
- * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. */
-@supports (corner-shape: squircle) {
-  .card {
-    corner-shape: squircle;
-  }
-}
-
-/* The bordered box shared by outlined and attention: a real 1px edge on the
- * pane radius, padded one step tighter than the flat card because the edge
- * already separates it from what is around it. */
+/* The bordered box shared by outlined and attention: a real 1px edge in
+ * place of the flat card's ring, padded one step tighter for the denser flow
+ * these sit in. */
 .outlined,
 .attention {
   padding: var(--space-3);
   border: 1px solid;
-  border-radius: var(--radius-pane);
 }
 
 .outlined {
   border-color: var(--edge);
   background: var(--surface-1);
+  box-shadow: var(--shadow-card);
 }
 
 /* Stronger than the --attention-bg/-edge token defaults (15%/40%): against
@@ -35,7 +28,9 @@
  * /dev/surfaces gallery: dark gains a legible amber wash and edge, light stays
  * close to the token reading. Card is on token-contract.test.ts's
  * SEMANTIC_USE_ALLOWLIST for this tone. */
+/* No lift: the attention envelope's edge and wash carry it. */
 .attention {
+  box-shadow: none;
   border-color: color-mix(in oklab, var(--attention) 55%, var(--edge));
   background: color-mix(in oklab, var(--attention) 24%, var(--surface-1));
 }

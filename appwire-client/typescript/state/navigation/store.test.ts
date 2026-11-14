@@ -232,6 +232,59 @@ test("manifest invalidation hydrates resources that become nonempty", async () =
   });
 });
 
+test("a failed section page keeps demand after the manifest count drains to zero", async () => {
+  const calls: NavigationReadParams[] = [];
+  const retried = deferred<void>();
+  let attempts = 0;
+  let drained = false;
+  const client = await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wireSnapshot(
+        params,
+        drained
+          ? emptyManifest()
+          : emptyManifest({ sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } } }),
+        drained ? '"two"' : '"one"',
+        drained ? 2 : 1,
+      );
+    if (params.resource === "section") {
+      attempts += 1;
+      if (attempts === 1) throw new Error("section read failed");
+      retried.resolve();
+      return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false });
+    }
+    return wireSnapshot(params, { projects: [], remaining: 0 });
+  });
+
+  // Boot advertises one live session, so the fan-out loads the section; the
+  // scripted refusal leaves the page in the store holding an error.
+  await flush();
+  expect(attempts).toBe(1);
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const failed = store.getState().resources.get(keyID(sectionKey));
+  expect(failed?.error).toBeInstanceOf(Error);
+
+  // The refreshed manifest advertises the section as drained (count 0). The
+  // shared can-demand rule — not the manifest count — owns the failed page,
+  // so the fan-out retries the section instead of skipping it.
+  drained = true;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "manifest", revision: 2 }],
+    }),
+  );
+  await retried.promise;
+  await flush();
+  expect(calls.filter((c) => c.resource === "manifest")).toHaveLength(2);
+  expect(calls.filter((c) => c.resource === "section")).toHaveLength(2);
+  const recovered = store.getState().resources.get(keyID(sectionKey));
+  expect(recovered?.error).toBeNull();
+  expect(recovered?.data).not.toBeNull();
+});
+
 test("validated manifest attention seeds the v3 summary before notifications", async () => {
   await init((params) =>
     params.resource === "manifest"

@@ -41,6 +41,22 @@ func TestConversationProvenance_PromotionPreservesOutOfOrderInputIdentity(t *tes
 			if _, err := sess.AcceptClientMutationPromoteQueuedAsSteer(appwire.TurnPromoteQueuedAsSteerParams{ClientMutationID: "promotion-control", Index: 0, ExpectedEntryID: queueID}); err != nil {
 				t.Fatal(err)
 			}
+			// The pending replacement must name the entry it consumed. Without
+			// that join the client renders the promoted message and its carried
+			// queue row side by side until delivery completes.
+			_, pendings := sess.ClientMutationProjection()
+			var promotion *appwire.PendingMutation
+			for index := range pendings {
+				if pendings[index].ClientMutationID == "promotion-control" {
+					promotion = &pendings[index]
+				}
+			}
+			if promotion == nil {
+				t.Fatal("promotion left no pending replacement")
+			}
+			if !slices.Equal(promotion.QueueEntryIDs, []string{queueID}) {
+				t.Fatalf("pending promotion does not name the entry it consumed: %v", promotion.QueueEntryIDs)
+			}
 			return response("steered-output", false)
 		},
 		func(req llm.Request) llm.Response {

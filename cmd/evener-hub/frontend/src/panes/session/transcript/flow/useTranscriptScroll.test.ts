@@ -72,6 +72,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -453,6 +454,137 @@ test("following-bottom intent survives a passive measurement correction and clea
       fireEvent.scroll(scene.port());
     });
     expect(scene.flow().isFollowingBottom()).toBe(false);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("an away wheel retires end-follow before its delayed scroll can be read as a measurement growth", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-wheel-delayed-reanchor", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
+  try {
+    await scene.start();
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+    const end = scene.port().scrollTop;
+    expect(end).toBe(scene.port().scrollHeight - scene.port().clientHeight);
+    // Clear the record the scene's own start wheel left, so this test pins its
+    // own wheel.
+    await act(async () => {
+      scene.port().scrollTop = end;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+
+    // The wheel starts the reader away from the end. Its marker frame passes
+    // before the browser's own scroll event reaches the listener, so the
+    // delayed scroll cannot be the marker's veto.
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -900, bubbles: true }));
+    });
+    await act(async () => scene.frames.release());
+    // A resize that lands before the wheel's delayed movement must not consume
+    // the recorded offset.
+    await act(async () => scene.external.notify());
+    await act(async () => {
+      scene.port().scrollTop = end - 900;
+    });
+
+    // A measurement growth arrives before that scroll event: it must not pin
+    // the reader back to the end. The wheel's recorded start offset outlives
+    // the one-frame marker, so the geometry says the reader left.
+    scene.geometry.rowHeights[0] = (scene.geometry.rowHeights[0] ?? 0) + 100;
+    await act(async () => scene.external.notify());
+    expect(scene.flow().isFollowingBottom()).toBe(false);
+    expect(scene.flow().pillVisible).toBe(true);
+    // The row above the viewport grew, so the virtualizer preserves the
+    // reading position by that amount; what must not happen is a pin to the
+    // new end (which would put the reader back at scrollHeight - clientHeight).
+    expect(scene.port().scrollTop).toBeLessThan(scene.port().scrollHeight - scene.port().clientHeight - 4);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("a wheel-away record clears when the reader returns to the end", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-wheel-return-to-end", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
+  try {
+    await scene.start();
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    const end = scene.port().scrollTop;
+    // Settle the previous-geometry record at the end, so the wheel records the
+    // offset the reader actually left.
+    await act(async () => {
+      scene.port().scrollTop = end;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+
+    // Wheel away, then return to the true end before any re-anchor consumes
+    // the record.
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -900, bubbles: true }));
+      scene.port().scrollTop = end - 900;
+    });
+    await act(async () => scene.frames.release());
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+
+    // A backward measurement correction at the true end must keep following:
+    // the stale wheel offset must not retire it.
+    scene.geometry.rowHeights[0] = Math.max(100, (scene.geometry.rowHeights[0] ?? 0) - 100);
+    await act(async () => scene.external.notify());
+    await act(async () => scene.frames.release());
+    expect(scene.flow().isFollowingBottom()).toBe(true);
+  } finally {
+    scene.dispose();
+  }
+});
+
+test("a delayed wheel whose marker expired retires on its own scroll event", async () => {
+  const scene = await act(async () =>
+    mountReaderScene("hook-wheel-delayed-scroll", [1600, 500, 500, 500, 500], {
+      estimate: 500,
+      viewportHeight: 400,
+    }),
+  );
+  try {
+    await scene.start();
+    await act(async () => scene.flow().jumpToBottom());
+    await act(async () => scene.frames.release());
+    const end = scene.port().scrollTop;
+    await act(async () => {
+      scene.port().scrollTop = end;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+
+    await act(async () => {
+      scene.port().dispatchEvent(new WheelEvent("wheel", { deltaY: -900, bubbles: true }));
+    });
+    await act(async () => scene.frames.release());
+    // A resize before the delayed movement retains the recorded offset.
+    await act(async () => scene.external.notify());
+
+    // The delayed scroll lands with a height change, so the listener cannot
+    // use its stable-geometry backward-move branch; the recorded wheel start
+    // must retire follow and report the movement.
+    scene.geometry.rowHeights[0] = (scene.geometry.rowHeights[0] ?? 0) + 100;
+    await act(async () => {
+      scene.port().scrollTop = end - 900;
+      scene.port().dispatchEvent(new Event("scroll"));
+    });
+    expect(scene.flow().isFollowingBottom()).toBe(false);
+    expect(scene.flow().pillVisible).toBe(true);
   } finally {
     scene.dispose();
   }
@@ -2541,6 +2673,35 @@ describe("late content growth with no scroll event", () => {
     }
   });
 
+  test("a compositor-applied wheel whose marker expired retires follow before its scroll", async () => {
+    const frames = controllableFrames();
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set, result } = mountWithContent();
+      // The compositor applies the wheel before the passive handler runs: the
+      // live metrics are already away, the previous measurement is the bottom.
+      const away: ScrollMetrics = {
+        scrollTop: MOUNTED_AT_BOTTOM.scrollTop - 120,
+        scrollHeight: MOUNTED_AT_BOTTOM.scrollHeight,
+        clientHeight: MOUNTED_AT_BOTTOM.clientHeight,
+      };
+      definePort(el, away);
+      set(away);
+      act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+      // The marker frame passes before the wheel's scroll event.
+      act(() => frames.runAll());
+      // The resize observation lands first; the recorded departure must retire
+      // follow instead of pinning the reader back.
+      await act(async () => resizeObserver.trigger());
+      expect(result.current.isFollowingBottom()).toBe(false);
+      expect(result.current.pillVisible).toBe(true);
+      expect(el.scrollTop).toBe(away.scrollTop);
+    } finally {
+      resizeObserver.restore();
+      frames.restore();
+    }
+  });
+
   // A gesture that never produces a scroll event (a selection drag, a
   // stationary middle-button hold) must not consume the growth as the new
   // baseline, or the correction is permanently missed and the reader is
@@ -3635,6 +3796,331 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     act(() => result.current.jumpToBottom());
 
     expect(scrollToIndex).toHaveBeenCalledWith(3, { align: "start" }); // t3, not the historical t0
+  });
+});
+
+describe("opening at the unseen reply", () => {
+  const THREE_TURNS = () => model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]);
+
+  // makeListHandle has no scrollToOffset; the landing's absolute placement is
+  // observed through this spy.
+  function withScrollToOffset(list: ReturnType<typeof makeListHandle>) {
+    const scrollToOffset = vi.fn();
+    const handle = list.ref.current;
+    if (handle) handle.scrollToOffset = scrollToOffset;
+    return scrollToOffset;
+  }
+
+  function mountOpening(
+    options: {
+      openAtRow?: number;
+      measureUnseenLanding?: (el: HTMLElement) => number | undefined;
+      initialViewCapture?: CapturedTranscriptView;
+      metrics?: ScrollMetrics;
+    } = {},
+  ) {
+    const list = makeListHandle();
+    const scrollToOffset = withScrollToOffset(list);
+    const measured = makeMeasure(options.metrics ?? SCROLLED_AWAY);
+    const hook = renderHook(
+      ({ r, m, openAtRow }: { r: string; m: ThreadModel | undefined; openAtRow: number | undefined }) =>
+        useTranscriptScroll({
+          ref: r,
+          model: m,
+          listRef: list.ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure: measured.measure,
+          openAtRow,
+          measureUnseenLanding: options.measureUnseenLanding,
+          initialViewCapture: options.initialViewCapture,
+        }),
+      {
+        initialProps: {
+          r: "ref_a",
+          m: THREE_TURNS() as ThreadModel | undefined,
+          openAtRow: ("openAtRow" in options ? options.openAtRow : 1) as number | undefined,
+        },
+      },
+    );
+    return { ...list, ...hook, ...measured, scrollToOffset };
+  }
+
+  test("a fresh open with an unseen reply lands at that row's start, not the end, with the pill on offer", () => {
+    const { scrollToIndex, result } = mountOpening({ metrics: AT_BOTTOM });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    expect(scrollToIndex).not.toHaveBeenCalledWith(expect.anything(), { align: "end" });
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("the landing is finished by the divider's measured offset once its row renders", () => {
+    let offset: number | undefined;
+    const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
+    expect(scrollToOffset).not.toHaveBeenCalled();
+
+    offset = 120;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(120);
+    expect(scrollToOffset).toHaveBeenCalledWith(120);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a landing measured past the end of the transcript stops at the end", () => {
+    let offset: number | undefined;
+    const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
+
+    // SCROLLED_AWAY: 5000px of content in a 500px port, so the end is 4500.
+    el.scrollTop = 4400;
+    offset = 300;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(4500);
+    expect(scrollToOffset).toHaveBeenCalledWith(4500);
+  });
+
+  test("a list that reports committed geometry keeps the landing pending until a committed layout finds it in place", () => {
+    let offset: number | undefined;
+    const { el, ref, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
+    const handle = ref.current;
+    if (handle) handle.isMeasurementReady = () => true;
+    const cancelPendingScroll = vi.fn();
+    const layout = { isCurrent: () => true, cancelPendingScroll } as unknown as CommittedVirtualListLayout;
+
+    // The first placement brings rows into the window that measure far from
+    // their estimates, so the landing has moved by the next measurement.
+    offset = 120;
+    act(() => result.current.restoreViewAnchorAfterMeasurement(layout));
+    expect(el.scrollTop).toBe(120);
+    offset = 900;
+    act(() => result.current.restoreViewAnchorAfterMeasurement(layout));
+    expect(el.scrollTop).toBe(1020);
+    expect(cancelPendingScroll).not.toHaveBeenCalled();
+
+    // In place, but reported before the layout committed: still pending.
+    offset = 0;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(cancelPendingScroll).not.toHaveBeenCalled();
+
+    // In place on a committed layout: settled, and the virtualizer's own
+    // target is retired so its next reconcile cannot return to it.
+    act(() => result.current.restoreViewAnchorAfterMeasurement(layout));
+    expect(cancelPendingScroll).toHaveBeenCalledTimes(1);
+    expect(scrollToOffset).toHaveBeenLastCalledWith(1020);
+
+    // Settled means later measurements leave the reader alone.
+    offset = 400;
+    act(() => result.current.restoreViewAnchorAfterMeasurement(layout));
+    expect(el.scrollTop).toBe(1020);
+  });
+
+  test("a landing clamped to the end of a still-estimated sizer does not start following the end", () => {
+    let offset: number | undefined;
+    const { el, result, set, rerender, scrollToIndex } = mountOpening({ measureUnseenLanding: () => offset });
+
+    // The row's scroll request overshoots a sizer shorter than its estimate:
+    // the port reads at its end for a frame while the landing is in flight.
+    set({ scrollTop: 4500 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.isFollowingBottom()).toBe(false);
+
+    // Content appended meanwhile is not followed either.
+    scrollToIndex.mockClear();
+    rerender({
+      r: "ref_a",
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+      openAtRow: 1,
+    });
+    expect(scrollToIndex).not.toHaveBeenCalledWith(expect.anything(), { align: "end" });
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a landing waits for a transcript whose recorded bodies are still being restored", () => {
+    // The restore's first paint is the evicted snapshot: empty turns that
+    // still render the divider, in a transcript short enough to read as its
+    // own end. Settling there would follow the end once the bodies arrive.
+    setLocalOpening("ref_a", true);
+    let offset: number | undefined = 0;
+    const { el, result, set, rerender, scrollToIndex } = mountOpening({
+      measureUnseenLanding: () => offset,
+      metrics: AT_BOTTOM,
+    });
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+
+    // The bodies restore: the landing is placed against the real geometry,
+    // and the reader is not carried to the end.
+    act(() => setLocalOpening("ref_a", false));
+    set(SCROLLED_AWAY);
+    offset = 300;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(300);
+    expect(result.current.isFollowingBottom()).toBe(false);
+
+    scrollToIndex.mockClear();
+    rerender({
+      r: "ref_a",
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+      openAtRow: 1,
+    });
+    expect(scrollToIndex).not.toHaveBeenCalledWith(expect.anything(), { align: "end" });
+  });
+
+  test("a pending landing follows the unseen reply to a new row when the rows above it change", () => {
+    // Rows above the reply can coalesce or be prepended before its row has
+    // rendered: the same turn is then a different row, outside the window
+    // the first request brought in.
+    let offset: number | undefined;
+    const { el, result, rerender, scrollToIndex } = mountOpening({ measureUnseenLanding: () => offset, openAtRow: 2 });
+    expect(scrollToIndex).toHaveBeenLastCalledWith(2, { align: "start" });
+
+    rerender({ r: "ref_a", m: THREE_TURNS(), openAtRow: 1 });
+    expect(scrollToIndex).toHaveBeenLastCalledWith(1, { align: "start" });
+
+    offset = 60;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(60);
+
+    // Once landed, a later change of row is not a reason to move the reader.
+    scrollToIndex.mockClear();
+    rerender({ r: "ref_a", m: THREE_TURNS(), openAtRow: 0 });
+    expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  test("a landing still in flight yields to the live end when something starts waiting there", () => {
+    // A question surfaces while the reply's row has not rendered: the live
+    // end, where the dock is, takes the opening back.
+    let offset: number | undefined;
+    const { el, result, rerender, scrollToIndex } = mountOpening({ measureUnseenLanding: () => offset });
+
+    rerender({ r: "ref_a", m: THREE_TURNS(), openAtRow: undefined });
+    expect(scrollToIndex).toHaveBeenLastCalledWith(2, { align: "end" });
+    expect(result.current.isFollowingBottom()).toBe(true);
+
+    // The withdrawn landing no longer places the reader.
+    offset = 120;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(0);
+  });
+
+  test("a landing measured above the port's top never lands before the start", () => {
+    let offset: number | undefined;
+    const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
+
+    el.scrollTop = 200;
+    offset = -300;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(0);
+    expect(scrollToOffset).toHaveBeenCalledWith(0);
+  });
+
+  test("the landing waits while the divider is not rendered, then lands when it is", () => {
+    let offset: number | undefined;
+    const { el, result, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
+
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(0);
+    expect(scrollToOffset).not.toHaveBeenCalled();
+
+    offset = 80;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+    expect(el.scrollTop).toBe(80);
+    expect(scrollToOffset).toHaveBeenCalledWith(80);
+  });
+
+  test("a retained place away from the bottom wins over the unseen reply", () => {
+    const { el, result, scrollToIndex, scrollToOffset } = mountOpening({
+      initialViewCapture: RETAINED_AWAY_FROM_BOTTOM,
+      measureUnseenLanding: () => 120,
+    });
+
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(scrollToIndex).not.toHaveBeenCalledWith(1, { align: "start" });
+    expect(scrollToOffset).not.toHaveBeenCalled();
+    expect(el.scrollTop).toBe(0);
+  });
+
+  test("a reader's wheel before the divider renders cancels the landing", () => {
+    let offset: number | undefined;
+    const { el, result, set, scrollToOffset } = mountOpening({ measureUnseenLanding: () => offset });
+
+    act(() => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, bubbles: true }));
+      el.scrollTop = 40;
+      set({ scrollTop: 40 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+    offset = 200;
+    act(() => result.current.restoreViewAnchorAfterMeasurement());
+
+    expect(el.scrollTop).toBe(40);
+    expect(scrollToOffset).not.toHaveBeenCalled();
+  });
+
+  test("a landing that measures at the bottom follows the end from then on", async () => {
+    let offset: number | undefined;
+    const { result, set, rerender, scrollToIndex } = mountOpening({ measureUnseenLanding: () => offset });
+    expect(result.current.pillVisible).toBe(true);
+
+    offset = 120;
+    set(AT_BOTTOM);
+    await act(async () => {
+      result.current.restoreViewAnchorAfterMeasurement();
+    });
+    expect(result.current.pillVisible).toBe(false);
+
+    scrollToIndex.mockClear();
+    rerender({
+      r: "ref_a",
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+      openAtRow: 1,
+    });
+    expect(scrollToIndex).toHaveBeenCalledWith(3, { align: "end" });
+  });
+
+  test("a same-session remount lands at the end, not at the unseen reply again", () => {
+    const list = makeListHandle();
+    withScrollToOffset(list);
+    const handle = list.ref.current;
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { rerender } = renderHook(
+      ({ m }: { m: ThreadModel | undefined }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: list.ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+          openAtRow: 1,
+          measureUnseenLanding: () => 120,
+        }),
+      { initialProps: { m: THREE_TURNS() as ThreadModel | undefined } },
+    );
+    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    list.scrollToIndex.mockClear();
+
+    (list.ref as { current: VirtualListHandle | null }).current = null;
+    rerender({ m: undefined });
+    (list.ref as { current: VirtualListHandle | null }).current = handle;
+    rerender({ m: THREE_TURNS() });
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith(2, { align: "end" });
+    expect(list.scrollToIndex).not.toHaveBeenCalledWith(1, { align: "start" });
+  });
+
+  test("switching to another session opens it at that session's own unseen reply", () => {
+    const { rerender, scrollToIndex } = mountOpening({ openAtRow: 1 });
+    scrollToIndex.mockClear();
+
+    rerender({ r: "ref_b", m: THREE_TURNS(), openAtRow: 2 });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(2, { align: "start" });
+    expect(scrollToIndex).not.toHaveBeenCalledWith(expect.anything(), { align: "end" });
   });
 });
 

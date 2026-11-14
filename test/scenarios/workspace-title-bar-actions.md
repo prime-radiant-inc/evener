@@ -95,7 +95,7 @@ head and runs it as a fresh user turn.
      transcript's trailing pending stack
      (`transcript/messages/PendingRowStack.tsx:595-604`) and as
      `[data-testid="status-row-queue"]` reading `N queued` on the status
-     strip (`chrome/StatusRow.tsx:355-359`).
+     strip (`chrome/StatusRow.tsx:185-200`).
 
    ```bash
    # Re-send a slow turn so we have a window to queue + interrupt.

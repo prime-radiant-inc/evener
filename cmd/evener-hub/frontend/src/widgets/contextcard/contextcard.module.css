@@ -4,7 +4,7 @@
   gap: var(--space-1);
   padding: var(--space-3);
   background: var(--surface-inset);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pane);
   text-decoration: none;
   color: inherit;
 }

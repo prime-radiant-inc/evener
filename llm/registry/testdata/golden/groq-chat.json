@@ -76,11 +76,13 @@
     "Family": "snapshot/row",
     "InputModalities": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "StructuredOutput": "snapshot/row",
     "Surface": "snapshot/row",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:openai/gpt-oss-120b"
   },
   "default_model": "openai/gpt-oss-120b",

@@ -1,7 +1,7 @@
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
 import type { VirtualListHandle } from "../../../../widgets";
-import type { ScrollMetrics } from "./scrollMetrics";
+import { isAtBottom, type ScrollMetrics } from "./scrollMetrics";
 import { DRAG_BUTTON_BITS, MIDDLE_BUTTON_BIT, verticalInputCanMovePort } from "./scrollPredicates";
 import type { PendingViewAnchor } from "./viewAnchor";
 
@@ -11,7 +11,11 @@ export interface UseReaderGesturesOptions {
   /** Frames the pending marker has left; the scroll listener reads it to classify an event. */
   gestureFramesLeftRef: RefObject<number>;
   readerGestureRef: RefObject<{ beforeOffset: number; admitted: boolean } | undefined>;
-  readerCallbacksRef: RefObject<{ onReaderIntent?: () => void; onReaderMovement?: (beforeOffset: number) => void }>;
+  readerCallbacksRef: RefObject<{
+    onReaderIntent?: () => void;
+    onReaderMovement?: (beforeOffset: number) => void;
+    onReaderAway?: (beforeOffset: number) => void;
+  }>;
   /** The previous measurement's geometry; a wheel is attributed to the position the reader left. */
   lastScrollGeometryRef: RefObject<ScrollMetrics>;
   /** Cleared when the reader takes over: their gesture supersedes these pending requests. */
@@ -261,7 +265,19 @@ export function useReaderGestures({
       if (event.deltaY === 0) return;
       const port = event.currentTarget;
       if (!(port instanceof HTMLElement)) return;
-      if (!verticalInputCanMovePort(port, measure(port), event.target, event.deltaY > 0 ? 1 : -1)) return;
+      const metrics = measure(port);
+      if (!verticalInputCanMovePort(port, metrics, event.target, event.deltaY > 0 ? 1 : -1)) return;
+      // An upward wheel from the end is the reader leaving it, and says so
+      // before the browser's own scroll event reaches the listener. Record the
+      // position the previous measurement saw, not the live offset: the
+      // compositor may already have applied the wheel, and the hook's contract
+      // attributes a wheel to the position the reader left. Only a wheel that
+      // starts at the end needs the longer-lived record; a wheel already away
+      // keeps the ordinary one-frame marker. The compositor can have applied
+      // the wheel before this passive handler runs, so the previous measurement
+      // being at the bottom also counts.
+      if (event.deltaY < 0 && (isAtBottom(metrics) || isAtBottom(lastScrollGeometryRef.current)))
+        readerCallbacksRef.current.onReaderAway?.(lastScrollGeometryRef.current.scrollTop);
       markGesture(true, lastScrollGeometryRef.current.scrollTop);
     },
     [markGesture, measure],

@@ -6,8 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -1055,10 +1054,11 @@ func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 
 func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 	reg := NewRegistry()
-	// Capture log output.
+	// Capture the process logger the warning rides.
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	err := reg.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -1080,8 +1080,8 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 		t.Error("tool should still be registered despite empty description")
 	}
 
-	// Should have logged a warning.
-	if !strings.Contains(buf.String(), "WARNING") || !strings.Contains(buf.String(), "no_desc_tool") {
+	// Should have logged a warning naming the tool.
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "tool=no_desc_tool") {
 		t.Errorf("expected warning about empty description, got log: %q", buf.String())
 	}
 }
@@ -1546,6 +1546,36 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 	})
 	if res.IsError || res.Truncated || res.Output != body {
 		t.Fatalf("default use_skill dispatch truncated complete content: error=%v truncated=%v", res.IsError, res.Truncated)
+	}
+}
+
+func TestToolRegistry_ExecuteCall_AskUserShorthandPreservesIntent(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	var capturedIntent string
+	mustRegister(t, r, RegisteredTool{
+		Definition: DefAskUser(),
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			capturedIntent = IntentFromContext(ctx)
+			return "ok", nil
+		},
+	})
+	args := json.RawMessage(`{
+		"question": "Which option?",
+		"options": [
+			{"label": "A", "detail": "first"},
+			{"label": "B", "detail": "second"}
+		],
+		"intent": "clarify user choice"
+	}`)
+	res := r.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "c1", Name: "ask_user", Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("ExecuteCall failed: %s", res.Output)
+	}
+	if capturedIntent != "clarify user choice" {
+		t.Fatalf("captured intent = %q, want %q", capturedIntent, "clarify user choice")
 	}
 }
 

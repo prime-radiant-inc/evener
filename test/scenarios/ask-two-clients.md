@@ -136,7 +136,8 @@ and assert what each tab converges to.
      recap: [...document.querySelectorAll('[data-testid="tool-call-item"][data-tool-name="ask_user"]')]
               .map((el) => el.textContent.match(/Asked: \[[^\]]*\][^\n]*/)?.[0]),
      composerDraft: document.querySelector('[data-testid="composer-input-card"] textarea[aria-label="Message"]')?.value,
-     queueRows: [...document.querySelectorAll('li')].map((li) => li.textContent)
+     queueRows: [...document.querySelectorAll('[data-testid="pending-message-row"]')]
+                  .map((li) => li.textContent)
                   .filter((t) => /Delivery uncertain|Destination deleted|\[answers\]/.test(t)),
      toast: document.querySelector('section[aria-label="Notifications"]')?.textContent,
    })

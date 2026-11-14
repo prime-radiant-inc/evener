@@ -204,7 +204,7 @@ test.each([
     const committed = hold.reached;
     try {
       await user.click(actionButton());
-      // The commit's store publications re-render the queue strip; they land
+      // The commit's store publications re-render the pending stack; they land
       // inside this act() rather than after it.
       await act(async () => {
         await committed;
@@ -271,8 +271,8 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         });
         const row = screen.getByText("merge me").closest("li");
         if (!row) throw new Error("missing rejected queue row");
-        const editRecovery = within(row).getByRole("button", { name: "Edit message" });
-        expect(editRecovery.getAttribute("aria-disabled")).toBe("true");
+        const editRecovery = within(row).getByRole<HTMLButtonElement>("button", { name: "Edit message" });
+        expect(editRecovery.disabled).toBe(true);
         fireEvent.click(editRecovery);
       }
     } finally {

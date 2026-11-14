@@ -34,27 +34,27 @@ test("exchange boundaries, runs and pane bodies use the rhythm and space tokens"
   expect(rule(user, ".message")).not.toMatch(/margin-top/);
   expect(rule(user, '.message[data-opens-exchange="true"]')).toMatch(/margin-top: var\(--rhythm-exchange\)/);
   const tool = read("panes/session/transcript/toolcallitem.module.css");
-  expect(rule(tool, ".call")).toMatch(/padding: var\(--rhythm-item\) 0/);
+  // A tool row is a row of a card: one item step above and below its lines,
+  // declared once by the card's owner.
+  const surface = read("styles/surface.module.css");
+  expect(rule(surface, ".toolRowInsets")).toMatch(/--tool-card-row-pad: var\(--rhythm-item\)/);
+  expect(rule(tool, ".call")).toMatch(/padding: var\(--tool-card-row-pad\) var\(--tool-card-inset\)/);
   const scaffold = read("widgets/panescaffold/panescaffold.module.css");
   expect(rule(scaffold, ".body")).toMatch(/padding: var\(--space-5\)/);
   const separator = read("panes/session/transcript/messages/turnseparator.module.css");
   expect(rule(separator, ".row")).toMatch(/padding: var\(--rhythm-group\) 0 var\(--rhythm-line\)/);
 });
 
-// The intent-level density (Jesse's Tufte call, 2026-09-20): a row showing
-// only its intent line is one line of ink in a two-line slot, and a run of
-// them at the "intent" detail level read as one airy list. The collapsed
-// intent-only row halves the item rhythm; every open state drops the
-// hook and keeps the full rhythm, so a reader's own expansion is the
-// boundary cue between rows with more to show and rows without.
-test("intent-only tool rows take half the item rhythm; open states keep the full one", () => {
-  const tool = read("panes/session/transcript/toolcallitem.module.css");
-  expect(rule(tool, '.call[data-intent-only="true"]')).toMatch(/padding: var\(--space-1\) 0/);
-  // A folded run's collapsed summary is the same single quiet line and takes
-  // the same half step; opening the run restores the full item rhythm.
+// Every row of a tool card takes the same step, whatever it shows: the kind
+// icon's seat is taller than one line of text, so a one-line row needs the
+// full step to keep the seat clear of the card's dividers, and a folded run's
+// summary lines up with the rows it stands for.
+test("every tool card row takes one padding step, open or collapsed", () => {
   const run = read("panes/session/transcript/toolrungroup.module.css");
-  expect(rule(run, ".summary")).toMatch(/padding: var\(--space-1\) 0/);
-  expect(rule(run, ".group[open] > .summary")).toMatch(/padding: var\(--rhythm-item\) 0/);
+  expect(rule(run, ".summary")).toMatch(
+    /composes: toolRowInsets from "\.\.\/\.\.\/\.\.\/styles\/surface\.module\.css"/,
+  );
+  expect(rule(run, ".summary")).toMatch(/padding: var\(--tool-card-row-pad\) var\(--tool-card-inset\)/);
 });
 
 test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {

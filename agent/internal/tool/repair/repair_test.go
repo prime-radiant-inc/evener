@@ -63,6 +63,193 @@ func TestRepairArgs_Alias_NoOpWhenCanonicalPresent(t *testing.T) {
 	}
 }
 
+func TestRepairArgs_NestedTaskItemAliases(t *testing.T) {
+	t.Parallel()
+	// task_list add: title -> description
+	taskListParams := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"add": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"description": map[string]any{"type": "string"},
+						"prompt":      map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	out, changes := RepairArgs(taskListParams, map[string]any{
+		"add": []any{
+			map[string]any{"title": "step 1", "prompt": "p1"},
+		},
+	})
+	addItems := out["add"].([]any)
+	first := addItems[0].(map[string]any)
+	if first["description"] != "step 1" {
+		t.Fatalf("description = %v, want step 1", first["description"])
+	}
+	if _, hasTitle := first["title"]; hasTitle {
+		t.Fatal("title should be removed")
+	}
+	var foundAlias bool
+	for _, c := range changes {
+		if c.Kind == ChangeAlias && c.Field == "add[0].description" {
+			foundAlias = true
+			break
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("changes missing add[0].description alias: %+v", changes)
+	}
+
+	// delegate task_list: description -> title
+	delegateParams := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"task_list": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title":  map[string]any{"type": "string"},
+						"prompt": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	outDel, changesDel := RepairArgs(delegateParams, map[string]any{
+		"task_list": []any{
+			map[string]any{"description": "step 1", "prompt": "p1"},
+		},
+	})
+	delItems := outDel["task_list"].([]any)
+	firstDel := delItems[0].(map[string]any)
+	if firstDel["title"] != "step 1" {
+		t.Fatalf("title = %v, want step 1", firstDel["title"])
+	}
+	if _, hasDesc := firstDel["description"]; hasDesc {
+		t.Fatal("description should be removed")
+	}
+	foundAlias = false
+	for _, c := range changesDel {
+		if c.Kind == ChangeAlias && c.Field == "task_list[0].title" {
+			foundAlias = true
+			break
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("changes missing task_list[0].title alias: %+v", changesDel)
+	}
+}
+
+func TestRepairArgs_DoesNotMutateNestedTaskArgs(t *testing.T) {
+	t.Parallel()
+	taskListParams := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"add": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"description": map[string]any{"type": "string"},
+						"prompt":      map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	item := map[string]any{"title": "step 1", "prompt": "p1"}
+	in := map[string]any{
+		"add": []any{item},
+	}
+	out, _ := RepairArgs(taskListParams, in)
+	if _, hasDesc := item["description"]; hasDesc {
+		t.Fatal("RepairArgs mutated input item map by adding description")
+	}
+	if _, hasTitle := item["title"]; !hasTitle {
+		t.Fatal("RepairArgs mutated input item map by deleting title")
+	}
+	outItem := out["add"].([]any)[0].(map[string]any)
+	if outItem["description"] != "step 1" {
+		t.Fatalf("out description = %v, want step 1", outItem["description"])
+	}
+}
+
+func TestRepairArgs_DoesNotCorruptMCPToolDeclaringBothTitleAndDescription(t *testing.T) {
+	t.Parallel()
+	mcpParams := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"add": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title":       map[string]any{"type": "string"},
+						"description": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	args := map[string]any{
+		"add": []any{
+			map[string]any{"title": "my title", "prompt": "p1"},
+		},
+	}
+	out, changes := RepairArgs(mcpParams, args)
+	if len(changes) != 0 {
+		t.Fatalf("expected no changes for MCP tool declaring both title and description, got %+v", changes)
+	}
+	outItem := out["add"].([]any)[0].(map[string]any)
+	if outItem["title"] != "my title" {
+		t.Fatalf("title = %v, want my title", outItem["title"])
+	}
+	if _, hasDesc := outItem["description"]; hasDesc {
+		t.Fatal("description should not be added when schema declares title")
+	}
+}
+
+func TestRepairArgs_DuplicateAliasKeyRecordsChange(t *testing.T) {
+	t.Parallel()
+	taskListParams := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"add": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"description": map[string]any{"type": "string"},
+						"prompt":      map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	args := map[string]any{
+		"add": []any{
+			map[string]any{"title": "my title", "description": "my desc", "prompt": "p1"},
+		},
+	}
+	out, changes := RepairArgs(taskListParams, args)
+	if len(changes) == 0 {
+		t.Fatal("deleting duplicate alias key must record a change")
+	}
+	outItem := out["add"].([]any)[0].(map[string]any)
+	if outItem["description"] != "my desc" {
+		t.Fatalf("description = %v, want my desc", outItem["description"])
+	}
+	if _, hasTitle := outItem["title"]; hasTitle {
+		t.Fatal("title duplicate should be removed")
+	}
+}
+
 func TestRepairArgs_DoesNotMutateInput(t *testing.T) {
 	in := map[string]any{"path": "/x"}
 	RepairArgs(readFileParams(), in)

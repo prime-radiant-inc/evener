@@ -268,12 +268,16 @@ func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
 		{"setModelDisabled", appwire.MethodEvenerInstanceSetModelDisabled, func(origin string) any {
 			return appwire.InstanceSetModelDisabledParams{Name: "base", Model: "claude-opus-4-6", Disabled: true, OriginClientId: origin}
 		}},
+		{"modelEdit", appwire.MethodEvenerInstanceModelEdit, func(origin string) any {
+			ct := 200_000
+			return appwire.InstanceModelEditParams{Name: "base", Model: "claude-opus-4-6", CompactionThreshold: &ct, OriginClientId: origin}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			client := newAuthOriginTestClient(t)
 
-			var resp appwire.InstanceListResponse
+			var resp any
 			if err := client.Request(context.Background(), tc.method, tc.params("tab-a"), &resp); err != nil {
 				t.Fatalf("%s: %v", tc.method, err)
 			}

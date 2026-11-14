@@ -66,6 +66,7 @@
     "Family": "snapshot/row",
     "InputModalities": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "config/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "overlay/glob:minimax/*",
     "ReasoningField": "overlay/glob:minimax/*",
@@ -77,6 +78,7 @@
     "ThinkingShape": "derived",
     "ToolChoiceForcing": "overlay/provider",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:minimax/minimax-m2.7"
   },
   "default_model": "anthropic/claude-opus-5",

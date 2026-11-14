@@ -195,7 +195,7 @@ rm -rf "$tmpdir"
   `evener.prefs.enterToSend` preference is off (`Composer.tsx:685-687`).
 - **An empty queue is part of the premise.** Any queued message, or any
   staged attachment, reroutes the same button to `turn/drainAsSteer`
-  (`submitRouting.ts:33-39`) — a different method, a `Draining` chip, and a
+  (`submitRouting.ts:33-39`) — a different method, a steering caption, and a
   different card.
 - **`turn_count` does not move.** It counts committed user→assistant
   exchanges; a steer writes a transcript entry without starting a turn. Don't

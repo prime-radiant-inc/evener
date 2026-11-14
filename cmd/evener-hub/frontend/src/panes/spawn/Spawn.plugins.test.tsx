@@ -255,7 +255,7 @@ test.each(["remove plugin", "unsupported harness"])(
       await user.click(screen.getByRole("button", { name: "Remove alpha" }));
       await waitForPluginPreviewState("error");
     } else {
-      await user.click(screen.getByRole("button", { name: "Advanced options" }));
+      await user.click(screen.getByText("Advanced options"));
       await user.selectOptions(screen.getByLabelText("Harness"), "external");
     }
     await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
@@ -577,7 +577,7 @@ test("selection survives Advanced-options updates and failed Start", async () =>
   await user.click(screen.getByRole("switch", { name: "beta" }));
   await waitFor(() => expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false"));
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.clear(screen.getByLabelText("Max rounds"));
   await user.type(screen.getByLabelText("Max rounds"), "7");
   await waitFor(() => {
@@ -644,7 +644,7 @@ test("retained stale plugin names block every submit path until removed", async 
   await user.click(screen.getByRole("switch", { name: "beta" }));
   await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.clear(screen.getByLabelText("Max rounds"));
   await user.type(screen.getByLabelText("Max rounds"), "7");
   await waitFor(() => expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy());
@@ -682,7 +682,7 @@ test("switching to a non-Evener harness hides plugins and clears explicit select
     }),
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Harness"), "external");
 
   expect(screen.queryByTestId("spawn-plugin-desktop")).toBeNull();

@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
+    "styles/surface.module.css",
     "panes/session/transcript/toolcallitem.module.css"
   ],
   "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },

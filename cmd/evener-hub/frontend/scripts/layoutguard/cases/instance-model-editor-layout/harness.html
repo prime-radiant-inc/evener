@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>instance-model-editor-layout harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+  body { margin: 0; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .sheetBody { box-sizing: border-box; width: 480px; padding: var(--space-4); background: var(--surface-1); }
+</style>
+</head>
+<body>
+<main class="sheetBody" data-sheet>
+  <div class="subviewRoot">
+    <form class="form">
+      <div class="root">
+        <label class="label" for="ct-input">Auto-compact threshold</label>
+        <div class="control">
+          <div class="fieldInline" data-field-inline>
+            <div class="fieldGrow" data-field-grow>
+              <input id="ct-input" class="input" data-field-input value="250000" />
+            </div>
+            <button type="button" class="button link" data-reset-button>Reset</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</main>
+
+<script>
+window.measure = () => {
+  const fieldInlineEl = document.querySelector("[data-field-inline]");
+  const inputEl = document.querySelector("[data-field-input]");
+  const resetEl = document.querySelector("[data-reset-button]");
+
+  const fieldInline = fieldInlineEl.getBoundingClientRect();
+  const input = inputEl.getBoundingClientRect();
+  const reset = resetEl.getBoundingClientRect();
+
+  const inlineStyle = getComputedStyle(fieldInlineEl);
+  const gap = Number.parseFloat(inlineStyle.columnGap || inlineStyle.gap);
+  const slack = fieldInline.right - reset.right;
+
+  return {
+    viewport: window.innerWidth,
+    minInputWidth: 260,
+    fieldInlineWidth: fieldInline.width,
+    inputWidth: input.width,
+    gap,
+    slack,
+  };
+};
+</script>
+</body>
+</html>

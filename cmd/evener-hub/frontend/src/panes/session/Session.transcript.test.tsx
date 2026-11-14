@@ -581,7 +581,7 @@ function liveSurfaceThread(): Partial<Thread> {
   };
 }
 
-test("a dormant live session keeps an idle drain in the QueueStrip", async () => {
+test("a dormant live session keeps its queued and draining messages in the pending stack", async () => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(stubSessionSlots);
   const fake = connectReadyFakeClient();
@@ -644,7 +644,7 @@ test("a dormant live session keeps an idle drain in the QueueStrip", async () =>
 // read-only surfaces - the same family the shared-notes surface keys on
 // (humanNoteDrafts.ts). A hold parked on a restart-required session waits
 // with the queue, not as a ghost promising delivery.
-test("a restart-required session renders no held ghost for a seeded hold", async () => {
+test("a restart-required session keeps its pending rows visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -752,7 +752,7 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
   });
 
   // Stop cancels attempted work, but this never-attempted row stays locally
-  // owned by QueueStrip.
+  // owned by pending stack.
   await act(async () => {
     await mutationStorage.cancelUnattempted("ref_a");
     await refreshPendingTurnsProjection("ref_a");
@@ -893,7 +893,7 @@ test("a dormant session keeps the held outcome region through final rejected gho
 // status still reads active/idle can be read-only - a snapshot marked
 // resumeRequired, or a restart-blocking recovery obligation. No ghost, no
 // announcements, no live-edge row while either fence stands.
-test("a resume-required live session renders no held ghost", async () => {
+test("a resume-required live session keeps its pending rows visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -937,7 +937,7 @@ test("a resume-required live session renders no held ghost", async () => {
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
 });
 
-test("a recovery-fenced live session renders no held ghost", async () => {
+test("a recovery-fenced live session keeps its pending rows visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -1114,7 +1114,7 @@ test("a held steer without an ask still counts in renderedRowCount (the one-row-
 
 test("heldEpoch bumps on arrival only - never on removal", async () => {
   // Same spy shape as above, capturing options.heldEpoch instead: this is
-  // useHeldSteerEpoch's one end-to-end pin - the epoch Session feeds the
+  // usePendingArrivalEpoch's one end-to-end pin - the epoch Session feeds the
   // scroll coordinator, observed through the options the coordinator
   // actually received.
   const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
@@ -1171,7 +1171,7 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
   }
 });
 
-test("held steering renders only on a live surface: a notLoaded session shows no ghost", async () => {
+test("a notLoaded session keeps its pending row visible", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { ...liveSurfaceThread(), status: { type: "notLoaded" } }));
 
@@ -1187,7 +1187,8 @@ test("held steering renders only on a live surface: a notLoaded session shows no
     await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
   });
   await flushPendingTurnsProjectionForTests();
-  expect(document.querySelector("[data-row-id='live-edge']")).toBeNull();
+  expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+  expect(screen.getByTestId("pending-message-row")).toBeTruthy();
 });
 
 // The held-steer announcements region follows the ask dock's one mounting rule
