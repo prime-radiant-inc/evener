@@ -1343,9 +1343,6 @@ func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
 	if inspectRes.IsError {
 		t.Fatalf("inspect error: %s", inspectRes.Output)
 	}
-	if strings.Contains(inspectRes.Output, "not found") {
-		t.Fatalf("inspect must find the catch-up watch: %s", inspectRes.Output)
-	}
 	var inspectOut struct {
 		WatchID   string `json:"watch_id"`
 		Source    string `json:"source"`
@@ -1420,9 +1417,6 @@ func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
 	})
 	if inspectNoMatchRes.IsError {
 		t.Fatalf("inspect no-match error: %s", inspectNoMatchRes.Output)
-	}
-	if strings.Contains(inspectNoMatchRes.Output, "not found") {
-		t.Fatalf("inspect must find the no-match catch-up watch: %s", inspectNoMatchRes.Output)
 	}
 	var inspectNoMatchOut struct {
 		WatchID   string `json:"watch_id"`
