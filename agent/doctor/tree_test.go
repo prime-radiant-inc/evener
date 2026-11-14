@@ -298,6 +298,40 @@ func TestTree_JobsUnreadable(t *testing.T) {
 	}
 }
 
+// The node's failures fold reads the journal bounded, like the sessions row
+// since #6324: the corrupt line beyond the head window must not fail the node,
+// and the legacy delegate activation inside the window must still surface.
+// Not parallel: overrides legacyFailureScanMaxBytes.
+func TestTree_BoundedJobsScan(t *testing.T) {
+	origMax := legacyFailureScanMaxBytes
+	legacyFailureScanMaxBytes = 512
+	t.Cleanup(func() { legacyFailureScanMaxBytes = origMax })
+
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+
+	startedAt := time.Unix(100, 0).UTC()
+	jobsPath := filepath.Join(bucket, "sessions", sidA, "jobs.jsonl")
+	writeJobsEvents(t, jobsPath, legacyFailureJournalEvents(sidA, startedAt))
+
+	// The corrupt line is the one byte sequence the Store cannot write, so it
+	// lands raw after the Store-shaped fixture lines, beyond the head window:
+	// a full scan fails the node on it, the bounded scan never reaches it.
+	appendRawLine(t, jobsPath, "{not json}\n")
+
+	root, err := Tree(base, sidA, TreeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Note != "" {
+		t.Fatalf("root.Note = %q, want empty; the corrupt line beyond the window must not fail the node", root.Note)
+	}
+	if !hasFailureCode(root.Failures, "legacy_delegate_state") {
+		t.Fatalf("Failures = %+v, want the head-window legacy delegate activation reported", root.Failures)
+	}
+}
+
 // A delegate whose child transcript is missing is listed with a note rather
 // than being dropped.
 func TestTree_DelegateChildTranscriptMissing(t *testing.T) {

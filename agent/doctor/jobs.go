@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -313,6 +314,32 @@ func legacyDelegateFailures(events []jobstore.Event) []StateFailure {
 		failures = append(failures, StateFailure{Code: "legacy_delegate_watch_state", Detail: "retired delegate activation watches: " + strings.Join(watchIDs, ", ")})
 	}
 	return failures
+}
+
+// legacyFailureScanMaxBytes bounds how deep into a jobs journal the shared
+// legacy-failure fold scans. The failures it folds for are retired delegate
+// activation records, written at activation time and so usually among a
+// journal's oldest events — the head window is where that legacy state lives —
+// and a journal at or under the bound is read whole. On a larger journal,
+// records beyond the window are not reported; the per-session jobs report
+// remains the unbounded, authoritative view. Production never assigns it; a
+// test shrinks it to prove the bound.
+var legacyFailureScanMaxBytes int64 = 1 << 20
+
+// legacyDelegateFailuresBounded reads a session's jobs journal bounded by
+// legacyFailureScanMaxBytes and folds the retired-state failures
+// legacyDelegateFailures computes. jobstore reports ErrScanLimitExceeded
+// alongside the events decoded so far; the fold keeps them, because the
+// failures are a summary of retired state, not an inventory that must be
+// complete. Surfaces that already read the whole journal for their own
+// listings — the jobs and watches reports — fold those events directly
+// instead of paying this second read.
+func legacyDelegateFailuresBounded(ctx context.Context, path string) ([]StateFailure, error) {
+	events, err := jobstore.ScanEvents(ctx, path, jobstore.ScanLimits{MaxBytes: legacyFailureScanMaxBytes})
+	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) {
+		return nil, err
+	}
+	return legacyDelegateFailures(events), nil
 }
 
 // jobViewFrom projects one folded JobRecord onto the forensic view. It is the

@@ -3,7 +3,6 @@ package doctor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -11,21 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
-
-// sessionRowJobsMaxBytes bounds how deep into a jobs journal a sessions row
-// scans. The failures the row folds for are retired delegate activation
-// records, written at activation time and so usually among a journal's oldest
-// events — the head window is where that legacy state lives — and a journal
-// at or under the bound is read whole. On a larger journal, records beyond
-// the window are not reported: the row's failures stay a bounded summary of
-// retired state, and the per-session jobs report remains the unbounded,
-// authoritative view. Production never assigns it; a test shrinks it to
-// prove the bound.
-var sessionRowJobsMaxBytes int64 = 1 << 20
 
 // SessionRow is one session's forensic summary, as ListSessions enumerates for
 // a batch study: enough to triage many sessions without opening each one.
@@ -185,18 +172,6 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 	return err == nil && info.ModTime().Before(cutoff)
 }
 
-// scanSessionRowJobs reads a session's jobs journal bounded by
-// sessionRowJobsMaxBytes. jobstore reports ErrScanLimitExceeded alongside the
-// events decoded so far; the row keeps them, because the failures fold is a
-// summary of retired state, not an inventory that must be complete.
-func scanSessionRowJobs(ctx context.Context, path string) ([]jobstore.Event, error) {
-	events, err := jobstore.ScanEvents(ctx, path, jobstore.ScanLimits{MaxBytes: sessionRowJobsMaxBytes})
-	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) {
-		return nil, err
-	}
-	return events, nil
-}
-
 // sessionRow builds one SessionRow from a session's durable state: the
 // transcript's header plus a bounded entry tail (started/models/parent and
 // the outcome hint), the transcript file's own size and mtime
@@ -212,7 +187,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("stat transcript %s: %w", paths.TranscriptPath, err)
 	}
-	events, err := scanSessionRowJobs(ctx, paths.JobsPath)
+	failures, err := legacyDelegateFailuresBounded(ctx, paths.JobsPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -245,7 +220,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 		ParentSessionID: doc.Header.ParentSessionID,
 		DelegateCount:   delegateCount,
 		ObserverCount:   len(meta.ObservedBy),
-		Failures:        legacyDelegateFailures(events),
+		Failures:        failures,
 		Outcome:         outcomeHint(doc, resultTool),
 	}, nil
 }

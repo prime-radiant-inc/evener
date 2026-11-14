@@ -603,25 +603,8 @@ func TestAPILogSettlementCollectionIsBoundedAndIndependentOfCallFilters(t *testi
 	}
 }
 
-// apilogAppendRaw appends raw bytes directly to a session's on-disk API log,
-// bypassing the canonical writer -- the only way to construct a deliberately
-// corrupt or partial fixture. Test-only.
-func apilogAppendRaw(t *testing.T, path, content string) {
-	t.Helper()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // apilogFileSize returns the current byte size of a session's on-disk API
-// log, used to compute the exact offset a subsequent apilogAppendRaw call
+// log, used to compute the exact offset a subsequent appendRawLine call
 // will land at.
 func apilogFileSize(t *testing.T, path string) int64 {
 	t.Helper()
@@ -701,12 +684,12 @@ func TestValidateAPILog_ReportsInteriorCorruptionWithOffsetAndKeepsScanning(t *t
 	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
 
 	offsetBeforeCorrupt := apilogFileSize(t, path)
-	apilogAppendRaw(t, path, "{bad json}\n")
+	appendRawLine(t, path, "{bad json}\n")
 	attemptBLine, err := json.Marshal(attemptB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	apilogAppendRaw(t, path, string(attemptBLine)+"\n")
+	appendRawLine(t, path, string(attemptBLine)+"\n")
 
 	res, err := ValidateAPILog(base, sidA)
 	if err != nil {
@@ -741,9 +724,9 @@ func TestValidateAPILog_ReportsMultipleDistinctProblemsWithOffsets(t *testing.T)
 	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
 
 	firstCorruptOffset := apilogFileSize(t, path)
-	apilogAppendRaw(t, path, "{bad json 1}\n")
+	appendRawLine(t, path, "{bad json 1}\n")
 	secondCorruptOffset := apilogFileSize(t, path)
-	apilogAppendRaw(t, path, "{bad json 2}\n")
+	appendRawLine(t, path, "{bad json 2}\n")
 
 	res, err := ValidateAPILog(base, sidA)
 	if err != nil {
@@ -765,7 +748,7 @@ func TestValidateAPILog_PartialTailIsSeparateFromProblemsAndStaysClean(t *testin
 	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
 
 	partialOffset := apilogFileSize(t, path)
-	apilogAppendRaw(t, path, `{"kind":"attempt_group_settlement"`)
+	appendRawLine(t, path, `{"kind":"attempt_group_settlement"`)
 
 	res, err := ValidateAPILog(base, sidA)
 	if err != nil {
@@ -805,7 +788,7 @@ func TestValidateAPILog_ProblemsAreBoundedToFirstNAndCountStaysHonest(t *testing
 	for range extraProblems {
 		b.WriteString(corruptLine)
 	}
-	apilogAppendRaw(t, path, b.String())
+	appendRawLine(t, path, b.String())
 
 	res, err := ValidateAPILog(base, sidA)
 	if err != nil {
