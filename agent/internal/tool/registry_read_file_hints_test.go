@@ -44,6 +44,11 @@ func TestTruncatedReadFileExposesOmittedLineRange(t *testing.T) {
 			if from <= 1 || to >= total || from > to {
 				t.Fatalf("omitted range %d-%d is not interior to 1-%d", from, to, total)
 			}
+			// The rendered output must tell the model what it cut: the window's
+			// own numbers, from the structured field — never the hint's wording.
+			if !strings.Contains(got.Output, strconv.Itoa(from)+"-"+strconv.Itoa(to)) {
+				t.Fatalf("truncated output must name the omitted window %d-%d: %.300q", from, to, got.Output)
+			}
 			// Every line outside the window must be present whole; the window is
 			// exactly what offset/limit must refetch.
 			shown := map[int]bool{}
