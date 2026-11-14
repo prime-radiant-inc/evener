@@ -137,6 +137,28 @@ func TestSessionLog_AppendCreatesDirectory(t *testing.T) {
 	}
 }
 
+func TestSessionLog_AppendFailureDoesNotAddEntry(t *testing.T) {
+	readOnly := afero.NewReadOnlyFs(afero.NewMemMapFs())
+	log, err := newSessionLogFS("/state/sessions/session.log", readOnly)
+	if err != nil {
+		t.Fatalf("newSessionLogFS: %v", err)
+	}
+
+	failedEntry := SessionLogEntry{Turn: 1, Action: "shell", Summary: "failed persistence", Outcome: "success"}
+	if err := log.Append(failedEntry); err == nil {
+		t.Fatal("Append on read-only fs succeeded")
+	}
+	if got := log.Len(); got != 0 {
+		t.Errorf("Len() = %d after failed append, want 0", got)
+	}
+	if got := log.Entries(); len(got) != 0 {
+		t.Errorf("Entries() = %+v after failed append, want no entries", got)
+	}
+	if got := log.String(); got != "" {
+		t.Errorf("String() after failed append = %q, want empty", got)
+	}
+}
+
 func TestSessionLog_Range(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
