@@ -133,12 +133,34 @@ export function useFindInSession({
       next.length === previous.length &&
       next.every((hit, index) => {
         const before = previous[index];
-        return before !== undefined && before.key === hit.key && before.rowIndex === hit.rowIndex;
+        return (
+          before !== undefined &&
+          before.key === hit.key &&
+          before.itemId === hit.itemId &&
+          before.rowIndex === hit.rowIndex
+        );
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
   }, [isOpen, rows, query]);
-  const currentIndex = find?.key == null ? -1 : hits.findIndex((hit) => hit.key === find.key);
+  // The current match is a message, and its source item says which one. Its
+  // display key can pass to another message as the loaded window changes: a
+  // round's first loaded reply takes the round's key, so loading or dropping
+  // an earlier reply of that round renames the later one. While the key is
+  // the one last chosen, the message it was chosen for stays current.
+  const chosen = useRef<{ key: string; itemId: string } | null>(null);
+  let currentIndex = find?.key == null ? -1 : hits.findIndex((hit) => hit.key === find.key);
+  const keyed = hits[currentIndex];
+  if (find?.key == null) chosen.current = null;
+  else if (chosen.current?.key !== find.key) {
+    chosen.current = keyed === undefined ? null : { key: find.key, itemId: keyed.itemId };
+  } else if (keyed?.itemId !== chosen.current.itemId) {
+    const itemId = chosen.current.itemId;
+    const moved = hits.findIndex((hit) => hit.itemId === itemId);
+    if (moved >= 0) currentIndex = moved;
+    // The same entry under a new record: a streamed reply being recorded.
+    else if (keyed !== undefined) chosen.current = { key: find.key, itemId: keyed.itemId };
+  }
   const current = currentIndex < 0 ? null : (hits[currentIndex] ?? null);
   const historyEnded = olderPageKey === null;
 
@@ -206,16 +228,19 @@ export function useFindInSession({
   // Find then reads back to it rather than losing the reader's place. A match
   // whose message is still loaded but no longer holds the words is simply no
   // longer current.
-  const currentItem = useRef<string | null>(null);
-  if (current !== null) currentItem.current = current.itemId;
-  else if (find === null || find.key === null) currentItem.current = null;
   const lost = find !== null && find.key !== null && current === null;
   useEffect(() => {
-    if (find === null || !lost || find.seek === "restore") return;
-    const evicted = currentItem.current !== null && !itemLoaded(currentItem.current);
+    if (find === null) return;
+    if (current !== null && current.key !== find.key) {
+      // Renamed: follow the message to its new key.
+      setState({ ...find, key: current.key, seek: find.seek === "restore" ? null : find.seek });
+      return;
+    }
+    if (!lost || find.seek === "restore") return;
+    const evicted = chosen.current !== null && !itemLoaded(chosen.current.itemId);
     if (evicted && !historyEnded) setState({ ...find, seek: "restore" });
     else setState({ ...find, key: null, seek: null });
-  }, [find, lost, historyEnded, itemLoaded]);
+  }, [find, current, lost, historyEnded, itemLoaded]);
 
   // While seeking, take the newest match older than the current one as soon
   // as a page brings one, and otherwise keep Find's demand standing. Asking

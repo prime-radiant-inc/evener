@@ -656,3 +656,40 @@ test("jumping to latest while Find is reading back to a dropped match gives that
   await settle();
   expect(requests).toBe(after);
 });
+
+test("the current match stays on its message when loading older history renames it", async () => {
+  // One long turn read in fragments. A round's first loaded reply goes by the
+  // round's key; once an older page brings the round's earlier reply, that
+  // one takes the key and the later reply goes by its own id.
+  const fragment = (itemId: string, text: string): Turn => ({
+    id: "long",
+    status: "completed",
+    itemsView: "fragment",
+    items: [{ id: itemId, turnId: "long", type: "agentMessage", text, roundId: "r1", status: "completed" } as never],
+  });
+  const client = connectReadyFakeClient();
+  client.on("thread/read", (params) => ({
+    thread: thread([fragment("second", "a beta needle")]),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    requestGeneration: params.requestGeneration,
+    olderCursor: "page-0",
+  }));
+  client.on("thread/turns/list", () => ({ data: [fragment("first", "an alpha needle")], nextCursor: undefined }));
+  await mount(client);
+  openFind();
+  type("needle");
+  const before = currentAnchor();
+  expect(before).not.toBeNull();
+  expect(document.querySelector(`[${FIND_CURRENT_ATTRIBUTE}]`)?.textContent).toContain("a beta needle");
+
+  // The reader pages older themselves: the earlier reply arrives and matches too.
+  fireEvent.click(screen.getByTestId("reader-older"));
+  await waitFor(() => expect(state()).toMatchObject({ count: 2 }));
+  // Still on the newest match, the same message, under whatever key it has now.
+  await waitFor(() => expect(state()).toMatchObject({ status: "matches", position: 1, count: 2 }));
+  await waitFor(() =>
+    expect(document.querySelector(`[${FIND_CURRENT_ATTRIBUTE}]`)?.textContent).toContain("a beta needle"),
+  );
+});

@@ -5,12 +5,19 @@
 // inline runs are joined with nothing, the same way Find reads the rendered
 // DOM. This module stays free of the transcript's renderers so the palette's
 // search can share it.
-import type { ItemModel } from "@evener/appwire-client";
+import { fenceTokenTerminated, type ItemModel, isMermaidCodeToken } from "@evener/appwire-client";
 import type { Token } from "marked";
 import { markdownLexer } from "../../../widgets/markdown/lexer";
 
-function read(tokens: readonly Token[], into: string[]): void {
+// A finished Mermaid fence at the top of a reply is drawn as a diagram
+// (widgets/markdown/segments.ts), so its source is not on the page.
+function drawnAsDiagram(token: Token): boolean {
+  return isMermaidCodeToken(token) && fenceTokenTerminated(token.raw);
+}
+
+function read(tokens: readonly Token[], into: string[], top = false): void {
   for (const token of tokens) {
+    if (top && drawnAsDiagram(token)) continue;
     switch (token.type) {
       case "table":
         for (const cell of [...token.header, ...token.rows.flat()]) {
@@ -54,7 +61,7 @@ function read(tokens: readonly Token[], into: string[]): void {
 
 function markdownAsRead(source: string): string {
   const into: string[] = [];
-  read(markdownLexer.lexer(source), into);
+  read(markdownLexer.lexer(source), into, true);
   return into.join("");
 }
 

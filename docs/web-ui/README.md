@@ -201,11 +201,13 @@ history recovery remain owned by the existing reader and virtual viewport.
 Find searches the messages of the conversation in a session pane or a
 cascade's active column: what the person typed and what the agent replied. It
 opens from ⌘F / Ctrl+F while that conversation holds the keyboard, from
-**Find in session…** in the session menu, from the palette's **Find in session**
-command, and by choosing a message in the palette's **In session** results,
-which opens Find on the typed words at that message. The menu row is left out
-where the viewport is too short for the menu to hold it without scrolling (a
-landscape phone); the palette command remains.
+**Find in session…** in the session menu, from `/find` in the composer, and by
+choosing a message in the palette's **In session** results, which opens Find
+on the typed words at that message. `/find` is a session command, so the
+palette does not run it: typing it there hands it to the composer, as for
+every session command. The menu row is left out where the viewport is too
+short for the menu to hold it without scrolling (a landscape phone); `/find`
+and the chord remain.
 
 - **What matches.** A match is one message the conversation shows. Tool calls
   and their output, thoughts, steers, notes and system notices are not
@@ -216,7 +218,8 @@ landscape phone); the palette command remains.
 - **What is searched.** A message as its row shows it
   (`src/panes/session/find/messageText.ts`). A reply is read as its rendered
   Markdown: no formatting marks, a link's label without its address, code and
-  authored HTML as written. A prompt is read as typed.
+  authored HTML as written. A finished Mermaid fence is drawn as a diagram,
+  so its source is not searched. A prompt is read as typed.
 - **The palette's In session section** still lists matches in tool output and
   thoughts as well. Choosing a message hands it to Find; choosing any other row
   only closes the palette, because Find has nowhere to land for it.
@@ -229,7 +232,8 @@ landscape phone); the palette command remains.
   rule: a phrase is painted across the elements it spans, read as continuous
   across inline formatting (emphasis, a link) and as separate words across a
   block, a code block's line or a line break. Each open transcript keeps its
-  own painted words.
+  own painted words, in the highlight registry of the window it renders into
+  (a popped-out session has its own).
 - **Older history.** Typing reads only what is loaded. Stepping older past the
   oldest loaded match reads older pages, as Find's own consumer of
   [`HistoryPaging`](../../appwire-client/typescript/historyPaging.ts), until a

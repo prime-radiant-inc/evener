@@ -100,3 +100,13 @@ test("only the conversation's messages are searched", () => {
     expect(messageAsShown(item) !== null).toBe(item.id === "u" || item.id === "a");
   }
 });
+
+test("a diagram's source is not searched once the reply shows the diagram instead", () => {
+  const fence = "```";
+  const drawn = message("drawn", `The flow:\n\n${fence}mermaid\nflowchart TD\n  A --> B\n${fence}\n\nDone.`);
+  // An unfinished fence still shows its source, as any code block does.
+  const streaming = message("streaming", `The flow:\n\n${fence}mermaid\nflowchart TD\n  A --> B`);
+  const rows = [turnRow("t", [drawn, streaming])];
+  expect(findHits(rows, "flowchart TD").map((hit) => hit.key)).toEqual(["streaming"]);
+  expect(findHits(rows, "the flow").map((hit) => hit.key)).toEqual(["drawn", "streaming"]);
+});

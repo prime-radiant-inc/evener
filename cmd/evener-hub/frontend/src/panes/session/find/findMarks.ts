@@ -38,9 +38,20 @@ function readMounted(port: HTMLElement): MountedTranscript {
   return mounted;
 }
 
-function highlightRegistry(): { set(name: string, highlight: unknown): void; delete(name: string): void } | null {
-  if (typeof CSS === "undefined" || typeof Highlight === "undefined") return null;
-  return (CSS as unknown as { highlights?: ReturnType<typeof highlightRegistry> }).highlights ?? null;
+type HighlightRegistry = { set(name: string, highlight: unknown): void; delete(name: string): void };
+type HighlightView = Window & {
+  CSS?: { highlights?: HighlightRegistry };
+  Highlight?: new (...ranges: Range[]) => unknown;
+};
+
+// The window a transcript renders into: a popped-out session has its own
+// document, and only that document's registry paints there.
+function viewOf(port: HTMLElement | null): HighlightView | null {
+  return (port?.ownerDocument.defaultView as HighlightView | null | undefined) ?? null;
+}
+
+function highlightRegistry(view: HighlightView | null): HighlightRegistry | null {
+  return view?.Highlight === undefined ? null : (view.CSS?.highlights ?? null);
 }
 
 // An entry's text as Find matches it - lowercased, whitespace collapsed, what
@@ -61,7 +72,7 @@ interface ReadText {
 function runsOn(element: Element, known: Map<Element, boolean>): boolean {
   let inline = known.get(element);
   if (inline === undefined) {
-    const display = getComputedStyle(element).display;
+    const display = (element.ownerDocument.defaultView ?? window).getComputedStyle(element).display;
     inline = display.startsWith("inline") || display === "contents";
     known.set(element, inline);
   }
@@ -78,15 +89,17 @@ function readText(element: HTMLElement): ReadText {
   const known = new Map<Element, boolean>();
   // Set on entering a block or passing a line break since the last text.
   let broken = false;
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+  const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
     acceptNode: (node) =>
-      node instanceof Element && node.getAttribute("aria-hidden") === "true"
+      node.nodeType === Node.ELEMENT_NODE && (node as Element).getAttribute("aria-hidden") === "true"
         ? NodeFilter.FILTER_REJECT
         : NodeFilter.FILTER_ACCEPT,
   });
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node instanceof Element) {
-      if (node.tagName === "BR" || !runsOn(node, known)) broken = true;
+    // By node type, not class: another window's elements are another realm's.
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const inner = node as Element;
+      if (inner.tagName === "BR" || !runsOn(inner, known)) broken = true;
       continue;
     }
     const value = node.nodeValue ?? "";
@@ -127,7 +140,7 @@ function rangesIn(element: HTMLElement, needle: string, budget: number): Range[]
     const startNode = read.nodes[read.nodeOf[at] ?? -1];
     const endNode = read.nodes[read.nodeOf[last] ?? -1];
     if (startNode === undefined || endNode === undefined) continue;
-    const range = document.createRange();
+    const range = element.ownerDocument.createRange();
     range.setStart(startNode, read.offsetOf[at] ?? 0);
     range.setEnd(endNode, (read.offsetOf[last] ?? 0) + 1);
     ranges.push(range);
@@ -136,18 +149,26 @@ function rangesIn(element: HTMLElement, needle: string, budget: number): Range[]
 }
 
 // Highlight names are document-wide, so each transcript's ranges are kept
-// apart here and the registrations hold their union: marking or clearing one
-// transcript leaves another's words painted.
+// apart here and a document's registrations hold the union of its
+// transcripts': marking or clearing one leaves another's words painted.
 const painted = new Map<HTMLElement, { all: Range[]; current: Range[] }>();
 
-function register(registry: NonNullable<ReturnType<typeof highlightRegistry>>): void {
-  // A transcript that left the document takes its ranges with it.
-  for (const port of painted.keys()) if (!port.isConnected) painted.delete(port);
-  const all = [...painted.values()].flatMap((ranges) => ranges.all);
-  const current = [...painted.values()].flatMap((ranges) => ranges.current);
-  if (all.length > 0) registry.set(HIGHLIGHT_ALL, new Highlight(...all));
+function register(view: HighlightView, registry: HighlightRegistry): void {
+  const Painted = view.Highlight;
+  if (Painted === undefined) return;
+  const all: Range[] = [];
+  const current: Range[] = [];
+  for (const [port, ranges] of painted) {
+    // A transcript that left its document takes its ranges with it.
+    if (!port.isConnected) painted.delete(port);
+    else if (port.ownerDocument.defaultView === view) {
+      all.push(...ranges.all);
+      current.push(...ranges.current);
+    }
+  }
+  if (all.length > 0) registry.set(HIGHLIGHT_ALL, new Painted(...all));
   else registry.delete(HIGHLIGHT_ALL);
-  if (current.length > 0) registry.set(HIGHLIGHT_CURRENT, new Highlight(...current));
+  if (current.length > 0) registry.set(HIGHLIGHT_CURRENT, new Painted(...current));
   else registry.delete(HIGHLIGHT_CURRENT);
 }
 
@@ -166,7 +187,8 @@ export function markTranscript(
   currentKey: string | null,
   needle: string,
 ): MarkedTranscript {
-  const registry = highlightRegistry();
+  const view = viewOf(port);
+  const registry = highlightRegistry(view);
   const scope: ParentNode = port ?? document;
   let current: HTMLElement | null = null;
   const all: Range[] = [];
@@ -192,7 +214,7 @@ export function markTranscript(
   if (registry && port) {
     if (all.length > 0 || mine.length > 0) painted.set(port, { all, current: mine });
     else painted.delete(port);
-    register(registry);
+    if (view) register(view, registry);
   }
   return { current, focus: mine[0] ?? null };
 }

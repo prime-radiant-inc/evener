@@ -116,3 +116,24 @@ test("two transcripts keep their own painted words", () => {
   markTranscript(left, [], null, "");
   expect(registry.size).toBe(0);
 });
+
+test("a transcript in another window paints in that window", () => {
+  // A popped-out session renders into its own document, whose highlight
+  // registry is the only one that paints there.
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  const view = frame.contentWindow as Window & { CSS?: unknown; Highlight?: unknown };
+  const popout = new Map<string, FakeHighlight>();
+  view.CSS = { highlights: popout };
+  view.Highlight = FakeHighlight;
+  const el = view.document.createElement("div");
+  el.innerHTML = '<div data-view-anchor-id="a" data-view-anchor-index="0"><p>one <b>need</b>le here</p></div>';
+  view.document.body.appendChild(el);
+
+  const marks = markTranscript(el, [hit("a")], "a", "needle");
+  expect(marks.current?.getAttribute("data-view-anchor-id")).toBe("a");
+  expect((popout.get("evener-find-current")?.ranges ?? []).map((range) => range.toString())).toEqual(["needle"]);
+  expect(registry.size).toBe(0);
+  markTranscript(el, [], null, "");
+  expect(popout.size).toBe(0);
+});
