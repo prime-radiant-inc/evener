@@ -249,7 +249,7 @@ export function landingScrollTop(port: HTMLElement, target: DOMRect): number | n
   const reveal = scrollTopRevealing(port, target);
   const offEnd = end - 2 * AT_BOTTOM_THRESHOLD_PX;
   // With too little to scroll the whole conversation is on screen and there
-  // is no end to step off.
+  // is no end to step off; the scroll owner's own hold keeps the reader there.
   const atEnd = offEnd >= 0 && end - Math.min(reveal ?? port.scrollTop, end) <= AT_BOTTOM_THRESHOLD_PX;
   const top = atEnd ? offEnd : reveal;
   return top === port.scrollTop ? null : top;

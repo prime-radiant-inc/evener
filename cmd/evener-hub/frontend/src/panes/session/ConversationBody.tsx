@@ -514,6 +514,7 @@ function LiveConversationBody({
         initialViewCapture={seat.readView?.getCapture()}
         readView={seat.readView ?? undefined}
         followingBottom={flow.isFollowingBottom}
+        holdsPlace={flow.holdsPlace}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });

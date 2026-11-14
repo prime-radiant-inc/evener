@@ -2999,6 +2999,69 @@ describe("the error anchor (failed turn)", () => {
     expect(result.current.pillVisible).toBe(true);
   });
 
+  test("a held place stays held where the whole transcript fits, until the reader goes to the end", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    expect(result.current.isFollowingBottom()).toBe(true);
+    expect(result.current.holdsPlace).toBe(false);
+
+    act(() => result.current.holdPosition());
+    // Nothing has scrolled and nothing can: the end is in view, and a scroll
+    // event the reader did not cause still must not read as arriving there.
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.holdsPlace).toBe(true);
+
+    // Output grows past the port. The reader is still where they were.
+    set({ scrollHeight: 400 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.holdsPlace).toBe(true);
+
+    // Going to the end themselves is how following comes back.
+    act(() => result.current.markGesture());
+    set({ scrollTop: 350 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
+  test("jumping to latest ends a held place", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    act(() => result.current.holdPosition());
+    expect(result.current.holdsPlace).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
   test("a jump to a row lands there and ends bottom-following, so nothing pulls the reader back", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
