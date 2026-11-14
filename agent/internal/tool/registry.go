@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -589,7 +588,14 @@ func (r *Registry) Clone() *Registry {
 	defer r.mu.RUnlock()
 	if len(r.tools) > 0 {
 		out.tools = make(map[string]RegisteredTool, len(r.tools))
-		maps.Copy(out.tools, r.tools)
+		for name, registered := range r.tools {
+			registered.Definition.Parameters = CloneSchemaMap(registered.Definition.Parameters)
+			if strict := registered.Definition.Strict; strict != nil {
+				strictCopy := *strict
+				registered.Definition.Strict = &strictCopy
+			}
+			out.tools[name] = registered
+		}
 	}
 	out.middleware = append([]toolMiddleware(nil), r.middleware...)
 	return out
