@@ -49,12 +49,15 @@ var errNotDerivable = errors.New("transcript index cut is not derivable from the
 // name. A nameless tool result in a folded span whose announcing call the
 // span does not hold, a model the folded span names that the committed
 // summary does not, a new-format entry that shares a legacy group's turn id,
-// a call the tail re-announced that an item below the cut already names, a
-// span-bearing entry that may have re-opened its own id, and a suffix echo
-// that reached a cut item's call field would all fold records a full replay
-// never wrote. Each case is rare in a publication cut —
-// the unpublished tail of one producer while another published past it — and
-// each costs the replay it always cost. A tail that outnumbers the covered
+// a deferred communicate call the tail announced (its cut-time pending state
+// cannot be proven absent below the cut, and the announce leaves no record to
+// check), a span-bearing entry that may have re-opened its own id, a legacy
+// record the tail re-opened by id beyond its group (identity entries attach
+// through place's whole-table search, and the group's span cannot see their
+// stamps), and a suffix echo that reached a cut item's call field would all
+// fold records a full replay never wrote. Each case is rare in a publication
+// cut — the unpublished tail of one producer while another published past it —
+// and each costs the replay it always cost. A tail that outnumbers the covered
 // entries means the transcript and the committed records disagree, and the
 // replay decides too.
 func (x *Index) reconstructAtCut(length int64) *Index {
@@ -81,6 +84,14 @@ func (x *Index) reconstructAtCut(length int64) *Index {
 		return nil
 	}
 	cutOrdinal := x.meta.Entries - suffix.entries
+	if len(suffix.commAnnounced) > 0 {
+		// A deferred communicate call the tail announced may be new or may
+		// re-announce one the prefix already opened; the announce leaves no
+		// committed record to tell the two apart, and the re-announced one's
+		// cut-time pending state — the pre-cut announcement's own — lives only
+		// below the cut. The replay decides.
+		return nil
+	}
 	pending := false
 	for _, c := range x.meta.CommCalls {
 		if c.Ordinal < cutOrdinal {
@@ -99,7 +110,7 @@ func (x *Index) reconstructAtCut(length int64) *Index {
 	if err != nil {
 		return nil
 	}
-	turns, latestExecution, err := x.cutTurns(cutOrdinal, length, counts)
+	turns, latestExecution, err := x.cutTurns(cutOrdinal, length, counts, suffix)
 	if err != nil {
 		return nil
 	}
@@ -139,6 +150,7 @@ type suffixEffects struct {
 	entries       uint64
 	commAdds      map[string]bool
 	commAnnounced map[string]bool
+	identityIDs   map[string]bool
 	commDelivers  []uint64
 	assistantText bool
 }
@@ -161,6 +173,7 @@ func (s suffixEffects) commDelivered(ordinal uint64) bool {
 func (x *Index) scanSuffixEffects(length int64) (suffix suffixEffects, err error) {
 	suffix.commAdds = map[string]bool{}
 	suffix.commAnnounced = map[string]bool{}
+	suffix.identityIDs = map[string]bool{}
 	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, length, x.meta.Length-length), 4<<10)
 	for {
 		line, complete, _, err := transcript.ReadLine(reader, maxLineBytes)
@@ -200,6 +213,17 @@ func (x *Index) scanSuffixEffects(length int64) (suffix suffixEffects, err error
 // reconstruct. A call the tail itself announced and then consumed never
 // existed at the cut, so consuming it is not a fallback.
 func applySuffixEffects(turn *schema.Turn, position uint64, suffix *suffixEffects) error {
+	if turn.OriginalOrdinal != nil {
+		// A compaction fold copy re-appends an entry the file already holds,
+		// and the builder indexes nothing of it: not here either.
+		return nil
+	}
+	if turn.Format == schema.TurnFormatIdentity {
+		// Any identity entry the tail holds can re-open an earlier record by
+		// id through place's whole-table search, past any legacy group: the
+		// legacy fold consults this set.
+		suffix.identityIDs[turn.TurnID] = true
+	}
 	switch turn.Kind {
 	case schema.TurnAssistant:
 		for _, part := range turn.Message.Content {
@@ -296,18 +320,11 @@ func (x *Index) cutItems(cutOrdinal uint64, length int64, suffix suffixEffects) 
 		}
 		for i := range count {
 			record := decodeItem(buf[i*itemRecordSize:])
-			if len(suffix.commAnnounced) > 0 && record.Call.Len > 0 {
-				call, err := x.strings.get(record.Call)
-				if err != nil {
-					return view, nil, err
-				}
-				if suffix.commAnnounced[string(call)] {
-					// A call the tail announced that an item below the cut
-					// already names was re-announced: the cut's pending state
-					// for it and the tail's own announce are not separable
-					// from the committed records. The replay decides.
-					return view, nil, errNotDerivable
-				}
+			if uint64(record.Turn) >= x.turns.n {
+				// An item record naming a turn slot outside the summary table
+				// is sidecar corruption: fall back to the authoritative
+				// transcript instead of indexing past it.
+				return view, nil, errCorrupt
 			}
 			if record.Version > cutOrdinal {
 				record, err = x.truncateItemContributors(record, cutOrdinal, suffix)
@@ -379,7 +396,7 @@ func (x *Index) truncateItemContributors(record itemRecord, cutOrdinal uint64, s
 // cutTurns copies the turn summaries an entry at or before the cut opened,
 // folding again the ones a suffix entry stamped. It returns the copied table
 // and the one-based slot of the latest kept execution summary.
-func (x *Index) cutTurns(cutOrdinal uint64, length int64, counts []uint32) (*table, uint64, error) {
+func (x *Index) cutTurns(cutOrdinal uint64, length int64, counts []uint32, suffix suffixEffects) (*table, uint64, error) {
 	first, err := x.firstTurnCreatedAt(length)
 	if err != nil {
 		return nil, 0, err
@@ -397,7 +414,7 @@ func (x *Index) cutTurns(cutOrdinal uint64, length int64, counts []uint32) (*tab
 		for i := range count {
 			record := decodeTurn(buf[i*turnRecordSize:])
 			if record.Version > cutOrdinal {
-				record, err = x.foldTurnAtCut(record, length, counts[start+i])
+				record, err = x.foldTurnAtCut(record, length, counts[start+i], suffix)
 				if err != nil {
 					return nil, 0, err
 				}
@@ -421,13 +438,20 @@ func (x *Index) cutTurns(cutOrdinal uint64, length int64, counts []uint32) (*tab
 // reproduce the committed summary exactly — a nameless tool result whose
 // announcing call the span does not hold, or a model the committed summary
 // does not name.
-func (x *Index) foldTurnAtCut(record turnRecord, length int64, itemCount uint32) (turnRecord, error) {
+func (x *Index) foldTurnAtCut(record turnRecord, length int64, itemCount uint32, suffix suffixEffects) (turnRecord, error) {
 	id, err := x.strings.get(record.ID)
 	if err != nil {
 		return turnRecord{}, err
 	}
 	turnID := string(id)
 	legacy := record.Kind == turnKindLegacy
+	if legacy && suffix.identityIDs[turnID] {
+		// An identity entry in the tail named this group's id, so the tail
+		// stamped this record through place's whole-table search — and an
+		// identity entry below the cut may have stamped it the same way,
+		// beyond the group's span, where no fold can see. The replay decides.
+		return turnRecord{}, errNotDerivable
+	}
 	folded := turnRecord{ID: record.ID, Kind: record.Kind, FirstOffset: record.FirstOffset, FirstOrdinal: record.FirstOrdinal}
 	if folded.Kind == turnKindExecution {
 		folded.Status = statusOpen

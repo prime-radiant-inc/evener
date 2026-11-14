@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -379,6 +380,206 @@ func TestCloseBuildDropsTheCachedCutView(t *testing.T) {
 	}
 	if x.cutView != nil {
 		t.Fatal("closeBuild kept the cached cut view")
+	}
+}
+
+// A deferred communicate call pending at the cut that the tail re-announces is
+// not separable from a genuinely new call: the re-announcement overwrote the
+// committed pending state, so the cut read replays the prefix and still serves
+// the message the cut held pending.
+func TestReadAtCutFallsBackOnAReAnnouncedDeferredCall(t *testing.T) {
+	path, lines := writeHeaderOnly(t, fixture{lines: []fixtureLine{
+		entryLine(user("base")),
+		entryLine(assistant(callRaw("kA", "communicate", `{"message":"pending at cut"}`))),
+		entryLine(user("after")),
+	}})
+	for _, line := range lines {
+		appendBytes(t, path, line)
+	}
+	x, err := Open(path, DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close()
+	if err := x.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := x.Latest(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := x.ChangedSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendBytes(t, path, encodeEntry(t, 4, assistant(callRaw("kA", "communicate", `{"message":"re-announced"}`))))
+	appendBytes(t, path, encodeEntry(t, 5, results(result("kA", "communicate", "delivered"))))
+	other, err := Open(path, DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := other.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.ReadAt(expected.Length, func(s *Snapshot) error {
+		latest, err := s.Latest(3)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(latest, expected) {
+			t.Fatalf("cut latest mismatch:\ngot  %+v\nwant %+v", latest, expected)
+		}
+		changed, err := s.ChangedSince(0)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(changed, changes) {
+			t.Fatalf("cut changes mismatch:\ngot  %+v\nwant %+v", changed, changes)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A compaction fold copy re-appends an entry the file already holds, and the
+// builder indexes nothing of it: the cut's builder state must not take the
+// copy's announce as the tail's own, or the original call's result would seem
+// to consume a call the cut still held pending. The copy is ignored and the
+// result's consume falls back to the replay.
+func TestReadAtCutIgnoresCompactionCopiesInTheTail(t *testing.T) {
+	path, lines := writeHeaderOnly(t, fixture{lines: []fixtureLine{
+		entryLine(user("base")),
+		entryLine(assistant(callRaw("kB", "communicate", `{"message":"pending at cut"}`))),
+		entryLine(user("after")),
+	}})
+	for _, line := range lines {
+		appendBytes(t, path, line)
+	}
+	x, err := Open(path, DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close()
+	if err := x.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := x.Latest(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := x.ChangedSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendBytes(t, path, encodeEntry(t, 4, foldCopy(assistant(callRaw("kB", "communicate", `{"message":"pending at cut"}`)), 2)))
+	appendBytes(t, path, encodeEntry(t, 5, results(result("kB", "communicate", "delivered"))))
+	other, err := Open(path, DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := other.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.ReadAt(expected.Length, func(s *Snapshot) error {
+		latest, err := s.Latest(3)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(latest, expected) {
+			t.Fatalf("cut latest mismatch:\ngot  %+v\nwant %+v", latest, expected)
+		}
+		changed, err := s.ChangedSince(0)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(changed, changes) {
+			t.Fatalf("cut changes mismatch:\ngot  %+v\nwant %+v", changed, changes)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A corrupted item record naming a turn slot outside the summary table must
+// fall back to the authoritative transcript, not panic the read.
+func TestReadAtRecoversFromAnItemNamingAMissingTurn(t *testing.T) {
+	path, lines := writeHeaderOnly(t, fixture{lines: []fixtureLine{
+		entryLine(user("base")),
+		entryLine(assistant(text("work"))),
+		entryLine(user("after")),
+	}})
+	for _, line := range lines {
+		appendBytes(t, path, line)
+	}
+	x, err := Open(path, DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close()
+	if err := x.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := x.Latest(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := x.ChangedSince(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first entry's item: its version the tail cannot have stamped, so
+	// the copy path walks straight into the corrupt turn slot. The record is
+	// corrupted in the committed file, where the adopting refresh reloads it,
+	// not in the handle's buffer alone.
+	slot := uint64(0)
+	buf, err := x.items.read(slot, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := decodeItem(buf)
+	record.Turn = uint32(x.turns.n + 5)
+	itemsPath := filepath.Join(liveBuild(t, x.dir), itemsFile)
+	f, err := os.OpenFile(itemsPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt(encodeItemInto(make([]byte, itemRecordSize), record), int64(slot)*int64(itemRecordSize)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	appendBytes(t, path, encodeEntry(t, 4, user("unpublished-tail")))
+	other, err := Open(path, DirFor(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := other.CatchUp(); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.ReadAt(expected.Length, func(s *Snapshot) error {
+		latest, err := s.Latest(3)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(latest, expected) {
+			t.Fatalf("cut latest mismatch:\ngot  %+v\nwant %+v", latest, expected)
+		}
+		changed, err := s.ChangedSince(0)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(changed, changes) {
+			t.Fatalf("cut changes mismatch:\ngot  %+v\nwant %+v", changed, changes)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
