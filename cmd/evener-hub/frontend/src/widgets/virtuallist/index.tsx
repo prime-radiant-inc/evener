@@ -118,6 +118,13 @@ export interface VirtualListProps {
    */
   anchorToEnd?: boolean;
   /**
+   * With anchorToEnd, whether a reader at the end is carried along with it
+   * (default). Off, the list still compensates prepends by key, but no
+   * position counts as the end: neither an append nor a growing row moves
+   * the port. For a reader held at a place they chose, which can be the end.
+   */
+  followEnd?: boolean;
+  /**
    * The entry holding the reader's reading point, as of the last scroll: its
    * row, identity, place within that row, its own height, and the viewport it
    * was read in. Content arriving below that entry grows the row without
@@ -212,6 +219,7 @@ export function VirtualList({
   onChange,
   onLayout,
   anchorToEnd,
+  followEnd = true,
   readingPoint,
   ref,
 }: VirtualListProps) {
@@ -305,7 +313,13 @@ export function VirtualList({
     },
     ...geometryOptions,
     ...(anchorToEnd
-      ? { anchorTo: "end" as const, followOnAppend: true, scrollEndThreshold: END_ANCHOR_THRESHOLD_PX }
+      ? {
+          anchorTo: "end" as const,
+          followOnAppend: followEnd,
+          // The core's distance from the end is never negative, so no
+          // position is within a negative threshold.
+          scrollEndThreshold: followEnd ? END_ANCHOR_THRESHOLD_PX : -1,
+        }
       : {}),
     ...(keepsPlaceOnMeasure
       ? {

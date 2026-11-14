@@ -391,6 +391,7 @@ function LiveConversationBody({
     listRef: virtualListRef,
     jumpToRow: flow.jumpToRow,
     holdPosition: flow.holdPosition,
+    releaseHold: flow.releaseHold,
     markGesture: flow.markGesture,
     olderPageKey,
     olderLoading: loadingOlder,

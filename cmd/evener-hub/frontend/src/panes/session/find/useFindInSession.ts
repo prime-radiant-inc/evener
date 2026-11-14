@@ -56,6 +56,8 @@ interface FindInSessionOptions {
   listRef: RefObject<VirtualListHandle | null>;
   jumpToRow(index: number): void;
   holdPosition(): void;
+  /** Gives back the place a landing held, once no match is current. */
+  releaseHold(): void;
   markGesture(readerIntent?: boolean, beforeOffset?: number): void;
   /** null is the confirmed start of history; undefined is "not known yet". */
   olderPageKey: string | null | undefined;
@@ -115,6 +117,7 @@ export function useFindInSession({
   listRef,
   jumpToRow,
   holdPosition,
+  releaseHold,
   markGesture,
   olderPageKey,
   olderLoading,
@@ -337,6 +340,9 @@ export function useFindInSession({
   useEffect(() => {
     if (current === null) {
       settle.current = null;
+      // The hold was for the match. With none, a reader at the end follows
+      // new output again.
+      if (landed.current !== null) releaseHold();
       landed.current = null;
       return;
     }

@@ -3041,6 +3041,60 @@ describe("the error anchor (failed turn)", () => {
     expect(result.current.isFollowingBottom()).toBe(true);
   });
 
+  test("a scroll command that moved the port before reporting it ends a held place", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 400, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    act(() => result.current.holdPosition());
+    expect(result.current.holdsPlace).toBe(true);
+
+    // The keyboard scroll commands write the offset first and report after,
+    // naming where the port was.
+    act(() => {
+      el.scrollTop = 350;
+      set({ scrollTop: 350 });
+      result.current.markGesture(true, 0);
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
+  test("giving a held place back resumes following at the end, and nowhere else", () => {
+    const { ref } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    act(() => result.current.holdPosition());
+    act(() => result.current.releaseHold());
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+    expect(result.current.pillVisible).toBe(false);
+
+    act(() => result.current.holdPosition());
+    set({ scrollHeight: 400 });
+    act(() => result.current.releaseHold());
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("jumping to latest ends a held place", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });

@@ -259,8 +259,12 @@ and the chord remain.
   so a landing on a match already in view at the live end also moves the
   reader a few pixels off the end. A conversation that fits on screen has no
   end to step off, so the scroll owner keeps the choice itself (`holdsPlace`):
-  the list stops following new output, and the end being in view does not
-  count as arriving there, until the reader scrolls or jumps to latest.
+  the list stops following new output (`VirtualList`'s `followEnd` off, which
+  still keeps the reader's place when older pages arrive above), and the end
+  being in view does not count as arriving there. The hold ends when the
+  reader moves the transcript, jumps to latest, or Find no longer has a
+  current match (closed, or words with no match); a reader then at the end
+  follows new output again.
   Jumping to latest ends a search into older
   history and leaves no match current, so neither a match arriving later nor
   a refresh reading back to the old one can pull the reader away again; Find

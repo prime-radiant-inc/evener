@@ -184,6 +184,9 @@ export interface UseTranscriptScrollResult {
    * jumpToRow, for a place that is already in view. New output then offers
    * the way back to latest instead of carrying them off. */
   holdPosition: () => void;
+  /** Gives a held place back: the reader is wherever geometry says, which at
+   * the end means following again. */
+  releaseHold: () => void;
   /** True from holdPosition until the reader moves the transcript or jumps to
    * latest. A held place is not the end even where the end is in view, so the
    * list must not follow new output while this is set. */
@@ -555,6 +558,16 @@ export function useTranscriptScroll({
     setHeld(true);
   }, [setHeld]);
 
+  const releaseHold = useCallback(() => {
+    if (!heldRef.current) return;
+    setHeld(false);
+    const el = listRef.current?.getScrollElement();
+    if (!el || !isAtBottom(measure(el))) return;
+    wasAtBottomRef.current = true;
+    endFollowIntentRef.current = true;
+    setAwayFromBottom(false);
+  }, [listRef, measure, setHeld]);
+
   const jumpToRow = useCallback(
     (index: number) => {
       holdPosition();
@@ -904,11 +917,21 @@ export function useTranscriptScroll({
         wasAtBottomRef.current = false;
         readerCallbacksRef.current.onReaderMovement?.(wheelAwayOffset);
       }
+      // The reader moved: where they are now is theirs to say again. Measured
+      // against the last geometry, not the gesture's own record, which a
+      // command that writes the offset before reporting it has already
+      // advanced to the new place.
+      if (
+        heldRef.current &&
+        (gestured || pointerDraggingRef.current) &&
+        heightsHeld &&
+        m.scrollTop !== previous.scrollTop
+      ) {
+        setHeld(false);
+      }
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
       if ((gestured || pointerDraggingRef.current) && m.scrollTop !== beforeOffset && heightsHeld) {
-        // The reader moved: where they are now is theirs to say again.
-        if (heldRef.current) setHeld(false);
         if (!atBottom) {
           // The movement report captures the view synchronously; clear the
           // intent first so the capture records the reader's new position.
@@ -1423,6 +1446,7 @@ export function useTranscriptScroll({
     jumpToBottom,
     jumpToRow,
     holdPosition,
+    releaseHold,
     holdsPlace,
     captureViewAnchor,
     restoreViewAnchorAfterMeasurement,

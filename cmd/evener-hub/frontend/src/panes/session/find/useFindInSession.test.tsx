@@ -70,6 +70,7 @@ function scriptHistory(client: FakeClient, recent: Turn[], pages: string[]): Scr
 
 const jumps: number[] = [];
 let holds = 0;
+let releases = 0;
 let ownsKeyboard = true;
 
 function Harness() {
@@ -91,6 +92,9 @@ function Harness() {
     jumpToRow: (index) => jumps.push(index),
     holdPosition: () => {
       holds += 1;
+    },
+    releaseHold: () => {
+      releases += 1;
     },
     markGesture: () => {},
     olderPageKey: transcript.olderPageKey,
@@ -171,6 +175,7 @@ beforeEach(() => {
   resetFindRequestsForTests();
   jumps.length = 0;
   holds = 0;
+  releases = 0;
   ownsKeyboard = true;
 });
 
@@ -541,6 +546,10 @@ test("every landing tells the scroll owner the reader left the live end, even wi
   await waitFor(() => expect(holds).toBe(2));
   // Both entries are mounted, so no row jump was needed for either.
   expect(jumps).toEqual([]);
+  // The hold is for the match: it is given back only once there is none.
+  expect(releases).toBe(0);
+  fireEvent.keyDown(field(), { key: "Escape" });
+  await waitFor(() => expect(releases).toBe(1));
 });
 
 test("refining the words inside the same entry lands on the new place", async () => {

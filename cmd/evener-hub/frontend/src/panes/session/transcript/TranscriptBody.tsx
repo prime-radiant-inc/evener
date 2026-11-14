@@ -344,7 +344,8 @@ export interface TranscriptBodyProps {
   /** The owning reader's following-bottom intent, used by reflow captures. */
   followingBottom?: () => boolean;
   /** The reader is held at a place they chose (the scroll owner's
-   * holdsPlace): the list stops following new output until they let go. */
+   * holdsPlace): the list stops following new output until they let go, and
+   * still keeps their place across older pages arriving above it. */
   holdsPlace?: boolean;
   onAnnounceViewChange?: (summary: string) => void;
 }
@@ -508,7 +509,8 @@ export function TranscriptBody({
       <VirtualList
         ref={listRef}
         dynamic
-        anchorToEnd={!holdsPlace && !viewRegistration.hasRetainedPlacement()}
+        anchorToEnd={!viewRegistration.hasRetainedPlacement()}
+        followEnd={!holdsPlace}
         readingPoint={readingPoint}
         count={rows.length + (trailingRow === undefined ? 0 : 1)}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}

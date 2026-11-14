@@ -431,7 +431,7 @@ describe("anchorToEnd", () => {
     options: { anchorTo: string; followOnAppend: unknown; scrollEndThreshold: number };
   };
 
-  function captureResolvedOptions(anchorToEnd?: boolean): ResolvedOptions {
+  function captureResolvedOptions(anchorToEnd?: boolean, followEnd?: boolean): ResolvedOptions {
     let captured: ResolvedOptions | undefined;
     render(
       <VirtualList
@@ -439,6 +439,7 @@ describe("anchorToEnd", () => {
         estimateSize={() => ROW_HEIGHT}
         getItemKey={(i) => `row-${i}`}
         anchorToEnd={anchorToEnd}
+        followEnd={followEnd}
         onChange={(instance) => {
           captured = instance as unknown as ResolvedOptions;
         }}
@@ -458,6 +459,17 @@ describe("anchorToEnd", () => {
     // A few pixels (rounding-safe, far smaller than one line of text ~20px) so
     // a reader scrolled back even one line is NOT treated as following the tail.
     expect(resolved.options.scrollEndThreshold).toBe(4);
+  });
+
+  test("on without following: rows stay keyed to the end, but no reader position counts as at the end", () => {
+    const resolved = captureResolvedOptions(true, false);
+    // Prepends are still compensated by key.
+    expect(resolved.options.anchorTo).toBe("end");
+    expect(resolved.options.followOnAppend).toBe(false);
+    // The core's distance from the end is never negative, so a negative
+    // threshold is one no position satisfies: a growing row cannot pin the
+    // port to the end either.
+    expect(resolved.options.scrollEndThreshold).toBeLessThan(0);
   });
 
   test("off (default): upstream defaults hold - start-anchored, no append following", () => {
