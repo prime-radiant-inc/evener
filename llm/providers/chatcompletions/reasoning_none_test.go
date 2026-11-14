@@ -20,6 +20,7 @@ func offReq() llm.Request {
 // two dialects have a wire shape that says so. On the rest the off has no
 // spelling, so the request carries nothing and the provider's default applies.
 func TestApplyThinkingFormat_ExplicitOffOnTheWire(t *testing.T) {
+	t.Parallel()
 	cases := map[string]map[string]any{
 		"":                   {"reasoning_effort": "none"},
 		"openai":             {"reasoning_effort": "none"},
@@ -61,6 +62,7 @@ func TestApplyThinkingFormat_ExplicitOffOnTheWire(t *testing.T) {
 // makes it concrete: reasoning = true, toggle-only controls, always-on, no
 // ladder, the openrouter dialect.
 func TestApplyThinkingFormat_ExplicitOffNeverSwitchesThinkingOn(t *testing.T) {
+	t.Parallel()
 	for _, format := range []string{"", "openai", "openrouter", "zai", "deepseek", "together", "qwen", "qwen-chat-template", "chat-template", "string-thinking"} {
 		t.Run(format, func(t *testing.T) {
 			res := resolved(func(c *registry.Caps) {
@@ -85,6 +87,7 @@ func TestApplyThinkingFormat_ExplicitOffNeverSwitchesThinkingOn(t *testing.T) {
 // accept. A row that takes no effort control has no field to ride either, so
 // its body stays empty.
 func TestApplyThinkingFormat_MandatoryBackstopNeedsAVouchedEffort(t *testing.T) {
+	t.Parallel()
 	alwaysOn := func(controls []string, ladder []string) registry.Resolved {
 		return resolved(func(c *registry.Caps) {
 			c.Reasoning = new(true)
@@ -123,6 +126,7 @@ func reasoningKeys(body map[string]any) map[string]any {
 // legal; with the user's explicit off it must not be sent, or turning
 // reasoning off would turn it on.
 func TestBuildBody_ExplicitOffOnAMandatoryThinkingRow(t *testing.T) {
+	t.Parallel()
 	r, err := registry.Load(
 		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
 		registry.WithStateRoot(t.TempDir()),

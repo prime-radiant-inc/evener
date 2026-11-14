@@ -14,6 +14,7 @@ func fastPolicy(maxRetries int) RetryPolicy {
 }
 
 func TestRetryStream_SucceedsFirstAttempt(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	calls := 0
 	err := RetryStream(context.Background(), RetryStreamOptions{Policy: fastPolicy(5), Sleep: noSleepRetry}, func(context.Context) (AttemptReport, error) {
 		calls++
@@ -28,6 +29,7 @@ func TestRetryStream_SucceedsFirstAttempt(t *testing.T) {
 }
 
 func TestRetryStream_RetriesRetryableThenSucceeds(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	calls := 0
 	err := RetryStream(context.Background(), RetryStreamOptions{Policy: fastPolicy(5), Sleep: noSleepRetry}, func(context.Context) (AttemptReport, error) {
 		calls++
@@ -45,6 +47,7 @@ func TestRetryStream_RetriesRetryableThenSucceeds(t *testing.T) {
 }
 
 func TestRetryStream_ExhaustsBudget(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	calls := 0
 	err := RetryStream(context.Background(), RetryStreamOptions{Policy: fastPolicy(4), Sleep: noSleepRetry}, func(context.Context) (AttemptReport, error) {
 		calls++
@@ -59,6 +62,7 @@ func TestRetryStream_ExhaustsBudget(t *testing.T) {
 }
 
 func TestRetryStream_DoesNotRetryPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	calls := 0
 	err := RetryStream(context.Background(), RetryStreamOptions{Policy: fastPolicy(5), Sleep: noSleepRetry}, func(context.Context) (AttemptReport, error) {
 		calls++
@@ -73,6 +77,7 @@ func TestRetryStream_DoesNotRetryPermanent(t *testing.T) {
 }
 
 func TestRetryStream_PartialOutputBlocksRetryByDefault(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	calls := 0
 	err := RetryStream(context.Background(), RetryStreamOptions{Policy: fastPolicy(5), Sleep: noSleepRetry}, func(context.Context) (AttemptReport, error) {
 		calls++
@@ -87,6 +92,7 @@ func TestRetryStream_PartialOutputBlocksRetryByDefault(t *testing.T) {
 }
 
 func TestRetryStream_RetryAfterPartialResetsAndRetries(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	calls := 0
 	resets := 0
 	err := RetryStream(context.Background(), RetryStreamOptions{
@@ -113,6 +119,7 @@ func TestRetryStream_RetryAfterPartialResetsAndRetries(t *testing.T) {
 }
 
 func TestRetryStream_StopsOnContextCancel(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
 	err := RetryStream(ctx, RetryStreamOptions{Policy: fastPolicy(5), Sleep: noSleepRetry}, func(context.Context) (AttemptReport, error) {
@@ -141,6 +148,7 @@ func attemptScript(t *testing.T, reports []AttemptReport, errs []error) (StreamA
 }
 
 func TestRetryStream_StreakStopsAtFailFastAfter(t *testing.T) {
+	t.Parallel()
 	// 4 consume-phase failures -> ProviderUnhealthyError, exactly 4 attempts.
 	rep := AttemptReport{Phase: PhaseConsume}
 	e := NewStreamError("p", "cut", nil)
@@ -163,6 +171,7 @@ func TestRetryStream_StreakStopsAtFailFastAfter(t *testing.T) {
 }
 
 func TestRetryStream_OpenPhaseTransparent(t *testing.T) {
+	t.Parallel()
 	// stall,429,stall,429,stall,stall -> trips at the 4th stall (6 attempts total).
 	stall := AttemptReport{Phase: PhaseSilentStall}
 	open := AttemptReport{Phase: PhaseOpen}
@@ -181,6 +190,7 @@ func TestRetryStream_OpenPhaseTransparent(t *testing.T) {
 }
 
 func TestRetryStream_CapDetectionStopsAtTwo(t *testing.T) {
+	t.Parallel()
 	long := AttemptReport{Phase: PhaseConsume, ContentWindow: 70 * time.Second, SalvagedBytes: 100}
 	e := NewStreamError("p", "cut", nil)
 	attempt, calls := attemptScript(t, []AttemptReport{long, long}, []error{e, e})
@@ -198,6 +208,7 @@ func TestRetryStream_CapDetectionStopsAtTwo(t *testing.T) {
 }
 
 func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
+	t.Parallel()
 	// FailFastAfter=0: 4 consume failures ride the policy budget (MaxRetries=3 -> 4 attempts, last err returned raw).
 	rep := AttemptReport{Phase: PhaseConsume}
 	e := NewStreamError("p", "cut", nil)
@@ -214,6 +225,7 @@ func TestRetryStream_FastRejectTransparent_AndDisabledWhenZero(t *testing.T) {
 }
 
 func TestRetryStream_FastRejectTransparent(t *testing.T) {
+	t.Parallel()
 	// Four fast rejections must never trip the streak (FailFastAfter=4): spec
 	// requires PhaseFastReject be transparent like PhaseOpen, so a provider that
 	// fails fast with zero content events every time must never produce the
@@ -238,6 +250,7 @@ func TestRetryStream_FastRejectTransparent(t *testing.T) {
 }
 
 func TestRetryStream_CapStreakResetsOnNonCapAttempt(t *testing.T) {
+	t.Parallel()
 	// long, short(<60s consume), long, long: the short attempt in the middle
 	// breaks the cap streak's consecutive-attempt requirement, so the cap
 	// rule must not trip on the 2nd cap-shaped attempt (index 0) pairing with
@@ -262,6 +275,7 @@ func TestRetryStream_CapStreakResetsOnNonCapAttempt(t *testing.T) {
 }
 
 func TestRetryStream_CapStreakDoesNotTripAcrossReset(t *testing.T) {
+	t.Parallel()
 	// long, short, long: only 3 attempts, so if the cap streak wrongly
 	// survived the short attempt's reset, attempt 1 and attempt 3 would
 	// (wrongly) combine into a trip. The reset must hold, so this rides the
@@ -284,6 +298,7 @@ func TestRetryStream_CapStreakDoesNotTripAcrossReset(t *testing.T) {
 }
 
 func TestRetryStream_CapDetectionDisabledWhenZero(t *testing.T) {
+	t.Parallel()
 	// FailFastAfter=0 must disable the cap rule too, not just the streak
 	// rule — the earlier disabled-case test only used zero-value
 	// ContentWindow reports, which never exercised the cap-shaped path.
@@ -302,6 +317,7 @@ func TestRetryStream_CapDetectionDisabledWhenZero(t *testing.T) {
 }
 
 func TestRetryStream_UnhealthyWinsOverPartialOutputBlock(t *testing.T) {
+	t.Parallel()
 	// FailFastAfter=1 trips on the very first attempt. Partial output alone
 	// would otherwise end the chain immediately with the raw error (partial
 	// blocks retry by default) — the early-stop check must run first and win,
@@ -327,6 +343,7 @@ func TestRetryStream_UnhealthyWinsOverPartialOutputBlock(t *testing.T) {
 // exhaustion: the one before the wait for the first case, the one computing
 // the remaining slice for the second.
 func TestRetryStreamWallBudgetExhaustion(t *testing.T) {
+	t.Parallel()
 	rateLimited := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 	for _, tc := range []struct {
 		name  string

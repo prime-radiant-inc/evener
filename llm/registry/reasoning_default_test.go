@@ -35,6 +35,7 @@ var adaptiveClaudeRefs = []string{
 // the region and vendor, and Vertex suffixes @default — the fact has to reach
 // all of them.
 func TestResolve_DefaultEffortIsCuratedNotUpstream(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{
 		"AWS_REGION": "us-east-1", "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global",
 	}, "")
@@ -60,6 +61,7 @@ func TestResolve_DefaultEffortIsCuratedNotUpstream(t *testing.T) {
 // The cap layers like every other: a user row is the last word, and an alias
 // inherits the target's value as a model fact (spec §4.2).
 func TestResolve_DefaultEffortLayers(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndefault_effort = \"low\"\n")
 	res := mustResolve(t, r, "anthropic/claude-opus-4-6")
 	if StringValue(res.Caps.DefaultEffort) != "low" || res.Provenance["DefaultEffort"] != "config/row" {
@@ -76,6 +78,7 @@ func TestResolve_DefaultEffortLayers(t *testing.T) {
 // default_reasoning_level), so liveFacts has to carry it past the filter or
 // the fact is dropped between the adapter and Resolve.
 func TestResolve_DefaultEffortFromLiveListing(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	r.ApplyLive("openai-codex", []Model{{ID: "gpt-5.6-sol", Caps: Caps{DefaultEffort: new("low")}}})
 	res := mustResolve(t, r, "openai-codex/gpt-5.6-sol")
@@ -89,6 +92,7 @@ func TestResolve_DefaultEffortFromLiveListing(t *testing.T) {
 // off on the wire. Dropping it in the converter would make the explicit off
 // unreachable for every cataloged model that accepts one (gpt-5.1 and later).
 func TestResolve_OffLevelSurvivesTheConverter(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	for _, ref := range []string{"openai/gpt-5.1", "openai/gpt-5.6", "openrouter/openai/gpt-5.5"} {
 		res := mustResolve(t, r, ref)

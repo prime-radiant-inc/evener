@@ -46,6 +46,7 @@ func writerFixtureLayer() *Layer {
 }
 
 func TestMarshalConfigRoundTrips(t *testing.T) {
+	t.Parallel()
 	want := writerFixtureLayer()
 	data, err := MarshalConfig(want)
 	if err != nil {
@@ -76,6 +77,7 @@ func TestMarshalConfigRoundTrips(t *testing.T) {
 }
 
 func TestMarshalConfigWritesExplicitEmptyAPIKeyEnvOnly(t *testing.T) {
+	t.Parallel()
 	data, err := MarshalConfig(&Layer{Providers: map[string]Provider{
 		"a": {ID: "a", Base: "openai", APIKeyEnv: []string{}},
 		"b": {ID: "b", Base: "openai"},
@@ -93,6 +95,7 @@ func TestMarshalConfigWritesExplicitEmptyAPIKeyEnvOnly(t *testing.T) {
 }
 
 func TestReadWriteConfigFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nested", "providers.toml")
 	l, exists, err := ReadConfigFile(path)
 	if err != nil || exists || l == nil || l.Providers == nil {
@@ -132,6 +135,7 @@ func symlinkWriterLayer() *Layer {
 // stop being the source of truth (issue #1040). This is the same
 // follow-the-symlink rule writeAgentsDoc already applies to AGENTS.md.
 func TestWriteConfigFileFollowsSymlink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	target := filepath.Join(dir, "managed", "providers.toml")
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
@@ -165,6 +169,7 @@ func TestWriteConfigFileFollowsSymlink(t *testing.T) {
 // A regular providers.toml is written in place: the resolved path is the path
 // itself, so the atomic temp-and-rename behavior is unchanged.
 func TestWriteConfigFileRegularFileUnchanged(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "providers.toml")
 	if err := os.WriteFile(path, []byte("schema = 2\ndefault = \"old\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -195,6 +200,7 @@ func TestWriteConfigFileRegularFileUnchanged(t *testing.T) {
 // dangling link is replaced by the file itself. A first save with no file yet
 // takes the same path.
 func TestWriteConfigFileDanglingSymlinkFallsBackToLinkPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	link := filepath.Join(dir, "providers.toml")
 	if err := os.Symlink(filepath.Join(dir, "gone", "providers.toml"), link); err != nil {
@@ -224,6 +230,7 @@ func TestWriteConfigFileDanglingSymlinkFallsBackToLinkPath(t *testing.T) {
 // the target itself). The temp name is exclusive and random, so the planted
 // link is left alone and the config lands on the real path.
 func TestWriteConfigFileDoesNotFollowAPlantedTempSymlink(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "providers.toml")
 	victim := filepath.Join(dir, "victim")
@@ -252,6 +259,7 @@ func TestWriteConfigFileDoesNotFollowAPlantedTempSymlink(t *testing.T) {
 // never lands on disk, so the write cannot lock its own author out of the
 // corrective edit (spec §10, §11.3).
 func TestWriteConfigFileRefusesALayerTheReaderWouldRefuse(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		p    Provider
@@ -283,6 +291,7 @@ func TestWriteConfigFileRefusesALayerTheReaderWouldRefuse(t *testing.T) {
 // A filesystem failure is not a refusal of the caller's entry: it must not
 // wrap ErrConfigUnloadable, or every caller reports a full disk as bad input.
 func TestWriteConfigFileDiskFailureIsNotAConfigRefusal(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -298,6 +307,7 @@ func TestWriteConfigFileDiskFailureIsNotAConfigRefusal(t *testing.T) {
 }
 
 func TestValidInstanceName(t *testing.T) {
+	t.Parallel()
 	for name, want := range map[string]bool{"work": true, "kimi-for-coding": true, "a.b_c": true, "Work": false, "a/b": false, "": false, "-x": false} {
 		if got := ValidInstanceName(name); got != want {
 			t.Fatalf("%q: got %v want %v", name, got, want)
@@ -306,6 +316,7 @@ func TestValidInstanceName(t *testing.T) {
 }
 
 func TestReadConfigFileReportsOldSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "providers.toml")
 	if err := os.WriteFile(path, []byte("default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -317,6 +328,7 @@ func TestReadConfigFileReportsOldSchema(t *testing.T) {
 }
 
 func TestMarshalConfig_StampsSchemaTwo(t *testing.T) {
+	t.Parallel()
 	data, err := MarshalConfig(&Layer{Default: "openai"})
 	if err != nil {
 		t.Fatal(err)
@@ -333,6 +345,7 @@ func TestMarshalConfig_StampsSchemaTwo(t *testing.T) {
 // land and then fails the directory sync. The new file is what readers see, so
 // the write is a success for callers that reload from it.
 func TestWriteConfigFileDirectorySyncFailureAfterTheRenameIsNotAFailedWrite(t *testing.T) {
+	t.Parallel()
 	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
 		t.Skip("needs a directory the process cannot open for reading")
 	}

@@ -52,6 +52,7 @@ func (b *wallTimeoutStreamBody) Close() error {
 }
 
 func TestClientStream_WallCeilingCancelsBodyAndClassifiesRetryableTimeout(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			var body *wallTimeoutStreamBody
@@ -143,6 +144,7 @@ func TestClientStream_WallCeilingCancelsBodyAndClassifiesRetryableTimeout(t *tes
 }
 
 func TestStreamGenerate_WallCeilingResetsForNextHTTPAttempt(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	provider := wireProviders()[0]
 	var calls atomic.Int32
 	var firstBody *wallTimeoutStreamBody

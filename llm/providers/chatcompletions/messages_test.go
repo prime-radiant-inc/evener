@@ -16,6 +16,7 @@ func assistantTurn(thinking, sig, text string) llm.Message {
 }
 
 func TestToChatMessages_RoleAndContentCaps(t *testing.T) {
+	t.Parallel()
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "sys"}}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: ""}, {Kind: llm.ContentText, Text: "hi"}}},
@@ -47,6 +48,7 @@ func TestToChatMessages_RoleAndContentCaps(t *testing.T) {
 }
 
 func TestToChatMessages_ReasoningReplay(t *testing.T) {
+	t.Parallel()
 	base := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIChat)}
 	turn := []llm.Message{assistantTurn("thought", "reasoning", "answer")}
 
@@ -140,6 +142,7 @@ func imageWireDetail(t *testing.T, caps registry.Caps, msg llm.Message) any {
 // and a part that names no detail takes the row's cap. A part's own detail
 // otherwise wins.
 func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
+	t.Parallel()
 	if got := imageWireDetail(t, imageCaps("original"), chatImageMessage("")); got != "high" {
 		t.Fatalf(`image_detail "original" wire detail = %v, want "high"`, got)
 	}
@@ -171,6 +174,7 @@ func TestToChatMessages_ImageDetailHonorsRowCap(t *testing.T) {
 // builder. The plain-text form silently drops the document, and the model
 // answers the prompt with no document in hand (#5472).
 func TestToChatMessages_DocumentBecomesFilePart(t *testing.T) {
+	t.Parallel()
 	const pdfDataURI = "data:application/pdf;base64,JVBERi0xLjcgc3R1Yg=="
 	cases := []struct {
 		name     string
@@ -220,6 +224,7 @@ func TestToChatMessages_DocumentBecomesFilePart(t *testing.T) {
 // scan: a document part the wire cannot carry must not end the scan, or later
 // valid media would silently ride the plain-text form and drop.
 func TestToChatMessages_UncarriableDocumentDoesNotHideLaterMedia(t *testing.T) {
+	t.Parallel()
 	pdfBytes := []byte("%PDF-1.7 stub")
 	cases := []struct {
 		name      string
@@ -276,6 +281,7 @@ func TestToChatMessages_UncarriableDocumentDoesNotHideLaterMedia(t *testing.T) {
 // file mechanism — file_data takes base64 bytes only — so a URL-only
 // document stays here too.
 func TestToChatMessages_DocumentWithoutBytesStaysPlain(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		document llm.DocumentData
@@ -305,6 +311,7 @@ func TestToChatMessages_DocumentWithoutBytesStaysPlain(t *testing.T) {
 // the chat wire accepts only auto|low|high, so no combination of row cap and
 // part detail may put any other value on it.
 func TestToChatMessages_NeverEmitsAnInvalidImageDetail(t *testing.T) {
+	t.Parallel()
 	for _, capDetail := range []string{"", "original", "omit", "low", "high"} {
 		for _, partDetail := range []string{"", "original", "low", "high", "auto", "medium", "ORIGINAL"} {
 			d := imageWireDetail(t, imageCaps(capDetail), chatImageMessage(partDetail))

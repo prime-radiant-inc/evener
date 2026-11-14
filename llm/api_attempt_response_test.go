@@ -6,6 +6,7 @@ import (
 )
 
 func TestBuildAPIAttemptRecordStoresCompactResponseCounts(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	response := Response{
 		Message: Message{

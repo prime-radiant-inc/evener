@@ -402,6 +402,7 @@ func redact(v string) string {
 }
 
 func TestWireCaptures(t *testing.T) {
+	// Not parallel: newHarness swaps tokenauth.DefaultCodex.Credentials and StateDir, package-level seams.
 	h := newHarness(t)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -438,6 +439,7 @@ func TestWireCaptures(t *testing.T) {
 // TestWireCaptureAssertions pins the transport facts spec §13 names, so a
 // golden regeneration cannot silently lose them.
 func TestWireCaptureAssertions(t *testing.T) {
+	// Not parallel: newHarness swaps tokenauth.DefaultCodex.Credentials and StateDir, package-level seams.
 	h := newHarness(t)
 	byName := map[string]capture{}
 	for _, c := range cases {

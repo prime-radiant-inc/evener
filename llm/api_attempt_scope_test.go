@@ -8,6 +8,7 @@ import (
 // A scope begun without a context still gets one, owning a fresh attempt
 // group attached to it.
 func TestBeginAPIAttemptGroupScopeOwnsAGroupForANilContext(t *testing.T) {
+	t.Parallel()
 	var input context.Context
 	ctx, scope := BeginAPIAttemptGroupScope(input)
 	if ctx == nil || scope == nil {

@@ -19,6 +19,7 @@ import (
 // path, with the scripted server receiving the minted bearer — and the token
 // never appearing in the API log that records the wire exchange.
 func TestCommandExpressionMintsBearerEndToEnd(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0

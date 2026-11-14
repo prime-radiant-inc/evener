@@ -12,6 +12,7 @@ import (
 )
 
 func TestMarkAPILogErrorObservedNil(t *testing.T) {
+	t.Parallel()
 	if got := markAPILogErrorObserved(nil); got != nil {
 		t.Fatalf("markAPILogErrorObserved(nil) = %v, want nil", got)
 	}
@@ -21,6 +22,7 @@ func TestMarkAPILogErrorObservedNil(t *testing.T) {
 // regular file occupies a path component: the error is the directory check's
 // own path error, and no logger comes back.
 func TestNewAPILoggerRejectsAnUnusableDirectory(t *testing.T) {
+	t.Parallel()
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("a file, not a directory"), 0o600); err != nil {
 		t.Fatalf("write blocker: %v", err)
@@ -35,6 +37,7 @@ func TestNewAPILoggerRejectsAnUnusableDirectory(t *testing.T) {
 }
 
 func TestNewSessionAPILogDirError(t *testing.T) {
+	t.Parallel()
 	// A sessions dir under a regular file cannot be created.
 	regular := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
@@ -49,6 +52,7 @@ func TestNewSessionAPILogDirError(t *testing.T) {
 // A session file that failed to open for a reason that will not clear on its
 // own stays failed: later calls report it unavailable without reopening.
 func TestSessionFileWithErrorNilCache(t *testing.T) {
+	// Not parallel: swaps the package's apiLogOpenFile seam.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -77,6 +81,7 @@ func TestSessionFileWithErrorNilCache(t *testing.T) {
 }
 
 func TestReserveSessionNoSessionsDir(t *testing.T) {
+	t.Parallel()
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -88,6 +93,7 @@ func TestReserveSessionNoSessionsDir(t *testing.T) {
 }
 
 func TestReleaseSessionAfterClose(t *testing.T) {
+	t.Parallel()
 	logger, err := NewSessionAPILogger(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionAPILogger: %v", err)
@@ -104,6 +110,7 @@ func TestReleaseSessionAfterClose(t *testing.T) {
 }
 
 func TestReleaseSessionEmptySessionsDir(t *testing.T) {
+	t.Parallel()
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -115,6 +122,7 @@ func TestReleaseSessionEmptySessionsDir(t *testing.T) {
 }
 
 func TestReleaseSessionNotFound(t *testing.T) {
+	t.Parallel()
 	logger, err := NewSessionAPILogger(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionAPILogger: %v", err)
@@ -126,6 +134,7 @@ func TestReleaseSessionNotFound(t *testing.T) {
 }
 
 func TestReleaseSessionNilFile(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -150,6 +159,7 @@ func TestReleaseSessionNilFile(t *testing.T) {
 }
 
 func TestRecoverCanonicalAPILogTailTruncateError(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	writeCanonicalAttempt(t, path, standaloneCanonicalAttempt("ag_trunc_err", 1))
 	appendAPILogCrashTail(t, path, []byte(`{"kind":"api_attempt"`))
@@ -169,6 +179,7 @@ func TestRecoverCanonicalAPILogTailTruncateError(t *testing.T) {
 // setup settles the group as a transport failure, and a provider that hands
 // back no stream settles it as a success.
 func TestWrapStreamSettlesAnOwnedGroupWithoutAStream(t *testing.T) {
+	t.Parallel()
 	streamErr := errors.New("stream setup failed")
 	for _, tc := range []struct {
 		name    string
@@ -210,6 +221,7 @@ func TestWrapStreamSettlesAnOwnedGroupWithoutAStream(t *testing.T) {
 }
 
 func TestObserveClosedAppendCoordinatorManaged(t *testing.T) {
+	t.Parallel()
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -228,6 +240,7 @@ func TestObserveClosedAppendCoordinatorManaged(t *testing.T) {
 }
 
 func TestAppendCanonicalRecordNoDestination(t *testing.T) {
+	t.Parallel()
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -245,6 +258,7 @@ func TestAppendCanonicalRecordNoDestination(t *testing.T) {
 }
 
 func TestCloseFileCloseError(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileClose seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -263,6 +277,7 @@ func TestCloseFileCloseError(t *testing.T) {
 }
 
 func TestSettlementStreamPumpStopsWhenClosing(t *testing.T) {
+	t.Parallel()
 	closing := make(chan struct{})
 	close(closing)
 	stream := &apiAttemptSettlementStream{
@@ -285,6 +300,7 @@ func TestSettlementStreamPumpStopsWhenClosing(t *testing.T) {
 }
 
 func TestSettlementStreamPumpSettlesAnErrorEvent(t *testing.T) {
+	t.Parallel()
 	providerErr := errors.New("provider error")
 	events := make(chan StreamEvent, 1)
 	events <- StreamEvent{Type: StreamEventError, Err: providerErr}
@@ -324,6 +340,7 @@ func TestSettlementStreamPumpSettlesAnErrorEvent(t *testing.T) {
 }
 
 func TestSettlementStreamPumpDropsAnEventWhileClosing(t *testing.T) {
+	t.Parallel()
 	events := make(chan StreamEvent)
 	closing := make(chan struct{})
 	stream := &apiAttemptSettlementStream{

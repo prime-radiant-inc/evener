@@ -12,6 +12,7 @@ import (
 )
 
 func TestExpandEnv(t *testing.T) {
+	t.Parallel()
 	env := map[string]string{"KEY": "sk-1", "ORG": "org-9"}
 	lookup := func(n string) (string, bool) { v, ok := env[n]; return v, ok }
 	cases := []struct {
@@ -46,6 +47,7 @@ func TestExpandEnv(t *testing.T) {
 // evaluator's cache; a failed one behaves like an unset variable, worded as a
 // phrase so a warning can carry the command's own diagnosis.
 func TestExpandEnvCommandExpression(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -79,6 +81,7 @@ func TestExpandEnvCommandExpression(t *testing.T) {
 // ScanConfigValue splits a value into the two halves a caller needs to tell a
 // reference from a literal: everything a secret could hide in is in `literal`.
 func TestScanConfigValue(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		value   string
 		refs    []string
@@ -113,6 +116,7 @@ func TestScanConfigValue(t *testing.T) {
 // literal word, which is the auth scheme and stands ahead of the reference
 // (spec §11.2). Any scheme name works, custom ones included.
 func TestCheckCredentialHeaderValue(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"$PORTKEY_KEY",
 		"${PORTKEY_KEY}",
@@ -197,6 +201,7 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 // authoring surfaces parse: a name outside the HTTP field-name grammar is one
 // no server would read, and a CR or LF in it would forge a second header.
 func TestCheckCredentialHeaderName(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"Authorization", "X-Api-Key", "x_api_key", "X-Api-Key-1"} {
 		if err := CheckCredentialHeaderName(name); err != nil {
 			t.Errorf("CheckCredentialHeaderName(%q) = %v, want accepted", name, err)
@@ -210,6 +215,7 @@ func TestCheckCredentialHeaderName(t *testing.T) {
 }
 
 func TestCheckEnvRefs(t *testing.T) {
+	t.Parallel()
 	if err := checkEnvRefs("Bearer $KEY and ${OTHER}", "api_key"); err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +256,7 @@ func TestCheckEnvRefs(t *testing.T) {
 // ordinary text. Load-time validation refuses the command outright, naming
 // the field.
 func TestLoadRefusesCommandExpressionsOutsideCredentialFields(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name   string
 		config string
@@ -292,6 +299,7 @@ func TestLoadRefusesCommandExpressionsOutsideCredentialFields(t *testing.T) {
 // environment variable, spelled as a "${NAME}" reference spells it. A value
 // outside that grammar is a key standing where its variable's name belonged.
 func TestCheckAPIKeyEnvName(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"OPENAI_API_KEY", "_private", "k9", "lowercase_ok"} {
 		if err := CheckAPIKeyEnvName(name); err != nil {
 			t.Errorf("CheckAPIKeyEnvName(%q) = %v, want accepted", name, err)
@@ -316,6 +324,7 @@ func TestCheckAPIKeyEnvName(t *testing.T) {
 // ${unterminated" — and Expand would run evil on the way to surfacing the
 // error.
 func TestCheckNoCommandsSeesPartialScan(t *testing.T) {
+	t.Parallel()
 	if err := checkNoCommands(`$(evil) ${unterminated`, `providers.gw.headers."X"`); err == nil {
 		t.Fatal("checkNoCommands passed a value whose later syntax error hides a command piece")
 	}
@@ -332,6 +341,7 @@ func TestCheckNoCommandsSeesPartialScan(t *testing.T) {
 // refused first (one literal word, ahead of the material, is all the
 // boundary allows), so no arrangement below survives validation.
 func TestCheckCredentialHeaderValueNeverPassesControlBytes(t *testing.T) {
+	t.Parallel()
 	var controls []byte
 	for i := range 0x20 {
 		if i != '\t' {

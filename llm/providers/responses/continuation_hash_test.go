@@ -11,6 +11,7 @@ import (
 // reaches the protocol through the context rather than through the
 // process-wide Protocol.Hasher field, which stays nil here.
 func TestStampsResponseIDHashFromContext(t *testing.T) {
+	t.Parallel()
 	hasher := llm.NewContinuationHasher([]byte("task-2-secret"))
 	want, err := hasher.HashContinuationHandle("response_id", "resp_1")
 	if err != nil {

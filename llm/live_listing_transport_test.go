@@ -20,6 +20,7 @@ import (
 // identity describe the row's would pull rows from an endpoint the launch
 // never contacts.
 func TestListLiveFetchesThroughTheDefaultRowTransport(t *testing.T) {
+	t.Parallel()
 	var providerHits, rowHits int
 	respond := func(hits *int) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -13,6 +13,7 @@ import (
 // TestExplicitAPIAttemptErrorClassStatusCodes covers the status code branches
 // in explicitAPIAttemptErrorClass that fire when the error has no declared kind.
 func TestExplicitAPIAttemptErrorClassStatusCodes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		status int
 		want   string
@@ -41,6 +42,7 @@ func TestExplicitAPIAttemptErrorClassStatusCodes(t *testing.T) {
 
 // TestExplicitAPIAttemptErrorClassTimeout covers the AttemptProviderTimeout path.
 func TestExplicitAPIAttemptErrorClassTimeout(t *testing.T) {
+	t.Parallel()
 	got := explicitAPIAttemptErrorClass(apilog.AttemptProviderTimeout, 0, errors.New("timeout"))
 	if got != llm.KindTimeout.String() {
 		t.Fatalf("timeout: got %q, want %q", got, llm.KindTimeout.String())
@@ -50,6 +52,7 @@ func TestExplicitAPIAttemptErrorClassTimeout(t *testing.T) {
 // TestExplicitAPIAttemptErrorClassNonReject covers the non-AttemptProviderReject
 // path.
 func TestExplicitAPIAttemptErrorClassNonReject(t *testing.T) {
+	t.Parallel()
 	got := explicitAPIAttemptErrorClass(apilog.AttemptTransportFail, 0, errors.New("transport fail"))
 	if got != llm.KindUnknown.String() {
 		t.Fatalf("transport fail: got %q, want %q", got, llm.KindUnknown.String())
@@ -58,6 +61,7 @@ func TestExplicitAPIAttemptErrorClassNonReject(t *testing.T) {
 
 // TestMergeCredentialMaterialNil covers the nil receiver path (lines 55-56).
 func TestMergeCredentialMaterialNil(t *testing.T) {
+	t.Parallel()
 	var c *APIAttemptCapture
 	c.mergeCredentialMaterial(llm.APILogCredentialMaterial{})
 	// No panic.
@@ -65,6 +69,7 @@ func TestMergeCredentialMaterialNil(t *testing.T) {
 
 // TestCompleteWithCapturedEvidenceNil covers the nil receiver path (lines 88-89).
 func TestCompleteWithCapturedEvidenceNil(t *testing.T) {
+	t.Parallel()
 	var c *APIAttemptCapture
 	c.completeWithCapturedEvidence(llm.APIAttemptResult{}, llm.APIAttemptContextOwnership{}, false, llm.APITimeoutNone, nil, nil)
 	// No panic.
@@ -72,6 +77,7 @@ func TestCompleteWithCapturedEvidenceNil(t *testing.T) {
 
 // TestCompleteNowFinishedAtZero covers the FinishedAt.IsZero path (lines 139-140).
 func TestCompleteNowFinishedAtZero(t *testing.T) {
+	t.Parallel()
 	sink := &responseAssociationSink{}
 	attemptCtx := attemptContext("ag_finished_zero", sink)
 	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "https://provider.test/v1", nil)

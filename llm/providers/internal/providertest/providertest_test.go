@@ -11,6 +11,7 @@ import (
 )
 
 func TestRegisterStreamingRequiredAuthRegistersOncePerScheme(t *testing.T) {
+	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
 	for _, tc := range []struct {
 		scheme string
 		auth   StreamingRequiredAuth

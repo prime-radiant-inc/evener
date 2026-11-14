@@ -57,6 +57,7 @@ func liveRes(srv *httptest.Server, mutate func(c *registry.Caps)) registry.Resol
 }
 
 func TestCompleteDecodesTextToolCallsAndUsage(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, chatJSON)
 	res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
 	p := &Protocol{Client: srv.Client()}
@@ -88,6 +89,7 @@ func TestCompleteDecodesTextToolCallsAndUsage(t *testing.T) {
 }
 
 func TestStreamEmitsTextThenToolCallThenFinish(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, chatSSE)
 	res := liveRes(srv, func(c *registry.Caps) { c.Fields["stream_options"] = false })
 	p := &Protocol{Client: srv.Client()}
@@ -121,6 +123,7 @@ func TestStreamEmitsTextThenToolCallThenFinish(t *testing.T) {
 }
 
 func TestCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -160,6 +163,7 @@ func TestCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
 }
 
 func TestCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, http.StatusOK, chatJSON)
 	res := liveRes(srv, func(caps *registry.Caps) { caps.Fields[registry.FieldMaxTokens] = false })
 	res.Transport.Body = map[string]any{"max_tokens": 1000}
@@ -174,6 +178,7 @@ func TestCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing.T) {
 }
 
 func TestStreamInbandErrorBecomesTypedError(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, "data: {\"error\":{\"message\":\"Rate limit reached\",\"type\":\"rate_limit_error\",\"code\":429}}\n\n")
 	p := &Protocol{Client: srv.Client()}
 	s, err := p.Stream(context.Background(), userReq("hi"), liveRes(srv, nil))
@@ -199,6 +204,7 @@ func TestStreamInbandErrorBecomesTypedError(t *testing.T) {
 // anthropic, google and responses transports, which keep the stream alive and
 // forward an undecodable event raw.
 func TestStreamSurfacesMalformedChunk(t *testing.T) {
+	t.Parallel()
 	const malformed = "{not valid json}"
 	body := "data: " + malformed + "\n\n" +
 		"data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n" +
@@ -235,6 +241,7 @@ func TestStreamSurfacesMalformedChunk(t *testing.T) {
 // success — every dropped payload is surfaced, so corruption is distinguishable
 // from an empty successful stream.
 func TestStreamRepeatedMalformedChunksAreAnnotated(t *testing.T) {
+	t.Parallel()
 	body := "data: {bad-one}\n\n" +
 		"data: {bad-two}\n\n" +
 		"data: [DONE]\n\n"
@@ -265,6 +272,7 @@ func TestStreamRepeatedMalformedChunksAreAnnotated(t *testing.T) {
 }
 
 func TestCompleteClassifiesHTTPErrorsWithHints(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 400, `{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}`)
 	p := &Protocol{Client: srv.Client()}
 	_, err := p.Complete(context.Background(), userReq("hi"), liveRes(srv, nil))
@@ -274,6 +282,7 @@ func TestCompleteClassifiesHTTPErrorsWithHints(t *testing.T) {
 }
 
 func TestCountTokensIsUnsupported(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, chatJSON)
 	res := liveRes(srv, nil)
 	if _, err := (&Protocol{Client: srv.Client()}).CountTokens(context.Background(), userReq("hi"), res); !errors.Is(err, llm.ErrInputTokenCountUnsupported) {
@@ -292,6 +301,7 @@ func TestCountTokensIsUnsupported(t *testing.T) {
 // timeout, so net/http's timeoutError wrapper cannot win the race and
 // misreport the cancellation on a slow runner.
 func TestCompleteWrapsImmediateCancel(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))

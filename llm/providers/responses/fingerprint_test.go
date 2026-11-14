@@ -15,6 +15,7 @@ import (
 // anchor from its continuation, so it is pinned here rather than on a
 // hand-written body.
 func TestRequestFingerprintIsStableAcrossCompleteAndStream(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		caps   func(*registry.Caps)

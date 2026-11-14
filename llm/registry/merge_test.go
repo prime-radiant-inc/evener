@@ -6,6 +6,7 @@ import (
 )
 
 func TestMergeCaps_LaterSetFieldWins_NilInherits(t *testing.T) {
+	t.Parallel()
 	prov := map[string]string{}
 	dst := Caps{ContextWindow: new(1000), Tools: new(true), EffortValues: []string{"low"}}
 	src := Caps{ContextWindow: new(2000), EffortValues: []string{"high", "max"}}
@@ -28,6 +29,7 @@ func TestMergeCaps_LaterSetFieldWins_NilInherits(t *testing.T) {
 }
 
 func TestMergeCaps_MapsMergeKeyWise(t *testing.T) {
+	t.Parallel()
 	prov := map[string]string{}
 	dst := Caps{Fields: map[string]bool{"store": false, "temperature": true}}
 	src := Caps{Fields: map[string]bool{"store": true}, ChatTemplateKwargs: map[string]any{"a": 1}}
@@ -44,6 +46,7 @@ func TestMergeCaps_MapsMergeKeyWise(t *testing.T) {
 }
 
 func TestMergeCaps_CostAndFinishReasonMapReplaceWholesale(t *testing.T) {
+	t.Parallel()
 	prov := map[string]string{}
 	dst := Caps{Cost: &Cost{Input: 1, Output: 2}, FinishReasonMap: map[string]string{"a": "b", "c": "d"}}
 	src := Caps{Cost: &Cost{Input: 5}, FinishReasonMap: map[string]string{"x": "y"}}
@@ -57,6 +60,7 @@ func TestMergeCaps_CostAndFinishReasonMapReplaceWholesale(t *testing.T) {
 }
 
 func TestMergeTransport_FieldWise(t *testing.T) {
+	t.Parallel()
 	dst := Transport{Auth: "bearer", BaseURL: "https://a/v1", Vars: map[string]string{"X": "1"}, Body: map[string]any{"k": "v"}}
 	src := Transport{AuthHeader: "x-api-key", Vars: map[string]string{"Y": "2"}, Body: map[string]any{"k2": true}}
 	mergeTransport(&dst, src)
@@ -69,6 +73,7 @@ func TestMergeTransport_FieldWise(t *testing.T) {
 }
 
 func TestMatchGlob(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		pattern, id string
 		want        bool
@@ -91,6 +96,7 @@ func TestMatchGlob(t *testing.T) {
 }
 
 func TestSortGlobs_ShorterThenLexical(t *testing.T) {
+	t.Parallel()
 	got := sortGlobs([]string{"gpt-5.6*", "gpt-5*", "*", "gpt-4.1*"})
 	want := []string{"*", "gpt-5*", "gpt-4.1*", "gpt-5.6*"}
 	if !reflect.DeepEqual(got, want) {
@@ -99,6 +105,7 @@ func TestSortGlobs_ShorterThenLexical(t *testing.T) {
 }
 
 func TestIsGlob(t *testing.T) {
+	t.Parallel()
 	if !isGlob("gpt-5*") || isGlob("gpt-5.6") {
 		t.Fatalf("isGlob wrong")
 	}

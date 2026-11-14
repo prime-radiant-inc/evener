@@ -7,6 +7,7 @@ import (
 )
 
 func TestProviderFailureMessage(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		op   string
@@ -59,6 +60,7 @@ func TestProviderFailureMessage(t *testing.T) {
 
 // A giant HTML error page must not become the error message.
 func TestProviderFailureMessageTruncatesRunawayBodies(t *testing.T) {
+	t.Parallel()
 	body := "<html>" + strings.Repeat("x", 4000) + "</html>"
 	got := ProviderFailureMessage("responses.create", []byte(body))
 
@@ -73,6 +75,7 @@ func TestProviderFailureMessageTruncatesRunawayBodies(t *testing.T) {
 // classifyByMessage reads the message for 400/422 signals. Surfacing the
 // provider's own wording must keep those signals intact.
 func TestProviderFailureMessageKeepsClassificationSignals(t *testing.T) {
+	t.Parallel()
 	msg := ProviderFailureMessage("messages.create", []byte(`{"error":{"message":"context length exceeded for this model"}}`))
 	err := ErrorFromHTTPStatus("anthropic", 400, msg, nil, nil)
 	if got := Kind(err); got != KindContextLength {
@@ -83,6 +86,7 @@ func TestProviderFailureMessageKeepsClassificationSignals(t *testing.T) {
 // A gateway's top-level {"message": ...} body yields the same failure text as
 // the nested {"error": {"message": ...}} shape.
 func TestProviderFailureMessageTopLevelMessage(t *testing.T) {
+	t.Parallel()
 	nested := ProviderFailureMessage("test", []byte(`{"error":{"message":"top-level error message"}}`))
 	topLevel := ProviderFailureMessage("test", []byte(`{"message":"top-level error message"}`))
 	if topLevel != nested {
@@ -92,6 +96,7 @@ func TestProviderFailureMessageTopLevelMessage(t *testing.T) {
 
 // Truncation backs off a rune split by the byte cut, keeping the valid prefix.
 func TestTruncateForMessageCutsOnARuneBoundary(t *testing.T) {
+	t.Parallel()
 	// 'é' is two bytes; placing it across the cut leaves its first byte at the
 	// last kept position.
 	ascii := strings.Repeat("x", maxFailureMessageBody-1)

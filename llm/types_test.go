@@ -8,6 +8,7 @@ import (
 )
 
 func TestValidateReasoningEffort(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		effort  string
@@ -47,6 +48,7 @@ func TestValidateReasoningEffort(t *testing.T) {
 }
 
 func TestReasoningEffortVocabulary(t *testing.T) {
+	t.Parallel()
 	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 	got := ReasoningEffortVocabulary()
 	if len(got) != len(want) {
@@ -60,6 +62,7 @@ func TestReasoningEffortVocabulary(t *testing.T) {
 }
 
 func TestNormalizeFinishReason(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := []struct {
 		provider string
 		raw      string
@@ -106,6 +109,7 @@ func TestNormalizeFinishReason(t *testing.T) {
 }
 
 func TestContentPart_WebSearch_JSONRoundTrip(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := json.RawMessage(`{"type":"web_search_call","id":"ws_1","action":{"type":"search","query":"go error handling"}}`)
 	part := ContentPart{
 		Kind: ContentWebSearch,
@@ -137,6 +141,7 @@ func TestContentPart_WebSearch_JSONRoundTrip(t *testing.T) {
 }
 
 func TestNormalizeFinishReason_PauseTurn(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	got := NormalizeFinishReason("anthropic", "pause_turn")
 	if got.Reason != FinishReasonPauseTurn {
 		t.Fatalf("Reason = %q, want %q", got.Reason, FinishReasonPauseTurn)
@@ -147,6 +152,7 @@ func TestNormalizeFinishReason_PauseTurn(t *testing.T) {
 }
 
 func TestAdapterTimeout_Defaults(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	at := DefaultAdapterTimeout()
 	if at.Connect != 10*time.Second {
 		t.Fatalf("Connect = %v, want 10s", at.Connect)
@@ -160,6 +166,7 @@ func TestAdapterTimeout_Defaults(t *testing.T) {
 }
 
 func TestToolCallData_Parse_PopulatesParsedArguments(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tc := ToolCallData{
 		ID:        "call_1",
 		Name:      "get_weather",
@@ -180,6 +187,7 @@ func TestToolCallData_Parse_PopulatesParsedArguments(t *testing.T) {
 }
 
 func TestToolCallData_Parse_EmptyArguments(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tc := ToolCallData{
 		ID:        "call_2",
 		Name:      "get_time",
@@ -197,6 +205,7 @@ func TestToolCallData_Parse_EmptyArguments(t *testing.T) {
 }
 
 func TestToolCallData_Parse_NilArguments(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tc := ToolCallData{
 		ID:   "call_3",
 		Name: "no_args",
@@ -213,6 +222,7 @@ func TestToolCallData_Parse_NilArguments(t *testing.T) {
 }
 
 func TestToolCallData_Parse_InvalidJSON(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tc := ToolCallData{
 		ID:        "call_4",
 		Name:      "broken",
@@ -224,6 +234,7 @@ func TestToolCallData_Parse_InvalidJSON(t *testing.T) {
 }
 
 func TestToolResultData_DurationMS_JSONRoundTrip(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tr := ToolResultData{
 		ToolCallID: "call_1",
 		Name:       "shell",
@@ -256,6 +267,7 @@ func TestToolResultData_DurationMS_JSONRoundTrip(t *testing.T) {
 }
 
 func TestToolResultData_DurationMS_OmittedWhenZero(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tr := ToolResultData{
 		ToolCallID: "call_1",
 		Content:    "hello",
@@ -274,6 +286,7 @@ func TestToolResultData_DurationMS_OmittedWhenZero(t *testing.T) {
 }
 
 func TestIsOpenAICompatReasoningFieldMatchesTheWireFieldNames(t *testing.T) {
+	t.Parallel()
 	// Anthropic-style providers use this to tell a wire field name apart from a
 	// cryptographic signature, and replaying the wrong one is an API rejection.
 	for _, sig := range OpenAICompatReasoningFields() {
@@ -289,6 +302,7 @@ func TestIsOpenAICompatReasoningFieldMatchesTheWireFieldNames(t *testing.T) {
 }
 
 func TestRequest_Validate_WithWebSearch(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	req := Request{
 		Model:     "test-model",
 		Messages:  []Message{User("hello")},
@@ -301,6 +315,7 @@ func TestRequest_Validate_WithWebSearch(t *testing.T) {
 
 // TestMessageConstructors covers the Developer and ToolResult constructors.
 func TestMessageConstructors(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	dev := Developer("guidance")
 	if dev.Role != RoleDeveloper || dev.Text() != "guidance" {
 		t.Fatalf("Developer() = %+v", dev)
@@ -321,6 +336,7 @@ func TestMessageConstructors(t *testing.T) {
 // TestReasoningTextJoinsBlocksWithBlankLine covers the blank-line separator arm
 // between multiple thinking blocks.
 func TestReasoningTextJoinsBlocksWithBlankLine(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	r := Response{Message: Message{Content: []ContentPart{
 		{Kind: ContentThinking, Thinking: &ThinkingData{Text: "first"}},
 		{Kind: ContentThinking, Thinking: &ThinkingData{Text: "second"}},

@@ -68,6 +68,7 @@ func assertLocalTokenBudgetFailure(t *testing.T, err error) {
 }
 
 func TestClientCompleteTokenBudgetPreventsAdapterDispatch(t *testing.T) {
+	t.Parallel()
 	c, adapter := tokenBudgetClient(t)
 	req := userRequest("budgeted", "model")
 	req.InputTokensEstimate = 9_000
@@ -80,6 +81,7 @@ func TestClientCompleteTokenBudgetPreventsAdapterDispatch(t *testing.T) {
 }
 
 func TestClientStreamTokenBudgetPreventsAdapterDispatch(t *testing.T) {
+	t.Parallel()
 	c, adapter := tokenBudgetClient(t)
 	req := userRequest("budgeted", "model")
 	req.InputTokensEstimate = 9_000
@@ -92,6 +94,7 @@ func TestClientStreamTokenBudgetPreventsAdapterDispatch(t *testing.T) {
 }
 
 func TestClientMiddlewareTokenBudgetMutationCannotBypassGuard(t *testing.T) {
+	t.Parallel()
 	c, adapter := tokenBudgetClient(t)
 	c.Use(llm.MiddlewareFunc{Complete: func(ctx context.Context, req llm.Request, next llm.CompleteFunc) (llm.Response, error) {
 		req.InputTokensEstimate = 9_000
@@ -106,6 +109,7 @@ func TestClientMiddlewareTokenBudgetMutationCannotBypassGuard(t *testing.T) {
 }
 
 func TestCompactionThresholdDoesNotClampTokenBudget(t *testing.T) {
+	t.Parallel()
 	res := registry.Resolved{
 		Instance:   "work",
 		ProviderID: "work",

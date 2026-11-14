@@ -66,6 +66,7 @@ func (s *blockingRedirectSink) snapshot() []apilog.APIAttemptRecord {
 }
 
 func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
@@ -190,6 +191,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 }
 
 func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
@@ -263,6 +265,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 }
 
 func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 			t.Run(provider.name+"/"+http.StatusText(status), func(t *testing.T) {
@@ -338,6 +341,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 }
 
 func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	largeRedirectBody := bytes.Repeat([]byte("redirect-evidence-"), 512)
 	if len(largeRedirectBody) <= 2<<10 {
 		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
@@ -414,6 +418,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 }
 
 func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	const responseBody = `{"error":{"message":"redirect response"}}`
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
@@ -464,6 +469,7 @@ func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 }
 
 func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 1)
@@ -528,6 +534,7 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 }
 
 func TestCoreCompleteWireCaptureRecordsRejectedRedirectWithoutInventingHop(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)

@@ -15,6 +15,7 @@ import (
 // that wrapping is transparent. It is the contract the unexported concrete
 // types now sit behind.
 func TestKind_FromHTTPStatus(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		status  int
 		message string
@@ -53,6 +54,7 @@ func TestKind_FromHTTPStatus(t *testing.T) {
 // TestKind_Timeout_NonHTTP verifies a non-HTTP context deadline classifies as a
 // timeout — the case StatusCode() cannot express (it is 0 here).
 func TestKind_Timeout_NonHTTP(t *testing.T) {
+	t.Parallel()
 	err := llm.NewRequestTimeoutError("openai", "deadline exceeded", context.DeadlineExceeded)
 	if got := llm.Kind(err); got != llm.KindTimeout {
 		t.Errorf("Kind(non-HTTP timeout) = %v, want %v", got, llm.KindTimeout)
@@ -61,6 +63,7 @@ func TestKind_Timeout_NonHTTP(t *testing.T) {
 
 // TestKind_NilAndForeign verifies the safe defaults.
 func TestKind_NilAndForeign(t *testing.T) {
+	t.Parallel()
 	if got := llm.Kind(nil); got != llm.KindUnknown {
 		t.Errorf("Kind(nil) = %v, want %v", got, llm.KindUnknown)
 	}
@@ -75,6 +78,7 @@ func TestKind_NilAndForeign(t *testing.T) {
 // than the bare-kind fallback. The exact wording is copy a person reads —
 // reviewed in diffs, not pinned here.
 func TestProviderFailureSummary(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error

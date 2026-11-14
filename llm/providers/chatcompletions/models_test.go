@@ -16,6 +16,7 @@ const openRouterModels = `{"data":[
 ]}`
 
 func TestListModelsMapsAdvertisedFacts(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, openRouterModels)
 	res := liveRes(srv, nil)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
@@ -53,6 +54,7 @@ func TestListModelsMapsAdvertisedFacts(t *testing.T) {
 // pricing must drop Cost to nil while every other advertised fact on that
 // row still maps.
 func TestListModelsRejectsNonFiniteCost(t *testing.T) {
+	t.Parallel()
 	body := `{"data":[
  {"id":"nan-prompt","context_length":4096,"pricing":{"prompt":"NaN","completion":"0.000002"}},
  {"id":"inf-completion","context_length":8192,"pricing":{"prompt":"0.000001","completion":"Inf"}}
@@ -81,6 +83,7 @@ func TestListModelsRejectsNonFiniteCost(t *testing.T) {
 // supported_parameters are matched with strings.EqualFold on the trimmed
 // value, so " Tools " still advertises tool support.
 func TestListModelsNormalizesSupportedParameters(t *testing.T) {
+	t.Parallel()
 	body := `{"data":[
  {"id":"padded/tools","supported_parameters":["Tools ","  Reasoning_Effort"]}
 ]}`
@@ -119,6 +122,7 @@ func listRow(t *testing.T, row string) registry.Caps {
 // max_input_tokens/max_output_tokens here left Profile.MaxOutputTokens() at 0,
 // so llm.ApplyTokenBudget fell back to asking for the whole remaining window.
 func TestListModelsMapsGatewayTopLevelLimits(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"deepseek-4.1-flash","object":"model","created":0,"owned_by":"lunaroute","context_window":1048576,"context_length":1048576,"max_input_tokens":1048576,"max_output_tokens":262144,"max_completion_tokens":262144,"capabilities":{"json_schema":true,"openai_chat":true,"openai_responses":true,"reasoning":true,"tools":true,"vision":true},"client_compat":{"streaming":true}}`)
 	if c.ContextWindow == nil || *c.ContextWindow != 1048576 {
 		t.Fatalf("ContextWindow = %v, want 1048576", c.ContextWindow)
@@ -137,6 +141,7 @@ func TestListModelsMapsGatewayTopLevelLimits(t *testing.T) {
 // empty EffortValues ladder: the session picker falls back to
 // low/medium/high, and the request builder omits the effort name entirely.
 func TestListModelsReadsGatewayReasoningLadder(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"deepseek-4.1-flash","capabilities":{"reasoning":true,"tools":true},"client_compat":{"streaming":true,"pi":{"maxTokensField":"max_tokens","supportsReasoningEffort":true,"thinkingFormat":"openai","thinkingLevelMap":{"high":"high","low":"low","max":"max","medium":"medium","minimal":null,"off":null,"xhigh":"xhigh"}}}}`)
 	if got, want := c.EffortValues, []string{"low", "medium", "high", "xhigh", "max"}; !slices.Equal(got, want) {
 		t.Fatalf("EffortValues = %v, want %v", got, want)
@@ -150,6 +155,7 @@ func TestListModelsReadsGatewayReasoningLadder(t *testing.T) {
 // be told to stop reasoning: the map's off key names the wire value, which is
 // the ladder's off entry (EffortOffCapable reads "none").
 func TestListModelsReadsGatewayReasoningOffLevel(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"toggle-model","client_compat":{"pi":{"thinkingLevelMap":{"off":"none","low":"low","high":"high"}}}}`)
 	if got, want := c.EffortValues, []string{"none", "low", "high"}; !slices.Equal(got, want) {
 		t.Fatalf("EffortValues = %v, want %v", got, want)
@@ -161,6 +167,7 @@ func TestListModelsReadsGatewayReasoningOffLevel(t *testing.T) {
 // because capabilities.reasoning is the model's own verdict and derivation
 // clears a ladder on an off row.
 func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"no-reasoning","capabilities":{"reasoning":false},"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
 	if c.Reasoning == nil || *c.Reasoning {
 		t.Fatalf("Reasoning = %v, want an explicit false", c.Reasoning)
@@ -172,6 +179,7 @@ func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
 // tools in supported_parameters but states capabilities.tools false must
 // resolve tool-less: the gateway's own verdict is the narrower fact.
 func TestListModelsGatewayToolsFollowsTheCapability(t *testing.T) {
+	t.Parallel()
 	if c := listRow(t, `{"id":"tools-gateway","supported_parameters":["tools"],"capabilities":{"tools":false}}`); c.Tools == nil || *c.Tools {
 		t.Fatalf("Tools = %v, want an explicit false from capabilities.tools", c.Tools)
 	}
@@ -184,6 +192,7 @@ func TestListModelsGatewayToolsFollowsTheCapability(t *testing.T) {
 // publishes no Pi compat block still contributes its capabilities and limits;
 // the absence of a ladder must stay nil, not become an empty one.
 func TestListModelsGatewayWithoutPiKeepsOtherFacts(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"plain-gateway","context_window":8192,"capabilities":{"reasoning":true,"tools":true},"client_compat":{"streaming":true}}`)
 	if c.EffortValues != nil {
 		t.Fatalf("EffortValues = %#v, want nil when no map is published", c.EffortValues)
@@ -198,6 +207,7 @@ func TestListModelsGatewayWithoutPiKeepsOtherFacts(t *testing.T) {
 // reasoning = false first. Without the raise, registry derivation discards the
 // ladder and request shaping drops the selected effort.
 func TestListModelsGatewayLadderRaisesInferredFalse(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"no-reasoning-param","supported_parameters":["tools"],"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
 	if c.Reasoning == nil || !*c.Reasoning {
 		t.Fatalf("Reasoning = %v, want true from the ladder", c.Reasoning)
@@ -212,6 +222,7 @@ func TestListModelsGatewayLadderRaisesInferredFalse(t *testing.T) {
 // control, so the row must not carry a ladder at all rather than inherit one
 // from a curated row at resolve time.
 func TestListModelsGatewayPublishedEmptyMapStatesNoEffort(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"no-effort","capabilities":{"reasoning":true},"client_compat":{"pi":{"thinkingLevelMap":{"low":null,"high":null}}}}`)
 	if len(c.EffortValues) != 0 || c.EffortValues == nil {
 		t.Fatalf("EffortValues = %#v, want a published empty ladder", c.EffortValues)
@@ -222,6 +233,7 @@ func TestListModelsGatewayPublishedEmptyMapStatesNoEffort(t *testing.T) {
 // other compat fields do not count as a published map: silence about effort
 // must leave an inherited ladder alone rather than erase it.
 func TestListModelsGatewayPiWithoutMapStatesNoLadder(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"max-tokens-only","client_compat":{"pi":{"maxTokensField":"max_tokens","supportsReasoningEffort":true}}}`)
 	if c.EffortValues != nil {
 		t.Fatalf("EffortValues = %#v, want nil when the block states no map", c.EffortValues)
@@ -232,6 +244,7 @@ func TestListModelsGatewayPiWithoutMapStatesNoLadder(t *testing.T) {
 // gateway publishes per model. A lunaroute glm row says zai; without reading
 // it the row spells the openai dialect and the thinking object never opens.
 func TestListModelsReadsGatewayDialect(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"glm-5.3","capabilities":{"reasoning":true},"client_compat":{"pi":{"thinkingFormat":"zai","maxTokensField":"max_tokens","supportsReasoningEffort":true,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
 	if got := registry.StringValue(c.ThinkingFormat); got != "zai" {
 		t.Fatalf("ThinkingFormat = %q, want zai", got)
@@ -247,6 +260,7 @@ func TestListModelsReadsGatewayDialect(t *testing.T) {
 // level. Derivation, not the reader, turns the verdict into toggle-only
 // controls, because only it can preserve a numeric budget from another layer.
 func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"toggle-model","supported_parameters":["reasoning"],"client_compat":{"pi":{"supportsReasoningEffort":false,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
 	if !registry.BoolValue(c.EffortParameterUnsupported) {
 		t.Fatal("the row must record the no-effort verdict")
@@ -265,6 +279,7 @@ func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
 // normalizes it, but a model the gateway says takes no effort parameter must
 // still get the enable object instead of a level it does not accept.
 func TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort(t *testing.T) {
+	t.Parallel()
 	high, on := "high", true
 	format := "openrouter"
 	unsupported := true
@@ -293,6 +308,7 @@ func TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort(t *testing.T) {
 // translates the level into a budget, so suppressing it would silently discard
 // the user's setting.
 func TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort(t *testing.T) {
+	t.Parallel()
 	high, on := "high", true
 	format := "openrouter"
 	body := map[string]any{}
@@ -313,6 +329,7 @@ func TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort(t *testing.T) {
 // the row cannot take. Suppressing the effort at the call site instead would
 // leave thinking off entirely.
 func TestApplyThinkingFormat_ToggleOnlyZaiKeepsThinkingObject(t *testing.T) {
+	t.Parallel()
 	high, on := "high", true
 	format := "zai"
 	body := map[string]any{}
@@ -333,6 +350,7 @@ func TestApplyThinkingFormat_ToggleOnlyZaiKeepsThinkingObject(t *testing.T) {
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"both-windows","context_length":1000000,"context_window":1048576}`)
 	if c.ContextWindow == nil || *c.ContextWindow != 1000000 {
 		t.Fatalf("ContextWindow = %v, want context_length 1000000", c.ContextWindow)
@@ -342,6 +360,7 @@ func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {
 // TestListModelsPrefersTopProviderMaxCompletionTokens keeps OpenRouter's
 // precedence: the per-provider cap beats every top-level output spelling.
 func TestListModelsPrefersTopProviderMaxCompletionTokens(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"provider-cap","top_provider":{"max_completion_tokens":128000},"max_completion_tokens":262144,"max_output_tokens":999}`)
 	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 128000 {
 		t.Fatalf("MaxOutputTokens = %v, want top_provider 128000", c.MaxOutputTokens)
@@ -351,6 +370,7 @@ func TestListModelsPrefersTopProviderMaxCompletionTokens(t *testing.T) {
 // TestListModelsPrefersTopLevelMaxCompletionTokens pins the top-level order:
 // max_completion_tokens before max_output_tokens.
 func TestListModelsPrefersTopLevelMaxCompletionTokens(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"two-spellings","max_completion_tokens":262144,"max_output_tokens":999}`)
 	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 262144 {
 		t.Fatalf("MaxOutputTokens = %v, want max_completion_tokens 262144", c.MaxOutputTokens)
@@ -360,6 +380,7 @@ func TestListModelsPrefersTopLevelMaxCompletionTokens(t *testing.T) {
 // TestListModelsLeavesLimitsNilWhenUnadvertised pins that only positive values
 // become caps: absent, zero and negative spellings all leave the pointer nil.
 func TestListModelsLeavesLimitsNilWhenUnadvertised(t *testing.T) {
+	t.Parallel()
 	for _, row := range []string{
 		`{"id":"absent"}`,
 		`{"id":"nonpositive","context_length":0,"context_window":-1,"max_input_tokens":0,"max_completion_tokens":0,"max_output_tokens":-5,"top_provider":{"max_completion_tokens":0}}`,
@@ -378,6 +399,7 @@ func TestListModelsLeavesLimitsNilWhenUnadvertised(t *testing.T) {
 // a gateway publishing only that spelling lost its window: ApplyTokenBudget
 // would then skip the total-context clamp and allocate output with no ceiling.
 func TestListModelsReadsContextWindowAlone(t *testing.T) {
+	t.Parallel()
 	c := listRow(t, `{"id":"window-only","context_window":1048576}`)
 	if c.ContextWindow == nil || *c.ContextWindow != 1048576 {
 		t.Fatalf("ContextWindow = %v, want 1048576", c.ContextWindow)
@@ -389,6 +411,7 @@ func TestListModelsReadsContextWindowAlone(t *testing.T) {
 // so the model is not resolved as image-blind. An explicit vision:false, or no
 // capabilities object at all, must not advertise image input.
 func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
+	t.Parallel()
 	if c := listRow(t, `{"id":"vision-model","capabilities":{"vision":true,"tools":true}}`); !c.AcceptsModality("image") {
 		t.Fatalf("capabilities.vision:true must advertise image input: %+v", c.InputModalities)
 	}
@@ -407,6 +430,7 @@ func TestListModelsReadsGatewayVisionCapability(t *testing.T) {
 // is not the models JSON shape fails the listing rather than yielding empty
 // rows silently.
 func TestListModelsDecodeFailure(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `not json at all`)
 	if _, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil)); err == nil {
 		t.Fatal("an undecodable models listing must fail")

@@ -7,6 +7,7 @@ import (
 )
 
 func TestValidateToolName(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	for _, name := range []string{"t", "Tool_1", "a_b_c", "Z9", strings.Repeat("a", 64)} {
 		if err := ValidateToolName(name); err != nil {
 			t.Fatalf("ValidateToolName(%q): %v", name, err)
@@ -25,6 +26,7 @@ func TestValidateToolName(t *testing.T) {
 }
 
 func TestRequestValidate_ToolsValidated(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	req := Request{Model: "m", Messages: []Message{User("hi")}}
 	if err := req.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)

@@ -47,6 +47,7 @@ func rateLimit429() error {
 }
 
 func TestDefaultRetryPolicy_CarriesRateLimitWallBudget(t *testing.T) {
+	t.Parallel()
 	p := DefaultRetryPolicy()
 	if p.RateLimitWallBudget != 30*time.Minute {
 		t.Fatalf("RateLimitWallBudget = %s, want 30m", p.RateLimitWallBudget)
@@ -57,6 +58,7 @@ func TestDefaultRetryPolicy_CarriesRateLimitWallBudget(t *testing.T) {
 // wall budget still has room: issue #342's fatal case is eleven consecutive
 // Bedrock 429s settling provider_rejection with 25 minutes of run budget left.
 func TestRetry_RateLimitOutlivesAttemptCapWhileWallBudgetRemains(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 
@@ -87,6 +89,7 @@ func TestRetry_RateLimitOutlivesAttemptCapWhileWallBudgetRemains(t *testing.T) {
 // When the wall budget does elapse the rate-limit error is returned unchanged,
 // so the caller's existing fatal escalation stands.
 func TestRetry_RateLimitSettlesWhenWallBudgetElapses(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 10*time.Minute)
 
@@ -112,6 +115,7 @@ func TestRetry_RateLimitSettlesWhenWallBudgetElapses(t *testing.T) {
 }
 
 func TestRetry_WallBudgetPreservesTerminalErrorIdentity(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, time.Second)
 	terminal := rateLimit429()
@@ -127,6 +131,7 @@ func TestRetry_WallBudgetPreservesTerminalErrorIdentity(t *testing.T) {
 // Non-rate-limit retryables keep attempt-counted semantics exactly, even with a
 // wall budget configured.
 func TestRetry_NonRateLimitRetryableStillStopsAtAttemptCap(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 	policy.MaxRetries = 3
@@ -146,6 +151,7 @@ func TestRetry_NonRateLimitRetryableStillStopsAtAttemptCap(t *testing.T) {
 }
 
 func TestRetry_NonRateLimitAfterRateLimitStormStillStops(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 	policy.MaxRetries = 1
@@ -170,6 +176,7 @@ func TestRetry_NonRateLimitAfterRateLimitStormStillStops(t *testing.T) {
 // A wall-budgeted rate-limit retry still waits exactly as long as the provider
 // asked, rather than falling back to the calculated backoff ladder.
 func TestRetry_RateLimitHonorsRetryAfterUnderWallBudget(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 
@@ -201,6 +208,7 @@ func TestRetry_RateLimitHonorsRetryAfterUnderWallBudget(t *testing.T) {
 // otherwise this client would immediately re-enter the throttle it was told to
 // avoid. Attempt-counted policies retain the legacy MaxDelay refusal.
 func TestRetry_RateLimitHonorsRetryAfterAboveMaxDelay(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 5*time.Minute)
 	policy.MaxRetries = 0
@@ -230,6 +238,7 @@ func TestRetry_RateLimitHonorsRetryAfterAboveMaxDelay(t *testing.T) {
 // A zero budget is the off switch: rate limits stay attempt-counted, which is
 // what every policy literal that predates the budget gets.
 func TestRetry_ZeroWallBudgetKeepsAttemptCountedRateLimits(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 0)
 	policy.MaxRetries = 2
@@ -251,6 +260,7 @@ func TestRetry_ZeroWallBudgetKeepsAttemptCountedRateLimits(t *testing.T) {
 // The streaming path is the one that died in the field (a 429 rejection at
 // stream open), so it carries the same four properties.
 func TestRetryStream_RateLimitOutlivesAttemptCapWhileWallBudgetRemains(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 
@@ -275,6 +285,7 @@ func TestRetryStream_RateLimitOutlivesAttemptCapWhileWallBudgetRemains(t *testin
 }
 
 func TestRetryStream_RateLimitSettlesWhenWallBudgetElapses(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 10*time.Minute)
 
@@ -302,6 +313,7 @@ func TestRetryStream_RateLimitSettlesWhenWallBudgetElapses(t *testing.T) {
 }
 
 func TestRetryStream_WallBudgetPreservesTerminalErrorIdentity(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, time.Second)
 	terminal := rateLimit429()
@@ -315,6 +327,7 @@ func TestRetryStream_WallBudgetPreservesTerminalErrorIdentity(t *testing.T) {
 }
 
 func TestRetryStream_NonRateLimitRetryableStillStopsAtAttemptCap(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 	policy.MaxRetries = 3
@@ -333,6 +346,7 @@ func TestRetryStream_NonRateLimitRetryableStillStopsAtAttemptCap(t *testing.T) {
 }
 
 func TestRetryStream_NonRateLimitAfterRateLimitStormStillStops(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 	policy.MaxRetries = 1
@@ -355,6 +369,7 @@ func TestRetryStream_NonRateLimitAfterRateLimitStormStillStops(t *testing.T) {
 }
 
 func TestRetryStream_RateLimitHonorsRetryAfterUnderWallBudget(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 
@@ -381,6 +396,7 @@ func TestRetryStream_RateLimitHonorsRetryAfterUnderWallBudget(t *testing.T) {
 }
 
 func TestRetryStream_RateLimitHonorsRetryAfterAboveMaxDelay(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 5*time.Minute)
 	policy.MaxRetries = 0
@@ -406,6 +422,7 @@ func TestRetryStream_RateLimitHonorsRetryAfterAboveMaxDelay(t *testing.T) {
 // An exhausted allowance is a 429 too, but it is KindQuotaExceeded and
 // Permanent: the wall budget must not resurrect it into a 30-minute wait.
 func TestRetry_QuotaExceeded429IsNotWallBudgeted(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	policy := budgetPolicy(clk, 30*time.Minute)
 
@@ -434,6 +451,7 @@ func TestRetry_QuotaExceeded429IsNotWallBudgeted(t *testing.T) {
 // WallBudgetedRateLimit is the one home for "is this failure wall-budgeted",
 // shared with the agent's retry-chip denominator so the two cannot drift.
 func TestWallBudgetedRateLimit(t *testing.T) {
+	t.Parallel()
 	budgeted := DefaultRetryPolicy()
 	unbudgeted := budgeted
 	unbudgeted.RateLimitWallBudget = 0

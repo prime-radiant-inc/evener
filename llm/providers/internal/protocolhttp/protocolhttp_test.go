@@ -84,6 +84,7 @@ func (s *captureSink) records() []apilog.APIAttemptRecord {
 }
 
 func TestPrepareRunsPruneConstantsAuthPrepareInOrder(t *testing.T) {
+	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
 	registerTestSchemes()
 	res := testRes("https://api.example.test/v1", "test-runner-preparer")
 	body := map[string]any{"metadata": map[string]string{"a": "b"}, "store": false, "reasoning": map[string]any{"effort": "high"}}
@@ -115,6 +116,7 @@ func TestPrepareRunsPruneConstantsAuthPrepareInOrder(t *testing.T) {
 }
 
 func TestPrepareReturnsFinalizeBodyError(t *testing.T) {
+	t.Parallel()
 	want := errors.New("final body invalid")
 	_, err := Prepare(context.Background(), &Call{
 		Method: http.MethodPost,
@@ -131,6 +133,7 @@ func TestPrepareReturnsFinalizeBodyError(t *testing.T) {
 }
 
 func TestURLAndModelInBody(t *testing.T) {
+	t.Parallel()
 	res := registry.Resolved{WireID: "models/x y", Transport: registry.Transport{BaseURL: "https://h/v1/", Endpoint: "/publishers/anthropic/models/{model}:rawPredict"}}
 	if got := URL(res, res.Transport.Endpoint); got != "https://h/v1/publishers/anthropic/models/models%2Fx%20y:rawPredict" {
 		t.Fatalf("URL = %q", got)
@@ -144,6 +147,7 @@ func TestURLAndModelInBody(t *testing.T) {
 }
 
 func TestDoDecodesStampsAndLogs(t *testing.T) {
+	t.Parallel()
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -218,6 +222,7 @@ func assertOneAttemptCompleted(ctx context.Context, t *testing.T, sink *captureS
 }
 
 func TestDoClassifiesFailuresAndReclassifies(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":{"message":"Unknown parameter: 'store'.","code":"unknown_parameter","param":"store"}}`))
@@ -260,6 +265,7 @@ func TestDoClassifiesFailuresAndReclassifies(t *testing.T) {
 }
 
 func TestStreamPublishesStartThenHandsOff(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "fail") {
 			w.WriteHeader(http.StatusTooManyRequests)
@@ -323,6 +329,7 @@ func TestStreamPublishesStartThenHandsOff(t *testing.T) {
 }
 
 func TestCompleteViaStreamAccumulates(t *testing.T) {
+	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
 	open := func(context.Context) (llm.Stream, error) {
 		s := llm.NewChanStream(func() {})
 		go func() {
@@ -353,6 +360,7 @@ func TestCompleteViaStreamAccumulates(t *testing.T) {
 // so every consumer of Prepared.material (endpoint stamps, error
 // sanitizing) can scrub it too.
 func TestCredentialMaterialCoversURLUserinfo(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"r1"}`))

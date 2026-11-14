@@ -17,6 +17,7 @@ import (
 )
 
 func TestEstimateMessagesInputTokensIsAlwaysMarkedInexact(t *testing.T) {
+	t.Parallel()
 	got := EstimateMessagesInputTokens([]Message{User("hello there, this is some text")})
 	if got.Tokens <= 0 {
 		t.Fatalf("Tokens = %d, want a positive estimate", got.Tokens)
@@ -51,6 +52,7 @@ func TestEstimateMessagesInputTokensIsAlwaysMarkedInexact(t *testing.T) {
 // kept on the part (gateway-fronted GLM, for example) is display-only. A part
 // that does carry replayable metadata is still counted.
 func TestEstimateMessagesInputTokens_ExcludesNonReplayableThinking(t *testing.T) {
+	t.Parallel()
 	rawText := strings.Repeat("r", 400)
 	thinkingOnly := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
@@ -73,6 +75,7 @@ func TestEstimateMessagesInputTokens_ExcludesNonReplayableThinking(t *testing.T)
 // and ignores Text. A blob-only part must therefore still be billed, and the
 // estimate must grow with the blob.
 func TestEstimateMessagesInputTokens_BillsReplayedEncryptedBlob(t *testing.T) {
+	t.Parallel()
 	big := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: strings.Repeat("b", 400)}},
 	}}}
@@ -94,6 +97,7 @@ func TestEstimateMessagesInputTokens_BillsReplayedEncryptedBlob(t *testing.T) {
 // with the separately parsed text, so the text must be billed alongside the
 // blob; ID and Summary never ride a compat blob.
 func TestEstimateMessagesInputTokens_CompatEncryptedBlobBillsItsText(t *testing.T) {
+	t.Parallel()
 	const blob = `[{"type":"reasoning.text","text":"","signature":"sig-1"}]`
 	plain := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: blob}},
@@ -114,6 +118,7 @@ func TestEstimateMessagesInputTokens_CompatEncryptedBlobBillsItsText(t *testing.
 }
 
 func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T) {
+	t.Parallel()
 	withSig := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentRedThinking, Thinking: &ThinkingData{Text: "redacted", Signature: strings.Repeat("s", 400)}},
 	}}}
@@ -130,6 +135,7 @@ func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T)
 // "thinking": text, "signature": ""}), so its text must be billed even though
 // no replay metadata marks it. Before the provider-aware rule this was zero.
 func TestEstimateInputTokens_AnthropicReplaysUnsignedThinkingText(t *testing.T) {
+	t.Parallel()
 	rawText := strings.Repeat("t", 400)
 	req := thinkingOnlyRequest("anthropic", "claude-test", rawText)
 
@@ -149,6 +155,7 @@ func TestEstimateInputTokens_AnthropicReplaysUnsignedThinkingText(t *testing.T) 
 // row (chatcompletions/messages.go), so a text-only part must be billed here
 // too. Before the provider-aware rule this was zero.
 func TestEstimateInputTokens_OpenAICompatChatReplaysUnsignedThinkingText(t *testing.T) {
+	t.Parallel()
 	rawText := strings.Repeat("t", 400)
 	req := Request{
 		Provider: "openai-compatible",
@@ -168,6 +175,7 @@ func TestEstimateInputTokens_OpenAICompatChatReplaysUnsignedThinkingText(t *test
 // blob alone), Google drops thinking parts, and a provider alias the estimator
 // cannot resolve to either replaying adapter is not billed.
 func TestEstimateInputTokens_NonReplayingProvidersDoNotBillUnsignedThinking(t *testing.T) {
+	t.Parallel()
 	rawText := strings.Repeat("t", 400)
 	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
@@ -190,6 +198,7 @@ func TestEstimateInputTokens_NonReplayingProvidersDoNotBillUnsignedThinking(t *t
 // redacted thinking, signed parts, and encrypted blobs keep the same
 // characters whether the adapter replays unsigned text or not.
 func TestEstimateInputTokens_ProviderAwareRuleLeavesOtherThinkingShapesUnchanged(t *testing.T) {
+	t.Parallel()
 	shapes := map[string]ContentPart{
 		"anthropic signature":              {Kind: ContentThinking, Thinking: &ThinkingData{Text: "reasoning", Signature: strings.Repeat("s", 64)}},
 		"compat field name":                {Kind: ContentThinking, Thinking: &ThinkingData{Text: "reasoning", Signature: "reasoning_content"}},
@@ -216,6 +225,7 @@ func TestEstimateInputTokens_ProviderAwareRuleLeavesOtherThinkingShapesUnchanged
 // that fits before the thinking text is billed must cross the window once the
 // replayed text is counted.
 func TestEstimateInputTokens_ReplayedThinkingCrossesAnOversizedRequestThreshold(t *testing.T) {
+	t.Parallel()
 	const window = 1_000
 	req := Request{
 		Provider: "anthropic",
@@ -265,6 +275,7 @@ func (a *countAdapter) CountInputTokens(ctx context.Context, req Request) (Input
 }
 
 func TestEstimateInputTokens_ImageDataDoesNotScaleWithByteLength(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	reqWithImage := func(size int) Request {
 		return Request{
 			Provider: "openai-compatible",
@@ -291,6 +302,7 @@ func TestEstimateInputTokens_ImageDataDoesNotScaleWithByteLength(t *testing.T) {
 }
 
 func TestEstimateInputTokens_GoogleImageTiles(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	req := Request{
 		Provider: "google",
 		Model:    "gemini-2.5-pro",
@@ -323,6 +335,7 @@ func TestEstimateInputTokens_GoogleImageTiles(t *testing.T) {
 }
 
 func TestEstimateInputTokens_AnthropicImagePatches(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// 57×57: ceilDiv(57,28)=3, so 3*3=9 tokens.
 	// Floor division (57/28=2) would give 2*2=4, making the ceiling behaviour observable.
 	req := Request{
@@ -340,6 +353,7 @@ func TestEstimateInputTokens_AnthropicImagePatches(t *testing.T) {
 }
 
 func TestClient_CountInputTokens_UsesAdapterCounter(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	// Adapter returns only Tokens; Exact/Source/Provider/Model are deliberately blank
 	// so the enrichment block in CountInputTokens must fill every field.
@@ -378,6 +392,7 @@ func TestClient_CountInputTokens_UsesAdapterCounter(t *testing.T) {
 }
 
 func TestClient_CountInputTokens_FallsBackWhenCounterUnsupported(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &countAdapter{
 		name: "unsupported",
@@ -408,6 +423,7 @@ func TestClient_CountInputTokens_FallsBackWhenCounterUnsupported(t *testing.T) {
 }
 
 func TestClient_CountInputTokens_FallsBackToLocalEstimate(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "plain"})
 
@@ -471,6 +487,7 @@ func thinkingOnlyRequest(provider, model, text string) Request {
 // unsigned thinking text. Admission must bill it: undercounting here is what
 // lets an oversized request pass the local budget.
 func TestApplyTokenBudget_ResolvedOpenAIChatProviderBillsUnsignedThinking(t *testing.T) {
+	t.Parallel()
 	const text = 400 // chars → 100 tokens
 	reasoning := true
 	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
@@ -492,6 +509,7 @@ func TestApplyTokenBudget_ResolvedOpenAIChatProviderBillsUnsignedThinking(t *tes
 // thinking into content drops the part, so billing it would fail the budget
 // early and force needless compaction.
 func TestApplyTokenBudget_NonReasoningOpenAIChatRowDoesNotBillUnsignedThinking(t *testing.T) {
+	t.Parallel()
 	reasoning := false
 	res := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{Reasoning: &reasoning}}
 
@@ -514,6 +532,7 @@ func TestApplyTokenBudget_NonReasoningOpenAIChatRowDoesNotBillUnsignedThinking(t
 // bills nothing for plain thinking either — request assembly strips it
 // (#4563) — which is the row's answer, not the name's.
 func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
+	t.Parallel()
 	const text = 400
 	req := thinkingOnlyRequest("openai", "gpt-x", strings.Repeat("t", text))
 	if got := EstimateInputTokens(req).Tokens; got != 0 {
@@ -530,6 +549,7 @@ func TestEstimateInputTokens_ResolvedRowBeatsTheNameFallback(t *testing.T) {
 // a Google row does not claim an Anthropic replay; a Claude model under an alias
 // that selects nothing is still the best signal there is.
 func TestEstimateInputTokens_ProviderNameDominatesTheClaudeModelFallback(t *testing.T) {
+	t.Parallel()
 	const text = 400
 	google := thinkingOnlyRequest("google", "claude-sonnet", strings.Repeat("t", text))
 	if got := EstimateInputTokens(google).Tokens; got != 0 {
@@ -545,6 +565,7 @@ func TestEstimateInputTokens_ProviderNameDominatesTheClaudeModelFallback(t *test
 // names (the history entry point) must not fall back to the generic placeholder
 // for a row whose protocol has its own image-token rules.
 func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -569,6 +590,7 @@ func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *te
 // image must keep its own tokenizer family. The surface decides before the
 // protocol; without a surface the protocol still does.
 func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -600,6 +622,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *t
 // vendor's own, and with a generic surface the protocol alone would pick the
 // wrong tokenizer. An unrecognized family still falls through to the protocol.
 func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsTheWireProtocol(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -637,6 +660,7 @@ func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsTheWireProtocol(
 // compaction pressure sees replayable thinking text and does not see text the
 // adapter drops.
 func TestEstimateMessagesInputTokensForResolved_BillsAndSparesUnsignedThinking(t *testing.T) {
+	t.Parallel()
 	const text = 400
 	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{
 		{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("t", text)}},
@@ -665,6 +689,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsAndSparesUnsignedThinking(t
 // provider and model rather than the row's empty fields, or a resolved-but-partial
 // row undercounts exactly the requests a name-based caller bills correctly.
 func TestEstimateInputTokensForResolvedPartialRowKeepsTheRequestNames(t *testing.T) {
+	t.Parallel()
 	req := Request{
 		Provider: "anthropic",
 		Model:    "claude-opus-5",
@@ -686,6 +711,7 @@ func TestEstimateInputTokensForResolvedPartialRowKeepsTheRequestNames(t *testing
 // Mistral, OLMo, OpenChat or OPT model -- or a gateway path like openrouter/* or
 // ollama/* -- served over another protocol keeps that protocol's image rules.
 func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -708,6 +734,7 @@ func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *tes
 // while carrying an OpenAI provider surface still bills Anthropic's image rules,
 // because the surface describes where the row was reached, not what the model is.
 func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsProviderSurface(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -725,6 +752,7 @@ func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsProviderSurface(
 // a row's instance alias: the resolved and name-based estimators must agree on a
 // row that carries no other facts.
 func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	req := Request{
 		Provider: "google", Model: "gateway-zz",
@@ -743,6 +771,7 @@ func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T
 // not carry, or the request estimate and the history estimate disagree about one
 // row.
 func TestEstimateInputTokensForResolved_InstanceAliasDoesNotOutrankTheRowProtocol(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -762,6 +791,7 @@ func TestEstimateInputTokensForResolved_InstanceAliasDoesNotOutrankTheRowProtoco
 // protocol) must not claim a vendor's image rules for a row that does not carry
 // them.
 func TestLocalInputEstimateKeepsTheCallersProviderNotTheInstance(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentText, Text: "hello"},
@@ -781,6 +811,7 @@ func TestLocalInputEstimateKeepsTheCallersProviderNotTheInstance(t *testing.T) {
 // text-only input, so no image family is claimed for them -- not from the
 // protocol they are served over and not from anything else.
 func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -801,6 +832,7 @@ func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily
 // carry none of their own, so the estimate bills the low-detail formula the
 // request will actually use.
 func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetail(t *testing.T) {
+	t.Parallel()
 	low := "low"
 	row := registry.Resolved{
 		Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIResponses,
@@ -818,6 +850,7 @@ func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetail(t *tes
 // maps it exactly as ChatImageDetail does), so the estimate must bill the
 // low-detail formula for a chat row that configures it, mirroring the request.
 func TestEstimateMessagesInputTokensForResolved_ChatRowAppliesTheRowsImageDetail(t *testing.T) {
+	t.Parallel()
 	low := "low"
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
@@ -835,6 +868,7 @@ func TestEstimateMessagesInputTokensForResolved_ChatRowAppliesTheRowsImageDetail
 // one, so the estimate bills the full-detail formula the wire will use, not the
 // part's low-detail one.
 func TestEstimateMessagesInputTokensForResolved_ResponsesOmitDropsAPartDetail(t *testing.T) {
+	t.Parallel()
 	omit := "omit"
 	row := registry.Resolved{
 		Instance: "gateway", ModelID: "gpt-5.5", Protocol: registry.ProtocolOpenAIResponses,
@@ -858,6 +892,7 @@ func TestEstimateMessagesInputTokensForResolved_ResponsesOmitDropsAPartDetail(t 
 // overcounts, which fails the budget early and compacts a request the provider
 // would have taken.
 func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenTheyRide(t *testing.T) {
+	t.Parallel()
 	toolResult := func(withImage bool) []Message {
 		result := &ToolResultData{ToolCallID: "call1", Name: "screenshot", Content: "ok"}
 		if withImage {
@@ -926,6 +961,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenThe
 // estimable when the detail that rides the wire is low. The undecoded fallback
 // here would fail the budget on a request the provider bills at 85 tokens.
 func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetailWithoutDimensions(t *testing.T) {
+	t.Parallel()
 	low := "low"
 	const url = "https://images.test/cat.png"
 	remote := func(detail string) []Message {
@@ -968,6 +1004,7 @@ func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetailWithout
 //     and drops a redacted part and an opaque Responses blob;
 //   - the Google adapter emits no thinking shape at all.
 func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *testing.T) {
+	t.Parallel()
 	const (
 		textChars    = 400 // 100 tokens
 		blobChars    = 800 // 200 tokens
@@ -1046,6 +1083,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 // with no caller-provided provider and no row facts, a row merely named
 // "anthropic" must not bill thinking text.
 func TestEstimateInputTokensForResolved_InstanceAliasDoesNotBillThinking(t *testing.T) {
+	t.Parallel()
 	const text = "unsigned reasoning that only an Anthropic adapter would replay"
 	row := registry.Resolved{Instance: "anthropic", ModelID: "gateway-zz"}
 	req := thinkingOnlyRequest("", "gateway-zz", text)
@@ -1057,6 +1095,7 @@ func TestEstimateInputTokensForResolved_InstanceAliasDoesNotBillThinking(t *test
 // The equivalence covers what the estimator reads, model id included: the name
 // rules consult it whenever the row's own facts do not decide the family.
 func TestEstimatorTargetsEquivalentCoversTheModelID(t *testing.T) {
+	t.Parallel()
 	base := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIChat}
 	same := base
 	if !EstimatorTargetsEquivalent(base, same) {
@@ -1079,6 +1118,7 @@ func TestEstimatorTargetsEquivalentCoversTheModelID(t *testing.T) {
 // keeps a measurement keyed to the target would otherwise hold a count that bills
 // an image the shaped request no longer carries.
 func TestEstimatorTargetsEquivalentCoversMultimodalToolResults(t *testing.T) {
+	t.Parallel()
 	declared, undeclared := true, false
 	base := registry.Resolved{
 		Instance: "gateway", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIChat,
@@ -1099,6 +1139,7 @@ func TestEstimatorTargetsEquivalentCoversMultimodalToolResults(t *testing.T) {
 // A namespaced OpenAI id is the same model as its bare spelling, and a gemma id
 // is Google's: the name rule has to read both, with no row facts to decide from.
 func TestProviderTokenFamilyReadsNamespacedAndGemmaNames(t *testing.T) {
+	t.Parallel()
 	for _, model := range []string{"openai/gpt-4o", "openai.gpt-4o", "gpt-4o"} {
 		if got := providerTokenFamily("gateway", model); got != "openai" {
 			t.Fatalf("providerTokenFamily(gateway, %q) = %q, want openai", model, got)
@@ -1116,6 +1157,7 @@ func TestProviderTokenFamilyReadsNamespacedAndGemmaNames(t *testing.T) {
 // registry never classified, so a resolved target's family comes from the row's
 // own facts and the wire protocol, not from what its instance is called.
 func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -1136,6 +1178,7 @@ func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(
 // own family → surface rule (llm/registry §6.1): claude, gemini/gemma, gpt and
 // the o family are recognized, and gpt-oss is deliberately generic.
 func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRowDoesNot(t *testing.T) {
+	t.Parallel()
 	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -1195,6 +1238,7 @@ func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRo
 // protocol: the walker hands the part to the replay rule, which must return
 // the empty count rather than dereference the absent payload.
 func TestEstimateMessagesInputTokensForResolved_PartWithoutThinkingData(t *testing.T) {
+	t.Parallel()
 	messages := []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentThinking}}}}
 	for _, protocol := range []string{registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat, registry.ProtocolGoogle} {
 		row := registry.Resolved{Instance: "gateway", Protocol: protocol}
@@ -1211,6 +1255,7 @@ func TestEstimateMessagesInputTokensForResolved_PartWithoutThinkingData(t *testi
 // with its id and every summary entry, because the OpenAI Responses shape
 // replays all of them on the wire.
 func TestEstimateMessagesInputTokensCountsOpaqueBlobIdAndSummaries(t *testing.T) {
+	t.Parallel()
 	const (
 		blobChars    = 800
 		idChars      = 400
@@ -1238,6 +1283,7 @@ func TestEstimateMessagesInputTokensCountsOpaqueBlobIdAndSummaries(t *testing.T)
 // rules when the caller supplied no provider either: the instance alias is not
 // evidence, so the generic fallback prices the image.
 func TestEstimateMessagesInputTokensForResolved_NoVendorNameToRead(t *testing.T) {
+	t.Parallel()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
 	}}}
@@ -1253,6 +1299,7 @@ func TestEstimateMessagesInputTokensForResolved_NoVendorNameToRead(t *testing.T)
 // prices images with OpenAI's rules, and a Google protocol row with neither
 // surface nor family falls through to the protocol.
 func TestEstimateMessagesInputTokensForResolved_SurfaceAndProtocolNameTheFamily(t *testing.T) {
+	t.Parallel()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
 	}}}
@@ -1270,6 +1317,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceAndProtocolNameTheFamily(
 // has a portable representation for it: name-based targets bill the fallback
 // (no row can rule the bytes out), while a chat row drops them entirely.
 func TestEstimateToolResultMediaByType(t *testing.T) {
+	t.Parallel()
 	const pdfBytes = "%PDF-1.4 no raster here"
 	toolResult := func() []Message {
 		return []Message{{Role: RoleTool, Content: []ContentPart{{Kind: ContentToolResult, ToolResult: &ToolResultData{
@@ -1293,6 +1341,7 @@ func TestEstimateToolResultMediaByType(t *testing.T) {
 // differ only in ThinkingAsText or ImageDetail are different estimator
 // targets, because the local estimate reads both.
 func TestEstimatorTargetsEquivalentCoversThinkingAndImageDetail(t *testing.T) {
+	t.Parallel()
 	base := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIChat}
 	same := base
 	if !EstimatorTargetsEquivalent(base, same) {
@@ -1317,6 +1366,7 @@ func TestEstimatorTargetsEquivalentCoversThinkingAndImageDetail(t *testing.T) {
 }
 
 func TestEstimateInputTokensCountsResponseFormat(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	rf := &ResponseFormat{Type: "json_object"}
 	withRF := EstimateInputTokens(Request{Model: "m", Messages: []Message{User("hi")}, ResponseFormat: rf})
 	without := EstimateInputTokens(Request{Model: "m", Messages: []Message{User("hi")}})
@@ -1328,6 +1378,7 @@ func TestEstimateInputTokensCountsResponseFormat(t *testing.T) {
 // TestCountInputTokensConfigErrors covers the validation, missing-provider, and
 // unknown-provider guards of Client.CountInputTokens.
 func TestCountInputTokensConfigErrors(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	ctx := context.Background()
 
@@ -1346,6 +1397,7 @@ func TestCountInputTokensConfigErrors(t *testing.T) {
 // Every content kind the estimator reads contributes to the estimate: a part
 // carrying more of its kind's payload estimates higher than a smaller one.
 func TestEstimateInputTokensCountsEveryContentKind(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	estimate := func(part ContentPart) int {
 		return EstimateInputTokens(Request{
 			Provider: "anthropic",
@@ -1383,6 +1435,7 @@ func TestEstimateInputTokensCountsEveryContentKind(t *testing.T) {
 }
 
 func TestEstimateOpenAIImageTokens(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	openaiReq := func(img *ImageData) Request {
 		return Request{
 			Provider: "openai",
@@ -1427,6 +1480,7 @@ func TestEstimateOpenAIImageTokens(t *testing.T) {
 }
 
 func TestImageDimensions_LocalFileURL(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pic.png")
 	if err := os.WriteFile(path, pngImage(t, 57, 57), 0o600); err != nil {
@@ -1450,6 +1504,7 @@ func TestImageDimensions_LocalFileURL(t *testing.T) {
 // decodable raster, both fall back to the undecoded estimate: the local file
 // promise alone must not invent dimensions.
 func TestEstimateImageTokens_LocalPathFallbacks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.png")
 	if err := os.WriteFile(filepath.Join(dir, "garbage.png"), []byte("definitely not a raster"), 0o600); err != nil {

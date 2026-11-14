@@ -24,6 +24,7 @@ type modelListTransport func(*http.Request) (*http.Response, error)
 
 // A client-owned provider deadline must not become the protocol's caller deadline.
 func TestModelsRequestTimeoutAttemptOwnership(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, scenario := range []string{"request", "caller-deadline", "caller-cancel"} {
 			t.Run(provider.name+"/"+scenario, func(t *testing.T) {
@@ -86,6 +87,7 @@ func (a *timeoutListingAdapter) LiveModels(ctx context.Context) ([]registry.Mode
 }
 
 func TestModelsOverrideRequestTimeoutOwnership(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"request", "caller-deadline", "caller-cancel"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -131,6 +133,7 @@ func TestModelsOverrideRequestTimeoutOwnership(t *testing.T) {
 }
 
 func TestModelsTimeoutPolicy(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"fake", "openai"} {
 		for _, explicit := range []bool{false, true} {
 			t.Run(name+map[bool]string{false: "/default", true: "/explicit"}[explicit], func(t *testing.T) {
@@ -166,6 +169,7 @@ func TestModelsTimeoutPolicy(t *testing.T) {
 }
 
 func TestListingHTTPTimeoutPolicies(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"chat", "responses", "google", "anthropic"} {
 		for _, scenario := range []string{"default-body", "default-headers", "explicit-idle", "disabled", "active", "caller", "client", "request", "cancel"} {
 			t.Run(provider+"/"+scenario, func(t *testing.T) {

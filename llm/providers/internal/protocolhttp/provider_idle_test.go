@@ -18,6 +18,7 @@ type idleRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f idleRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func TestCompleteProviderIdleIsTimeout(t *testing.T) {
+	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
 	synctest.Test(t, func(t *testing.T) {
 		registerTestSchemes()
 		r, w := io.Pipe()
@@ -56,6 +57,7 @@ func TestCompleteProviderIdleIsTimeout(t *testing.T) {
 }
 
 func TestStreamRejectedBodyPreservesIdleAndCallerCancellation(t *testing.T) {
+	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
 	for _, callerCancel := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			registerTestSchemes()

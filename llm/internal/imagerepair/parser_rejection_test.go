@@ -34,6 +34,7 @@ func paraTag(kind uint16, params ...float64) []byte {
 // curve parser, each with a valid encoding of the same shape as the control
 // so the rejection is attributable to the violated rule alone.
 func TestParseCurveRejections(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cases := []struct {
 		name string
@@ -83,6 +84,7 @@ func TestParseCurveRejections(t *testing.T) {
 // TestParseICCRejections pins the profile-level rejection arms a mutation of
 // a single field can reach, with the unmutated profile as the control.
 func TestParseICCRejections(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := fixture(t, "p3.icc")
 	if _, ok := parseICC(ctx, base); !ok {
@@ -136,6 +138,7 @@ func minimalJPEG(interior []byte) []byte {
 // against the control of a complete minimal JPEG so the refusal is the
 // specific violation's alone.
 func TestScanJPEGRejections(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	if _, ok := scanJPEG(ctx, minimalJPEG(nil)); !ok {
 		t.Fatal("a complete minimal JPEG must scan")
@@ -173,6 +176,7 @@ func TestScanJPEGRejections(t *testing.T) {
 // all; the sweep must eventually complete, proving every earlier boundary
 // returned the refused scan.
 func TestScanJPEGCancellationBoundaries(t *testing.T) {
+	t.Parallel()
 	inputs := map[string][]byte{
 		"entropy step check": minimalJPEG(make([]byte, 8192)),
 		"fill step check":    minimalJPEG(bytes.Repeat([]byte{0xFF}, 8190)),
@@ -213,6 +217,7 @@ func TestScanJPEGCancellationBoundaries(t *testing.T) {
 // conversion, so the removal loop is the only path); every cancelled run
 // must hand back the original bytes, and some run must complete.
 func TestRepairJPEGRemovalLoopCancellation(t *testing.T) {
+	t.Parallel()
 	input := tagged(fixture(t, "patches.jpg"), []byte("malformed"))
 	original := bytes.Clone(input)
 	completed := false
@@ -248,6 +253,7 @@ func TestRepairJPEGRemovalLoopCancellation(t *testing.T) {
 // transform has no business re-interpreting gray pixels, so the repair falls
 // back to stripping the profile and returns the original bytes.
 func TestRepairGrayJPEGWithColorProfileFallsBack(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, image.NewGray(image.Rect(0, 0, 32, 24)), &jpeg.Options{Quality: 80}); err != nil {
 		t.Fatal(err)
@@ -263,6 +269,7 @@ func TestRepairGrayJPEGWithColorProfileFallsBack(t *testing.T) {
 // still parses and defaults to the identity, so unrelated metadata can never
 // disable a repair.
 func TestParseOrientationSkipsUnrelatedTags(t *testing.T) {
+	t.Parallel()
 	tiff := exif(8, binary.LittleEndian)[10:]
 	binary.LittleEndian.PutUint16(tiff[10:], 0x010f) // the Make tag, not orientation
 	o, ok := parseOrientation(tiff)

@@ -87,6 +87,7 @@ func completedBefore(a, b callRecord) bool {
 }
 
 func TestExecuteToolCalls_SingleCall(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		const sleep = 20 * time.Millisecond
 		var mu sync.Mutex
@@ -117,6 +118,7 @@ func TestExecuteToolCalls_SingleCall(t *testing.T) {
 }
 
 func TestExecuteToolCalls_AllReads(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		const sleep = 25 * time.Millisecond
 		var mu sync.Mutex
@@ -163,6 +165,7 @@ func TestExecuteToolCalls_AllReads(t *testing.T) {
 }
 
 func TestExecuteToolCalls_ReadThenWrite(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		const sleep = 25 * time.Millisecond
 		var mu sync.Mutex
@@ -208,6 +211,7 @@ func TestExecuteToolCalls_ReadThenWrite(t *testing.T) {
 }
 
 func TestExecuteToolCalls_WriteThenRead(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		const sleep = 25 * time.Millisecond
 		var mu sync.Mutex
@@ -253,6 +257,7 @@ func TestExecuteToolCalls_WriteThenRead(t *testing.T) {
 }
 
 func TestExecuteToolCalls_InterleavedReadWrite(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		// Pattern: [read, write, read, write, read]
 		// Expected groups: group1(read1) → group2(write1) → group3(read2) → group4(write2) → group5(read3)
@@ -308,6 +313,7 @@ func TestExecuteToolCalls_InterleavedReadWrite(t *testing.T) {
 }
 
 func TestExecuteToolCalls_ConsecutiveWritesSerialized(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		const sleep = 25 * time.Millisecond
 		var mu sync.Mutex
@@ -343,6 +349,7 @@ func TestExecuteToolCalls_ConsecutiveWritesSerialized(t *testing.T) {
 }
 
 func TestExecuteToolCalls_UnknownToolDefaultsNonReadOnly(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	synctest.Test(t, func(t *testing.T) {
 		// An unknown tool name should be treated as non-read-only: it must be serialized
 		// and not batched with adjacent reads.

@@ -9,6 +9,7 @@ import (
 )
 
 func TestResolveContextBudgetIdentity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		req          Request
@@ -49,6 +50,7 @@ func TestResolveContextBudgetIdentity(t *testing.T) {
 }
 
 func TestApplyTokenBudget_IncidentMaxInputAndTotalClamp(t *testing.T) {
+	t.Parallel()
 	req := Request{
 		Model:               "glm-5.2-vision",
 		Messages:            []Message{User("x")},
@@ -98,6 +100,7 @@ func TestApplyTokenBudget_IncidentMaxInputAndTotalClamp(t *testing.T) {
 }
 
 func TestApplyTokenBudget_CapCombinationsAndBoundaries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		req           Request
@@ -275,6 +278,7 @@ func TestApplyTokenBudget_CapCombinationsAndBoundaries(t *testing.T) {
 }
 
 func TestShapeRequestClampsKnownOutputCap(t *testing.T) {
+	t.Parallel()
 	requested := 8_192
 	req := Request{MaxTokens: &requested}
 	got := ShapeRequest(req, registry.Resolved{Caps: registry.Caps{MaxOutputTokens: new(4_096)}})
@@ -290,6 +294,7 @@ func TestShapeRequestClampsKnownOutputCap(t *testing.T) {
 // requests by: one percent of the context window, rounded up, floored at the
 // package minimum, and the minimum alone when no window is known.
 func TestSafetyReserveTokens(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		window int
 		want   int
