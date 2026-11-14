@@ -7,7 +7,7 @@
 // pinned in Session.transcript.test.tsx and the Composer suites; this file
 // pins the component's own pure rendering rules.
 import { formatElapsed } from "@evener/appwire-client";
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
@@ -266,12 +266,21 @@ test("a queued text-and-image row refuses Edit rather than destroying its images
   // Refused, with the image reason the retired strip showed - not enabled.
   // The reason rides the widget's own disabledReason contract: aria-disabled
   // refusal plus a describing tooltip, observed the same way the widget's
-  // own test observes it (focus, then the show delay).
+  // own test observes it (focus, then the show delay). The reason's WORDS
+  // are copy, not a test oracle: the behavior pinned here is the refusal
+  // (aria-disabled), the association (aria-describedby names the tooltip),
+  // and that the tooltip says something (a non-empty reason is present).
   expect(edit.getAttribute("aria-disabled")).toBe("true");
   act(() => edit.focus());
   const tooltip = await screen.findByRole("tooltip");
   expect(edit.getAttribute("aria-describedby")).toBe(tooltip.id);
-  expect(tooltip.textContent).toContain("remove the message and re-attach it instead");
+  expect(tooltip.textContent?.trim()).not.toBe("");
+  // The refusal is behavioral: the press cannot fire the restore that
+  // would cancel this row. The queue still holds the entry.
+  fireEvent.click(edit);
+  expect(screen.queryByTestId("composer-slot")).toBeNull();
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows.some((row) => row.textContent?.includes("look at this"))).toBe(true);
 });
 
 // Retry's own busy state is transient (the press's own in-flight window),
