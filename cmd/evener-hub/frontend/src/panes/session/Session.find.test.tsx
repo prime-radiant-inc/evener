@@ -250,3 +250,72 @@ test("calls that fold into a run after a match was found are opened again when t
   await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
   expect(marked()?.getAttribute(FIND_CURRENT_ATTRIBUTE)).toBe("entry");
 });
+
+test("a tool body that would not show the matched words shows them while it is the current match", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            message("turn_1", "userMessage", "write and fetch"),
+            {
+              id: "write",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "write_file",
+              callId: "write",
+              argumentsJson: JSON.stringify({
+                path: "/notes.md",
+                content: `${"filler ".repeat(200)}the wombat paragraph`,
+              }),
+              output: "wrote 1420 bytes to /notes.md",
+              status: "completed" as const,
+            },
+            {
+              id: "fetch",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "web_fetch",
+              callId: "fetch",
+              argumentsJson: JSON.stringify({ url: "https://example.com" }),
+              output: `${"page ".repeat(100)}a numbat sentence far past the preview`,
+              status: "completed" as const,
+            },
+            message("turn_1", "agentMessage", "Done."),
+          ],
+        },
+      ],
+    }),
+  }));
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused />
+    </ClientProvider>,
+  );
+  await screen.findByText("Done.");
+  pressFind();
+  const field = screen.getByRole("searchbox");
+
+  // write_file's body shows only its confirmation line.
+  fireEvent.change(field, { target: { value: "wombat paragraph" } });
+  await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("write"));
+  await waitFor(() => expect(marked()?.textContent).toContain("the wombat paragraph"));
+
+  // web_fetch's body shows a short preview of the page.
+  fireEvent.change(field, { target: { value: "numbat sentence" } });
+  await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("fetch"));
+  await waitFor(() => expect(marked()?.textContent).toContain("a numbat sentence"));
+
+  // Moving on puts the earlier call back as it was.
+  expect(document.querySelector('[data-view-anchor-id="write"]')?.textContent).not.toContain("wombat");
+});

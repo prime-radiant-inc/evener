@@ -621,18 +621,7 @@ export function buildCommands(): Command[] {
       scope: "session",
       run: (ctx) => {
         if (!ctx.sessionRef) return;
-        // Find lives in the conversation: from a companion pane (tasks,
-        // details) focus the seat that hosts it, or open the session pane,
-        // as the notes command does. The request waits for that pane to mount.
-        const seat = ctx.sessionPaneId
-          ? workspaceStore.getState().panes.find((pane) => pane.id === ctx.sessionPaneId)
-          : undefined;
-        if (seat && (seat.type === "session" || seat.type === "sessionZoom")) {
-          workspaceStore.getState().focusPane(seat.id);
-        } else {
-          workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
-        }
-        requestFindInSession(ctx.sessionRef, { target: seat ? ctx.sessionPaneId : null });
+        showFindIn(ctx.sessionRef, ctx.sessionPaneId);
       },
     },
     {
@@ -702,6 +691,22 @@ export function buildCommands(): Command[] {
       },
     },
   ];
+}
+
+/** Opens Find in a session's conversation. Find lives in the conversation:
+ * from a companion pane (tasks, details) this focuses the seat that hosts it,
+ * or opens the session pane, as the notes command does. The request waits for
+ * that pane to mount. */
+export function showFindIn(
+  sessionRef: string,
+  sessionPaneId: string | null,
+  landing: { query?: string; itemId?: string } = {},
+): void {
+  const seat = sessionPaneId ? workspaceStore.getState().panes.find((pane) => pane.id === sessionPaneId) : undefined;
+  const hosts = seat !== undefined && (seat.type === "session" || seat.type === "sessionZoom");
+  if (hosts) workspaceStore.getState().focusPane(seat.id);
+  else workspaceStore.getState().openPane("session", { ref: sessionRef });
+  requestFindInSession(sessionRef, { ...landing, target: hosts ? sessionPaneId : null });
 }
 
 // rememberableId is the id a successful ARGLESS command records in recents -

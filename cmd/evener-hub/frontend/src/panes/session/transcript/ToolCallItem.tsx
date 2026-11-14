@@ -20,6 +20,7 @@ import {
 import { type CadenceState, StatusDot } from "../../../widgets";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { FindLandingFallback } from "../find/FindLandingFallback";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
@@ -434,6 +435,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           {showErrorText && <div className={CLASS.error}>{item.error}</div>}
           {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={cwd} />}
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
+          <FindLandingFallback item={item} />
         </div>
       )}
     </div>

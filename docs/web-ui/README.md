@@ -220,7 +220,11 @@ without scrolling (a landscape phone); the palette command remains.
   words are on screen. They stay open, as a reader's own toggle would. A tool
   body that folds its output (a long read shows only its tail) shows the
   stretch holding the landed-on words instead, under a line saying so, for as
-  long as that call is the landing.
+  long as that call is the landing. Any other tool body that does not show
+  the words (a write shows its confirmation, a fetch a short preview) gets the
+  same stretch beneath it: the tool row reads what its body rendered and adds
+  what is missing, so no renderer has to opt in. Coloured terminal output is
+  searched as it reads, without its control codes.
 - **Marks.** The current entry is outlined. Matching words are painted with the
   CSS Custom Highlight API, which changes no transcript DOM; where a browser
   lacks it, the outline alone marks the match. Painting follows the match

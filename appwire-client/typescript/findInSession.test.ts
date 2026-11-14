@@ -74,6 +74,15 @@ describe("the text an item is searched by", () => {
     expect(found("question")).toBe(false);
   });
 
+  it("reads coloured output as the reader sees it, without the control codes", () => {
+    const shell = item({ type: "commandExecution", output: "build \u001b[31merror\u001b[0m\u001b[1m code\u001b[0m 2" });
+    const found = (query: string) => itemFindTexts(shell).some((text) => textMatchesFind(text, findNeedle(query)));
+    expect(found("error code 2")).toBe(true);
+    // The codes themselves are not text.
+    expect(found("[31m")).toBe(false);
+    expect(found("31merror")).toBe(false);
+  });
+
   it("survives arguments that are not an object", () => {
     expect(itemFindTexts(item({ argumentsJSON: "not json", text: "kept" }))).toEqual(["kept"]);
   });

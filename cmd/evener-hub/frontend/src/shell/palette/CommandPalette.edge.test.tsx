@@ -286,6 +286,32 @@ test("choosing an in-session result hands its words and its item to the session'
   expect(renderHook(() => useFindRequest("ref_b", paneId)).result.current).toBeUndefined();
 });
 
+test("choosing an in-session result from a companion pane brings up the conversation to show Find in", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([{ ...item("i1", "search term here"), type: "agentMessage" }])] });
+  // Only the tasks pane is open: no conversation is mounted to take the ask.
+  workspaceStore.setState({
+    panes: [{ id: "tasks", type: "sessionTasks", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "tasks",
+  });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "search term");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  const conversation = workspaceStore.getState().panes.find((pane) => pane.type === "session");
+  expect(conversation).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(conversation?.id);
+  const asked = renderHook(() => useFindRequest("ref_a", conversation?.id ?? ""));
+  expect(asked.result.current).toMatchObject({ query: "search term", itemId: "i1" });
+});
+
 test("an in-session match the conversation's verbosity hides is not offered", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });

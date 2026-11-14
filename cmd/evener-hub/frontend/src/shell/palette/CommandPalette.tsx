@@ -21,7 +21,6 @@ import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { findableItemIds } from "../../panes/session/find/findHits";
-import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
 import {
@@ -66,6 +65,7 @@ import {
   rememberableId,
   type ScopedCommand,
   sessionScopedHandoffMatch,
+  showFindIn,
   visibleCatalogCommands,
 } from "./commands";
 import { useHelpRows } from "./helpRows";
@@ -670,7 +670,7 @@ function PaletteBody({
       const { sessionRef, sessionPaneId } = runContext();
       closePalette();
       if (sessionRef !== null)
-        requestFindInSession(sessionRef, { target: sessionPaneId, query: query.trim(), itemId: item.match.itemId });
+        showFindIn(sessionRef, sessionPaneId, { query: query.trim(), itemId: item.match.itemId });
       return;
     }
     if (item.kind === "live" || item.kind === "past") {

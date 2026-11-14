@@ -13,6 +13,7 @@
 
 import { clip, editDiffText, parseArgs, str, tailFold, tailSlice } from "@evener/appwire-client";
 import { CodeBlock, DiffBlock } from "../../../../widgets";
+import { excerptAround, holdsNeedle } from "../../find/findExcerpt";
 import { useFindReveal } from "../../find/findReveal";
 import type { ToolRenderProps } from "../toolRenderers";
 
@@ -85,19 +86,12 @@ export function Excerpt({ text, ansi }: { text: string; ansi?: boolean }) {
   );
 }
 
-// The needle is whitespace-collapsed and lowercased (findNeedle); in the
-// output its words may be separated by any run of whitespace. Null when the
-// output does not hold the words at all (the match is elsewhere in the call).
+// Null when the output does not hold the words at all (the match is
+// elsewhere in the call); a null excerpt when `shown` already holds them.
 function landingIn(output: string, shown: string, needle: string): { excerpt: string | null } | null {
-  const words = needle.split(" ").map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const pattern = new RegExp(words.join("\\s+"), "i");
-  const match = pattern.exec(output);
-  if (match === null) return null;
-  if (pattern.test(shown)) return { excerpt: null };
-  const start = Math.max(0, Math.min(match.index - TOOL_BODY_MAX_CHARS / 2, output.length - TOOL_BODY_MAX_CHARS));
-  const end = Math.min(output.length, start + TOOL_BODY_MAX_CHARS);
-  const note = `showing ${(end - start).toLocaleString("en-US")} chars around the match — the rest of the output is not shown`;
-  return { excerpt: `${note}\n${output.slice(start, end)}` };
+  if (!holdsNeedle(output, needle)) return null;
+  if (holdsNeedle(shown, needle)) return { excerpt: null };
+  return { excerpt: excerptAround(output, needle, TOOL_BODY_MAX_CHARS) };
 }
 
 // EditFileBody synthesizes an edit's diff from its old_string/new_string

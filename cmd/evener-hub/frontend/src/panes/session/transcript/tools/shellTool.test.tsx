@@ -577,3 +577,13 @@ test("a shell body shows the stretch of output Find landed on when its tail does
   act(() => revealForFind("", null, ""));
   expect(view.container.textContent).not.toContain("quokka");
 });
+
+test("a shell excerpt is found by the words as coloured output shows them", () => {
+  const Body = toolRendererFor("shell").body!;
+  const output = `an early \u001b[31mquokka\u001b[0m\u001b[1m line\u001b[0m\n${"x".repeat(20000)}\nthe tail`;
+  const view = render(<Body item={withCommand("make test", { id: "shell-ansi", output })} live={false} />);
+  expect(view.container.textContent).not.toContain("quokka");
+  act(() => revealForFind("", "shell-ansi", "quokka line"));
+  expect(view.container.textContent).toContain("an early quokka line");
+  act(() => revealForFind("", null, ""));
+});

@@ -297,6 +297,7 @@ export {
   itemFindTexts,
   type MatchPosition,
   matchPosition,
+  outputAsShown,
   stepMatch,
   textMatchesFind,
 } from "./findInSession";
