@@ -284,9 +284,12 @@ line shows it. A non-string or empty value counts as missing. A page written
 before `memory_write` took fields may also carry `description`, one line whose
 newlines collapse to spaces when it is rendered; a value that is not a YAML
 string counts as missing. The index line shows a page's `description` only when
-it has no `when`. `tags` is a YAML list (a
-single string is one tag); each tag is trimmed and lowercased, runs of
-whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
+it has no `when`. `tags` is a YAML list, and commas split
+each item — a single string, number, or boolean included — into one tag per
+part; each tag is lowercased, trim characters (hyphens, `;`, quotes, brackets,
+braces) at the tag's edges and around each word are dropped, internal
+whitespace and hyphen runs collapse to a single `-`, and empty and duplicate
+tags are dropped. Tags are plain:
 there is no primary tag, reserved tag or type field. `evidence` is free-form and
 never rendered in the index; it is for whoever reads the page. Unknown keys are
 kept untouched and ignored.
