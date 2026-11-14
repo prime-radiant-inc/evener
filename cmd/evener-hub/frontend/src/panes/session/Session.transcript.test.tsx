@@ -677,9 +677,16 @@ test("a restart-required session renders no held ghost for a seeded hold", async
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
+  // The durable families reach off-status surfaces (the retired footer
+  // strip's own reach): the seeded queue row renders. But the seeded drain
+  // hold must produce no ghost row - a pending-entry row, the family the
+  // live gate hides on read-only surfaces - only its durable waiting row.
+  const stack = screen.queryByTestId("pending-row-stack");
+  expect(stack).not.toBeNull();
+  expect(stack!.textContent).toContain("parked");
+  expect(stack!.querySelectorAll("li[data-kind]")).toHaveLength(2);
+  expect(stack!.querySelectorAll("li:not([data-kind])")).toHaveLength(0);
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
 
 // Stop cancels a locally owned, never-attempted row. It is not a held ghost
@@ -919,9 +926,15 @@ test("a resume-required live session renders no held ghost", async () => {
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
+  // Durable families reach off-status surfaces (the retired footer strip's
+  // reach): the queue row and the hold's waiting row render, but the hold
+  // produces no ghost - no pending-entry row, the family the live gate
+  // hides.
+  const stack = screen.queryByTestId("pending-row-stack");
+  expect(stack).not.toBeNull();
+  expect(stack!.textContent).toContain("parked");
+  expect(stack!.querySelectorAll("li:not([data-kind])")).toHaveLength(0);
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
 
 test("a recovery-fenced live session renders no held ghost", async () => {
@@ -963,9 +976,13 @@ test("a recovery-fenced live session renders no held ghost", async () => {
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
+  // Same rule as the resume-required case above: durable rows render, no
+  // pending-entry ghost.
+  const stack = screen.queryByTestId("pending-row-stack");
+  expect(stack).not.toBeNull();
+  expect(stack!.textContent).toContain("parked");
+  expect(stack!.querySelectorAll("li:not([data-kind])")).toHaveLength(0);
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
 
 test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
@@ -1573,4 +1590,69 @@ test("a queued row's steer action promotes that entry from its transcript row", 
   await act(async () => {
     await promoted.promise;
   });
+});
+
+// The row's steer action carries the entry's own selections through the
+// promote (the retired strip passed them; dropping them steers a
+// selection-bearing message as bare text) and never promotes the daemon's
+// generic "[N skills]" placeholder as the message.
+test("a queued row's steer action preserves the entry's selections and never its placeholder preview", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      ...liveSurfaceThread(),
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 1,
+          depth: 2,
+          ids: ["q1", "q2"],
+          texts: ["promote me", ""],
+          preview: ["promote me", "[1 skills]"],
+          skillNames: [["review"], ["review"]],
+        },
+      },
+    }),
+  );
+  const promoted = deferred<void>();
+  fake.on("turn/promoteQueuedAsSteer", () => {
+    promoted.resolve();
+    return { receipt: appliedReceipt("m_promote", "thr_ref_a") };
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const row = await waitFor(() => {
+    const liveEdge = document.querySelector('[data-row-id="live-edge"]');
+    expect(liveEdge).not.toBeNull();
+    return liveEdge as HTMLElement;
+  });
+  const user = userEvent.setup();
+  const rows = within(row).getAllByRole("listitem");
+  const first = rows.find((candidate) => candidate.textContent?.includes("promote me"));
+  expect(first).toBeDefined();
+  await user.click(within(first as HTMLElement).getByRole("button", { name: "Steer now" }));
+  await act(async () => {
+    await promoted.promise;
+  });
+  // The promote's optimistic display input keeps the entry's own skill
+  // selections (the ghost row previews the message it will become) - the
+  // store packs them from the display payload the row's press passes.
+  const storage = new MutationOutboxIndexedDB();
+  const outbox = await storage.listOutbox("ref_a");
+  storage.close();
+  const promoteRecord = outbox.find((record) => record.method === "turn/promoteQueuedAsSteer");
+  const display = promoteRecord?.optimisticDisplay as { input: unknown[] } | undefined;
+  expect(display?.input).toEqual(
+    expect.arrayContaining([
+      { type: "text", text: "promote me" },
+      { type: "skill", name: "review" },
+    ]),
+  );
 });

@@ -1,4 +1,4 @@
-// The decisions the Composer's submit and the QueueStrip's drain share, so the
+// The decisions the Composer's submit and its own drain route share, so the
 // two surfaces cannot drift: whether the target can take the draft's
 // selections, how a draft reaches the threads store, and what the user hears
 // when a recovery row was changed or consumed elsewhere.

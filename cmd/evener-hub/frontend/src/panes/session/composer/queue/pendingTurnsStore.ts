@@ -505,7 +505,7 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
   return useOutboxRecordsByState(ref, "blockedUnknown");
 }
 
-// Stop-canceled rows (stop-cancellation-outbox §6): QueueStrip surfaces them
+// Stop-canceled rows (stop-cancellation-outbox §6): the pending rows surface them
 // in the same durable-rows slot as blocked ones, where their explicit Retry
 // affordance lives. The canceled state is the one projected by displayedRef
 // too (canceledEntries): a retargeted resend's born-canceled row is the

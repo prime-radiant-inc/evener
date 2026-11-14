@@ -261,16 +261,20 @@ function StandardConversationBody({
   // The full pending set decides the trailing row: held steers, in-flight
   // sends, queued rows, and the durable failure families all render as
   // transcript rows now (the one-rendering rule), so the row mounts for any
-  // of them. The live gate below still hides the whole surface on read-only
-  // states, exactly as the steering-ghost spec's §1 gate did for steers.
+  // of them. The live gate applies to the live-composition families only -
+  // the steering-ghost spec's §1 rule for steers and the in-flight sends
+  // that share its surface. The durable families (blocked, canceled,
+  // refused recovery, the daemon's queue) render regardless of session
+  // status: they are settled facts about the user's undelivered work, and
+  // the retired footer strip showed them through ended/closed/notLoaded
+  // and restartRequired sessions - hiding their Retry/Edit on those states
+  // would leave the work reachable from nowhere.
   const pendingRowsVisible =
-    heldSurfaceLive &&
-    (heldSteers.length > 0 ||
-      pendingEntries.length > 0 ||
-      blockedRows.length > 0 ||
-      canceledRows.length > 0 ||
-      recoveryRows.length > 0 ||
-      (model?.queue?.depth ?? 0) > 0);
+    (heldSurfaceLive && (heldSteers.length > 0 || pendingEntries.length > 0)) ||
+    blockedRows.length > 0 ||
+    canceledRows.length > 0 ||
+    recoveryRows.length > 0 ||
+    (model?.queue?.depth ?? 0) > 0;
   const trailingRow =
     askPending || pendingRowsVisible || overlayHeight > 0
       ? {
@@ -278,7 +282,7 @@ function StandardConversationBody({
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
-              {pendingRowsVisible && <PendingRowStack ref={ref} />}
+              {pendingRowsVisible && <PendingRowStack ref={ref} paneId={seat.viewFallbackId} />}
               {overlayHeight > 0 && (
                 <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
               )}

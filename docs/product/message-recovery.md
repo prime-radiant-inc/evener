@@ -111,8 +111,8 @@ not scope user selections; they keep pane identity stable and scope automatic
 restoration: a recovery row records the composer seat that last wrote it as
 its composition owner, and an empty composer at mount restores only the
 newest rejected row its own seat owns - the pane's own bounced work, one tap
-back. Every row stays reachable through the pending rows' explicit Edit, Remove, Retry
-and Send now regardless of owner. A pane's own send carries its seat, so the row
+back. Every row stays reachable through the pending rows' explicit Edit, Remove, and Retry
+regardless of owner. A pane's own send carries its seat, so the row
 a refusal bounces from it restores to that pane's next mount under the same
 seat. A resumed nested session carries the authoring pane's seat to its
 replacement pane, so the resumed composer can restore its own work again.

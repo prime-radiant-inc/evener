@@ -56,9 +56,9 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
 
 // The local recovery fence's shared predicate lives in recoveryFence.ts, where
 // the store's own mutation admission uses it too. Re-exported here so the
-// control surfaces keep one import site for the fence and its press-time reading; Composer.tsx's availabilityFor and QueueStrip's
+// control surfaces keep one import site for the fence and its press-time reading; Composer.tsx's availabilityFor and the pending rows'
 // press handlers derive from this one predicate (the composer module cannot
-// lend QueueStrip its copy: Composer imports QueueStrip), and each call site
+// lend the pending rows their copy: Composer publishes through the seam), and each call site
 // adds the shape its own surface needs.
 export { isRecoveryFenced, isResumeOnly, isSendResumes };
 

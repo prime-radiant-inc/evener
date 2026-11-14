@@ -80,6 +80,44 @@ export function consumeQueueRowRestore(ref: string): void {
   store.getState().consumeQueueRowRestore(ref);
 }
 
+/** Test- and row-side read of whether `ref` still holds an unconsumed
+ * request. A queued row's loser-safe edit cancels its queue entry only once
+ * the composer has consumed the restore, so the row needs to observe that
+ * moment without owning the composer's bookkeeping. */
+export function hasQueueRowRestoreRequest(ref: string): boolean {
+  return store.getState().requests.has(ref);
+}
+
+/** Bounded wait for `ref`'s pending restore request to be consumed by a
+ * mounted composer. The queued row's loser-safe edit removes its queue entry
+ * only after this resolves true; a seat with no composer resolves false at
+ * the deadline and the row stays queued. The wait resolves on the store's
+ * own subscription (a mounted composer consumes in a single effect tick),
+ * with the deadline only as the composer-less seat's honest way out. */
+export function waitForQueueRowRestoreConsumed(ref: string, deadlineMs = 2000): Promise<boolean> {
+  const state = store.getState();
+  if (!state.requests.has(ref)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const unsubscribe = store.subscribe((next) => {
+      if (!next.requests.has(ref)) {
+        unsubscribe();
+        clearTimeout(timer);
+        resolve(true);
+      }
+    });
+    // Re-check synchronously in case consumption landed between the initial
+    // read and the subscription, then arm the composer-less deadline.
+    if (!store.getState().requests.has(ref)) {
+      unsubscribe();
+      return resolve(true);
+    }
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(!store.getState().requests.has(ref));
+    }, deadlineMs);
+  });
+}
+
 /** Composer's read side: the pending request for `ref` that belongs to this
  * seat, if any. Same routing rule as useQuoteInsertRequest: an unaddressed
  * request (target null) reads everywhere for the ref; a request naming a pane
@@ -109,21 +147,30 @@ export function resetQueueRowRestoreStoreForTests(): void {
 // which is also the honest reading - nothing is being edited.
 const activeRecoveryStore = createStore<{
   activeRecoveryIds: Map<string, string | null>;
-  publishActiveRecovery(ref: string, id: string | null): void;
+  owners: Map<string, string>;
+  publishActiveRecovery(ref: string, id: string | null, owner?: string): void;
 }>((set) => ({
   activeRecoveryIds: new Map(),
-  publishActiveRecovery: (ref, id) =>
+  owners: new Map(),
+  publishActiveRecovery: (ref, id, owner) =>
     set((state) => {
       if (state.activeRecoveryIds.get(ref) === id) return state;
+      // A closing pane's cleanup clear must not wipe a sibling composer's
+      // publication for the same ref (an embedded cascade column).
+      if (id === null && owner !== undefined && state.owners.get(ref) !== owner) return state;
       const activeRecoveryIds = new Map(state.activeRecoveryIds);
+      const owners = new Map(state.owners);
       if (id === null) activeRecoveryIds.delete(ref);
-      else activeRecoveryIds.set(ref, id);
-      return { activeRecoveryIds };
+      else {
+        activeRecoveryIds.set(ref, id);
+        if (owner !== undefined) owners.set(ref, owner);
+      }
+      return { activeRecoveryIds, owners };
     }),
 }));
 
-export function publishActiveRecovery(ref: string, id: string | null): void {
-  activeRecoveryStore.getState().publishActiveRecovery(ref, id);
+export function publishActiveRecovery(ref: string, id: string | null, owner?: string): void {
+  activeRecoveryStore.getState().publishActiveRecovery(ref, id, owner);
 }
 
 export function useActiveRecoveryId(ref: string): string | null {
@@ -138,21 +185,31 @@ export function useActiveRecoveryId(ref: string): string | null {
 // without importing it.
 const composerBusyStore = createStore<{
   busyRefs: Map<string, boolean>;
-  publishComposerBusy(ref: string, busy: boolean): void;
+  busyOwners: Map<string, string>;
+  publishComposerBusy(ref: string, busy: boolean, owner?: string): void;
 }>((set) => ({
   busyRefs: new Map(),
-  publishComposerBusy: (ref, busy) =>
+  busyOwners: new Map(),
+  publishComposerBusy: (ref, busy, owner) =>
     set((state) => {
       if (state.busyRefs.get(ref) === busy) return state;
+      // Same sibling rule as the recovery publication above.
+      if (!busy && owner !== undefined && state.busyOwners.get(ref) !== owner) return state;
       const busyRefs = new Map(state.busyRefs);
-      if (busy) busyRefs.set(ref, true);
-      else busyRefs.delete(ref);
-      return { busyRefs };
+      const busyOwners = new Map(state.busyOwners);
+      if (busy) {
+        busyRefs.set(ref, true);
+        if (owner !== undefined) busyOwners.set(ref, owner);
+      } else {
+        busyRefs.delete(ref);
+        busyOwners.delete(ref);
+      }
+      return { busyRefs, busyOwners };
     }),
 }));
 
-export function publishComposerBusy(ref: string, busy: boolean): void {
-  composerBusyStore.getState().publishComposerBusy(ref, busy);
+export function publishComposerBusy(ref: string, busy: boolean, owner?: string): void {
+  composerBusyStore.getState().publishComposerBusy(ref, busy, owner);
 }
 
 export function useComposerBusy(ref: string): boolean {

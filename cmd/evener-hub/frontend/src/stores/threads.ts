@@ -3628,7 +3628,7 @@ async function retargetParkedMutations(
 // The snapshot-level refusals of retryBlockedMutation: a target the store
 // cannot act on regardless of what the retry would find -- no live status, a
 // restartRequired or notLoaded snapshot, no mutation authority, or a
-// restart-blocking obligation. Shared with QueueStrip's Retry button, which
+// restart-blocking obligation. Shared with the pending rows' Retry button, which
 // disables on exactly these so a fenced row never offers a Retry that always
 // fails; the remaining refusals (an in-flight reconciliation or hydration, a
 // reconciliation failure, a missing dispatch client) stay retry-time checks.
@@ -3715,7 +3715,7 @@ export async function retryBlockedMutation(
   const rowInstance = record.instanceId ?? record.threadId;
   if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
   // The snapshot refusals and the storage-blocked fence are per-TARGET (the
-  // row's own destination), shared with QueueStrip's per-row button via
+  // row's own destination), shared with the pending rows' per-row button via
   // retryBlockedForTarget.
   if (retryBlockedForTarget(record.targetRef)) return false;
   if (
@@ -4816,7 +4816,7 @@ export function resumeOnlyDispatchable(ref: string): boolean {
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
-// surface already renders (Composer's Send/Steer sentences, QueueStrip's
+// surface already renders (Composer's Send/Steer sentences, the pending rows'
 // queue-actions sentence, the typed /clear idiom): the hub's recovery
 // admission refuses exactly these methods for an obligation's whole window -
 // turn/start, turn/steer, turn/queue, turn/drainAsSteer,

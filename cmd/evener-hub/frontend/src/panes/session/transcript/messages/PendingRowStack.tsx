@@ -68,7 +68,12 @@ import {
   skillMarkers,
   truncateForDisplay,
 } from "../../composer/queue/queueDisplay";
-import { requestQueueRowRestore, useActiveRecoveryId, useComposerBusy } from "../../composer/queueRowInsert";
+import {
+  requestQueueRowRestore,
+  useActiveRecoveryId,
+  useComposerBusy,
+  waitForQueueRowRestoreConsumed,
+} from "../../composer/queueRowInsert";
 import { SessionNowContext } from "../../liveness";
 import styles from "./pendingrowstack.module.css";
 import { UserMessageView } from "./UserMessageItem";
@@ -214,7 +219,16 @@ function recordPreview(record: MutationOutboxRecord): string {
   return truncateForDisplay(pendingEntryPreview(recordContent(record)));
 }
 
-export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Element | null {
+export function PendingRowStack({
+  ref: sessionRef,
+  paneId,
+}: {
+  ref: string;
+  // The seat the stack mounts under: restore requests address this pane the
+  // way quote inserts do, so one ref's two mounted composers (an embedded
+  // cascade column) never both consume one request.
+  paneId?: string;
+}): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
   const queueStripIds = useQueueStripMutationIds(sessionRef);
   const blockedEntries = useBlockedMutationEntries(sessionRef).filter((record) => record.method !== "notes/human/set");
@@ -290,7 +304,13 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
   const turnActive = isTurnActive(model?.status.type ?? "");
 
   // Steer-now on a daemon queue row: promote that row into the running turn.
-  async function handlePromote(index: number, entryId: string, displayText: string): Promise<void> {
+  async function handlePromote(
+    index: number,
+    entryId: string,
+    displayText: string,
+    skillNames?: readonly string[],
+    commandNames?: readonly string[],
+  ): Promise<void> {
     // The recovery fence, re-read live at the press (the same render-vs-press
     // rule every queue press follows): the hub refuses
     // turn/promoteQueuedAsSteer for the obligation's whole window.
@@ -305,7 +325,11 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
     }
     setRowBusy(entryId, true);
     try {
-      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, { text: displayText });
+      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
+        text: displayText,
+        skillNames,
+        commandNames,
+      });
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't steer with this message now", err));
     } finally {
@@ -328,19 +352,21 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
     }
   }
 
-  // Edit a daemon queue row: loser-safe order - the row's full text reaches
-  // the composer FIRST (through the restore seam; Composer owns the merge
-  // and the caret), then the queued copy is removed. A failure on the remove
-  // half leaves the user's text in the composer and an honest toast, never a
-  // silently duplicated message.
-  function handleEdit(
+  // Edit a daemon queue row: loser-safe order (the retired strip's own) -
+  // the row's full text reaches the composer FIRST (through the restore
+  // seam; Composer owns the merge and the caret), then the queued copy is
+  // removed. A failure on the remove half leaves the user's text in the
+  // composer and an honest toast, never a silently duplicated message. A
+  // seat with no mounted composer never consumes the request, so the
+  // remove half only runs after the text provably landed somewhere.
+  async function handleEdit(
     index: number,
     entryId: string,
     fullText: string,
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
-  ): void {
+  ): Promise<void> {
     if (pressLocalRecoveryFenced(sessionRef)) {
       toasts.push("error", "Queue actions aren't available until this session is resumed");
       return;
@@ -350,16 +376,25 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
       requestQueueRowRestore(
         sessionRef,
         mentions
-          ? { text: fullText, skillNames, commandNames, mentions, target: null }
-          : { text: fullText, skillNames, commandNames, target: null },
+          ? { text: fullText, skillNames, commandNames, mentions, target: paneId ?? null }
+          : { text: fullText, skillNames, commandNames, target: paneId ?? null },
       );
-      void threadsStore
-        .getState()
-        .cancelQueued(sessionRef, index, entryId)
-        .catch((err: unknown) => {
-          toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
-        })
-        .finally(() => setRowBusy(entryId, false));
+      const composerTookIt = await waitForQueueRowRestoreConsumed(sessionRef);
+      if (!composerTookIt) {
+        // No composer of this ref consumed the request: leave the queued
+        // entry where it is rather than removing a message whose text
+        // landed nowhere.
+        toasts.push("error", "Open the session composer to edit this message");
+        setRowBusy(entryId, false);
+        return;
+      }
+      try {
+        await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
+      } catch (err) {
+        toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
+      } finally {
+        setRowBusy(entryId, false);
+      }
     } catch (err) {
       toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
       setRowBusy(entryId, false);
@@ -387,7 +422,7 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
     const id = record.clientMutationId;
     if (localActions.current.has(id)) return;
     if (action === "edit") {
-      requestQueueRowRestore(sessionRef, { text: "", outboxRecord: record, target: null });
+      requestQueueRowRestore(sessionRef, { text: "", outboxRecord: record, target: paneId ?? null });
       return;
     }
     localActions.current.add(id);
@@ -464,8 +499,17 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
     }
   }
 
+  // The count signal carries what the stack renders: recovery rows the
+  // composer's live composition already owns are excluded here exactly as
+  // the render excludes them (the retired strip applied the same
+  // activeRecoveryId cut at selection time).
   const queuedCount =
-    depth + pendingQueueEntries.length + blockedEntries.length + canceledEntries.length + editableEntries.length;
+    depth +
+    pendingQueueEntries.length +
+    blockedEntries.length +
+    canceledEntries.length +
+    editableEntries.length +
+    visibleRecoveryEntries.length;
   // One rendering per message: the durable families below own blockedUnknown
   // and canceled rows (their Retry affordance lives there), and this client's
   // editable queue rows own their unattempted entries, so the pending-entry
@@ -511,6 +555,18 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
           item.kind === "skill" || item.kind === "command" ? [{ ...item, kind: item.kind }] : [],
         );
         const entryPreview = truncateForDisplay(preview?.[index] ?? fullText ?? "");
+        const namedMarkers = [skillMarkers(entrySkillNames ?? []), commandMarkers(entryCommandNames ?? [])]
+          .filter(Boolean)
+          .join(" ");
+        // The daemon's generic "[N skills]" preview doubles the named
+        // markers a selection-only row already renders - suppress it so the
+        // synthetic placeholder never reads as the message (the retired
+        // strip's own rule).
+        const genericSelectionPlaceholder =
+          (fullText ?? "").trim() === "" &&
+          namedMarkers !== "" &&
+          /^\[\d*\s*(skills?|commands?)\]$/i.test(entryPreview.trim());
+        const previewText = genericSelectionPlaceholder ? "" : entryPreview;
         // The optimistic twin owns the row while this client's durable
         // record reconciles against the daemon's queue.
         if (pendingTexts.has(entryPreview) && entryId === undefined) return null;
@@ -530,9 +586,13 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
               disabled={!controls.drain || busy}
               onClick={() => {
                 if (entryId !== undefined) {
+                  // The ghost's display text: the row's full text, or -
+                  // for a blank row - the same stripped preview the row
+                  // renders (nothing for a selection-only row, where the
+                  // named markers carry the whole content).
                   const rowText = fullText ?? "";
-                  const displayText = rowText.trim() !== "" ? rowText : entryPreview;
-                  void handlePromote(index, entryId, displayText);
+                  const displayText = rowText.trim() !== "" ? rowText : previewText;
+                  void handlePromote(index, entryId, displayText, entrySkillNames, entryCommandNames);
                 }
               }}
             />
@@ -566,9 +626,7 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
                 id: entryId ?? `queue_${index}`,
                 turnId: "",
                 type: "userMessage",
-                text: [entryPreview, skillMarkers(entrySkillNames ?? []), commandMarkers(entryCommandNames ?? [])]
-                  .filter((part) => part !== "")
-                  .join(" "),
+                text: [previewText, namedMarkers].filter(Boolean).join(" "),
               }}
               opensExchange={false}
               provisional="Queued for the next turn"
@@ -589,7 +647,11 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
                 label="Edit message"
                 icon={<span aria-hidden="true">✎</span>}
                 size="sm"
-                disabled={rowBusy}
+                // The composer's live busy gate keeps the press from
+                // racing an in-flight submit (the retired strip's own
+                // gate), read through the seam store.
+                disabled={rowBusy || composerBusy}
+                disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
                 onClick={() => void handleLocalAction(record, "edit")}
               />
             )}
@@ -634,7 +696,8 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
                 label="Edit message"
                 icon={<span aria-hidden="true">✎</span>}
                 size="sm"
-                disabled={rowBusy}
+                disabled={rowBusy || composerBusy}
+                disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
                 onClick={() => void handleLocalAction(record, "edit")}
               />
             )}
@@ -737,7 +800,7 @@ export function PendingRowStack({ ref: sessionRef }: { ref: string }): JSX.Eleme
                     disabled={rowBusy || composerBusy}
                     disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
                     onClick={() =>
-                      requestQueueRowRestore(sessionRef, { text: "", recoveryRecord: record, target: null })
+                      requestQueueRowRestore(sessionRef, { text: "", recoveryRecord: record, target: paneId ?? null })
                     }
                   />
                 )

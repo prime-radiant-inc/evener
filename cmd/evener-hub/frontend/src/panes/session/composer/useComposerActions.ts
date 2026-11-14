@@ -234,7 +234,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     // An interrupt is not a draft. It carries no input, so activating one
     // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
+    // turn/start -- a Stop becoming a message. The pending rows render it as a
     // failure with its reason instead.
     // Mount restoration is seat-owned: only a row this pane's durable
     // composer seat authored is a candidate, so a fresh pane never injects
@@ -353,7 +353,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   }
 
   async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
-    // QueueStrip already holds the shared operation lease for this callback.
+    // The pending row's Edit press already carried this record through the
+    // restore seam; the seam's own consumed-request bookkeeping serializes
+    // presses, so this callback runs at most once per press.
     if (!source.alive) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");

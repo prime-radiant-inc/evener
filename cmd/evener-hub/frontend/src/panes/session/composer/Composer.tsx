@@ -35,6 +35,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -652,20 +653,34 @@ export function Composer({
   // typing (restoreTextToComposer's merge rule).
   const queueRowRestoreRequest = useQueueRowRestoreRequest(ref, paneId);
   const consumedQueueRowRestoreIdRef = useRef<number | null>(null);
+  // The per-instance owner token for the seam's publications: it lets a
+  // closing pane clear its own state without touching a sibling composer's
+  // publication for the same ref.
+  const composerSeationToken = useId();
   // The pending rows exclude the recovery record this composer is actively
   // editing (its composition is live here), so the same message never renders
   // both as a transcript row and as the composition under edit. Published on
   // every activation change, including the automatic ones no seam request
   // drives.
   useEffect(() => {
-    publishActiveRecovery(ref, activeRecoveryId);
-  }, [ref, activeRecoveryId]);
+    publishActiveRecovery(ref, activeRecoveryId, composerSeationToken);
+  }, [ref, activeRecoveryId, composerSeationToken]);
+  // Unmount clears both publications: a pane closed mid-activation must not
+  // keep excluding its recovery row or holding the busy gate for the ref.
+  // The owner token keeps a closing pane from clearing a sibling composer's
+  // publication for the same ref (an embedded cascade column).
+  useEffect(() => {
+    return () => {
+      publishActiveRecovery(ref, null, composerSeationToken);
+      publishComposerBusy(ref, false, composerSeationToken);
+    };
+  }, [ref, composerSeationToken]);
   // The shared busy gate, published beside it: the pending rows' Edit/Retry
   // affordances read the composer's live in-flight state (the retired
   // strip's busy prop).
   useEffect(() => {
-    publishComposerBusy(ref, actionPending);
-  }, [ref, actionPending]);
+    publishComposerBusy(ref, actionPending, composerSeationToken);
+  }, [ref, actionPending, composerSeationToken]);
   useEffect(() => {
     const request = queueRowRestoreRequest;
     if (!request || request.id === consumedQueueRowRestoreIdRef.current) return;
@@ -685,6 +700,12 @@ export function Composer({
       const id = record.clientMutationId;
       const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
       if (!releaseRecoveryOperation) {
+        // A refused control has to say so: the lease is held by an
+        // in-flight recovery operation, so the press landed mid-edit of
+        // another row. The row-level busy gate usually prevents this
+        // press; the toast keeps the window honest instead of swallowing
+        // the request silently.
+        toasts.push("error", "Wait for the current message to finish sending");
         consumeQueueRowRestore(ref);
         return;
       }
@@ -1069,7 +1090,7 @@ export function Composer({
   );
 
   // data-testid on every control in this row: two different buttons here
-  // start with "Steer" (this one and QueueStrip's "Steer queue now"), so
+  // start with "Steer" (this one and the pending rows' "Steer now"), so
   // tests address controls by a stable hook instead of navigating by
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
