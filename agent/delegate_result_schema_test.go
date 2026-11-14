@@ -25,8 +25,11 @@ var issue6298Schema = map[string]any{
 
 // launchSchemaDelegate drives root through a real delegate tool call whose
 // result_schema is schema, and returns the requests the root and its child
-// each made at the LLM boundary.
-func launchSchemaDelegate(t *testing.T, schema map[string]any) (rootRequests, childRequests []llm.Request) {
+// each made at the LLM boundary. expectChild selects the synchronization: a
+// valid schema launches a child whose first model request races the root's
+// final request, so it is waited for before the snapshot; an invalid schema
+// must launch no child, and waiting on one would hang the tripwire.
+func launchSchemaDelegate(t *testing.T, schema map[string]any, expectChild bool) (rootRequests, childRequests []llm.Request) {
 	t.Helper()
 	adapter := newMessagingAdapter("SCHEMA-CHILD")
 	adapter.script("root",
@@ -40,6 +43,9 @@ func launchSchemaDelegate(t *testing.T, schema map[string]any) (rootRequests, ch
 	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
 	if _, err := root.ProcessInput(tripwireCtx(t), "start", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
+	}
+	if expectChild {
+		adapter.waitForRequests(t, "SCHEMA-CHILD", 1)
 	}
 	return adapter.waitForRequests(t, "root", 2), adapter.requestsFor("SCHEMA-CHILD")
 }
@@ -92,7 +98,7 @@ func TestDelegateLaunchRejectsInvalidResultSchema(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			rootRequests, childRequests := launchSchemaDelegate(t, schema)
+			rootRequests, childRequests := launchSchemaDelegate(t, schema, false)
 			isError, found := delegateCallResult(t, rootRequests)
 			if !found {
 				t.Fatal("the root's follow-up request carries no tool result for the delegate call")
@@ -115,7 +121,7 @@ func TestDelegateLaunchRejectsInvalidResultSchema(t *testing.T) {
 // tool parameters applies to every tool schema it receives.
 func TestDelegateResultSchemaSplicePreservesSchemaOnValidTool(t *testing.T) {
 	t.Parallel()
-	_, childRequests := launchSchemaDelegate(t, issue6298Schema)
+	_, childRequests := launchSchemaDelegate(t, issue6298Schema, true)
 	if len(childRequests) == 0 {
 		t.Fatal("the schema delegate made no model call")
 	}
