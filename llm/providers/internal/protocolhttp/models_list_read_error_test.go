@@ -22,7 +22,7 @@ func (truncatedListingBody) Read(p []byte) (int, error) {
 func (truncatedListingBody) Close() error { return nil }
 
 func TestModelsListTruncatedRejectedBodyPreservesStatus(t *testing.T) {
-	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerTestSchemes()
 	for _, tc := range []struct {
 		name   string
@@ -55,7 +55,7 @@ func TestModelsListTruncatedRejectedBodyPreservesStatus(t *testing.T) {
 }
 
 func TestModelsListRejectedBodyPreservesIdleAndCallerCancellation(t *testing.T) {
-	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	for _, callerCancel := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			registerTestSchemes()

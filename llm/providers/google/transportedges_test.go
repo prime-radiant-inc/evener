@@ -20,7 +20,7 @@ const streamingRequiredScheme = "google-test-streaming-required"
 // A transport whose auth scheme requires streaming completion must serve
 // Complete from the SSE stream and still return the accumulated response.
 func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
-	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, streamingRequiredScheme, providertest.StreamingRequiredAuth{})
 	srv, _ := protoServer(t, 200, generateSSE)
 	res := protoLive(srv)

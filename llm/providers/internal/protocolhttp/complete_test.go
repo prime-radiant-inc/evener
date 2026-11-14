@@ -43,7 +43,7 @@ type completeResult struct {
 // even for a scheme that requires streaming: that routing is the
 // caller's job, not Complete's.
 func TestComplete(t *testing.T) {
-	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerTestSchemes()
 	// wantDecodeErr already implements llm.Error with its own Provider; the
 	// status and message it carries are arbitrary fixture data — only

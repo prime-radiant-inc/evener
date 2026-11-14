@@ -125,7 +125,7 @@ func TestCompleteDecodesOutputItems(t *testing.T) {
 }
 
 func TestCompleteReconcilesOutputAfterTransportPreparation(t *testing.T) {
-	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerOutputOverwriterOnce.Do(func() {
 		llm.RegisterAuthenticator("test-output-overwriter", outputOverwritingPreparer{})
 	})
@@ -228,7 +228,7 @@ func TestStreamEmitsDeltasAndFinish(t *testing.T) {
 }
 
 func TestCompleteThroughStreamWhenTheTransportRequiresIt(t *testing.T) {
-	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, "test-streaming-codex", providertest.StreamingRequiredAuth{Authorization: "Bearer codex-token"})
 	srv, got := server(t, 200, responseSSE)
 	res := liveRes(srv, codexLiteCaps)

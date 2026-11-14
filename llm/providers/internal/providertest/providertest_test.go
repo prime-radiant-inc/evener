@@ -11,7 +11,7 @@ import (
 )
 
 func TestRegisterStreamingRequiredAuthRegistersOncePerScheme(t *testing.T) {
-	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	for _, tc := range []struct {
 		scheme string
 		auth   StreamingRequiredAuth

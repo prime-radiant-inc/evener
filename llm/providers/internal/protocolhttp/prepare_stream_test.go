@@ -53,7 +53,7 @@ var errApplyRefused = errors.New("authenticator refused the request")
 // URL, an authenticator that refuses the row, a preparer that refuses the
 // body, and a body that cannot be marshaled.
 func TestPrepareSurfacesEachAssemblyFailure(t *testing.T) {
-	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerFailingSchemes()
 	for _, tc := range []struct {
 		name    string
@@ -99,7 +99,7 @@ func TestPrepareSurfacesEachAssemblyFailure(t *testing.T) {
 // it without decoding, the shape listings rely on when they hand the body to
 // the caller directly.
 func TestDoWithoutFinishAcceptsA2xxBody(t *testing.T) {
-	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerTestSchemes()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"r1"}`))

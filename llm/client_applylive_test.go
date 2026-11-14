@@ -60,7 +60,7 @@ func applyLiveRegistry(t *testing.T, protocolID string) *registry.Registry {
 // own — and it keeps the assertion off the shared EmbeddedRegistry, which a
 // test must not mutate.
 func TestModelsAppliesLiveListingOnlyToARegistryTheClientOwns(t *testing.T) {
-	// Not parallel: RegisterProtocol swaps the package's protocols seam.
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	RegisterProtocol(listingProtocol{id: "test-proto-applylive", rows: []registry.Model{{ID: "live-only-model"}}})
 
 	t.Run("owned registry takes the listing", func(t *testing.T) {
@@ -102,7 +102,7 @@ func TestModelsAppliesLiveListingOnlyToARegistryTheClientOwns(t *testing.T) {
 }
 
 func TestModelsFallsBackToRegistryWhenLiveListingFails(t *testing.T) {
-	// Not parallel: RegisterProtocol swaps the package's protocols seam.
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	liveErr := errors.New("listing unavailable")
 	RegisterProtocol(listingProtocol{id: "test-proto-fallback-error", err: liveErr})
 	r := applyLiveRegistry(t, "test-proto-fallback-error")
@@ -124,7 +124,7 @@ func TestModelsFallsBackToRegistryWhenLiveListingFails(t *testing.T) {
 }
 
 func TestModelsFallsBackToRegistryWhenLiveListingIsUnsupported(t *testing.T) {
-	// Not parallel: RegisterProtocol swaps the package's protocols seam.
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	RegisterProtocol(stubProtocol{id: "test-proto-fallback-unsupported"})
 	r := applyLiveRegistry(t, "test-proto-fallback-unsupported")
 	r.ApplyLive("listing", []registry.Model{{ID: "stale-live-model"}})
@@ -145,7 +145,7 @@ func TestModelsFallsBackToRegistryWhenLiveListingIsUnsupported(t *testing.T) {
 }
 
 func TestModelsFallbackIgnoresStaleLiveFacts(t *testing.T) {
-	// Not parallel: RegisterProtocol swaps the package's protocols seam.
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	liveErr := errors.New("listing unavailable")
 	RegisterProtocol(listingProtocol{id: "test-proto-fallback-stale-facts", err: liveErr})
 	r := applyLiveRegistry(t, "test-proto-fallback-stale-facts")
@@ -164,7 +164,7 @@ func TestModelsFallbackIgnoresStaleLiveFacts(t *testing.T) {
 }
 
 func TestModelsFallsBackToRegistryWhenLiveListingIsUnusable(t *testing.T) {
-	// Not parallel: RegisterProtocol swaps the package's protocols seam.
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	for _, tc := range []struct {
 		name       string
 		rows       []registry.Model
@@ -197,7 +197,7 @@ func TestModelsFallsBackToRegistryWhenLiveListingIsUnusable(t *testing.T) {
 }
 
 func TestModelsDropsHiddenRowsFromUsableLiveListing(t *testing.T) {
-	// Not parallel: RegisterProtocol swaps the package's protocols seam.
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	RegisterProtocol(listingProtocol{id: "test-proto-mixed-hidden", rows: []registry.Model{
 		{ID: "hidden-live", Hidden: true},
 		{ID: "visible-live"},

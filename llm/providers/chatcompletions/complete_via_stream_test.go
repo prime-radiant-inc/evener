@@ -12,7 +12,7 @@ import (
 // through Stream and accumulated, with the stream flag on the wire and the
 // preparer's headers applied.
 func TestCompleteThroughStreamWhenTheTransportRequiresIt(t *testing.T) {
-	// Not parallel: RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, "test-chat-streaming", providertest.StreamingRequiredAuth{Authorization: "Bearer chat-stream-token"})
 	srv, got := server(t, 200, chatSSE)
 	res := liveRes(srv, nil)
