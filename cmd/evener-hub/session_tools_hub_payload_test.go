@@ -36,9 +36,9 @@ func (s *controlPayloadRecordingSource) ClearThread(_ context.Context, p appwire
 	s.record(appwire.MethodThreadClear, p)
 	return appwire.ThreadClearResponse{}, nil
 }
-func (s *controlPayloadRecordingSource) SetThreadModel(_ context.Context, p appwire.ThreadModelSetParams) error {
+func (s *controlPayloadRecordingSource) SetThreadModel(_ context.Context, p appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 	s.record(appwire.MethodThreadModelSet, p)
-	return nil
+	return appwire.ThreadModelSetResponse{}, nil
 }
 func (s *controlPayloadRecordingSource) SetThreadVisionModel(_ context.Context, p appwire.ThreadVisionModelSetParams) error {
 	s.record(appwire.MethodThreadVisionModelSet, p)

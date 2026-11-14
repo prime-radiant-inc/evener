@@ -90,7 +90,7 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if err := source.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}); err != nil {
+	if _, err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}); err != nil {
@@ -170,7 +170,7 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 		},
 		"compact":  func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
 		"shutdown": func() error { return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}) },
-		"model":    func() error { return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}) },
+		"model":    func() error { _, err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}); return err },
 		"effort":   func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
 		"name":     func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
 		"goal":     func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },

@@ -65,6 +65,7 @@ import {
   type ThreadSubscriptionLease,
   WarningCodeModelSwitchRejected,
   WireError,
+  warningNoticeClientMutationID,
   warningNoticeCode,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
@@ -255,21 +256,21 @@ export interface PromoteDisplayInput {
 
 export interface AcceptedModelSwitch {
   sequence: number;
+  clientMutationId: string;
   modelProvider: string;
   model: string;
   previousModelProvider: string;
   previousModel: string;
   previousInstanceId?: string;
   previousBootGeneration?: string;
-  previousRejectionNotice: number;
 }
 
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   // A successful thread/model/set is immediately useful UI state even when the
   // daemon queues it behind an active turn. It stays shared across every pane
-  // showing the ref until the authoritative model changes or a live or hydrated
-  // daemon rejection notice supersedes the one present when the pick was made.
+  // showing the ref until authoritative model state settles it or a live or
+  // hydrated daemon rejection names that exact request.
   acceptedModelSwitches: ReadonlyMap<string, AcceptedModelSwitch>;
   mutationWriteStalled: boolean;
   // Refs whose durable reconcile failed for a reason other than storage: the
@@ -611,84 +612,87 @@ const goalUpdateGenerations = new Map<string, number>();
 interface ModelSwitchRequestState {
   issued: number;
   displayedThrough: number;
-  pending: Map<number, ModelSwitchTarget>;
-  unsettled: Map<number, ModelSwitchTarget>;
-  settledPending: Set<number>;
+  pending: Map<string, ModelSwitchTarget>;
+  unsettled: Map<string, ModelSwitchTarget>;
+  settledPending: Set<string>;
 }
 
 interface ModelSwitchTarget {
+  sequence: number;
   modelProvider: string;
   model: string;
 }
 
 const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
 
-function settleModelSwitchSequence(requests: ModelSwitchRequestState, sequence: number): void {
-  if (requests.pending.has(sequence)) requests.settledPending.add(sequence);
-  requests.pending.delete(sequence);
-  requests.unsettled.delete(sequence);
+function settleModelSwitchThrough(requests: ModelSwitchRequestState, sequence: number): void {
+  requests.displayedThrough = Math.max(requests.displayedThrough, sequence);
+  for (const [clientMutationId, target] of requests.pending) {
+    if (target.sequence > sequence) continue;
+    requests.settledPending.add(clientMutationId);
+    requests.pending.delete(clientMutationId);
+  }
+  for (const [clientMutationId, target] of requests.unsettled) {
+    if (target.sequence <= sequence) requests.unsettled.delete(clientMutationId);
+  }
 }
 
-function matchingModelSwitchSequence(
+function matchingModelSwitchTarget(
   requests: ModelSwitchRequestState,
-  targets: readonly ModelSwitchTarget[],
-): number | undefined {
+  targets: readonly { modelProvider: string; model: string }[],
+): ModelSwitchTarget | undefined {
+  let match: ModelSwitchTarget | undefined;
   for (const candidates of [requests.unsettled, requests.pending]) {
-    for (const [sequence, candidate] of candidates) {
+    for (const candidate of candidates.values()) {
       if (
         targets.some((target) => target.modelProvider === candidate.modelProvider && target.model === candidate.model)
       )
-        return sequence;
+        if (!match || candidate.sequence > match.sequence) match = candidate;
     }
   }
-  return undefined;
+  return match;
 }
 
-function settleModelSwitchAuthority(ref: string, targets: readonly ModelSwitchTarget[]): number | undefined {
+function settleModelSwitchAuthority(
+  ref: string,
+  targets: readonly { modelProvider: string; model: string }[],
+): number | undefined {
   const requests = modelSwitchRequests.get(ref);
   if (!requests) return undefined;
-  const authority = matchingModelSwitchSequence(requests, targets);
-  if (authority !== undefined) {
-    settleModelSwitchSequence(requests, authority);
-    return authority;
+  const authority = matchingModelSwitchTarget(requests, targets);
+  if (authority) {
+    settleModelSwitchThrough(requests, authority.sequence);
+    return authority.sequence;
   }
   return undefined;
 }
 
-function reconcileModelSwitchRejection(ref: string, rejectionNotice: number): void {
+function reconcileModelSwitchRejection(ref: string, clientMutationId: string): void {
   const requests = modelSwitchRequests.get(ref);
-  const sequence = requests?.unsettled.keys().next().value ?? requests?.pending.keys().next().value;
-  if (requests && sequence !== undefined) settleModelSwitchSequence(requests, sequence);
+  const rejected = requests?.unsettled.get(clientMutationId) ?? requests?.pending.get(clientMutationId);
+  if (!requests || !rejected) return;
+  settleModelSwitchThrough(requests, rejected.sequence);
   const current = threadsStore.getState().acceptedModelSwitches;
   const accepted = current.get(ref);
-  if (!accepted) return;
+  if (!accepted || accepted.sequence > rejected.sequence) return;
   const acceptedModelSwitches = new Map(current);
-  if (sequence !== undefined && sequence !== accepted.sequence) {
-    acceptedModelSwitches.set(ref, {
-      ...accepted,
-      previousRejectionNotice: Math.max(accepted.previousRejectionNotice, rejectionNotice),
-    });
-  } else {
-    acceptedModelSwitches.delete(ref);
-  }
+  acceptedModelSwitches.delete(ref);
   threadsStore.setState({ acceptedModelSwitches });
 }
 
-function modelSwitchRejection(n: AnyNotification): { ref: string; notice: number } | undefined {
+function modelSwitchRejection(n: AnyNotification): { ref: string; clientMutationId: string } | undefined {
   if (n.method !== "overlay/upserted") return undefined;
   if (warningNoticeCode(n.params.item.item) !== WarningCodeModelSwitchRejected) return undefined;
-  const match = /^notice:(\d+)$/.exec(n.params.item.key);
-  return { ref: n.params.ref, notice: match ? Number(match[1]) : -1 };
+  const clientMutationId = warningNoticeClientMutationID(n.params.item.item);
+  return clientMutationId ? { ref: n.params.ref, clientMutationId } : undefined;
 }
 
-function latestModelSwitchRejection(model: ThreadModel | undefined): number {
-  let latest = -1;
+function hasModelSwitchRejection(model: ThreadModel | undefined, clientMutationId: string): boolean {
   for (const item of Object.values(model?.overlay ?? {})) {
     if (warningNoticeCode(item.item) !== WarningCodeModelSwitchRejected) continue;
-    const match = /^notice:(\d+)$/.exec(item.key);
-    if (match) latest = Math.max(latest, Number(match[1]));
+    if (warningNoticeClientMutationID(item.item) === clientMutationId) return true;
   }
-  return latest;
+  return false;
 }
 
 function modelIdentityInvalidatesAcceptedSwitch(model: ThreadModel, accepted: AcceptedModelSwitch): boolean {
@@ -706,7 +710,7 @@ function modelIdentityInvalidatesAcceptedSwitch(model: ThreadModel, accepted: Ac
     bootGeneration !== accepted.previousBootGeneration
   )
     return true;
-  return latestModelSwitchRejection(model) > accepted.previousRejectionNotice;
+  return hasModelSwitchRejection(model, accepted.clientMutationId);
 }
 
 function invalidateGoalResponseFallback(ref: string): void {
@@ -1648,11 +1652,11 @@ function putThreadModels(
     );
   if (accepted && (identityInvalidated || (modelInvalidated && authoritySequence === undefined))) {
     const requests = modelSwitchRequests.get(ref);
-    if (requests) settleModelSwitchSequence(requests, accepted.sequence);
+    if (requests) settleModelSwitchThrough(requests, accepted.sequence);
     const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
     acceptedModelSwitches.delete(ref);
     patch.acceptedModelSwitches = acceptedModelSwitches;
-  } else if (accepted && authoritySequence === accepted.sequence) {
+  } else if (accepted && authoritySequence !== undefined && authoritySequence >= accepted.sequence) {
     const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
     acceptedModelSwitches.delete(ref);
     patch.acceptedModelSwitches = acceptedModelSwitches;
@@ -6661,7 +6665,7 @@ function acceptEntryNotification(
 
 function handleNotification(n: AnyNotification): void {
   const rejection = modelSwitchRejection(n);
-  if (rejection) reconcileModelSwitchRejection(rejection.ref, rejection.notice);
+  if (rejection) reconcileModelSwitchRejection(rejection.ref, rejection.clientMutationId);
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
     // legacy has no history.invalidatedAtGeneration for the generic
@@ -8565,38 +8569,57 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const requests = modelSwitchRequests.get(ref) ?? {
       issued: 0,
       displayedThrough: 0,
-      pending: new Map<number, ModelSwitchTarget>(),
-      unsettled: new Map<number, ModelSwitchTarget>(),
-      settledPending: new Set<number>(),
+      pending: new Map<string, ModelSwitchTarget>(),
+      unsettled: new Map<string, ModelSwitchTarget>(),
+      settledPending: new Set<string>(),
     };
     modelSwitchRequests.set(ref, requests);
     const sequence = ++requests.issued;
-    const target = { modelProvider, model };
-    requests.pending.set(sequence, target);
-    const response = await requestMappingConflict("thread/model/set", { ref, modelProvider, model }).finally(() => {
-      requests.pending.delete(sequence);
-    });
-    if (requests.settledPending.delete(sequence)) return;
+    const clientMutationId = createSecureUUID();
+    const target = { sequence, modelProvider, model };
+    requests.pending.set(clientMutationId, target);
+    let response: MethodTypes["thread/model/set"]["result"];
+    try {
+      response = await requestMappingConflict("thread/model/set", {
+        ref,
+        modelProvider,
+        model,
+        clientMutationId,
+      });
+    } catch (error) {
+      requests.pending.delete(clientMutationId);
+      requests.settledPending.delete(clientMutationId);
+      throw error;
+    }
+    requests.pending.delete(clientMutationId);
+    if (requests.settledPending.delete(clientMutationId)) return;
     if (response.rejectionCode !== WarningCodeModelSwitchRejected) {
-      requests.displayedThrough = Math.max(requests.displayedThrough, sequence);
+      settleModelSwitchThrough(requests, sequence);
+      threadsStore.setState((state) => {
+        const accepted = state.acceptedModelSwitches.get(ref);
+        if (!accepted || accepted.sequence > sequence) return state;
+        const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
+        acceptedModelSwitches.delete(ref);
+        return { acceptedModelSwitches };
+      });
       return;
     }
-    requests.unsettled.set(sequence, target);
     if (sequence <= requests.displayedThrough) return;
+    settleModelSwitchThrough(requests, sequence - 1);
+    requests.unsettled.set(clientMutationId, target);
     requests.displayedThrough = sequence;
     const previous = trackedThreadModel(ref);
-    const previousRejectionNotice = latestModelSwitchRejection(previous);
     threadsStore.setState((state) => {
       const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
       acceptedModelSwitches.set(ref, {
         sequence,
+        clientMutationId,
         modelProvider,
         model,
         previousModelProvider: previous?.modelProvider ?? "",
         previousModel: previous?.model ?? "",
         previousInstanceId: threadInstanceID(previous),
         previousBootGeneration: previous?.history?.bootGeneration || undefined,
-        previousRejectionNotice,
       });
       return { acceptedModelSwitches };
     });

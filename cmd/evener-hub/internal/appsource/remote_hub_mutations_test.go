@@ -118,8 +118,9 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 		{"ShutdownThread", appwire.MethodThreadShutdown, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: testControllerRef})
 		}},
-		{"SetThreadModel", appwire.MethodThreadModelSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
-			return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef})
+		{"SetThreadModel", appwire.MethodThreadModelSet, true, false, "cmid-SetThreadModel", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef, ClientMutationID: "cmid-SetThreadModel"})
+			return err
 		}},
 		{"SetThreadReasoningEffort", appwire.MethodThreadReasoningEffortSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: testControllerRef})
@@ -188,6 +189,29 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 				t.Errorf("%s harness = %q, want %q", tc.name, env.Harness, want)
 			}
 		})
+	}
+}
+
+func TestRemoteHubSetThreadModelReturnsRejectionCapability(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadModelSet {
+			t.Fatalf("method = %q, want %q", method, appwire.MethodThreadModelSet)
+		}
+		return scriptedReply{result: appwire.ThreadModelSetResponse{
+			RejectionCode: "model_switch_rejected",
+		}}
+	})
+
+	response, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{
+		Ref:              testControllerRef,
+		Model:            "claude-opus-5",
+		ClientMutationID: "cmid-model-pick",
+	})
+	if err != nil {
+		t.Fatalf("SetThreadModel: %v", err)
+	}
+	if response.RejectionCode != "model_switch_rejected" {
+		t.Fatalf("rejection code = %q, want %q", response.RejectionCode, "model_switch_rejected")
 	}
 }
 

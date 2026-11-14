@@ -117,18 +117,28 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string
   await user.click(await screen.findByRole("option", { name: optionName }));
 }
 
-function emitModelSwitchRejection(fake: ReturnType<typeof connectReadyFakeClient>): void {
+function emitModelSwitchRejection(fake: ReturnType<typeof connectReadyFakeClient>, clientMutationId?: string): void {
+  const mutationId = clientMutationId ?? latestModelSetMutationId(fake);
   fake.emitNotification({
     method: "overlay/upserted",
     params: {
       threadId: "thr_a",
       ref: "ref_a",
-      item: modelSwitchRejectionNotice(1),
+      item: modelSwitchRejectionNotice(1, mutationId),
     },
   });
 }
 
-function modelSwitchRejectionNotice(sequence: number): OverlayItem {
+function latestModelSetMutationId(fake: ReturnType<typeof connectReadyFakeClient>): string | undefined {
+  for (const call of [...fake.calls].reverse()) {
+    if (call.method !== "thread/model/set") continue;
+    const mutationId = (call.params as { clientMutationId?: unknown }).clientMutationId;
+    return typeof mutationId === "string" ? mutationId : undefined;
+  }
+  return undefined;
+}
+
+function modelSwitchRejectionNotice(sequence: number, clientMutationId?: string): OverlayItem {
   const key = `notice:${sequence}`;
   return {
     key,
@@ -140,7 +150,7 @@ function modelSwitchRejectionNotice(sequence: number): OverlayItem {
       turnId: "turn_1",
       text: "The queued model switch was refused.",
       eventKind: "warning",
-      raw: { warning: { code: "model_switch_rejected" } },
+      raw: { warning: { code: "model_switch_rejected", client_mutation_id: clientMutationId } },
     },
   };
 }
@@ -214,7 +224,14 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   await user.clear(combobox);
   await user.keyboard("gpt-5.5");
   await user.click(await screen.findByRole("option", { name: /gpt-5\.5/i }));
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() =>
+    expect(called).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      clientMutationId: expect.any(String),
+    }),
+  );
 });
 
 // The capability is the ONLY gate. Whether a turn is in flight is not a fact
@@ -258,7 +275,14 @@ test("a mid-turn pick sends thread/model/set rather than being refused client-si
   await user.keyboard("gpt");
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() =>
+    expect(called).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      clientMutationId: expect.any(String),
+    }),
+  );
   await screen.findByText(/nope\/m-404/i);
 });
 
@@ -385,6 +409,91 @@ test("accepted model display follows pick order when responses arrive out of ord
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
+test("a deferred rejection restores authority for the exact accepted pick", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  const mutationIds = new Map<string, string>();
+  fake.on("thread/model/set", (params) => {
+    const request = params as typeof params & { clientMutationId?: string };
+    if (request.clientMutationId) mutationIds.set(request.model, request.clientMutationId);
+    return codedModelSetResponse();
+  });
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+
+  const rejectedMutationId = mutationIds.get("claude-opus-5");
+  expect(rejectedMutationId).toBeTruthy();
+  act(() => emitModelSwitchRejection(fake, rejectedMutationId));
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+test("a deferred rejection for an older pick preserves the newer accepted pick", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  const mutationIds = new Map<string, string>();
+  fake.on("thread/model/set", (params) => {
+    const request = params as typeof params & { clientMutationId?: string };
+    if (request.clientMutationId) mutationIds.set(request.model, request.clientMutationId);
+    return codedModelSetResponse();
+  });
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+
+  const rejectedMutationId = mutationIds.get("gpt-5.5");
+  expect(rejectedMutationId).toBeTruthy();
+  act(() => emitModelSwitchRejection(fake, rejectedMutationId));
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
+test("a settled newer pick prevents an older response from restoring its label", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  const resolvers = new Map<string, () => void>();
+  fake.on(
+    "thread/model/set",
+    ({ model }) =>
+      new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+        resolvers.set(model, () => resolve(codedModelSetResponse()));
+      }),
+  );
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  const olderSet = threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+  await waitFor(() => expect(resolvers.has("gpt-5.5")).toBe(true));
+  const newerSet = threadsStore.getState().setModel("ref_a", "anthropic", "claude-opus-5");
+  await waitFor(() => expect(resolvers.has("claude-opus-5")).toBe(true));
+
+  act(() => {
+    putThreadModel("ref_a", { ...activeModel, modelProvider: "anthropic", model: "claude-opus-5" });
+  });
+  view.rerender(
+    <ModelSwitch sessionRef="ref_a" model={{ ...activeModel, modelProvider: "anthropic", model: "claude-opus-5" }} />,
+  );
+  await act(async () => {
+    resolvers.get("claude-opus-5")?.();
+    await newerSet;
+  });
+  await act(async () => {
+    resolvers.get("gpt-5.5")?.();
+    await olderSet;
+  });
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
 test("an accepted next model remains visible after the composer remounts", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
@@ -449,7 +558,7 @@ test("reconnect hydration clears an accepted model when thread/read contains a n
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
   fake.on("thread/model/set", () => codedModelSetResponse());
-  const oldRejection = modelSwitchRejectionNotice(0);
+  const oldRejection = modelSwitchRejectionNotice(0, "older-model-pick");
   let overlay = [oldRejection];
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", { id: "thr_a", modelProvider: "anthropic/claude-sonnet-4-5" }),
@@ -469,7 +578,9 @@ test("reconnect hydration clears an accepted model when thread/read contains a n
     await pickModel(user, "gpt", /gpt-5\.5/i);
     await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
 
-    overlay = [oldRejection, modelSwitchRejectionNotice(1)];
+    const acceptedMutationId = latestModelSetMutationId(fake);
+    expect(acceptedMutationId).toBeTruthy();
+    overlay = [oldRejection, modelSwitchRejectionNotice(1, acceptedMutationId)];
     const readsBeforeReconnect = fake.calls.filter((call) => call.method === "thread/read").length;
     act(() => {
       fake.emitStateChange("reconnecting");
@@ -542,7 +653,14 @@ test("a cold exited session sends the same thread/model/set - the hub owns the r
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() =>
+    expect(called).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      clientMutationId: expect.any(String),
+    }),
+  );
 });
 
 test("opening the picker fetches the catalog via listModels and shows a loading state until it resolves", async () => {
@@ -606,7 +724,14 @@ test("picking an option calls setModel with that option's provider/model and clo
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() =>
+    expect(called).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      clientMutationId: expect.any(String),
+    }),
+  );
   expect(screen.queryByRole("combobox")).toBeNull();
 });
 
@@ -857,6 +982,7 @@ test("session picker retry refreshes a cached empty catalogue through the RPC", 
       ref: "ref_a",
       modelProvider: "openai",
       model: "gpt-5.5",
+      clientMutationId: expect.any(String),
     }),
   );
   expect(fake.calls.filter((call) => call.method === "model/list").at(-1)?.params).toEqual({ refresh: true });

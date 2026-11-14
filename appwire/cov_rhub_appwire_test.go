@@ -138,6 +138,16 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"ThreadModelSet", MethodThreadModelSet, `{"ref":"local:th","modelProvider":"openai","model":"gpt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadModelSet(ctx, ThreadModelSetParams{Ref: "local:th", ModelProvider: "openai", Model: "gpt"})
 		}},
+		{"ThreadModelSetWithResponse", MethodThreadModelSet, `{"ref":"local:th","modelProvider":"openai","model":"gpt","clientMutationId":"cm_model"}`, ThreadModelSetResponse{RejectionCode: "model_switch_rejected"}, func(ctx context.Context, c *Client) error {
+			out, err := c.ThreadModelSetWithResponse(ctx, ThreadModelSetParams{Ref: "local:th", ModelProvider: "openai", Model: "gpt", ClientMutationID: "cm_model"})
+			if err != nil {
+				return err
+			}
+			if out.RejectionCode != "model_switch_rejected" {
+				return errors.New("ThreadModelSetWithResponse decode mismatch")
+			}
+			return nil
+		}},
 		{"ThreadReasoningEffortSet", MethodThreadReasoningEffortSet, `{"ref":"local:th","reasoningEffort":"high"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.ThreadReasoningEffortSet(ctx, ThreadReasoningEffortSetParams{Ref: "local:th", ReasoningEffort: "high"})
 		}},

@@ -793,7 +793,7 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	// boundary. One-shot hook: A's own publication is the one parked.
 	go func() {
 		<-aPublishEntered
-		if err := s.SetModel("glm/glm-test"); err != nil {
+		if err := s.SetModelWithMutationID("glm/glm-test", "model-pick-b"); err != nil {
 			t.Errorf("queued pick of B: %v", err)
 		}
 		close(releaseAPublish)
@@ -827,20 +827,26 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 	var warningCodes []string
 	sawRejectionCode := false
+	rejectionMutationID := ""
 	for _, item := range overlay.Snapshot() {
 		var raw struct {
 			Warning struct {
-				Code string `json:"code"`
+				Code             string `json:"code"`
+				ClientMutationID string `json:"client_mutation_id"`
 			} `json:"warning"`
 		}
 		if err := json.Unmarshal(item.Item.Raw, &raw); err == nil && raw.Warning.Code != "" {
 			warningCodes = append(warningCodes, raw.Warning.Code)
 			if raw.Warning.Code == "model_switch_rejected" {
 				sawRejectionCode = true
+				rejectionMutationID = raw.Warning.ClientMutationID
 			}
 		}
 	}
 	if !sawRejectionCode {
 		t.Fatalf("session-to-overlay warning codes = %v, want the queued-switch rejection marker", warningCodes)
+	}
+	if rejectionMutationID != "model-pick-b" {
+		t.Fatalf("queued-switch rejection mutation id = %q, want %q", rejectionMutationID, "model-pick-b")
 	}
 }

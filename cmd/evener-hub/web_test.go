@@ -400,8 +400,8 @@ func (s *scriptedAppSource) ShutdownThread(context.Context, appwire.ThreadShutdo
 	return appwire.Unavailable("scripted source does not shut down threads")
 }
 
-func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
-	return appwire.Unavailable("scripted source does not set models")
+func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+	return appwire.ThreadModelSetResponse{}, appwire.Unavailable("scripted source does not set models")
 }
 
 func (s *scriptedAppSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {

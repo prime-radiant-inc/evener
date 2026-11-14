@@ -1866,10 +1866,11 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // SetModel stamped, which fences the boundary application against superseding
 // picks. A zero value (empty model) means nothing is queued.
 type pendingModelSwitch struct {
-	model          string
-	primedInstance string
-	primedListing  *llm.ModelListing
-	seq            uint64
+	model            string
+	clientMutationID string
+	primedInstance   string
+	primedListing    *llm.ModelListing
+	seq              uint64
 }
 
 // modelSwitchFence bounds one switch application's commit to the pick that
@@ -1880,6 +1881,9 @@ type modelSwitchFence struct {
 	// passed means a newer accepted pick owns the outcome: the application
 	// drops instead of overwriting it.
 	pickSeq uint64
+	// clientMutationID identifies the request whose accepted switch may be
+	// re-queued at the commit point and later rejected at the boundary.
+	clientMutationID string
 	// queueWhenBusy re-queues the switch at the commit point instead of
 	// committing when a turn is in flight: the at-rest pickers' "land it at
 	// the next boundary" fallback, so a turn that started while the pick was
@@ -1906,6 +1910,13 @@ type modelSwitchFence struct {
 // a switch that fails there surfaces as a transcript warning and is dropped
 // rather than retried.
 func (s *Session) SetModel(model string) error {
+	return s.SetModelWithMutationID(model, "")
+}
+
+// SetModelWithMutationID changes the model and associates a queued switch
+// with the client request that accepted it. A deferred rejection carries the
+// same identity so clients can reconcile overlapping picks exactly.
+func (s *Session) SetModelWithMutationID(model, clientMutationID string) error {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
 		return admissionErr
@@ -1920,10 +1931,14 @@ func (s *Session) SetModel(model string) error {
 	pickSeq := s.modelPickSeq
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, "", nil, modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true})
+		return s.applyModelSwitch(model, "", nil, modelSwitchFence{
+			pickSeq:          pickSeq,
+			clientMutationID: clientMutationID,
+			queueWhenBusy:    true,
+		})
 	}
 	s.mu.Unlock()
-	return s.queueModelSwitch(model, pickSeq)
+	return s.queueModelSwitch(model, clientMutationID, pickSeq)
 }
 
 // turnInFlightLocked reports whether an input is being processed, from its
@@ -1942,9 +1957,9 @@ func (s *Session) turnInFlightLocked() bool {
 // being appended to by the running turn - and re-run by the boundary's
 // applyModelSwitch against settled history, reusing the listing this preflight
 // fetched so the boundary pays no second enumeration.
-func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
+func (s *Session) queueModelSwitch(model, clientMutationID string, pickSeq uint64) error {
 	primedInstance, primedListing := s.primeCodexRoster(model)
-	fence := modelSwitchFence{pickSeq: pickSeq, queueWhenBusy: true}
+	fence := modelSwitchFence{pickSeq: pickSeq, clientMutationID: clientMutationID, queueWhenBusy: true}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1985,7 +2000,13 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 	// over the newer choice. Storing accepts the pick, so the watermark
 	// advances with it.
 	if s.modelPickAccepted <= pickSeq {
-		s.pendingModel = pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq}
+		s.pendingModel = pendingModelSwitch{
+			model:            model,
+			clientMutationID: clientMutationID,
+			primedInstance:   primedInstance,
+			primedListing:    primedListing,
+			seq:              pickSeq,
+		}
 		s.modelPickAccepted = pickSeq
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
@@ -2036,11 +2057,13 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
 		release()
 		if err != nil {
-			s.emit(warningDataFromErrorCode(
+			warning := warningDataFromErrorCode(
 				events.WarningCodeModelSwitchRejected,
 				"queued model switch to "+pending.model+" did not apply",
 				err,
-			))
+			)
+			warning.ClientMutationID = pending.clientMutationID
+			s.emit(warning)
 		}
 	}
 }
@@ -2128,7 +2151,13 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		// for that turn's boundary instead of swapping the profile under it,
 		// carrying the listing this validation already fetched. Re-queueing
 		// accepts the pick, so the watermark advances with it.
-		s.pendingModel = pendingModelSwitch{model: model, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq}
+		s.pendingModel = pendingModelSwitch{
+			model:            model,
+			clientMutationID: fence.clientMutationID,
+			primedInstance:   listedInstance,
+			primedListing:    listing,
+			seq:              fence.pickSeq,
+		}
 		if s.modelPickAccepted < fence.pickSeq {
 			s.modelPickAccepted = fence.pickSeq
 		}

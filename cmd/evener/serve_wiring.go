@@ -117,11 +117,11 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		session: func() agent.EnvelopeSampling { return live.session() },
 	}
 	srv.SetThreadEnvelopeSource(envelopeSource)
-	srv.SetModelFunc(func(model string) error {
+	srv.SetModelFunc(func(model, clientMutationID string) error {
 		sess := live.session()
-		// SetModel queues a pick made while a turn runs (applied at the turn
+		// SetModelWithMutationID queues a pick made while a turn runs (applied at the turn
 		// boundary) and applies one made at rest immediately.
-		if err := sess.SetModel(model); err != nil {
+		if err := sess.SetModelWithMutationID(model, clientMutationID); err != nil {
 			return err
 		}
 		// Refresh the daemon's cached session info for the RPC's own reply

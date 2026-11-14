@@ -57,19 +57,22 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	fn := s.modelFunc
 	s.mu.RUnlock()
 	// No processing gate: while a turn runs, the session queues the switch and
-	// applies it at the turn boundary (Session.SetModel's queue path), so a
+	// applies it at the turn boundary (Session.SetModelWithMutationID's queue path), so a
 	// pick made in the composer lands on the next turn instead of erroring.
 	// The running turn still finishes on the model it started with.
 	if fn == nil {
 		return appwire.ThreadModelSetResponse{}, appwire.Unavailable("model change not available")
 	}
-	if err := fn(model); err != nil {
+	if err := fn(model, params.ClientMutationID); err != nil {
 		// Every SetModel failure is mapped to InvalidParams deliberately: the
 		// hook's error modes today are all validation-shaped (unknown model,
 		// not a member of the instance's catalog, unresolvable ref). Revisit
 		// this blanket mapping if SetModel grows I/O failure modes (e.g. a live
 		// ListModels fetch failing), which would deserve a distinct code.
 		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if params.ClientMutationID == "" {
+		return appwire.ThreadModelSetResponse{}, nil
 	}
 	return appwire.ThreadModelSetResponse{RejectionCode: events.WarningCodeModelSwitchRejected}, nil
 }

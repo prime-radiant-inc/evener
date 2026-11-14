@@ -106,8 +106,8 @@ func (s *relayLifecycleSource) ShutdownThread(context.Context, appwire.ThreadShu
 	return appwire.Unavailable("relay lifecycle source does not shut down threads")
 }
 
-func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
-	return appwire.Unavailable("relay lifecycle source does not set models")
+func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+	return appwire.ThreadModelSetResponse{}, appwire.Unavailable("relay lifecycle source does not set models")
 }
 
 func (s *relayLifecycleSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {

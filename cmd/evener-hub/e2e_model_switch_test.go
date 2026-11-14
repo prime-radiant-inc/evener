@@ -224,12 +224,17 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 
 	// The mid-turn pick. This used to answer Conflict "session is processing"
 	// through the hub; it must now be accepted and queued for the boundary.
-	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "fake",
-		Model:         fakellm.SwitchTargetID,
-	}); err != nil {
+	setResponse, err := clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:              ref,
+		ModelProvider:    "fake",
+		Model:            fakellm.SwitchTargetID,
+		ClientMutationID: "e2e-model-pick",
+	})
+	if err != nil {
 		t.Fatalf("mid-turn thread/model/set: %v", err)
+	}
+	if setResponse.RejectionCode != "model_switch_rejected" {
+		t.Fatalf("mid-turn thread/model/set rejection code = %q, want the coded deferred-rejection capability", setResponse.RejectionCode)
 	}
 
 	// The composer's send-while-busy: the typed message queues behind the turn.

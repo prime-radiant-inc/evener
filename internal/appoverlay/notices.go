@@ -150,7 +150,7 @@ func noticeAnnouncement(ev events.SessionEvent) (apptranscript.NoticeAnnouncemen
 	case events.ForkSummaryData:
 		return apptranscript.ForkSummaryAnnouncement(data), true
 	case events.WarningData:
-		return warningAnnouncement(data.Source, data.Title, data.Hint, data.Code, data.Message), true
+		return warningAnnouncement(data.Source, data.Title, data.Hint, data.Code, data.ClientMutationID, data.Message), true
 	case events.ErrorData:
 		// A recorded error is a TURN_FAILURE entry history already shows.
 		if data.Recorded {
@@ -163,7 +163,7 @@ func noticeAnnouncement(ev events.SessionEvent) (apptranscript.NoticeAnnouncemen
 		// A user-cancelled turn is not a failure: it shows as a warning, as
 		// the live projector has always shown it.
 		if apptranscript.IsCancellation(message) {
-			return warningAnnouncement(data.Source, data.Title, data.Hint, "", message), true
+			return warningAnnouncement(data.Source, data.Title, data.Hint, "", "", message), true
 		}
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
 		return apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindError, Description: info.Title, Text: message}, true
@@ -187,7 +187,7 @@ func interruptedAnnouncement() apptranscript.NoticeAnnouncement {
 // notification has always given clients, and its code when it has one, so a
 // client can tell a "no action needed" notice (events.WarningCodeContextBudget)
 // from a failure without reading its prose.
-func warningAnnouncement(source, title, hint, code, message string) apptranscript.NoticeAnnouncement {
+func warningAnnouncement(source, title, hint, code, clientMutationID, message string) apptranscript.NoticeAnnouncement {
 	info := diagnostic.FromFields(source, title, hint, message)
 	announcement := apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindWarning, Description: info.Title, Text: message}
 	fields := map[string]string{
@@ -197,6 +197,9 @@ func warningAnnouncement(source, title, hint, code, message string) apptranscrip
 	}
 	if code != "" {
 		fields["code"] = code
+	}
+	if clientMutationID != "" {
+		fields["client_mutation_id"] = clientMutationID
 	}
 	raw, err := json.Marshal(map[string]map[string]string{"warning": fields})
 	if err == nil {

@@ -340,7 +340,7 @@ type Server struct {
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
 	clearJournal             threadClearJournalFile
-	modelFunc                func(string) error
+	modelFunc                func(string, string) error
 	visionModelFunc          func(string) error
 	nameFunc                 func(string) error
 	reasoningEffortFunc      func(string) error
@@ -675,7 +675,7 @@ func (s *Server) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams
 }
 
 // SetModelFunc sets the function called by thread/model/set.
-func (s *Server) SetModelFunc(fn func(string) error) {
+func (s *Server) SetModelFunc(fn func(string, string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
 	s.mu.Unlock()

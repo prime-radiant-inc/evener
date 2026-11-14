@@ -384,22 +384,23 @@ engaged, without a second discovery mount.
 
 The model picker remains available when the session advertises `changeModel`.
 Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
-and applying the choice. While a turn is running, a successful call makes the
-accepted next model visible in the picker immediately and in every composer for
-that session when the response advertises `model_switch_rejected` support through
-its `rejectionCode` field. An older daemon returns an empty response, so the hub
-keeps its authoritative model label rather than displaying a choice that it
-cannot reconcile if deferred validation rejects it.
+and applying the choice. While a turn is running, the browser assigns each pick
+a `clientMutationId`. A daemon that returns the `model_switch_rejected`
+`rejectionCode` also carries that same ID into any later coded rejection. Only
+then does the thread store make the accepted next model visible immediately in
+every composer for that session. An older daemon returns an empty response, so
+the hub keeps its authoritative model label rather than displaying a choice that
+it cannot reconcile if deferred validation rejects it.
 
-The thread store retains an accepted choice across pane remounts and reconciles
-each request separately. A `thread/model/changed` update that matches an earlier
-request settles that request without hiding a newer choice whose provider check
-is still running. When that newer response arrives, its fallback label starts
-from the then-current authoritative model. A refused call leaves the prior label
-intact. A coded rejection restores it if the queued switch later fails history
-validation, and a thread snapshot from a new daemon boot restores it if the
-daemon exited before applying the queued choice. Closing the desktop picker
-restores focus to its trigger, including after a selection.
+The thread store retains an accepted choice across pane remounts. It reconciles
+responses and deferred rejections by request identity, and authoritative changes
+by model. A `thread/model/changed` update that matches an earlier request settles
+that request without hiding a newer choice whose provider check is still running. A coded
+rejection retires its exact request and earlier unsettled picks without clearing
+a newer accepted choice. A refused call leaves the prior label intact. A thread
+snapshot from a new daemon boot restores the authoritative label if the daemon
+exited before applying the queued choice. Closing the desktop picker restores
+focus to its trigger, including after a selection.
 
 ## Directory fields
 

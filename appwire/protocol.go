@@ -182,7 +182,7 @@ var Methods = []MethodSpec{
 	{MethodThreadResume, ThreadResumeParams{}, ThreadResumeResponse{}, ScopeHub, "Resumes an existing session and attaches its relay."},
 	{MethodThreadFork, ThreadForkParams{}, ThreadForkResponse{}, ScopeHub, "Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config."},
 	{MethodThreadClear, ThreadClearParams{}, ThreadClearResponse{}, ScopeBoth, "Clears the thread's conversation when no turn, queued, or approval work is unresolved."},
-	{MethodThreadModelSet, ThreadModelSetParams{}, ThreadModelSetResponse{}, ScopeBoth, "Changes the session's model/provider and identifies the coded warning used if a deferred switch is later rejected."},
+	{MethodThreadModelSet, ThreadModelSetParams{}, ThreadModelSetResponse{}, ScopeBoth, "Changes the session's model/provider. When supplied, clientMutationId is copied into any later deferred rejection and rejectionCode advertises that exact-identity support."},
 	{MethodEvenerThreadNameSet, ThreadNameSetParams{}, EmptyResponse{}, ScopeBoth, "Sets a user-chosen session title (rename)."},
 	{MethodThreadReasoningEffortSet, ThreadReasoningEffortSetParams{}, EmptyResponse{}, ScopeBoth, "Sets reasoning effort, normalizing and validating the value."},
 	{MethodThreadVisionModelSet, ThreadVisionModelSetParams{}, EmptyResponse{}, ScopeBoth, "Sets the vision side-channel routing (\"\", \"off\", or a model ref)."},

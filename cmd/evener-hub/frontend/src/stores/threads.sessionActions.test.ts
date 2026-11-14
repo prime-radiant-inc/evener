@@ -239,14 +239,19 @@ describe("Manager start-time projection", () => {
 });
 
 describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/rename/compact/shutdown/clearThread/forkFromTurn)", () => {
-  test("setModel sends thread/model/set with {ref, modelProvider, model}", async () => {
+  test("setModel sends thread/model/set with request identity and model", async () => {
     const fake = connectFakeClient();
     fake.on("thread/model/set", () => ({}));
 
     await threadsStore.getState().setModel("ref_a", "anthropic", "claude-opus-4-1");
 
     const call = fake.calls.find((c) => c.method === "thread/model/set");
-    expect(call?.params).toEqual({ ref: "ref_a", modelProvider: "anthropic", model: "claude-opus-4-1" });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      modelProvider: "anthropic",
+      model: "claude-opus-4-1",
+      clientMutationId: expect.any(String),
+    });
   });
 
   test("setVisionModel sends thread/vision-model/set with {ref, visionModel}", async () => {

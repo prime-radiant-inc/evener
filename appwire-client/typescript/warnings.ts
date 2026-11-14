@@ -94,6 +94,17 @@ export function warningNoticeCode(item: { type: string; eventKind?: string; raw?
   return typeof code === "string" ? code : undefined;
 }
 
+/** The checked client mutation identity carried by a daemon warning notice. */
+export function warningNoticeClientMutationID(item: {
+  type: string;
+  eventKind?: string;
+  raw?: unknown;
+}): string | undefined {
+  if (item.type !== "systemMessage" || item.eventKind !== "warning") return undefined;
+  const clientMutationID = noticeWarningField(item.raw, "client_mutation_id");
+  return typeof clientMutationID === "string" ? clientMutationID : undefined;
+}
+
 /** A warning's words as both clients show them, each once. */
 export interface WarningWords {
   message: string;

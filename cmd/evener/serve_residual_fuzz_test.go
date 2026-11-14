@@ -40,7 +40,7 @@ type residualServeServer struct {
 	urlsRemove     func(outerID, id string) (bool, error)
 	envelopeSource server.ThreadEnvelopeSource
 	meta           func() schema.SessionMeta
-	model          func(string) error
+	model          func(string, string) error
 	visionModel    func(string) error
 	name           func(string) error
 	effort         func(string) error
@@ -76,7 +76,7 @@ func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeS
 	s.envelopeSource = src
 }
 func (s *residualServeServer) RefreshThreadEnvelope()                      {}
-func (s *residualServeServer) SetModelFunc(f func(string) error)           { s.model = f }
+func (s *residualServeServer) SetModelFunc(f func(string, string) error)   { s.model = f }
 func (s *residualServeServer) SetVisionModelFunc(f func(string) error)     { s.visionModel = f }
 func (s *residualServeServer) SetNameFunc(f func(string) error)            { s.name = f }
 func (s *residualServeServer) SetReasoningEffortFunc(f func(string) error) { s.effort = f }
@@ -168,7 +168,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_, _, _ = s.envelopeSource.ReasoningInfo()
 	_ = s.envelopeSource.VisionModel()
 	_ = s.envelopeSource.SessionMeta()
-	_ = s.model("test2")
+	_ = s.model("test2", "residual-model-switch")
 	_ = s.visionModel("off")
 	if err := s.name("renamed"); err != nil {
 		t.Error(err)

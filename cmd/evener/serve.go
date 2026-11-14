@@ -110,7 +110,7 @@ type serveServer interface {
 	// one seam the daemon samples at change time. See server/thread_envelope.go.
 	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
 	RefreshThreadEnvelope()
-	SetModelFunc(func(string) error)
+	SetModelFunc(func(string, string) error)
 	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
 	UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string))

@@ -18,6 +18,7 @@ import {
   WarningCodeMCPReconnected,
   WarningCodeModelSwitchRejected,
   WarningCodePluginCompatibility,
+  warningNoticeClientMutationID,
   warningNoticeCode,
   warningWords,
 } from "./warnings";
@@ -38,6 +39,30 @@ test("warningNoticeCode reads a daemon overlay warning's checked code", () => {
     }),
   ).toBeUndefined();
   expect(warningNoticeCode({ type: "systemMessage", eventKind: "warning", raw: { warning: [] } })).toBeUndefined();
+});
+
+test("warningNoticeClientMutationID reads a daemon warning's checked mutation identity", () => {
+  expect(
+    warningNoticeClientMutationID({
+      type: "systemMessage",
+      eventKind: "warning",
+      raw: { warning: { client_mutation_id: "model-pick-b" } },
+    }),
+  ).toBe("model-pick-b");
+  expect(
+    warningNoticeClientMutationID({
+      type: "systemMessage",
+      eventKind: "error",
+      raw: { warning: { client_mutation_id: "model-pick-b" } },
+    }),
+  ).toBeUndefined();
+  expect(
+    warningNoticeClientMutationID({
+      type: "systemMessage",
+      eventKind: "warning",
+      raw: { warning: { client_mutation_id: 17 } },
+    }),
+  ).toBeUndefined();
 });
 
 // goWarningCode reads one warning code's value out of agent/events/payloads.go

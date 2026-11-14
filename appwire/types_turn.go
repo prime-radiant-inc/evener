@@ -1143,13 +1143,15 @@ type ThreadClearResponse struct {
 }
 
 type ThreadModelSetParams struct {
-	Ref           string `json:"ref"`
-	ModelProvider string `json:"modelProvider"`
-	Model         string `json:"model"`
+	Ref              string `json:"ref"`
+	ModelProvider    string `json:"modelProvider"`
+	Model            string `json:"model"`
+	ClientMutationID string `json:"clientMutationId,omitempty"`
 }
 
 // ThreadModelSetResponse describes the deferred rejection signal a client can
-// rely on after the request succeeds. Older daemons return an empty result.
+// rely on after an identified request succeeds. Older daemons and requests
+// without a client mutation ID return an empty result.
 type ThreadModelSetResponse struct {
 	RejectionCode string `json:"rejectionCode,omitempty"`
 }

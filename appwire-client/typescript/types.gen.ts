@@ -4909,6 +4909,7 @@ export interface ThreadModelSetParams {
   ref: string;
   modelProvider: string;
   model: string;
+  clientMutationId?: string;
 }
 
 export interface ThreadModelSetResponse {

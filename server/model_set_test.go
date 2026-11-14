@@ -17,7 +17,7 @@ import (
 func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	called := false
-	s.SetModelFunc(func(string) error { called = true; return nil })
+	s.SetModelFunc(func(string, string) error { called = true; return nil })
 	s.SetProcessing(true)
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"}); err != nil {
@@ -31,7 +31,7 @@ func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	hookErr := errors.New("unknown instance: nope")
-	s.SetModelFunc(func(string) error { return hookErr })
+	s.SetModelFunc(func(string, string) error { return hookErr })
 
 	_, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
 	if err == nil {
@@ -48,10 +48,19 @@ func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 func TestHandleAppThreadModelSet_SuccessReturnsRejectionCode(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	var got string
+	var gotClientMutationID string
 	called := false
-	s.SetModelFunc(func(m string) error { got = m; called = true; return nil })
+	s.SetModelFunc(func(m, clientMutationID string) error {
+		got = m
+		gotClientMutationID = clientMutationID
+		called = true
+		return nil
+	})
 
-	resp, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
+	resp, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Model:            "claude-x",
+		ClientMutationID: "model-pick-b",
+	})
 	if err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
@@ -61,12 +70,28 @@ func TestHandleAppThreadModelSet_SuccessReturnsRejectionCode(t *testing.T) {
 	if !called || got != "claude-x" {
 		t.Fatalf("hook not called as expected: called=%v got=%q", called, got)
 	}
+	if gotClientMutationID != "model-pick-b" {
+		t.Fatalf("model hook client mutation id = %q, want %q", gotClientMutationID, "model-pick-b")
+	}
+}
+
+func TestHandleAppThreadModelSet_WithoutMutationIDKeepsCompatibilityResponse(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	s.SetModelFunc(func(string, string) error { return nil })
+
+	response, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
+	if err != nil {
+		t.Fatalf("handleAppThreadModelSet: %v", err)
+	}
+	if response.RejectionCode != "" {
+		t.Fatalf("rejection capability was advertised without a request identity")
+	}
 }
 
 func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	var got string
-	s.SetModelFunc(func(m string) error { got = m; return nil })
+	s.SetModelFunc(func(m, _ string) error { got = m; return nil })
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		ModelProvider: "openrouter",
@@ -82,7 +107,7 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
-	s.SetModelFunc(func(m string) error {
+	s.SetModelFunc(func(m, _ string) error {
 		// Mirrors serve.go: the hook itself refreshes the cached session info
 		// synchronously after a successful switch, rather than waiting for the
 		// next EventSessionStart (which never fires again mid-session).

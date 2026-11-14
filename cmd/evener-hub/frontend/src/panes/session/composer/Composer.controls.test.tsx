@@ -446,7 +446,12 @@ test("an empty exited follow-up can pick its next model before entering the edit
   await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
   await waitFor(() =>
     expect(fake.calls.filter((call) => call.method === "thread/model/set").map((call) => call.params)).toEqual([
-      { ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" },
+      {
+        ref: "ref_a",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        clientMutationId: expect.any(String),
+      },
     ]),
   );
   render(<button type="button">Outside composer</button>);

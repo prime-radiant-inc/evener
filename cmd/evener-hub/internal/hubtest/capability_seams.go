@@ -41,7 +41,7 @@ func WireCapabilitySeams(srv *daemonserver.Server) {
 	srv.SetCompactFunc(func(context.Context) error { return nil })
 	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
 	srv.SetShutdownFunc(func() {})
-	srv.SetModelFunc(func(string) error { return nil })
+	srv.SetModelFunc(func(string, string) error { return nil })
 	srv.SetVisionModelFunc(func(string) error { return nil })
 	srv.SetNameFunc(func(string) error { return nil })
 	srv.SetGoalFunc(func(string) (bool, error) { return false, nil })

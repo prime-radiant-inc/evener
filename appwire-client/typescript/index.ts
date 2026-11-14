@@ -951,6 +951,7 @@ export {
   WarningCodeMCPReconnected,
   WarningCodeModelSwitchRejected,
   WarningCodePluginCompatibility,
+  warningNoticeClientMutationID,
   warningNoticeCode,
   warningWords,
 } from "./warnings";

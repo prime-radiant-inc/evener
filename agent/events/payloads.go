@@ -683,6 +683,7 @@ type WarningData struct {
 	Message           string `json:"message"`
 	Source            string `json:"source,omitempty"`
 	Code              string `json:"code,omitempty"`
+	ClientMutationID  string `json:"client_mutation_id,omitempty"`
 	DelegateID        string `json:"delegate_id,omitempty"`
 	Title             string `json:"title,omitempty"`
 	Hint              string `json:"hint,omitempty"`

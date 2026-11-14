@@ -58,8 +58,8 @@ func (f fakeSource) CompactThread(context.Context, appwire.ThreadCompactStartPar
 func (f fakeSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
 	return nil
 }
-func (f fakeSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
-	return nil
+func (f fakeSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+	return appwire.ThreadModelSetResponse{}, nil
 }
 
 func (f fakeSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {

@@ -50,7 +50,8 @@ func (o *sessionOperations) Control(ctx context.Context, request appwire.Session
 		out.Clear = &result
 		return out, err
 	case "model":
-		return out, setThreadModelWithResume(ctx, o.cfg, o.sources, o.relays, *request.Model)
+		_, err := setThreadModelWithResume(ctx, o.cfg, o.sources, o.relays, *request.Model)
+		return out, err
 	case "vision_model":
 		return out, setThreadVisionModelWithResume(ctx, o.cfg, o.sources, *request.VisionModel)
 	case "reasoning_effort":

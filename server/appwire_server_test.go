@@ -581,7 +581,7 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	var got string
-	srv.SetModelFunc(func(model string) error {
+	srv.SetModelFunc(func(model, _ string) error {
 		got = model
 		return nil
 	})
@@ -589,9 +589,10 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           "local:th_1",
-		ModelProvider: "openai",
-		Model:         "gpt-5",
+		Ref:              "local:th_1",
+		ModelProvider:    "openai",
+		Model:            "gpt-5",
+		ClientMutationID: "model-pick",
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)

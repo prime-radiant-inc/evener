@@ -228,7 +228,14 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() =>
+    expect(called).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      clientMutationId: expect.any(String),
+    }),
+  );
 });
 
 // --- reasoning effort switcher ----------------------------------------------

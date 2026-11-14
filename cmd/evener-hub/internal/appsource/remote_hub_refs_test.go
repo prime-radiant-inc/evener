@@ -208,7 +208,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			"ShutdownThread": func() error { return source.ShutdownThread(ctx, appwire.ThreadShutdownParams{}) },
 		}},
 		{"ChangeModel", map[string]func() error{
-			"SetThreadModel": func() error { return source.SetThreadModel(ctx, appwire.ThreadModelSetParams{}) },
+			"SetThreadModel": func() error { _, err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{}); return err },
 			"SetThreadReasoningEffort": func() error {
 				return source.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{})
 			},
