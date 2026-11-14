@@ -11,7 +11,6 @@ import {
   useThreadsStore,
 } from "../../../stores/threads";
 import { useToasts } from "../../../widgets";
-import type { PendingActionContext } from "../pending/actionContext";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
 import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
@@ -100,7 +99,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     freshRecoveryRef,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const {
-    lastDrainSnapshotRef,
     draftEditRevisionRef,
     ownedDraftRevisionRef,
     textRef,
@@ -123,6 +121,10 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   const observedAttachments = useAttachments(source.editor, source.attachments);
   const attachments = useMemo(() => createAttachmentOperations(source.editor, source.attachments), [source]);
   const recoveryEntries = useRecoveryEntries(ref);
+  // An unresolved durable read is unknown, not empty (useRetryPendingProjection's
+  // same rule): mount restoration must not adopt rows from a possibly-stale
+  // in-memory snapshot while the ref's current read is still in flight.
+  const recoveryProjectionLoaded = useThreadsStore((s) => s.pendingProjectionLoadedRefs.has(ref));
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const [busyAction, updateBusyAction] = useState<BusyAction>(null);
   const busyActionRef = useRef<BusyAction>(null);
@@ -221,6 +223,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   useEffect(() => {
     if (
       freshRecoveryRef !== ref ||
+      !recoveryProjectionLoaded ||
       activeRecoveryId !== null ||
       textRef.current.trim() !== "" ||
       attachments.items.length > 0 ||
@@ -231,7 +234,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     // An interrupt is not a draft. It carries no input, so activating one
     // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. pending stack renders it as a
+    // turn/start -- a Stop becoming a message. The pending rows render it as a
     // failure with its reason instead.
     // Mount restoration is seat-owned: only a row this pane's durable
     // composer seat authored is a candidate, so a fresh pane never injects
@@ -274,6 +277,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     draftEditRevisionRef,
     freshRecoveryRef,
     markRestore,
+    recoveryProjectionLoaded,
     recoveryEntries,
     recoveryOwnsLocalDraftRef,
     ref,
@@ -287,26 +291,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSelectionMeta,
     attachments.items.length,
   ]);
-  // pending stack captures this mount's payload and edit revision through
-  // getComposerText before it starts the drain's durable write.
-  function handleDrainSuccess(): void {
-    const snapshot = lastDrainSnapshotRef.current;
-    if (!snapshot || !source.alive) return;
-    clearIfUnchanged(
-      snapshot.text,
-      snapshot.revision,
-      snapshot.draftRevision,
-      snapshot.skillNames,
-      snapshot.commandNames,
-    );
-    clearSubmittedAttachments(snapshot.attachments);
-  }
-
-  async function getRecoveryRevisionForDrain(): Promise<number | undefined> {
-    await source.flushRecoveryWrites();
-    if (!source.alive || source.getSnapshot().activeRecoveryId !== activeRecoveryId) return undefined;
-    return recoveryOwnerLeaseRef.current?.compositionRevision;
-  }
   // restoreTextToComposer implements the shared "put text back into the
   // composer without clobbering what's already typed there" merge (parity-
   // m5-composer.md line 101, byte-ported from renderer.js:6823-6837's own
@@ -369,7 +353,9 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   }
 
   async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
-    // pending stack already holds the shared operation lease for this callback.
+    // The pending row's Edit press already carried this record through the
+    // restore seam; the seam's own consumed-request bookkeeping serializes
+    // presses, so this callback runs at most once per press.
     if (!source.alive) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -386,42 +372,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
   }
 
-  // getComposerText is pending stack's own seam for reading this composer's
-  // CURRENT text/attachments/hasPending at the moment its drain affordance
-  // is used - textRef.current (not the `text` state closure) for the
-  // identical liveness reason textEditor.read() above reads it, and
-  // toInputAttachments() for the same wire shape submitAction's own payload
-  // already uses. `hasPending` mirrors this component's own attachments.
-  // hasPending so pending stack's "Steer queue now" button can block with the SAME
-  // "still processing" toast this component's classic submit paths already
-  // use, instead of silently sending a drain payload with a not-yet-encoded
-  // image missing (toInputAttachments() itself only ever filters incomplete
-  // items without signaling it - see that function's own doc comment) - see
-  // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
-  // lastDrainSnapshotRef (text, edit revision, and the currently-staged attachments) so
-  // handleDrainSuccess can later tell whether the composer changed between
-  // THIS read and the drain actually resolving - pending stack only ever calls
-  // this once per handleDrain invocation, immediately before starting the
-  // request, so the snapshot always reflects exactly what that drain sent.
-  function getComposerText() {
-    lastDrainSnapshotRef.current = {
-      text: textRef.current,
-      attachments: attachments.items,
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-      revision: draftEditRevisionRef.current,
-      draftRevision: readDraftRevision(ref),
-    };
-    return {
-      text: textRef.current,
-      attachments: attachments.toInputAttachments(),
-      hasPending: attachments.hasPending,
-      skillNames: [...skillNamesRef.current],
-      commandNames: [...selectionMetaRef.current.commandNames],
-      mentions: selectionMetaRef.current.mentions,
-    };
-  }
   // submitAction wraps every method in submitWithPendingTracking (the wave's
   // own beyond-parity decision - w5-task-3-report.md: "T2's own send/steer
   // submissions should wrap their threadsStore.send/.steer calls in
@@ -771,21 +721,15 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     await submit(allowed.canQueue ? "queue" : "send");
   }
 
-  const pendingProps: PendingActionContext = {
-    ref,
-    // The pending stack's drain presses submit as this pane, so its sends carry the
-    // same seat the composer's own sends do.
-    compositionOwnerId: source.compositionOwnerId,
-    getComposerText,
+  // The pending-row seam's composer-side callbacks (queueRowInsert.ts): the
+  // transcript's pending rows hand a queued row's text, or a recovery
+  // record's editing, back to this composer through them. The drain halves
+  // of the retired strip's prop bundle are gone - the composer's own Steer
+  // control routes the drain (decideSteerRoute), and its submit path already
+  // owns the recovery-resend and busy-gate machinery the strip duplicated.
+  const queueRowActions = {
     onRestoreToComposer: restoreTextToComposer,
-    activeRecoveryId: activeRecoveryId ?? undefined,
-    activeRecoveryRevision: recoveryOwnerLeaseRef.current?.compositionRevision,
-    getRecoveryRevision: getRecoveryRevisionForDrain,
     onEditRecovery: activateRecovery,
-    tryAcquireRecoveryOperation: () => (isBusy() ? null : source.tryAcquireRecoveryOperation()),
-    onDrainSuccess: handleDrainSuccess,
-    busy,
-    onDrainBusyChange: (draining) => setBusyAction(draining ? "drain" : null),
   };
   return {
     availability,
@@ -794,6 +738,6 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     submitFromLiveState,
     submit,
     stop,
-    pendingProps,
+    queueRowActions,
   };
 }

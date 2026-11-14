@@ -124,8 +124,9 @@ export interface UseTranscriptScrollOptions {
    * already told.
    */
   askDockActivationEpoch?: number;
-  /** Whether a held-steering trailing row mounts an otherwise dormant transcript. */
-  heldVisible?: boolean;
+  /** Whether a pending trailing row (held steering, queued, sending, or a
+   * durable failure family) mounts an otherwise dormant transcript. */
+  pendingRowsVisible?: boolean;
   /**
    * The held-steering ghost stack's arrival counter (Session's
    * usePendingArrivalEpoch). Same role as askDockActivationEpoch: a held steer
@@ -217,7 +218,7 @@ export function useTranscriptScroll({
   sourceTurnRowIndexes,
   askDockPending = false,
   askDockActivationEpoch = 0,
-  heldVisible = false,
+  pendingRowsVisible = false,
   heldEpoch = 0,
   onReaderIntent,
   onReaderMovement,
@@ -410,11 +411,11 @@ export function useTranscriptScroll({
   // mount effect below would silently never re-run at the one render where
   // VirtualList actually appears - initializedRef stuck false, no
   // scroll-to-bottom, no scroll listener, no stick-to-bottom, for the rest
-  // of the pane's mounted life. isDormantTranscript plus heldVisible mirrors
-  // Session.tsx's own render condition exactly, so this flips at the SAME
-  // transition VirtualList actually mounts at. Ask-only dormant behavior is
-  // intentionally unchanged.
-  const hasContent = heldVisible || !isDormantTranscript(model?.turns ?? []);
+  // of the pane's mounted life. isDormantTranscript plus pendingRowsVisible
+  // mirrors Session.tsx's own render condition exactly, so this flips at the
+  // SAME transition VirtualList actually mounts at. Ask-only dormant
+  // behavior is intentionally unchanged.
+  const hasContent = pendingRowsVisible || !isDormantTranscript(model?.turns ?? []);
   // Track hasContent transitions so a false->true flip (VirtualList remounts
   // after the model briefly went undefined - e.g. a store resync that clears
   // the thread, or the same ref re-hydrating) re-runs the one-time

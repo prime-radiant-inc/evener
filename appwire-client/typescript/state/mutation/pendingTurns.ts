@@ -15,7 +15,12 @@
 // to exactly what this module calls.
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
-import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
+import {
+  type ConsumedQueueEntry,
+  type PendingMethod,
+  type PendingTurnEntry,
+  reconcilePendingEntries,
+} from "./pendingEntries";
 import { type MutationPersistenceSnapshot, replaceTargetRecords } from "./projection";
 import type {
   ClientIdentity,
@@ -79,6 +84,25 @@ export function blockedEntries<A extends MutationAttachmentRef = MutationAttachm
   return outboxEntriesByState(outbox, ref, "blockedUnknown");
 }
 
+// `ref`'s blocked rows INCLUDING the ones a peer retargeted to another
+// destination while this ref is the pane they were sent from. The message
+// rows read this, not blockedEntries: a retargeted recovery resend carries
+// the displayed ref it was authored in, and its delivery-uncertain row -
+// keyed to the destination the peer retargeted to - is the composition's
+// only durable copy while delivery stays unknown, so the author's pane
+// must keep showing the Retry it owns. The routing tiers keep
+// blockedEntries' targetRef-only read: a row's DELIVERY question belongs
+// to its destination, and no submission decision may follow a row another
+// ref owns. The same reasoning canceledEntries carries for its state.
+export function blockedEntriesIncludingDisplayed<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+): MutationOutboxRecord<A>[] {
+  return [...outbox.values()]
+    .filter((record) => record.state === "blockedUnknown" && (record.targetRef === ref || record.displayedRef === ref))
+    .sort((left, right) => left.intentSequence - right.intentSequence);
+}
+
 // `ref`'s stop-canceled rows, oldest first - the one state a row can be
 // visible under a ref it does not target. A retargeted recovery resend
 // carries the displayed ref it was sent from, and its born-canceled row -
@@ -131,6 +155,10 @@ export interface PendingTurnsDraftPort {
 export interface PendingTurnsStoreDeps {
   threads: PendingTurnsThreadsPort;
   draft: PendingTurnsDraftPort;
+  // Consumed queue rows still awaiting an authoritative replacement
+  // (consumedQueueEntriesFor's registry shape). Optional so hosts without the
+  // registry keep today's behavior; the web store passes its own.
+  consumedQueueEntries?: (ref: string) => readonly ConsumedQueueEntry[];
   // The host's own ClientIdentity capability (createClientIdentity):
   // recordSubmittedHere and pendingTurnEntries both ask "is this record this
   // client's own", and reconcilePendingEntries's own isOwnMutationRecord
@@ -316,6 +344,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
       deps.threads.getThreadModel(ref),
       state.submittedHere,
       (record) => deps.identity.isOwnMutationRecord(record),
+      deps.consumedQueueEntries?.(ref),
     ).filter((entry) => method === undefined || entry.method === method);
   };
 

@@ -21,8 +21,10 @@ import {
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
+import { HeldSteerAnnouncements } from "../transcript/messages/HeldSteerAnnouncements";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { createAttachmentOperations } from "./attachments/useAttachments";
-import { ComposerWithPendingStack } from "./composerTestUtils";
+import { Composer } from "./Composer";
 import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import {
@@ -99,7 +101,8 @@ async function setup(offline = true, storage = new MutationOutboxIndexedDB()) {
 function mount(fake: FakeClient, source = createTestComposerSource("root")) {
   const view = render(
     <ClientProvider client={fake}>
-      <ComposerWithPendingStack ref="root" source={source} />
+      <Composer ref="root" source={source} focused={false} />
+      <PendingRowStack ref="root" />
     </ClientProvider>,
   );
   return { source, ...view };
@@ -760,14 +763,17 @@ test.each(["turn/start", "turn/steer", "turn/drainAsSteer", "turn/promoteQueuedA
     });
     const view = render(
       <ClientProvider client={fake}>
-        <ComposerWithPendingStack ref="root" source={createTestComposerSource("root")} />
+        <Composer ref="root" source={createTestComposerSource("root")} focused={false} />
+        <PendingRowStack ref="root" />
+        <HeldSteerAnnouncements ref="root" />
       </ClientProvider>,
     );
     await flushPendingTurnsProjectionForTests();
     expect(screen.getAllByRole("button", { name: "Remove from queue" })).toHaveLength(1);
     expect(view.container.querySelectorAll("li")).toHaveLength(1);
-    expect(screen.getByTestId("pending-message-row")).toBeTruthy();
-    expect(screen.getByTestId("pending-message-stack")).toBeTruthy();
+    expect(screen.queryByTestId("pending-chips")).toBeNull();
+    expect(screen.queryByTestId("pending-row-stack")).toBeTruthy();
+    expect(screen.getByTestId("held-steer-announcements").getAttribute("data-outcomes")).toBeNull();
   },
 );
 
@@ -784,7 +790,7 @@ test("two offline edits consolidate one durable owner and preserve typing during
   const hold = holdNextWriteTransaction(["recovery", "outbox"]);
   try {
     await user.click(screen.getByRole("button", { name: "Edit message" }));
-    // The press's own continuation is fire-and-forget (pending stack's handler),
+    // The press's own continuation is fire-and-forget (QueueStrip's handler),
     // and its edit mutation publishes a projection refresh plus the activation
     // state before the held recovery write reaches its gate. A projection flush
     // here would wait on this test's own held completion and could not settle,
@@ -831,8 +837,8 @@ test("two offline edits consolidate one durable owner and preserve typing during
   // notifications start the pending-turns projection's final refresh. Under
   // load such a notification can still be queued when the last await above
   // returns, and the refresh it starts then publishes its snapshot outside
-  // act at teardown - the five pending-stack plus three Composer
-  // not-wrapped-in-act warnings this test flaked on in whole-suite runs. Hop the macrotask
+  // act at teardown - the five QueueStrip plus three Composer not-wrapped-in-
+  // act warnings this test flaked on in whole-suite runs. Hop the macrotask
   // queue empty so every queued notification has started its refresh, then
   // flush the projection inside act.
   await outlastEmptyFlushRoundForTests();
@@ -1138,7 +1144,7 @@ test("recovery activation during a paused resend preserves the secondary image r
       data: "AQID",
       name: "secondary.png",
     });
-    expect((editRecovery as HTMLButtonElement).disabled).toBe(true);
+    expect(editRecovery.getAttribute("aria-disabled")).toBe("true");
     let activationSettled = false;
     await act(async () => {
       const activation = source.activateRecovery(recoveryB).finally(() => {
@@ -1812,7 +1818,7 @@ test("an ordinary send cannot start while a recovery Edit claim is settling", as
   }
 });
 
-// The stuck-uncertain-message complaint: an uncertain row in the pending stack
+// The stuck-uncertain-message complaint: an uncertain row in the queue strip
 // looks and acts like any other local message, so the user can clear it.
 test("an uncertain queued message offers Remove like any other row", async () => {
   const storage = new MutationOutboxIndexedDB();
@@ -1832,7 +1838,7 @@ test("an uncertain queued message offers Remove like any other row", async () =>
   await flushPendingTurnsProjectionForTests();
   // By slot, not by copy: a wording change must not break the behaviour test.
   const row = await waitFor(() => {
-    const found = document.querySelector('[data-testid="pending-message-row"][data-state="uncertain"]');
+    const found = document.querySelector('li[data-kind="blocked"]');
     expect(found).toBeTruthy();
     return found as HTMLElement;
   });

@@ -25,6 +25,7 @@ import {
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
+  sessionActionError,
   slashCommandInvocation,
 } from "@evener/appwire-client";
 import {
@@ -35,6 +36,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -82,13 +84,24 @@ import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } f
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { readDraftRevision } from "./draft";
 import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
-import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
+import {
+  editQueuedPendingTurn,
+  refreshPendingTurnsProjection,
+  useBlockedMutationEntries,
+} from "./queue/pendingTurnsStore";
+import {
+  consumeQueueRowRestore,
+  publishActiveRecovery,
+  publishComposerBusy,
+  useQueueRowRestoreRequest,
+} from "./queueRowInsert";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
+import { pushRecoveryRefusal } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
@@ -241,12 +254,11 @@ function ComposerWithSubmission({
     restoredRecoveryRef.current = activeRecoveryId;
     // Automatic restoration starts without an owner. Replacing an existing
     // owner after peer consumption preserves the editor, including selection.
-    // Explicit recovery Edit restores its caret in the pending stack callback.
+    // Explicit recovery Edit restores its caret in the queue-row restore seam.
     if (activating && activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
   }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
-    lastDrainSnapshotRef,
     ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
@@ -516,7 +528,6 @@ function ComposerWithSubmission({
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
     resetSlashCompletion();
-    lastDrainSnapshotRef.current = null;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
@@ -626,7 +637,7 @@ function ComposerWithSubmission({
   // line twice in a row is still two separate insertions rather than a
   // no-op the second time (quoteInsert.ts's own QuoteInsertRequest doc
   // comment). mergeDraftText is the SAME merge restoreTextToComposer uses
-  // for pending stack's "edit a queued entry" path, now parameterized on the
+  // for the queued-row edit's restore path, now parameterized on the
   // request's own placement (mergeDraftText's own doc comment) - a quote
   // never clobbers whatever the user already typed, and a palette-inserted
   // slash command lands where it can actually parse (the draft's start)
@@ -646,6 +657,119 @@ function ComposerWithSubmission({
     editorRef.current?.focus();
     consumeQuoteInsert(ref);
   }, [quoteInsertRequest, ref, textEditor.write, textRef]);
+
+  // The transcript's pending rows (the live-edge trailing region, a sibling
+  // of this component) hand a queued row's text - or a refused-recovery
+  // record's editing - back through the queueRowInsert seam: the same
+  // one-shot monotonic-id shape the quote-insert effect above uses, because
+  // the pending stack cannot reach this component's restore/recovery lease
+  // any other way, and a restore must never clobber a draft the user is
+  // typing (restoreTextToComposer's merge rule).
+  const queueRowRestoreRequest = useQueueRowRestoreRequest(ref, paneId);
+  const consumedQueueRowRestoreIdRef = useRef<number | null>(null);
+  // The per-instance owner token for the seam's publications: it lets a
+  // closing pane clear its own state without touching a sibling composer's
+  // publication for the same ref.
+  const composerSeationToken = useId();
+  // The pending rows exclude the recovery record this composer is actively
+  // editing (its composition is live here), so the same message never renders
+  // both as a transcript row and as the composition under edit. Published on
+  // every activation change, including the automatic ones no seam request
+  // drives.
+  useEffect(() => {
+    publishActiveRecovery(ref, activeRecoveryId, composerSeationToken);
+  }, [ref, activeRecoveryId, composerSeationToken]);
+  // Unmount clears both publications: a pane closed mid-activation must not
+  // keep excluding its recovery row or holding the busy gate for the ref.
+  // The owner token keeps a closing pane from clearing a sibling composer's
+  // publication for the same ref (an embedded cascade column).
+  useEffect(() => {
+    return () => {
+      publishActiveRecovery(ref, null, composerSeationToken);
+      publishComposerBusy(ref, false, composerSeationToken);
+    };
+  }, [ref, composerSeationToken]);
+  // The shared busy gate, published beside it: the pending rows' Edit/Retry
+  // affordances read the composer's live in-flight state (the retired
+  // strip's busy prop).
+  useEffect(() => {
+    publishComposerBusy(ref, actionPending, composerSeationToken);
+  }, [ref, actionPending, composerSeationToken]);
+  useEffect(() => {
+    const request = queueRowRestoreRequest;
+    if (!request || request.id === consumedQueueRowRestoreIdRef.current) return;
+    consumedQueueRowRestoreIdRef.current = request.id;
+    if (request.recoveryRecord) {
+      void Promise.resolve(actions.queueRowActions.onEditRecovery?.(request.recoveryRecord))
+        .then(() => {
+          // The retired strip's callback focused the editor after its
+          // activation; an edit that restores content without focus leaves
+          // typing ineffective until the user clicks the composer. The
+          // outbox-record branch below carries the same contract.
+          editorRef.current?.focus();
+        })
+        .finally(() => consumeQueueRowRestore(ref));
+    } else if (request.outboxRecord) {
+      // A durable outbox row's Edit: the retired strip's own sequence, run
+      // where its gates live - the encoding gate and the recovery-operation
+      // lease belong to the composer's own state, so the claim (the row's
+      // move into recovery storage) only happens after both pass. The
+      // cursor-restore wrapper around activation is the Composer's own half
+      // of that contract (its restored caret lands where the edit put it).
+      const record = request.outboxRecord;
+      const id = record.clientMutationId;
+      const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
+      if (!releaseRecoveryOperation) {
+        // A refused control has to say so: the lease is held by an
+        // in-flight recovery operation, so the press landed mid-edit of
+        // another row. The row-level busy gate usually prevents this
+        // press; the toast keeps the window honest instead of swallowing
+        // the request silently.
+        toasts.push("error", "Wait for the current message to finish sending");
+        consumeQueueRowRestore(ref);
+        return;
+      }
+      if (attachments.hasPending) {
+        toasts.push("error", "Image attachment is still processing");
+        releaseRecoveryOperation();
+        consumeQueueRowRestore(ref);
+        return;
+      }
+      void (async () => {
+        try {
+          const recovery = await editQueuedPendingTurn(id, record.targetRef);
+          if (recovery) {
+            await actions.queueRowActions.onEditRecovery?.(recovery);
+            // The retired strip's callback focused the editor after its
+            // activation; an edit that restores content without focus
+            // leaves typing ineffective until the user clicks the composer.
+            editorRef.current?.focus();
+          } else {
+            // An undefined claim means the row changed under the press -
+            // the same refusal the retired handler reported, not a silent
+            // consumption.
+            pushRecoveryRefusal("changed");
+          }
+          if (record.targetRef !== ref) await refreshPendingTurnsProjection(ref);
+        } catch (error) {
+          toasts.push("error", sessionActionError("Edit failed", error));
+        } finally {
+          releaseRecoveryOperation();
+          consumeQueueRowRestore(ref);
+        }
+      })();
+    } else {
+      actions.queueRowActions.onRestoreToComposer(
+        request.text,
+        undefined,
+        request.skillNames,
+        request.commandNames,
+        request.mentions,
+      );
+      editorRef.current?.focus();
+      consumeQueueRowRestore(ref);
+    }
+  }, [queueRowRestoreRequest, ref, actions.queueRowActions, source, toasts, attachments.hasPending]);
 
   // composerFocus.ts's own seam: a global chord (owned elsewhere) asks this
   // ref's Composer to move keyboard focus into its textarea. Exactly the
@@ -999,7 +1123,7 @@ function ComposerWithSubmission({
   );
 
   // data-testid on every control in this row: two different buttons here
-  // start with "Steer" (this one and pending stack's "Steer queue now"), so
+  // start with "Steer" (this one and the pending rows' "Steer now"), so
   // tests address controls by a stable hook instead of navigating by
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
@@ -1074,6 +1198,11 @@ function ComposerWithSubmission({
           {readyAnnouncement}
         </span>
       </VisuallyHidden>
+      {/* The queue strip no longer renders here: every undelivered user
+          message renders as a transcript row in the live-edge trailing
+          region (PendingRowStack, ConversationBody's trailingRow), so the
+          composer's footer carries no message renderings. The queue count
+          pill stays a count only (StatusRow's queue depth figure). */}
       {askPending && askChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's

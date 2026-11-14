@@ -45,16 +45,14 @@ HUB=http://127.0.0.1:$PORT
 4. **Queue a message.** Type `then: write a haiku about Go testing` and press
    the submit chord — `Enter` when the `evener.prefs.enterToSend` preference is
    on, `⌘/Ctrl+Enter` otherwise (`Composer.tsx:389`) — or just click
-   `[data-testid="composer-submit"]`. Then read the stack:
+   `[data-testid="composer-submit"]`. Then read the pending rows:
    ```javascript
    ({
      port: location.port,
-     rows: Array.from(document.querySelectorAll('[data-testid="pending-message-row"]'),
-                      (li) => li.textContent),
-     states: Array.from(document.querySelectorAll('[data-testid="pending-message-row"]'),
-                        (li) => li.dataset.state),
+     rows: Array.from(document.querySelectorAll('[data-testid="pending-row-stack"] li'),
+                     (li) => li.textContent),
      text: document.querySelector('[data-testid="composer-input-card"] textarea').value,
-     rowActions: Array.from(document.querySelectorAll('[data-testid="pending-message-row"] button'),
+     rowActions: Array.from(document.querySelectorAll('[data-testid="pending-row-stack"] li button'),
                             (b) => b.getAttribute("aria-label") ?? b.textContent),
    })
    ```
@@ -77,29 +75,25 @@ HUB=http://127.0.0.1:$PORT
   `Capabilities.Queue` stopped being threaded through the
   appwire thread capabilities, and
   every browser assertion below is moot.
-- **Step 4 (queue submit)**: the stack appears
-  (`pending/PendingMessageStack.tsx:41-49`) with one row per identity
-  (`:50-69`) carrying the message text and the `Queued, sends when this turn
-  ends` caption (`pending/pendingMessageCaption.ts:17-18`); the composer is
-  cleared; and the row's footer offers `Steer now`, `Edit message` and
-  `Remove from queue` (`pending/PendingMessageStack.tsx:96-102`). The same
-  row set comes from `usePendingMessages`, which merges the queue entry with
-  the local record by `clientMutationId`
-  (`composer/queue/pendingTurnsStore.ts:487-546`,
-  `state/mutation/pendingMessages.ts:426-516`). Falsify: the message starts
-  a new turn instead of queueing (the routing table regressed —
+- **Step 4 (queue submit)**: one pending row appears in the transcript's
+  trailing stack — `li[data-kind=queued]`, captioned `Queued for the next
+  turn` (`transcript/messages/PendingRowStack.tsx:595-604`) and carrying the
+  message text; the composer is cleared; and the row offers
+  `Steer now`, `Edit message` and `Remove from queue`
+  (`:552-592`). Falsify: the message starts a new turn instead
+  of queueing (the routing table regressed —
   `decideSubmitRoute` puts queue ahead of send whenever it is available,
-  `submitRouting.ts:19-23`), the stack never appears, or the daemon rejects
+  `submitRouting.ts:19-23`), the row never appears, or the daemon rejects
   the queue with a conflict (the session was not really active).
 - **Step 5 (drain)**: after the original turn settles the daemon pops the
   queue head and runs it as a fresh turn — `state` returns to `active`, then
   `idle`, and `turn_count` advances by exactly one. The stack empties and
-  then disappears entirely (it renders only while a row is shown,
-  `pending/PendingMessageStack.tsx:36-39`). Falsify: `turn_count` does not
-  advance (the queued message was dropped), the stack keeps its row after
-  the queued message has plainly run, or the new turn starts before the
-  original finishes (the daemon's outer loop did not wait for the queue
-  drain point).
+  then disappears entirely (it renders only while there is undelivered
+  work, `transcript/messages/PendingRowStack.tsx:495`). Falsify:
+  `turn_count` does not advance (the
+  queued message was dropped), the stack keeps its row after the queued
+  message has plainly run, or the new turn starts before the original
+  finishes (the daemon's outer loop did not wait for the queue drain point).
 - **Step 6 (transcript)**: the queued text appears as a `USER` turn, **not**
   as `STEERING`, and the assistant's reply to it answers the queued
   instruction. In the browser the same distinction is visible: a queued
@@ -142,12 +136,10 @@ rm -rf "$tmpdir"
   `[data-testid="steering-item"]` finds neither — that element is the
   *daemon*-steering divider.
 - **Rows can lose their actions.** `Steer now` / `Edit message` /
-  `Remove from queue` need the daemon to report per-entry ids and full texts;
-  an older or degraded daemon reports neither, so `Steer now` is not offered
-  (`pending/PendingMessageStack.tsx:96-102`), `Edit message` is withheld until
-  the row carries complete text (`pending/usePendingMessageActions.ts:362-373`),
-  and a press without entry ids returns without acting
-  (`pending/usePendingMessageActions.ts`, `:137-174`). That is a
+  `Remove from queue` need the daemon to report per-entry ids and texts; an
+  older or degraded daemon reports neither and the row renders with no
+  actions at all (`transcript/messages/PendingRowStack.tsx:546-552`). Missing row actions are a
   daemon-capability signal, not a UI bug.
-- **The stack's absence is a state, not a failure.** No pending rows means
-  the component returns `null` (`pending/PendingMessageStack.tsx:39`).
+- **The stack's absence is a state, not a failure.** No queued work and no
+  recovery rows means the component returns `null`
+  (`transcript/messages/PendingRowStack.tsx:495`).

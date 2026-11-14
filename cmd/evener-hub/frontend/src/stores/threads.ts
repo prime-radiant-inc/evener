@@ -76,6 +76,7 @@ import {
   type MutationDiscoveryReason,
   MutationDispatcher,
   notificationMutationIdentities,
+  type PendingMessageImage,
   type PendingTurnEntry,
   queueEntryAt,
   recordedInputLineage,
@@ -250,11 +251,15 @@ export interface ForkFromTurnOptions {
 // - or the daemon's own preview placeholder when the row is image-only -
 // plus its canonical skill selections, so the optimistic promote record
 // previews the message it will become instead of the action's wire
-// parameters.
+// parameters. images carries the parts the queue wire never speaks (the
+// merged projection row's own bytes), so the promotion's optimistic input -
+// and the row that renders from it through every in-flight and refused
+// state - keeps the image count the entry really owns.
 export interface PromoteDisplayInput {
   text: string;
   skillNames?: readonly string[];
   commandNames?: readonly string[];
+  images?: readonly PendingMessageImage[];
 }
 
 export interface ThreadsStoreState {
@@ -3677,7 +3682,7 @@ async function retargetParkedMutations(
 // The snapshot-level refusals of retryBlockedMutation: a target the store
 // cannot act on regardless of what the retry would find -- no live status, a
 // restartRequired or notLoaded snapshot, no mutation authority, or a
-// restart-blocking obligation. Shared with pending stack's Retry button, which
+// restart-blocking obligation. Shared with the pending rows' Retry button, which
 // disables on exactly these so a fenced row never offers a Retry that always
 // fails; the remaining refusals (an in-flight reconciliation or hydration, a
 // reconciliation failure, a missing dispatch client) stay retry-time checks.
@@ -3710,6 +3715,19 @@ export function retryBlockedForTarget(targetRef: string): boolean {
       state.restartBlockingObligations.has(targetRef),
     ) || state.mutationReconciliationStorageBlocked.has(targetRef)
   );
+}
+
+// The reactive form of retryBlockedForTarget for a component rendering a
+// row's Retry affordance: subscribes to exactly that function's inputs (the
+// target's status type, its mutation authority, its restart obligation, its
+// storage-blocked fence) and nothing else, so a row re-renders precisely
+// when its own verdict flips.
+export function useRetryBlockedForTarget(targetRef: string): boolean {
+  const statusType = useThreadsStore((s) => s.threads.get(targetRef)?.status.type);
+  const hasMutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(targetRef));
+  const restartObligated = useThreadsStore((s) => s.restartBlockingObligations.has(targetRef));
+  const storageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(targetRef));
+  return retryBlockedBySnapshot(statusType, hasMutationAuthority, restartObligated) || storageBlocked;
 }
 
 export async function retryBlockedMutation(
@@ -3764,7 +3782,7 @@ export async function retryBlockedMutation(
   const rowInstance = record.instanceId ?? record.threadId;
   if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
   // The snapshot refusals and the storage-blocked fence are per-TARGET (the
-  // row's own destination), shared with pending stack's per-row button via
+  // row's own destination), shared with the pending rows' per-row button via
   // retryBlockedForTarget.
   if (retryBlockedForTarget(record.targetRef)) return false;
   if (
@@ -3926,9 +3944,19 @@ export function useEditableQueuedMutationEntries(ref: string): MutationOutboxRec
   useEffect(() => {
     void projection.refresh(ref);
   }, [ref]);
-  // Include removable controls so the strip can offer Remove without Edit.
+  // Include removable controls so the strip can offer Remove without Edit,
+  // and match a retargeted resend's displayed ref: the row targets the
+  // destination a peer retargeted to while the pane that authored it stays
+  // its displayedRef (records.ts' own field contract), so the author keeps
+  // seeing the waiting row - the same association canceledEntries,
+  // recoveryEntries and the blocked message rows already carry. Presentation
+  // ownership only; submission routing reads the pending projection, never
+  // this selector.
   return useMemo(
-    () => [...outbox.values()].filter((record) => record.targetRef === ref && canRemoveQueuedMessage(record)),
+    () =>
+      [...outbox.values()].filter(
+        (record) => (record.targetRef === ref || record.displayedRef === ref) && canRemoveQueuedMessage(record),
+      ),
     [outbox, ref],
   );
 }
@@ -4865,7 +4893,7 @@ export function resumeOnlyDispatchable(ref: string): boolean {
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
-// surface already renders (Composer's Send/Steer sentences, pending stack's
+// surface already renders (Composer's Send/Steer sentences, the pending rows'
 // queue-actions sentence, the typed /clear idiom): the hub's recovery
 // admission refuses exactly these methods for an obligation's whole window -
 // turn/start, turn/steer, turn/queue, turn/drainAsSteer,
@@ -8927,7 +8955,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
-    // turn id that would only add a second way to fail.
+    // turn id that would only add a second way to fail. The optimistic input
+    // carries the row's images too: the projection's steering arm reads this
+    // input while the promotion is in flight (and after a refusal), and a
+    // text-only input would zero the merged row's image count for exactly the
+    // window in which the entry's Edit must stay refused.
     await enqueueMutation(
       ref,
       COMPOSER_METHODS.promote,
@@ -8936,6 +8968,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         method: COMPOSER_METHODS.promote,
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
+          ...(display.images ?? []).map((image) => ({
+            type: "image",
+            mediaType: image.src.startsWith("data:") ? image.src.slice(5, image.src.indexOf(";")) : "image/png",
+            data: image.src.slice(image.src.indexOf(";base64,") + ";base64,".length),
+            ...(image.name ? { name: image.name } : {}),
+          })),
           ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
           ...(display.commandNames ?? []).map((name) => ({ type: "command", name })),
         ],

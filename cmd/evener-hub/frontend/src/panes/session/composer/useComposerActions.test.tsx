@@ -388,12 +388,10 @@ test("external command busy gates every submission, Stop and queue lease", async
   act(() => source.editText("kept while command runs"));
   rerender({ busy: true });
   expect(result.current.busy).toBe(true);
-  expect(result.current.pendingProps.busy).toBe(true);
   await act(async () => {
     await result.current.submitFromLiveState();
     for (const kind of ["send", "queue", "steer", "drain"] as const) await result.current.submit(kind);
     await result.current.stop();
-    expect(result.current.pendingProps.tryAcquireRecoveryOperation?.()).toBeNull();
   });
   expect(await storage.listOutbox(ref)).toEqual([]);
   expect(source.getSnapshot().text).toBe("kept while command runs");
@@ -413,15 +411,12 @@ test("Stop in flight and queue drain share the synchronous action gate", async (
       await hold.reached;
     });
     expect(result.current.busy).toBe(true);
-    expect(result.current.pendingProps.busy).toBe(true);
     await act(async () => {
       await result.current.submitFromLiveState();
 
       await result.current.submit("steer");
 
       await result.current.stop();
-
-      expect(result.current.pendingProps.tryAcquireRecoveryOperation?.()).toBeNull();
 
       hold.release();
 
@@ -433,12 +428,32 @@ test("Stop in flight and queue drain share the synchronous action gate", async (
   }
   expect((await storage.listOutbox(ref)).map((row) => row.method)).toEqual(["turn/interrupt"]);
   expect(source.getSnapshot().text).toBe("keep during Stop");
-  act(() => result.current.pendingProps.onDrainBusyChange(true));
-  await act(async () => {
-    await result.current.submitFromLiveState();
-    await result.current.stop();
-  });
-  expect((await storage.listOutbox(ref)).map((row) => row.method)).toEqual(["turn/interrupt"]);
-  act(() => result.current.pendingProps.onDrainBusyChange(false));
+  // The composer's own drain now owns the busyAction gate the retired strip's
+  // callback used to set from outside: a drain in flight holds the gate, so
+  // the concurrent submit and Stop refuse, and only the drain's own mutation
+  // lands.
+  const drainHold = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  let draining!: Promise<void>;
+  try {
+    await act(async () => {
+      draining = result.current.submit("drain");
+      await drainHold.reached;
+    });
+    expect(result.current.busy).toBe(true);
+    // The drain's own completion settles inside this act; the tracked
+    // projection work it owns flushes AFTER the outer act closes (the
+    // flush-scope rule: a flush inside the outer act cannot settle the
+    // effects its own rounds start).
+    await act(async () => {
+      await result.current.submitFromLiveState();
+      await result.current.stop();
+      drainHold.release();
+      await draining;
+    });
+    await flushPendingTurnsProjectionForTests();
+  } finally {
+    drainHold.release();
+  }
+  expect((await storage.listOutbox(ref)).map((row) => row.method)).toEqual(["turn/interrupt", "turn/drainAsSteer"]);
   expect(result.current.busy).toBe(false);
 });

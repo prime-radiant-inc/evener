@@ -188,8 +188,11 @@ test.each([
     );
     const method = drain ? "turn/drainAsSteer" : "turn/start";
     fake.on(method, () => new Promise<never>(() => undefined));
-    const actionButton = () =>
-      drain ? screen.getByRole<HTMLButtonElement>("button", { name: "Steer queue now" }) : submitButton();
+    // The drain route's entry point is the composer's own Steer control
+    // (composer-steer): with queue depth it routes to drain
+    // (decideSteerRoute), the same single-destination rule the retired
+    // strip's header button used to carry.
+    const actionButton = () => (drain ? (screen.getByTestId("composer-steer") as HTMLButtonElement) : submitButton());
     const user = userEvent.setup();
     if (!recovery) pastePngInto(textarea(), "original.png");
     await flushPendingTurnsProjectionForTests();
@@ -268,8 +271,8 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         });
         const row = screen.getByText("merge me").closest("li");
         if (!row) throw new Error("missing rejected queue row");
-        const editRecovery = within(row).getByRole<HTMLButtonElement>("button", { name: "Edit message" });
-        expect(editRecovery.disabled).toBe(true);
+        const editRecovery = within(row).getByRole("button", { name: "Edit message" });
+        expect(editRecovery.getAttribute("aria-disabled")).toBe("true");
         fireEvent.click(editRecovery);
       }
     } finally {

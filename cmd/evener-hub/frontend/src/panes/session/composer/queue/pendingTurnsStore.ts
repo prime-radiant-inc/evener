@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
+  blockedEntriesIncludingDisplayed,
   type ConsumedQueueEntry,
   canceledEntries,
   createMutationProjectionFence,
@@ -89,6 +90,10 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+  // A consumed queue row stays a pending entry until an authoritative
+  // replacement retires it, so the hydration window never vanishes the
+  // message (consumedQueueEntriesFor's own registry contract).
+  consumedQueueEntries: consumedQueueEntriesFor,
 });
 
 // The direct fallback's provenance seam: see pendingTurns' recordDirectSend.
@@ -613,7 +618,7 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
   return useOutboxRecordsByState(ref, "blockedUnknown");
 }
 
-// Stop-canceled rows (stop-cancellation-outbox §6): the pending stack surfaces them
+// Stop-canceled rows (stop-cancellation-outbox §6): the pending rows surface them
 // in the same durable-rows slot as blocked ones, where their explicit Retry
 // affordance lives. The canceled state is the one projected by displayedRef
 // too (canceledEntries): a retargeted resend's born-canceled row is the
@@ -621,6 +626,37 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
 // must still show it.
 export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] {
   return useOutboxRecordsByState(ref, "canceled");
+}
+
+// The notes panel's own writes never count as undelivered user messages:
+// a notes/human/set row is panel state with its own failure surface
+// (TopNotesPanel), not a message the transcript's pending rows render. The
+// message-row variants below bake the exclusion in; the unfiltered
+// selectors above stay for the consumers that read the whole families (the
+// announcements region, the composer's fences and notices).
+function isMessageRowRecord(record: { method: string }): boolean {
+  return record.method !== "notes/human/set";
+}
+
+export function useBlockedMessageEntries(ref: string): MutationOutboxRecord[] {
+  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
+  useEffect(() => {
+    void refreshPendingTurnsProjection(ref);
+  }, [ref]);
+  // Displayed-ref aware by design (blockedEntriesIncludingDisplayed's own
+  // comment): a retargeted resend's blocked row stays visible in the pane it
+  // was authored in. The routing tiers keep the targetRef-only read.
+  return useMemo(() => blockedEntriesIncludingDisplayed(outbox, ref).filter(isMessageRowRecord), [outbox, ref]);
+}
+
+export function useCanceledMessageEntries(ref: string): MutationOutboxRecord[] {
+  const canceled = useCanceledMutationEntries(ref);
+  return useMemo(() => canceled.filter(isMessageRowRecord), [canceled]);
+}
+
+export function useRecoveryMessageEntries(ref: string): MutationRecoveryRecord[] {
+  const recovery = useRecoveryEntries(ref);
+  return useMemo(() => recovery.filter(isMessageRowRecord), [recovery]);
 }
 
 // A durable mutation and the projection refresh that publishes it are one
