@@ -1246,6 +1246,7 @@ describe("current transcript checkpoints", () => {
       logicalOwnerSessionId: "mid",
       rootSessionId: "root",
       childSessionId: "child",
+      childRef: "local:child",
       transcriptRef: "local:child",
       parentDelegateId: "dlg_parent",
       type: "delegate",
