@@ -45,8 +45,13 @@ func (s *Snapshot) ExecutionFrontier() (string, error) {
 // extended the sidecar past it. The shared sidecar is never rolled back and
 // its incarnation is retained. At the current boundary records are borrowed
 // under the shared lock. An older boundary reconstructs private records from
-// the transcript prefix up to the cut, including in-place summaries, contributors,
-// and pending communicates, using the same canonical builder as the sidecar.
+// the committed state: contributor surgery at the cut on the item records,
+// the turns the suffix stamped folded again over their own spans, the update
+// log kept below the cut, and the deferred communicates and pending-communicate
+// state the committed meta names. A cut that state cannot reproduce exactly
+// falls back to the full prefix replay, including in-place summaries,
+// contributors, and pending communicates, using the same canonical builder as
+// the sidecar.
 func (x *Index) ReadAt(length int64, fn func(*Snapshot) error) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -67,16 +72,20 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 		view = cached
 		view.transcript = x.transcript
 	} else {
-		view.meta = meta{Incarnation: x.meta.Incarnation}
-		view.prelude = nil
-		view.items = table{size: itemRecordSize, buf: []byte{}}
-		view.turns = table{size: turnRecordSize, buf: []byte{}}
-		view.updates = table{size: updateRecordSize, buf: []byte{}}
-		view.strings = blob{buf: []byte{}}
-		view.builder = newBuilder(view)
-		view.builder.global = map[string]string{}
-		if err := view.scan(length); err != nil {
-			return err
+		if derived := x.reconstructAtCut(length); derived != nil {
+			view = derived
+		} else {
+			view.meta = meta{Incarnation: x.meta.Incarnation}
+			view.prelude = nil
+			view.items = table{size: itemRecordSize, buf: []byte{}}
+			view.turns = table{size: turnRecordSize, buf: []byte{}}
+			view.updates = table{size: updateRecordSize, buf: []byte{}}
+			view.strings = blob{buf: []byte{}}
+			view.builder = newBuilder(view)
+			view.builder.global = map[string]string{}
+			if err := view.scan(length); err != nil {
+				return err
+			}
 		}
 		x.cutView, x.cutLength = view, length
 	}
