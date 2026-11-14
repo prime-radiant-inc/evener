@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { Marked, type RendererObject, type Token, type Tokens } from "marked";
+import type { RendererObject, Token, Tokens } from "marked";
 import { memo, type Ref, useMemo, useRef } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
@@ -14,6 +14,7 @@ import {
   splitLiveWindow,
   splitMarkdownSegments,
 } from "./segments";
+import { createGatedMarked } from "./setextGate";
 import { closeOpenMarkdown } from "./streaming";
 
 export interface MarkdownProps {
@@ -105,7 +106,10 @@ const renderer: RendererObject = {
 // A dedicated instance (not the module-level default export's global
 // `marked.use(...)`) so this widget's renderer never leaks into any other
 // consumer of the `marked` package that might get added to this app later.
-const md = new Marked({ gfm: true, renderer });
+// Built through createGatedMarked for the setext gate (#5002): without it a
+// large list-item document is quadratic to lex - seconds of UI stall before
+// a single line renders.
+const md = createGatedMarked({ gfm: true, renderer });
 
 // Re-exported so existing `widgets/markdown` import sites keep working; the
 // instance lives in ./lexer.ts (UI-free, no renderer to leak widget markup).

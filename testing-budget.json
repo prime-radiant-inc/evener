@@ -29,7 +29,8 @@
   "TestPromptEvalTasks": 20,
   "TestSessionActivityReportCaptureBudgetPreservesPageContinuation": 30,
   "TestSessionActivityWarmSummaryIssuesRespectResponseBudget": 30,
-  "TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact": 30
+  "TestValidateDeployBinaryAcceptsAGenuineEvenerArtifact": 30,
+  "lexes a sixteen-thousand-line list item without the per-line setext rescan": 12
  },
  "packages": {
   "primeradiant.com/evener": 183.27,
