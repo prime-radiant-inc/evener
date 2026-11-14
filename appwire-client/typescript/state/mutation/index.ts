@@ -34,6 +34,7 @@ export {
   commandMarkers,
   imagePlaceholder,
   normalizeText,
+  outboxRecordPreview,
   ownPendingSend,
   ownPendingTurnInput,
   pendingEntryPreview,

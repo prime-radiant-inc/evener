@@ -3663,6 +3663,19 @@ export function retryBlockedForTarget(targetRef: string): boolean {
   );
 }
 
+// The reactive form of retryBlockedForTarget for a component rendering a
+// row's Retry affordance: subscribes to exactly that function's inputs (the
+// target's status type, its mutation authority, its restart obligation, its
+// storage-blocked fence) and nothing else, so a row re-renders precisely
+// when its own verdict flips.
+export function useRetryBlockedForTarget(targetRef: string): boolean {
+  const statusType = useThreadsStore((s) => s.threads.get(targetRef)?.status.type);
+  const hasMutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(targetRef));
+  const restartObligated = useThreadsStore((s) => s.restartBlockingObligations.has(targetRef));
+  const storageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(targetRef));
+  return retryBlockedBySnapshot(statusType, hasMutationAuthority, restartObligated) || storageBlocked;
+}
+
 export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",

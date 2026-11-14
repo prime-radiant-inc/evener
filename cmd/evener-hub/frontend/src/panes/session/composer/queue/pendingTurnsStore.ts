@@ -522,6 +522,31 @@ export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] 
   }, [outbox, ref]);
 }
 
+// The notes panel's own writes never count as undelivered user messages:
+// a notes/human/set row is panel state with its own failure surface
+// (TopNotesPanel), not a message the transcript's pending rows render. The
+// message-row variants below bake the exclusion in; the unfiltered
+// selectors above stay for the consumers that read the whole families (the
+// announcements region, the composer's fences and notices).
+function isMessageRowRecord(record: { method: string }): boolean {
+  return record.method !== "notes/human/set";
+}
+
+export function useBlockedMessageEntries(ref: string): MutationOutboxRecord[] {
+  const blocked = useBlockedMutationEntries(ref);
+  return useMemo(() => blocked.filter(isMessageRowRecord), [blocked]);
+}
+
+export function useCanceledMessageEntries(ref: string): MutationOutboxRecord[] {
+  const canceled = useCanceledMutationEntries(ref);
+  return useMemo(() => canceled.filter(isMessageRowRecord), [canceled]);
+}
+
+export function useRecoveryMessageEntries(ref: string): MutationRecoveryRecord[] {
+  const recovery = useRecoveryEntries(ref);
+  return useMemo(() => recovery.filter(isMessageRowRecord), [recovery]);
+}
+
 // A durable mutation and the projection refresh that publishes it are one
 // operation: nothing has observed the mutation until the refresh has run.
 function mutateThenRefresh<T>(ref: string, mutate: () => Promise<T>): Promise<T> {

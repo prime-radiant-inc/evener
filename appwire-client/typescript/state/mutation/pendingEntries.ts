@@ -192,6 +192,22 @@ function outboxInput(record: PendingRecord): InputItem[] | undefined {
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : undefined;
 }
 
+// A durable record's display parts, through the same extraction every
+// projected pending entry uses: the optimisticDisplay.input carries a
+// promoted row's composed content (its wire params carry only the queue
+// position), so it is preferred over the payload input every other method
+// populates. The surfaces that render or copy a durable row directly read
+// this, so a durable row and its optimistic twin can never compose the same
+// message differently.
+export function outboxRecordPreview(record: PendingRecord): {
+  text: string;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
+  return inputPreview(outboxInput(record));
+}
+
 // The ONE home of the reflected-identity rule - which client mutation ids
 // have landed in the live model (queue rows or transcript items). Both the
 // pending reconciliation below and the held-steer announcements region

@@ -30,40 +30,40 @@
 
 import {
   type ComposerMention,
-  canonicalSkillNames,
   errorText,
   formatElapsed,
-  type InputItem,
   isTurnActive,
   sessionActionError,
 } from "@evener/appwire-client";
 import { canEditQueuedMessage, canRemoveQueuedMessage } from "@evener/appwire-client/state/mutation";
 import type { JSX } from "react";
-import { useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import {
-  retryBlockedForTarget,
   threadsStore,
   useEditableQueuedMutationEntries,
+  useRetryBlockedForTarget,
   useThreadsStore,
 } from "../../../../stores/threads";
 import { Button, IconButton, useToasts } from "../../../../widgets";
+import { QUEUE_ACTIONS_RECOVERY_FENCED_REASON } from "../../composer/controlTooltips";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
   removeQueuedPendingTurn,
   retryBlockedPendingTurn,
-  useBlockedMutationEntries,
-  useCanceledMutationEntries,
+  useBlockedMessageEntries,
+  useCanceledMessageEntries,
   usePendingTurnEntries,
   useQueueStripMutationIds,
-  useRecoveryEntries,
+  useRecoveryMessageEntries,
 } from "../../composer/queue/pendingTurnsStore";
 import {
   commandMarkers,
+  outboxRecordPreview,
   pendingEntryPreview,
   skillMarkers,
   truncateForDisplay,
@@ -167,56 +167,26 @@ export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: n
 // and its reappeared row is new content again for a scrolled-away reader.
 // `visible` carries Session's §1 live gate: a suppressed surface counts no
 // arrivals.
+const NO_VISIBLE_ENTRIES: readonly PendingTurnEntry[] = [];
+
 export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntry[], visible: boolean): number {
   const [epoch, setEpoch] = useState(0);
   const prevRef = useRef<{ ref: string; ids: ReadonlySet<string> } | null>(null);
-  const visibleEntries = visible ? entries : [];
-  const ids = new Set(visibleEntries.map((entry) => entry.id));
+  const visibleEntries = visible ? entries : NO_VISIBLE_ENTRIES;
+  const ids = useMemo(() => new Set(visibleEntries.map((entry) => entry.id)), [visibleEntries]);
   useEffect(() => {
     const prev = prevRef.current;
     prevRef.current = { ref, ids };
     if (prev?.ref !== ref) return;
-    const added = visible && entries.some((entry) => !prev.ids.has(entry.id));
+    const added = visibleEntries.some((entry) => !prev.ids.has(entry.id));
     if (!added) return;
     setEpoch((count) => count + 1);
-  });
+  }, [ref, ids, visibleEntries]);
   return epoch;
 }
 
-// recordContent: a durable record's display composition (QueueStrip's own
-// helper, carried over): the optimisticDisplay.input carries a promoted row's
-// composed content (its wire params carry only the queue position), so it is
-// preferred over the payload input every other method populates.
-function recordContent(record: MutationOutboxRecord): {
-  text: string;
-  imageCount: number;
-  skillNames: string[];
-  commandNames: string[];
-} {
-  const display = record.optimisticDisplay;
-  const displayInput =
-    display && typeof display === "object" && "input" in display && Array.isArray(display.input)
-      ? (display.input as InputItem[])
-      : undefined;
-  const input = displayInput ?? (Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : []);
-  const text = input
-    .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text)
-    .join("\n");
-  return {
-    text,
-    imageCount: input.filter((item) => item.type === "image").length,
-    skillNames: canonicalSkillNames(
-      input
-        .filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
-        .map((item) => item.name),
-    ),
-    commandNames: canonicalSkillNames(input.filter((item) => item.type === "command").map((item) => item.name ?? "")),
-  };
-}
-
 function recordPreview(record: MutationOutboxRecord): string {
-  return truncateForDisplay(pendingEntryPreview(recordContent(record)));
+  return truncateForDisplay(pendingEntryPreview(outboxRecordPreview(record)));
 }
 
 export function PendingRowStack({
@@ -231,11 +201,9 @@ export function PendingRowStack({
 }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
   const queueStripIds = useQueueStripMutationIds(sessionRef);
-  const blockedEntries = useBlockedMutationEntries(sessionRef).filter((record) => record.method !== "notes/human/set");
-  const canceledEntries = useCanceledMutationEntries(sessionRef).filter(
-    (record) => record.method !== "notes/human/set",
-  );
-  const recoveryEntries = useRecoveryEntries(sessionRef).filter((record) => record.method !== "notes/human/set");
+  const blockedEntries = useBlockedMessageEntries(sessionRef);
+  const canceledEntries = useCanceledMessageEntries(sessionRef);
+  const recoveryEntries = useRecoveryMessageEntries(sessionRef);
   // The composer's live recovery composition never renders as a row: the
   // message being edited is already visible as the composition under edit,
   // and the retired strip's activeRecoveryId exclusion moves with it.
@@ -270,38 +238,58 @@ export function PendingRowStack({
   const hasIds = ids !== undefined;
   const hasTexts = texts !== undefined;
   const depth = queue?.depth ?? 0;
-  const pendingQueueEntries = entries.filter(
-    (entry) =>
-      entry.method === "queue" &&
-      entry.state !== "blockedUnknown" &&
-      entry.state !== "canceled" &&
-      !queueStripIds.has(entry.id),
+  const pendingQueueEntries = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          entry.method === "queue" &&
+          entry.state !== "blockedUnknown" &&
+          entry.state !== "canceled" &&
+          !queueStripIds.has(entry.id),
+      ),
+    [entries, queueStripIds],
   );
-  // The daemon's queue rows this client also holds a durable optimistic
-  // record for: the optimistic entry renders instead (it carries createdAt),
-  // so the daemon row and its optimistic twin never both render.
-  const pendingTexts = new Set(pendingQueueEntries.map((entry) => pendingEntryPreview(entry)));
-  // Edits remove the daemon row first and leave the optimistic pending row
-  // for the composition; the pending side owns everything it can be
-  // reconciled against.
-
-  // Retry eligibility is ROW-scoped: each durable row's Retry reads its own
-  // target's flags, so subscribe to the target flags as one primitive key.
-  const retryTargets = [...new Set([...blockedEntries, ...canceledEntries].map((record) => record.targetRef))];
-  useThreadsStore((s) =>
-    retryTargets
-      .map((target) =>
-        [
-          s.threads.get(target)?.status.type ?? "",
-          s.mutationAuthorityRefs.has(target),
-          s.restartBlockingObligations.has(target),
-          s.mutationReconciliationStorageBlocked.has(target),
-        ].join("\u0000"),
-      )
-      .join("\u0001"),
+  // One preview per entry, computed once per projection change: the
+  // pending-entry rows below render it as their text, and the daemon-row
+  // twin check reads its queue-method subset as a matching key - the
+  // optimistic twin renders instead of the daemon row (it carries
+  // createdAt), so the daemon row and its twin never both render. Edits
+  // remove the daemon row first and leave the optimistic pending row for
+  // the composition; the pending side owns everything it can be reconciled
+  // against.
+  const entryPreviews = useMemo(() => {
+    const previews = new Map<string, string>();
+    for (const entry of entries) previews.set(entry.id, pendingEntryPreview(entry));
+    return previews;
+  }, [entries]);
+  const pendingTexts = useMemo(
+    () => new Set(pendingQueueEntries.map((entry) => entryPreviews.get(entry.id) ?? "")),
+    [pendingQueueEntries, entryPreviews],
   );
 
   const turnActive = isTurnActive(model?.status.type ?? "");
+
+  // The recovery fence, re-read live at the press (the same render-vs-press
+  // rule every queue press follows): the hub refuses the queue's verbs for
+  // the obligation's whole window. Shared by the three daemon-queue action
+  // handlers below; guardSteerPress adds the live-controls refusal check
+  // the Steer-now press carries.
+  const guardQueuePress = (): boolean => {
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", QUEUE_ACTIONS_RECOVERY_FENCED_REASON);
+      return true;
+    }
+    return false;
+  };
+  const guardSteerPress = (): boolean => {
+    if (guardQueuePress()) return true;
+    const refusal = pressRefusal(sessionRef, "drain");
+    if (refusal !== undefined) {
+      toasts.push("error", refusal);
+      return true;
+    }
+    return false;
+  };
 
   // Steer-now on a daemon queue row: promote that row into the running turn.
   async function handlePromote(
@@ -311,18 +299,7 @@ export function PendingRowStack({
     skillNames?: readonly string[],
     commandNames?: readonly string[],
   ): Promise<void> {
-    // The recovery fence, re-read live at the press (the same render-vs-press
-    // rule every queue press follows): the hub refuses
-    // turn/promoteQueuedAsSteer for the obligation's whole window.
-    if (pressLocalRecoveryFenced(sessionRef)) {
-      toasts.push("error", "Queue actions aren't available until this session is resumed");
-      return;
-    }
-    const refusal = pressRefusal(sessionRef, "drain");
-    if (refusal !== undefined) {
-      toasts.push("error", refusal);
-      return;
-    }
+    if (guardSteerPress()) return;
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
@@ -338,10 +315,7 @@ export function PendingRowStack({
   }
 
   async function handleCancel(index: number, entryId: string): Promise<void> {
-    if (pressLocalRecoveryFenced(sessionRef)) {
-      toasts.push("error", "Queue actions aren't available until this session is resumed");
-      return;
-    }
+    if (guardQueuePress()) return;
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
@@ -367,10 +341,7 @@ export function PendingRowStack({
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void> {
-    if (pressLocalRecoveryFenced(sessionRef)) {
-      toasts.push("error", "Queue actions aren't available until this session is resumed");
-      return;
-    }
+    if (guardQueuePress()) return;
     setRowBusy(entryId, true);
     try {
       requestQueueRowRestore(
@@ -385,18 +356,14 @@ export function PendingRowStack({
         // entry where it is rather than removing a message whose text
         // landed nowhere.
         toasts.push("error", "Open the session composer to edit this message");
-        setRowBusy(entryId, false);
-        return;
+      } else {
+        try {
+          await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
+        } catch (err) {
+          toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
+        }
       }
-      try {
-        await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
-      } catch (err) {
-        toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
-      } finally {
-        setRowBusy(entryId, false);
-      }
-    } catch (err) {
-      toasts.push("error", `Couldn't move this message to the composer: ${errorText(err)}`);
+    } finally {
       setRowBusy(entryId, false);
     }
   }
@@ -486,7 +453,7 @@ export function PendingRowStack({
   async function handleCopy(record: MutationRecoveryRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
     try {
-      const { text, skillNames, commandNames } = recordContent(record);
+      const { text, skillNames, commandNames } = outboxRecordPreview(record);
       const content = [text, skillMarkers(skillNames), commandMarkers(commandNames)]
         .filter((part) => part !== "")
         .join("\n");
@@ -515,11 +482,15 @@ export function PendingRowStack({
   // editable queue rows own their unattempted entries, so the pending-entry
   // map must exclude exactly those ids or a row appears twice - once as an
   // in-flight entry and once as its durable replacement.
-  const durableRowIds = new Set([
-    ...blockedEntries.map((record) => record.clientMutationId),
-    ...canceledEntries.map((record) => record.clientMutationId),
-    ...queueStripIds,
-  ]);
+  const durableRowIds = useMemo(
+    () =>
+      new Set([
+        ...blockedEntries.map((record) => record.clientMutationId),
+        ...canceledEntries.map((record) => record.clientMutationId),
+        ...queueStripIds,
+      ]),
+    [blockedEntries, canceledEntries, queueStripIds],
+  );
   const stackEntries = entries.filter((entry) => !durableRowIds.has(entry.id));
   if (queuedCount === 0 && stackEntries.length === 0 && visibleRecoveryEntries.length === 0) return null;
 
@@ -531,6 +502,7 @@ export function PendingRowStack({
     <ul className={styles.stack} data-testid="pending-row-stack" data-queued-count={queuedCount}>
       {stackEntries.map((entry) => {
         const hubRefused = entry.id === refusedId && entry.state === "submitting";
+        const entryPreview = entryPreviews.get(entry.id) ?? "";
         return (
           <li key={entry.id} data-busy={hubRefused ? "true" : undefined}>
             <UserMessageView
@@ -538,7 +510,7 @@ export function PendingRowStack({
                 id: entry.id,
                 turnId: "",
                 type: "userMessage",
-                text: pendingEntryPreview(entry) || "[queued messages]",
+                text: entryPreview || "[queued messages]",
               }}
               opensExchange={false}
               provisional={heldCaption(entry, turnActive, now, hubRefused)}
@@ -711,20 +683,7 @@ export function PendingRowStack({
                 onClick={() => void handleLocalAction(record, "remove")}
               />
             )}
-            <Button
-              size="sm"
-              variant="quiet"
-              disabled={
-                rowBusy ||
-                // Retry is offered only when retryBlockedMutation can actually
-                // act, and it acts on the ROW's own target - which for a
-                // retargeted row is not this pane's ref.
-                !retryBlockedForTarget(record.targetRef)
-              }
-              onClick={() => void handleRetry(record)}
-            >
-              {rowBusy ? "Retrying…" : "Retry"}
-            </Button>
+            <RetryButton record={record} busy={rowBusy} onRetry={() => void handleRetry(record)} />
           </>
         );
         const label = kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain";
@@ -810,5 +769,31 @@ export function PendingRowStack({
         );
       })}
     </ul>
+  );
+}
+
+// A durable failure row's Retry affordance, its own component so the
+// retry-verdict hook runs once per ROW target (hooks cannot sit inside the
+// map callback above): it subscribes to exactly the inputs the press's own
+// retryBlockedForTarget reads, so the row re-renders precisely when its own
+// verdict flips.
+function RetryButton({
+  record,
+  busy,
+  onRetry,
+}: {
+  record: MutationOutboxRecord;
+  busy: boolean;
+  onRetry(): void;
+}): JSX.Element {
+  // Retry is offered only when retryBlockedMutation can actually act, and
+  // it acts on the ROW's own target - which for a retargeted row is not
+  // this pane's ref. A blocked target keeps Retry disabled exactly as its
+  // press would refuse.
+  const retryBlocked = useRetryBlockedForTarget(record.targetRef);
+  return (
+    <Button size="sm" variant="quiet" disabled={busy || retryBlocked} onClick={onRetry}>
+      {busy ? "Retrying…" : "Retry"}
+    </Button>
   );
 }

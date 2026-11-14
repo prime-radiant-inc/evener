@@ -20,11 +20,11 @@ import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import {
+  useBlockedMessageEntries,
   useBlockedMutationEntries,
-  useCanceledMutationEntries,
+  useCanceledMessageEntries,
   usePendingTurnEntries,
-  useQueueStripMutationIds,
-  useRecoveryEntries,
+  useRecoveryMessageEntries,
 } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
@@ -39,7 +39,7 @@ import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
-import { heldSteerEntries, PendingRowStack, useHeldSteerEpoch } from "./transcript/messages/PendingRowStack";
+import { PendingRowStack, useHeldSteerEpoch } from "./transcript/messages/PendingRowStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import {
   TranscriptBody,
@@ -244,11 +244,9 @@ function StandardConversationBody({
   // the small control, not this whole pane.
   const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
   const pendingEntries = usePendingTurnEntries(ref);
-  const queueStripIds = useQueueStripMutationIds(ref);
-  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
-  const blockedRows = useBlockedMutationEntries(ref).filter((record) => record.method !== "notes/human/set");
-  const canceledRows = useCanceledMutationEntries(ref).filter((record) => record.method !== "notes/human/set");
-  const recoveryRows = useRecoveryEntries(ref).filter((record) => record.method !== "notes/human/set");
+  const blockedRows = useBlockedMessageEntries(ref);
+  const canceledRows = useCanceledMessageEntries(ref);
+  const recoveryRows = useRecoveryMessageEntries(ref);
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle.
@@ -270,7 +268,7 @@ function StandardConversationBody({
   // and restartRequired sessions - hiding their Retry/Edit on those states
   // would leave the work reachable from nowhere.
   const pendingRowsVisible =
-    (heldSurfaceLive && (heldSteers.length > 0 || pendingEntries.length > 0)) ||
+    (heldSurfaceLive && pendingEntries.length > 0) ||
     blockedRows.length > 0 ||
     canceledRows.length > 0 ||
     recoveryRows.length > 0 ||

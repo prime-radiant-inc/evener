@@ -9,6 +9,11 @@ import { chordLabel } from "../../../widgets";
 // names that path instead of a generic unavailability.
 export const STEER_RECOVERY_FENCED_REASON = "Steer isn't available until this session is resumed";
 
+// The same fence in the pending rows' vocabulary: their daemon-queue actions
+// (Steer now, Edit, Remove) refuse as a family, so the reason names the
+// whole family rather than one verb.
+export const QUEUE_ACTIONS_RECOVERY_FENCED_REASON = "Queue actions aren't available until this session is resumed";
+
 // Send keeps ONE label in every state. While a turn runs it queues rather
 // than sending now, but that is a change of TIMING, not of verb - a label
 // that flips to "Queue" made the same button mean two different things
