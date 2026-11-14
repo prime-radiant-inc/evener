@@ -398,6 +398,46 @@ test("a foreign image-only queued row renders the image placeholder, not an empt
   expect(edit.getAttribute("aria-disabled")).toBe("true");
 });
 
+// A blocked (delivery-uncertain) row's images live on in the merged
+// projection - the record's own input still holds the bytes - so the row
+// renders its gallery instead of bare text (roborev round-7; the same join
+// the sending, waiting and queue rows already carry).
+test("a blocked delivery-uncertain row renders its submission's images", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  await act(async () => {
+    // Seed the blocked state the way Session.transcript's own blocked test
+    // does: enqueue and flip in ONE storage, then refresh inside the same
+    // act so the projection publishes the blocked state before the render.
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "look at this" }], clientMutationId: "m_b" },
+      attachments: [{ presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png", blob: new Blob() }],
+      optimisticDisplay: {
+        method: "turn/start",
+        input: [
+          { type: "text", text: "look at this" },
+          { type: "image", mediaType: "image/png", data: "AQID", name: "shot.png" },
+        ],
+      },
+    });
+    const flipped = await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    expect(flipped).toBe(true);
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+  render(<PendingRowStack ref="ref_a" />);
+  const gallery = await screen.findByRole("img");
+  expect(gallery.getAttribute("src")).toContain("data:image/png;base64,AQID");
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows.some((row) => row.textContent?.includes("look at this"))).toBe(true);
+});
+
 // A promotion's optimistic input is the row's text (the restore seam's own
 // display grammar), so when the daemon links the promotion to its queue
 // entry (a claimed promote execution carrying queueEntryIds) while the queue

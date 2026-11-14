@@ -786,6 +786,12 @@ export function PendingRowStack({
                 turnId: "",
                 type: "userMessage",
                 text: recordPreview(record),
+                // The merged projection row holds the submission's image
+                // bytes through these states too - the gallery survives a
+                // blocked or canceled delivery.
+                ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
+                  ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
+                  : {}),
               }}
               opensExchange={false}
               provisional={label}
