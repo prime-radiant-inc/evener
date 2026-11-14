@@ -254,6 +254,7 @@ export interface PromoteDisplayInput {
 }
 
 export interface AcceptedModelSwitch {
+  sequence: number;
   modelProvider: string;
   model: string;
   previousModelProvider: string;
@@ -609,24 +610,75 @@ const goalUpdateGenerations = new Map<string, number>();
 
 interface ModelSwitchRequestState {
   issued: number;
-  settledThrough: number;
+  displayedThrough: number;
+  pending: Map<number, ModelSwitchTarget>;
+  unsettled: Map<number, ModelSwitchTarget>;
+  settledPending: Set<number>;
+}
+
+interface ModelSwitchTarget {
+  modelProvider: string;
+  model: string;
 }
 
 const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
 
-function invalidateAcceptedModelSwitch(ref: string): void {
+function settleModelSwitchSequence(requests: ModelSwitchRequestState, sequence: number): void {
+  if (requests.pending.has(sequence)) requests.settledPending.add(sequence);
+  requests.pending.delete(sequence);
+  requests.unsettled.delete(sequence);
+}
+
+function matchingModelSwitchSequence(
+  requests: ModelSwitchRequestState,
+  targets: readonly ModelSwitchTarget[],
+): number | undefined {
+  for (const candidates of [requests.unsettled, requests.pending]) {
+    for (const [sequence, candidate] of candidates) {
+      if (
+        targets.some((target) => target.modelProvider === candidate.modelProvider && target.model === candidate.model)
+      )
+        return sequence;
+    }
+  }
+  return undefined;
+}
+
+function settleModelSwitchAuthority(ref: string, targets: readonly ModelSwitchTarget[]): number | undefined {
   const requests = modelSwitchRequests.get(ref);
-  if (requests) requests.settledThrough = requests.issued;
+  if (!requests) return undefined;
+  const authority = matchingModelSwitchSequence(requests, targets);
+  if (authority !== undefined) {
+    settleModelSwitchSequence(requests, authority);
+    return authority;
+  }
+  return undefined;
+}
+
+function reconcileModelSwitchRejection(ref: string, rejectionNotice: number): void {
+  const requests = modelSwitchRequests.get(ref);
+  const sequence = requests?.unsettled.keys().next().value ?? requests?.pending.keys().next().value;
+  if (requests && sequence !== undefined) settleModelSwitchSequence(requests, sequence);
   const current = threadsStore.getState().acceptedModelSwitches;
-  if (!current.has(ref)) return;
+  const accepted = current.get(ref);
+  if (!accepted) return;
   const acceptedModelSwitches = new Map(current);
-  acceptedModelSwitches.delete(ref);
+  if (sequence !== undefined && sequence !== accepted.sequence) {
+    acceptedModelSwitches.set(ref, {
+      ...accepted,
+      previousRejectionNotice: Math.max(accepted.previousRejectionNotice, rejectionNotice),
+    });
+  } else {
+    acceptedModelSwitches.delete(ref);
+  }
   threadsStore.setState({ acceptedModelSwitches });
 }
 
-function modelSwitchRejectionRef(n: AnyNotification): string | undefined {
+function modelSwitchRejection(n: AnyNotification): { ref: string; notice: number } | undefined {
   if (n.method !== "overlay/upserted") return undefined;
-  return warningNoticeCode(n.params.item.item) === WarningCodeModelSwitchRejected ? n.params.ref : undefined;
+  if (warningNoticeCode(n.params.item.item) !== WarningCodeModelSwitchRejected) return undefined;
+  const match = /^notice:(\d+)$/.exec(n.params.item.key);
+  return { ref: n.params.ref, notice: match ? Number(match[1]) : -1 };
 }
 
 function latestModelSwitchRejection(model: ThreadModel | undefined): number {
@@ -639,8 +691,7 @@ function latestModelSwitchRejection(model: ThreadModel | undefined): number {
   return latest;
 }
 
-function invalidatesAcceptedModelSwitch(model: ThreadModel, accepted: AcceptedModelSwitch): boolean {
-  if (model.modelProvider !== accepted.previousModelProvider || model.model !== accepted.previousModel) return true;
+function modelIdentityInvalidatesAcceptedSwitch(model: ThreadModel, accepted: AcceptedModelSwitch): boolean {
   const instanceId = threadInstanceID(model);
   if (
     accepted.previousInstanceId !== undefined &&
@@ -1582,14 +1633,26 @@ function putThreadModels(
     putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
     patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
   }
+  const authorityModels = [threadModel, watchedModel].filter((model): model is ThreadModel => model !== undefined);
+  const authoritySequence = settleModelSwitchAuthority(
+    ref,
+    authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
+  );
   const accepted = state.acceptedModelSwitches.get(ref);
-  if (
+  const identityInvalidated =
+    accepted && authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted));
+  const modelInvalidated =
     accepted &&
-    ((threadModel && invalidatesAcceptedModelSwitch(threadModel, accepted)) ||
-      (watchedModel && invalidatesAcceptedModelSwitch(watchedModel, accepted)))
-  ) {
+    authorityModels.some(
+      (model) => model.modelProvider !== accepted.previousModelProvider || model.model !== accepted.previousModel,
+    );
+  if (accepted && (identityInvalidated || (modelInvalidated && authoritySequence === undefined))) {
     const requests = modelSwitchRequests.get(ref);
-    if (requests) requests.settledThrough = requests.issued;
+    if (requests) settleModelSwitchSequence(requests, accepted.sequence);
+    const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
+    acceptedModelSwitches.delete(ref);
+    patch.acceptedModelSwitches = acceptedModelSwitches;
+  } else if (accepted && authoritySequence === accepted.sequence) {
     const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
     acceptedModelSwitches.delete(ref);
     patch.acceptedModelSwitches = acceptedModelSwitches;
@@ -6597,11 +6660,8 @@ function acceptEntryNotification(
 }
 
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "thread/model/changed") invalidateAcceptedModelSwitch(n.params.ref);
-  else {
-    const rejectedRef = modelSwitchRejectionRef(n);
-    if (rejectedRef) invalidateAcceptedModelSwitch(rejectedRef);
-  }
+  const rejection = modelSwitchRejection(n);
+  if (rejection) reconcileModelSwitchRejection(rejection.ref, rejection.notice);
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
     // legacy has no history.invalidatedAtGeneration for the generic
@@ -8502,17 +8562,34 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
-    const requests = modelSwitchRequests.get(ref) ?? { issued: 0, settledThrough: 0 };
+    const requests = modelSwitchRequests.get(ref) ?? {
+      issued: 0,
+      displayedThrough: 0,
+      pending: new Map<number, ModelSwitchTarget>(),
+      unsettled: new Map<number, ModelSwitchTarget>(),
+      settledPending: new Set<number>(),
+    };
     modelSwitchRequests.set(ref, requests);
     const sequence = ++requests.issued;
+    const target = { modelProvider, model };
+    requests.pending.set(sequence, target);
+    const response = await requestMappingConflict("thread/model/set", { ref, modelProvider, model }).finally(() => {
+      requests.pending.delete(sequence);
+    });
+    if (requests.settledPending.delete(sequence)) return;
+    if (response.rejectionCode !== WarningCodeModelSwitchRejected) {
+      requests.displayedThrough = Math.max(requests.displayedThrough, sequence);
+      return;
+    }
+    requests.unsettled.set(sequence, target);
+    if (sequence <= requests.displayedThrough) return;
+    requests.displayedThrough = sequence;
     const previous = trackedThreadModel(ref);
     const previousRejectionNotice = latestModelSwitchRejection(previous);
-    await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
-    if (sequence <= requests.settledThrough) return;
-    requests.settledThrough = sequence;
     threadsStore.setState((state) => {
       const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
       acceptedModelSwitches.set(ref, {
+        sequence,
         modelProvider,
         model,
         previousModelProvider: previous?.modelProvider ?? "",

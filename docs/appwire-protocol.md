@@ -217,7 +217,7 @@ no router (reserved).
 | `thread/resume` | hub | [ThreadResumeParams](#threadresumeparams) | [ThreadResumeResponse](#threadresumeresponse) | Resumes an existing session and attaches its relay. |
 | `thread/fork` | hub | [ThreadForkParams](#threadforkparams) | [ThreadForkResponse](#threadforkresponse) | Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
-| `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
+| `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [ThreadModelSetResponse](#threadmodelsetresponse) | Changes the session's model/provider and identifies the coded warning used if a deferred switch is later rejected. |
 | `evener/thread/name/set` | both | [ThreadNameSetParams](#threadnamesetparams) | [EmptyResponse](#emptyresponse) | Sets a user-chosen session title (rename). |
 | `thread/reasoning-effort/set` | both | [ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | [EmptyResponse](#emptyresponse) | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | [ThreadVisionModelSetParams](#threadvisionmodelsetparams) | [EmptyResponse](#emptyresponse) | Sets the vision side-channel routing ("", "off", or a model ref). |
@@ -4770,6 +4770,13 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `modelProvider` | string |  |  |
 | `model` | string |  |  |
+
+
+### `ThreadModelSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `rejectionCode` | string | yes |  |
 
 
 ### `ThreadNameChangedParams`

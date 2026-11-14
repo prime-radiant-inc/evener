@@ -1148,6 +1148,12 @@ type ThreadModelSetParams struct {
 	Model         string `json:"model"`
 }
 
+// ThreadModelSetResponse describes the deferred rejection signal a client can
+// rely on after the request succeeds. Older daemons return an empty result.
+type ThreadModelSetResponse struct {
+	RejectionCode string `json:"rejectionCode,omitempty"`
+}
+
 // ThreadNameSetParams renames a thread (user-chosen title).
 type ThreadNameSetParams struct {
 	Ref  string `json:"ref"`

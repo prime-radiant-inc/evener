@@ -1,5 +1,5 @@
 import type { ModelListResponse, OverlayItem, ThreadModel } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { WarningCodeModelSwitchRejected, WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
@@ -83,6 +83,10 @@ function modelListResponse(): ModelListResponse {
       { provider: "openai", model: "gpt-5.5" },
     ],
   };
+}
+
+function codedModelSetResponse() {
+  return { rejectionCode: WarningCodeModelSwitchRejected };
 }
 
 beforeEach(() => {
@@ -177,7 +181,7 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return codedModelSetResponse();
   });
 
   const view = render(
@@ -262,7 +266,7 @@ test("a successful mid-turn pick immediately shows the accepted next model", asy
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", () => codedModelSetResponse());
 
   const view = render(
     <ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />,
@@ -280,7 +284,7 @@ test("a successful mid-turn pick immediately shows the accepted next model", asy
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
-test("a later accepted mid-turn pick replaces the accepted next model", async () => {
+test("an older daemon without coded rejection support keeps the authoritative model label", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
@@ -288,10 +292,65 @@ test("a later accepted mid-turn pick replaces the accepted next model", async ()
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
   await pickModel(user, "gpt", /gpt-5\.5/i);
+
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5"));
+});
+
+test("a later accepted mid-turn pick replaces the accepted next model", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
 
   await pickModel(user, "opus", /claude-opus-5/i);
 
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+});
+
+test("an earlier model change does not suppress a newer accepted pick", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  let setCount = 0;
+  let resolveNewerSet: (() => void) | undefined;
+  fake.on("thread/model/set", () => {
+    setCount += 1;
+    if (setCount === 1) return codedModelSetResponse();
+    return new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+      resolveNewerSet = () => resolve(codedModelSetResponse());
+    });
+  });
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(resolveNewerSet).toBeTypeOf("function"));
+  act(() => {
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+    });
+  });
+  view.rerender(
+    <ModelSwitch sessionRef="ref_a" model={{ ...activeModel, modelProvider: "openai", model: "gpt-5.5" }} />,
+  );
+  await act(async () => {
+    resolveNewerSet?.();
+  });
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
 });
 
@@ -303,8 +362,8 @@ test("accepted model display follows pick order when responses arrive out of ord
   fake.on(
     "thread/model/set",
     ({ model }) =>
-      new Promise<Record<string, never>>((resolve) => {
-        resolvers.set(model, () => resolve({}));
+      new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+        resolvers.set(model, () => resolve(codedModelSetResponse()));
       }),
   );
 
@@ -330,7 +389,7 @@ test("an accepted next model remains visible after the composer remounts", async
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", () => codedModelSetResponse());
   const model = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
 
   const view = render(<ModelSwitch sessionRef="ref_a" model={model} />);
@@ -347,7 +406,7 @@ test("a deferred model-switch rejection restores the authoritative model label",
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", () => codedModelSetResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
   await pickModel(user, "gpt", /gpt-5\.5/i);
@@ -368,8 +427,8 @@ test("a deferred rejection that arrives before the set response keeps the author
   fake.on(
     "thread/model/set",
     () =>
-      new Promise<Record<string, never>>((resolve) => {
-        resolveSet = () => resolve({});
+      new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+        resolveSet = () => resolve(codedModelSetResponse());
       }),
   );
 
@@ -389,7 +448,7 @@ test("reconnect hydration clears an accepted model when thread/read contains a n
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", () => codedModelSetResponse());
   const oldRejection = modelSwitchRejectionNotice(0);
   let overlay = [oldRejection];
   fake.on("thread/read", () => ({
@@ -430,7 +489,7 @@ test("a new daemon boot snapshot clears an accepted model when the session ident
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", () => codedModelSetResponse());
   const model = testModel({
     status: { type: "active" },
     activeTurnId: "turn_1",
@@ -471,7 +530,7 @@ test("a cold exited session sends the same thread/model/set - the hub owns the r
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return codedModelSetResponse();
   });
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "notLoaded" } })} />);
@@ -535,7 +594,7 @@ test("picking an option calls setModel with that option's provider/model and clo
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return codedModelSetResponse();
   });
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
@@ -787,7 +846,7 @@ test("session picker retry refreshes a cached empty catalogue through the RPC", 
       ? modelListResponse()
       : { data: [], diagnostics: [{ provider: "openai", message: "fixture failure" }] },
   );
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", () => codedModelSetResponse());
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
   await user.click(trigger());
   await user.click(await screen.findByRole("button", { name: "Retry models" }));

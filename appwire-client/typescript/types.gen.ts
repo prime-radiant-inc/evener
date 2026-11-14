@@ -4911,6 +4911,10 @@ export interface ThreadModelSetParams {
   model: string;
 }
 
+export interface ThreadModelSetResponse {
+  rejectionCode?: string;
+}
+
 export interface ThreadNameChangedParams {
   threadId: string;
   ref: string;
@@ -6404,7 +6408,7 @@ export interface MethodTypes {
   "thread/resume": { params: ThreadResumeParams; result: ThreadResumeResponse };
   "thread/fork": { params: ThreadForkParams; result: ThreadForkResponse };
   "thread/clear": { params: ThreadClearParams; result: ThreadClearResponse };
-  "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
+  "thread/model/set": { params: ThreadModelSetParams; result: ThreadModelSetResponse };
   "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
   "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };

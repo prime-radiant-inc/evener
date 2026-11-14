@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/llm"
@@ -41,13 +42,13 @@ func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.Thr
 	return appwire.EmptyResponse{}, nil
 }
 
-func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
-		return appwire.EmptyResponse{}, err
+		return appwire.ThreadModelSetResponse{}, err
 	}
 	model := strings.TrimSpace(params.Model)
 	if model == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("model is required")
+		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("model is required")
 	}
 	if provider := strings.TrimSpace(params.ModelProvider); provider != "" {
 		model = provider + "/" + model
@@ -60,7 +61,7 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	// pick made in the composer lands on the next turn instead of erroring.
 	// The running turn still finishes on the model it started with.
 	if fn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
+		return appwire.ThreadModelSetResponse{}, appwire.Unavailable("model change not available")
 	}
 	if err := fn(model); err != nil {
 		// Every SetModel failure is mapped to InvalidParams deliberately: the
@@ -68,9 +69,9 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 		// not a member of the instance's catalog, unresolvable ref). Revisit
 		// this blanket mapping if SetModel grows I/O failure modes (e.g. a live
 		// ListModels fetch failing), which would deserve a distinct code.
-		return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams(err.Error())
 	}
-	return appwire.EmptyResponse{}, nil
+	return appwire.ThreadModelSetResponse{RejectionCode: events.WarningCodeModelSwitchRejected}, nil
 }
 
 func (s *Server) handleAppThreadVisionModelSet(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {

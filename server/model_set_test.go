@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -44,7 +45,7 @@ func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	}
 }
 
-func TestHandleAppThreadModelSet_SuccessReturnsEmptyResponse(t *testing.T) {
+func TestHandleAppThreadModelSet_SuccessReturnsRejectionCode(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	var got string
 	called := false
@@ -54,8 +55,8 @@ func TestHandleAppThreadModelSet_SuccessReturnsEmptyResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
-	if resp != (appwire.EmptyResponse{}) {
-		t.Fatalf("expected EmptyResponse, got %#v", resp)
+	if resp.RejectionCode != events.WarningCodeModelSwitchRejected {
+		t.Fatalf("rejectionCode=%q, want %q", resp.RejectionCode, events.WarningCodeModelSwitchRejected)
 	}
 	if !called || got != "claude-x" {
 		t.Fatalf("hook not called as expected: called=%v got=%q", called, got)

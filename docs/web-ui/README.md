@@ -386,13 +386,20 @@ The model picker remains available when the session advertises `changeModel`.
 Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
 and applying the choice. While a turn is running, a successful call makes the
 accepted next model visible in the picker immediately and in every composer for
-that session. The thread store retains it across pane remounts. The authoritative
-`thread/model/changed` update settles that label at the turn boundary. A refused
-call leaves the prior label intact. A `model_switch_rejected` warning restores
-it if the queued switch later fails history validation, and a thread snapshot
-from a new daemon boot restores it if the daemon exited before applying the
-queued choice. Closing the desktop picker restores focus to its trigger,
-including after a selection.
+that session when the response advertises `model_switch_rejected` support through
+its `rejectionCode` field. An older daemon returns an empty response, so the hub
+keeps its authoritative model label rather than displaying a choice that it
+cannot reconcile if deferred validation rejects it.
+
+The thread store retains an accepted choice across pane remounts and reconciles
+each request separately. A `thread/model/changed` update that matches an earlier
+request settles that request without hiding a newer choice whose provider check
+is still running. When that newer response arrives, its fallback label starts
+from the then-current authoritative model. A refused call leaves the prior label
+intact. A coded rejection restores it if the queued switch later fails history
+validation, and a thread snapshot from a new daemon boot restores it if the
+daemon exited before applying the queued choice. Closing the desktop picker
+restores focus to its trigger, including after a selection.
 
 ## Directory fields
 

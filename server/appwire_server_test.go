@@ -599,6 +599,17 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 	if got != "openai/gpt-5" {
 		t.Fatalf("model=%q, want openai/gpt-5", got)
 	}
+	raw, err := json.Marshal(resp.Response.Result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result["rejectionCode"] != events.WarningCodeModelSwitchRejected {
+		t.Fatalf("rejectionCode=%q, want %q", result["rejectionCode"], events.WarningCodeModelSwitchRejected)
+	}
 }
 
 func TestAppStatusPreservesAttentionStates(t *testing.T) {
