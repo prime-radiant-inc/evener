@@ -223,12 +223,11 @@ func TestExpand_AtFileMissing(t *testing.T) {
 	}
 }
 
-// TestExpand_AtFileEscapingWorkingDirectoryRefused locks in finding #2's
-// containment guard: @file expansion runs with no hook/permission visibility
-// (unlike the model's Read tool), so a directive whose path escapes the
-// working directory is refused rather than read, even though the template
-// itself authored the directive.
-func TestExpand_AtFileEscapingWorkingDirectoryRefused(t *testing.T) {
+// TestExpand_AtFileConfinement locks in finding #2's containment guard:
+// @file expansion runs with no hook/permission visibility (unlike the model's
+// Read tool), so a directive whose path escapes the working directory is
+// refused rather than read, even though the template itself authored it.
+func TestExpand_AtFileConfinement(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	got, err := Expand(context.Background(), "@../../../../etc/passwd", "", env)
@@ -241,6 +240,59 @@ func TestExpand_AtFileEscapingWorkingDirectoryRefused(t *testing.T) {
 	if !strings.Contains(got, "refusing") {
 		t.Errorf("got %q, want a refusal marker for a path escaping the working directory", got)
 	}
+
+	t.Run("escaping symlink refused", func(t *testing.T) {
+		workDir := t.TempDir()
+		outsideDir := t.TempDir()
+		secret := filepath.Join(outsideDir, "secret.txt")
+		if err := os.WriteFile(secret, []byte("TOP-SECRET"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, filepath.Join(workDir, "note.txt")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Expand(context.Background(), "@note.txt", "", execenv.NewLocalExecutionEnvironment(workDir))
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		if strings.Contains(got, "TOP-SECRET") {
+			t.Fatalf("got %q, want symlink target content to remain unread", got)
+		}
+		if !strings.Contains(got, "refusing") {
+			t.Errorf("got %q, want a refusal marker for the escaping symlink", got)
+		}
+	})
+
+	t.Run("same-directory symlink allowed", func(t *testing.T) {
+		workDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workDir, "target.txt"), []byte("IN-DIRECTORY"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("target.txt", filepath.Join(workDir, "note.txt")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Expand(context.Background(), "@note.txt", "", execenv.NewLocalExecutionEnvironment(workDir))
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		if got != "IN-DIRECTORY" {
+			t.Errorf("got %q, want %q", got, "IN-DIRECTORY")
+		}
+	})
+
+	t.Run("broken symlink degrades to error marker", func(t *testing.T) {
+		workDir := t.TempDir()
+		if err := os.Symlink("missing-target.txt", filepath.Join(workDir, "note.txt")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Expand(context.Background(), "@note.txt", "", execenv.NewLocalExecutionEnvironment(workDir))
+		if err != nil {
+			t.Fatalf("Expand: %v", err)
+		}
+		if !strings.Contains(got, "error") || !strings.Contains(got, "note.txt") {
+			t.Errorf("got %q, want an inline error marker naming the broken symlink", got)
+		}
+	})
 }
 
 // TestExpand_AtFileBinaryDegradesGracefully proves a binary file inlined via
