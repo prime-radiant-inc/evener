@@ -1365,12 +1365,39 @@ func TestSnapshotCutDiscardsRecordsAtOrBeforeCut(t *testing.T) {
 	for seq := uint64(3); seq <= 4; seq++ {
 		subscriptions.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
 	}
-	records, ok := subscriptions.Release("conn", "th_1", 7)
+	records, ok, mustResync := subscriptions.Release("conn", "th_1", 7)
 	if !ok {
 		t.Fatal("release snapshot generation failed")
 	}
+	if mustResync {
+		t.Fatal("release snapshot unexpectedly requires resync")
+	}
 	if len(records) != 2 || records[0].Seq != 3 || records[1].Seq != 4 {
 		t.Fatalf("released sequences = %#v, want [3 4] in producer order", records)
+	}
+}
+
+func TestHydrationBufferOverflowNotifiesThreadResync(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-overflow-resync")
+	server.registerConnection(conn)
+	conn.setInitialized()
+	server.subs.beginBuffered(conn.id, "th_1", false, 1)
+
+	for seq := uint64(1); seq <= maxBufferedNotifications+1; seq++ {
+		server.subs.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
+	}
+	server.releaseHydration(conn, "th_1", 1, nil)
+	conn.closeSend()
+
+	var methods []string
+	for msg := range conn.send {
+		if msg.Notification != nil {
+			methods = append(methods, msg.Notification.Method)
+		}
+	}
+	if len(methods) != 1 || methods[0] != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("overflow release notifications = %v, want one %s", methods, appwire.NotifyEvenerThreadResync)
 	}
 }
 
@@ -1507,7 +1534,7 @@ func TestSnapshotCutWithdrawalFencesSupersededGeneration(t *testing.T) {
 	}
 
 	subscriptions.Route(SequencedNotification{Seq: 5, ThreadID: "th_1"})
-	records, ok := subscriptions.Release("conn", "th_1", 2)
+	records, ok, _ := subscriptions.Release("conn", "th_1", 2)
 	if !ok {
 		t.Fatal("the newer generation is no longer buffering; the stale withdrawal tore it down")
 	}

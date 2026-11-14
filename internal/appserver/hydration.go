@@ -191,15 +191,22 @@ func (s *Server) releaseHydration(conn *Connection, threadID string, generation 
 		s.subs.restoreContent(conn.id, threadID, generation, *failedCapture)
 	}
 	content := s.subs.content(conn.id, threadID)
-	records, ok := s.subs.Release(conn.id, threadID, generation)
+	records, ok, mustResync := s.subs.Release(conn.id, threadID, generation)
 	s.deliveryMu.Lock()
 	s.projectionMu.Unlock()
 	disconnected := false
 	if ok {
-		for _, record := range records {
-			if !conn.enqueueHistory(record, content) {
-				disconnected = true
-				break
+		if mustResync {
+			disconnected = !conn.enqueue(appwire.NotificationMessage(
+				appwire.NotifyEvenerThreadResync,
+				appwire.ThreadResyncParams{ThreadID: threadID},
+			))
+		} else {
+			for _, record := range records {
+				if !conn.enqueueHistory(record, content) {
+					disconnected = true
+					break
+				}
 			}
 		}
 	}

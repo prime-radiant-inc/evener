@@ -88,12 +88,37 @@ func TestSubscriptionsRouteBuffersBufferingAndReturnsLive(t *testing.T) {
 	}
 
 	// Release should return the buffered record (above cut 0)
-	released, ok := subs.Release("conn-1", "th_1", 1)
+	released, ok, mustResync := subs.Release("conn-1", "th_1", 1)
 	if !ok {
 		t.Fatal("Release should succeed")
 	}
+	if mustResync {
+		t.Fatal("Release unexpectedly requires resync")
+	}
 	if len(released) != 1 || released[0].Seq != 1 {
 		t.Fatalf("expected 1 released record with seq 1, got %+v", released)
+	}
+}
+
+func TestSubscriptionsRouteBoundsBufferDuringCapture(t *testing.T) {
+	const maxBufferedNotifications = 1024
+	subs := NewSubscriptions()
+	subs.beginBuffered("conn-1", "th_1", false, 1)
+
+	for seq := uint64(1); seq <= maxBufferedNotifications; seq++ {
+		subs.Route(SequencedNotification{Seq: seq, ThreadID: "th_1"})
+	}
+	if got := len(subs.byConn["conn-1"]["th_1"].buffer); got != maxBufferedNotifications {
+		t.Fatalf("buffer length at capacity = %d, want %d", got, maxBufferedNotifications)
+	}
+	subs.Route(SequencedNotification{Seq: maxBufferedNotifications + 1, ThreadID: "th_1"})
+
+	if got := len(subs.byConn["conn-1"]["th_1"].buffer); got != 0 {
+		t.Fatalf("buffer length after overflow = %d, want 0 to release its reservation", got)
+	}
+	_, ok, mustResync := subs.Release("conn-1", "th_1", 1)
+	if !ok || !mustResync {
+		t.Fatalf("Release = (ok %t, mustResync %t), want (true, true)", ok, mustResync)
 	}
 }
 
@@ -106,7 +131,7 @@ func TestSubscriptionsCaptureCallsRefuseAStaleGeneration(t *testing.T) {
 		call func(subs *Subscriptions) bool
 	}{
 		{"release of another generation", func(subs *Subscriptions) bool {
-			_, ok := subs.Release("conn-1", "th_1", 99)
+			_, ok, _ := subs.Release("conn-1", "th_1", 99)
 			return ok
 		}},
 		{"cut of another generation", func(subs *Subscriptions) bool { return subs.SetCut("conn-1", "th_1", 99, 5) }},
@@ -227,7 +252,7 @@ func TestSubscriptionsUnsubscribeDuringCaptureThenCommitDropsEntry(t *testing.T)
 	// its cut and only Release's withdrawal handling keeps it undelivered.
 	subs.Route(SequencedNotification{Seq: 9, ThreadID: "th_1"})
 	subs.Unsubscribe("conn-1", "th_1")
-	records, ok := subs.Release("conn-1", "th_1", 7)
+	records, ok, _ := subs.Release("conn-1", "th_1", 7)
 	if !ok {
 		t.Fatal("Release should succeed for the live generation")
 	}
@@ -256,7 +281,7 @@ func TestSubscriptionsUnsubscribeDuringCaptureThenCommit(t *testing.T) {
 		t.Fatalf("connection count after mid-capture unsubscribe = %d, want 0", got)
 	}
 	subs.Route(SequencedNotification{Seq: 9, ThreadID: "th_3"})
-	records, ok := subs.Release("conn-1", "th_3", 4)
+	records, ok, _ := subs.Release("conn-1", "th_3", 4)
 	if !ok {
 		t.Fatal("Release should succeed for the live generation")
 	}
