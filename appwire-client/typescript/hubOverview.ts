@@ -7,10 +7,14 @@
 //
 // "Caches" means exactly one thing: once `data` is non-null, fetch() is a
 // no-op. A failed request (data still null) is NOT cached - the next fetch()
-// is a real retry. refresh() always issues a request regardless of `data`.
-// Both join an already-in-flight request rather than firing a second one.
-// There is no push-driven invalidation (no evener/settings/* notification
-// exists on the wire), so callers decide when to fetch() or refresh().
+// is a real retry. refresh() always issues a request regardless of `data`;
+// while one is already in flight it waits for that one and then issues a
+// genuinely new request, because an in-flight read that started before the
+// update causing the refresh would answer with stale data. Concurrent
+// fetches join the in-flight request; concurrent refreshes coalesce into
+// one follow-up. There is no push-driven invalidation (no
+// evener/settings/* notification exists on the wire), so callers decide
+// when to fetch() or refresh().
 //
 // The client is a port, read at request time, so a host whose connection can
 // be replaced (the web's connection store) hands in an object that resolves
@@ -34,7 +38,9 @@ export interface HubOverviewState {
   error: string | null;
   /** Loads once: a no-op while `data` is already populated. */
   fetch(): Promise<void>;
-  /** Always requests, joining an in-flight request when there is one. */
+  /** Always requests. When a request is already in flight, waits for it and
+   * then issues a genuinely new one — an in-flight request that started
+   * before the update causing this refresh must not answer for it. */
   refresh(): Promise<void>;
 }
 
@@ -66,6 +72,16 @@ export function createHubOverviewStore(client: HubOverviewClient): HubOverviewSt
       await ensureInflight();
     },
     async refresh() {
+      // Never let the in-flight request stand in for this one: it started
+      // before the update that caused the refresh, so joining it would
+      // publish pre-update data and leave the caller stale until the next
+      // update. Wait for it (swallowing its failure; this call's own outcome
+      // is the follow-up's) and then request again — concurrent refreshes
+      // coalesce into that single follow-up.
+      const current = inflight;
+      if (current) {
+        await current.catch(() => undefined);
+      }
       await ensureInflight();
     },
   }));

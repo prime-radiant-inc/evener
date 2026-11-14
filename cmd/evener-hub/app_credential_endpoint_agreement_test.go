@@ -325,7 +325,7 @@ func TestCredentialAgreement_GateNeverMintsCommandCredentials(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(cmd string) (string, error) {
+	valueexpr.RunCommand = func(cmd string, _ []string) (string, error) {
 		runs++
 		return "token-for-" + cmd, nil
 	}
@@ -360,7 +360,7 @@ func TestCredentialAgreement_GateNeverMintsCommandCredentials(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs = 0
-	valueexpr.RunCommand = func(cmd string) (string, error) {
+	valueexpr.RunCommand = func(cmd string, _ []string) (string, error) {
 		runs++
 		return "token-for-" + cmd, nil
 	}

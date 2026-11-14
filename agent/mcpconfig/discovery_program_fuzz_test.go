@@ -44,7 +44,7 @@ func FuzzMCPConfigDiscoveryProgram(f *testing.F) {
 		fuzzMCPConfigDiscoverNoProjectRoot(t, token)
 		fuzzMCPConfigDiscoverFatalInputs(t)
 		fuzzMCPConfigDiscoverHomeFallback(t, token)
-		if got := globalMCPConfigPathWithHome(func() (string, error) {
+		if got := globalMCPConfigPathWithHome("", func() (string, error) {
 			return "", errors.New("scripted home lookup failure")
 		}); got != "" {
 			t.Fatalf("global path after home lookup failure = %q, want empty", got)

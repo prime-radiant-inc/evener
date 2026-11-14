@@ -49,7 +49,7 @@ func TestExpandEnvCommandExpression(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted", nil }
 	lookup := func(string) (string, bool) { return "", false }
 
 	got, unresolved := expandEnv("Bearer $(get-gateway-token)", lookup)
@@ -64,7 +64,7 @@ func TestExpandEnvCommandExpression(t *testing.T) {
 	}
 
 	valueexpr.ResetForTest()
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		return "", errors.New("command exited with status 1: session expired")
 	}
 	got, unresolved = expandEnv("Bearer $(get-gateway-token)", lookup)

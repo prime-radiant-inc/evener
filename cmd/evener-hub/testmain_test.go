@@ -793,15 +793,16 @@ func TestGoSubprocessesCacheOutsideTheTestRoot(t *testing.T) {
 
 // hubDefaultRoots lists every filesystem root the hub falls back to when a
 // WebConfig field is left unset (the launch config root, the hub state root,
-// the plugin store root, the MCP config path), every path runMain opens when a
-// flag is unset (the config file, the state glob, the past-index DB, the
-// rendezvous run dir), plus the HOME and XDG bases they derive from.
+// the plugin store root), every path runMain opens when a flag is unset (the
+// config file, the state glob, the past-index DB, the rendezvous run dir),
+// plus the HOME and XDG bases they derive from. The global MCP config no
+// longer appears here: the settings probe resolves it inside mcpconfig,
+// under the same pinned XDG/HOME bases.
 func hubDefaultRoots() []hubtestenv.NamedPath {
 	return append(hubtestenv.BaseRoots(), []hubtestenv.NamedPath{
 		{Name: "hubLaunchConfigRoot with LaunchConfigRoot unset", Path: hubLaunchConfigRoot(hubcore.WebConfig{})},
 		{Name: "userdirs.DefaultStateRoot", Path: defaultRoot(userdirs.DefaultStateRoot())},
 		{Name: "plugins.DefaultRoot", Path: plugins.DefaultRoot()},
-		{Name: "defaultMCPConfigPath", Path: defaultMCPConfigPath()},
 		{Name: "DefaultHubStateRoot", Path: defaultRoot(DefaultHubStateRoot())},
 		{Name: "DefaultConfigPath", Path: DefaultConfigPath()},
 		{Name: "DefaultStateGlob", Path: defaultRoot(DefaultStateGlob())},

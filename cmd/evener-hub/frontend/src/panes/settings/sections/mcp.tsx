@@ -37,7 +37,7 @@ import {
   parseMcpServerEntry,
 } from "./launchShared/collectionFields";
 import styles from "./mcp.module.css";
-import { useHostScopedLoad } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   page: requireClass(styles.page, "mcp.module.css", "page"),
@@ -62,7 +62,10 @@ export interface SettingsOverviewLike {
   data: SettingsOverviewResponse | null;
   loading: boolean;
   error: string | null;
+  /** Loads once: a no-op while `data` is already populated. */
   fetch(): Promise<void>;
+  /** Always re-requests, joining an in-flight request when there is one. */
+  refresh(): Promise<void>;
 }
 
 export interface McpSectionProps {
@@ -92,12 +95,17 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   // is built on the controller's client) and is NOT on the proxy allow-list, so
   // there is nothing honest to fetch or show for a remote host: the discovered
   // block below renders only for the local hub, and so does this fetch. The
-  // injected hook's own fetch is a stable store action (every useXStore() here
-  // defines its actions once in the store creator), so it fires on mount and
-  // re-fires only when the selected host changes.
+  // injected hook's actions are stable store actions (every useXStore() here
+  // defines its actions once in the store creator), so this fires on mount and
+  // re-fires only when the selected host changes. A first open loads;
+  // a REOPEN re-probes rather than replaying the fetch-once cache, so an edit
+  // made through any other launch surface - or the file on disk - cannot leave
+  // the discovered list stale until an app reload.
   // biome-ignore lint/correctness/useExhaustiveDependencies: host-keyed fetch against an injected store hook - see comment above.
   useEffect(() => {
-    if (isLocalHost(host)) void overview.fetch();
+    if (!isLocalHost(host)) return;
+    if (overview.data !== null) void overview.refresh();
+    else void overview.fetch();
   }, [host]);
 
   // useHostScopedLoad, not a bare mount-once effect: a direct deep link to
@@ -106,6 +114,39 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   // BACK after being away - so this section shows THAT host's layer rather than
   // leaving this one's on screen (or its own failure standing).
   useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
+
+  // The launch layer the probe resolves also changes under this section from
+  // places other than its own editors - the Session-defaults pane's schema
+  // form edits the same global layer's mcps and env, another tab may save, a
+  // trust decision can land - and the hub fans every successful setLayer out
+  // as evener/launch/updated. The same convergence hook the other launch-backed
+  // panes use re-probes the discovered list on any of those writes, so the
+  // probe cannot go stale beside freshly converged editors. The subscription
+  // keys on the LOCAL hub - the discovered block describes this hub only - and
+  // a remote host's config updates arrive wrapped in evener/host/notification,
+  // which never fires it.
+  useLaunchConfigRefresh(LOCAL_HOST, overview.refresh);
+
+  // The launch layer the probe resolves also changes under this section from
+  // places other than its own editors - the Session-defaults pane's schema
+  // form edits the same global layer's mcps and env, another tab may save, a
+  // trust decision can land - and the hub fans every successful setLayer out
+  // as evener/launch/updated. The same convergence hook the other launch-backed
+  // panes use re-probes the discovered list on any of those writes, so the
+  // probe cannot go stale beside freshly converged editors. The subscription
+  // keys on the LOCAL hub - the discovered block describes this hub only - and
+  // a remote host's config updates arrive wrapped in evener/host/notification,
+  // which never fires it.
+
+  // A successful local MCP edit changes the set a spawned session discovers,
+  // so the probed block re-probes immediately rather than waiting for the
+  // debounced broadcast echo above (inrepo.tsx's belt-and-suspenders shape).
+  // Only the LOCAL layer can change THIS hub's probe (the discovered block is
+  // local-only, the same scoping as the mount fetch above), so a remote
+  // host's edit never re-probes it.
+  function refreshDiscoveredAfterEdit() {
+    if (isLocalHost(host)) void overview.refresh();
+  }
 
   // The layer on screen may be stale after a failed refresh, and stays stale
   // until a recovery refresh actually lands (fetchLaunchLayer clears the error
@@ -134,6 +175,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
     const nextList = [...(current.mcpConfigs ?? []), canonical];
     try {
       await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
+      refreshDiscoveredAfterEdit();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: friendlyErrorMessage(err) };
@@ -149,6 +191,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
     const nextList = (current.mcpConfigs ?? []).filter((p) => p !== path);
     try {
       await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
+      refreshDiscoveredAfterEdit();
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     }
@@ -164,6 +207,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
       if (current === null) return { ok: false, error: refusal() };
       const nextList = [...(current.mcps ?? []), entry];
       await store.getState().setLaunchLayer({ ...current, mcps: nextList });
+      refreshDiscoveredAfterEdit();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: friendlyErrorMessage(err) };
@@ -179,6 +223,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
       if (current === null) throw new Error(refusal());
       const nextList = (current.mcps ?? []).filter((_, i) => i !== index);
       await store.getState().setLaunchLayer({ ...current, mcps: nextList });
+      refreshDiscoveredAfterEdit();
     } catch (err) {
       toasts.push("error", `Remove failed: ${friendlyErrorMessage(err)}`);
     } finally {
@@ -190,6 +235,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   const mcps = layer?.mcps ?? [];
   const pendingServer = pendingRemoveServerIndex !== null ? mcps[pendingRemoveServerIndex] : undefined;
   const discovered = overview.data?.mcpDiscovered;
+  const discoveredServers = discovered?.servers ?? [];
 
   return (
     <section className={CLASS.page}>
@@ -204,18 +250,19 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
         <section className={CLASS.section} data-section="mcp-discovered">
           <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
           <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
-          {discovered?.error !== undefined ? (
-            <InlineNotice tone="danger">{discovered.error}</InlineNotice>
-          ) : overview.loading && overview.data === null ? (
+          {discovered?.error !== undefined && <InlineNotice tone="danger">{discovered.error}</InlineNotice>}
+          {overview.loading && overview.data === null ? (
             <Skeleton />
-          ) : (
+          ) : discoveredServers.length === 0 &&
+            discovered?.error !== undefined ? // The diagnostic already says why nothing was discovered.
+          null : (
             <ul aria-label="Discovered MCP servers" className={CLASS.list}>
-              {(discovered?.servers ?? []).length === 0 ? (
+              {discoveredServers.length === 0 ? (
                 <li data-testid="mcp-discovered-empty">
                   <EmptyState size="compact" title="No MCP servers yet" />
                 </li>
               ) : (
-                (discovered?.servers ?? []).map((s) => (
+                discoveredServers.map((s) => (
                   <li key={s.name}>
                     {/* The name is the label alone and wraps in full; the
                         transport is the meta. */}

@@ -38,6 +38,24 @@ const CommitProvenanceScopeMessage = "commit_provenance is only available in the
 // merge, hub save path and resume policy.
 const CommitProvenanceField = "commit_provenance"
 
+// MCPConfigsField, MCPsField and EnvField are the launch-layer field names
+// that feed a spawned session's MCP configuration, shared by the schema, the
+// resolver's merge marks and the hub's MCP overview.
+const (
+	MCPConfigsField = "mcp_configs"
+	MCPsField       = "mcps"
+	EnvField        = "env"
+)
+
+// RepoLaunchConfigFile is the in-repo launch layer's file name, shared by the
+// resolver's diagnostics (a layer that fails to read, hash or decode
+// contributes nothing to a merged set) and the hub's MCP overview.
+const RepoLaunchConfigFile = ".evener/launch.toml"
+
+// ProjectLaunchConfigFile is the local project layer's file name, shared by
+// the trust UI and the settings probe's exclusion diagnostic.
+const ProjectLaunchConfigFile = ".evener/launch.local.toml"
+
 const (
 	LaunchPathNone       LaunchPathKind = ""
 	LaunchPathDir        LaunchPathKind = "dir"
@@ -149,11 +167,11 @@ func buildLaunchOptionSchema() []LaunchOption {
 		{Field: "system_prompt_append_text", WireField: "systemPromptAppendText", Label: "Append text", Group: LaunchGroupSystemPrompt, Kind: LaunchControlMultiline, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "skills_dirs", WireField: "skillsDirs", Label: "Skill directories", Description: "Extra directories evener scans for skill files at spawn time, in addition to the default locations.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "plugin_dirs", WireField: "pluginDirs", Label: "Plugin directories", Description: "Extra directories evener scans for plugin executables at spawn time.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
-		{Field: "mcp_configs", WireField: "mcpConfigs", Label: "MCP config files", Description: "JSON config files declaring MCP servers. Each file may define one or more servers.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
-		{Field: "mcps", WireField: "mcps", Label: "MCP servers", Description: "Inline MCP server definitions. Each entry specifies a name, command, and optional arguments.", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: MCPConfigsField, WireField: "mcpConfigs", Label: "MCP config files", Description: "JSON config files declaring MCP servers. Each file may define one or more servers.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: MCPsField, WireField: "mcps", Label: "MCP servers", Description: "Inline MCP server definitions. Each entry specifies a name, command, and optional arguments.", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "model_fallbacks", WireField: "modelFallbacks", Label: "Model fallbacks", Description: "Ordered list of alternative models evener tries when the primary model is unavailable or rate-limited.", Group: LaunchGroupResources, Kind: LaunchControlModelList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "enabled_plugins", WireField: "enabledPlugins", Label: "Enabled plugins", Description: "Select the installed plugins enabled for this launch. An empty selection disables all plugins.", Group: LaunchGroupResources, Kind: LaunchControlPluginSelection, Repeatable: true, PerLaunch: true, DriverSupport: evenerOnly},
-		{Field: "env", WireField: "env", Label: "Environment variables", Description: "Extra environment variables injected into the evener process. Do not store credentials here; use the Providers page instead.", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: EnvField, WireField: "env", Label: "Environment variables", Description: "Extra environment variables injected into the evener process. Do not store credentials here; use the Providers page instead.", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "sandbox", WireField: "sandbox", Label: "Sandbox", Description: "Confine the session to a sandbox mode. off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential and secret paths, give a private temp dir, and confine spawned shell commands too. Network egress is a separate toggle (Sandbox network egress). Default off.", Group: LaunchGroupSandbox, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: sandboxChoices(), DriverSupport: evenerOnly, BuiltinDefault: "off"},
 		{Field: "sandbox_net", WireField: "sandboxNet", Label: "Sandbox network egress", Description: "Allow network egress when sandboxed. Default on. Has no effect unless a sandbox mode is set.", Group: LaunchGroupSandbox, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolTrue},
 		{Field: "verbose", WireField: "verbose", Label: "Verbose event log", Description: "Emit all internal events to the debug log. Useful for diagnosing unexpected behaviour.", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolFalse},

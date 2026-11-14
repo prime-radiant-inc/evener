@@ -1108,10 +1108,14 @@ type SettingsMCPServerEntry struct {
 }
 
 // SettingsMCPOverview is the Settings → MCP servers section's probed half.
-// Source: web_settings.go mcpConfigPathForSettings + discoverMCPsForSettings.
-// A missing MCP config file is the empty state (Servers empty, Error ""),
-// matching discoverMCPsForSettings; Error is populated only on a real parse
-// failure (e.g. malformed mcp.json), mirroring settingsData.McpsError.
+// Servers is the merged set a session would connect to: the same
+// mcpconfig.Discover layers session init uses (user-global, project, and the
+// resolved launch configuration's MCP files and inline servers). A missing
+// config file is the empty state. Error carries non-fatal discovery
+// diagnostics — layers skipped because they were malformed or failed
+// environment expansion — while Servers still carries the successfully
+// discovered rows; a fatal error in an explicitly supplied config file leaves
+// Servers empty.
 //
 // Each server probe (agent/mcpprobe.Probe) runs under its own bounded
 // per-server timeout in parallel with the others, so this section's total

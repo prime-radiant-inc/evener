@@ -126,11 +126,7 @@ func ToArgs(r Resolved) []string {
 		out = append(out, "--enabled-plugins="+strings.Join(*e.EnabledPlugins, ","))
 	}
 	for _, m := range e.MCPs {
-		spec := m.Name + ":" + m.Command
-		if len(m.Args) > 0 {
-			spec += " " + strings.Join(m.Args, " ")
-		}
-		add("--mcp", spec)
+		add("--mcp", MCPSpecArg(m))
 	}
 	// Unconditional, and always last: the retirement deadline is a runtime
 	// launch parameter the child must see explicitly. Zero renders "0s"
@@ -145,6 +141,17 @@ func ToArgs(r Resolved) []string {
 		out = append(out, "--manager")
 	}
 	return out
+}
+
+// MCPSpecArg renders one inline MCP server as the `--mcp name:command args...`
+// value a spawned session receives. ToArgs and the hub settings overview share
+// this spelling so the probed set cannot drift from the launched one.
+func MCPSpecArg(m MCPServerSpec) string {
+	spec := m.Name + ":" + m.Command
+	if len(m.Args) > 0 {
+		spec += " " + strings.Join(m.Args, " ")
+	}
+	return spec
 }
 
 // onOff renders a boolean as the on|off token evener's --sandbox-net flag accepts.

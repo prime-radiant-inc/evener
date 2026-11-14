@@ -377,7 +377,7 @@ func TestInstanceIdentityNeverMintsAndIsStableAcrossRotations(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return fmt.Sprintf("token-%d", runs), nil
 	}
@@ -408,7 +408,7 @@ func TestInstanceIdentityNeverMintsAndIsStableAcrossRotations(t *testing.T) {
 	// A TTL rollover re-mints a different token; the identity must not
 	// move with it.
 	valueexpr.ResetForTest()
-	valueexpr.RunCommand = func(string) (string, error) { return "token-rotated", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { return "token-rotated", nil }
 	if second := instanceIdentity(r, "gw"); second != first {
 		t.Fatalf("identity changed across a re-mint (%q vs %q); a rotating token must not churn the live-row cache", first, second)
 	}

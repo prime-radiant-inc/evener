@@ -17,7 +17,7 @@ import (
 func TestRealExecutorThroughEvaluate(t *testing.T) {
 	t.Run("trims stdout", func(t *testing.T) {
 		ResetForTest()
-		res, err := evaluate("printf '  real-token \\n'")
+		res, err := evaluate("printf '  real-token \\n'", nil)
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
@@ -28,7 +28,7 @@ func TestRealExecutorThroughEvaluate(t *testing.T) {
 
 	t.Run("keeps multi-line output verbatim once trimmed", func(t *testing.T) {
 		ResetForTest()
-		res, err := evaluate("printf 'line-one\\nline-two\\n'")
+		res, err := evaluate("printf 'line-one\\nline-two\\n'", nil)
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
@@ -39,7 +39,7 @@ func TestRealExecutorThroughEvaluate(t *testing.T) {
 
 	t.Run("no output is a failure", func(t *testing.T) {
 		ResetForTest()
-		_, err := evaluate("true")
+		_, err := evaluate("true", nil)
 		if err == nil || !strings.Contains(err.Error(), "no output") {
 			t.Fatalf("got %v", err)
 		}
@@ -47,7 +47,7 @@ func TestRealExecutorThroughEvaluate(t *testing.T) {
 
 	t.Run("no stdout with a stderr complaint carries the complaint", func(t *testing.T) {
 		ResetForTest()
-		_, err := evaluate("echo boom >&2")
+		_, err := evaluate("echo boom >&2", nil)
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("got %v; want the command's stderr as the diagnosis", err)
 		}
@@ -55,7 +55,7 @@ func TestRealExecutorThroughEvaluate(t *testing.T) {
 
 	t.Run("whitespace-only stdout with a stderr complaint carries the complaint", func(t *testing.T) {
 		ResetForTest()
-		_, err := evaluate("printf '  \\n'; echo boom >&2")
+		_, err := evaluate("printf '  \\n'; echo boom >&2", nil)
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("got %v; want the command's stderr as the diagnosis, not the generic no-output error", err)
 		}
@@ -65,7 +65,7 @@ func TestRealExecutorThroughEvaluate(t *testing.T) {
 // These drive the real executor directly for the failure taxonomy it owns.
 func TestRealRunCommand(t *testing.T) {
 	t.Run("non-zero exit is a failure with stderr's first line", func(t *testing.T) {
-		_, err := realRunCommand("printf out; printf 'boom\\nnoise' >&2; exit 3")
+		_, err := realRunCommand("printf out; printf 'boom\\nnoise' >&2; exit 3", nil)
 		if err == nil {
 			t.Fatal("non-zero exit reported success")
 		}
@@ -79,7 +79,7 @@ func TestRealRunCommand(t *testing.T) {
 	})
 
 	t.Run("oversized output is a failure", func(t *testing.T) {
-		_, err := realRunCommand("head -c 1048577 /dev/zero")
+		_, err := realRunCommand("head -c 1048577 /dev/zero", nil)
 		if err == nil || !strings.Contains(err.Error(), "exceeds") {
 			t.Fatalf("got %v", err)
 		}
@@ -90,7 +90,7 @@ func TestRealRunCommand(t *testing.T) {
 		old := commandTimeout
 		commandTimeout = 100 * time.Millisecond
 		t.Cleanup(func() { commandTimeout = old; ResetForTest() })
-		_, err := realRunCommand("sleep 5")
+		_, err := realRunCommand("sleep 5", nil)
 		if err == nil || !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("got %v", err)
 		}

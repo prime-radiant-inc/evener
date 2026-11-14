@@ -2,16 +2,20 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/mcpprobe"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
 
 // hubSettingsOverview answers evener/settings/overview: the field bag behind
@@ -73,27 +77,39 @@ func settingsAgentRoster() []appwire.SettingsAgentEntry {
 	return agents
 }
 
-// settingsMCPOverview probes the configured MCP servers, mirroring
-// web_settings.go's discoverMCPsForSettings: a missing config file is the
-// empty state, not an error; a parse failure surfaces as Error; each probe
+// settingsMCPOverview probes the merged MCP configuration a session would use,
+// through the same mcpconfig.Discover path as Session.initMCP: the user-global
+// config, the project config at the discovery directory's git root, and the
+// launch configuration's MCP files and inline servers (the argv sources a
+// spawned session receives), with later layers shadowing earlier ones by
+// server name — with one deliberate difference from a session: the
+// checkout-controlled launch.local.toml is never applied (mcpOverviewResolveLaunch
+// resolves trusted layers only), because the probe runs with no launch or
+// trust decision behind it. An explicitly supplied cfg.MCPConfigPath, when it
+// exists, is appended as the highest-precedence file.
+//
+// A missing file is the empty state, not an error. A malformed explicit
+// session-local file surfaces as Error, as it does for a session (Discover
+// treats CLI-supplied files as fatal). A malformed user-global or project
+// layer is skipped by Discover with a warning, exactly as a session skips it;
+// those warnings stay in Error alongside the successfully discovered Servers
+// so a shrinking server list has a visible cause. Each probe
 // (agent/mcpprobe.Probe) runs under its own bounded timeout in parallel with
 // the others, so this never blocks the response beyond that per-probe bound
 // regardless of how many servers are configured.
 func settingsMCPOverview(ctx context.Context, cfg hubcore.WebConfig) *appwire.SettingsMCPOverview {
-	path := cfg.MCPConfigPath
-	if path == "" {
-		path = defaultMCPConfigPath()
+	dir := mcpOverviewDiscoveryDir(cfg)
+	extraFiles, inlineSpecs, launchEnv, diagnostics := mcpOverviewLaunchSources(cfg, dir)
+	if cfg.MCPConfigPath != "" {
+		if _, err := os.Stat(cfg.MCPConfigPath); err == nil {
+			extraFiles = append(extraFiles, cfg.MCPConfigPath)
+		}
 	}
-	if path == "" {
-		return &appwire.SettingsMCPOverview{}
-	}
-	if _, err := os.Stat(path); err != nil {
-		return &appwire.SettingsMCPOverview{} //nolint:nilerr // a missing MCP config file is the empty state, not an error
-	}
-	configs, err := mcpconfig.LoadFile(path)
+	configs, warnings, err := mcpconfig.DiscoverWithLaunchEnv(mcpOverviewDiscoveryEnv(dir), extraFiles, inlineSpecs, launchEnv)
 	if err != nil {
 		return &appwire.SettingsMCPOverview{Error: err.Error()}
 	}
+	diagnostics = append(diagnostics, warnings...)
 	results := mcpprobe.Probe(ctx, configs)
 	servers := make([]appwire.SettingsMCPServerEntry, 0, len(configs))
 	for i, c := range configs {
@@ -105,5 +121,91 @@ func settingsMCPOverview(ctx context.Context, cfg hubcore.WebConfig) *appwire.Se
 		})
 	}
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
-	return &appwire.SettingsMCPOverview{Servers: servers}
+	return &appwire.SettingsMCPOverview{Servers: servers, Error: strings.Join(diagnostics, "\n")}
+}
+
+// mcpOverviewDiscoveryDir is the working directory whose project and launch
+// layers the overview resolves. A zero WebConfig uses the hub process working
+// directory, the only directory a hub-global settings read has.
+func mcpOverviewDiscoveryDir(cfg hubcore.WebConfig) string {
+	dir := cfg.MCPDiscoveryDir
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	return dir
+}
+
+// mcpOverviewDiscoveryEnv is the environment whose working directory supplies
+// Discover's project layer. A nil environment suppresses that layer, which is
+// Discover's own contract.
+func mcpOverviewDiscoveryEnv(dir string) execenv.ExecutionEnvironment {
+	if dir == "" {
+		return nil
+	}
+	return execenv.NewLocalExecutionEnvironment(dir)
+}
+
+// mcpOverviewLaunchSources resolves the launch configuration for dir and
+// returns the MCP file list, inline servers, effective env, and diagnostics a
+// session spawned there receives (launchconfig.ToArgs and ToEnv render the
+// same values). A resolution failure is a diagnostic, not a failed overview:
+// the user-global and project layers are still discovered and reported.
+func mcpOverviewLaunchSources(cfg hubcore.WebConfig, dir string) (extraFiles, inlineSpecs []string, launchEnv map[string]string, diagnostics []string) {
+	root := hubLaunchConfigRoot(cfg)
+	if root == "" {
+		return nil, nil, nil, nil
+	}
+
+	resolved, err := mcpOverviewResolveLaunch(root, dir)
+	if err != nil {
+		return nil, nil, nil, []string{fmt.Sprintf("launch config: %v", err)}
+	}
+
+	extraFiles = append(extraFiles, resolved.Effective.MCPConfigs...)
+	for _, server := range resolved.Effective.MCPs {
+		inlineSpecs = append(inlineSpecs, launchconfig.MCPSpecArg(server))
+	}
+	return extraFiles, inlineSpecs, resolved.Effective.Env, launchMCPDiagnostics(resolved.Diagnostics)
+}
+
+// launchMCPDiagnostics renders the launch-resolution diagnostics that concern
+// the fields this probe consumes: the MCP fields themselves (mcp_configs,
+// mcps), the env map — including a key the credential blocklist dropped, whose
+// Field carries the key (env.NAME) — the repo layer's own file, whose read,
+// hash or decode failure means it contributes nothing to the merged set, and
+// the local launch.local.toml the probe deliberately never applies, whose
+// exclusion note says why the probed list may differ from a launched
+// session's. A resolution can succeed while dropping, blocking or excluding
+// any of these, and that must surface beside the servers that did load rather
+// than silently shrinking the list; diagnostics about other fields belong to
+// the sections that read them.
+func launchMCPDiagnostics(diags []launchconfig.Diagnostic) []string {
+	var out []string
+	for _, d := range diags {
+		switch {
+		case d.Field == launchconfig.MCPConfigsField,
+			d.Field == launchconfig.MCPsField,
+			d.Field == launchconfig.EnvField,
+			strings.HasPrefix(d.Field, launchconfig.EnvField+"."),
+			d.Field == launchconfig.RepoLaunchConfigFile,
+			d.Field == launchconfig.ProjectLaunchConfigFile:
+			out = append(out, fmt.Sprintf("launch config %s %s: %s", d.Layer, d.Field, d.Message))
+		}
+	}
+	return out
+}
+
+// mcpOverviewResolveLaunch resolves every launch layer for dir that the
+// probe may treat as user authorization: ResolveTrustedOnly keeps the
+// global and trust-approved repo layers and excludes the
+// checkout-controlled launch.local.toml, which must never reach the probe
+// as trusted input (see its doc). Without a usable directory only the user
+// layers exist, which ResolveUserOnly answers.
+func mcpOverviewResolveLaunch(root, dir string) (launchconfig.Resolved, error) {
+	if dir != "" {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return launchconfig.ResolveTrustedOnly(root, dir, launchconfig.Layer{})
+		}
+	}
+	return launchconfig.ResolveUserOnly(root, launchconfig.Layer{})
 }
