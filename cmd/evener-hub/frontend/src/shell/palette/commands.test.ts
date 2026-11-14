@@ -820,6 +820,10 @@ test("/find from a companion pane brings up the session's conversation to show F
   expect(workspaceStore.getState().focusedPaneId).toBe(conversation?.id);
   const asked = renderHook(() => useFindRequest("ref_a", conversation?.id ?? ""));
   expect(asked.result.current).toBeDefined();
+  // The ask is for the pane just opened: another view of the same session
+  // (a cascade column) must not take it first.
+  const elsewhere = renderHook(() => useFindRequest("ref_a", "cascade-column"));
+  expect(elsewhere.result.current).toBeUndefined();
   act(() => resetFindRequestsForTests());
 });
 

@@ -704,9 +704,16 @@ export function showFindIn(
 ): void {
   const seat = sessionPaneId ? workspaceStore.getState().panes.find((pane) => pane.id === sessionPaneId) : undefined;
   const hosts = seat !== undefined && (seat.type === "session" || seat.type === "sessionZoom");
-  if (hosts) workspaceStore.getState().focusPane(seat.id);
-  else workspaceStore.getState().openPane("session", { ref: sessionRef });
-  requestFindInSession(sessionRef, { ...landing, target: hosts ? sessionPaneId : null });
+  // The ask names one pane: another view of the same session (a cascade
+  // column) must not take it before the pane meant for it mounts.
+  let target: string;
+  if (hosts) {
+    workspaceStore.getState().focusPane(seat.id);
+    target = seat.id;
+  } else {
+    target = workspaceStore.getState().openPane("session", { ref: sessionRef });
+  }
+  requestFindInSession(sessionRef, { ...landing, target });
 }
 
 // rememberableId is the id a successful ARGLESS command records in recents -
