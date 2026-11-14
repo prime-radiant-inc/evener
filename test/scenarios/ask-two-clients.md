@@ -23,7 +23,8 @@ this card is rebuilt around, because they invert what it used to say:
   `excludedKeys` forever (`:269-296`) — so the dock clears in both tabs before either
   `turn/start` has been answered. The rejection surfaces later, through the durable
   recovery path (`appwire-client/typescript/state/mutation/dispatcher.ts:202-206` →
-  `Composer.tsx:271-297` / `composer/queue/QueueStrip.tsx:345-393`), never as an inline
+  the pending rows: `transcript/messages/PendingRowStack.tsx:706-770`, with the
+  composer-side restore through the seam at `composer/queueRowInsert.ts:73-89`), never as an inline
   composer drop. `sendBatch`'s own `catch` + toast (`AskDock.tsx:295-306`) is for a
   **local enqueue** failure only; a lost race does not reach it.
 - **Two tabs of one Chrome profile do not race.** The outbox is one origin-scoped
@@ -171,9 +172,11 @@ and assert what each tab converges to.
   (`appwire-client/typescript/askShared.ts:118-150`), not from local state.
 - **Step 7 (the loser's own text)**: the rejected intent lands in the durable recovery
   surface — either restored into that tab's composer as an editable draft (`composerDraft`
-  starts with `[answers]`; `Composer.tsx:271-297` only does this when the composer is
+  starts with `[answers]`; the restore-seam effect (`Composer.tsx:684-739`, gated on
+  `useComposerActions.ts:355-373`'s `activateRecovery`) only does this when the composer is
   empty and the projection refresh for this ref has landed) or listed as a recovery row
-  with an **Edit message** action (`queueRows`; `QueueStrip.tsx:378-392`). Either is
+  (`li[data-kind=refused]`) with an **Edit message** action
+  (`transcript/messages/PendingRowStack.tsx:727-764`). Either is
   correct — both are inert, and neither ever becomes a second user turn. Falsify: the
   loser's text reappears as a second `[answers]` user turn in the outline, or vanishes
   with no recovery surface at all.

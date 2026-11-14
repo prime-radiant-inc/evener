@@ -89,22 +89,23 @@ HUB=http://127.0.0.1:$PORT
 4. **Path A — the Steer button.** Type the steer text into the composer and
    click `[data-testid="composer-steer"]`. Take the synchronous snapshot
    before the ack lands (see "Synchronous vs. async assertion shape" in the
-   runbook): a `Steering` chip should be in `[data-testid="pending-chips"]`
+   runbook): a provisional pending row for the steer should be in
+   `[data-testid="pending-row-stack"]`
    immediately, and gone once the daemon acknowledges.
    ```javascript
    (async () => {
-     const chips = () => Array.from(
-       document.querySelectorAll('[data-testid="pending-chips"] li'), (li) => li.textContent);
+     const pendingRows = () => Array.from(
+       document.querySelectorAll('[data-testid="pending-row-stack"] li'), (li) => li.textContent);
      const ta = document.querySelector('[data-testid="composer-input-card"] textarea');
      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
      setter.call(ta, "Make it 1 paragraph instead of 5, about Go testing specifically.");
      ta.dispatchEvent(new Event("input", { bubbles: true }));
      document.querySelector('[data-testid="composer-steer"]').click();
-     const sync = chips();                                   // optimistic chip, right now
+     const sync = pendingRows();                             // optimistic row, right now
      await new Promise((r) => setTimeout(r, 3000));
      return JSON.stringify({
        sync,
-       after: chips(),
+       after: pendingRows(),
        textAfter: ta.value,
        steers: document.querySelectorAll(
          '[data-testid="user-message-item"]:not([data-opens-exchange])').length,
@@ -136,18 +137,20 @@ HUB=http://127.0.0.1:$PORT
   `composer-stop`, and `location.port` is your hub's. Falsify: the Steer
   button never appears while the server reports `state=active` — the AppWire
   socket did not hydrate; check `$run/hub.log` before blaming the composer.
-- **Step 4 (Path A)**: `sync` contains one chip reading `Steering` plus the
-  steer text (`pending/PendingChips.tsx:38-42,56`); `after` is empty (the
-  chip reconciled off the `clientMutationId` echoed back on
+- **Step 4 (Path A)**: `sync` contains one provisional row carrying the
+  steer text with its `Joining this turn` caption
+  (`transcript/messages/PendingRowStack.tsx:503-519`, the caption table at
+  `:110-117`); `after` is empty (the
+  row reconciled off the `clientMutationId` echoed back on
   `evener/steering/injected`, `stores/threads.ts:797-801`); the composer text is
   cleared; the steer appears in the transcript as a **user-message item with
   no `data-opens-exchange` attribute** — a steer the human typed reuses
   `UserMessageView` with `opensExchange={false}`
   (`transcript/messages/SteeringItem.tsx:124-127`,
   `UserMessageItem.tsx:98,112`), which is precisely what distinguishes it
-  from an ordinary prompt; and the toast region is empty. Falsify: no chip in
+  from an ordinary prompt; and the toast region is empty. Falsify: no row in
   `sync` (the optimistic path never rendered — the bug kata `wymv` was
-  about), a chip still present in `after` (the ack never arrived), the
+  about), a row still present in `after` (the ack never arrived), the
   composer keeps its text, or an error toast appears.
 - **Step 5 (Path B)**: the palette closes and the same kind of steer entry
   appears. Falsify: the palette closes with nothing added and nothing said —

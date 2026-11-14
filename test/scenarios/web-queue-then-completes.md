@@ -45,15 +45,14 @@ HUB=http://127.0.0.1:$PORT
 4. **Queue a message.** Type `then: write a haiku about Go testing` and press
    the submit chord — `Enter` when the `evener.prefs.enterToSend` preference is
    on, `⌘/Ctrl+Enter` otherwise (`Composer.tsx:389`) — or just click
-   `[data-testid="composer-submit"]`. Then read the strip:
+   `[data-testid="composer-submit"]`. Then read the pending rows:
    ```javascript
    ({
      port: location.port,
-     heading: document.querySelector("h3")?.textContent,   // "Queued messages (1)"
-     rows: Array.from(document.querySelectorAll("h3 ~ ul li"), (li) => li.textContent),
+     rows: Array.from(document.querySelectorAll('[data-testid="pending-row-stack"] li'),
+                     (li) => li.textContent),
      text: document.querySelector('[data-testid="composer-input-card"] textarea').value,
-     chips: document.querySelectorAll('[data-testid="pending-chips"] li').length,
-     rowActions: Array.from(document.querySelectorAll("h3 ~ ul li button"),
+     rowActions: Array.from(document.querySelectorAll('[data-testid="pending-row-stack"] li button'),
                             (b) => b.getAttribute("aria-label") ?? b.textContent),
    })
    ```
@@ -76,24 +75,23 @@ HUB=http://127.0.0.1:$PORT
   `Capabilities.Queue` stopped being threaded through the
   appwire thread capabilities, and
   every browser assertion below is moot.
-- **Step 4 (queue submit)**: the strip appears with heading
-  `Queued messages (1)` (`composer/queue/QueueStrip.tsx:302`) and one row
-  carrying the message text; the composer is cleared; `pending-chips` is
-  **empty** — queue mutations are deliberately excluded from that strip
-  because `QueueStrip` already chips them
-  (`panes/session/pending/PendingChips.tsx:22-28`); and the row offers
+- **Step 4 (queue submit)**: one pending row appears in the transcript's
+  trailing stack — `li[data-kind=queued]`, captioned `Queued for the next
+  turn` (`transcript/messages/PendingRowStack.tsx:595-604`) and carrying the
+  message text; the composer is cleared; and the row offers
   `Steer now`, `Edit message` and `Remove from queue`
-  (`QueueStrip.tsx:328-360`). Falsify: the message starts a new turn instead
+  (`:552-592`). Falsify: the message starts a new turn instead
   of queueing (the routing table regressed —
   `decideSubmitRoute` puts queue ahead of send whenever it is available,
-  `submitRouting.ts:19-23`), the strip never appears, or the daemon rejects
+  `submitRouting.ts:19-23`), the row never appears, or the daemon rejects
   the queue with a conflict (the session was not really active).
 - **Step 5 (drain)**: after the original turn settles the daemon pops the
   queue head and runs it as a fresh turn — `state` returns to `active`, then
-  `idle`, and `turn_count` advances by exactly one. The strip empties and
-  then disappears entirely (it renders only while there is queued work,
-  `QueueStrip.tsx:158-162`). Falsify: `turn_count` does not advance (the
-  queued message was dropped), the strip keeps its row after the queued
+  `idle`, and `turn_count` advances by exactly one. The stack empties and
+  then disappears entirely (it renders only while there is undelivered
+  work, `transcript/messages/PendingRowStack.tsx:495`). Falsify:
+  `turn_count` does not advance (the
+  queued message was dropped), the stack keeps its row after the queued
   message has plainly run, or the new turn starts before the original
   finishes (the daemon's outer loop did not wait for the queue drain point).
 - **Step 6 (transcript)**: the queued text appears as a `USER` turn, **not**
@@ -139,8 +137,9 @@ rm -rf "$tmpdir"
   *daemon*-steering divider.
 - **Rows can lose their actions.** `Steer now` / `Edit message` /
   `Remove from queue` need the daemon to report per-entry ids and texts; an
-  older or degraded daemon reports neither and the buttons render disabled
-  with a reason (`QueueStrip.tsx:296-300`). Disabled row actions are a
+  older or degraded daemon reports neither and the row renders with no
+  actions at all (`transcript/messages/PendingRowStack.tsx:546-552`). Missing row actions are a
   daemon-capability signal, not a UI bug.
-- **The strip's absence is a state, not a failure.** No queued work and no
-  recovery rows means the component returns `null`.
+- **The stack's absence is a state, not a failure.** No queued work and no
+  recovery rows means the component returns `null`
+  (`transcript/messages/PendingRowStack.tsx:495`).
