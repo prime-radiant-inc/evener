@@ -28,7 +28,6 @@ func loadOverlay(t *testing.T) *Layer {
 func TestEmbeddedOverlayReturnsIndependentCopy(t *testing.T) {
 	t.Parallel()
 	original := append([]byte(nil), embeddedOverlay...)
-	defer copy(embeddedOverlay, original)
 
 	first := EmbeddedOverlay()
 	first[0] ^= 0xff
