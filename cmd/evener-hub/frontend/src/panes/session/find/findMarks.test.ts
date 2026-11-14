@@ -2,7 +2,7 @@
 // globals a supporting browser has and read back what Find registers.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FindHit } from "./findHits";
-import { markTranscript } from "./findMarks";
+import { landingScrollTop, markTranscript } from "./findMarks";
 
 class FakeHighlight {
   readonly ranges: Range[];
@@ -147,4 +147,35 @@ test("words are painted in what the message says, not in the row's speaker heade
   expect(marks.focus?.startContainer.nodeValue).toBe("the agent replied");
   // The outline stays on the whole row.
   expect(marks.current?.getAttribute("data-view-anchor-id")).toBe("a");
+});
+
+test("a landing leaves the reader off the live end, wherever the match sits", () => {
+  // A 400px port over 1000px of content: the end is scrollTop 600.
+  const sized = (scrollTop: number, scrollHeight = 1000) => {
+    const el = document.createElement("div");
+    Object.defineProperties(el, {
+      scrollHeight: { value: scrollHeight },
+      clientHeight: { value: 400 },
+      scrollTop: { value: scrollTop, writable: true },
+    });
+    el.getBoundingClientRect = () => new DOMRect(0, 0, 300, 400);
+    return el;
+  };
+  const at = (top: number, height = 40) => new DOMRect(0, top, 300, height);
+  const offEnd = (value: number | null) => {
+    expect(value).not.toBeNull();
+    expect(value).toBeLessThan(600 - 4);
+    expect(value).toBeGreaterThan(600 - 12);
+  };
+  // Comfortably in view, reader at the end: only the nudge.
+  offEnd(landingScrollTop(sized(600), at(150)));
+  offEnd(landingScrollTop(sized(598), at(150)));
+  // The last message, low in the port: revealing it cannot scroll past the end.
+  offEnd(landingScrollTop(sized(600), at(350)));
+  // Above the port, far from the end: brought a third of the way down.
+  expect(landingScrollTop(sized(300), at(-100))).toBe(300 - 100 - 120);
+  // In view and already off the end: left alone.
+  expect(landingScrollTop(sized(300), at(150))).toBeNull();
+  // Nothing to scroll: the whole conversation is on screen.
+  expect(landingScrollTop(sized(0, 300), at(150))).toBeNull();
 });

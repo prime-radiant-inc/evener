@@ -758,3 +758,27 @@ test("after jumping to latest, a refresh does not read back to the match the rea
   expect(state().status).not.toBe("searching");
   expect((field() as HTMLInputElement).value).toBe("needle");
 });
+
+test("landing on a match already in view at the live end moves the reader just off the end", async () => {
+  // The list follows appended output for a reader at its end, whatever the
+  // scroll owner has been told; only being off the end stops that.
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle here")], []);
+  await mount(client);
+  const port = screen.getByTestId("port");
+  Object.defineProperties(port, {
+    scrollHeight: { value: 1000, configurable: true },
+    clientHeight: { value: 400, configurable: true },
+  });
+  port.scrollTop = 600;
+  openFind();
+  type("needle");
+  await waitFor(() => expect(port.scrollTop).toBeLessThan(596));
+  expect(port.scrollTop).toBeGreaterThan(588);
+  // Once off the end the reader is left where they are.
+  const rested = port.scrollTop;
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  });
+  expect(port.scrollTop).toBe(rested);
+});

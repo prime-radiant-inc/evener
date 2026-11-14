@@ -4,6 +4,7 @@
 // and paints the matching words through the CSS Custom Highlight API, which
 // styles ranges without touching the DOM React owns. Where that API is missing
 // the outline alone marks the hit.
+import { AT_BOTTOM_THRESHOLD_PX } from "../transcript/flow/scrollMetrics";
 import type { FindHit } from "./findHits";
 
 export const FIND_CURRENT_ATTRIBUTE = "data-find-current";
@@ -227,11 +228,29 @@ export function markTranscript(
 /** Where the scroll port should sit so the current hit reads comfortably: a
  * third of the way down, or untouched when it is already well in view. Null
  * means leave the port alone. */
-export function scrollTopRevealing(port: HTMLElement, target: DOMRect): number | null {
+function scrollTopRevealing(port: HTMLElement, target: DOMRect): number | null {
   const view = port.getBoundingClientRect();
   if (view.height <= 0) return null;
   const top = target.top - view.top;
   const bottom = target.bottom - view.top;
   if (top >= view.height * 0.1 && bottom <= view.height * 0.8) return null;
   return Math.max(0, port.scrollTop + top - view.height * 0.3);
+}
+
+/** Where the scroll port should sit for a landing on `target`, or null to
+ * leave it alone: the match a third of the way down when it is not already
+ * well in view, and in every case measurably off the live end. A reader
+ * within the end threshold is still at the end to the virtual list, which
+ * follows appended output there whatever the scroll owner has been told; one
+ * who chose a place to read has to be off the end for later output to leave
+ * them on it. */
+export function landingScrollTop(port: HTMLElement, target: DOMRect): number | null {
+  const end = port.scrollHeight - port.clientHeight;
+  const reveal = scrollTopRevealing(port, target);
+  const offEnd = end - 2 * AT_BOTTOM_THRESHOLD_PX;
+  // With too little to scroll the whole conversation is on screen and there
+  // is no end to step off.
+  const atEnd = offEnd >= 0 && end - Math.min(reveal ?? port.scrollTop, end) <= AT_BOTTOM_THRESHOLD_PX;
+  const top = atEnd ? offEnd : reveal;
+  return top === port.scrollTop ? null : top;
 }

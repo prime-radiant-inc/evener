@@ -18,7 +18,7 @@ import type { VirtualListHandle } from "../../../widgets";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
 import { type FindHit, findHits, indexOfMatch } from "./findHits";
-import { markTranscript, scrollTopRevealing } from "./findMarks";
+import { landingScrollTop, markTranscript } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
 
 /** How the search stands, for the bar to say:
@@ -306,7 +306,7 @@ export function useFindInSession({
       return;
     }
     const rect = (marked.focus ?? marked.current).getBoundingClientRect();
-    const target = scrollTopRevealing(port, rect);
+    const target = landingScrollTop(port, rect);
     if (target === null) return;
     const before = port.scrollTop;
     port.scrollTop = target;

@@ -254,9 +254,10 @@ and the chord remain.
   (`useTranscriptScroll`'s `jumpToRow`, or `holdPosition` when the match is
   already in view): every landing ends bottom-following and supersedes any
   retained placement, so later output offers the way back to latest instead of
-  carrying the reader off the match. One case is not held: a match already in
-  view at the live end, where the virtual list's own end anchor still follows
-  appended output. Jumping to latest ends a search into older
+  carrying the reader off the match. The virtual list follows appended output
+  for any reader within its end threshold, whatever the scroll owner was told,
+  so a landing on a match already in view at the live end also moves the
+  reader a few pixels off the end. Jumping to latest ends a search into older
   history and leaves no match current, so neither a match arriving later nor
   a refresh reading back to the old one can pull the reader away again; Find
   stays open on its words, and stepping starts over from the newest match.
