@@ -1291,7 +1291,10 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 			return nil, nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
 		}
 	}
-	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
+	p, err := provider.WithCommunicateOutputSchema(raw, outputSchema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid --output-schema: %w", err)
+	}
 	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
 	return provider.WithAllowedDecisions(p, allowedDecisions), startupListing, nil
 }

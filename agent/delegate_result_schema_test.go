@@ -50,9 +50,6 @@ func delegateCallResult(t *testing.T, reqs []llm.Request) (isError bool, found b
 	t.Helper()
 	for _, req := range reqs[1:] {
 		for _, msg := range req.Messages {
-			if msg.Role != llm.RoleTool || msg.ToolCallID != "create-schema" {
-				continue
-			}
 			for _, part := range msg.Content {
 				if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "create-schema" {
 					return part.ToolResult.IsError, true

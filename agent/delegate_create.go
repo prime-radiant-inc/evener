@@ -352,17 +352,18 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			}
 		}
 	}
-	resultSchema, err := json.Marshal(args.ResultSchema)
-	if err != nil {
-		return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid result schema: %w", err)
-	}
-	if len(args.ResultSchema) == 0 {
-		resultSchema = nil
-	} else if err := llm.ValidateSchemaDocument(args.ResultSchema); err != nil {
+	if len(args.ResultSchema) != 0 {
 		// An invalid result_schema spliced into the child's communicate tool
 		// makes its first model call a provider 400 about tool schemas (issue
 		// #6298); reject it here, at the call the model can repair.
-		return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid result schema: %w", err)
+		if err := llm.ValidateSchemaDocument(args.ResultSchema); err != nil {
+			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid result schema: %w", err)
+		}
+	}
+	// A non-empty schema passed the gate above, which proves it JSON-marshalable.
+	resultSchema, _ := json.Marshal(args.ResultSchema)
+	if len(args.ResultSchema) == 0 {
+		resultSchema = nil
 	}
 	sandboxSnapshot := delegateSandboxSnapshot(requestedSandbox)
 	if requestedSandbox == nil {
@@ -444,7 +445,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		if err := s.worktreeAnchorGone(); err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: %w", err)
 		}
-		project, err = resolveWorktreeProject(local, local.WorkingDirectory())
+		project, err := resolveWorktreeProject(local, local.WorkingDirectory())
 		if err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: resolve project: %w", err)
 		}

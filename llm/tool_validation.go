@@ -78,9 +78,7 @@ func ValidateSchemaDocument(v any) error {
 		return fmt.Errorf("schema document is not JSON-marshalable: %w", err)
 	}
 	var doc any
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return fmt.Errorf("schema document is not valid JSON: %w", err)
-	}
+	_ = json.Unmarshal(b, &doc) // b came from json.Marshal, so it always decodes.
 	checker, err := schemaDocumentChecker()
 	if err != nil {
 		return err
@@ -96,26 +94,11 @@ func ValidateSchemaDocument(v any) error {
 // reference to its embedded copy of the meta-schema, so validating an
 // instance against the checker applies the full meta-schema — including the
 // $dynamicRef walk that rejects a properties value which is not a schema.
-var (
-	schemaDocumentOnce    sync.Once
-	schemaDocumentMeta    *jsonschema.Schema
-	errSchemaDocumentInit error
-)
-
-func schemaDocumentChecker() (*jsonschema.Schema, error) {
-	schemaDocumentOnce.Do(func() {
-		c := jsonschema.NewCompiler()
-		c.Draft = jsonschema.Draft2020
-		if err := c.AddResource("urn:evener:meta-schema", strings.NewReader(`{"$ref": "https://json-schema.org/draft/2020-12/schema"}`)); err != nil {
-			errSchemaDocumentInit = err
-			return
-		}
-		s, err := c.Compile("urn:evener:meta-schema")
-		if err != nil {
-			errSchemaDocumentInit = err
-			return
-		}
-		schemaDocumentMeta = s
-	})
-	return schemaDocumentMeta, errSchemaDocumentInit
-}
+var schemaDocumentChecker = sync.OnceValues(func() (*jsonschema.Schema, error) {
+	c := jsonschema.NewCompiler()
+	c.Draft = jsonschema.Draft2020
+	if err := c.AddResource("urn:evener:meta-schema", strings.NewReader(`{"$ref": "https://json-schema.org/draft/2020-12/schema"}`)); err != nil {
+		return nil, err
+	}
+	return c.Compile("urn:evener:meta-schema")
+})
