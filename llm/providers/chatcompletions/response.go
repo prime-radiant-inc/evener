@@ -201,27 +201,10 @@ type chatDelta struct {
 var reasoningFieldNames = llm.OpenAICompatReasoningFields()
 
 // reasoningFromDelta returns the chunk's reasoning text and the field it
-// arrived on — the first non-empty of reasoning_content/reasoning/
-// reasoning_text, falling back to reasoning_details text items (which replay
-// through the reasoning_details path, so they report no field).
+// arrived on. Both response paths use the same precedence and detail joining
+// so a provider payload decodes identically in stream and non-stream mode.
 func reasoningFromDelta(d chatDelta) (text, field string) {
-	for i, v := range [...]string{d.ReasoningContent, d.Reasoning, d.ReasoningText} {
-		if v != "" {
-			return v, reasoningFieldNames[i]
-		}
-	}
-	if len(d.ReasoningDetails) > 0 {
-		var b strings.Builder
-		for _, item := range d.ReasoningDetails {
-			piece := item.Text
-			if piece == "" {
-				piece = item.Thinking
-			}
-			b.WriteString(piece)
-		}
-		return b.String(), ""
-	}
-	return "", ""
+	return extractReasoningFields(d.ReasoningContent, d.Reasoning, d.ReasoningText, d.ReasoningDetails)
 }
 
 type chatChunkToolCall struct {
@@ -240,33 +223,34 @@ func thoughtSignatureFromExtraContent(extra *chatExtraContent) string {
 }
 
 // extractReasoning returns the reasoning text from a chat message and the wire
-// field it arrived on, checking reasoning_details (OpenRouter MiniMax format)
-// first, then the reasoning_content/reasoning/reasoning_text field variants.
-// MiniMax uses {type: "reasoning.text", text: "..."}; older/alternate formats
-// use {type: "thinking", thinking: "..."}. Details report no field — they
-// replay through the reasoning_details path.
+// field it arrived on, using the same extraction as the stream decoder.
 func extractReasoning(msg chatMessage) (text, field string) {
-	if len(msg.ReasoningDetails) > 0 {
-		var b strings.Builder
-		for _, d := range msg.ReasoningDetails {
-			var piece string
-			if d.Text != "" {
-				piece = d.Text
-			} else if d.Thinking != "" {
-				piece = d.Thinking
-			}
-			if piece != "" {
-				if b.Len() > 0 {
-					b.WriteString("\n")
-				}
-				b.WriteString(piece)
-			}
+	return extractReasoningFields(msg.ReasoningContent, msg.Reasoning, msg.ReasoningText, msg.ReasoningDetails)
+}
+
+// extractReasoningFields prefers reasoning_details when it contains text,
+// joining pieces with newlines. Its empty field preserves the special replay
+// contract for reasoning_details; scalar fields retain the canonical registry
+// index mapping.
+func extractReasoningFields(reasoningContent, reasoning, reasoningText string, details []reasoningDetailItem) (text, field string) {
+	var b strings.Builder
+	for _, item := range details {
+		piece := item.Text
+		if piece == "" {
+			piece = item.Thinking
+		}
+		if piece == "" {
+			continue
 		}
 		if b.Len() > 0 {
-			return b.String(), ""
+			b.WriteString("\n")
 		}
+		b.WriteString(piece)
 	}
-	for i, v := range [...]string{msg.ReasoningContent, msg.Reasoning, msg.ReasoningText} {
+	if b.Len() > 0 {
+		return b.String(), ""
+	}
+	for i, v := range [...]string{reasoningContent, reasoning, reasoningText} {
 		if v != "" {
 			return v, reasoningFieldNames[i]
 		}
