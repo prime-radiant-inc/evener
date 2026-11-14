@@ -625,6 +625,13 @@ interface ModelSwitchTarget {
 
 const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
 
+function supersedeModelSwitchDisplayThrough(requests: ModelSwitchRequestState, sequence: number): void {
+  requests.displayedThrough = Math.max(requests.displayedThrough, sequence);
+  for (const [clientMutationId, target] of requests.pending) {
+    if (target.sequence <= sequence) requests.settledPending.add(clientMutationId);
+  }
+}
+
 function settleModelSwitchThrough(requests: ModelSwitchRequestState, sequence: number): void {
   requests.displayedThrough = Math.max(requests.displayedThrough, sequence);
   for (const [clientMutationId, target] of requests.pending) {
@@ -656,15 +663,52 @@ function matchingModelSwitchTarget(
 function settleModelSwitchAuthority(
   ref: string,
   targets: readonly { modelProvider: string; model: string }[],
-): number | undefined {
+): ModelSwitchTarget | undefined {
   const requests = modelSwitchRequests.get(ref);
   if (!requests) return undefined;
   const authority = matchingModelSwitchTarget(requests, targets);
   if (authority) {
     settleModelSwitchThrough(requests, authority.sequence);
-    return authority.sequence;
+    return authority;
   }
   return undefined;
+}
+
+function reconcileAcceptedModelSwitchAuthority(
+  ref: string,
+  authorityModels: readonly ThreadModel[],
+  current: ReadonlyMap<string, AcceptedModelSwitch>,
+): ReadonlyMap<string, AcceptedModelSwitch> {
+  const authority = settleModelSwitchAuthority(
+    ref,
+    authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
+  );
+  const accepted = current.get(ref);
+  if (!accepted) return current;
+  const identityInvalidated = authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted));
+  const modelInvalidated = authorityModels.some(
+    (model) => model.modelProvider !== accepted.previousModelProvider || model.model !== accepted.previousModel,
+  );
+  if (identityInvalidated || (modelInvalidated && authority === undefined)) {
+    const requests = modelSwitchRequests.get(ref);
+    if (requests) settleModelSwitchThrough(requests, accepted.sequence);
+    const next = new Map(current);
+    next.delete(ref);
+    return next;
+  }
+  if (!authority) return current;
+  if (authority.sequence >= accepted.sequence) {
+    const next = new Map(current);
+    next.delete(ref);
+    return next;
+  }
+  if (authority.modelProvider === accepted.previousModelProvider && authority.model === accepted.previousModel)
+    return current;
+  return new Map(current).set(ref, {
+    ...accepted,
+    previousModelProvider: authority.modelProvider,
+    previousModel: authority.model,
+  });
 }
 
 function reconcileModelSwitchRejection(ref: string, clientMutationId: string): void {
@@ -1638,29 +1682,12 @@ function putThreadModels(
     patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
   }
   const authorityModels = [threadModel, watchedModel].filter((model): model is ThreadModel => model !== undefined);
-  const authoritySequence = settleModelSwitchAuthority(
+  const acceptedModelSwitches = reconcileAcceptedModelSwitchAuthority(
     ref,
-    authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
+    authorityModels,
+    state.acceptedModelSwitches,
   );
-  const accepted = state.acceptedModelSwitches.get(ref);
-  const identityInvalidated =
-    accepted && authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted));
-  const modelInvalidated =
-    accepted &&
-    authorityModels.some(
-      (model) => model.modelProvider !== accepted.previousModelProvider || model.model !== accepted.previousModel,
-    );
-  if (accepted && (identityInvalidated || (modelInvalidated && authoritySequence === undefined))) {
-    const requests = modelSwitchRequests.get(ref);
-    if (requests) settleModelSwitchThrough(requests, accepted.sequence);
-    const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
-    acceptedModelSwitches.delete(ref);
-    patch.acceptedModelSwitches = acceptedModelSwitches;
-  } else if (accepted && authoritySequence !== undefined && authoritySequence >= accepted.sequence) {
-    const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
-    acceptedModelSwitches.delete(ref);
-    patch.acceptedModelSwitches = acceptedModelSwitches;
-  }
+  if (acceptedModelSwitches !== state.acceptedModelSwitches) patch.acceptedModelSwitches = acceptedModelSwitches;
   if (!threadModel && !watchedModel) return;
   threadsStore.setState(patch);
   // stop-cancellation-outbox §6, the cross-tab half: a published model whose
@@ -6666,6 +6693,18 @@ function acceptEntryNotification(
 function handleNotification(n: AnyNotification): void {
   const rejection = modelSwitchRejection(n);
   if (rejection) reconcileModelSwitchRejection(rejection.ref, rejection.clientMutationId);
+  if (n.method === "thread/model/changed") {
+    const previous = trackedThreadModel(n.params.ref);
+    if (previous) {
+      const current = threadsStore.getState().acceptedModelSwitches;
+      const next = reconcileAcceptedModelSwitchAuthority(
+        n.params.ref,
+        [{ ...previous, modelProvider: n.params.modelProvider, model: n.params.model }],
+        current,
+      );
+      if (next !== current) threadsStore.setState({ acceptedModelSwitches: next });
+    }
+  }
   if (n.method === "evener/thread/resync") {
     // A resync always re-reads the named ref, legacy and v6 threads alike:
     // legacy has no history.invalidatedAtGeneration for the generic
@@ -8588,11 +8627,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       });
     } catch (error) {
       requests.pending.delete(clientMutationId);
+      requests.unsettled.delete(clientMutationId);
       requests.settledPending.delete(clientMutationId);
       throw error;
     }
-    requests.pending.delete(clientMutationId);
-    if (requests.settledPending.delete(clientMutationId)) return;
+    const wasPending = requests.pending.delete(clientMutationId);
+    if (requests.settledPending.delete(clientMutationId)) {
+      if (wasPending && response.rejectionCode === WarningCodeModelSwitchRejected)
+        requests.unsettled.set(clientMutationId, target);
+      return;
+    }
     if (response.rejectionCode !== WarningCodeModelSwitchRejected) {
       settleModelSwitchThrough(requests, sequence);
       threadsStore.setState((state) => {
@@ -8605,7 +8649,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     if (sequence <= requests.displayedThrough) return;
-    settleModelSwitchThrough(requests, sequence - 1);
+    supersedeModelSwitchDisplayThrough(requests, sequence - 1);
     requests.unsettled.set(clientMutationId, target);
     requests.displayedThrough = sequence;
     const previous = trackedThreadModel(ref);

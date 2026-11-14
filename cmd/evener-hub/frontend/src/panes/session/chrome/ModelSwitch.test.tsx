@@ -378,6 +378,39 @@ test("an earlier model change does not suppress a newer accepted pick", async ()
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
 });
 
+test("an earlier model change after the newer response preserves the newer accepted pick", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+    });
+  });
+  view.rerender(
+    <ModelSwitch sessionRef="ref_a" model={{ ...activeModel, modelProvider: "openai", model: "gpt-5.5" }} />,
+  );
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
 test("accepted model display follows pick order when responses arrive out of order", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
@@ -391,7 +424,8 @@ test("accepted model display follows pick order when responses arrive out of ord
       }),
   );
 
-  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
   await pickModel(user, "gpt", /gpt-5\.5/i);
   await waitFor(() => expect(resolvers.has("gpt-5.5")).toBe(true));
 
@@ -405,6 +439,24 @@ test("accepted model display follows pick order when responses arrive out of ord
   await act(async () => {
     resolvers.get("gpt-5.5")?.();
   });
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+  act(() => {
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+    });
+  });
+  view.rerender(
+    <ModelSwitch sessionRef="ref_a" model={{ ...activeModel, modelProvider: "openai", model: "gpt-5.5" }} />,
+  );
 
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
