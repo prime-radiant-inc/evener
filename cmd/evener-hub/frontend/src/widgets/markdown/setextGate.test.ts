@@ -1,7 +1,7 @@
 import { Marked } from "marked";
 import { describe, expect, it } from "vitest";
 import { markdownLexer } from "./lexer";
-import { gateStats, resetGateStatsForTests } from "./setextGate";
+import { createGatedMarked, gateStats, resetGateStatsForTests } from "./setextGate";
 
 // Issue #5002: Marked's pinned `lheading` (setext) block rule uses a lazy
 // multi-line capture that must reach the END of the frame to prove no
@@ -24,7 +24,7 @@ function expectSameTokens(source: string): void {
 describe("setext gate", () => {
   it("lexes a sixteen-thousand-line list item without the per-line setext rescan", () => {
     resetGateStatsForTests();
-    const source = "- head\n" + "plain continuation line\n".repeat(16_000);
+    const source = `- head\n${"plain continuation line\n".repeat(16_000)}`;
     const startedAt = performance.now();
     const tokens = markdownLexer.lexer(source);
     const elapsedMs = performance.now() - startedAt;
@@ -51,14 +51,42 @@ describe("setext gate", () => {
     // candidate lies BEHIND every later continuation line's probe, so those
     // probes are skipped while the first one still runs the pinned rule.
     resetGateStatsForTests();
-    const source = "- head\n===\n" + "plain continuation line\n".repeat(50);
+    const source = `- head\n===\n${"plain continuation line\n".repeat(50)}`;
     const tokens = markdownLexer.lexer(source);
     expect(tokens[0]?.type).toBe("list");
     expect(JSON.stringify(tokens)).toContain('"depth":1');
     expect(gateStats.pinnedProbes).toBeGreaterThan(0);
     expect(gateStats.skippedProbes).toBeGreaterThan(40);
     // And the gated output still equals the ungated lexer's.
-    expect(tokens).toEqual(new Marked({ gfm: true }).lexer(source));
+    expect(tokens).toEqual(UNGATED.lexer(source));
+  });
+
+  it("drops unreachable candidates so a blank line before an underline cannot pin probes", () => {
+    resetGateStatsForTests();
+    // The only underline-shaped line follows a blank line: the pinned rule
+    // needs a non-empty content line to end right before any underline, so
+    // this candidate can never match. Keeping it would let every earlier
+    // probe find it in the binary search and run the pinned rule's
+    // whole-frame scan - the partial quadratic the drop removes.
+    const source = `- head\n${"plain continuation line\n".repeat(2_000)}\n  ===\n`;
+    const tokens = markdownLexer.lexer(source);
+    expect(tokens).toEqual(UNGATED.lexer(source));
+    expect(gateStats.pinnedProbes).toBe(0);
+    expect(gateStats.skippedProbes).toBeGreaterThan(1_000);
+  });
+
+  it("defers every probe to the pinned rule under pedantic options", () => {
+    resetGateStatsForTests();
+    // Pedantic blockTokens rebinds its working string before probing (tabs
+    // expanded to spaces, blank lines removed), so probes are no longer
+    // suffixes of the raw frame and the gate's position arithmetic is
+    // unsound: the gate must never skip under pedantic.
+    const source = `Title\n====\n\npara line\n${"plain continuation line\n".repeat(200)}`;
+    const tokens = createGatedMarked({ gfm: true, pedantic: true }).lexer(source);
+    const ungated = new Marked({ gfm: true, pedantic: true });
+    expect(tokens).toEqual(ungated.lexer(source));
+    expect(gateStats.pinnedProbes).toBeGreaterThan(0);
+    expect(gateStats.skippedProbes).toBe(0);
   });
 
   it("keeps token output identical to ungated Marked across setext-adjacent shapes", () => {
@@ -71,7 +99,7 @@ describe("setext gate", () => {
       "- head\nplain continuation\n",
       // Long item with a setext heading deep inside: the candidate scan
       // finds it and the pinned rule still runs for the probes that reach.
-      "- head\n" + "plain continuation line\n".repeat(500) + "Late title\n====\n",
+      `- head\n${"plain continuation line\n".repeat(500)}Late title\n====\n`,
       // The lazy-continuation blockquote shape from the issue.
       "> quoted\nlazy\n> quoted\nlazy\n",
       // Paragraphs end before a candidate beyond them - and a candidate
@@ -85,6 +113,16 @@ describe("setext gate", () => {
       "para\n\t== tabbed underline\nplain\n",
       "  Title\n  ====\n",
       "Title\n====   \ntrailing spaces then end\n",
+      // A loose list item whose only underline-shaped line follows a blank
+      // line: unreachable for the pinned rule, dropped by the gate.
+      "- head\n\n  ===\nplain continuation\n",
+      // A spaces-only line before the underline: the pinned capture can
+      // match spaces, so only an EMPTY preceding line is ever dropped.
+      "# H\n   \n===\nplain\n",
+      // CRLF: a carriage return can end the captured content line, and the
+      // underline grammar rejects it in the same places on both sides.
+      "para\r\n===\r\nplain\r\n",
+      "para\r\n===\n",
       // Dense candidates: a rule-of-dashes list separator document.
       Array.from({ length: 200 }, (_, i) => `row ${i}\n---\ntail ${i}`).join("\n"),
     ];

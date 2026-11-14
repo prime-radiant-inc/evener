@@ -1,4 +1,4 @@
-import { Marked, type MarkedExtension, type Token, type Tokens, type TokensList } from "marked";
+import { Lexer, Marked, type MarkedExtension, type Token, Tokenizer, type Tokens, type TokensList } from "marked";
 
 // The setext gate (#5002): an exact per-frame "next possible setext
 // underline" bound for Marked's `lheading` block rule.
@@ -9,7 +9,7 @@ import { Marked, type MarkedExtension, type Token, type Tokens, type TokensList 
 // continuation line, so the lexer probes lheading once per line and every
 // probe rescans everything still ahead: lexing a many-thousand-line list
 // item is quadratic (measured 8.3 s for 16k lines through this exact
-// lexer; the probes and their source suffixes are what the gate caches).
+// lexer).
 //
 // The gate precomputes, once per blockTokens frame, the byte offset of
 // every line that could possibly serve as a setext underline - a SUPERSET
@@ -19,33 +19,25 @@ import { Marked, type MarkedExtension, type Token, type Tokens, type TokensList 
 // after the probe position, the rule cannot match and its scan is skipped;
 // otherwise the PINNED rule runs unchanged and its result is returned
 // as-is. Token output is identical by construction - the gate only ever
-// suppresses probes that provably cannot match, and any surprise
-// (frame-stack mismatch, a probe that grows) permanently degrades that
-// frame to the pinned rule.
+// suppresses probes that provably cannot match.
+//
+// The position arithmetic rests on one property of the pinned runtime
+// (marked 18.0.6): probes are suffixes of the frame's source, because
+// every working-string rebind in the pinned blockTokens is a substring
+// cut. Under pedantic options blockTokens rewrites its working string
+// first (tabs expanded to spaces, blank lines removed), so the gate stands
+// down entirely there; the token-parity corpus in setextGate.test.ts is
+// the tripwire for all of this on any version bump.
 
-// marked ships its Lexer and Tokenizer classes as runtime exports without
-// top-level type declarations; their typed surface is the constructor
-// properties every Marked instance carries.
-const markedClasses = new Marked();
-const MarkedLexer = markedClasses.Lexer;
-const MarkedTokenizer = markedClasses.Tokenizer;
-type MarkedLexerInstance = InstanceType<typeof MarkedLexer>;
-type MarkedTokenizerInstance = InstanceType<typeof MarkedTokenizer>;
-
-// One blockTokens frame: the source it was entered with, the underline
-// candidate offsets inside it (computed lazily on the first lheading
-// probe), and the probe-progress tripwire. Probes inside a frame are
-// suffixes of `src`, so they only get shorter; the first probe sees the
-// whole frame.
+// One blockTokens frame: the source it was entered with, and the underline
+// candidate offsets inside it, computed lazily on the first lheading probe.
 interface GateFrame {
   readonly src: string;
   candidates?: number[];
-  lastProbeLength: number;
-  degraded: boolean;
 }
 
 const frames: GateFrame[] = [];
-const pinnedLheading = MarkedTokenizer.prototype.lheading;
+const pinnedLheading = Tokenizer.prototype.lheading;
 
 // A line that could be a setext underline: 0-3 spaces, one or more `=` or
 // `-`, optional trailing spaces, then end of line. The pinned rule's
@@ -59,20 +51,20 @@ const SETEXT_UNDERLINE_CANDIDATE = /(^|\n) {0,3}(=+|-+) *(?=\n|$)/g;
 // an override created by a stale module copy then finds no frames and
 // falls back to the pinned rule - correct, merely unoptimized.
 const GATE_MARKER = "__evenerSetextGate";
-type GateMarkedLexerPrototype = typeof MarkedLexer.prototype & { [GATE_MARKER]?: boolean };
+type GateMarkedLexerPrototype = typeof Lexer.prototype & { [GATE_MARKER]?: boolean };
 
 function ensureFrameStack(): void {
-  const proto = MarkedLexer.prototype as GateMarkedLexerPrototype;
+  const proto = Lexer.prototype as GateMarkedLexerPrototype;
   if (proto[GATE_MARKER]) return;
   proto[GATE_MARKER] = true;
-  const originalBlockTokens = MarkedLexer.prototype.blockTokens;
+  const originalBlockTokens = Lexer.prototype.blockTokens;
   const wrappedBlockTokens = function blockTokens(
-    this: MarkedLexerInstance,
+    this: Lexer,
     src: string,
     tokens?: Token[] | TokensList,
     lastParagraphClipped?: boolean,
   ): Token[] | TokensList {
-    frames.push({ src, lastProbeLength: src.length, degraded: false });
+    frames.push({ src });
     try {
       // The pinned method's two overloads both pass through; .call cannot
       // discriminate them, so this one cast aligns the token-array shape.
@@ -81,7 +73,7 @@ function ensureFrameStack(): void {
       frames.pop();
     }
   } as unknown as typeof originalBlockTokens;
-  MarkedLexer.prototype.blockTokens = wrappedBlockTokens;
+  Lexer.prototype.blockTokens = wrappedBlockTokens;
 }
 
 // True when no possible setext underline lies at or after this probe's
@@ -89,21 +81,20 @@ function ensureFrameStack(): void {
 // scan can be skipped.
 function gateSkipsProbe(src: string): boolean {
   const frame = frames[frames.length - 1];
-  if (frame === undefined || frame.degraded) return false;
-  // A probe longer than the last one in this frame breaks the
-  // probes-are-shrinking-suffixes contract the cache relies on; from here
-  // on the frame answers every probe with the pinned rule.
-  if (src.length > frame.lastProbeLength) {
-    frame.degraded = true;
-    return false;
-  }
-  frame.lastProbeLength = src.length;
+  if (frame === undefined) return false;
   if (frame.candidates === undefined) {
     const candidates: number[] = [];
     for (const match of frame.src.matchAll(SETEXT_UNDERLINE_CANDIDATE)) {
+      // The pinned rule's capture needs a non-empty content line to end
+      // right before the underline, so an underline at the frame's first
+      // line or directly after an empty line can never match; dropping it
+      // keeps probes skipping in shapes like "...\n\n  ===\n" where the
+      // only underline-shaped line is unreachable. A whitespace-only line
+      // before the underline is kept - the pinned capture matches spaces.
+      if (match.index === 0 || frame.src.charCodeAt(match.index - 1) === 10) continue;
       // The candidate's line starts after the newline the pattern matched;
       // at the frame's very start there is no newline to skip.
-      candidates.push((match.index ?? 0) + (match[1] ? 1 : 0));
+      candidates.push(match.index + (match[1] ? 1 : 0));
     }
     frame.candidates = candidates;
   }
@@ -131,7 +122,14 @@ export function resetGateStatsForTests(): void {
   gateStats.skippedProbes = 0;
 }
 
-const gatedLheading = function lheading(this: MarkedTokenizerInstance, src: string): Tokens.Heading | undefined {
+const gatedLheading = function lheading(this: Tokenizer, src: string): Tokens.Heading | undefined {
+  // Pedantic blockTokens rebinds its working string before probing (tabs
+  // expanded to spaces, blank lines removed), so probes stop being
+  // suffixes of the raw frame; the gate stands down and defers.
+  if (this.options.pedantic) {
+    gateStats.pinnedProbes += 1;
+    return pinnedLheading.call(this, src);
+  }
   if (gateSkipsProbe(src)) {
     gateStats.skippedProbes += 1;
     return undefined;
