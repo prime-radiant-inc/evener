@@ -38,6 +38,7 @@ import {
 import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
+  queueEntryAt,
   reflectedMutationIds,
 } from "@evener/appwire-client/state/mutation";
 import type { JSX } from "react";
@@ -190,7 +191,10 @@ export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntr
 }
 
 function recordPreview(record: MutationOutboxRecord): string {
-  return truncateForDisplay(pendingEntryPreview(outboxRecordPreview(record)));
+  // A durable row is a transcript bubble: the whole message body reads in
+  // place, never a 140-character cut that forces Edit to inspect the rest.
+  // Previews stay for preview-only records (the daemon's queued preview).
+  return pendingEntryPreview(outboxRecordPreview(record));
 }
 
 export function PendingRowStack({
@@ -553,6 +557,14 @@ export function PendingRowStack({
         if (pendingTexts.has(entryPreview) && entryId === undefined) return null;
         const busy = entryId !== undefined && busyEntryIds.has(entryId);
         const actionsAvailable = hasIds && entryId !== undefined;
+        // The restore seam is text-and-selections only: the queue projection
+        // carries no image bytes, so an edit's cancel would destroy the row's
+        // images permanently. Any image-bearing row refuses Edit for that
+        // reason - not just a textless image-only row, which a selection
+        // would otherwise make look editable. The core's own queue-row
+        // reader carries the plain-text caveat: a literal "[image]" message
+        // is not an image row.
+        const carriesImages = queue !== null && queueEntryAt(queue, index).imageCount > 0;
         const imageOnly =
           hasTexts &&
           (fullText ?? "").trim() === "" &&
@@ -581,7 +593,10 @@ export function PendingRowStack({
               label="Edit message"
               icon={<span aria-hidden="true">✎</span>}
               size="sm"
-              disabled={!hasTexts || imageOnly || busy}
+              disabled={!hasTexts || imageOnly || carriesImages || busy}
+              disabledReason={
+                carriesImages ? "Editing can't take the image back - remove the message and re-attach it instead" : ""
+              }
               onClick={() => {
                 if (entryId !== undefined && fullText !== undefined) {
                   handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
@@ -607,11 +622,11 @@ export function PendingRowStack({
                 id: entryId ?? `queue_${index}`,
                 turnId: "",
                 type: "userMessage",
-                text: [previewText, namedMarkers].filter(Boolean).join(" "),
+                text: [fullText ?? previewText, namedMarkers].filter(Boolean).join(" "),
               }}
               opensExchange={false}
               provisional="Queued for the next turn"
-              actions={actions}
+              footer={actions}
             />
           </li>
         );
@@ -659,7 +674,7 @@ export function PendingRowStack({
               }}
               opensExchange={false}
               provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
-              actions={actions}
+              footer={actions}
             />
           </li>
         );
@@ -711,8 +726,12 @@ export function PendingRowStack({
               }}
               opensExchange={false}
               provisional={label}
-              actions={actions}
-              footer={retryAlert}
+              footer={
+                <>
+                  {actions}
+                  {retryAlert}
+                </>
+              }
             />
           </li>
         );
@@ -728,7 +747,7 @@ export function PendingRowStack({
                 item={{ id: record.clientMutationId, turnId: "", type: "userMessage", text: recordPreview(record) }}
                 opensExchange={false}
                 provisional="Destination deleted"
-                actions={
+                footer={
                   <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleCopy(record)}>
                     Copy
                   </Button>
@@ -750,7 +769,7 @@ export function PendingRowStack({
               }}
               opensExchange={false}
               provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
-              actions={
+              footer={
                 isInterrupt ? (
                   <IconButton
                     label="Dismiss"

@@ -2,6 +2,7 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { type ComposerVerb, composerVerb } from "./composerMethods";
+import type { ConsumedQueueEntry } from "./pendingMessages";
 import {
   effectiveWireId,
   type MutationOptimisticRecord,
@@ -10,6 +11,7 @@ import {
 } from "./records";
 
 export type PendingMethod = ComposerVerb;
+export type { ConsumedQueueEntry } from "./pendingMessages";
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -424,6 +426,7 @@ export function reconcilePendingEntries(
   model: ThreadModel | undefined,
   submittedHere: ReadonlyMap<string, number>,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
+  consumedQueueEntries?: readonly ConsumedQueueEntry[],
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
   const entries = new Map<string, PendingTurnEntry>();
@@ -439,6 +442,35 @@ export function reconcilePendingEntries(
     if (record.targetRef !== ref || reflected.has(wireId)) continue;
     const entry = outboxEntry(record, isOwnMutationRecord);
     if (entry) entries.set(wireId, entry);
+  }
+
+  // A consumed queue row still awaiting its authoritative replacement: the
+  // registry (consumedQueueEntriesFor) keeps it after thread/queueChanged
+  // removes the queue row and before hydration supplies the pending mutation
+  // or transcript item, so the message never vanishes for that window. A row
+  // the model reflects, or that the queue still names, retires here exactly
+  // as the pending-message projection retires it.
+  const queuedEntryIds = new Set(model?.queue?.ids ?? []);
+  for (const carried of consumedQueueEntries ?? []) {
+    if (queuedEntryIds.has(carried.entryId)) continue;
+    if (entries.has(carried.entryId)) continue;
+    if (entries.has(carried.clientMutationId)) continue;
+    if (reflected.has(carried.clientMutationId)) continue;
+    entries.set(carried.entryId, {
+      id: carried.entryId,
+      ref,
+      method: "queue",
+      text: carried.text,
+      imageCount: carried.imageCount,
+      skillNames: [...carried.skillNames],
+      commandNames: [...carried.commandNames],
+      createdAt: submittedHere.get(carried.clientMutationId),
+      state: "submitting",
+      source: "authoritative",
+      // The daemon accepted this entry into a mutation this client may not
+      // have submitted; provenance stays the registry's own answer.
+      fromThisClient: submittedHere.has(carried.clientMutationId),
+    });
   }
 
   for (const mutation of model?.pendingMutations ?? []) {

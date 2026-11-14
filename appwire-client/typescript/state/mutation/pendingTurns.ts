@@ -15,7 +15,12 @@
 // to exactly what this module calls.
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
-import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
+import {
+  type ConsumedQueueEntry,
+  type PendingMethod,
+  type PendingTurnEntry,
+  reconcilePendingEntries,
+} from "./pendingEntries";
 import { type MutationPersistenceSnapshot, replaceTargetRecords } from "./projection";
 import type {
   ClientIdentity,
@@ -131,6 +136,10 @@ export interface PendingTurnsDraftPort {
 export interface PendingTurnsStoreDeps {
   threads: PendingTurnsThreadsPort;
   draft: PendingTurnsDraftPort;
+  // Consumed queue rows still awaiting an authoritative replacement
+  // (consumedQueueEntriesFor's registry shape). Optional so hosts without the
+  // registry keep today's behavior; the web store passes its own.
+  consumedQueueEntries?: (ref: string) => readonly ConsumedQueueEntry[];
   // The host's own ClientIdentity capability (createClientIdentity):
   // recordSubmittedHere and pendingTurnEntries both ask "is this record this
   // client's own", and reconcilePendingEntries's own isOwnMutationRecord
@@ -316,6 +325,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
       deps.threads.getThreadModel(ref),
       state.submittedHere,
       (record) => deps.identity.isOwnMutationRecord(record),
+      deps.consumedQueueEntries?.(ref),
     ).filter((entry) => method === undefined || entry.method === method);
   };
 

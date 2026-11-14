@@ -89,6 +89,10 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+  // A consumed queue row stays a pending entry until an authoritative
+  // replacement retires it, so the hydration window never vanishes the
+  // message (consumedQueueEntriesFor's own registry contract).
+  consumedQueueEntries: consumedQueueEntriesFor,
 });
 
 // The direct fallback's provenance seam: see pendingTurns' recordDirectSend.
