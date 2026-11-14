@@ -185,6 +185,12 @@ func everyLintTargetIsPhonyAndHasARule(a *audit) {
 
 const lintCacheCleanExemptionComment = "# lint-cache-clean is an intentional local cleanup action; keep it out of LINT_TARGETS so required lint runs can reuse the cache they are checking."
 
+// lint-cache-sweep is the second local cleanup action: it reclaims caches of
+// disposed worktrees, and a required lint run must never depend on (or be
+// gated behind) deleting the very caches it warms. Same narrow shape as
+// lint-cache-clean's exemption: this exact comment beside this one rule.
+const lintCacheSweepExemptionComment = "# lint-cache-sweep is the second intentional local cleanup action (reclaiming disposed worktrees' caches); keep it out of LINT_TARGETS like lint-cache-clean above."
+
 // makefileLintingRuleNames returns every rule name declared in
 // make/linting.mk, excluding the `lint` alias itself (the target
 // LINT_TARGETS feeds, not a member of it), the one explicitly documented local
@@ -206,6 +212,10 @@ func makefileLintingRuleNames(a *audit) []string {
 			continue
 		}
 		if name == "lint-cache-clean" && strings.TrimSpace(previous) == lintCacheCleanExemptionComment {
+			previous = line
+			continue
+		}
+		if name == "lint-cache-sweep" && strings.TrimSpace(previous) == lintCacheSweepExemptionComment {
 			previous = line
 			continue
 		}

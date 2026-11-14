@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -151,6 +151,30 @@ lint-golangci:
 # lint-cache-clean is an intentional local cleanup action; keep it out of LINT_TARGETS so required lint runs can reuse the cache they are checking.
 lint-cache-clean:
 	@GOLANGCI_LINT_CACHE="$(GOLANGCI_LINT_CACHE)" golangci-lint cache clean
+
+# lint-cache-sweep reclaims the golangci-lint analysis caches of worktrees
+# that no longer exist. The per-worktree cache scheme (issue #290) keys each
+# checkout's cache by its root path, so a disposed worktree leaves its cache
+# behind forever — on a machine with a churning worktree fleet the dead dirs
+# accumulate hundreds of megabytes each. The sweeper hashes the live
+# `git worktree list` roots exactly as scripts/lib/golangci-lint-cache.sh
+# does and deletes only the orphans older than GOLANGCI_SWEEP_MIN_AGE_HOURS
+# (default 48h, so a lane disposed mid-lint or re-created at the same path is
+# never swept). Like lint-cache-clean it is a local cleanup action, not a
+# gate: a required lint run must never depend on the very cache it warms.
+## Reclaim per-worktree golangci-lint caches whose owning worktree is gone.
+## proves: Only cache dirs whose key matches no registered worktree, and
+##   whose mtime is older than GOLANGCI_SWEEP_MIN_AGE_HOURS (default 48), are
+##   deleted; live worktrees' caches and unrecognized entries are untouched.
+## trigger: Local cleanup after disposing worktree lanes; safe to run
+##   periodically (cron) on machines with a churning worktree fleet.
+## requires: git (run from any registered worktree of this repository).
+## fails-when: Not inside a workable git repository — the live worktree set
+##   is unknown, and the sweep refuses to run rather than treat unknown as
+##   empty.
+# lint-cache-sweep is the second intentional local cleanup action (reclaiming disposed worktrees' caches); keep it out of LINT_TARGETS like lint-cache-clean above.
+lint-cache-sweep:
+	@scripts/ops/golangci-cache-sweep.sh
 
 # lint-gofmt keeps EVERY tracked Go source formatter-clean, including the ~250
 # files behind //go:build evenerfuzz / eval. It is not redundant with the gofmt
