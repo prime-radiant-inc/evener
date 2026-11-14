@@ -2,7 +2,15 @@
 // typed, and stepping between them, newest first. It searches what the phone
 // has loaded; the screen loads older pages as you step back past the oldest
 // match.
-import { composeStepWords, type EvenerDelegateInfo, type SteeringFragment } from "@evener/appwire-client";
+import {
+	composeStepWords,
+	type EvenerDelegateInfo,
+	findMatches as findSharedMatches,
+	type MatchPosition,
+	matchPosition,
+	type SteeringFragment,
+	stepMatch,
+} from "@evener/appwire-client";
 import type { RunStep, TimelineRow } from "../timeline";
 import { notificationLine, notificationText } from "./notificationLine";
 /** Find in session while it's open: what you typed, the current match's
@@ -66,43 +74,17 @@ export function rowText(row: TimelineRow, delegates?: readonly EvenerDelegateInf
 	}
 }
 
-/** The indexes of the rows holding `query`, ignoring case, oldest first. */
+/** The indexes of the rows holding `query`, oldest first. What counts as a
+ * match is the shared rule every client uses. */
 export function findMatches(
 	rows: readonly TimelineRow[],
 	query: string,
 	delegates?: readonly EvenerDelegateInfo[],
 ): number[] {
-	const needle = query.trim().toLowerCase();
-	if (!needle) return [];
-	const matches: number[] = [];
-	rows.forEach((row, index) => {
-		if (rowText(row, delegates).toLowerCase().includes(needle)) matches.push(index);
-	});
-	return matches;
+	return findSharedMatches(rows, query, (row) => rowText(row, delegates));
 }
 
-/** The match to show next. With none shown yet it starts at the newest, since
- * you are usually at the end. Stepping back (-1) goes older and forward (1)
- * newer. Null means there is none that way: stepping back, the screen then
- * loads older history and tries again. */
-export function stepMatch(matches: readonly number[], current: number | null, direction: 1 | -1): number | null {
-	if (matches.length === 0) return null;
-	if (current === null) return matches[matches.length - 1] ?? null;
-	if (direction === 1) return matches.find((index) => index > current) ?? null;
-	return matches.findLast((index) => index < current) ?? null;
-}
-
-/** Where you are among the matches: which one (1-based, 0 with none) of how
- * many. With no current match it sits on the newest. */
-export interface MatchPosition {
-	position: number;
-	count: number;
-}
-
-export function matchPosition(matches: readonly number[], current: number | null): MatchPosition {
-	if (matches.length === 0) return { position: 0, count: 0 };
-	return { position: current === null ? matches.length : matches.indexOf(current) + 1, count: matches.length };
-}
+export { type MatchPosition, matchPosition, stepMatch };
 
 /** Where you are among the matches, "2 of 3", or "No matches". */
 export function matchLabel(matches: readonly number[], current: number | null): string {

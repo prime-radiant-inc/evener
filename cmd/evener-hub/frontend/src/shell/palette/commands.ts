@@ -18,6 +18,7 @@ import {
   slashCommandInvocation,
   visibleCatalogCommands,
 } from "@evener/appwire-client";
+import { requestFindInSession } from "../../panes/session/find/findRequest";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
@@ -613,6 +614,17 @@ export function buildCommands(): Command[] {
       },
     },
     {
+      id: "find",
+      title: "Find in session",
+      hint: "",
+      keywords: ["search", "transcript"],
+      scope: "session",
+      run: (ctx) => {
+        if (!ctx.sessionRef) return;
+        showFindIn(ctx.sessionRef, ctx.sessionPaneId);
+      },
+    },
+    {
       id: "tasks",
       title: "Toggle tasks panel",
       hint: "",
@@ -679,6 +691,29 @@ export function buildCommands(): Command[] {
       },
     },
   ];
+}
+
+/** Opens Find in a session's conversation. Find lives in the conversation:
+ * from a companion pane (tasks, details) this focuses the seat that hosts it,
+ * or opens the session pane, as the notes command does. The request waits for
+ * that pane to mount. */
+export function showFindIn(
+  sessionRef: string,
+  sessionPaneId: string | null,
+  landing: { query?: string; itemId?: string } = {},
+): void {
+  const seat = sessionPaneId ? workspaceStore.getState().panes.find((pane) => pane.id === sessionPaneId) : undefined;
+  const hosts = seat !== undefined && (seat.type === "session" || seat.type === "sessionZoom");
+  // The ask names one pane: another view of the same session (a cascade
+  // column) must not take it before the pane meant for it mounts.
+  let target: string;
+  if (hosts) {
+    workspaceStore.getState().focusPane(seat.id);
+    target = seat.id;
+  } else {
+    target = workspaceStore.getState().openPane("session", { ref: sessionRef });
+  }
+  requestFindInSession(sessionRef, { ...landing, target });
 }
 
 // rememberableId is the id a successful ARGLESS command records in recents -

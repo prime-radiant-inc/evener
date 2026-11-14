@@ -196,6 +196,85 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+## Find in session
+
+Find searches the messages of the conversation in a session pane or a
+cascade's active column: what the person typed and what the agent replied. It
+opens from ⌘F / Ctrl+F while that conversation holds the keyboard, from
+**Find in session…** in the session menu, from `/find` in the composer, and by
+choosing a message in the palette's **In session** results, which opens Find
+on the typed words at that message. `/find` is a session command, so the
+palette does not run it: typing it there hands it to the composer, as for
+every session command. The menu row is left out where the viewport is too
+short for the menu to hold it without scrolling (a landscape phone); `/find`
+and the chord remain.
+
+- **What matches.** A match is one message the conversation shows. Tool calls
+  and their output, thoughts, steers, notes and system notices are not
+  searched, so every match Find counts is one it can land on with the words on
+  screen: a message is never folded, cut short or kept behind a disclosure.
+  Case and the shape of whitespace are ignored; that rule is shared with the
+  phone and the palette (`appwire-client/typescript/findInSession.ts`).
+- **What is searched.** A message as its row shows it
+  (`src/panes/session/find/messageText.ts`). A reply is read as its rendered
+  Markdown: no formatting marks, a link's label without its address, a
+  character reference as the character it shows, code and authored HTML as
+  written. A finished Mermaid fence is drawn as a diagram,
+  so its source is not searched. A prompt is read as typed.
+- **The palette's In session section** still lists matches in tool output and
+  thoughts as well. Choosing a message hands it to Find; choosing any other row
+  only closes the palette, because Find has nowhere to land for it.
+- **Order.** Typing lands on the newest loaded match. Enter or the up control
+  steps older; Shift+Enter or the down control steps newer. The position counts
+  from the newest match, so it does not shift as older pages arrive.
+- **Marks.** The current entry is outlined. Matching words are painted with the
+  CSS Custom Highlight API, which changes no transcript DOM; where a browser
+  lacks it, the outline alone marks the match. Painting follows the match
+  rule: a phrase is painted across the elements it spans, read as continuous
+  across inline formatting (emphasis, a link) and as separate words across a
+  block, a code block's line or a line break. Each open transcript keeps its
+  own painted words, in the highlight registry of the window it renders into
+  (a popped-out session has its own).
+- **Older history.** Typing reads only what is loaded. Stepping older past the
+  oldest loaded match reads older pages, as Find's own consumer of
+  [`HistoryPaging`](../../appwire-client/typescript/historyPaging.ts), until a
+  match appears or the start of history is confirmed. While older history is
+  unread the count carries a `+` and an empty result reads as not found *yet*;
+  "No matches" is said only at the confirmed start. A failed or disconnected
+  read leaves the search waiting and it resumes by itself; a permanent failure
+  shows its explanation and the search stays incomplete.
+- **Refresh and reconnect.** A refresh or resync replaces the loaded window
+  with the newest page. If that drops the page holding the current match, Find
+  reads back to it rather than losing the reader's place.
+- **Leaving.** Escape or the close control closes Find, withdraws only Find's
+  older-history demand, clears the marks and returns focus to where it was (the
+  composer when that element is gone). Changing the words also withdraws the
+  search for the old ones. The reader's own paging demand is untouched.
+- **Scrolling.** The transcript's scroll owner moves the reader
+  (`useTranscriptScroll`'s `jumpToRow`, or `holdPosition` when the match is
+  already in view): every landing ends bottom-following and supersedes any
+  retained placement, so later output offers the way back to latest instead of
+  carrying the reader off the match. The virtual list follows appended output
+  for any reader within its end threshold, whatever the scroll owner was told,
+  so a landing on a match already in view at the live end also moves the
+  reader a few pixels off the end. A conversation that fits on screen has no
+  end to step off, so the scroll owner keeps the choice itself (`holdsPlace`):
+  the list stops following new output (`VirtualList`'s `followEnd` off, which
+  still keeps the reader's place when older pages arrive above), and the end
+  being in view does not count as arriving there. The hold ends when the
+  reader moves the transcript, jumps to latest, or Find no longer has a
+  current match (closed, or words with no match); a reader then at the end
+  follows new output again.
+  Jumping to latest ends a search into older
+  history and leaves no match current, so neither a match arriving later nor
+  a refresh reading back to the old one can pull the reader away again; Find
+  stays open on its words, and stepping starts over from the newest match.
+- **Phone.** The bar docks above the transcript, so the on-screen keyboard,
+  which lifts the composer, never puts it over the send control.
+
+Find's state belongs to the mounted conversation: switching away from the pane
+closes it.
+
 ## Browser transcript cache
 
 The browser loads a session's transcript from the entry-backed repository, which

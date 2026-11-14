@@ -86,6 +86,8 @@ export interface SessionMenuProps {
   overviewLabel?: string; // e.g. "Overview · 2 active"; defaults to "Overview"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;
+  /** Pane-only action: opens Find in the pane's conversation. */
+  onFind?: () => void;
   /** Composer-only turn verbs (see the header comment). Rail/sidebar and
    * menu-only callers omit them. */
   turnVerbs?: SessionMenuTurnVerbs;
@@ -112,6 +114,7 @@ export function SessionMenu({
   overviewOpen,
   overviewLabel,
   onOpenVerbosity,
+  onFind,
   turnVerbs,
   actions,
   triggerTabIndex,
@@ -156,6 +159,9 @@ export function SessionMenu({
       onSelect: actions.onOpenOverview,
     },
   ];
+  if (onFind) {
+    inspectionItems.push({ id: "find", label: "Find in session…", onSelect: onFind });
+  }
   if (onOpenVerbosity) {
     inspectionItems.push({ id: "verbosity", label: "Verbosity…", onSelect: onOpenVerbosity });
   }

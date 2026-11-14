@@ -324,6 +324,14 @@ nothing — lineage is the hub's, and an older hub's response must render
 unchanged. The web command palette and the native Board search both render
 from this one implementation.
 
+## Find in session
+
+`findInSession.ts` holds what every client's Find agrees on: `findNeedle` and
+`textMatchesFind` (case and whitespace never decide a match), and
+`findMatches`, `stepMatch` and `matchPosition` for stepping through matching
+rows. Each client supplies the
+text of its own rows and its own older-history demand.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach

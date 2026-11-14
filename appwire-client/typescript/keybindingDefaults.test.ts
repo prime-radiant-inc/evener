@@ -33,6 +33,7 @@ describe("default binding map", () => {
       ACTIONS.transcriptPageDown,
       ACTIONS.transcriptScrollTop,
       ACTIONS.transcriptScrollBottom,
+      ACTIONS.transcriptFind,
       ACTIONS.settingsClose,
       ACTIONS.cheatsheetToggle,
       ACTIONS.cheatsheetToggle, // the "?" character-key trigger is a second entry for the same action
@@ -67,6 +68,7 @@ describe("default binding map", () => {
     [ACTIONS.transcriptPageDown, "Alt+Shift+ArrowDown"],
     [ACTIONS.transcriptScrollTop, "Alt+Home"],
     [ACTIONS.transcriptScrollBottom, "Alt+End"],
+    [ACTIONS.transcriptFind, "$mod+F"],
     [ACTIONS.cheatsheetToggle, "$mod+/"],
     [ACTIONS.cheatsheetClose, "[Control]+[Alt]+[Shift]+[Meta]+Escape"],
   ])("%s is bound to %s", (actionId, chord) => {
@@ -111,6 +113,8 @@ describe("default binding map", () => {
     expect(policy.get(ACTIONS.transcriptPageDown)).toBe(false);
     expect(policy.get(ACTIONS.transcriptScrollTop)).toBe(false);
     expect(policy.get(ACTIONS.transcriptScrollBottom)).toBe(false);
+    // Find opens from the composer, where the reader usually is.
+    expect(policy.get(ACTIONS.transcriptFind)).toBe(true);
     // cheatsheet.toggle's $mod+/ fires from editable targets (never collides
     // with typing); the "?" character-key trigger does NOT (it is itself a
     // printable character). cheatsheet.close mirrors settings.close.

@@ -17,11 +17,13 @@ import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
+import { resetFindRequestsForTests, useFindRequest } from "../../panes/session/find/findRequest";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { NeedsYouProvider } from "../NeedsYouProvider";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../openInNewTab.testSupport";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -78,7 +80,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 }
 
 function item(id: string, text: string): ItemModel {
-  return { id, turnId: "t1", type: "message", text };
+  return { id, turnId: "t1", type: "agentMessage", text };
 }
 function turn(items: ItemModel[]): TurnModel {
   return { id: "t1", status: "completed", items };
@@ -101,6 +103,8 @@ beforeEach(() => {
   resetNavigationStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
+  resetFindRequestsForTests();
+  resetTranscriptDisplayStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
   // @ts-expect-error jsdom baseline has no matchMedia.
@@ -256,6 +260,80 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(window.location.pathname).toBe("/");
   expect(anchors).toHaveLength(0);
+});
+
+test("choosing an in-session result hands its words and its item to the session's Find", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([item("i1", "nothing here"), item("i2", "search term found here")])] });
+  const paneId = workspaceStore.getState().focusedPaneId ?? "";
+  const request = renderHook(() => useFindRequest("ref_a", paneId));
+  expect(request.result.current).toBeUndefined();
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), " Search  term ");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(request.result.current).toMatchObject({ query: "Search  term", itemId: "i2" });
+  // Another session's Find is not asked.
+  expect(renderHook(() => useFindRequest("ref_b", paneId)).result.current).toBeUndefined();
+});
+
+test("choosing an in-session result from a companion pane brings up the conversation to show Find in", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  focusSession("ref_a", { turns: [turn([{ ...item("i1", "search term here"), type: "agentMessage" }])] });
+  // Only the tasks pane is open: no conversation is mounted to take the ask.
+  workspaceStore.setState({
+    panes: [{ id: "tasks", type: "sessionTasks", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "tasks",
+  });
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "search term");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  const conversation = workspaceStore.getState().panes.find((pane) => pane.type === "session");
+  expect(conversation).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(conversation?.id);
+  const asked = renderHook(() => useFindRequest("ref_a", conversation?.id ?? ""));
+  expect(asked.result.current).toMatchObject({ query: "search term", itemId: "i1" });
+});
+
+test("an in-session row Find cannot land on is listed and only closes the palette", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  // Find searches messages; a tool's output is listed here but is not a place
+  // Find can go.
+  const call: ItemModel = { ...item("c1", ""), type: "commandExecution", output: "search term in output" };
+  focusSession("ref_a", { turns: [turn([call])] });
+  const paneId = workspaceStore.getState().focusedPaneId ?? "";
+  const request = renderHook(() => useFindRequest("ref_a", paneId));
+
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "search term");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  await user.keyboard("{ArrowDown}{Enter}");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(request.result.current).toBeUndefined();
 });
 
 test("Enter on a plain query prefers the first session hit over the leading command", async () => {

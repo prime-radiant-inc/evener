@@ -24,6 +24,8 @@ import { useBlockedMutationEntries, usePendingMessages } from "./composer/queue/
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
+import { FindBar } from "./find/FindBar";
+import { useFindInSession } from "./find/useFindInSession";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
@@ -186,6 +188,20 @@ function UnavailablePresentationControl() {
   );
 }
 
+// Whether the conversation `ref`, seated under `paneId`, is the one the
+// keyboard is in: a focused session pane showing it, or a focused cascade
+// whose active leaf is it.
+function holdsKeyboard(
+  state: Pick<ReturnType<typeof workspaceStore.getState>, "panes" | "focusedPaneId">,
+  paneId: string | null,
+  ref: string,
+): boolean {
+  const focusedPane = state.panes.find((item) => item.id === state.focusedPaneId);
+  if (!focusedPane || focusedPane.id !== paneId) return false;
+  if (focusedPane.type === "session") return refParam(focusedPane.params) === ref;
+  return focusedSessionRef() === ref;
+}
+
 function StandardConversationBody(props: {
   ref: string;
   seat: ConversationSeat;
@@ -219,10 +235,19 @@ function LiveConversationBody({
   render(parts: ConversationParts): React.ReactNode;
   submission?: ComposerSubmission;
 }) {
-  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
-    ref,
-    seat.readView,
-  );
+  const {
+    model,
+    hasOlder,
+    olderPageKey,
+    loadOlder,
+    loadingOlder,
+    loadOlderReportingError,
+    olderError,
+    olderPermanent,
+    cancelOlder,
+    findOlder,
+    cancelFindOlder,
+  } = useTranscript(ref, seat.readView);
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
@@ -249,12 +274,7 @@ function LiveConversationBody({
   // Only the actual focused conversation participates: a session pane, or a
   // cascade's active leaf (its keyboard-scroll pane id plus the exact focused
   // ref). A parent column's broad seat.focused value never grants it.
-  const attentionOwner = useStore(workspaceStore, (state) => {
-    const focusedPane = state.panes.find((item) => item.id === state.focusedPaneId);
-    if (!focusedPane || focusedPane.id !== seat.keyboardScrollPaneId) return false;
-    if (focusedPane.type === "session") return refParam(focusedPane.params) === ref;
-    return focusedSessionRef() === ref;
-  });
+  const attentionOwner = useStore(workspaceStore, (state) => holdsKeyboard(state, seat.keyboardScrollPaneId, ref));
   useEffect(() => {
     if (!attentionOwner) setOverlayHeight(0);
   }, [attentionOwner]);
@@ -353,12 +373,50 @@ function LiveConversationBody({
     heldVisible: pendingVisible,
     heldEpoch: pendingEpoch,
   });
+  // Find shares the transcript's rows, its scroll owner and its paging owner.
+  // The chord reaches only the conversation the keyboard is in, read at keydown.
+  const keyboardPaneId = seat.keyboardScrollPaneId;
+  const ownsKeyboard = useCallback(
+    () => holdsKeyboard(workspaceStore.getState(), keyboardPaneId, ref),
+    [keyboardPaneId, ref],
+  );
+  const itemLoaded = useCallback(
+    (itemId: string) => model?.turns.some((turn) => turn.items.some((item) => item.id === itemId)) ?? false,
+    [model],
+  );
+  const find = useFindInSession({
+    ref,
+    paneId: seat.viewFallbackId,
+    rows: renderRows,
+    listRef: virtualListRef,
+    jumpToRow: flow.jumpToRow,
+    holdPosition: flow.holdPosition,
+    releaseHold: flow.releaseHold,
+    markGesture: flow.markGesture,
+    olderPageKey,
+    olderLoading: loadingOlder,
+    olderError,
+    olderPermanent,
+    findOlder,
+    cancelFindOlder,
+    ownsKeyboard,
+    itemLoaded,
+  });
+  // Going to the live end also ends Find's search into older history, so a
+  // match arriving later cannot pull the reader back up.
+  const { leaveHistory } = find;
+  const { jumpToBottom } = flow;
+  const jumpToLatest = useCallback(() => {
+    leaveHistory();
+    jumpToBottom();
+  }, [leaveHistory, jumpToBottom]);
+
   // Per-pane keyboard scroll registers against the shared registry and
   // declines unless the hosting pane is the focused one.
   useTranscriptScrollKeys({
     paneId: seat.keyboardScrollPaneId,
     listRef: virtualListRef,
-    jumpToBottom: flow.jumpToBottom,
+    jumpToBottom: jumpToLatest,
     markGesture: flow.markGesture,
     onPositioningCommand: seat.readView?.supersedePositioning,
   });
@@ -457,6 +515,7 @@ function LiveConversationBody({
         initialViewCapture={seat.readView?.getCapture()}
         readView={seat.readView ?? undefined}
         followingBottom={flow.isFollowingBottom}
+        holdsPlace={flow.holdsPlace}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
@@ -480,7 +539,7 @@ function LiveConversationBody({
               needsYou={flow.pillNeedsYou}
               error={flow.pillError}
               pillArrowDirection={flow.pillArrowDirection}
-              onClick={flow.jumpToBottom}
+              onClick={jumpToLatest}
             />
           ) : undefined
         }
@@ -513,6 +572,7 @@ function LiveConversationBody({
     <div className={styles.contentColumn}>
       <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={seat.viewFallbackId} />
       <SandboxEscalationRail sessionRef={ref} />
+      {find.view && <FindBar view={find.view} />}
       {/* The held-steer ghosts' ONE live region, same rule as the ask
           dock's: outside the virtual list, live-gated per spec §1. */}
       {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}

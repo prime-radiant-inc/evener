@@ -20,6 +20,7 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
+import { findableItemIds } from "../../panes/session/find/findHits";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
 import {
@@ -29,6 +30,7 @@ import {
 } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import {
   Chip,
   Dialog,
@@ -63,6 +65,7 @@ import {
   rememberableId,
   type ScopedCommand,
   sessionScopedHandoffMatch,
+  showFindIn,
   visibleCatalogCommands,
 } from "./commands";
 import { useHelpRows } from "./helpRows";
@@ -662,10 +665,19 @@ function PaletteBody({
       return;
     }
     if (item.kind === "insession") {
-      // Best-effort: focus stays on the already-focused session pane; precise
-      // scroll-to-hit in the virtualized transcript is beyond-parity (flagged
-      // in the sweep).
+      // A message the conversation shows is handed to its own Find, which
+      // opens on these words, lands on that message, and from there steps
+      // through the rest. Find searches messages only, so any other row (a
+      // tool's output, a thought) stays a listing and only closes the palette.
+      const { sessionRef, sessionPaneId } = runContext();
+      const words = query.trim();
+      const model = focusedModel(sessionRef);
+      const landable =
+        model !== undefined &&
+        findableItemIds(model, transcriptDisplayStore.getState().effective(), words).has(item.match.itemId);
       closePalette();
+      if (sessionRef !== null && landable)
+        showFindIn(sessionRef, sessionPaneId, { query: words, itemId: item.match.itemId });
       return;
     }
     if (item.kind === "live" || item.kind === "past") {

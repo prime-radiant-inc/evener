@@ -289,6 +289,16 @@ export {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+export {
+  findIndexIn,
+  findMatches,
+  findNeedle,
+  findReadable,
+  type MatchPosition,
+  matchPosition,
+  stepMatch,
+  textMatchesFind,
+} from "./findInSession";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export { HistoryPaging, type HistoryPagingState } from "./historyPaging";

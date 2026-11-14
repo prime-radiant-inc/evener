@@ -2976,6 +2976,173 @@ describe("the error anchor (failed turn)", () => {
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" }); // t2 (first), not t3
   });
 
+  test("a landing on something already in view ends bottom-following without moving the reader", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    expect(result.current.isFollowingBottom()).toBe(true);
+    scrollToIndex.mockClear();
+
+    act(() => result.current.holdPosition());
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    // New output must not carry the reader off what they chose to look at.
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("a held place stays held where the whole transcript fits, until the reader goes to the end", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    expect(result.current.isFollowingBottom()).toBe(true);
+    expect(result.current.holdsPlace).toBe(false);
+
+    act(() => result.current.holdPosition());
+    // Nothing has scrolled and nothing can: the end is in view, and a scroll
+    // event the reader did not cause still must not read as arriving there.
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.holdsPlace).toBe(true);
+
+    // Output grows past the port. The reader is still where they were.
+    set({ scrollHeight: 400 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.holdsPlace).toBe(true);
+
+    // Going to the end themselves is how following comes back.
+    act(() => result.current.markGesture());
+    set({ scrollTop: 350 });
+    act(() => {
+      el.dispatchEvent(new Event("scroll"));
+    });
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
+  test("a scroll command that moved the port before reporting it ends a held place", () => {
+    const { ref, el } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 400, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    act(() => result.current.holdPosition());
+    expect(result.current.holdsPlace).toBe(true);
+
+    // The keyboard scroll commands write the offset first and report after,
+    // naming where the port was.
+    act(() => {
+      el.scrollTop = 350;
+      set({ scrollTop: 350 });
+      result.current.markGesture(true, 0);
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
+  test("giving a held place back resumes following at the end, and nowhere else", () => {
+    const { ref } = makeListHandle();
+    const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    act(() => result.current.holdPosition());
+    act(() => result.current.releaseHold());
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+    expect(result.current.pillVisible).toBe(false);
+
+    act(() => result.current.holdPosition());
+    set({ scrollHeight: 400 });
+    act(() => result.current.releaseHold());
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(false);
+    expect(result.current.pillVisible).toBe(true);
+  });
+
+  test("jumping to latest ends a held place", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    act(() => result.current.holdPosition());
+    expect(result.current.holdsPlace).toBe(true);
+
+    act(() => result.current.jumpToBottom());
+
+    expect(result.current.holdsPlace).toBe(false);
+    expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
+  test("a jump to a row lands there and ends bottom-following, so nothing pulls the reader back", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const onReaderIntent = vi.fn();
+    const { result } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        onReaderIntent,
+        measure,
+      }),
+    );
+    expect(result.current.isFollowingBottom()).toBe(true);
+    scrollToIndex.mockClear();
+
+    act(() => result.current.jumpToRow(1));
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    expect(result.current.isFollowingBottom()).toBe(false);
+    // A jump the reader asked for supersedes any retained placement.
+    expect(onReaderIntent).toHaveBeenCalled();
+    // The landing is inside the transcript: the way back to latest is offered.
+    expect(result.current.pillVisible).toBe(true);
+  });
+
   test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the error/count state while the pill stays on offer", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);

@@ -178,3 +178,10 @@ test("highlightParts returns a single unmarked part when there is no match or no
   expect(highlightParts("Switch model", "")).toEqual([{ text: "Switch model", mark: false }]);
   expect(highlightParts("Switch model", "zzz")).toEqual([{ text: "Switch model", mark: false }]);
 });
+
+test("a reply is searched as it reads, the way the session's Find reads it", () => {
+  const reply: ItemModel = { id: "i1", turnId: "t", type: "agentMessage", text: "the build **fail**ed" };
+  const model = { turns: [{ id: "t", status: "completed", items: [reply] }] } as unknown as ThreadModel;
+  expect(findInSessionMatches(model, "build failed")).toHaveLength(1);
+  expect(findInSessionMatches(model, "**fail**")).toHaveLength(0);
+});

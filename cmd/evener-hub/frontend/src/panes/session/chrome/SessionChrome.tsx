@@ -58,6 +58,7 @@ import { useSessionActivity, useSubagentCounts } from "../../../stores/sessionAc
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { requestFindInSession } from "../find/findRequest";
 import { NOW_TICK_MS, useNowTick } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
@@ -118,6 +119,9 @@ const CLASS = {
 // fresh [] identity every render (Session.tsx's own frameTimes lookup does
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
+
+// Below this viewport height the session menu cannot hold one more row.
+const FIND_MENU_MIN_VIEWPORT_HEIGHT = 480;
 
 export function SessionChrome({
   ref: sessionRef,
@@ -376,6 +380,14 @@ export function SessionChrome({
             overviewOpen={sidebarOpenHere}
             overviewLabel={overviewLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
+            // The menu must show every item without scrolling on a landscape
+            // phone, and it has no row to spare there; Find stays reachable
+            // through the palette. Read when the menu's items are built.
+            onFind={
+              window.innerHeight < FIND_MENU_MIN_VIEWPORT_HEIGHT
+                ? undefined
+                : () => requestFindInSession(sessionRef, { target: paneId })
+            }
             // The composer's two row mounts carry the turn verbs (the
             // header comment on the prop says why the footer and rail
             // mounts must never): the engaged inline chrome, and the
