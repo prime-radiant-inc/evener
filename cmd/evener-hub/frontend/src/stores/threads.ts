@@ -76,6 +76,7 @@ import {
   type MutationDiscoveryReason,
   MutationDispatcher,
   notificationMutationIdentities,
+  type PendingMessageImage,
   type PendingTurnEntry,
   queueEntryAt,
   recordedInputLineage,
@@ -250,11 +251,15 @@ export interface ForkFromTurnOptions {
 // - or the daemon's own preview placeholder when the row is image-only -
 // plus its canonical skill selections, so the optimistic promote record
 // previews the message it will become instead of the action's wire
-// parameters.
+// parameters. images carries the parts the queue wire never speaks (the
+// merged projection row's own bytes), so the promotion's optimistic input -
+// and the row that renders from it through every in-flight and refused
+// state - keeps the image count the entry really owns.
 export interface PromoteDisplayInput {
   text: string;
   skillNames?: readonly string[];
   commandNames?: readonly string[];
+  images?: readonly PendingMessageImage[];
 }
 
 export interface ThreadsStoreState {
@@ -8950,7 +8955,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
-    // turn id that would only add a second way to fail.
+    // turn id that would only add a second way to fail. The optimistic input
+    // carries the row's images too: the projection's steering arm reads this
+    // input while the promotion is in flight (and after a refusal), and a
+    // text-only input would zero the merged row's image count for exactly the
+    // window in which the entry's Edit must stay refused.
     await enqueueMutation(
       ref,
       COMPOSER_METHODS.promote,
@@ -8959,6 +8968,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         method: COMPOSER_METHODS.promote,
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
+          ...(display.images ?? []).map((image) => ({
+            type: "image",
+            mediaType: image.src.startsWith("data:") ? image.src.slice(5, image.src.indexOf(";")) : "image/png",
+            data: image.src.slice(image.src.indexOf(";base64,") + ";base64,".length),
+            ...(image.name ? { name: image.name } : {}),
+          })),
           ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
           ...(display.commandNames ?? []).map((name) => ({ type: "command", name })),
         ],

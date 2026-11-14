@@ -39,6 +39,7 @@ import type { PendingMessage } from "@evener/appwire-client/state/mutation";
 import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
+  type PendingMessageImage,
   queueEntryAt,
   reflectedMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -331,6 +332,7 @@ export function PendingRowStack({
     displayText: string,
     skillNames?: readonly string[],
     commandNames?: readonly string[],
+    images?: readonly PendingMessageImage[],
   ): Promise<void> {
     if (guardSteerPress()) return;
     setRowBusy(entryId, true);
@@ -339,6 +341,7 @@ export function PendingRowStack({
         text: displayText,
         skillNames,
         commandNames,
+        ...(images && images.length > 0 ? { images } : {}),
       });
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't steer with this message now", err));
@@ -536,6 +539,10 @@ export function PendingRowStack({
       {stackEntries.map((entry) => {
         const hubRefused = entry.id === refusedId && entry.state === "submitting";
         const entryPreview = entryPreviews.get(entry.id) ?? "";
+        // The merged projection row for this entry holds the submission's
+        // image bytes - the same join the queue rows use, so a sending row
+        // renders its gallery instead of bare preview text.
+        const entryImages = mergedRowByWireId.get(entry.id)?.images;
         return (
           <li key={entry.id} data-busy={hubRefused ? "true" : undefined}>
             <UserMessageView
@@ -544,6 +551,7 @@ export function PendingRowStack({
                 turnId: "",
                 type: "userMessage",
                 text: entryPreview || "[queued messages]",
+                ...(entryImages && entryImages.length > 0 ? { images: entryImages } : {}),
               }}
               opensExchange={false}
               provisional={heldCaption(entry, turnActive, now, hubRefused)}
@@ -611,10 +619,21 @@ export function PendingRowStack({
                   // The ghost's display text: the row's full text, or -
                   // for a blank row - the same stripped preview the row
                   // renders (nothing for a selection-only row, where the
-                  // named markers carry the whole content).
+                  // named markers carry the whole content). The merged row's
+                  // images ride along: the promotion's optimistic input is
+                  // the one place the in-flight and refused states read
+                  // from, so it must carry the count the queue wire dropped
+                  // or the entry's Edit would unlock mid-transition.
                   const rowText = fullText ?? "";
                   const displayText = rowText.trim() !== "" ? rowText : previewText;
-                  void handlePromote(index, entryId, displayText, entrySkillNames, entryCommandNames);
+                  void handlePromote(
+                    index,
+                    entryId,
+                    displayText,
+                    entrySkillNames,
+                    entryCommandNames,
+                    mergedRow?.images,
+                  );
                 }
               }}
             />
@@ -651,7 +670,13 @@ export function PendingRowStack({
                 id: entryId ?? `queue_${index}`,
                 turnId: "",
                 type: "userMessage",
-                text: [fullText ?? previewText, namedMarkers].filter(Boolean).join(" "),
+                // A blank full text leaves the preview to speak: the
+                // daemon's image grammar ("[image]", "[N images]") is the
+                // row's whole content for a textless foreign entry, so an
+                // empty composed body never renders an empty bubble.
+                text: [fullText !== undefined && fullText.trim() !== "" ? fullText : previewText, namedMarkers]
+                  .filter(Boolean)
+                  .join(" "),
                 // The gallery this client can still prove: the merged row's
                 // family holds the bytes the queue wire never carries.
                 ...(mergedRow !== undefined && mergedRow.images.length > 0 ? { images: mergedRow.images } : {}),
@@ -703,6 +728,12 @@ export function PendingRowStack({
                 turnId: "",
                 type: "userMessage",
                 text: recordPreview(record) || "[queued messages]",
+                // The merged projection row for this record holds the
+                // submission's image bytes - the waiting row renders the
+                // gallery the record's preview text cannot describe.
+                ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
+                  ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
+                  : {}),
               }}
               opensExchange={false}
               provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
@@ -771,6 +802,11 @@ export function PendingRowStack({
       {visibleRecoveryEntries.map((record) => {
         const rowBusy = busyEntryIds.has(record.clientMutationId);
         const isInterrupt = record.method === "turn/interrupt";
+        // A rejected queue removal is the same shape: the control carries no
+        // editable message (its input is the wire's index/entryId pair), so
+        // the row offers Dismiss with the daemon's reason instead of an
+        // Edit on an empty body.
+        const isControlFailure = isInterrupt || record.method === "turn/cancelQueued";
         const reason = record.recoveryReason;
         if (record.recoveryKind === "orphaned") {
           return (
@@ -789,20 +825,28 @@ export function PendingRowStack({
           );
         }
         return (
-          <li key={record.clientMutationId} data-kind={isInterrupt ? "refused-stop" : "refused"}>
+          <li
+            key={record.clientMutationId}
+            data-kind={isInterrupt ? "refused-stop" : isControlFailure ? "control-failure" : "refused"}
+          >
             <UserMessageView
               item={{
                 id: record.clientMutationId,
                 turnId: "",
                 type: "userMessage",
-                // An interrupt is not a message: it carries no input, so say
-                // what failed instead of offering to edit a Stop.
-                text: isInterrupt ? "Stop didn't reach the session" : recordPreview(record),
+                // A control failure is not a message: it carries no input,
+                // so say what failed instead of offering to edit a Stop or
+                // an empty removal.
+                text: isInterrupt
+                  ? "Stop didn't reach the session"
+                  : record.method === "turn/cancelQueued"
+                    ? "Couldn't remove this message from the queue"
+                    : recordPreview(record),
               }}
               opensExchange={false}
               provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
               footer={
-                isInterrupt ? (
+                isControlFailure ? (
                   <IconButton
                     label="Dismiss"
                     icon={<span aria-hidden="true">✕</span>}

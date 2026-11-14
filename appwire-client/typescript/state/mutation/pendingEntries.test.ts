@@ -101,6 +101,28 @@ const NOTHING_SUBMITTED_HERE: ReadonlyMap<string, number> = new Map();
 // "names this client" branch gets its own predicate and test further down.
 const UNATTRIBUTED_ONLY = (record: { originClientId?: string }): boolean => record.originClientId === undefined;
 
+// A retargeted resend targets the destination a peer chose while the pane
+// that authored it stays its displayedRef (records.ts' field contract). The
+// blocked, canceled and recovery selectors already match displayedRef for
+// exactly that reason; the entries reconcile is the one remaining surface,
+// and without the same widening an in-flight resend (attempted, submitting)
+// vanishes from its author's pane for the whole send: the editable selector
+// drops it (attempted), and the reconcile drops it too (targetRef is the
+// destination). The author keeps seeing their undelivered work.
+test("a retargeted in-flight resend stays in its author's pending entries", () => {
+  const retargeted: MutationOutboxRecord = {
+    ...outbox("mutation_retargeted"),
+    targetRef: "local:resumed",
+    displayedRef: "ref_a",
+    attempted: true,
+  };
+  expect(reconcilePendingEntries("ref_a", [retargeted], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY)).toEqual([
+    // The entry keeps its own destination as its ref: presentation follows
+    // the displayed pane, routing keeps the record's targetRef.
+    expect.objectContaining({ id: "mutation_retargeted", ref: "local:resumed", method: "send" }),
+  ]);
+});
+
 test("two same-text outbox records remain distinct by client mutation identity", () => {
   expect(
     reconcilePendingEntries(

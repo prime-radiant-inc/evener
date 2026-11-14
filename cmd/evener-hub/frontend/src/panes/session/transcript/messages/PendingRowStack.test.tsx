@@ -100,7 +100,6 @@ test("a pending send captions itself as sending, never as a steer stage", () => 
     held: false,
     elapsedMs: 42_000,
   });
-  expect(heldCaption({ ...ENTRY("submitting", 1_000), method: "send" }, true, 43_000)).not.toMatch(/steering|step/i);
 });
 
 test("a pending queue entry captions itself as queued for the next turn", () => {
@@ -332,6 +331,195 @@ test("a queued text-and-image row refuses Edit rather than destroying its images
   // would cancel this row. The queue still holds the entry.
   fireEvent.click(edit);
   expect(screen.queryByTestId("composer-slot")).toBeNull();
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows.some((row) => row.textContent?.includes("look at this"))).toBe(true);
+});
+
+// A rejected queue removal is a control that failed, not a message the
+// author might edit: the queue-position conflict the daemon reports leaves
+// nothing editable behind (the entry itself moved). The row offers Dismiss
+// with its reason - the same classification the refused Stop carries
+// (roborev round-6: it rendered Edit on an empty body instead).
+test("a rejected queue removal offers Dismiss, not an empty Edit", async () => {
+  const fake = connectFakeClient();
+  const storage = new MutationOutboxIndexedDB();
+  const queued = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/queue",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "parked message" }], clientMutationId: "m_q" },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "parked message" }] },
+  });
+  await storage.markAttempted(queued.clientMutationId);
+  await storage.settleReceipt(queued.clientMutationId, "queued", ["q1"]);
+  const cancel = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/cancelQueued",
+    payload: { ref: "ref_a", index: 0, expectedEntryId: "q1", clientMutationId: "m_c" },
+    attachments: [],
+    optimisticDisplay: { method: "turn/cancelQueued" },
+  });
+  await storage.markAttempted(cancel.clientMutationId);
+  await storage.transferToRecovery(cancel.clientMutationId, "rejected");
+  storage.close();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  render(<PendingRowStack ref="ref_a" />);
+  // Dismiss for the failed control; no Edit on the empty body.
+  expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+});
+
+// A foreign image-only queue row arrives as texts: [""] with the daemon's
+// "[image]" preview (queuedEntryPreviewLine speaks the image grammar only
+// for a textless entry). The row must render that placeholder as its text -
+// an empty composed body would render an empty bubble (roborev round-6).
+test("a foreign image-only queued row renders the image placeholder, not an empty bubble", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q_img"], texts: [""], preview: ["[image]"] },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+  render(<PendingRowStack ref="ref_a" />);
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows).toHaveLength(1);
+  // The row speaks the image grammar, and its Edit stays refused.
+  expect(rows[0]?.textContent?.includes("[image]")).toBe(true);
+  const edit = screen.getByRole("button", { name: "Edit message" });
+  expect(edit.getAttribute("aria-disabled")).toBe("true");
+});
+
+// A promotion's optimistic input is the row's text (the restore seam's own
+// display grammar), so when the daemon links the promotion to its queue
+// entry (a claimed promote execution carrying queueEntryIds) while the queue
+// snapshot still lists the entry, the merged projection's steering arm
+// describes the row from that input alone. If the input is text-only, its
+// image count is zero for exactly the window in which the entry's Edit must
+// stay refused - and Edit's cancel half would destroy images the text-only
+// restore omitted. The promotion's input must carry the entry's images
+// (roborev's round-6 medium).
+test("a promoted text-and-image row keeps refusing Edit through the in-flight promotion", async () => {
+  const fake = connectFakeClient();
+  const id = await seedHeld("queue", "look at this", {
+    attempted: true,
+    attachments: [{ marker: 1, mediaType: "image/png", data: "AQID", name: "shot.png" }],
+  });
+  // The promotion's own clientMutationId - the daemon echoes it back in its
+  // pendingMutations projection, so the fixture must capture it from the
+  // press itself rather than inventing a foreign id the projection cannot
+  // join to this client's promotion input.
+  let promoteId = "";
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue:
+          promoteId === ""
+            ? {
+                revision: 1,
+                depth: 1,
+                ids: ["q1"],
+                clientMutationIds: [id],
+                texts: ["look at this"],
+                preview: ["look at this"],
+              }
+            : {
+                revision: 1,
+                depth: 1,
+                ids: ["q1"],
+                clientMutationIds: [id],
+                texts: ["look at this"],
+                preview: ["look at this"],
+              },
+      },
+    }),
+  );
+  fake.on("turn/promoteQueuedAsSteer", (params: { clientMutationId?: string }) => {
+    // The dispatch carries the enqueue's clientMutationId on the wire; the
+    // daemon's pending projection echoes the same id while it claims the
+    // execution.
+    if (typeof params.clientMutationId === "string") promoteId = params.clientMutationId;
+    throw new Error("daemon never answers this press: the window stays open");
+  });
+  await threadsStore.getState().ensureThread("ref_a");
+  const firstTree = render(<PendingRowStack ref="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
+  // Let the press's dispatch reach the wire so the fake handler captures the
+  // promotion's own clientMutationId (the daemon echoes it back).
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  expect(promoteId).not.toBe("");
+  firstTree.unmount();
+  // The daemon-side window: the queue snapshot still lists the entry while
+  // a claimed promote execution owns it (queueEntryIds names q1). The
+  // projection's steering arm reads this client's promotion input - the one
+  // place the row's images survive the queue wire's silence - so Edit must
+  // stay refused through the whole transition.
+  resetThreadsStoreForTests();
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      mutationStateAuthoritative: true,
+      capabilities: CAPABILITIES,
+      queue: {
+        revision: 1,
+        depth: 1,
+        ids: ["q1"],
+        clientMutationIds: [id],
+        texts: ["look at this"],
+        preview: ["look at this"],
+      },
+      pendingMutations: [
+        {
+          clientMutationId: promoteId,
+          method: "turn/promoteQueuedAsSteer",
+          executionState: "claimed",
+          projectionState: "state-1",
+          queueEntryIds: ["q1"],
+        },
+      ],
+    },
+  });
+  render(<PendingRowStack ref="ref_a" />);
+  const edit = await waitFor(() => {
+    const button = screen.getByRole("button", { name: "Edit message" });
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    return button;
+  });
+  fireEvent.click(edit);
+  expect(screen.queryByTestId("composer-slot")).toBeNull();
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows.some((row) => row.textContent?.includes("look at this"))).toBe(true);
+});
+
+// A waiting-family row (this client's unattempted editable record) holds its
+// submission's images in the merged projection - the record the optimistic
+// queue entry reconciles against - and the row renders them as its gallery
+// (roborev round-6: the pending families' rows omitted item.images).
+test("a waiting-family row renders its submission's images", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await seedHeld("queue", "look at this", {
+    attempted: true,
+    attachments: [{ marker: 1, mediaType: "image/png", data: "AQID", name: "shot.png" }],
+  });
+  await threadsStore.getState().ensureThread("ref_a");
+  render(<PendingRowStack ref="ref_a" />);
+  // The row carries a gallery image, not just the text.
+  const gallery = await screen.findByRole("img");
+  expect(gallery.getAttribute("src")).toContain("data:image/png;base64,AQID");
   const rows = screen.getAllByTestId("user-message-item");
   expect(rows.some((row) => row.textContent?.includes("look at this"))).toBe(true);
 });

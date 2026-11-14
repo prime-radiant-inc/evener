@@ -439,7 +439,15 @@ export function reconcilePendingEntries(
     // keying projects the one composition twice. The entry's own id stays
     // the storage key; only the projection's identity is the wire id.
     const wireId = effectiveWireId(record);
-    if (record.targetRef !== ref || reflected.has(wireId)) continue;
+    // A retargeted resend targets the destination a peer chose while the
+    // pane that authored it stays its displayedRef: presentation follows
+    // the displayed ref (the same association the blocked, canceled and
+    // recovery selectors carry), so the author keeps seeing their
+    // in-flight work. Submission routing reads the record's own targetRef
+    // and never this filter. displayedRef is an outbox-record field - an
+    // optimistic (accepted) snapshot never carries it, so the read narrows.
+    const displayedHere = "displayedRef" in record ? record.displayedRef : undefined;
+    if ((record.targetRef !== ref && displayedHere !== ref) || reflected.has(wireId)) continue;
     const entry = outboxEntry(record, isOwnMutationRecord);
     if (entry) entries.set(wireId, entry);
   }
