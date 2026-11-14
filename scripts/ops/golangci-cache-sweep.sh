@@ -81,13 +81,18 @@ bare'*)
 esac
 # One shasum per root is inherent (content-hash tools hash files, not argv
 # strings); the cut runs once over the whole set instead of once per root.
-# A failed shasum must fail the run: set -e ends the pipeline's caller, but
-# the while-loop's explicit check makes the requirement local and visible.
-if ! live_keys="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' \
-	| while IFS= read -r root; do printf '%s' "$root" | shasum -a 256; done | cut -c1-16)"; then
+# The hash loop runs as the LAST pipeline element into a command
+# substitution whose status the if tests directly — a cut downstream of it
+# would mask a shasum failure the way POSIX pipelines masked git's in the
+# worktree-list guard above. Empty input (no worktree lines) would also
+# produce empty output, so the loop only succeeds when it hashed at least
+# one root.
+if ! shasum_lines="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' \
+	| while IFS= read -r root; do printf '%s' "$root" | shasum -a 256; done)"; then
 	echo "golangci-cache-sweep: hashing the live worktree roots failed; the live set is incomplete, refusing to sweep" >&2
 	exit 1
 fi
+live_keys="$(printf '%s\n' "$shasum_lines" | cut -c1-16)"
 
 [ -d "$cache_root" ] || { echo "$(date -Is) golangci-cache-sweep: no cache root at $cache_root; nothing to sweep"; exit 0; }
 
