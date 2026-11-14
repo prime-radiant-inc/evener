@@ -1,18 +1,27 @@
-/* A folded run of settled tool calls (critique R9, toolRuns.ts). The
- * collapsed row is deliberately quieter than the tool rows it stands in for:
- * it is a count and one name, at the same UI step and the same half-step
- * padding a collapsed single tool call takes (the intent-only rhythm,
- * toolcallitem.module.css), so a turn's vertical rhythm does not change
- * when a run folds. */
+/* A folded run of settled tool calls (critique R9, toolRuns.ts): one row of
+ * the tool card it sits in (styles/surface.module.css draws the card on this
+ * element). The collapsed row is deliberately quieter than the
+ * tool rows it stands in for: a count and one name, at the UI step, with the
+ * same inset a tool row takes so its edge lines up with their seats. Open, it
+ * is the header of the rows it stands for, which follow inside the same card
+ * behind hairline dividers. The card does not clip, because a row's Open
+ * control overhangs its line by more than the row's padding on a phone.
+ * What paints to the card's edge takes the card's corners instead, read from
+ * the segment's corner properties (styles/surface.module.css): the summary
+ * while it is the whole row, and the last row of an open run, whose evidence
+ * band inherits them. */
 .group {
   min-width: 0;
 }
 
 .summary {
-  display: inline-flex;
+  composes: toolRowInsets from "../../../styles/surface.module.css";
+  display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) 0;
+  padding: var(--tool-card-row-pad) var(--tool-card-inset);
+  border-radius: var(--tool-card-radius-top, 0) var(--tool-card-radius-top, 0) var(--tool-card-radius-bottom, 0)
+    var(--tool-card-radius-bottom, 0);
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -22,10 +31,9 @@
   list-style: none;
 }
 
-/* An OPEN run is a header again - the rows it stands for render beneath it -
- * so it keeps the full item rhythm. */
 .group[open] > .summary {
-  padding: var(--rhythm-item) 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .summary::-webkit-details-marker {
@@ -33,13 +41,14 @@
 }
 
 .summary:hover {
-  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
-  border-radius: var(--radius-control);
+  background: var(--hover-1);
 }
 
+/* Inset: the summary spans the card, so an outset ring would sit on its edge. */
 .summary:focus-visible {
   outline: var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: -2px;
+  border-radius: var(--radius-control);
 }
 
 /* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
@@ -78,7 +87,15 @@
   text-overflow: ellipsis;
 }
 
+/* The rows of an open run: divided from each other by the card's rows rule,
+ * and from the header above by the body's own top edge. */
 .body {
-  display: flex;
-  flex-direction: column;
+  composes: groupedRows from "../../../styles/surface.module.css";
+  border-top: 1px solid var(--edge);
+}
+
+.body,
+.body > :last-child {
+  border-bottom-left-radius: var(--tool-card-radius-bottom, 0);
+  border-bottom-right-radius: var(--tool-card-radius-bottom, 0);
 }

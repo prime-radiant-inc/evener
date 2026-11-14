@@ -841,6 +841,7 @@ func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToo
 	}
 	s.delegateDeliveryCommits[callID] = append(s.delegateDeliveryCommits[callID], commit)
 	s.delegateDeliveryMu.Unlock()
+	commit.controller.noteDelegateDeliveryCommitQueued(commit.token)
 }
 
 func (s *Session) abortDelegateDeliveryCommits() {
@@ -875,13 +876,18 @@ func abortDelegateToolCallDeliveryCommits(commits []delegateToolCallDeliveryComm
 
 func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delegateToolCallDeliveryCommit {
 	s.delegateDeliveryMu.Lock()
-	defer s.delegateDeliveryMu.Unlock()
 	var commits []delegateToolCallDeliveryCommit
 	for _, call := range calls {
 		for _, commit := range s.delegateDeliveryCommits[call.ID] {
 			commits = append(commits, delegateToolCallDeliveryCommit{toolCallID: call.ID, commit: commit})
 		}
 		delete(s.delegateDeliveryCommits, call.ID)
+	}
+	s.delegateDeliveryMu.Unlock()
+	for _, binding := range commits {
+		if binding.commit != nil {
+			binding.commit.controller.noteDelegateDeliveryCommitTaken(binding.commit.token)
+		}
 	}
 	return commits
 }

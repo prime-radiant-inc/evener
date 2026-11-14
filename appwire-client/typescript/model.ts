@@ -71,6 +71,14 @@ export interface ItemModel {
   // what ties a delivered message back to the queue entry another client
   // consumed (see recordedInputLineage).
   conversationInputIds?: string[];
+  // Wire ThreadItem.observation.answerToTurnIds: the pending question
+  // executions (by turn id) this accepted input resolved — the server-stamped
+  // link naming the ask round a reply answers (issue #5836). Undefined for
+  // ordinary messages, for answers from a daemon that predates the
+  // observation, and for any item whose wire carried no observation; a
+  // consumer must fall back to the composed "[answers]" text shape there.
+  // Names the QUESTION's turn, not the reply's own turn.
+  answerToTurnIds?: string[];
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text

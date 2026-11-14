@@ -36,10 +36,12 @@ import { setCacheChannelFactoryForTests } from "./cacheLifetime";
 import { connectionStore } from "./connection";
 import {
   entryTranscriptRoute,
+  forgetEntryRoute,
   olderTranscriptPageKey,
   openingRecoveryCompletion,
   productionEntryTranscriptForTests,
   publishEntryTranscriptModel,
+  retireEntryTranscriptRoute,
   setProductionEntryCacheForTests,
   setSessionCacheOpenBackstopForTests,
   setSessionCacheStalledOpenForTests,
@@ -8060,6 +8062,57 @@ it("ordinary suppression-only acquisition still cold-reads but never caches unti
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   expect((await storage.getLatest(key, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
+});
+
+it("a suppression-only acquisition that creates its own route is retired, not installed", async () => {
+  cache();
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const inherited = entryTranscriptRoute("local:a");
+  if (!inherited?.repository) {
+    const evidence = productionEntryTranscriptForTests("local:a");
+    throw new Error(
+      `the background lease did not install an entry repository: ${JSON.stringify({
+        repository: evidence.repository !== undefined,
+        model: evidence.model !== undefined,
+        historyKey: evidence.historyKey,
+        localOpen: evidence.lastLocalOpenStatus,
+      })}`,
+    );
+  }
+  // Keep the background owner but remove its route: the refresh below is then
+  // the only thing that can register one. That is the suppression-only
+  // acquisition acceptance must refuse; a route it creates for itself is not
+  // a production route it inherited.
+  retireEntryTranscriptRoute(inherited);
+  forgetEntryRoute(inherited);
+  expect(productionEntryTranscriptForTests("local:a").repository).toBeUndefined();
+  const channel = Object.assign(new EventTarget(), {
+    name: "evener.session-cache.v1",
+    onmessage: null,
+    onmessageerror: null,
+    postMessage(_message: unknown) {},
+    close() {},
+  });
+  setCacheChannelFactoryForTests(() => channel);
+  channel.dispatchEvent(
+    new MessageEvent("message", {
+      data: { version: 1, sourceId: "sibling-tab", kind: "deletion", refs: ["local:a"] },
+    }),
+  );
+  await settleProjectionWorkForTests();
+  expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
+  expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(false);
+  try {
+    await threadsStore.getState().refreshThread("local:a");
+    expect(productionEntryTranscriptForTests("local:a").repository).toBeUndefined();
+    expect(productionEntryTranscriptForTests("local:a").reader).toBeUndefined();
+  } finally {
+    background.release();
+  }
 });
 
 it("ordinary failed source refresh preserves only the prior committed rows until a successful baseline", async () => {

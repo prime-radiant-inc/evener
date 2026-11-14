@@ -947,7 +947,16 @@ async function acceptEntryTranscriptHydration(
     (pendingThreadHydrations.get(ref) !== pending || !canonicalThreadOwnerActive(ref))
   )
     return;
+  // `entryTranscriptRoute(ref)` above creates and registers a route when the
+  // acquisition had none, so asking the registry now would always answer yes.
+  // Compare the route this hydration INHERITED (`entryRouteBefore`, captured
+  // before the read) with the one it actually owns: a route the acquisition
+  // registered for itself is a suppression-only acquisition, and one replaced
+  // during the durable read is no longer this response's to adopt. The
+  // registry check stays separate because the other consumers below want the
+  // route that owns the ref now, including one this hydration created.
   const productionRoute = existingEntryRoute(ref) === fixture;
+  const inheritedRoute = pending.entryRouteBefore === fixture && productionRoute;
   if (productionRoute && authorities) {
     // A first unpublished claim may capture the observed epoch. Existing
     // holders instead pass through the same suppression as a Clear broadcast.
@@ -971,7 +980,7 @@ async function acceptEntryTranscriptHydration(
   const retired =
     state.deletedRefs.has(ref) ||
     entryRouteRetirementCount(ref) !== claimedRetirement ||
-    (lifetimeSuppressed && !productionRoute);
+    (lifetimeSuppressed && !inheritedRoute);
   if (retired) {
     // The acquisition is no longer eligible. Only the route this acquisition
     // actually owns is retired: if a replacement has since installed its own
@@ -995,7 +1004,7 @@ async function acceptEntryTranscriptHydration(
   // than adopting unread authorities; a brand-new route falls back to the
   // epoch-0/generation-0 baseline and lets the durable fence decide.
   const clearEpoch =
-    productionRoute && lifetimeSuppressed && !lifetime?.freshForegroundLifetime
+    inheritedRoute && lifetimeSuppressed && !lifetime?.freshForegroundLifetime
       ? (fixture.clearEpoch ?? 0)
       : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
@@ -1314,6 +1323,11 @@ type PendingThreadHydration = {
   // authority read resolves moves the counter, so the acquisition is refused
   // rather than granted the new authorities.
   entryRetirement?: number;
+  // The route registered before this hydration created its own, if any. A
+  // fresh suppression-only acquisition starts without one, so acceptance can
+  // tell it from a hydration over an already-held production route (see
+  // acceptEntryTranscriptHydration).
+  entryRouteBefore?: EntryTranscriptRoute;
   // The installed binding's durable deletion claim when the source read began.
   // A later durable observation must not grant an older response a newer fence.
   entryHistoryKey?: string;
@@ -5817,6 +5831,10 @@ function beginThreadHydration(
   threadReadSequences.set(ref, readSequence);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
+  // Capture the route BEFORE entryTranscriptRoute creates one: acceptance must
+  // compare against what the acquisition actually inherited, not against the
+  // route object this hydration registered for itself.
+  const entryRouteBefore = existingEntryRoute(ref);
   const entryRoute = entryTranscriptRoute(ref);
   const pending = {
     client,
@@ -5828,6 +5846,7 @@ function beginThreadHydration(
     attempt,
     baseModel,
     requestGeneration,
+    entryRouteBefore,
     entryRetirement: entryRouteRetirementCount(ref),
     entryHistoryKey: entryRoute?.repository ? entryRoute.historyKey : undefined,
     entryHistoryGeneration: entryRoute?.repository ? (entryRoute.historyGeneration ?? 0) : undefined,

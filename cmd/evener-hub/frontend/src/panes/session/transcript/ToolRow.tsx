@@ -13,7 +13,7 @@ const ROW_ICON_SIZE = 14;
 //
 // THE ROW GRAMMAR, two lines when an intent exists (one otherwise):
 //
-//     rail:   [kind icon, 50%] [✗ badge?] (in the gutter, beside line 1)
+//     seat:   [kind icon] [✗ badge?] (the row's own seat column, beside line 1)
 //     line 1: [status?] intent[Open?][chevron inline]
 //     line 2: verb target [· meta] [affordances]
 //
@@ -27,11 +27,11 @@ const ROW_ICON_SIZE = 14;
 //   summaryWhenExpanded as the summary text), so the call never appears
 //   twice and the chevron keeps its line.
 //
-//   - the kind icon sits in the RAIL beside the rationale line (Jesse's
-//     review call): pulled --speaker-gutter left into the padding the
-//     runContent wrapper reserves, at 50% opacity - the kind is ambient
-//     context, not content. Below the breakpoint (no gutter) it leads the
-//     rationale line inline, same 50%;
+//   - the kind icon sits in a SEAT beside the rationale line: a rounded
+//     --field square in the column the row reserves in its own left padding
+//     (toolcallitem.module.css's .call), at every width. The kind is ambient
+//     context, not content, so it stays out of the text and the row's two
+//     lines share one left edge beside it;
 //   - a COLLAPSED row with both an intent and a summary STACKS them: the
 //     intent (the agent's stated rationale, italic) on the first line, the
 //     verb/target summary demoted to a quiet second line (truncation
@@ -625,9 +625,9 @@ export function ToolRow({
   ) : null;
   // The failure mark: a cross on the kind icon's bottom-right corner, never a
   // second column of ink beside it (Jesse, 2026-10-20). It rides BESIDE the
-  // aria-hidden seat inside the slot, never as its child: the seat recedes to
-  // 50% opacity, and a nested cross would recede with it, while the failure
-  // tone is the row's one full-strength signal.
+  // aria-hidden seat inside the slot, never as its child: the seat is hidden
+  // from assistive tech and may recede, while the failure mark must stay
+  // announced and at full strength.
   const failureNode = failed ? <FailureGlyph /> : null;
   // The small exit mark: a nonzero exit on an otherwise-clean call. A plain
   // cross in attention ink (ToolIcon's cross kind, attention tone), NOT the
@@ -650,14 +650,11 @@ export function ToolRow({
       {status}
     </span>
   ) : null;
-  // The kind icon sits in the RAIL beside the rationale line (Jesse's review
-  // call: pull the tool-use and thought icons into the gutter, at 50%
-  // opacity, on the rationale's line - not inline in the text). It is the
-  // row's first flex item: the .rowIconSlot rules pull it --speaker-gutter to
-  // the left, into the padding the runContent wrapper reserves (the .rowIcon
-  // seat alone centres and dims the glyph), and pin it to the first line (the
-  // rationale) at all times. Below the breakpoint the gutter is gone and the
-  // icon simply leads the line inline, at the same 50%.
+  // The kind icon sits in the row's seat column, beside the rationale line
+  // and out of the text. It is the row's first flex item: the .rowIconSlot
+  // rule pulls it one --speaker-gutter to the left, into the padding the tool
+  // row (.call) reserves for it, paints the seat's ground behind it, and
+  // pins it to the first line (the rationale) at all times.
   //
   // The slot is the badge's POSITIONING CONTEXT and the row's flex item. A
   // clean row renders it with only the seat inside, so success costs no extra

@@ -56,6 +56,27 @@ test("the entry item codec round-trips recorded conversation input lineage", () 
   ).toBeUndefined();
 });
 
+// The wire stamps an answered round's reply with the durable answer link
+// (ThreadItem.observation.answerToTurnIds, onto the model as
+// answerToTurnIds — the same hazard as conversationInputIds: the cache
+// encoder spreads every key, so an unknown one reaches the allowlist and
+// rejects the whole write batch, stranding cached history for every
+// answered session).
+test("the entry item codec round-trips the answer link", () => {
+  const answered: ItemModel = {
+    id: "item-1",
+    turnId: "turn-1",
+    type: "userMessage",
+    text: "sure, go with Yes",
+    answerToTurnIds: ["turn-question"],
+  };
+  const decoded = decodeTranscriptItem(encodeTranscriptItem(answered));
+  expect(decoded?.answerToTurnIds).toEqual(["turn-question"]);
+  expect(
+    decodeTranscriptItem({ ...encodeTranscriptItem(answered), answerToTurnIds: ["ok", 7] as unknown as string[] }),
+  ).toBeUndefined();
+});
+
 // szw1: reducer.ts's turn/started and turn/completed have no defense against
 // a duplicate turn id in model.turns. Both known causes of a live collision
 // (eptj, bz2z) are fixed server-side, so this is hardening against a defect

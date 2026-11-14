@@ -1,0 +1,390 @@
+{
+  "samples": [
+    {
+      "pair": 1,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "c43c8b0e194f6aeda1e0a2df5780bfbd77cf5bad24e475a4b2944487fa6db509",
+      "peak_rss_kib": 98560,
+      "peak_rss_bytes": 100925440,
+      "user_cpu_seconds": 0.35526199999999997,
+      "system_cpu_seconds": 0.058704,
+      "checkpoints": [
+        {
+          "phase": "before_load_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 147176,
+          "heap_objects": 563,
+          "total_alloc_bytes": 165568
+        },
+        {
+          "phase": "first_load_before_forced_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 17475048,
+          "heap_objects": 126905,
+          "total_alloc_bytes": 34817408,
+          "last_load_wall_ns": 108660121
+        },
+        {
+          "phase": "holding_1_post_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 14958416,
+          "heap_objects": 78347,
+          "total_alloc_bytes": 34822728,
+          "last_load_wall_ns": 108660121
+        },
+        {
+          "phase": "holding_2_post_gc",
+          "registries_held": 2,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 23649488,
+          "heap_objects": 95700,
+          "total_alloc_bytes": 46429616,
+          "last_load_wall_ns": 32248831
+        },
+        {
+          "phase": "holding_8_post_gc",
+          "registries_held": 8,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 75840064,
+          "heap_objects": 199856,
+          "total_alloc_bytes": 115934976,
+          "last_load_wall_ns": 18324218
+        },
+        {
+          "phase": "released_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 6227984,
+          "heap_objects": 60977,
+          "total_alloc_bytes": 115940248
+        }
+      ]
+    },
+    {
+      "pair": 1,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "3795a9b3affb6fafa9b3bb2d3a0c7ecc90832256e3e845b0a52fa0008dbe0d06",
+      "peak_rss_kib": 63300,
+      "peak_rss_bytes": 64819200,
+      "user_cpu_seconds": 0.278571,
+      "system_cpu_seconds": 0.025324,
+      "checkpoints": [
+        {
+          "phase": "before_load_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 147176,
+          "heap_objects": 563,
+          "total_alloc_bytes": 165568
+        },
+        {
+          "phase": "first_load_before_forced_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 13206752,
+          "heap_objects": 119564,
+          "total_alloc_bytes": 30415328,
+          "last_load_wall_ns": 125905655
+        },
+        {
+          "phase": "holding_1_post_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 10835416,
+          "heap_objects": 70240,
+          "total_alloc_bytes": 30420664,
+          "last_load_wall_ns": 125905655
+        },
+        {
+          "phase": "holding_2_post_gc",
+          "registries_held": 2,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 15440368,
+          "heap_objects": 79490,
+          "total_alloc_bytes": 37662824,
+          "last_load_wall_ns": 18991267
+        },
+        {
+          "phase": "holding_8_post_gc",
+          "registries_held": 8,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 42815488,
+          "heap_objects": 134979,
+          "total_alloc_bytes": 80677928,
+          "last_load_wall_ns": 16110164
+        },
+        {
+          "phase": "released_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 6228416,
+          "heap_objects": 60980,
+          "total_alloc_bytes": 80683200
+        }
+      ]
+    },
+    {
+      "pair": 2,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "3795a9b3affb6fafa9b3bb2d3a0c7ecc90832256e3e845b0a52fa0008dbe0d06",
+      "peak_rss_kib": 61868,
+      "peak_rss_bytes": 63352832,
+      "user_cpu_seconds": 0.229449,
+      "system_cpu_seconds": 0.041899,
+      "checkpoints": [
+        {
+          "phase": "before_load_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 147176,
+          "heap_objects": 563,
+          "total_alloc_bytes": 165568
+        },
+        {
+          "phase": "first_load_before_forced_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 18447136,
+          "heap_objects": 180606,
+          "total_alloc_bytes": 30376760,
+          "last_load_wall_ns": 102940203
+        },
+        {
+          "phase": "holding_1_post_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 10842184,
+          "heap_objects": 70301,
+          "total_alloc_bytes": 30382112,
+          "last_load_wall_ns": 102940203
+        },
+        {
+          "phase": "holding_2_post_gc",
+          "registries_held": 2,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 15402176,
+          "heap_objects": 79475,
+          "total_alloc_bytes": 37587904,
+          "last_load_wall_ns": 20439248
+        },
+        {
+          "phase": "holding_8_post_gc",
+          "registries_held": 8,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 42814736,
+          "heap_objects": 134971,
+          "total_alloc_bytes": 80641064,
+          "last_load_wall_ns": 15251188
+        },
+        {
+          "phase": "released_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 6227600,
+          "heap_objects": 60972,
+          "total_alloc_bytes": 80646336
+        }
+      ]
+    },
+    {
+      "pair": 2,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "c43c8b0e194f6aeda1e0a2df5780bfbd77cf5bad24e475a4b2944487fa6db509",
+      "peak_rss_kib": 97664,
+      "peak_rss_bytes": 100007936,
+      "user_cpu_seconds": 0.235281,
+      "system_cpu_seconds": 0.044863,
+      "checkpoints": [
+        {
+          "phase": "before_load_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 147496,
+          "heap_objects": 565,
+          "total_alloc_bytes": 165888
+        },
+        {
+          "phase": "first_load_before_forced_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 17029024,
+          "heap_objects": 119359,
+          "total_alloc_bytes": 34819040,
+          "last_load_wall_ns": 59398608
+        },
+        {
+          "phase": "holding_1_post_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 14959376,
+          "heap_objects": 78352,
+          "total_alloc_bytes": 34824360,
+          "last_load_wall_ns": 59398608
+        },
+        {
+          "phase": "holding_2_post_gc",
+          "registries_held": 2,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 23650416,
+          "heap_objects": 95705,
+          "total_alloc_bytes": 46432064,
+          "last_load_wall_ns": 15171920
+        },
+        {
+          "phase": "holding_8_post_gc",
+          "registries_held": 8,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 75803936,
+          "heap_objects": 199855,
+          "total_alloc_bytes": 115900824,
+          "last_load_wall_ns": 13594220
+        },
+        {
+          "phase": "released_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 6228912,
+          "heap_objects": 60982,
+          "total_alloc_bytes": 115906096
+        }
+      ]
+    },
+    {
+      "pair": 3,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "c43c8b0e194f6aeda1e0a2df5780bfbd77cf5bad24e475a4b2944487fa6db509",
+      "peak_rss_kib": 97792,
+      "peak_rss_bytes": 100139008,
+      "user_cpu_seconds": 0.255725,
+      "system_cpu_seconds": 0.047883999999999996,
+      "checkpoints": [
+        {
+          "phase": "before_load_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 147176,
+          "heap_objects": 563,
+          "total_alloc_bytes": 165568
+        },
+        {
+          "phase": "first_load_before_forced_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 17006072,
+          "heap_objects": 118923,
+          "total_alloc_bytes": 34818808,
+          "last_load_wall_ns": 64442240
+        },
+        {
+          "phase": "holding_1_post_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 14958784,
+          "heap_objects": 78348,
+          "total_alloc_bytes": 34824128,
+          "last_load_wall_ns": 64442240
+        },
+        {
+          "phase": "holding_2_post_gc",
+          "registries_held": 2,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 23649920,
+          "heap_objects": 95701,
+          "total_alloc_bytes": 46432008,
+          "last_load_wall_ns": 16542558
+        },
+        {
+          "phase": "holding_8_post_gc",
+          "registries_held": 8,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 75803376,
+          "heap_objects": 199851,
+          "total_alloc_bytes": 115900232,
+          "last_load_wall_ns": 19282870
+        },
+        {
+          "phase": "released_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 6228352,
+          "heap_objects": 60978,
+          "total_alloc_bytes": 115905504
+        }
+      ]
+    },
+    {
+      "pair": 3,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "3795a9b3affb6fafa9b3bb2d3a0c7ecc90832256e3e845b0a52fa0008dbe0d06",
+      "peak_rss_kib": 62540,
+      "peak_rss_bytes": 64040960,
+      "user_cpu_seconds": 0.17532299999999998,
+      "system_cpu_seconds": 0.028887999999999997,
+      "checkpoints": [
+        {
+          "phase": "before_load_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 147176,
+          "heap_objects": 563,
+          "total_alloc_bytes": 165568
+        },
+        {
+          "phase": "first_load_before_forced_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 11855920,
+          "heap_objects": 93746,
+          "total_alloc_bytes": 30415576,
+          "last_load_wall_ns": 56836558
+        },
+        {
+          "phase": "holding_1_post_gc",
+          "registries_held": 1,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 10835128,
+          "heap_objects": 70239,
+          "total_alloc_bytes": 30420896,
+          "last_load_wall_ns": 56836558
+        },
+        {
+          "phase": "holding_2_post_gc",
+          "registries_held": 2,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 15439728,
+          "heap_objects": 79488,
+          "total_alloc_bytes": 37663648,
+          "last_load_wall_ns": 10073938
+        },
+        {
+          "phase": "holding_8_post_gc",
+          "registries_held": 8,
+          "providers_per_registry": 219,
+          "heap_alloc_bytes": 42852608,
+          "heap_objects": 134985,
+          "total_alloc_bytes": 80717168,
+          "last_load_wall_ns": 10987526
+        },
+        {
+          "phase": "released_post_gc",
+          "registries_held": 0,
+          "providers_per_registry": 0,
+          "heap_alloc_bytes": 6228128,
+          "heap_objects": 60979,
+          "total_alloc_bytes": 80722440
+        }
+      ]
+    }
+  ],
+  "probe_sha256": "e2f273fc9320b5590c85eaa99ebdcea8ec4d78b95df978efc570f180fe6e893b",
+  "process_helper_sha256": "b866dde5273ed841cc4ec4bd1c83fca95fe37fe5538031ca6e2df5654ee4e581"
+}

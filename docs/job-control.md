@@ -686,6 +686,23 @@ Defaults:
 - An observer that installs watches reports readiness through its terminal packet;
   the stable watch remains active and later frames resume the same `dlg_...`.
 
+Model choices come from a snapshot that a session able to delegate captures once
+at startup, listing the configured providers within fixed time and size bounds.
+A complete snapshot that fits is listed in the `model` parameter's description;
+otherwise the read-only `model_list` tool pages it. The first page's `status`
+maps each captured provider to `success`, `empty-success` (the provider
+listed no models), `failure`, `timeout`, or `limited` (capture bounds
+dropped some models), so a failed listing stays distinct from an empty one
+and healthy providers' choices remain listed. Continuation pages omit
+`status`, so keep the first page's statuses while paging. Paging never lists a
+provider again: a `failure` or `timeout` entry keeps that status for the rest
+of the session. The
+snapshot is not a gate on the `model` override. To use a model from a provider
+whose listing failed, once the problem clears, pass it as `provider/model`. The
+spawn lists that provider again and refuses a model the listing does not offer,
+naming the ones it does. If that listing fails too, the spawn proceeds with the
+requested model. A resumed session captures a new snapshot.
+
 Create return shape:
 
 ```json

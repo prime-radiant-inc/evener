@@ -7,7 +7,8 @@
 //      sibling and pushes the rationale right, which is the inline layout this
 //      change removes;
 //   2. it lands on the icon SEAT's bottom-right corner, at both the desktop
-//      gutter-pulled width and the phone width where the slot leads inline.
+//      width and the phone width; the slot pulls into the tool row's own seat
+//      column at each.
 //
 // Every width renders a clean row beside the failed one as the control: the
 // badge must not shift the rationale off the content edge both rows share.
@@ -90,18 +91,22 @@ export default function assert(measurements) {
         `${mode} (${width}px): the failed row's rationale starts at ${intentLeft.toFixed(1)}, a clean row's at ${cleanIntentLeft.toFixed(1)} - the badge is taking layout space`,
       );
     }
-    // Above the breakpoint the slot still seats the text on the row's content
-    // edge: the pull (--speaker-gutter) cancels the seat's own width plus the
-    // row's column gap. Below it there is no gutter and the slot leads the
-    // line inline, so the text legitimately starts one slot-plus-gap later.
-    if (width >= 700 && Math.abs(intentLeft - rowLeft) > TOLERANCE_PX) {
+    // At every width the slot seats the text on the row's content edge: the
+    // pull (--speaker-gutter) cancels the seat's own width plus the row's
+    // column gap, into the seat column the tool row reserves in its own
+    // padding. The column belongs to the row, not to a breakpoint-gated turn
+    // gutter, so the phone leg nets to the content edge exactly as desktop does.
+    if (Math.abs(intentLeft - rowLeft) > TOLERANCE_PX) {
       failures.push(
-        `${mode} (${width}px): the rationale starts at ${intentLeft.toFixed(1)} but the row's content edge is ${rowLeft.toFixed(1)} - the slot no longer nets the seat's width and the gutter pull`,
+        `${mode} (${width}px): the rationale starts at ${intentLeft.toFixed(1)} but the row's content edge is ${rowLeft.toFixed(1)} - the slot no longer nets the seat's width and the seat-column pull`,
       );
     }
-    if (width < 700 && Math.abs(intentLeft - rowLeft - 34) > TOLERANCE_PX) {
+    // The icon stays inside the tool row's own box: the seat column is the
+    // row's padding, so a pull with no column to land in would hang the glyph
+    // outside the card.
+    if (m.callLeft !== undefined && slot.left < m.callLeft - TOLERANCE_PX) {
       failures.push(
-        `${mode} (${width}px): the rationale starts ${(intentLeft - rowLeft).toFixed(1)}px after the row edge, not the inline seat's one gutter (34px) - the phone leg is not leading its line inline`,
+        `${mode} (${width}px): the icon slot starts at ${slot.left.toFixed(1)}, left of its tool row's box at ${m.callLeft.toFixed(1)} - the row is not reserving the seat column the slot pulls into`,
       );
     }
     if (Math.abs(rowLeft - cleanRowLeft) > TOLERANCE_PX) {

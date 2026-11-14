@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { requireClass } from "../internal/requireClass";
+import selectableStyles from "../internal/selectableRow.module.css";
 import styles from "./tree.module.css";
 
 export interface TreeNode {
@@ -14,6 +15,10 @@ export interface TreeRowInfo {
   depth: number;
   expanded: boolean;
   hasChildren: boolean;
+  /** True while the treeitem itself holds focus (not a control inside it):
+   * row content reveals its focus-only affordances from this rather than
+   * from a selector on Tree's own element. */
+  focused: boolean;
   toggle: () => void;
   activate: () => void;
 }
@@ -31,9 +36,8 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
   // history navigation - the tree keeps them tree-owned instead.
   releaseModifierKeys?: boolean;
   // Optional single-selection, owned by the caller: Tree only reflects it as
-  // aria-selected on each treeitem (the stylesheet keys the selected wash on
-  // that attribute, the same way the command palette and segmented control
-  // do). Return true for the selected row, false for another of the selectable
+  // aria-selected on each treeitem (the shared selectable-row recipe keys the
+  // selected lift on that attribute). Return true for the selected row, false for another of the selectable
   // rows, or
   // undefined for a row that has no selected state at all (a heading-like
   // group row in a list where only some nodes are selectable) - undefined
@@ -45,7 +49,9 @@ export interface TreeProps<T extends TreeNode = TreeNode> {
 
 const CLASS = {
   tree: requireClass(styles.tree, "tree.module.css", "tree"),
-  row: requireClass(styles.row, "tree.module.css", "row"),
+  // Every row is selectable in principle: the shared recipe draws the
+  // selected lift only on the row whose ARIA says so.
+  row: `${requireClass(styles.row, "tree.module.css", "row")} ${requireClass(selectableStyles.selectableRow, "selectableRow.module.css", "selectableRow")}`,
   group: requireClass(styles.group, "tree.module.css", "group"),
 };
 
@@ -81,7 +87,9 @@ function flattenVisible<T extends TreeNode>(nodes: T[], depth = 0, parent: T | n
  * currently visible, role=tree/treeitem/group, aria-expanded/aria-level, and
  * aria-selected when the caller supplies a selection (see isSelected).
  * `renderRow` owns each row's visible content (icon, label, whatever);
- * Tree owns structure, ARIA, and the keyboard path - Up/Down move,
+ * Tree owns structure, ARIA, the row's own box (its inset from the
+ * container, the rounded hover/pressed/selected states, the press, the
+ * nested levels' guide rails) and the keyboard path - Up/Down move,
  * Right expands a closed branch or steps into an open one's first child,
  * Left collapses an open branch or steps to the parent, Enter activates
  * (see https://www.w3.org/WAI/ARIA/apg/patterns/treeview/ - this is that
@@ -113,7 +121,7 @@ export function Tree<T extends TreeNode = TreeNode>({
   const nodesRef = useRef(new Map<string, T>());
   const handlersRef = useRef({ onToggle, onActivate });
   const infoCache = useRef(
-    new Map<string, { depth: number; expanded: boolean; hasChildren: boolean; info: TreeRowInfo }>(),
+    new Map<string, { depth: number; expanded: boolean; hasChildren: boolean; focused: boolean; info: TreeRowInfo }>(),
   );
   nodesRef.current = new Map(flat.map((entry) => [entry.node.id, entry.node]));
   handlersRef.current = { onToggle, onActivate };
@@ -168,6 +176,17 @@ export function Tree<T extends TreeNode = TreeNode>({
   ) {
     pendingRefocusRef.current = effectiveCurrentId;
   }
+
+  // Which treeitem itself holds focus, for TreeRowInfo.focused. A row that
+  // lost focus without a blur event (it unmounted while focused) is cleared
+  // by the check below, so a row remounted under the same id never starts
+  // out reporting focus it does not have.
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    if (focusedId === null) return;
+    const row = rowRefs.current.get(focusedId);
+    if (row === undefined || row.ownerDocument.activeElement !== row) setFocusedId(null);
+  });
 
   useLayoutEffect(() => {
     if (pendingRefocusRef.current === null) return;
@@ -277,6 +296,7 @@ export function Tree<T extends TreeNode = TreeNode>({
       const branchHasChildren = hasChildrenOf(node);
       const expanded = node.expanded === true;
       const selection = isSelected?.(node);
+      const focused = node.id === focusedId;
       out.push(
         <div
           key={node.id}
@@ -291,7 +311,13 @@ export function Tree<T extends TreeNode = TreeNode>({
           tabIndex={node.id === effectiveCurrentId ? 0 : -1}
           className={CLASS.row}
           onKeyDown={(event) => handleKeyDown(event, node, parent)}
-          onFocus={() => setCurrentId(node.id)}
+          onFocus={(event) => {
+            setCurrentId(node.id);
+            if (event.target === event.currentTarget) setFocusedId(node.id);
+          }}
+          onBlur={(event) => {
+            if (event.target === event.currentTarget) setFocusedId((id) => (id === node.id ? null : id));
+          }}
         >
           {renderRow(
             node,
@@ -301,13 +327,15 @@ export function Tree<T extends TreeNode = TreeNode>({
                 cached &&
                 cached.depth === depth &&
                 cached.expanded === expanded &&
-                cached.hasChildren === branchHasChildren
+                cached.hasChildren === branchHasChildren &&
+                cached.focused === focused
               )
                 return cached.info;
               const info: TreeRowInfo = {
                 depth,
                 expanded,
                 hasChildren: branchHasChildren,
+                focused,
                 toggle: () => {
                   const current = nodesRef.current.get(node.id);
                   if (current) handlersRef.current.onToggle(current);
@@ -317,7 +345,7 @@ export function Tree<T extends TreeNode = TreeNode>({
                   if (current) handlersRef.current.onActivate(current);
                 },
               };
-              infoCache.current.set(node.id, { depth, expanded, hasChildren: branchHasChildren, info });
+              infoCache.current.set(node.id, { depth, expanded, hasChildren: branchHasChildren, focused, info });
               return info;
             })(),
           )}

@@ -140,15 +140,15 @@ function parseAskAnswerLines(text: string): Map<string, string> {
 // line. The current transcript already collapses a clean ask_user row by
 // default (ToolCallItem's generic disclosure contract), but its summary
 // only ever showed "Asked: [Header]" - the answer lives in a SEPARATE,
-// later userMessage item (the composed [answers] reply) that this item
-// alone can't see, forcing the reader to cross-reference a second,
-// unstyled message to reconstruct "what did I answer". This reads the
-// FULL thread model to find that reply and pull the answer back in.
+// later reply item that this item alone can't see, forcing the reader to
+// cross-reference a second, unstyled message to reconstruct "what did I
+// answer". This reads the FULL thread model to find that reply and pull
+// the answer back in.
 //
 // Returns undefined - meaning "show nothing extra, keep the bare
 // 'Asked: [Header]' summary" - whenever there's nothing to append: the call
 // errored (its own row already gets the failure treatment), it carries no
-// parseable questions, or no later [answers] reply exists yet (still
+// parseable questions, or no later answer reply exists yet (still
 // pending in the composer/dock - a LIVE thing, which per the same
 // principle must stay looking unresolved).
 export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): string | undefined {
@@ -158,16 +158,144 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   const items = model.turns.flatMap((turn) => turn.items);
   const at = items.findIndex((i) => i.id === item.id);
   if (at === -1) return undefined;
-  const reply = items.slice(at + 1).find((i) => i.type === "userMessage" && i.text.startsWith("[answers]"));
+  const reply = findAnswerReply(items, items.slice(at + 1), item);
   if (!reply) return undefined;
-  const answers = parseAskAnswerLines(reply.text);
-  const multiple = questions.length > 1;
-  const parts = questions
-    .map((q) => {
-      const a = answers.get(q.header);
-      if (a === undefined) return undefined;
-      return multiple ? `${q.header}: ${a}` : a;
-    })
-    .filter((p): p is string => p !== undefined);
-  return parts.length > 0 ? ` — answered: ${parts.join(", ")}` : undefined;
+  if (reply.text.startsWith("[answers]")) {
+    // The composed form always resolves here, even when it parses to nothing
+    // or nothing matches this call's headers (the user edited the draft,
+    // spec §6.1): an attempted composed reply is not free prose to echo.
+    const answers = parseAskAnswerLines(reply.text);
+    const multiple = questions.length > 1;
+    const parts = questions
+      .map((q) => {
+        const a = answers.get(q.header);
+        if (a === undefined) return undefined;
+        return multiple ? `${q.header}: ${a}` : a;
+      })
+      .filter((p): p is string => p !== undefined);
+    return parts.length > 0 ? ` — answered: ${parts.join(", ")}` : undefined;
+  }
+  // A linked reply whose text is not the composed form is the spec's other
+  // reply form - free prose (§4.3: "either the numbered [answers] form ...
+  // or free prose; treat either as the reply to everything you asked") -
+  // and the reply's own words are the answer. The recap's home is one
+  // collapsed row, so only the reply's first line carries, with an
+  // ellipsis when the reply said more.
+  const trimmed = reply.text.trim();
+  const [first, ...rest] = trimmed.split("\n");
+  const more = rest.some((line) => line.trim() !== "");
+  return first !== "" ? ` — answered: ${first}${more ? " …" : ""}` : undefined;
+}
+
+// One acked, answerable ask_user call - the only population that can hold a
+// round's questions. A rejected call posts no questions (its arguments may
+// still parse - the projector stamps it "completed" with error set), and a
+// still-streaming call has not posted them yet; neither can be a reply's
+// target. Mirrors deriveAskQuestions's isAckedAskUserItem, which gates
+// liveness the same way; the two must not drift.
+function isAckedAskCall(candidate: ItemModel): boolean {
+  return (
+    candidate.type === "commandExecution" &&
+    candidate.toolName === "ask_user" &&
+    candidate.status === "completed" &&
+    candidate.error === undefined
+  );
+}
+
+// What a linked reply naming item's turn can say about THIS call. Without
+// acked sibling calls in the same execution it is this call's answer. With
+// them, free prose names no header and could belong to any sibling, and a
+// composed reply is decisive only through a header it answers that THIS
+// call asks and no sibling also asks (a shared header could belong to
+// either); a composed reply answering only the sibling's headers says
+// nothing about this call. (The wire's link names an execution turn, not a
+// call - the whole heuristic exists because of that granularity, and
+// exposing admission's call-level AskResolution on the wire would replace
+// it with an exact match; see the follow-up issue filed from #5836.)
+function linkedReplyAnswersThisCall(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
+  const siblings = items.filter((i) => i.id !== item.id && i.turnId === item.turnId && isAckedAskCall(i));
+  if (siblings.length === 0) return true;
+  if (!reply.text.startsWith("[answers]")) return false;
+  const siblingHeaders = new Set(
+    siblings.flatMap((sibling) => (parseAskUserQuestions(sibling) ?? []).map((question) => question.header)),
+  );
+  const answered = parseAskAnswerLines(reply.text);
+  let answersOwn = false;
+  for (const question of parseAskUserQuestions(item) ?? []) {
+    if (!answered.has(question.header)) continue;
+    if (siblingHeaders.has(question.header)) return false;
+    answersOwn = true;
+  }
+  return answersOwn;
+}
+
+// isUserAuthoredSteer answers one wire-level question: is this steering item
+// the human speaking, as opposed to the daemon injecting one on its own
+// (SteeringSourceUser) or a human-note update recorded through the same
+// source (session_notes_selfecho.go's steeringOrigin machinery stamps a note
+// SteeringKindHumanNote even though a human wrote it - writing a note is not
+// the human speaking through the transcript). Shared with web layoutRoles.ts,
+// which asks the same wire question for its own, unrelated reason (routing
+// the item to a divider instead of a user bubble); callers add their own
+// `item.type === "steering"` gate first, since this only reads the fields a
+// non-steering item never sets. Lived in deriveAskQuestions until the answer
+// carrier below needed it too; it moved here so the shared leaf owns it and
+// deriveAskQuestions re-exports (deriveAskQuestions imports this module, so
+// the other direction would cycle).
+export function isUserAuthoredSteer(item: ItemModel): boolean {
+  return item.source === "user" && item.steeringKind !== "human-note";
+}
+
+// One user-role item that can carry a round's answer: a recorded user
+// message, or the user-authored steering a fenced answer records (the ask
+// fence's steering append publishes the same answer evidence - agent's
+// session_client_mutation). Daemon-sourced steering is machinery, a
+// human-note steer is the whiteboard speaking, and an interrupted steer is
+// a cancelled round's boundary marker (session_lifecycle.go) - the ask it
+// resolved was never answered, so its marker text must not recap as one.
+function isAnswerCarrier(item: ItemModel): boolean {
+  return (
+    item.type === "userMessage" ||
+    (item.type === "steering" && item.steeringKind !== "interrupted" && isUserAuthoredSteer(item))
+  );
+}
+
+// findAnswerReply locates the reply that answered this call among the items
+// after it, in one pass. The durable rule decides first: a reply carrying
+// the wire's answer link (ThreadItem.observation.answerToTurnIds, onto the
+// model as answerToTurnIds) is server-stamped evidence naming the round it
+// answers. Among carriers, the first linked reply naming ANOTHER round ends
+// the search: the fence holds the floor until this round is answered, so
+// this round's own reply can only sit before any foreign link - everything
+// after that link answered a later round. A linked reply naming THIS turn is
+// decisive when it can unambiguously answer THIS call
+// (linkedReplyAnswersThisCall); one that cannot - free prose beside acked
+// sibling calls, or a composed reply answering only the siblings' headers -
+// is skipped, not decisive, so a later unambiguous reply can still supply
+// this call's recap: the fence keeps a call appended after a scoped answer
+// pending (TestAskFenceScopedAnswerPreservesPostAdmissionAppend), and its
+// own answer arrives after the earlier one. The composed "[answers]" shape
+// matched before a foreign link still stands, though: in a mixed thread (a
+// reply recorded by an older daemon that stamped no link), erasing it would
+// lose this round's answer to an unrelated later link. With no link
+// anywhere (an older daemon, or a reply the observation never reached) the
+// shape is the only evidence, exactly as before the link existed.
+function findAnswerReply(
+  items: readonly ItemModel[],
+  later: readonly ItemModel[],
+  item: ItemModel,
+): ItemModel | undefined {
+  let shapeMatch: ItemModel | undefined;
+  for (const candidate of later) {
+    if (candidate.answerToTurnIds !== undefined) {
+      if (!isAnswerCarrier(candidate)) continue;
+      if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
+      if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
+      continue;
+    }
+    if (shapeMatch === undefined && candidate.type === "userMessage" && candidate.text.startsWith("[answers]")) {
+      shapeMatch = candidate;
+    }
+  }
+  return shapeMatch;
 }

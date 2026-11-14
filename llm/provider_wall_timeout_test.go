@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 // wallTimeoutStreamBody is a scripted provider body that stays open until the
@@ -55,7 +56,7 @@ func TestClientStream_WallCeilingCancelsBodyAndClassifiesRetryableTimeout(t *tes
 		t.Run(provider.name, func(t *testing.T) {
 			var body *wallTimeoutStreamBody
 			client := provider.wireClient(t, "https://provider.test", &http.Client{
-				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				Transport: transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 					body = newWallTimeoutStreamBody(request.Context())
 					return &http.Response{
 						StatusCode: http.StatusOK,
@@ -146,7 +147,7 @@ func TestStreamGenerate_WallCeilingResetsForNextHTTPAttempt(t *testing.T) {
 	var calls atomic.Int32
 	var firstBody *wallTimeoutStreamBody
 	client := provider.wireClient(t, "https://provider.test", &http.Client{
-		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		Transport: transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			if calls.Add(1) == 1 {
 				firstBody = newWallTimeoutStreamBody(request.Context())
 				return &http.Response{

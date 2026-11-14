@@ -1,6 +1,8 @@
 package doctor
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,7 +20,17 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-var openDoctorTranscriptFile = func(path string) (io.ReadCloser, error) {
+// sessionRowTranscriptTailBytes is the first tail window a sessions row reads
+// from a transcript longer than it. The row consumes only the header and the
+// last assistant turn's entry, so one window holds it for nearly every
+// transcript; when it does not, the window doubles until it does or the row
+// falls back to the full scan, so the outcome is never guessed from a window
+// that merely ran out. A transcript at or under the bound is read whole by
+// the full scan, which keeps the row identical on every small transcript.
+// Production never assigns it; a test shrinks it to prove the bound.
+var sessionRowTranscriptTailBytes int64 = 1 << 20
+
+var openDoctorTranscriptFile = func(path string) (io.ReadSeekCloser, error) {
 	return os.Open(path)
 }
 
@@ -49,6 +61,96 @@ func loadRecordedTranscript(path string) (transcriptDoc, error) {
 
 func loadRecordedTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
 	return scanTranscriptContext(ctx, path, true)
+}
+
+// loadSessionRowTranscript reads only what a sessions row consumes: the
+// header, and the last assistant turn's entry — the outcome hint's input,
+// which reports "none" only when the transcript holds no complete assistant
+// record. A transcript at or under sessionRowTranscriptTailBytes goes through
+// the full scan unchanged, so a small transcript keeps its exact summary and
+// error shape. A longer transcript is read in a tail window that doubles
+// until it holds an assistant record or reaches the transcript's start, so
+// the full scan's cost returns only for a transcript with no assistant record
+// to find. In every window, compaction fold copies are skipped and an
+// unterminated final tail is tolerated, exactly as the full scan does; a
+// corrupt complete line inside the window still fails the read, so the
+// unreadable-session contract holds within the window.
+func loadSessionRowTranscript(ctx context.Context, path string) (transcriptDoc, error) {
+	file, err := openDoctorTranscriptFile(path)
+	if err != nil {
+		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+	}
+	defer file.Close() //nolint:errcheck // read-only file
+	size, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+	}
+	if size <= sessionRowTranscriptTailBytes {
+		return loadRecordedTranscriptContext(ctx, path)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+	}
+	reader := bufio.NewReaderSize(file, 64*1024)
+	header, err := transcript.ReadHeader(ctx, reader, transcript.DefaultMaxLineBytes)
+	if err != nil {
+		return transcriptDoc{}, err
+	}
+	doc := transcriptDoc{Header: header}
+	for window := sessionRowTranscriptTailBytes; window < size; window *= 2 {
+		// A record that starts inside the window is kept even when the
+		// window begins exactly at its boundary; only the tail of a record
+		// that began before the window is discarded, without decoding.
+		if _, err := file.Seek(size-window-1, io.SeekStart); err != nil {
+			return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
+		}
+		preceding := make([]byte, 1)
+		if _, err := io.ReadFull(file, preceding); err != nil {
+			return transcriptDoc{}, err
+		}
+		reader.Reset(file)
+		if preceding[0] != '\n' {
+			if _, _, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes); err != nil {
+				return transcriptDoc{}, err
+			}
+		}
+		for {
+			if err := ctx.Err(); err != nil {
+				return transcriptDoc{}, err
+			}
+			line, complete, _, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
+			if err != nil {
+				return transcriptDoc{}, err
+			}
+			if !complete {
+				break // end of file, or a torn trailing write: not a record
+			}
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			entry, err := transcript.DecodeEntry(line)
+			if err != nil {
+				return transcriptDoc{}, err
+			}
+			if entry.Turn.OriginalOrdinal != nil {
+				continue // compaction fold copy: the original appears earlier
+			}
+			// The row's only entries consumer is the outcome hint, which
+			// reads the last assistant turn; retaining just that entry
+			// keeps the window's decoded cost from piling up per session.
+			if entry.Turn.Kind == schema.TurnAssistant {
+				doc.Entries = []transcript.Entry{entry}
+			}
+		}
+		if len(doc.Entries) > 0 {
+			return doc, nil
+		}
+	}
+	// No window reached an assistant record: read the whole transcript
+	// through the full scan so the outcome is the true one, never a guess
+	// from a window that ran out.
+	return loadRecordedTranscriptContext(ctx, path)
 }
 
 func scanTranscriptContext(ctx context.Context, path string, skipFoldCopies bool) (transcriptDoc, error) {
@@ -111,12 +213,22 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 		}
 	}
 	res := CountResult{SessionID: paths.SessionID, Tool: tool}
+	// Exact-first (#6241): when some call in this session resolved to the
+	// queried name literally — a distinct custom or rejected tool holding a
+	// wire alias — a query by that name counts only that tool, exactly as
+	// TranscriptHealth and metricSource.hasExactTool prefer the exact key.
+	// Only a session with no exact match falls back to alias matching.
+	exactResolved := tool != resultTool && sessionHasExactResolvedTool(doc.Entries, resolver, tool)
 	for _, e := range doc.Entries {
 		for _, part := range e.Turn.Message.Content {
 			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
 				resolved := resolver.callName(part.ToolCall)
 				if tool == resultTool {
 					if resolved == resultTool {
+						res.Calls++
+					}
+				} else if exactResolved {
+					if resolved == tool {
 						res.Calls++
 					}
 				} else if resolved == target || (resolved == tool && resolved != resultTool) {
@@ -135,6 +247,19 @@ type sessionToolResolver struct {
 	resultTool string
 	callByID   map[string]string
 	resultByID map[string]string
+}
+
+// sessionHasExactResolvedTool reports whether any tool call in entries
+// resolved to name literally, under the same resolver Count counts with.
+func sessionHasExactResolvedTool(entries []transcript.Entry, resolver sessionToolResolver, name string) bool {
+	for _, e := range entries {
+		for _, part := range e.Turn.Message.Content {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && resolver.callName(part.ToolCall) == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func newSessionToolResolver(entries []transcript.Entry, resultTool string) sessionToolResolver {

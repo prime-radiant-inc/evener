@@ -1,11 +1,9 @@
 // Contract test for the shared icon-rail seat (styles/railseat.module.css).
 //
-// Three copies of the rail-seat geometry used to live hand-synced in three
-// module stylesheets (ToolRow's .rowIcon, the notification head's .statusIcon,
-// Loader's .rail row), and the gutter pull in four places. The consolidation
-// moved the geometry HERE, one module composed by every consumer, so the
-// declarations are pinned where they live and each consumer is pinned to its
-// wiring: compose the shared rules, restate nothing. jsdom cannot see CSS, so
+// The rail-seat geometry, the ambient strength and the two pulls live in one
+// module composed by every consumer, so the declarations are pinned where
+// they live and each consumer is pinned to its wiring: compose the shared
+// rules, restate nothing. jsdom cannot see CSS, so
 // these are declaration-level assertions over the stylesheet sources - the
 // same idiom as thinkBlockMotion.test.ts and agentMessageSize.contract.test.ts
 // (notificationStatusIcon.contract.test.ts and loader.test.tsx carry the
@@ -57,9 +55,12 @@ test("the seat is the avatar column: avatar-size wide, glyph centred, pinned to 
   expect(seat).toMatch(/\.seat\s*\{[^}]*flex:\s*none/);
 });
 
-test("the seat glyph is ambient context, not content: half opacity in the rail ink", () => {
-  expect(seat).toMatch(/\.seat\s*\{[^}]*opacity:\s*0\.5/);
+test("the seat carries the rail ink; the ambient strength is a separate class", () => {
   expect(seat).toMatch(/\.seat\s*\{[^}]*color:\s*var\(--ink-mid\)/);
+  // Geometry and strength compose separately: a glyph that sits on its own
+  // ground takes the seat without receding.
+  expect(seat).not.toMatch(/\.seat\s*\{[^}]*opacity/);
+  expect(seat).toMatch(/\.ambient\s*\{[^}]*opacity:\s*0\.5/);
 });
 
 test("the seat's text lands at the content edge: speaker-gap net of the row's own gap", () => {
@@ -71,25 +72,36 @@ test("the seat's text lands at the content edge: speaker-gap net of the row's ow
   expect(seat).toMatch(/\.seat\s*\{[^}]*margin-right:\s*calc\(var\(--speaker-gap\) - var\(--space-2\)\)/);
 });
 
-test("the gutter pull exists only above the breakpoint, never unconditionally", () => {
+test("the gutter pull exists only above the breakpoint; the column pull holds at every width", () => {
   expect(seatGated).toMatch(/\.gutterPull\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
-  // Outside the media block the pull must not appear at all: below 700px
-  // there is no reserved padding to eat, and an unconditional negative margin
-  // would push the glyph out of the pane.
-  expect(seatUngated).not.toMatch(/margin-left:\s*calc\(-1/);
+  // Below 700px the turn's gutter collapses, so the gutter pull has no
+  // reserved padding to eat there: it must not exist outside the media block.
+  expect(seatUngated).not.toMatch(/\.gutterPull/);
+  // The column pull is for a row that reserves the column in its own padding,
+  // which exists at every width.
+  expect(seatUngated).toMatch(/\.columnPull\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
+  expect(seatGated).not.toMatch(/\.columnPull/);
 });
 
-test("ToolRow's kind icon composes the shared seat; its slot owns the shared pull", () => {
+test("ToolRow's kind icon composes the seat without the ambient strength; its slot composes the column pull", () => {
   expect(toolcallitem).toMatch(
     /\.rowIcon\s*\{[^}]*composes:\s*seat from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );
-  // No restated geometry: the seat's declarations belong to the shared module.
-  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("");
+  // A tool row's glyph sits on its own --field ground inside a card, which
+  // does the receding the rail's half opacity does, so the row takes the
+  // seat's geometry and leaves the ambient strength uncomposed. Its one own
+  // declaration keeps the glyph painted above that ground; it restates no
+  // geometry and overrides nothing the seat declares.
+  expect(toolcallitem).not.toMatch(/\.rowIcon\s*\{[^}]*composes:\s*ambient/);
+  expect(ownDeclarations(toolcallitem, "\\.rowIcon")).toBe("position: relative;");
   // The pull rides the row's own flex item (the icon's slot, which is also the
-  // failure badge's positioning context), so the gutter still has one owner
-  // and the icon cannot seat differently from the notification head's glyph.
+  // failure badge's positioning context): the ungated column pull, since a
+  // tool row reserves its seat column in its own padding.
   expect(toolcallitem).toMatch(
-    /\.rowIconSlot\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
+    /\.rowIconSlot\s*\{[^}]*composes:\s*columnPull from "\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
+  );
+  expect(toolcallitem).toMatch(
+    /\.call\s*\{[^}]*padding-left:\s*calc\(var\(--tool-card-inset\) \+ var\(--speaker-gutter\)\)/,
   );
   // The one local rule that is genuinely ToolRow's own: on intent-bearing rows
   // the first line is the rationale, whose line-height is --line-height-title
@@ -99,7 +111,10 @@ test("ToolRow's kind icon composes the shared seat; its slot owns the shared pul
   );
 });
 
-test("the notification head's status glyph composes the same seat and pull", () => {
+test("the notification head's status glyph composes the seat, the ambient strength and the gutter pull", () => {
+  expect(notificationcard).toMatch(
+    /\.statusIcon\s*\{[^}]*composes:\s*ambient from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
+  );
   expect(notificationcard).toMatch(
     /\.statusIcon\s*\{[^}]*composes:\s*seat from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/railseat\.module\.css"/,
   );

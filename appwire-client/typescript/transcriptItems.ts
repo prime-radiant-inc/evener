@@ -411,6 +411,9 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
   // promotion or drain inherits the consumed entry's input ids, which is the
   // only lineage tying a recorded message to the queue row it replaced.
   if (item.conversationInputIds?.length) model.conversationInputIds = [...item.conversationInputIds];
+  // The answer link rides the wire's observation metadata, set only when the
+  // wire carried one (see model.ts's answerToTurnIds note).
+  if (item.observation?.answerToTurnIds?.length) model.answerToTurnIds = [...item.observation.answerToTurnIds];
   if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.

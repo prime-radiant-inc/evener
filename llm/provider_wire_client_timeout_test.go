@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 type lockedAttemptSink struct {
@@ -109,7 +110,7 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 				readEntered: make(chan struct{}),
 				closed:      make(chan struct{}),
 			}
-			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			client := &http.Client{Transport: transporttest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -177,7 +178,7 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 				}
 				closeErr := errors.New("underlying response close sentinel")
 				body := &closeCountingReadCloser{Reader: strings.NewReader(responseBody), closeErr: closeErr}
-				client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				client := &http.Client{Transport: transporttest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
 					return &http.Response{
 						StatusCode: http.StatusOK,
 						Header:     http.Header{"Content-Type": []string{contentType}},

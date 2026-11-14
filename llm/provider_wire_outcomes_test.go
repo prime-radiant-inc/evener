@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 type outcomeSink struct {
@@ -26,15 +27,6 @@ func (s *outcomeSink) AppendAttempt(_ context.Context, record apilog.APIAttemptR
 
 func (*outcomeSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
 	return nil
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.Body != nil {
-		defer request.Body.Close() //nolint:errcheck // Test transport honors the RoundTripper request-body contract.
-	}
-	return f(request)
 }
 
 func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
@@ -68,7 +60,7 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 			t.Run("caller cancellation", func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
-				httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				httpClient := &http.Client{Transport: transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 					return nil, request.Context().Err()
 				})}
 				client := provider.wireClient(t, "https://provider.test", httpClient, nil)
@@ -76,7 +68,7 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 			})
 
 			t.Run("provider timeout", func(t *testing.T) {
-				httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				httpClient := &http.Client{Transport: transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 					<-request.Context().Done()
 					return nil, request.Context().Err()
 				})}
@@ -99,7 +91,7 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 			})
 
 			t.Run("transport failure", func(t *testing.T) {
-				httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				httpClient := &http.Client{Transport: transporttest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
 					return nil, errors.New("round trip failed")
 				})}
 				client := provider.wireClient(t, "https://provider.test", httpClient, nil)
@@ -107,7 +99,7 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 			})
 
 			t.Run("configured request budget does not relabel generic transport failure", func(t *testing.T) {
-				httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				httpClient := &http.Client{Transport: transporttest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
 					return nil, errors.New("round trip failed")
 				})}
 				client := provider.wireClient(t, "https://provider.test", httpClient, nil)

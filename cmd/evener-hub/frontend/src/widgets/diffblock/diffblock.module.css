@@ -1,19 +1,14 @@
+/* Clips to the rounded corners: the add/del line washes run edge to edge and
+ * would otherwise square off the first and last rows. Lines truncate rather
+ * than scroll (.content), so nothing reachable is clipped. */
 .root {
+  overflow: hidden;
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-0);
   font-family: var(--font-mono);
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
-}
-
-/* squircle-proto: continuous (Apple-style) corner curvature where the engine
- * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. */
-@supports (corner-shape: squircle) {
-  .root {
-    corner-shape: squircle;
-  }
 }
 
 .line {

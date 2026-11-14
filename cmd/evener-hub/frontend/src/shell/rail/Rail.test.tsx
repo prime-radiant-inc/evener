@@ -834,6 +834,22 @@ describe("resource-backed Rail", () => {
     expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
   });
 
+  test("the mark leads the wordmark as decoration, and the chip's dot adds no second status name", () => {
+    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+    render(<Rail />);
+    const brand = within(screen.getByTestId("rail-brand"));
+    const mark = brand.getByTestId("rail-mark");
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      mark.compareDocumentPosition(brand.getByTestId("rail-wordmark")) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The chip's own text already says what the dot means, so the dot must not
+    // announce the status a second time.
+    const chip = screen.getByTestId("rail-needs-you");
+    expect(chip.querySelector('[data-kind="needs-you"]')).toBeTruthy();
+    expect(within(chip).queryByRole("img")).toBeNull();
+  });
+
   // The header's three icons are drawn, not typed: global.css subsets the sans
   // face to Latin, so the text glyphs these buttons carried (the gear, the magnifier,
   // the burger) came from whatever system fallback happened to have those code

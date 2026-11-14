@@ -143,14 +143,28 @@ even in code you don't own. "Pre-existing" and "another
 session's area" are not exemptions; a deferred flake gets re-triaged at full cost
 by every session that hits it, and it poisons every run's signal in between. The
 fix must address the mechanism, not the symptom: it removes the test's
-dependence on wall-clock time or ordering. Honest irreproducibility after
-serious looped effort is reportable, but only with mechanism analysis, not a
-shrug.
+dependence on wall-clock time or ordering. A test also never asserts elapsed
+wall-clock time as its oracle: elapsed time measures the host and its load,
+not the code, so the assertion cannot fail for the reason the test exists.
+Replace a measured wait with a deterministic signal — a fake clock, an
+injected command or binary, a scripted provider, an operation count. Honest
+irreproducibility after serious looped effort is reportable, but only with
+mechanism analysis, not a shrug.
 
 A failure seen once on a loaded host or runner is recorded on the existing issue
 for that test, when a search finds one. By itself it is no reason for a fix PR.
 A failure that exposes a race in the product is a product bug and gets fixed,
 whatever the host load.
+
+A batch of vitest or `make test-web` failures that changes identity between
+runs — each suspect passing alone, the scanned input unchanged — is load,
+not regression. Rerun the failing files in isolation and against a clean
+base checkout before chasing them as defects. Concurrent edits are a second
+class of the same symptom: a vitest run reads and transforms each source
+file once, so a file captured between two writes fails differently from the
+settled state. Check `git status --porcelain` against the failing set's
+surface and rerun after the edits settle. A failure that passes in
+isolation is a race symptom first and a regression second.
 
 **Never widen or hardcode a timeout to absorb awaitable work.** A widened
 deadline hides a guess that re-flakes as the suite grows, and it converts real
@@ -168,6 +182,13 @@ failures into timeout mysteries. The preference hierarchy:
 A test binary's own `-timeout` (ten minutes by default, under the shard runners
 too) is a tripwire of the same kind: when it fires it names the tests still
 running. Raising it so a slow test fits is the widening this rule forbids.
+
+An existing assertion, timeout or budget is a contract, not an obstacle. A
+change that conflicts with one stops and surfaces the conflict — the
+assertion's source lines and the evidence — rather than weakening, widening
+or redefining it; every check stays at least as strict as it was. An
+assertion is replaced only by an explicit, precisely scoped supersession
+that says exactly what replaces it, never as a side effect of a repair.
 
 For a helper process, the await is a pipe on `exec.Cmd.ExtraFiles`: the child
 writes a milestone line after its file barrier exists, and the parent blocks on
@@ -845,6 +866,19 @@ and src/testSetup.ts fails the second file that lands in a used context. Running
 one file with `--maxWorkers=1` is fine. Workers are recycled at `vmMemoryLimit`
 (512MB); VM contexts otherwise grow a worker's memory file after file.
 
+The same window makes a global installed in `src/testSetup.ts` a change to
+every test file, not a local one. Main's session entry cache defaults its
+`keyRange` from the ambient `IDBKeyRange` global (`options.keyRange ??
+globalThis.IDBKeyRange` in `stores/sessionEntryCache.ts`), and the
+production singleton in `stores/entryTranscriptRoutes.ts` is created lazily
+with no options, so installing `IDBKeyRange` in testSetup makes the
+production cache functional in every jsdom file that never opted in: the
+ambient-default code paths of main are the ones every test file exercises
+until a test passes the option explicitly. Before installing any global in
+testSetup, grep production code for ambient reads of it (`globalThis.X`),
+and thread the test-only global as an explicit option on the consuming
+store or connection — the `SessionEntryCache` options pattern.
+
 A test that has to get past a real debounce or timer uses Vitest's fake timers
 rather than waiting it out, with two pieces of wiring so Testing Library keeps
 working: `vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime })`,
@@ -1209,6 +1243,14 @@ runtime. It reuses `gate-surface-lib.sh` (generated from
 `internal/devtool/gatesurface`), so it measures the same surface `ROOT_FULL=1
 make test` proves.
 
+When the ratchet fails, the fix is the test, not the number. Re-measuring,
+re-blessing or widening a budget to clear a failing run records the load
+dependence instead of removing it: restructure the test so it no longer
+depends on elapsed time. A uniformly slow host is not a regression — the
+failure limits scale by the run's own medians (see [Scaling by the Run's
+Speed](#scaling-by-the-runs-speed)) — but a package or test genuinely over
+its budget gets faster, never re-blessed.
+
 ### What Is Budgeted
 
 The gate oversubscribes its runner on purpose: the `tests / root` lane runs the
@@ -1320,6 +1362,11 @@ config error that fails the run in every mode, because a JSON object would
 otherwise keep the last one silently. A ceiling that is not a finite,
 float-convertible number fails in every mode, naming the test and the field; a
 huge but finite value is a legitimate ceiling that simply disables that test's.
+
+A new ceiling, or a changed number, needs Jesse's approval on the specific
+value before `testing-budget.json` is edited. A named test that breaches
+under contention is evidence its margin is too small for that test; bring
+the measurement to Jesse rather than bumping the number yourself.
 
 Enforcement of the package ratios is conditional. A local run only warns. A
 package over its limits is nonzero only under `CHECK=1` in a CI-shaped
@@ -1548,6 +1595,51 @@ Geometry also cannot see `object-fit`: dropping `object-fit: cover` leaves every
 box identical and only changes how pixels are scaled inside the image box. Say so
 in the case rather than letting a pass imply coverage it does not have.
 
+A CSS geometry change in `cmd/evener-hub/frontend` gets a layoutguard case:
+jsdom evaluates no cascade, so the change is otherwise provable only by
+hand. The case lives under `scripts/layoutguard/cases/<name>/` with
+`harness.html`, `assert.mjs` and `case.json`, and runs alone with `node
+scripts/layoutguard/run.mjs <name>`. Four rules the existing cases learned
+the hard way:
+
+- Make every bound two-sided and NaN-safe. `Number.parseFloat("")` is
+  `NaN` and every `NaN` comparison is false, so a one-sided
+  `gap < expected` check passed while a 16px phone breakpoint showed the
+  desktop 24px, and a missing token silently skipped its bound. Assert a
+  closed range or the exact value, never an open inequality.
+- A breakpoint whose own rule competes with the base rule gets a paired
+  case directory (`-phone`) sharing one assertion module
+  (`cases/editorial-transcript-360/shared-assert.mjs` is the precedent).
+- A harness fixture that stands in for production markup uses the
+  component's real class (`.body.bodyNoScroll`, not a local `.flush`), or
+  the guard tests the stand-in.
+- `case.json`'s `mutation` field records the seeded break that made the
+  case fail for the right reason (the mutation-testing rule above), so the
+  case arrives as a check rather than decoration.
+
+When a full `make test-web` fails on unrelated files while the box is
+loaded, judge it by [Flakes and Timeouts](#flakes-and-timeouts) before
+calling it a regression: rerun the failing files in isolation and check the
+base checkout.
+
+A browser-guard regression owns its triage before its repair. Record the
+exact failing assertion and its milestone values, rerun the same guard
+repeatedly on a byte-identical tree, and read the wait's actual outcome —
+which milestone fired, what the driver recorded — rather than the
+surrounding elapsed time. Never widen a timeout or weaken an assertion to
+classify a failure as load.
+
+A migration that touches a browserguard journey follows the same ownership:
+enumerate every journey at the current tip and report the whole red set
+before migrating; each migrated observation either preserves its guarantee
+or carries a case-specific accepted opposite, its source reason, and the
+restored original failing. The no-wire-read, no-refetch and
+retained-window reopen promises (the `reopen-without-read` milestones in
+`cmd/evener-hub/background_transcripts_browser_test.go`) are product
+promises. Stop and report a genuine pressure or eviction gap instead of
+repairing past it — do not change budgets or timeouts, install a legacy
+adapter, or collapse sustained-pressure coverage into another journey.
+
 ### What the browser gate owns, and how it cleans up
 
 Make invokes each guard's Node entrypoint directly, so an interruption reaches the
@@ -1589,8 +1681,8 @@ true geometry verification stays manual and on-device.
 ## A Test That Never Runs
 
 A test that does not execute is worse than a missing test: it reports the coverage
-without providing it, and the suite stays green either way. Three shapes in this
-repo produce one, and none announces itself.
+without providing it, and the suite stays green either way. Several shapes in
+this repo produce one, and none announces itself.
 
 **Registered `check*` functions.** Several packages drive their behavioral
 contracts through a fuzz entry point that replays one check selected by the fuzz
@@ -1655,6 +1747,19 @@ signature". A fixture is only honestly a PDF if something proved it parses:
 `validPDFFixture` computes its cross-reference offsets from the bytes as they are
 written and `TestValidPDFFixtureCrossReferencesResolve` resolves them back.
 Grepping for `%PDF`/`xref`/`trailer`/`startxref` markers is not validation.
+
+**A `//go:build evenerfuzz` file the untagged gates never compile.** `go
+build ./...`, `go vet ./...` and `go test ./...` do not type-check files
+carrying the tag, so a change that deletes or reshapes a shared
+test-support symbol — a field on a type in `agent/internal/agenttest`, say
+— can strand tagged construction literals while every untagged gate stays
+green. `make lint` catches it through the tagged compile floor (`make
+lint-evenerfuzz`: `go vet -tags evenerfuzz` per module for the host, Linux
+and Windows GOOS, plus the tagliatelle naming pass), but a bare
+`go vet`/`go test` loop does not. When touching an exported or shared
+surface that tagged files might use, run the tagged check before pushing:
+`make lint-evenerfuzz`, or at minimum `go vet -tags evenerfuzz
+./agent/...`.
 
 ## A Subprocess Can Outlive Its Context
 
@@ -1825,6 +1930,29 @@ Subscribe: true}` on the same daemon connection before `TurnStart`. Without
 `Client.Notifications()` never carries that thread's `thread/status/changed` or
 `history/updated`.
 
+## One Consumer for a Served Session's Events
+
+An agent-package test that both serves a session and asserts on its captured
+events needs exactly one event consumer. The serve helpers (`serveSession`,
+`serveSessionWithMutationStore` in `agent/session_active_turn_test.go`)
+register the session's authoritative drain through `ConsumeEventsLossless`;
+stacking `captureEvents(s)` (`agent/session_skill_activation_test.go`) on
+top puts a second goroutine on the same event channel, and each emitted
+event is delivered to exactly one of them. Assertions over the captured
+slice flake nondeterministically: an event "missing" that the emit path
+demonstrably produced was consumed by the serve drain. The session enforces
+the rule with a panic — `ConsumeEventsLossless` in `agent/session_events.go`
+refuses a second consumer because it would silently split the stream —
+pinned by `TestConsumeEventsLosslessRejectsASecondConsumer`.
+
+A served test that must also assert on events serves through its own
+consumer: `s.ConsumeEventsLossless(func(ev) { append under a mutex },
+func() { close(drained) })` registers the authoritative consumer and marks
+the session served in one call, and `s.ensureClientMutationStore()` adds the
+mutation queue when the test needs it. After the inputs finish, `s.Close()`,
+then `<-drained`, then read the slice under the mutex. Never combine
+`captureEvents` with a serve helper in one test.
+
 ## A Disposable Hub Needs Its Own HOME
 
 The hub is a host singleton guarded by an exclusive flock on
@@ -1920,6 +2048,24 @@ that is already far past it.
   already shares a `beforeEach`.
 - Mocks that vitest hoists (`vi.mock`) move with the tests that need them.
 
+Before removing a helper from a shared helpers file because your change left
+it unused, count its references across the whole current base of that file —
+including declarations other branches still hold — not just the cluster you
+worked in. A helper one branch stopped using can still be required by a
+declaration another branch retains, and an integration merge that drops it
+breaks that branch. When any outside-owned use remains, restore the helper
+and its type or import, and leave the cleanup to the integrating writer.
+
+A helper parameterized over its reporting sink takes the minimal interface
+its body uses, never a wide standard one. `skillGuardMilestoneDetail`
+(`cmd/evener-hub/skill_composer_browser_test.go`) takes exactly `Helper()`
+and `Fatalf(string, ...any)` rather than `testing.TB`, so the browser
+guards' `backgroundAssertionSink` — a failure recorder that supports those
+methods but implements little of `testing.TB` — can drive owner-level
+assertions directly and record their verdicts. A helper typed against a
+larger interface than it calls hides which reports it uses and locks out
+every caller that is not a `*testing.T`.
+
 Prove a split lost nothing with `scripts/ops/test-inventory.sh`: list the
 test names before, list them after, and diff. The diff must be empty, and the
 PR description carries it.
@@ -1954,6 +2100,15 @@ the proof:
 Here the `scripts/ops/test-inventory.sh` diff lists the names that went away, and
 it goes in the PR description beside the proof. A test folded into a table as
 a subtest appears in that diff as removed; name the subtest that replaces it.
+
+That diff is provenance evidence, not an audit to satisfy. A merge or
+delivery review must not compare test names as sets: main legitimately
+rewrites tests a branch still holds, and no gate requires a branch's test
+names to be a superset of its base's. When a name in the diff went away,
+establish its provenance against the common base and the current main,
+preserve the names only your delivery introduced, and evaluate an explicit
+replacement against the merged behavior it claims to cover — never restore
+a stale name solely to make a set comparison pass.
 
 ### Finding candidates and building the proof
 

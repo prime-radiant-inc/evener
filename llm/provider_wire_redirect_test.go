@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 // redirectHeaders are the instance's default headers: one the redirect policy
@@ -97,7 +98,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 			client.Jar = jar
 			baseTransport := client.Transport
 			var transportCalls atomic.Int32
-			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client.Transport = transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				transportCalls.Add(1)
 				return baseTransport.RoundTrip(request)
 			})
@@ -219,7 +220,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 			client.Jar = jar
 			baseTransport := client.Transport
 			var transportCalls atomic.Int32
-			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client.Transport = transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				transportCalls.Add(1)
 				return baseTransport.RoundTrip(request)
 			})
@@ -482,7 +483,7 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 			transportErr := errors.New("final redirect transport sentinel")
 			client := server.Client()
 			baseTransport := client.Transport
-			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client.Transport = transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				if request.URL.Path == "/redirect-target" {
 					if request.Body != nil {
 						_, _ = io.ReadAll(request.Body)

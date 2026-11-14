@@ -175,7 +175,7 @@ func (c *hubInstancesController) EditModel(params appwire.InstanceModelEditParam
 	}
 
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
-	defer c.lockMutation(&err)()
+	defer c.lockMutation(params.OriginClientId, &err)()
 
 	r := c.reg.Get()
 	if _, ok := r.Instance(name); !ok {

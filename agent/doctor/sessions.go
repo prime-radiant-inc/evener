@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -174,11 +173,13 @@ func transcriptOlderThan(path string, cutoff time.Time) bool {
 }
 
 // sessionRow builds one SessionRow from a session's durable state: the
-// transcript (header + entries, for started/models/outcome), the transcript
-// file's own size and mtime (bytes/last-activity), the meta (turn count,
-// subagent/observer facts), and the jobs fold (delegate count).
+// transcript's header plus a bounded entry tail (started/models/parent and
+// the outcome hint), the transcript file's own size and mtime
+// (bytes/last-activity), the meta (turn count, subagent/observer facts), the
+// delegates journal (delegate count), and the jobs scan (legacy delegate
+// failures), bounded the same way.
 func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionMeta, delegates delegateCache) (SessionRow, error) {
-	doc, err := loadRecordedTranscriptContext(ctx, paths.TranscriptPath)
+	doc, err := loadSessionRowTranscript(ctx, paths.TranscriptPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -186,7 +187,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("stat transcript %s: %w", paths.TranscriptPath, err)
 	}
-	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
+	failures, err := legacyDelegateFailuresBounded(ctx, paths.JobsPath)
 	if err != nil {
 		return SessionRow{}, fmt.Errorf("session %s: %w", meta.ID, err)
 	}
@@ -219,7 +220,7 @@ func sessionRow(ctx context.Context, b bucket, paths Paths, meta schema.SessionM
 		ParentSessionID: doc.Header.ParentSessionID,
 		DelegateCount:   delegateCount,
 		ObserverCount:   len(meta.ObservedBy),
-		Failures:        legacyDelegateFailures(events),
+		Failures:        failures,
 		Outcome:         outcomeHint(doc, resultTool),
 	}, nil
 }

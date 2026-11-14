@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -351,7 +352,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionID))
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -361,6 +362,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	plans.updates = append(plans.updates, deliveryPlans.updates...)
 	plans.deliveries = append(plans.deliveries, deliveryPlans.deliveries...)
+	plans.warnings = append(plans.warnings, deliveryPlans.warnings...)
 	if len(stop.deliveries) != 0 {
 		// A receipt still in flight will untrack itself when its executor
 		// commits or abandons it, waking this drain.
@@ -498,58 +500,165 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 	return delegateMutationPlans{}, nil, nil
 }
 
-// delegateDeliveryWake is deliverDelegatePacket's post-commit wake for a
-// delivery whose acknowledgment the stop retried itself.
+// delegateDeliveryWake is one grouped post-commit wake for the acknowledgments
+// the stop retried itself: one per receiver, carrying every attention ID that
+// receiver must arm.
 type delegateDeliveryWake struct {
-	receiver    delegateDeliveryReceiver
-	attentionID string
+	receiver     delegateDeliveryReceiver
+	attentionIDs []string
 }
 
 // acknowledgeRetryableStopDeliveriesLocked retries the durable acknowledgment
-// for retryable, non-inline admissions the stop tracks: their receiver-side
-// write already committed and only the acknowledgment append failed, while the
-// executor that owned the plan has returned. Without the retry the stop waits
-// on a receipt no plan can resolve. In-flight and inline receipts are left to
-// their owners, and the returned wakes mirror deliverDelegatePacket's
+// for retryable admissions the stop tracks: their receiver-side write already
+// committed and only the acknowledgment append failed, while the executor that
+// owned the plan has returned. Without the retry the stop waits on a receipt
+// no plan can resolve. In-flight receipts are left to their owners; an inline
+// receipt whose owning tool commit is gone is abandoned and its lost result
+// recorded.
+//
+// The acks commit one receipt at a time, but the snapshots, owner replays, and
+// wakes are planned once per touched delegate, owner, and receiver after the
+// loop: the common case is several receipts under one owner, where a plan per
+// receipt would rescan the whole store under c.mu and wake the same receiver
+// once per receipt. The returned wakes mirror deliverDelegatePacket's
 // post-commit wake for the caller to run outside c.mu. The caller holds c.mu.
 func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *delegateStopState) (delegateMutationPlans, []delegateDeliveryWake, error) {
 	tokens := slices.Collect(maps.Keys(stop.deliveries))
 	sort.Slice(tokens, func(i, j int) bool { return tokens[i].processID < tokens[j].processID })
-	plans := delegateMutationPlans{}
-	var wakes []delegateDeliveryWake
+	updated := make(map[string]struct{})
+	owners := make(map[string]struct{})
+	var lost []events.WarningData
+	liveOrder := make([]*Session, 0)
+	liveIDs := make(map[*Session][]string)
+	cold := false
+	buildPlans := func() delegateMutationPlans {
+		plans := c.deliveryAckPlansLocked(
+			slices.Sorted(maps.Keys(updated)),
+			slices.Sorted(maps.Keys(owners)),
+		)
+		plans.warnings = append(plans.warnings, lost...)
+		return plans
+	}
+	buildWakes := func() []delegateDeliveryWake {
+		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
+		for _, receiver := range liveOrder {
+			wakes = append(wakes, delegateDeliveryWake{receiver: receiver, attentionIDs: liveIDs[receiver]})
+		}
+		if cold {
+			wakes = append(wakes, delegateDeliveryWake{receiver: coldDelegateDeliveryReceiver{}})
+		}
+		return wakes
+	}
 	for _, token := range tokens {
 		receipt := c.deliveries[token.processID]
-		if receipt == nil || receipt.token != token || !receipt.retryable || receipt.inline {
+		if receipt == nil || receipt.token != token {
 			continue
 		}
-		ackPlans, err := c.completeDeliveryLocked(token, true)
+		// A caller-committed inline receipt already persisted its result in
+		// the caller's tool round; only its store acknowledgment is
+		// outstanding, so it falls through to the ordinary retry.
+		if receipt.inline {
+			if receipt.commitQueued || (receipt.callerCommitted && !receipt.retryable) {
+				// A live tool round still owns the reply and will complete it.
+				continue
+			}
+			if !receipt.retryable {
+				if owner, ok := c.deliveryReceiverLocked(receipt.ownerID).(*Session); ok && owner != nil {
+					// The reply has not queued its commit yet; wait for it.
+					continue
+				}
+				// No owner can complete the receipt: it was never answered by
+				// its tool round. Abandon it and record the lost result.
+				_, _ = c.completeDeliveryAckLocked(token, false)
+				lost = append(lost, events.WarningData{
+					Message:    fmt.Sprintf("delegate %s delivery %s result lost: its owning tool commit is gone", receipt.delegateID, token.deliveryID),
+					Source:     "delegate",
+					Code:       events.WarningCodeDelegateDeliveryResultLost,
+					DelegateID: receipt.delegateID,
+				})
+				continue
+			}
+			// A retryable reply already persisted the receipt's result; only
+			// its acknowledgment failed, so retry it like a non-inline receipt.
+		} else if !receipt.retryable {
+			continue
+		}
+		ack, err := c.completeDeliveryAckLocked(token, true)
 		if err != nil {
 			if errors.Is(err, errDelegateStaleLease) {
 				continue
 			}
-			c.dropDeliveryPlanClaimsLocked(plans)
-			plans.deliveries = nil
 			if errors.Is(err, errDelegateNotControllable) ||
 				errors.Is(err, delegatestore.ErrStoreUnusable) ||
 				errors.Is(err, delegatestore.ErrStoreClosed) {
 				// Permanent store failures join errDelegateNotControllable:
 				// production never swaps c.store, so the retry would poll
 				// forever.
-				return plans, wakes, fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
+				return delegateMutationPlans{}, buildWakes(), fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
 			}
 			// A transient append failure keeps the receipt tracked. Re-arm the
 			// stop's progress so the parked drain retries after the store
-			// returns instead of exiting with the driver.
+			// returns instead of exiting with the driver. Replay the owners
+			// touched before the failure and give their claims back, as a
+			// per-receipt retry did: dropping a claim resolves the inline
+			// waiter it took, so no waiter is stranded across the retry.
+			plans := buildPlans()
+			c.dropDeliveryPlanClaimsLocked(plans)
+			plans.deliveries = nil
 			c.rearmStopDeliveryRetryLocked(stop)
-			return plans, wakes, nil
+			return plans, buildWakes(), nil
 		}
-		plans.updates = append(plans.updates, ackPlans.updates...)
-		plans.deliveries = append(plans.deliveries, ackPlans.deliveries...)
-		if receiver := c.deliveryReceiverLocked(receipt.ownerID); receiver != nil {
-			wakes = append(wakes, delegateDeliveryWake{receiver: receiver, attentionID: delegateAttentionID(token.deliveryID)})
+		if !ack.planned {
+			continue
+		}
+		if ack.ownerChanged {
+			updated[ack.ownerID] = struct{}{}
+		}
+		updated[ack.delegateID] = struct{}{}
+		owners[ack.ownerID] = struct{}{}
+		if receiver := c.deliveryReceiverLocked(ack.ownerID); receiver != nil {
+			switch receiver := receiver.(type) {
+			case *Session:
+				if _, seen := liveIDs[receiver]; !seen {
+					liveOrder = append(liveOrder, receiver)
+				}
+				liveIDs[receiver] = append(liveIDs[receiver], delegateAttentionID(token.deliveryID))
+			case coldDelegateDeliveryReceiver:
+				cold = true
+			}
 		}
 	}
-	return plans, wakes, nil
+	return buildPlans(), buildWakes(), nil
+}
+
+// noteDelegateDeliveryCommitQueued records that an inline receipt's owning
+// tool commit is queued on its session and can still complete it. The caller
+// holds no session lock. c.mu is the only lock taken here: a session pumping
+// deliveries holds its delivery mutex across BeginDelivery, so reading that
+// session's map from Reconcile would invert the lock order.
+func (c *delegateTreeController) noteDelegateDeliveryCommitQueued(token delegateDeliveryToken) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveries[token.processID]; receipt != nil && receipt.token == token {
+		receipt.commitQueued = true
+	}
+}
+
+// noteDelegateDeliveryCommitTaken clears the queued mark when the tool round
+// takes its commit: the round now owns the reply and will complete the receipt
+// or leave it retryable for the acknowledgment.
+func (c *delegateTreeController) noteDelegateDeliveryCommitTaken(token delegateDeliveryToken) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if receipt := c.deliveries[token.processID]; receipt != nil && receipt.token == token {
+		receipt.commitQueued = false
+	}
 }
 
 // delegateStopDeliveryRetryDelay spaces retries of a stop delivery
@@ -588,6 +697,15 @@ func (c *delegateTreeController) rearmStopDeliveryRetryLocked(stop *delegateStop
 	})
 }
 
+// dropDeliveryPlanClaimsLocked gives back the claims a replay created: a
+// claimed delivery is never re-planned, so an abandoned batch must release
+// them, and releasing a plan's claim resolves the inline waiter it took.
+func (c *delegateTreeController) dropDeliveryPlanClaimsLocked(plans delegateMutationPlans) {
+	for _, plan := range plans.deliveries {
+		c.dropDeliveryClaimLocked(plan)
+	}
+}
+
 // reportDelegateWakeError logs a best-effort delivery wake failure. The
 // attention arm retries on its own.
 func (c *delegateTreeController) reportDelegateWakeError(err error) {
@@ -602,25 +720,16 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 	}
 }
 
-// dropDeliveryPlanClaimsLocked gives back the claims the retries created before
-// a later acknowledgment failed: a claimed delivery is never re-planned, so an
-// abandoned batch must release them. The caller holds c.mu.
-func (c *delegateTreeController) dropDeliveryPlanClaimsLocked(plans delegateMutationPlans) {
-	for _, plan := range plans.deliveries {
-		c.dropDeliveryClaimLocked(plan)
-	}
-}
-
 // wakeDeliveryReceiver reproduces deliverDelegatePacket's post-commit wake for
 // an acknowledgment the stop retried itself. It runs outside c.mu.
-func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionID string) error {
+func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {
 			return nil
 		}
 		if receiver.isRootDelegateAttentionReceiver() {
-			return receiver.armDelegateAttention(attentionID)
+			return receiver.armDelegateAttentions(attentionIDs)
 		}
 		// A committed delivery is a wake from a new event in its own
 		// right: the child's report may present a row a user's stop

@@ -665,7 +665,7 @@ test.each(["settled error", "late error"])(
       );
     });
     renderSpawn(fake);
-    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    await user.click(screen.getByText("Advanced options"));
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
     const finish = async () =>
       act(async () => validation.resolve({ path: "review-agent", valid: false, error: "review-a-invalid" }));
@@ -698,7 +698,7 @@ test.each(["settled success", "settled error", "late success", "late error"])(
     );
     renderSpawn(fake);
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
-    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    await user.click(screen.getByText("Advanced options"));
     previewRequested = true;
     await user.click(screen.getByRole("button", { name: "Show resolved config" }));
     const finish = async () =>
@@ -754,7 +754,7 @@ test("directory picker assigns the unscoped draft and restores each project's la
   expect(promptField().textContent).toBe("unscoped-sentinel");
   await setWorkingDir(user, "/tmp/draft-a");
   await pickModel(user, "gpt-5", "openai/gpt-5");
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.selectOptions(screen.getByLabelText("Harness"), "evener");
   await setWorkingDir(user, "/tmp/draft-b");
@@ -837,11 +837,11 @@ test.each(["unrelated field", "newer same field", "other project"])(
       );
     });
     const mounted = renderSpawn(fake);
-    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    await user.click(screen.getByText("Advanced options"));
     fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
     mounted.unmount();
     renderSpawn(fake);
-    await user.click(screen.getByRole("button", { name: "Advanced options" }));
+    await user.click(screen.getByText("Advanced options"));
     fireEvent.change(screen.getByLabelText("Max rounds"), { target: { value: "7" } });
     if (scenario === "newer same field") {
       fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-new" } });
@@ -1048,7 +1048,7 @@ test("a draft re-entered after another keeps its late path-validation error", as
   window.history.pushState({}, "", "/new?dir=/tmp/reentry-validation-a");
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
 
   // Visit another draft and come back: A's draft is the SAME object, but Spawn's
@@ -1090,7 +1090,7 @@ test("a path-validation error that settles while its draft is inactive appears w
   window.history.pushState({}, "", "/new?dir=/tmp/inactive-validation-a");
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true));
 
@@ -1143,14 +1143,14 @@ test("a remounted draft still shows the path-validation error stored with its in
   window.history.pushState({}, "", "/new?dir=/tmp/remount-validation-a");
   const mounted = renderSpawn(fake);
   await settled();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
   expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
 
   mounted.unmount();
   renderSpawn(fake);
   await settled();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
   expect(completionDraft("/tmp/remount-validation-a").fields.getState().advancedOverrides).toEqual({});

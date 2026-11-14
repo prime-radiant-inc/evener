@@ -131,6 +131,14 @@ const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 // comes back fails with the last reading that stood in for a baseline.
 const TURN_BASELINE_RETRY_MS = envMillis("SKILLGUARD_TURN_BASELINE_TIMEOUT_MS", 45_000);
 
+// A page that stopped answering rejects every Runtime.evaluate poll. One
+// rejection is unobserved time (a CDP hiccup, a navigation in flight), but a
+// continuous run is evidence about the page itself: waiting out the full
+// missing-condition timeout would name only the condition and hide the
+// rejection. The ordinary deadline remains the backstop for a page that is
+// still answering "not yet".
+export const EVALUATE_FAILURE_FAIL_FAST_MS = envMillis("SKILLGUARD_EVALUATE_FAILURE_FAIL_FAST_MS", 2_000);
+
 // selectAll feeds a replacement edit -- the queue journey selects the draft a
 // queued entry returned and types over it -- so a caret the editor left at the
 // end of the text instead of the whole selection would send the next typeText
@@ -774,6 +782,13 @@ export class Driver {
   // loaded moment the wait was widened to survive. It is accounted for ONCE:
   // re-extending on every hold would let a flapping condition postpone the
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
+  //
+  // A stopped page and a missing panel are different failures. A rejected
+  // evaluate is not a reading, but a CONTINUOUS run of them means the page
+  // itself stopped answering; after EVALUATE_FAILURE_FAIL_FAST_MS the wait
+  // fails with the rejection instead of waiting out the missing-condition
+  // deadline. A healthy page that answers "not yet" still times out as before,
+  // and its error now says whether any polls failed on the way.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0, observe = true } = {}) {
     const startedAt = Date.now();
     // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
@@ -799,14 +814,24 @@ export class Driver {
     let readAt = startedAt;
     // How much unobserved time may still be refunded to the deadline.
     let refundLeft = settleMs;
+    // Failed evaluate polls, total and consecutive: the witness a timeout
+    // attaches, and the proof that the page stopped answering.
+    let failedPolls = 0;
+    let failureStreak = 0;
+    let failureStartedAt = null;
+    let lastEvaluateError = null;
     for (;;) {
       let errored = false;
-      const value = await evaluate(this.send, exprSource).catch(() => {
+      const value = await evaluate(this.send, exprSource).catch((error) => {
         errored = true;
+        lastEvaluateError = error instanceof Error ? error.message : String(error);
         return null;
       });
       const now = Date.now();
       if (errored) {
+        failedPolls += 1;
+        failureStreak += 1;
+        failureStartedAt ??= now;
         const unobserved = now - readAt;
         if (heldSince !== null) {
           heldSince += unobserved;
@@ -814,6 +839,9 @@ export class Driver {
           refundLeft -= refund;
           deadline += refund;
         }
+      } else {
+        failureStreak = 0;
+        failureStartedAt = null;
       }
       readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
@@ -836,12 +864,21 @@ export class Driver {
         // action produced around for the waits that outlive it.
         const toast = await evaluate(this.send, this.toastExpr()).catch(() => "");
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
+        const pollFailures =
+          failedPolls > 0
+            ? `; ${failedPolls} evaluate poll${failedPolls === 1 ? "" : "s"} failed, last: ${lastEvaluateError}`
+            : "";
         const settle =
           settleMs > 0
             ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})`
             : "";
         throw new Error(
-          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}${pollFailures}`,
+        );
+      }
+      if (failureStartedAt !== null && now - failureStartedAt >= EVALUATE_FAILURE_FAIL_FAST_MS) {
+        throw new Error(
+          `page stopped answering: ${failureStreak} consecutive Runtime.evaluate failures over ${now - failureStartedAt}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}; last: ${lastEvaluateError}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));

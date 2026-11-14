@@ -1,6 +1,8 @@
-// Session creation keeps the project directory above the prompt and the
-// less frequently changed launch settings below it. The directory picker
-// commits once, so browsing does not churn directory-dependent configuration.
+// Session creation leads with the task: the question, then the prompt card.
+// The working directory and effective access summarize beneath it, and the
+// less frequently changed launch settings follow as disclosure rows. The
+// directory picker commits once, so browsing does not churn
+// directory-dependent configuration.
 
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
@@ -31,6 +33,7 @@ import {
   withPluginSelection,
 } from "@evener/appwire-client";
 import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useStore } from "zustand";
 import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
@@ -46,6 +49,7 @@ import { selectDisplaySources, selectSources } from "../../stores/navigation/sel
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
+  Card,
   Chevron,
   CloseIcon,
   ConfirmDialog,
@@ -67,6 +71,7 @@ import {
   SendIcon,
   ShortcutList,
   Switch,
+  ToolIcon,
   Tooltip,
   useToasts,
   VisuallyHidden,
@@ -195,8 +200,15 @@ const CLASS = {
   cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
   branch: requireClass(styles.branch, "spawn.module.css", "branch"),
   directoryButton: requireClass(styles.directoryButton, "spawn.module.css", "directoryButton"),
-  directoryText: requireClass(styles.directoryText, "spawn.module.css", "directoryText"),
-  directoryPath: requireClass(styles.directoryPath, "spawn.module.css", "directoryPath"),
+  tileSeat: requireClass(styles.tileSeat, "spawn.module.css", "tileSeat"),
+  tileText: requireClass(styles.tileText, "spawn.module.css", "tileText"),
+  tileCaption: requireClass(styles.tileCaption, "spawn.module.css", "tileCaption"),
+  directoryAction: requireClass(styles.directoryAction, "spawn.module.css", "directoryAction"),
+  summaryRow: requireClass(styles.summaryRow, "spawn.module.css", "summaryRow"),
+  accessTile: requireClass(styles.accessTile, "spawn.module.css", "accessTile"),
+  summaryPending: requireClass(styles.summaryPending, "spawn.module.css", "summaryPending"),
+  quietRows: requireClass(styles.quietRows, "spawn.module.css", "quietRows"),
+  quietRow: requireClass(styles.quietRow, "spawn.module.css", "quietRow"),
   attachments: requireClass(styles.attachments, "spawn.module.css", "attachments"),
   leading: requireClass(styles.leading, "spawn.module.css", "leading"),
   modelTrigger: requireClass(styles.modelTrigger, "spawn.module.css", "modelTrigger"),
@@ -2007,11 +2019,13 @@ function SpawnForm({
   const advancedSandboxOverride =
     typeof advancedOverrides.sandbox === "string" && advancedOverrides.sandbox.trim() !== "";
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   function focusAccessOwner(): void {
     const owner = advancedOwnerRef.current;
     if (owner === null) return;
-    const toggle = owner.querySelector<HTMLButtonElement>("button[aria-controls][aria-expanded]");
-    if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
+    // Committed before the focus below looks for a field inside the panel.
+    flushSync(() => setAdvancedOpen(true));
     queueMicrotask(() => {
       if (!advancedSandboxOverride) {
         owner.querySelector<HTMLElement>("#spawn-access")?.focus();
@@ -2569,115 +2583,10 @@ function SpawnForm({
           </InlineNotice>
         )}
 
-        {/* Host picker (Component 06b): rendered only when the manifest lists a
-            non-local source, so the common single-host form is byte-for-byte
-            unchanged. Local is preselected (the draft default). An offline host
-            still renders - the reader can see it exists - but its option is
-            disabled and carries the reason in its own label. The row sits
-            ABOVE the working directory: the folder list, recents, and
-            validation all come from the selected machine (hostRequest), so
-            the form reads pick-the-machine first, then the folder on it. */}
-        {displayRemoteHosts.length > 0 && (
-          <FormRow
-            label="Host"
-            htmlFor="spawn-host"
-            help={
-              displayRemoteHosts.some((candidate) => !candidate.online)
-                ? "Where the session runs. Offline hosts can't be selected."
-                : "Where the session runs."
-            }
-          >
-            <Select
-              id="spawn-host"
-              value={displayHostChoice}
-              // A submit snapshots this choice (handleSpawn's closure carries
-              // the submittedSource/remoteLaunch that thread/start and
-              // saveDefaults receive) and then awaits the local directory
-              // preflight, so a change mid-submit would silently diverge from
-              // what actually launches and from which defaults are saved.
-              // Disabled while busy; the guard also covers the same-tick window
-              // before that attribute commits (kata 61v2's busyRef discipline).
-              disabled={busy}
-              onChange={(event) => {
-                if (busyRef.current) return;
-                const next = event.target.value;
-                setSource(next);
-                // Selecting a host is never itself an attach request: an online
-                // row is already attached (a dial would only be redundant), and
-                // an offline row's option is disabled, so a select event cannot
-                // name it — the Connect affordance below is the single path that
-                // reaches an offline host.
-              }}
-              options={displaySources.map((candidate) => ({
-                value: candidate.id,
-                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
-                disabled: !candidate.online,
-              }))}
-            />
-            {displayRemoteHosts.some((candidate) => !candidate.online) && (
-              <div className={CLASS.hostConnectRow}>
-                {displayRemoteHosts
-                  .filter((candidate) => !candidate.online)
-                  .map((candidate) => (
-                    <Button
-                      key={candidate.id}
-                      variant="quiet"
-                      size="xs"
-                      type="button"
-                      disabled={connectingHosts.has(candidate.id)}
-                      onClick={() => connectHost(candidate.id)}
-                    >
-                      {connectingHosts.has(candidate.id)
-                        ? `Connecting ${candidate.label}…`
-                        : `Connect ${candidate.label}`}
-                    </Button>
-                  ))}
-              </div>
-            )}
-          </FormRow>
-        )}
-
-        <div className={CLASS.cfgDir}>
-          <button
-            type="button"
-            id="spawn-cwd"
-            className={CLASS.directoryButton}
-            data-state={cwd ? "chosen" : "unset"}
-            aria-label={`Working directory: ${cwd || "Choose a folder"}`}
-            aria-haspopup="dialog"
-            aria-expanded={directoryOpen}
-            onClick={() => setDirectoryOpen(true)}
-          >
-            <DirectoryIcon />
-            <span className={CLASS.directoryText}>
-              <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
-              <span className={CLASS.directoryPath}>{cwd || "Choose a folder"}</span>
-            </span>
-            <span>Change…</span>
-          </button>
-          {branch !== "" && (
-            <span className={CLASS.branch} data-testid="spawn-branch">
-              {branch}
-            </span>
-          )}
+        <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
+          <h2 className={CLASS.promptHeading}>What should the agent do?</h2>
+          <p className={CLASS.promptSubtitle}>Leave blank to start an empty session and write the task there.</p>
         </div>
-        {directoryOpen && (
-          <DirectoryPicker
-            key={cwd}
-            value={cwd}
-            fallbackDir={pickerFallbackDir}
-            complete={complete}
-            listRecents={listRecents}
-            validatePath={validatePath}
-            createDirectory={createDirectory}
-            onClose={() => setDirectoryOpen(false)}
-            onPick={(path) => {
-              setCwd(path);
-              commitLastWorkingDir(path);
-              setDirectoryOpen(false);
-            }}
-          />
-        )}
 
         {providerRequired && (
           <InlineNotice
@@ -2719,11 +2628,6 @@ function SpawnForm({
             Could not check provider configuration.
           </InlineNotice>
         )}
-
-        <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
-          <h2 className={CLASS.promptHeading}>What should the agent do?</h2>
-          <p className={CLASS.promptSubtitle}>Leave blank to start an empty session and write the task there.</p>
-        </div>
 
         {/* The prompt shares its card and attachment controls with the session composer. */}
         {/* The positioned anchor for the inline slash menu above the card -
@@ -2911,49 +2815,6 @@ function SpawnForm({
             {startBlockedReason}
           </p>
         )}
-        <InlineNotice
-          data-testid="spawn-effective-access"
-          data-state={resolveStatus}
-          data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
-          data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
-          data-source={advancedSandboxOverride ? "advanced" : "access"}
-          action={
-            <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
-              Change
-            </Button>
-          }
-        >
-          {resolveStatus === "ready" ? (
-            <>
-              Effective access: {effectiveAccess?.label ?? (effectiveSandbox || "inherited")}.
-              {advancedSandboxOverride ? " Set by the Advanced sandbox override." : " Set by Access mode."}
-              {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
-            </>
-          ) : resolveStatus === "error" ? (
-            "Effective access is unresolved because launch settings could not be resolved."
-          ) : (
-            "Effective access is being resolved."
-          )}
-        </InlineNotice>
-        {connectingProvider !== null && providerSetupIsLocal && (
-          <ConnectProviderDialogBoundary
-            key={dialogChunkVersion}
-            onRetry={retryProviderDialog}
-            reloadAvailable={dialogReloadAvailable}
-            onClose={closeProviderSetup}
-          >
-            <Suspense
-              fallback={
-                <Dialog open onClose={closeProviderSetup} title="Connect provider">
-                  <Loader label="Loading…" />
-                </Dialog>
-              }
-            >
-              <ProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />
-            </Suspense>
-          </ConnectProviderDialogBoundary>
-        )}
-        <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
         {/* The same AttachmentTile the session composer draws (kata kbg7):
             staging an image is one act, so it looks like one thing whichever
@@ -2970,7 +2831,7 @@ function SpawnForm({
         )}
 
         {/* The modelRequired note lives with the card's own model trigger
-            below: it explains why Start is disabled, so it sits beside the
+            above: it explains why Start is disabled, so it sits beside the
             control it names rather than in a form row that no longer exists. */}
         {modelRequired && !providerRequired && (
           <InlineNotice live="alert" data-reason={noDefaultModel ? "no-default-model" : "provider-model"}>
@@ -2994,63 +2855,183 @@ function SpawnForm({
             {hostCatalogErrorText}
           </InlineNotice>
         )}
-        {pluginSelectionSupported && (
-          <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
-            {previewResponse === null && (
-              <div
-                className={CLASS.pluginSummary}
-                data-testid="spawn-plugin-summary"
-                data-state={pluginPreview.state.status}
-                role="status"
-              >
-                <strong>Plugins for this session</strong>
-                {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
-                {pluginPreview.state.status === "error" && (
-                  <>
-                    <span title={pluginPreview.state.message}>
-                      Couldn't inspect plugins: {pluginPreview.state.message}
-                    </span>
-                    <div className={CLASS.pluginSummaryAction}>
-                      <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
-                        Retry
-                      </Button>
-                    </div>
-                  </>
-                )}
+
+        {/* Host picker (Component 06b): rendered only when the manifest lists a
+            non-local source, so the common single-host form is byte-for-byte
+            unchanged. Local is preselected (the draft default). An offline host
+            still renders - the reader can see it exists - but its option is
+            disabled and carries the reason in its own label. The row sits
+            ABOVE the working directory: the folder list, recents, and
+            validation all come from the selected machine (hostRequest), so
+            the form reads pick-the-machine first, then the folder on it. */}
+        {displayRemoteHosts.length > 0 && (
+          <FormRow
+            label="Host"
+            htmlFor="spawn-host"
+            help={
+              displayRemoteHosts.some((candidate) => !candidate.online)
+                ? "Where the session runs. Offline hosts can't be selected."
+                : "Where the session runs."
+            }
+          >
+            <Select
+              id="spawn-host"
+              value={displayHostChoice}
+              // A submit snapshots this choice (handleSpawn's closure carries
+              // the submittedSource/remoteLaunch that thread/start and
+              // saveDefaults receive) and then awaits the local directory
+              // preflight, so a change mid-submit would silently diverge from
+              // what actually launches and from which defaults are saved.
+              // Disabled while busy; the guard also covers the same-tick window
+              // before that attribute commits (kata 61v2's busyRef discipline).
+              disabled={busy}
+              onChange={(event) => {
+                if (busyRef.current) return;
+                const next = event.target.value;
+                setSource(next);
+                // Selecting a host is never itself an attach request: an online
+                // row is already attached (a dial would only be redundant), and
+                // an offline row's option is disabled, so a select event cannot
+                // name it — the Connect affordance below is the single path that
+                // reaches an offline host.
+              }}
+              options={displaySources.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.online ? candidate.label : `${candidate.label} (offline)`,
+                disabled: !candidate.online,
+              }))}
+            />
+            {displayRemoteHosts.some((candidate) => !candidate.online) && (
+              <div className={CLASS.hostConnectRow}>
+                {displayRemoteHosts
+                  .filter((candidate) => !candidate.online)
+                  .map((candidate) => (
+                    <Button
+                      key={candidate.id}
+                      variant="quiet"
+                      size="xs"
+                      type="button"
+                      disabled={connectingHosts.has(candidate.id)}
+                      onClick={() => connectHost(candidate.id)}
+                    >
+                      {connectingHosts.has(candidate.id)
+                        ? `Connecting ${candidate.label}…`
+                        : `Connect ${candidate.label}`}
+                    </Button>
+                  ))}
               </div>
             )}
-            {previewResponse !== null && (
-              <Disclosure
-                id="spawn-plugin-selection"
-                data-testid="spawn-plugin-disclosure"
-                summary={
-                  <div
-                    className={CLASS.pluginSummary}
-                    data-testid="spawn-plugin-summary"
-                    data-state={pluginPreview.state.status}
-                  >
-                    <strong>Plugins for this session</strong>
-                    <span>
-                      {configuredPluginNames.length > 0
-                        ? `Configured plugins: ${configuredPluginNames.join(", ")}`
-                        : "Configured plugins: none"}
-                    </span>
-                  </div>
-                }
-              >
-                <PluginSelectionPanel
-                  preview={previewResponse}
-                  selection={pluginSelection}
-                  client={client}
-                  host={submittedSource}
-                  removeOnly={pluginPreview.state.status === "error"}
-                  onSelectionChange={handlePluginSelectionChange}
-                  onRetry={pluginPreview.retry}
-                />
-              </Disclosure>
-            )}
-          </div>
+          </FormRow>
         )}
+
+        {/* The two facts a session starts from, as a pair of summary tiles
+            under the task: where it runs and what it may touch. Each tile's
+            action opens the owner of that fact - the directory picker, the
+            access control. */}
+        <div className={CLASS.summaryRow}>
+          <div className={CLASS.cfgDir}>
+            <button
+              type="button"
+              id="spawn-cwd"
+              className={CLASS.directoryButton}
+              data-state={cwd ? "chosen" : "unset"}
+              aria-label={`Working directory: ${cwd || "Choose a folder"}`}
+              aria-haspopup="dialog"
+              aria-expanded={directoryOpen}
+              onClick={() => setDirectoryOpen(true)}
+            >
+              <span className={CLASS.tileSeat} aria-hidden="true">
+                <DirectoryIcon />
+              </span>
+              <span className={CLASS.tileText}>
+                <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
+                <span className={CLASS.tileCaption}>{cwd || "Choose a folder"}</span>
+                {/* Git info is a property of that directory (HEAD there), so
+                    it rides inside the directory's own tile. */}
+                {branch !== "" && (
+                  <span className={CLASS.branch} data-testid="spawn-branch">
+                    {branch}
+                  </span>
+                )}
+              </span>
+              <span className={CLASS.directoryAction}>Change…</span>
+            </button>
+          </div>
+          {/* A live region: a changed access mode re-announces what the
+              session will be allowed to do. */}
+          <Card
+            variant="outlined"
+            role="status"
+            data-testid="spawn-effective-access"
+            data-state={resolveStatus}
+            data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
+            data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
+            data-source={advancedSandboxOverride ? "advanced" : "access"}
+          >
+            <div className={CLASS.accessTile}>
+              <span className={CLASS.tileSeat} aria-hidden="true">
+                <ToolIcon kind="shield" size={16} />
+              </span>
+              <span className={CLASS.tileText}>
+                {resolveStatus === "ready" ? (
+                  <>
+                    <span className={CLASS.tileCaption}>Effective access</span>
+                    <strong>{effectiveAccess?.label ?? (effectiveSandbox || "inherited")}</strong>
+                    <span className={CLASS.tileCaption}>
+                      {advancedSandboxOverride ? "Set by the Advanced sandbox override." : "Set by Access mode."}
+                      {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
+                    </span>
+                  </>
+                ) : (
+                  <span className={CLASS.summaryPending}>
+                    {resolveStatus === "error"
+                      ? "Effective access is unresolved because launch settings could not be resolved."
+                      : "Effective access is being resolved."}
+                  </span>
+                )}
+              </span>
+              <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
+                Change
+              </Button>
+            </div>
+          </Card>
+        </div>
+        {directoryOpen && (
+          <DirectoryPicker
+            key={cwd}
+            value={cwd}
+            fallbackDir={pickerFallbackDir}
+            complete={complete}
+            listRecents={listRecents}
+            validatePath={validatePath}
+            createDirectory={createDirectory}
+            onClose={() => setDirectoryOpen(false)}
+            onPick={(path) => {
+              setCwd(path);
+              commitLastWorkingDir(path);
+              setDirectoryOpen(false);
+            }}
+          />
+        )}
+        {connectingProvider !== null && providerSetupIsLocal && (
+          <ConnectProviderDialogBoundary
+            key={dialogChunkVersion}
+            onRetry={retryProviderDialog}
+            reloadAvailable={dialogReloadAvailable}
+            onClose={closeProviderSetup}
+          >
+            <Suspense
+              fallback={
+                <Dialog open onClose={closeProviderSetup} title="Connect provider">
+                  <Loader label="Loading…" />
+                </Dialog>
+              }
+            >
+              <ProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />
+            </Suspense>
+          </ConnectProviderDialogBoundary>
+        )}
+        <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows
@@ -3079,52 +3060,113 @@ function SpawnForm({
           />
         </div>
 
-        <div ref={advancedOwnerRef}>
-          <AdvancedOptions
-            createDirectory={createDirectory}
-            options={schemaOptions}
-            onOverridesChange={setAdvancedOverrides}
-            values={advancedValues}
-            onValuesChange={handleAdvancedValuesChange}
-            errors={advancedErrors}
-            onErrorsChange={setAdvancedErrors}
-            readValues={readAdvancedValues}
-            draftId={draft}
-            validatePath={validatePath}
-            resolveConfig={resolveConfig}
-            loadCatalog={loadCatalog}
-            complete={complete}
-            resolvedDefaults={
-              sandboxOverride ? { ...resolvedDefaults, sandbox: undefined } : (resolvedDefaults ?? undefined)
-            }
-          >
-            <FormRow label="Harness" htmlFor="spawn-harness">
-              <Select
-                id="spawn-harness"
-                value={harness || "evener"}
-                onChange={(e) => handleHarnessChange(e.target.value)}
-                options={harnessOptions}
+        <div className={CLASS.quietRows}>
+          {pluginSelectionSupported && (
+            <div className={`${CLASS.pluginDesktop} ${CLASS.quietRow}`} data-testid="spawn-plugin-desktop">
+              {previewResponse === null && (
+                <div
+                  className={CLASS.pluginSummary}
+                  data-testid="spawn-plugin-summary"
+                  data-state={pluginPreview.state.status}
+                  role="status"
+                >
+                  <strong>Plugins for this session</strong>
+                  {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
+                  {pluginPreview.state.status === "error" && (
+                    <>
+                      <span title={pluginPreview.state.message}>
+                        Couldn't inspect plugins: {pluginPreview.state.message}
+                      </span>
+                      <div className={CLASS.pluginSummaryAction}>
+                        <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                          Retry
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              {previewResponse !== null && (
+                <Disclosure
+                  id="spawn-plugin-selection"
+                  data-testid="spawn-plugin-disclosure"
+                  summary={
+                    <div
+                      className={CLASS.pluginSummary}
+                      data-testid="spawn-plugin-summary"
+                      data-state={pluginPreview.state.status}
+                    >
+                      <strong>Plugins for this session</strong>
+                      <span>
+                        {configuredPluginNames.length > 0
+                          ? `Configured plugins: ${configuredPluginNames.join(", ")}`
+                          : "Configured plugins: none"}
+                      </span>
+                    </div>
+                  }
+                >
+                  <PluginSelectionPanel
+                    preview={previewResponse}
+                    selection={pluginSelection}
+                    client={client}
+                    host={submittedSource}
+                    removeOnly={pluginPreview.state.status === "error"}
+                    onSelectionChange={handlePluginSelectionChange}
+                    onRetry={pluginPreview.retry}
+                  />
+                </Disclosure>
+              )}
+            </div>
+          )}
+          <div ref={advancedOwnerRef} className={CLASS.quietRow}>
+            <AdvancedOptions
+              createDirectory={createDirectory}
+              options={schemaOptions}
+              onOverridesChange={setAdvancedOverrides}
+              values={advancedValues}
+              onValuesChange={handleAdvancedValuesChange}
+              errors={advancedErrors}
+              onErrorsChange={setAdvancedErrors}
+              readValues={readAdvancedValues}
+              draftId={draft}
+              open={advancedOpen}
+              onOpenChange={setAdvancedOpen}
+              validatePath={validatePath}
+              resolveConfig={resolveConfig}
+              loadCatalog={loadCatalog}
+              complete={complete}
+              resolvedDefaults={
+                sandboxOverride ? { ...resolvedDefaults, sandbox: undefined } : (resolvedDefaults ?? undefined)
+              }
+            >
+              <FormRow label="Harness" htmlFor="spawn-harness">
+                <Select
+                  id="spawn-harness"
+                  value={harness || "evener"}
+                  onChange={(e) => handleHarnessChange(e.target.value)}
+                  options={harnessOptions}
+                />
+              </FormRow>
+              <FormRow label="Access mode" htmlFor="spawn-access">
+                <Select
+                  id="spawn-access"
+                  value={accessMode}
+                  onChange={(e) => setAccessMode(e.target.value)}
+                  options={accessOptions}
+                />
+              </FormRow>
+              <Switch
+                label="Start as Manager"
+                description="The session can manage any session its hub can reach. This is a start-time property: it lasts until the session ends."
+                checked={manager}
+                onChange={setManager}
               />
-            </FormRow>
-            <FormRow label="Access mode" htmlFor="spawn-access">
-              <Select
-                id="spawn-access"
-                value={accessMode}
-                onChange={(e) => setAccessMode(e.target.value)}
-                options={accessOptions}
-              />
-            </FormRow>
-            <Switch
-              label="Start as Manager"
-              description="The session can manage any session its hub can reach. This is a start-time property: it lasts until the session ends."
-              checked={manager}
-              onChange={setManager}
-            />
-          </AdvancedOptions>
+            </AdvancedOptions>
+          </div>
         </div>
         {!hasSession && (
           <div className={CLASS.chordHints} data-testid="spawn-chord-hints">
-            <ShortcutList items={CHORD_HINTS} />
+            <ShortcutList layout="inline" items={CHORD_HINTS} />
           </div>
         )}
       </div>

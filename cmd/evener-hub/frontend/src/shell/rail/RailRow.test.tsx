@@ -290,7 +290,15 @@ function watchSummary(overrides: Partial<EvenerWatchInfo> = {}): EvenerWatchInfo
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
-  return { depth: 0, expanded: false, hasChildren: false, toggle: vi.fn(), activate: vi.fn(), ...overrides };
+  return {
+    depth: 0,
+    expanded: false,
+    hasChildren: false,
+    focused: false,
+    toggle: vi.fn(),
+    activate: vi.fn(),
+    ...overrides,
+  };
 }
 
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
@@ -2364,11 +2372,21 @@ describe("shared right slot (RailRow.module.css)", () => {
     expect(actionsRule).toMatch(/visibility:\s*hidden/);
   });
 
+  test("a session row carries the treeitem's focus only while Tree reports it", () => {
+    const { container, rerender } = render(
+      <RailRow node={sessionRailNode(apiNode())} info={info({ focused: false })} actions={actions()} />,
+    );
+    const row = () => container.querySelector<HTMLElement>("[data-session-ref]");
+    expect(row()?.dataset.rowFocused).toBeUndefined();
+    rerender(<RailRow node={sessionRailNode(apiNode())} info={info({ focused: true })} actions={actions()} />);
+    expect(row()?.dataset.rowFocused).toBe("true");
+  });
+
   test("revealing the menu covers the occupant - and only on a hover-capable desktop pointer", () => {
     // The reveal flips BOTH halves of the shared cell. Menu side (top-level
     // rule): the same three conditions as ever - row hover, treeitem focus,
     // this row's own menu held open.
-    const revealStart = RAIL_CSS.indexOf('[role="treeitem"]:focus .actions');
+    const revealStart = RAIL_CSS.indexOf('.railRow[data-row-focused="true"] .actions');
     expect(revealStart, "row hover must reveal the actions").toBeGreaterThanOrEqual(0);
     const revealOpen = RAIL_CSS.indexOf("{", revealStart);
     expect(revealOpen, "the action reveal selectors must own a rule").toBeGreaterThan(revealStart);
@@ -2380,7 +2398,7 @@ describe("shared right slot (RailRow.module.css)", () => {
       .map((s) => s.trim());
     expect(revealTargets).toEqual(
       expect.arrayContaining([
-        '[role="treeitem"]:focus .actions',
+        '.railRow[data-row-focused="true"] .actions',
         '.actions:has(button[aria-expanded="true"])',
         ".railRow:hover .actions",
       ]),
@@ -2394,9 +2412,9 @@ describe("shared right slot (RailRow.module.css)", () => {
     // nested in @media mangle the flat matchAll above, so this half is
     // pinned against the media block's own text.
     const flipMedia = mediaBlock(RAIL_CSS, "hover: hover) and (min-width: 900px");
-    const flipBlock = nestedRuleBlock(flipMedia, '[role="treeitem"]:focus .rightSlot > :not(.actions)');
+    const flipBlock = nestedRuleBlock(flipMedia, '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)');
     for (const selector of [
-      '[role="treeitem"]:focus .rightSlot > :not(.actions)',
+      '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)',
       '.rightSlot:has(button[aria-expanded="true"]) > :not(.actions)',
       ".railRow:hover .rightSlot > :not(.actions)",
     ]) {

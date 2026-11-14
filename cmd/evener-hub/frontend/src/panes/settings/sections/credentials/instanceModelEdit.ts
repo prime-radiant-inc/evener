@@ -172,7 +172,7 @@ function effectiveHardCeiling(
     return draftedCw !== null && draftedCw > 0 ? draftedCw : 0;
   }
   const limits: number[] = [];
-  const inheritedCw = inheritedField(detail?.effective.contextWindow, detail?.provenance.ContextWindow) ?? null;
+  const inheritedCw = inheritedNumericField(detail, "contextWindow") ?? null;
   const effectiveCw = rawCw !== "" ? draftedCw : inheritedCw;
   if (effectiveCw !== null && effectiveCw > 0) {
     limits.push(effectiveCw);
@@ -530,6 +530,32 @@ function inheritedField<T>(value: T | undefined, prov: string | undefined): T | 
   return prov === "config" ? undefined : value;
 }
 
+// The numeric override fields whose figures an alias row can import from its
+// target's config row: seedFromAlias preserves the target's provenance for
+// exactly these (llm/registry/resolve.go), so an alias can report prov
+// "config" for figures it never authored. The keys name each field on
+// InstanceModelEffective and InstanceModelAuthored; the values name it on
+// the provenance record.
+const NUMERIC_OVERRIDE_FIELDS = {
+  compactionThreshold: "CompactionThreshold",
+  contextWindow: "ContextWindow",
+  maxOutputTokens: "MaxOutputTokens",
+} as const;
+
+// A numeric figure is hidden from the Inherited placeholders only when THIS
+// row authored it: an alias importing the target's config figures did not
+// author them, so they stay visible as inherited, like a catalog figure.
+function inheritedNumericField(
+  detail: InstanceModelDetailResponse | null | undefined,
+  field: keyof typeof NUMERIC_OVERRIDE_FIELDS,
+): number | undefined {
+  const prov = detail?.provenance[NUMERIC_OVERRIDE_FIELDS[field]];
+  if (prov === "config" && detail?.authored?.[field] !== undefined) {
+    return undefined;
+  }
+  return detail?.effective[field];
+}
+
 function provenanceSuffix(prov: string | undefined): string {
   return prov && prov !== "config" ? ` (${prov})` : "";
 }
@@ -548,13 +574,13 @@ export function compactionThresholdPlaceholder(
   draftContextWindow = "",
 ): string {
   const thresholdProv = detail?.provenance.CompactionThreshold;
-  const inheritedThreshold = inheritedField(detail?.effective.compactionThreshold, thresholdProv);
+  const inheritedThreshold = inheritedNumericField(detail, "compactionThreshold");
   if (inheritedThreshold !== undefined && inheritedThreshold > 0) {
     return `Inherited: ${formatTokenCount(inheritedThreshold)}${provenanceSuffix(thresholdProv)}`;
   }
   const rawDraftCw = draftContextWindow.trim();
   const draftedCw = rawDraftCw === "" ? null : parseTokenCount(rawDraftCw);
-  const inheritedCw = inheritedField(detail?.effective.contextWindow, detail?.provenance.ContextWindow);
+  const inheritedCw = inheritedNumericField(detail, "contextWindow");
   const cw = draftedCw ?? inheritedCw;
   if (cw !== undefined && cw > 0) {
     const defaultTokens = Math.round(cw * DEFAULT_COMPACT_AT);
@@ -563,10 +589,13 @@ export function compactionThresholdPlaceholder(
   return "Default: 90% of context window";
 }
 
-export function tokenLimitPlaceholder(value: number | undefined, prov: string | undefined): string {
-  const inherited = inheritedField(value, prov);
+export function tokenLimitPlaceholder(
+  detail: InstanceModelDetailResponse | null | undefined,
+  field: keyof typeof NUMERIC_OVERRIDE_FIELDS,
+): string {
+  const inherited = inheritedNumericField(detail, field);
   if (inherited !== undefined && inherited > 0) {
-    return `Inherited: ${formatTokenCount(inherited)}${provenanceSuffix(prov)}`;
+    return `Inherited: ${formatTokenCount(inherited)}${provenanceSuffix(detail?.provenance[NUMERIC_OVERRIDE_FIELDS[field]])}`;
   }
   return "Inherited";
 }

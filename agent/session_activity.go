@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -260,7 +261,10 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 			if parent == nil || parent.Descriptor.ChildSessionID != owner {
 				return false
 			}
-			chain[len(chain)-1].Title = activitybound.Truncate(parent.Descriptor.Description, activityMaxLabelRunes)
+			// An ancestor is titled from the parent descriptor's
+			// Description, or its Task when none was recorded; an empty
+			// title would push the display back onto the opaque session ref.
+			chain[len(chain)-1].Title = activitybound.Truncate(cmp.Or(parent.Descriptor.Description, parent.Descriptor.Task), activityMaxLabelRunes)
 			chain[len(chain)-1].DelegateName = activitybound.Truncate(parent.Descriptor.Name, activityMaxLabelRunes)
 		} else if owner != rootID {
 			return false

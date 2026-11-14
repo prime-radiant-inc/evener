@@ -212,7 +212,7 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
             <ul aria-label="Discovered MCP servers" className={CLASS.list}>
               {(discovered?.servers ?? []).length === 0 ? (
                 <li data-testid="mcp-discovered-empty">
-                  <EmptyState size="compact" title="No MCP servers configured." />
+                  <EmptyState size="compact" title="No MCP servers yet" />
                 </li>
               ) : (
                 (discovered?.servers ?? []).map((s) => (

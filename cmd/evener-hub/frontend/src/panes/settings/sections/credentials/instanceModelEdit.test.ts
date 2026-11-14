@@ -384,12 +384,15 @@ describe("summary and placeholder helpers", () => {
     expect(inheritedPlaceholder).toContain("300K");
     expect(inheritedPlaceholder).toContain("glob");
 
-    const limitPlaceholder = tokenLimitPlaceholder(1_000_000, "catalog");
+    const limitPlaceholder = tokenLimitPlaceholder(baseDetail(), "contextWindow");
     expect(limitPlaceholder).toContain("1M");
     expect(limitPlaceholder).toContain("catalog");
   });
 
-  test("omits authored values from Inherited placeholders and options when provenance is config", () => {
+  // The numeric fields hide a config-provenance figure only when this row
+  // authored it (the alias case lives in the test below); the option and
+  // wire-id helpers still hide every config-provenance value.
+  test("omits config-provenance figures from Inherited placeholders and options", () => {
     const configDetail = baseDetail({
       effective: {
         contextWindow: 128_000,
@@ -419,9 +422,17 @@ describe("summary and placeholder helpers", () => {
         ThinkingShape: "config",
         WireID: "config",
       },
+      // The row authored these config values itself: that is what the
+      // config-provenance omission below is for. An alias importing the
+      // target's config figures authors nothing (see the alias test below).
+      authored: {
+        compactionThreshold: 90_000,
+        contextWindow: 128_000,
+        maxOutputTokens: 16_000,
+      },
     });
 
-    expect(tokenLimitPlaceholder(128_000, "config")).not.toContain("128K");
+    expect(tokenLimitPlaceholder(configDetail, "contextWindow")).not.toContain("128K");
     expect(wireIdPlaceholder(configDetail)).not.toContain("custom-wire-v1");
     expect(compactionThresholdPlaceholder(configDetail, "")).not.toContain("128K");
     expect(compactionThresholdPlaceholder(configDetail, "")).not.toContain("115K");
@@ -446,5 +457,35 @@ describe("summary and placeholder helpers", () => {
     expect(modelSurfaceOptions(configDetail)[0]?.label).not.toContain("generic");
     expect(thinkingFormatOptions(configDetail)[0]?.label).not.toContain("deepseek");
     expect(thinkingShapeOptions(configDetail)[0]?.label).not.toContain("budget");
+  });
+
+  test("keeps alias-inherited values visible when config provenance was imported from the alias target", () => {
+    const aliasDetail = baseDetail({
+      effective: { ...baseDetail().effective, contextWindow: 128_000, compactionThreshold: 250_000 },
+      provenance: { ...baseDetail().provenance, ContextWindow: "config", CompactionThreshold: "config" },
+      authored: { aliasOf: "gpt-5.5" },
+    });
+    const thresholdPlaceholder = compactionThresholdPlaceholder(aliasDetail, "");
+    expect(thresholdPlaceholder).toContain("250K");
+    expect(tokenLimitPlaceholder(aliasDetail, "contextWindow")).toContain("128K");
+
+    const aliasWindowOnly = baseDetail({
+      effective: { ...baseDetail().effective, contextWindow: 128_000 },
+      provenance: { ...baseDetail().provenance, ContextWindow: "config" },
+      authored: { aliasOf: "gpt-5.5" },
+    });
+    const windowPlaceholder = compactionThresholdPlaceholder(aliasWindowOnly, "");
+    expect(windowPlaceholder).toContain("115K");
+    expect(windowPlaceholder).toContain("128K");
+
+    const seeded = seedModelDraft(aliasDetail);
+    expect(
+      validateModelDraft({ ...seeded, compactionThreshold: "300k" }, aliasDetail, [], "edit", seeded)
+        .compactionThreshold,
+    ).toBeDefined();
+    expect(
+      validateModelDraft({ ...seeded, compactionThreshold: "100k" }, aliasDetail, [], "edit", seeded)
+        .compactionThreshold,
+    ).toBeUndefined();
   });
 });

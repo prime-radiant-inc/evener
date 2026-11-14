@@ -85,6 +85,10 @@ export default function ListRowGallerySection() {
               <ListRow variant="plain" label="Pinned" onSelect={() => {}} />
             </li>
             <li>
+              {/* aria-current: the selected row of a navigation list. */}
+              <ListRow variant="plain" label="Appearance (current)" onSelect={() => {}} aria-current="page" />
+            </li>
+            <li>
               <ListRow
                 variant="plain"
                 leading={<span aria-hidden="true">$</span>}

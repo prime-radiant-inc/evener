@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/internal/providertest"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -91,18 +92,6 @@ func liveRes(srv *httptest.Server, mutate func(c *registry.Caps)) registry.Resol
 	return res
 }
 
-// streamingPreparer stands in for the Codex transport: RequiresStreamingComplete.
-type streamingPreparer struct{}
-
-func (streamingPreparer) Apply(_ context.Context, req *http.Request, _ registry.Resolved) error {
-	req.Header.Set("Authorization", "Bearer codex-token")
-	return nil
-}
-func (streamingPreparer) PrepareRequest(context.Context, *http.Request, map[string]any, llm.Request, registry.Resolved) error {
-	return nil
-}
-func (streamingPreparer) RequiresStreamingComplete() bool { return true }
-
 type outputOverwritingPreparer struct{}
 
 func (outputOverwritingPreparer) Apply(context.Context, *http.Request, registry.Resolved) error {
@@ -114,7 +103,6 @@ func (outputOverwritingPreparer) PrepareRequest(_ context.Context, _ *http.Reque
 }
 func (outputOverwritingPreparer) RequiresStreamingComplete() bool { return false }
 
-var registerOnce sync.Once
 var registerOutputOverwriterOnce sync.Once
 
 func TestCompleteDecodesOutputItems(t *testing.T) {
@@ -236,7 +224,7 @@ func TestStreamEmitsDeltasAndFinish(t *testing.T) {
 }
 
 func TestCompleteThroughStreamWhenTheTransportRequiresIt(t *testing.T) {
-	registerOnce.Do(func() { llm.RegisterAuthenticator("test-streaming-codex", streamingPreparer{}) })
+	providertest.RegisterStreamingRequiredAuth(t, "test-streaming-codex", providertest.StreamingRequiredAuth{Authorization: "Bearer codex-token"})
 	srv, got := server(t, 200, responseSSE)
 	res := liveRes(srv, codexLiteCaps)
 	res.Transport.Auth = "test-streaming-codex"

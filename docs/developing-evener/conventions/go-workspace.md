@@ -156,8 +156,9 @@ became a `[]summarizationRoute` stranded a `//go:build eval` caller for
 six weeks.
 
 **`golangci-lint` still does not look inside a tagged file.**
-`make lint-golangci` runs the developer binary's module-lint command,
-which invokes a bare `golangci-lint run ./...` per module.
+`make lint-golangci` invokes `golangci-lint` directly from the repo root, one
+invocation per build regime over `WORKSPACE_LINT_PATTERNS` (every `go.work`
+module — a bare `./...` resolves per-module under `go.work`).
 `.golangci.yml` sets no `build-tags`, so the lint rules
 proper — unused, staticcheck, the rest — never see a `//go:build
 evenerfuzz` or `//go:build eval` source. The floors are type-checking, not

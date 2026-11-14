@@ -5,43 +5,20 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
+	"primeradiant.com/evener/llm/providers/internal/providertest"
 )
 
-// streamingRequiredAuth is a stub authenticator whose transport answers every
-// request as a stream: it is what routes Complete through CompleteViaStream
-// (protocolhttp.RequiresStreamingComplete). Registered under a test-only scheme
-// so the anthropic transport can be driven through the streaming-complete path
-// without a real Codex backend.
-type streamingRequiredAuth struct{}
-
-func (streamingRequiredAuth) Apply(context.Context, *http.Request, registry.Resolved) error {
-	return nil
-}
-func (streamingRequiredAuth) PrepareRequest(context.Context, *http.Request, map[string]any, llm.Request, registry.Resolved) error {
-	return nil
-}
-func (streamingRequiredAuth) RequiresStreamingComplete() bool { return true }
-
+// streamingRequiredScheme is the test-only auth scheme that routes Complete
+// through CompleteViaStream (protocolhttp.RequiresStreamingComplete).
 const streamingRequiredScheme = "anthropic-test-streaming-required"
-
-var registerStreamingRequiredOnce sync.Once
-
-func registerStreamingRequiredAuth(t *testing.T) {
-	t.Helper()
-	registerStreamingRequiredOnce.Do(func() {
-		llm.RegisterAuthenticator(streamingRequiredScheme, streamingRequiredAuth{})
-	})
-}
 
 // A transport whose auth scheme requires streaming completion must serve
 // Complete from the SSE stream and still return the accumulated response.
 func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
-	registerStreamingRequiredAuth(t)
+	providertest.RegisterStreamingRequiredAuth(t, streamingRequiredScheme, providertest.StreamingRequiredAuth{})
 	srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, messagesSSE })
 	res := protoLive(srv)
 	res.Transport.Auth = streamingRequiredScheme

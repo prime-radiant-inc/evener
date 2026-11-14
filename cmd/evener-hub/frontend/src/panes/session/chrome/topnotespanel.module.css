@@ -7,17 +7,15 @@
    * continuation of the header, whose own border-bottom is the single seam.
    * Inside cascade columns the body is flush (bodyNoScroll) with no padding
    * to cancel, so that margin rule lives in a session-scoped override below
-   * and stays 0 there. Only the bottom corners are rounded. Shadow is the
-   * intentional separation from the transcript — layered soft bloom rather
-   * than a hard bar. */
+   * and stays 0 there. Only the bottom corners are rounded. The raised lift
+   * is the intentional separation from the transcript - a soft ambient
+   * rather than a hard bar. */
   position: relative;
   z-index: var(--z-raised);
   border: 1px solid var(--edge);
   border-top: none;
   border-radius: 0 0 var(--radius-panel) var(--radius-panel);
-  box-shadow:
-    0 1px 3px var(--shadow-color),
-    0 8px 24px var(--shadow-color);
+  box-shadow: var(--shadow-raised);
   /* The boundary is a real border, NOT --shadow-overlay's ring: the ring is a
    * spread box-shadow, which paints OUTSIDE the border box and is shaved
    * wherever a clipping ancestor cuts the card's edge - the pane body's
@@ -32,17 +30,6 @@
  * panel must not pull above its scrollport there. */
 :global([data-pane-scaffold^="session:"]) .topNotesPanel {
   margin-top: calc(-1 * var(--space-5));
-}
-
-/* squircle-proto: continuous (Apple-style) corner curvature where the engine
- * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. Matches Card and PaneScaffold. Top edge is flat
- * where it meets the header, so only the bottom corners carry the curve. */
-@supports (corner-shape: squircle) {
-  .topNotesPanel {
-    corner-shape: squircle;
-    border-radius: 0 0 var(--radius-panel) var(--radius-panel);
-  }
 }
 
 .summary {

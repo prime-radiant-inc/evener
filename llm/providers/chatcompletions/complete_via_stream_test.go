@@ -2,35 +2,17 @@ package chatcompletions
 
 import (
 	"context"
-	"net/http"
-	"sync"
 	"testing"
 
-	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/registry"
+	"primeradiant.com/evener/llm/providers/internal/providertest"
 )
-
-// chatStreamingPreparer stands in for a transport that answers only streams
-// (the Codex-style RequiresStreamingComplete contract).
-type chatStreamingPreparer struct{}
-
-func (chatStreamingPreparer) Apply(_ context.Context, req *http.Request, _ registry.Resolved) error {
-	req.Header.Set("Authorization", "Bearer chat-stream-token")
-	return nil
-}
-func (chatStreamingPreparer) PrepareRequest(context.Context, *http.Request, map[string]any, llm.Request, registry.Resolved) error {
-	return nil
-}
-func (chatStreamingPreparer) RequiresStreamingComplete() bool { return true }
-
-var registerChatStreamingOnce sync.Once
 
 // TestCompleteThroughStreamWhenTheTransportRequiresIt pins the streaming
 // entrypoint of Complete: a transport that only answers streams is driven
 // through Stream and accumulated, with the stream flag on the wire and the
 // preparer's headers applied.
 func TestCompleteThroughStreamWhenTheTransportRequiresIt(t *testing.T) {
-	registerChatStreamingOnce.Do(func() { llm.RegisterAuthenticator("test-chat-streaming", chatStreamingPreparer{}) })
+	providertest.RegisterStreamingRequiredAuth(t, "test-chat-streaming", providertest.StreamingRequiredAuth{Authorization: "Bearer chat-stream-token"})
 	srv, got := server(t, 200, chatSSE)
 	res := liveRes(srv, nil)
 	res.Transport.Auth = "test-chat-streaming"

@@ -775,7 +775,9 @@ function assertDuoCompactStates(result) {
     );
   }
   if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  if (focused && (focused.cardGap !== "4px" || focused.cardPaddingBlock !== "4px 4px")) {
+  // Ordinary spacing is PromptCard's own stacked inset: one --space-2 between
+  // field and controls, --space-3 above the field and --space-2 below the row.
+  if (focused && (focused.cardGap !== "8px" || focused.cardPaddingBlock !== "12px 8px")) {
     failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)

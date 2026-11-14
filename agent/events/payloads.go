@@ -669,6 +669,11 @@ const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undelivera
 // requeued and the start continues.
 const WarningCodeDelegateStartDeliveryReplay = "delegate_start_delivery_replay"
 
+// WarningCodeDelegateDeliveryResultLost identifies the notice that a stop
+// abandoned an inline delivery receipt after proving the owning tool commit
+// was gone: the delegate's result reached no tool result and is lost.
+const WarningCodeDelegateDeliveryResultLost = "delegate_delivery_result_lost"
+
 // WarningCodeAttentionPaused identifies the notice that a permanent provider
 // failure (a dead credential, a spent quota) has paused delivering background
 // updates to a session until something changes. Unlike the informational

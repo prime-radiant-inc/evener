@@ -677,20 +677,24 @@ function TodayBrowseNode() {
     <Disclosure open={open} onOpenChange={setOpen} summary={`superpowers-marketplace (${rows.length})`}>
       <ul aria-label="superpowers-marketplace plugins" className={mpStyles.treeChildren}>
         {rows.map((p) => (
-          <li className={mpStyles.row} key={p.name}>
-            <div className={mpStyles.rowMain}>
-              <div className={mpStyles.rowText}>{p.name}</div>
-              <div className={mpStyles.rowMeta}>{p.description}</div>
-            </div>
-            <div className={mpStyles.rowActions}>
-              {p.installed ? (
-                <Chip kind="installed">Installed</Chip>
-              ) : (
-                <Button size="sm" onClick={() => {}}>
-                  Install
-                </Button>
-              )}
-            </div>
+          <li key={p.name}>
+            <Card variant="outlined">
+              <div className={mpStyles.row}>
+                <div className={mpStyles.rowMain}>
+                  <div className={mpStyles.rowText}>{p.name}</div>
+                  <div className={mpStyles.rowMeta}>{p.description}</div>
+                </div>
+                <div className={mpStyles.rowActions}>
+                  {p.installed ? (
+                    <Chip kind="installed">Installed</Chip>
+                  ) : (
+                    <Button size="sm" onClick={() => {}}>
+                      Install
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </Card>
           </li>
         ))}
       </ul>

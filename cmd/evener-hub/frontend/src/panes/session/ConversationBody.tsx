@@ -134,7 +134,7 @@ export function ConversationBody({
   useThreadClaim(ref, seat.readView ?? undefined);
 
   // Opening a conversation marks its session seen on the hub, so the
-  // session's blue dot clears on the phone too.
+  // session's unseen dot clears on the phone too.
   useMarkSessionSeenOnOpen(ref);
 
   // Identity follow-up for a store-driven resume: the transcript is already
