@@ -31,6 +31,7 @@ import "../panes/session";
 import "../panes/transcript";
 import "../panes/welcome";
 import Session from "../panes/session/Session";
+import { seenWatermarkKey, writeSeenWatermark } from "../panes/session/transcript/flow/seenWatermark";
 import { openTranscript } from "../panes/session/transcript/openTranscript";
 import Transcript from "../panes/transcript/Transcript";
 import { ClientProvider } from "../shell/clientContext";
@@ -306,6 +307,15 @@ threadsStore.subscribe((state) => {
   if (model) modelTurnCount = model.turns.length;
 });
 
+// ?seen=<turn id>: this browser last left the session with that turn as its
+// latest finished one, so every later turn is a reply it has not shown and the
+// session opens at the first of them. Every other pass clears the watermark:
+// an earlier pass's unmount writes one, and the open those passes measure is
+// the plain one that lands at the end.
+const SEEN = new URLSearchParams(window.location.search).get("seen");
+if (SEEN === null) localStorage.removeItem(seenWatermarkKey(REF));
+else writeSeenWatermark(REF, SEEN);
+
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("transcriptscrollguard.html is missing #root");
 
@@ -563,6 +573,47 @@ async function waitForPagedOpenSettled(expectedTurns = INITIAL_TURN_COUNT): Prom
       return metrics();
     if (performance.now() > deadline) {
       throw new Error(`transcript harness: the paged open never settled; ${JSON.stringify(sample)}`);
+    }
+  }
+}
+
+// Frames the unseen-reply landing has to hold still for before it is read:
+// longer than the virtualizer's reconcile loop and the measurement
+// corrections of the rows the landing brought into the window.
+const UNSEEN_OPEN_STILL_FRAMES = 30;
+
+// ?seen=<turn id> readiness: the seen divider rendered and the geometry, the
+// divider's place in it included, holding still. `dividerTop` and `turnTop`
+// are the divider's and its turn's offsets from the top of the scroll port's
+// viewport.
+async function waitForUnseenOpenSettled() {
+  const deadline = performance.now() + SETTLE_TRIPWIRE_MS;
+  let still = 0;
+  let previous: string | undefined;
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("unseen open");
+    const el = findScrollElement();
+    const divider = el?.querySelector("[data-seen-divider]") ?? null;
+    const turn = divider?.closest("[data-turn-id]") ?? null;
+    const portTop = el?.getBoundingClientRect().top ?? 0;
+    const dividerTop = divider === null ? undefined : divider.getBoundingClientRect().top - portTop;
+    const sample =
+      el === null || dividerTop === undefined || !hasMeasuredRowGeometry(el)
+        ? undefined
+        : JSON.stringify({ ...geometryOf(el), dividerTop });
+    still = sample !== undefined && sample === previous ? still + 1 : 0;
+    previous = sample;
+    if (el !== null && dividerTop !== undefined && still >= UNSEEN_OPEN_STILL_FRAMES) {
+      return {
+        ...metricsFrom(el),
+        dividerTop,
+        dividerTurnId: turn?.getAttribute("data-turn-id") ?? null,
+        turnTop: (turn?.getBoundingClientRect().top ?? Number.NaN) - portTop,
+      };
+    }
+    if (performance.now() > deadline) {
+      throw new Error(`transcript harness: the unseen open never settled; ${sample ?? "no seen divider rendered"}`);
     }
   }
 }
@@ -840,6 +891,7 @@ declare global {
     unmountTranscriptScrollGuardPane: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
+    waitForUnseenOpenSettled: typeof waitForUnseenOpenSettled;
     transcriptScrollMetrics: typeof metrics;
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
     appendLargeTurns: typeof appendLargeTurns;
@@ -863,6 +915,7 @@ window.releaseEndedOlderPage = () => {
 window.unmountTranscriptScrollGuardPane = () => root.unmount();
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.waitForPagedOpenSettled = waitForPagedOpenSettled;
+window.waitForUnseenOpenSettled = waitForUnseenOpenSettled;
 window.transcriptScrollMetrics = metrics;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
 window.appendLargeTurns = appendLargeTurns;

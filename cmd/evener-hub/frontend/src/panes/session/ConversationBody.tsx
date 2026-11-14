@@ -33,7 +33,7 @@ import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill, newContentPillVisible } from "./transcript/flow/NewContentPill";
-import { useSeenDivider } from "./transcript/flow/useSeenDivider";
+import { unseenOpeningTurnId, useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
@@ -41,6 +41,7 @@ import { SelectionQuote } from "./transcript/SelectionQuote";
 import {
   TranscriptBody,
   transcriptAnchorEntriesForRows,
+  transcriptFirstRowIndexForTurn,
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
@@ -325,6 +326,21 @@ function LiveConversationBody({
     [projection, renderRows, anchorEntries],
   );
 
+  const seenBoundary = useSeenDivider(ref, model);
+  const retainedCapture = seat.readView?.getCapture();
+  const openingTurnId = unseenOpeningTurnId(seenBoundary, {
+    thread: model,
+    askDockPending: askPending,
+    retained: retainedCapture,
+  });
+  const openAtRow = useMemo(
+    () => (openingTurnId === null ? -1 : transcriptFirstRowIndexForTurn(renderRows, openingTurnId)),
+    [renderRows, openingTurnId],
+  );
+  // A capture that was following the end asks for the end again; the unseen
+  // reply replaces that request, so the two never both place the reader.
+  const initialViewCapture = openAtRow >= 0 ? undefined : retainedCapture;
+
   const virtualListRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
@@ -335,7 +351,8 @@ function LiveConversationBody({
     keepViewRemount: seat.keepViewRemount,
     model,
     listRef: virtualListRef,
-    initialViewCapture: seat.readView?.getCapture(),
+    initialViewCapture,
+    openAtRow: openAtRow >= 0 ? openAtRow : undefined,
     onReaderIntent: seat.readView?.supersedePositioning,
     onReaderMovement: seat.readView?.syncPositioningMovement,
     loadOlder,
@@ -393,7 +410,6 @@ function LiveConversationBody({
   }, [attentionMounted, attentionOwner, attentionController]);
 
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
-  const seenDividerTurnId = useSeenDivider(ref, model);
 
   // A deleted ref never hydrates a fresh model and its cached snapshot is
   // stale: the seat's deleted face outranks anything this body could render.
@@ -454,14 +470,14 @@ function LiveConversationBody({
         sessionRef={ref}
         sourcePaneId={seat.viewFallbackId}
         viewId={seat.readView?.id}
-        initialViewCapture={seat.readView?.getCapture()}
+        initialViewCapture={initialViewCapture}
         readView={seat.readView ?? undefined}
         followingBottom={flow.isFollowingBottom}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
         }}
-        showSeenDividerTurnId={seenDividerTurnId ?? undefined}
+        showSeenDividerTurnId={seenBoundary.dividerTurnId ?? undefined}
         loadOlderRow={
           hasOlder && (
             <LoadOlderRow

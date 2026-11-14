@@ -1,80 +1,105 @@
-// useSeenDivider (kata g2ez): answers "reopening a session you stepped away
-// from shows no marker for what's new" by giving the transcript a single,
-// fixed "you left off here" divider turn id.
+// useSeenDivider: the boundary between what this browser has shown of a
+// session and what arrived while its pane was away. One fixed turn id per
+// open, which the transcript marks with the "New since your last visit"
+// divider and, when that turn has finished, opens at.
 //
-// Scope decisions (each was an open product question the filing agent
-// deliberately left unsettled - see the kata's own comments):
-//  1. SCOPE: per-session, keyed by sessionRef - matches the existing
-//     per-ref localStorage precedent (composer/draft.ts's
-//     evener.composer.draft.v1.<ref>), not per-pane or per-device.
-//  2. PERSISTENCE: localStorage, so device-local. A laptop-only watermark
-//     never clears on a phone or second machine - a real limitation, but a
-//     cross-device read cursor would need to live on the daemon (wire
-//     protocol + server persistence), a materially bigger feature that
-//     should not block this one.
-//  3. TWO TABS ON ONE SESSION: not coordinated (this app deliberately has
-//     no cross-tab sync - see notifications/leader.ts). Each tab's unmount
-//     overwrites the stored watermark independently; last-unmount-wins.
-//     Shipped as a known gap, same as the two similar gaps the wave-2
-//     design doc already documents.
+// The watermark is the latest settled turn at the moment the reader leaves:
+// a turn still running then has not been read to its end, so the reply it
+// goes on to finish counts as new. It is per session and per browser
+// (localStorage); two tabs on one session each overwrite it, last leave wins.
 //
-// Mechanics: the watermark is the id of the last turn that existed the
-// last time this pane was mounted, written on UNMOUNT (not continuously -
-// matches useTranscriptScroll's own scroll-position flushPendingSave
-// pattern: best-effort, not durable against a hard browser close/crash
-// mid-view). dockview unmounts a pane's whole tree whenever its tab isn't
-// active (Session.tsx's own top-of-file comment), so switching to another
-// pane and back - not just closing the browser - already exercises this
-// same unmount/mount cycle, which is exactly the "stepped away, came back"
-// case this exists for.
+// The boundary is decided once per open, from the first render that has the
+// conversation's turns, and never moves while the pane stays on that session:
+// content arriving during this viewing is the new-content pill's concern. It
+// is a turn id, so it survives older pages loading above it. A watermark turn
+// that is not among the loaded turns places no boundary rather than a guess.
 //
-// The divider turn id is computed ONCE per mount, from the FIRST render
-// that has turns loaded, and never recomputed afterward: it names a fixed
-// point in the transcript (the turn right after the reader's last-seen
-// one), not a live boundary that should keep sliding as more content
-// streams in during THIS viewing - that live-while-open case is
-// NewContentPill's job, not this one's. Because it's stored as a turn ID
-// (not an index), it stays valid across prepends (loadOlder) without any
-// shifting logic of its own.
-//
-// If the stored watermark turn isn't found in the loaded turns (never
-// visited before, or - same reasoning as useTranscriptScroll's own
-// full-resync branch - a shape too different to confidently place a
-// marker in), this shows no divider rather than guessing.
+// A pane is reused across sessions without remounting, so "leaving" is the
+// session ref changing as much as the pane unmounting, and what is written is
+// the last turn list rendered for the ref being left.
 
-import type { ThreadModel } from "@evener/appwire-client";
-import { useEffect, useRef, useState } from "react";
+import { displayTurnStatus, isInProgressStatus, type ThreadModel } from "@evener/appwire-client";
+import { useEffect, useRef } from "react";
+import { isDormantTranscript } from "../transcriptVisibility";
 import { readSeenWatermark, writeSeenWatermark } from "./seenWatermark";
 
-export function useSeenDivider(ref: string, model: ThreadModel | undefined): string | null {
-  const [dividerTurnId, setDividerTurnId] = useState<string | null>(null);
-  const computedRef = useRef(false);
-  // Latest-ref mirror so the unmount cleanup (attached once, deps=[ref])
-  // writes the CURRENT model's last turn, not whatever model existed at
-  // mount - same "long-lived closure needs a fresh read" reasoning as
-  // useTranscriptScroll's own loadOlderRef/modelRef.
-  const modelRef = useRef(model);
-  modelRef.current = model;
+export interface SeenBoundary {
+  /** The first turn this browser has not shown to its end, or null. */
+  dividerTurnId: string | null;
+  /** Whether that turn had finished when the session opened: a finished
+   * unseen reply is where the session opens; one still running opens at the
+   * live end like any other session. */
+  settled: boolean;
+}
 
+const NO_BOUNDARY: SeenBoundary = { dividerTurnId: null, settled: false };
+
+function isSettled(turn: { id: string; status: string }, model: ThreadModel): boolean {
+  return !isInProgressStatus(displayTurnStatus(turn, model));
+}
+
+function latestSettledTurnId(model: ThreadModel): string | undefined {
+  for (let index = model.turns.length - 1; index >= 0; index -= 1) {
+    const turn = model.turns[index];
+    if (turn && isSettled(turn, model)) return turn.id;
+  }
+  return undefined;
+}
+
+function boundaryFor(ref: string, model: ThreadModel): SeenBoundary {
+  const watermark = readSeenWatermark(ref);
+  if (watermark === null) return NO_BOUNDARY;
+  const seen = model.turns.findIndex((turn) => turn.id === watermark);
+  const next = seen === -1 ? undefined : model.turns[seen + 1];
+  return next ? { dividerTurnId: next.id, settled: isSettled(next, model) } : NO_BOUNDARY;
+}
+
+/** The turn a session opens at instead of the live end: a finished reply this
+ * browser has not shown. The live end keeps the opening while something waits
+ * there for the reader, and a reader with a retained place of their own up
+ * the transcript returns to it. What waits is read from the thread as well as
+ * from the question dock: a transcript restored without its bodies knows a
+ * question is pending before the dock has the question to show. */
+export function unseenOpeningTurnId(
+  boundary: SeenBoundary,
+  reader: {
+    thread: { askPending: boolean; pendingEscalations: readonly unknown[] } | undefined;
+    askDockPending: boolean;
+    retained: { followingBottom: boolean } | undefined;
+  },
+): string | null {
+  if (!boundary.settled) return null;
+  if (reader.askDockPending || reader.thread?.askPending || (reader.thread?.pendingEscalations.length ?? 0) > 0)
+    return null;
+  if (reader.retained !== undefined && !reader.retained.followingBottom) return null;
+  return boundary.dividerTurnId;
+}
+
+export function useSeenDivider(ref: string, model: ThreadModel | undefined): SeenBoundary {
+  // Decided during render, not in an effect: the transcript's opening scroll
+  // placement runs in the layout effect of the same render that first has
+  // turns, and has to see the boundary then.
+  const decided = useRef<{ ref: string; boundary: SeenBoundary } | null>(null);
+  if (decided.current?.ref !== ref) decided.current = null;
+  if (decided.current === null && model && !isDormantTranscript(model.turns)) {
+    decided.current = { ref, boundary: boundaryFor(ref, model) };
+  }
+
+  // What leaving this ref would record. Tracked per commit so the cleanup
+  // below, which runs after the next ref's render, still reads the turns of
+  // the ref it is closing.
+  const latestSeen = useRef<{ ref: string; turnId: string } | null>(null);
   useEffect(() => {
-    if (computedRef.current) return;
-    if (!model || model.turns.length === 0) return;
-    computedRef.current = true;
-    const watermark = readSeenWatermark(ref);
-    if (watermark === null) return;
-    const idx = model.turns.findIndex((t) => t.id === watermark);
-    if (idx === -1 || idx >= model.turns.length - 1) return;
-    const next = model.turns[idx + 1];
-    if (next) setDividerTurnId(next.id);
+    const turnId = model ? latestSettledTurnId(model) : undefined;
+    if (turnId !== undefined) latestSeen.current = { ref, turnId };
   }, [ref, model]);
 
   useEffect(() => {
     return () => {
-      const turns = modelRef.current?.turns;
-      const last = turns && turns.length > 0 ? turns[turns.length - 1] : undefined;
-      if (last) writeSeenWatermark(ref, last.id);
+      const seen = latestSeen.current;
+      if (seen?.ref === ref) writeSeenWatermark(ref, seen.turnId);
     };
   }, [ref]);
 
-  return dividerTurnId;
+  return decided.current?.boundary ?? NO_BOUNDARY;
 }
