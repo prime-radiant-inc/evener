@@ -217,7 +217,10 @@ without scrolling (a landscape phone); the palette command remains.
   from the newest match, so it does not shift as older pages arrive.
 - **Folds.** Landing on a match inside a folded tool run or action group opens
   the fold, and a tool call's summary and body or a thought's body, so the
-  words are on screen. They stay open, as a reader's own toggle would. A tool
+  words are on screen. They stay open, as a reader's own toggle would. A steer,
+  a note or a memory refresh keeps its text behind a divider whose open state
+  belongs to the session, so a match there opens that divider in every view of
+  the conversation. A tool
   body that folds its output (a long read shows only its tail) shows the
   stretch holding the landed-on words instead, under a line saying so, for as
   long as that call is the landing. Any other tool body that does not show
@@ -228,8 +231,10 @@ without scrolling (a landscape phone); the palette command remains.
 - **Marks.** The current entry is outlined. Matching words are painted with the
   CSS Custom Highlight API, which changes no transcript DOM; where a browser
   lacks it, the outline alone marks the match. Painting follows the match
-  rule: a phrase is painted across the elements it spans (a code block's
-  lines), and each open transcript keeps its own painted words.
+  rule: a phrase is painted across the elements it spans, read as continuous
+  across inline formatting (a colour run) and as separate words across a
+  block, a code block's line or a line break. Each open transcript keeps its
+  own painted words.
 - **Older history.** Typing reads only what is loaded. Stepping older past the
   oldest loaded match reads older pages, as Find's own consumer of
   [`HistoryPaging`](../../appwire-client/typescript/historyPaging.ts), until a
