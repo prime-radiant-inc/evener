@@ -89,7 +89,11 @@ function call(turnId: string, index: number, output: string) {
   };
 }
 
-function renderSession(focusedPane = "p1") {
+function steer(id: string, text: string, extra: Record<string, string>) {
+  return { id, turnId: "turn_2", type: "steering", text, status: "completed" as const, ...extra };
+}
+
+function renderSession(focusedPane = "p1", steers: ReturnType<typeof steer>[] = []) {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {
@@ -112,6 +116,7 @@ function renderSession(focusedPane = "p1") {
           itemsView: "full",
           items: [
             message("turn_2", "userMessage", "what about the quokka?"),
+            ...steers,
             message("turn_2", "agentMessage", "No more to say."),
           ],
         },
@@ -318,4 +323,25 @@ test("a tool body that would not show the matched words shows them while it is t
 
   // Moving on puts the earlier call back as it was.
   expect(document.querySelector('[data-view-anchor-id="write"]')?.textContent).not.toContain("wombat");
+});
+
+test("a match inside a closed steer or note opens it and marks the words' entry", async () => {
+  renderSession("p1", [
+    steer("steer_parent", "mind the wombat", { source: "parent" }),
+    steer("steer_note", "the numbat moved", { source: "user", steeringKind: "human-note" }),
+  ]);
+  await screen.findByText("No more to say.");
+  expect(screen.queryByText("mind the wombat")).toBeNull();
+  expect(screen.queryByText("the numbat moved")).toBeNull();
+
+  pressFind();
+  const field = screen.getByRole("searchbox");
+  fireEvent.change(field, { target: { value: "wombat" } });
+  expect(await screen.findByText("mind the wombat")).toBeTruthy();
+  await waitFor(() => expect(marked()?.textContent).toContain("mind the wombat"));
+  // Only the steer holding the words opened.
+  expect(screen.queryByText("the numbat moved")).toBeNull();
+
+  fireEvent.change(field, { target: { value: "numbat" } });
+  expect(await screen.findByText("the numbat moved")).toBeTruthy();
 });

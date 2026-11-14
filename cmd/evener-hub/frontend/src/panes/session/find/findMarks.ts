@@ -77,13 +77,26 @@ function highlightRegistry(): { set(name: string, highlight: unknown): void; del
 // An entry's text as Find matches it - lowercased, whitespace collapsed, what
 // is hidden from readers left out - with, for each code unit, the text node
 // and offset it came from. Lowercasing can change length ("İ" becomes two
-// units) and a phrase can span elements (a code block renders a line per
-// element), so only this mapping says where a match sits on screen.
+// units) and a phrase can span elements (a colour run, a code block's line),
+// so only this mapping says where a match sits on screen.
 interface ReadText {
   text: string;
   nodes: Text[];
   nodeOf: number[];
   offsetOf: number[];
+}
+
+// Whether text inside `element` runs on from the text beside it, as formatting
+// within a sentence does. Anything else - a paragraph, a list item, a code
+// block's line - starts and ends its own words.
+function runsOn(element: Element, known: Map<Element, boolean>): boolean {
+  let inline = known.get(element);
+  if (inline === undefined) {
+    const display = getComputedStyle(element).display;
+    inline = display.startsWith("inline") || display === "contents";
+    known.set(element, inline);
+  }
+  return inline;
 }
 
 function readText(element: HTMLElement): ReadText {
@@ -93,19 +106,34 @@ function readText(element: HTMLElement): ReadText {
     read.nodeOf.push(node);
     read.offsetOf.push(offset);
   };
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+  const known = new Map<Element, boolean>();
+  // Set on entering a block or passing a line break since the last text.
+  let broken = false;
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
     acceptNode: (node) =>
-      node.parentElement?.closest('[aria-hidden="true"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+      node instanceof Element && node.getAttribute("aria-hidden") === "true"
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT,
   });
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (node instanceof Element) {
+      if (node.tagName === "BR" || !runsOn(node, known)) broken = true;
+      continue;
+    }
     const value = node.nodeValue ?? "";
     const previous = read.nodes.at(-1);
     const index = read.nodes.push(node as Text) - 1;
-    // Separate elements read as separate words unless they are run together
-    // inside one parent (formatting within a sentence).
-    if (previous !== undefined && previous.parentNode !== node.parentNode && !read.text.endsWith(" ")) {
-      put(" ", index, 0);
+    // Leaving a block separates words too: the blocks the previous text sat
+    // in that this text does not.
+    for (
+      let left = previous?.parentElement;
+      !broken && left != null && left !== element && !left.contains(node);
+      left = left.parentElement
+    ) {
+      if (!runsOn(left, known)) broken = true;
     }
+    if (broken && previous !== undefined && !read.text.endsWith(" ")) put(" ", index, 0);
+    broken = false;
     for (let offset = 0; offset < value.length; offset += 1) {
       const char = value.charAt(offset);
       if (/\s/.test(char)) {

@@ -37,7 +37,7 @@ function port(entries: Record<string, string>): HTMLElement {
   return el;
 }
 
-const hit = (key: string): FindHit => ({ key, itemId: key, rowIndex: 0, opens: [] });
+const hit = (key: string): FindHit => ({ key, itemId: key, rowIndex: 0, opens: [], sessionOpens: [] });
 const painted = (name: string) => (registry.get(name)?.ranges ?? []).map((range) => range.toString());
 
 test("the current entry's words and the other matches are painted separately", () => {
@@ -64,7 +64,9 @@ test("a phrase is painted across the nodes it spans, skipping what is hidden fro
   // between them that is not part of the text.
   const el = port({ a: "" });
   const anchor = el.firstElementChild as HTMLElement;
-  anchor.innerHTML = '<span>find the needle</span><span aria-hidden="true">2</span><span>thread here</span>';
+  anchor.innerHTML =
+    '<span style="display:flex"><span>find the needle</span></span>' +
+    '<span style="display:flex"><span aria-hidden="true">2</span><span>thread here</span></span>';
   markTranscript(el, [hit("a")], "a", "needle thread");
   const ranges = registry.get("evener-find-current")?.ranges ?? [];
   expect(ranges).toHaveLength(1);
@@ -75,6 +77,31 @@ test("a phrase is painted across the nodes it spans, skipping what is hidden fro
   // The line number itself is never a match.
   markTranscript(el, [hit("a")], "a", "2");
   expect(registry.has("evener-find-current")).toBe(false);
+});
+
+test("words run together across inline formatting are one phrase; separate blocks are separate words", () => {
+  // Coloured output puts each colour run in its own element with nothing
+  // between them.
+  const el = port({ a: "" });
+  const anchor = el.firstElementChild as HTMLElement;
+  anchor.innerHTML = "<p><span>error</span>: build <b>fail</b><i>ed</i></p><p>next</p>";
+  markTranscript(el, [hit("a")], "a", "error: build failed");
+  const ranges = registry.get("evener-find-current")?.ranges ?? [];
+  expect(ranges).toHaveLength(1);
+  expect(ranges[0]?.startContainer.nodeValue).toBe("error");
+  expect(ranges[0]?.endContainer.nodeValue).toBe("ed");
+  // Two paragraphs never read as one word, and do read as two.
+  markTranscript(el, [hit("a")], "a", "failednext");
+  expect(registry.has("evener-find-current")).toBe(false);
+  markTranscript(el, [hit("a")], "a", "failed next");
+  expect(painted("evener-find-current")).toHaveLength(1);
+});
+
+test("a line break inside one element separates words", () => {
+  const el = port({ a: "" });
+  (el.firstElementChild as HTMLElement).innerHTML = "<p>first<br>second</p>";
+  markTranscript(el, [hit("a")], "a", "first second");
+  expect(painted("evener-find-current")).toHaveLength(1);
 });
 
 test("two transcripts keep their own painted words", () => {

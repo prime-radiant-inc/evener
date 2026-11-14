@@ -18,6 +18,7 @@ import type { VirtualListHandle } from "../../../widgets";
 import { setDisclosureOpen } from "../../../widgets/disclosure/disclosureStore";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
+import { itemScopeKey } from "../transcript/tools/subagentModuleStore";
 import { type FindHit, findHits } from "./findHits";
 import { markTranscript, scrollTopRevealing } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
@@ -91,6 +92,11 @@ const SETTLE_WINDOW_MS = 1500;
 // How long a row jump gets to render its row before Find asks again.
 const JUMP_RETRY_MS = 150;
 
+// Everything a hit opens, as one comparable value.
+function opensOf(hit: FindHit): string {
+  return [...hit.opens, "", ...hit.sessionOpens].join("\0");
+}
+
 export function useFindInSession({
   ref,
   paneId,
@@ -141,7 +147,7 @@ export function useFindInSession({
           before !== undefined &&
           before.key === hit.key &&
           before.rowIndex === hit.rowIndex &&
-          before.opens.join("\0") === hit.opens.join("\0")
+          opensOf(before) === opensOf(hit)
         );
       });
     if (!same) lastHits.current = next;
@@ -316,7 +322,7 @@ export function useFindInSession({
   // A landing is owed for a new current match, for new words inside the same
   // entry (the place in it moves), and when what hides the entry changes (a
   // finished turn folding its calls). Rows prepending above it are not one.
-  const currentOpens = current?.opens.join("\0") ?? "";
+  const currentOpens = current === null ? "" : opensOf(current);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
@@ -324,6 +330,7 @@ export function useFindInSession({
       return;
     }
     for (const id of current.opens) setDisclosureOpen(scopedDisclosureId(disclosureScope, id), true);
+    for (const id of current.sessionOpens) setDisclosureOpen(itemScopeKey(ref, id), true);
     // The reader chose this place, in view or not: output arriving later
     // must not carry them off it.
     holdPosition();

@@ -67,7 +67,11 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   const tail = buffer.current.tail.update(output);
   // Find matches the output as coloured text reads, so the landing is
   // looked for, and its excerpt cut, in that same decoded text.
-  const landing = useFindLanding(item.id, outputAsShown(output), outputAsShown(tail.renderedText));
+  const landing = useFindLanding(
+    item.id,
+    () => outputAsShown(output),
+    () => outputAsShown(tail.renderedText),
+  );
   // The typed exit code's one home is the captured output's trailing footer,
   // but the wire carries the two independently: an output can exist with NO
   // exit trailer of either shape while the typed ItemModel.exitCode is present

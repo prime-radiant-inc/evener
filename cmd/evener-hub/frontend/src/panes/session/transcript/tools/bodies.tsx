@@ -70,10 +70,16 @@ function FoldedOutput({ output, shown, needle }: { output: string; shown: string
 
 /** For a body that keeps its own rendering of the tail: whether Find is
  * landed on words in this call's output (so its block must not line-fold),
- * and the stretch holding them when `shown` does not. */
-export function useFindLanding(itemId: string, output: string, shown: string): { excerpt: string | null } | null {
+ * and the stretch holding them when what is shown does not. The two texts are
+ * asked for only while Find is landed on this call, so a body that has to
+ * decode its output to answer does not pay for that on every render. */
+export function useFindLanding(
+  itemId: string,
+  output: () => string,
+  shown: () => string,
+): { excerpt: string | null } | null {
   const needle = useFindReveal(itemId);
-  return needle === "" ? null : landingIn(output, shown, needle);
+  return needle === "" ? null : landingIn(output(), shown(), needle);
 }
 
 // The excerpt is already bounded, so the block's own line fold stays off:

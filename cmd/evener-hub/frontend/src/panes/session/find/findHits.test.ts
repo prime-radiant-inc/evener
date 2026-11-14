@@ -175,3 +175,28 @@ test("a call whose row the transcript never renders is not a match", () => {
   const rows = [turnRow("t1", [message("u", "quokka?", "userMessage"), view])];
   expect(findHits(rows, "quokka").map((found) => found.key)).toEqual(["u"]);
 });
+
+test("a steer or a memory refresh names the divider its words sit behind", () => {
+  const steer = (id: string, text: string, fields: Partial<ItemModel> = {}): ItemEntry => {
+    const entry = message(id, text, "steering");
+    return { ...entry, isMessage: false, item: { ...entry.item, ...fields } };
+  };
+  const delivered =
+    'before the needle\n<job-notification job_id="job_1" event="completed">Done.</job-notification>\nafter it';
+  const rows = [
+    turnRow("t", [
+      steer("whole", "a needle from above", { source: "parent" }),
+      steer("cut", delivered),
+      steer("memory", "needle remembered", { type: "systemMessage", eventKind: "memory-context" }),
+      tool("call", { output: "needle" }),
+    ]),
+  ];
+  const opened = findHits(rows, "needle").map((hit) => [hit.itemId, hit.sessionOpens]);
+  // Only the piece of a cut-up steer that holds the words is opened.
+  expect(opened).toEqual([
+    ["whole", ["whole"]],
+    ["cut", ["cut:0"]],
+    ["memory", ["memory"]],
+    ["call", []],
+  ]);
+});

@@ -1,9 +1,9 @@
 import { type ItemModel, makeTranscriptDisplayConfig } from "@evener/appwire-client";
-import { act, render, screen } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { act, render, renderHook, screen } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { revealForFind } from "../../find/findReveal";
-import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
+import { HeadClippedOutputBody, TailFoldedOutputBody, useFindLanding } from "./bodies";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -152,4 +152,20 @@ test("a landing belongs to one transcript view: another view of the same call ke
   act(() => revealForFind("right", null, ""));
   expect(screen.getByTestId("left").textContent).toContain("early quokka");
   act(() => revealForFind("left", null, ""));
+});
+
+test("a body's output is read for Find only while Find is landed on that call", () => {
+  // Reading means decoding all retained output, which a streaming call would
+  // otherwise repeat on every delta.
+  const output = vi.fn(() => "an early quokka");
+  const shown = vi.fn(() => "the tail");
+  const hook = renderHook(() => useFindLanding("streaming", output, shown));
+  hook.rerender();
+  expect(hook.result.current).toBeNull();
+  expect(output).not.toHaveBeenCalled();
+  expect(shown).not.toHaveBeenCalled();
+  act(() => revealForFind("", "streaming", "quokka"));
+  expect(hook.result.current).toEqual({ excerpt: "an early quokka" });
+  act(() => revealForFind("", null, ""));
+  expect(hook.result.current).toBeNull();
 });
