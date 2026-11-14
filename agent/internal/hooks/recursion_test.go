@@ -93,7 +93,7 @@ func TestValidate_ReportsInvalidMatcherOnce(t *testing.T) {
 		plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo x", PluginName: "broken-plugin"},
 		plugin.RegisteredHook{Matcher: "Bash|Edit", Type: "command", Command: "echo ok", PluginName: "good-plugin"},
 		plugin.RegisteredHook{Matcher: "*", Type: "command", Command: "echo all", PluginName: "good-plugin"},
-		plugin.RegisteredHook{Matcher: "mcp__.*", Type: "command", Command: "echo mcp", PluginName: "good-plugin"},
+		plugin.RegisteredHook{Matcher: "memory__.*", Type: "command", Command: "echo mcp", PluginName: "good-plugin"},
 	)
 
 	diags := r.Validate()
