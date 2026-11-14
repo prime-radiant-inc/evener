@@ -17,7 +17,7 @@ import { installKeybindings } from "../../../shell/installKeybindings";
 import type { VirtualListHandle } from "../../../widgets";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
-import { type FindHit, findHits } from "./findHits";
+import { type FindHit, findHits, indexOfMatch } from "./findHits";
 import { markTranscript, scrollTopRevealing } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
 
@@ -97,12 +97,6 @@ function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item"> {
   return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId };
 }
 
-// A reply still streaming is an overlay item, keyed "stream:<id>:<type>"
-// (the wire's overlay slot key), until its round is recorded.
-function isStreamOverlay(itemId: string): boolean {
-  return itemId.startsWith("stream:");
-}
-
 export function useFindInSession({
   ref,
   paneId,
@@ -158,20 +152,10 @@ export function useFindInSession({
     if (!same) lastHits.current = next;
     return lastHits.current;
   }, [isOpen, rows, query]);
-  // The current match is a message, named by its source item. Its display
-  // key is not its identity: a round's first loaded reply takes the round's
-  // key, so loading or dropping an earlier reply of that round hands the key
-  // to a different message.
-  let currentIndex = -1;
-  if (find != null && find.key !== null) {
-    currentIndex = hits.findIndex((hit) => hit.itemId === find.item);
-    if (currentIndex < 0 && find.item !== null && isStreamOverlay(find.item)) {
-      // A streamed reply being recorded is the same message under a new
-      // item: the overlay item gives way to the recorded one, on one key.
-      const recorded = hits.findIndex((hit) => hit.key === find.key);
-      if (recorded >= 0 && !isStreamOverlay(hits[recorded]?.itemId ?? "")) currentIndex = recorded;
-    }
-  }
+  const currentIndex =
+    find == null || find.key === null || find.item === null
+      ? -1
+      : indexOfMatch(hits, { key: find.key, itemId: find.item });
   const current = currentIndex < 0 ? null : (hits[currentIndex] ?? null);
   const historyEnded = olderPageKey === null;
 

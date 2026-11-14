@@ -25,6 +25,37 @@ export interface FindHit {
   readonly itemId: string;
   /** The virtual row that renders it. */
   readonly rowIndex: number;
+  /** The call that delivered the message, for one said through a tool call. */
+  readonly callId?: string;
+}
+
+// A reply still arriving is an overlay item until it is recorded: a streamed
+// reply under "stream:<id>:<type>", one being said through a call under
+// "preview:<callId>" (the wire's overlay slot keys).
+const STREAM = "stream:";
+const PREVIEW = "preview:";
+
+function isOverlay(itemId: string): boolean {
+  return itemId.startsWith(STREAM) || itemId.startsWith(PREVIEW);
+}
+
+/** Where the chosen match is among `hits`, or -1. A match is a message, named
+ * by its source item; its display key is not its identity, because a round's
+ * first loaded reply takes the round's key and so the key passes between
+ * replies as the loaded window changes. The one time the item itself changes
+ * is a reply being recorded: a streamed reply keeps its key, and a previewed
+ * one is the recorded message of the same call. */
+export function indexOfMatch(hits: readonly FindHit[], chosen: { key: string; itemId: string }): number {
+  const same = hits.findIndex((hit) => hit.itemId === chosen.itemId);
+  if (same >= 0) return same;
+  if (chosen.itemId.startsWith(STREAM)) {
+    return hits.findIndex((hit) => hit.key === chosen.key && !isOverlay(hit.itemId));
+  }
+  if (chosen.itemId.startsWith(PREVIEW)) {
+    const callId = chosen.itemId.slice(PREVIEW.length);
+    return hits.findIndex((hit) => hit.callId === callId && !isOverlay(hit.itemId));
+  }
+  return -1;
 }
 
 // A message's searchable text, normalised once. Settled items keep their
@@ -54,7 +85,9 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string): Fin
   rows.forEach((row, rowIndex) => {
     if (row.kind !== "turn") return;
     for (const entry of row.turn.entries) {
-      if (matches(entry, needle)) hits.push({ key: entryDisplayKey(entry), itemId: entry.item.id, rowIndex });
+      if (!matches(entry, needle)) continue;
+      const found = { key: entryDisplayKey(entry), itemId: entry.item.id, rowIndex };
+      hits.push(entry.item.callId ? { ...found, callId: entry.item.callId } : found);
     }
   });
   return hits;

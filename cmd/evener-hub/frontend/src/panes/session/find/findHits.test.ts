@@ -10,7 +10,7 @@ import {
 import { expect, test } from "vitest";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import "../transcript/tools";
-import { findableItemIds, findHits } from "./findHits";
+import { findableItemIds, findHits, indexOfMatch } from "./findHits";
 import { messageAsShown } from "./messageText";
 
 type ItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
@@ -123,4 +123,36 @@ test("a character reference in a reply is searched as the character it shows", (
   expect(keys("a &amp; b")).toEqual(["a"]);
   expect(keys("&amp; stays escaped")).toEqual(["a"]);
   expect(keys("typed &amp; kept")).toEqual(["u"]);
+});
+
+test("the current match is found again by its message, whatever key that message goes by", () => {
+  const reply = (id: string, text: string, fields: Partial<ItemModel> = {}, displayKey?: string): ItemEntry => {
+    const entry = message(id, text);
+    return { ...entry, displayKey, item: { ...entry.item, ...fields } };
+  };
+  const hitsOf = (...entries: ItemEntry[]) => findHits([turnRow("t", entries)], "needle");
+
+  // The same item under a new key: an earlier reply of its round took the round's key.
+  const renamed = hitsOf(reply("first", "needle one", {}, "round:r1"), reply("second", "needle two"));
+  expect(indexOfMatch(renamed, { key: "round:r1", itemId: "second" })).toBe(1);
+  // The key now belongs to a different reply and the chosen one is not loaded.
+  const taken = hitsOf(reply("second", "needle two", {}, "round:r1"));
+  expect(indexOfMatch(taken, { key: "round:r1", itemId: "first" })).toBe(-1);
+
+  // A streamed reply being recorded keeps its key and takes a new item.
+  const recorded = hitsOf(reply("m1", "needle streamed", {}, "round:r2"));
+  expect(indexOfMatch(recorded, { key: "round:r2", itemId: "stream:r2/0:agentMessage" })).toBe(0);
+  // A communicate preview being recorded takes a new item and a new key; its call says which.
+  const delivered = hitsOf(
+    reply("other", "needle other", { callId: "c0" }),
+    reply("m2", "needle said", { callId: "c1" }),
+  );
+  expect(indexOfMatch(delivered, { key: "preview:c1", itemId: "preview:c1" })).toBe(1);
+  // While the preview is still the loaded item it is found as itself.
+  const previewing = hitsOf(reply("preview:c1", "needle said", { callId: "c1" }));
+  expect(indexOfMatch(previewing, { key: "preview:c1", itemId: "preview:c1" })).toBe(0);
+  // A preview whose message is not loaded is not some other call's message.
+  expect(
+    indexOfMatch(hitsOf(reply("other", "needle other", { callId: "c0" })), { key: "preview:c1", itemId: "preview:c1" }),
+  ).toBe(-1);
 });
