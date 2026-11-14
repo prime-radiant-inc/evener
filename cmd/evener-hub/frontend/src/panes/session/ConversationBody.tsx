@@ -23,6 +23,7 @@ import {
   useBlockedMessageEntries,
   useBlockedMutationEntries,
   useCanceledMessageEntries,
+  useEditablePendingMutationIds,
   usePendingTurnEntries,
   useRecoveryMessageEntries,
 } from "./composer/queue/pendingTurnsStore";
@@ -273,6 +274,11 @@ function LiveConversationBody({
   const blockedRows = useBlockedMessageEntries(ref);
   const canceledRows = useCanceledMessageEntries(ref);
   const recoveryRows = useRecoveryMessageEntries(ref);
+  // The waiting family's own fact: a Send that queued while the session
+  // needs recovery is settled undelivered work, not a live composition - it
+  // mounts the trailing row through the read-only states, or its Edit and
+  // Remove controls would be reachable from nowhere if the resume stalls.
+  const editableRows = useEditablePendingMutationIds(ref);
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle.
@@ -298,6 +304,7 @@ function LiveConversationBody({
     blockedRows.length > 0 ||
     canceledRows.length > 0 ||
     recoveryRows.length > 0 ||
+    editableRows.size > 0 ||
     (model?.queue?.depth ?? 0) > 0;
   const trailingRow =
     askPending || pendingRowsVisible || overlayHeight > 0

@@ -689,6 +689,52 @@ test("a restart-required session renders no held ghost for a seeded hold", async
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
 });
 
+// A Send that queued while the session needs recovery is a settled fact
+// about the user's undelivered work: its waiting row (this client's own
+// unattempted editable row) renders through the read-only state with its
+// Edit and Remove controls, the retired footer strip's reach. Hiding it
+// behind the live gate would leave the message reachable from nowhere if
+// the resume stalls.
+test("a resume-required session keeps its unattempted queued send's waiting row visible", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 0 },
+        resumeRequired: true,
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "queued while waiting to resume" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "queued while waiting to resume" }] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+  await act(async () => {});
+
+  const stack = screen.queryByTestId("pending-row-stack");
+  expect(stack).not.toBeNull();
+  expect(stack!.textContent).toContain("queued while waiting to resume");
+  expect(within(stack!).getByRole("button", { name: "Edit message" })).toBeTruthy();
+  expect(within(stack!).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+});
+
 // Stop cancels a locally owned, never-attempted row. It is not a held ghost
 // and must not produce a held outcome announcement.
 test("Stop keeps a dormant session's unattempted row in local queue ownership", async () => {

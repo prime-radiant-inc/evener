@@ -25,6 +25,7 @@ import {
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
+  sessionActionError,
   slashCommandInvocation,
 } from "@evener/appwire-client";
 import {
@@ -100,6 +101,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
+import { pushRecoveryRefusal } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
@@ -730,8 +732,21 @@ function ComposerWithSubmission({
       void (async () => {
         try {
           const recovery = await editQueuedPendingTurn(id, record.targetRef);
-          if (recovery) await actions.queueRowActions.onEditRecovery?.(recovery);
+          if (recovery) {
+            await actions.queueRowActions.onEditRecovery?.(recovery);
+            // The retired strip's callback focused the editor after its
+            // activation; an edit that restores content without focus
+            // leaves typing ineffective until the user clicks the composer.
+            editorRef.current?.focus();
+          } else {
+            // An undefined claim means the row changed under the press -
+            // the same refusal the retired handler reported, not a silent
+            // consumption.
+            pushRecoveryRefusal("changed");
+          }
           if (record.targetRef !== ref) await refreshPendingTurnsProjection(ref);
+        } catch (error) {
+          toasts.push("error", sessionActionError("Edit failed", error));
         } finally {
           releaseRecoveryOperation();
           consumeQueueRowRestore(ref);

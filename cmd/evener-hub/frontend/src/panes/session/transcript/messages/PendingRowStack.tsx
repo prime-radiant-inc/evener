@@ -35,7 +35,11 @@ import {
   isTurnActive,
   sessionActionError,
 } from "@evener/appwire-client";
-import { canEditQueuedMessage, canRemoveQueuedMessage } from "@evener/appwire-client/state/mutation";
+import {
+  canEditQueuedMessage,
+  canRemoveQueuedMessage,
+  reflectedMutationIds,
+} from "@evener/appwire-client/state/mutation";
 import type { JSX } from "react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
@@ -216,10 +220,15 @@ export function PendingRowStack({
   // selector): an empty drain or a remove-only promotion parks here as a
   // durable local row - the waiting family, rendered with its own
   // Edit/Remove affordances below.
-  const editableEntries = useEditableQueuedMutationEntries(sessionRef).filter(
-    (record) => record.state === "submitting",
-  );
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
+  // The ONE reflected-identity rule (the appwire core's own): an id the
+  // live model already carries - a delivered transcript item or a daemon
+  // queue row - is not a waiting row, or a send that landed would render
+  // both as its delivered row and as its durable waiting row.
+  const reflectedIds = reflectedMutationIds(model);
+  const editableEntries = useEditableQueuedMutationEntries(sessionRef).filter(
+    (record) => record.state === "submitting" && !reflectedIds.has(record.clientMutationId),
+  );
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // The caption reads the same clock the liveness line does: Session's 3s
   // SessionNowContext tick, so no per-second machinery re-renders the
@@ -687,6 +696,10 @@ export function PendingRowStack({
           </>
         );
         const label = kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain";
+        // A failed Retry has to announce itself: the provisional caption is
+        // an ordinary span, so the error gets its own live node - the
+        // retired strip rendered it with role="alert".
+        const retryAlert = retryError !== undefined ? <span role="alert">{retryError}</span> : null;
         return (
           <li key={record.clientMutationId} data-kind={kind}>
             <UserMessageView
@@ -697,8 +710,9 @@ export function PendingRowStack({
                 text: recordPreview(record),
               }}
               opensExchange={false}
-              provisional={retryError !== undefined ? `${label} · ${retryError}` : label}
+              provisional={label}
               actions={actions}
+              footer={retryAlert}
             />
           </li>
         );
