@@ -217,8 +217,9 @@ and the chord remain.
   phone and the palette (`appwire-client/typescript/findInSession.ts`).
 - **What is searched.** A message as its row shows it
   (`src/panes/session/find/messageText.ts`). A reply is read as its rendered
-  Markdown: no formatting marks, a link's label without its address, code and
-  authored HTML as written. A finished Mermaid fence is drawn as a diagram,
+  Markdown: no formatting marks, a link's label without its address, a
+  character reference as the character it shows, code and authored HTML as
+  written. A finished Mermaid fence is drawn as a diagram,
   so its source is not searched. A prompt is read as typed.
 - **The palette's In session section** still lists matches in tool output and
   thoughts as well. Choosing a message hands it to Find; choosing any other row

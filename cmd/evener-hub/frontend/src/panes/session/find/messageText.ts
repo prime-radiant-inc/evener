@@ -15,6 +15,20 @@ function drawnAsDiagram(token: Token): boolean {
   return isMermaidCodeToken(token) && fenceTokenTerminated(token.raw);
 }
 
+// Character references ("&amp;", "&#36;") as the page shows them. The
+// browser's own parser decodes them, exactly as it does for the rendered
+// reply; a textarea's content is text only, so nothing in it is parsed as
+// markup. Without a document (a node-environment caller) the text is left as
+// written.
+let decoder: HTMLTextAreaElement | undefined;
+
+function decodeReferences(text: string): string {
+  if (!text.includes("&") || typeof document === "undefined") return text;
+  decoder ??= document.createElement("textarea");
+  decoder.innerHTML = text;
+  return decoder.value;
+}
+
 function read(tokens: readonly Token[], into: string[], top = false): void {
   for (const token of tokens) {
     if (top && drawnAsDiagram(token)) continue;
@@ -53,7 +67,9 @@ function read(tokens: readonly Token[], into: string[], top = false): void {
             into.push("\n");
           }
         } else if ("text" in token && typeof token.text === "string") {
-          into.push(token.text);
+          // Ordinary text shows a character reference as its character; an
+          // escaped one (an "escape" token) shows as written.
+          into.push(token.type === "text" ? decodeReferences(token.text) : token.text);
         }
     }
   }

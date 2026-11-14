@@ -110,3 +110,17 @@ test("a diagram's source is not searched once the reply shows the diagram instea
   expect(findHits(rows, "flowchart TD").map((hit) => hit.key)).toEqual(["streaming"]);
   expect(findHits(rows, "the flow").map((hit) => hit.key)).toEqual(["drawn", "streaming"]);
 });
+
+test("a character reference in a reply is searched as the character it shows", () => {
+  const reply = "The R&amp;D report costs &#36;5 &lt;today&gt;.\n\n`a &amp; b` stays code, and \\&amp; stays escaped.";
+  const rows = [turnRow("t", [message("a", reply), message("u", "typed &amp; kept", "userMessage")])];
+  const keys = (query: string) => findHits(rows, query).map((hit) => hit.key);
+  expect(keys("R&D report costs $5 <today>")).toEqual(["a"]);
+  // The reference's own letters are not on the page.
+  expect(keys("R&amp;D")).toEqual([]);
+  expect(keys("report costs &#36;")).toEqual([]);
+  // Code, an escaped reference and a prompt show theirs as written.
+  expect(keys("a &amp; b")).toEqual(["a"]);
+  expect(keys("&amp; stays escaped")).toEqual(["a"]);
+  expect(keys("typed &amp; kept")).toEqual(["u"]);
+});
