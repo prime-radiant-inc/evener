@@ -401,10 +401,10 @@ function SystemGroup({
 // because its render is cheap - one linear systemRunFor scan plus a few
 // divs, no markdown/diff work - unlike the heavy renderers ignoringTurn
 // exists to protect.
-function renderSystemRunFor(
+export function renderSystemRunFor(
   turnItems: ItemModel[],
   itemId: string,
-  metadata: TranscriptMetadataVisibility,
+  metadata: Pick<TranscriptMetadataVisibility, "hookExits">,
 ): SystemRun | undefined {
   const run = systemRunFor(turnItems, itemId);
   if (!run) return undefined;

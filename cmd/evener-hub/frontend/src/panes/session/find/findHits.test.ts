@@ -3,10 +3,12 @@ import {
   makeTranscriptDisplayConfig,
   type ProjectedEntry,
   type ProjectedTurn,
+  steeringNotificationFragments,
   type ThreadModel,
   type TurnModel,
 } from "@evener/appwire-client";
 import { expect, test } from "vitest";
+import { notificationDisclosureId } from "../transcript/messages/NotificationCard";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
 import "../transcript/tools";
 import { findableItemIds, findHits } from "./findHits";
@@ -141,7 +143,9 @@ test("a redacted thought is found by what it can show: its label and its summari
   expect(found(true, "thinking failed")).toBe(1);
   // The summaries unfold inside the redacted thought, so they are findable.
   expect(found(true, "weighing the haystack")).toBe(1);
-  expect(found(false, "needle")).toBe(1);
+  // Shown in full, a thought still renders its summaries and nothing else.
+  expect(found(false, "weighing the haystack")).toBe(1);
+  expect(found(false, "needle")).toBe(0);
 });
 
 test("only what the current verbosity shows can be found in a thread", () => {
@@ -153,7 +157,14 @@ test("only what the current verbosity shows can be found in a thread", () => {
         status: "completed",
         items: [
           { id: "u", turnId: "t1", type: "userMessage", text: "find the quokka", status: "completed" },
-          { id: "c", turnId: "t1", type: "reasoning", text: "Where would a quokka be?", status: "completed" },
+          {
+            id: "c",
+            turnId: "t1",
+            type: "reasoning",
+            text: "Where would a quokka be?",
+            reasoningSummaries: [["Where would a quokka be?"]],
+            status: "completed",
+          },
           { id: "a", turnId: "t1", type: "agentMessage", text: "No quokka to report.", status: "completed" },
         ],
       },
@@ -199,4 +210,88 @@ test("a steer or a memory refresh names the divider its words sit behind", () =>
     ["memory", ["memory"]],
     ["call", []],
   ]);
+});
+
+test("a reply is searched as it reads, not as its Markdown is written", () => {
+  const reply =
+    "The build **fail**ed in `main.go`, see [the log](https://example.test/log).\n\n- first point\n- second point\n\n```\nraw **stars** stay\n```";
+  const rows = [turnRow("t", [message("a", reply), message("u", "keep my **stars**", "userMessage")])];
+  const keys = (query: string) => findHits(rows, query).map((hit) => hit.key);
+  expect(keys("build failed in main.go, see the log")).toEqual(["a"]);
+  // Formatting marks are not words, and a link's address is not on the page.
+  expect(keys("**fail**")).toEqual([]);
+  expect(keys("example.test")).toEqual([]);
+  // Separate list items are separate words.
+  expect(keys("first point second point")).toEqual(["a"]);
+  expect(keys("pointsecond")).toEqual([]);
+  // Code, and a message shown as typed, keep their marks.
+  expect(keys("raw **stars** stay")).toEqual(["a"]);
+  expect(keys("**stars**")).toEqual(["a", "u"]);
+});
+
+test("an entry its renderer leaves blank is not a match", () => {
+  const steer = (id: string, fields: Partial<ItemModel>): ItemEntry => {
+    const entry = message(id, "the needle task", "steering");
+    return { ...entry, isMessage: false, item: { ...entry.item, ...fields } };
+  };
+  const thought = {
+    id: "th",
+    turnId: "t",
+    type: "reasoning",
+    text: "",
+    reasoningSummaries: [["a needle thought"]],
+    status: "inProgress",
+  } as ItemModel;
+  const thinking: ProjectedEntry = {
+    kind: "thinking",
+    live: true,
+    id: "th",
+    turnId: "t",
+    sourceIndex: 0,
+    item: thought,
+  };
+  const rows = [
+    turnRow("t", [
+      steer("task", { steeringKind: "current-task" }),
+      steer("note", { steeringKind: "human-note" }),
+      thinking,
+    ]),
+  ];
+  const keys = (level: "chat" | "tools") =>
+    findHits(rows, "needle", { config: makeTranscriptDisplayConfig({ kind: "preset", level }) }).map((hit) => hit.key);
+  // The daemon's task bookkeeping never renders; a thought unfolds everywhere but Chat.
+  expect(keys("tools")).toEqual(["note", "th"]);
+  expect(keys("chat")).toEqual(["note"]);
+});
+
+test("words inside a notification card open that card", () => {
+  const text =
+    'before\n<job-notification job_id="job_1" event="completed">The needle finished.</job-notification>\nafter';
+  const entry = message("cut", text, "steering");
+  const rows = [turnRow("t", [{ ...entry, isMessage: false }])];
+  const pieces = steeringNotificationFragments(text) ?? [];
+  const at = pieces.findIndex((piece) => piece.kind === "notification");
+  const piece = pieces[at];
+  if (piece?.kind !== "notification") throw new Error("fixture holds no notification");
+  const [found] = findHits(rows, "needle finished", { sessionRef: "s" });
+  expect(found?.opens).toContain(notificationDisclosureId(piece.notification, "s", `cut:${at}`));
+  expect(found?.sessionOpens).toEqual([]);
+});
+
+test("a notice folded into a group lands on the group and opens it", () => {
+  const notice = (id: string, text: string) => message(id, text, "systemMessage");
+  const entries = [notice("n1", "first event"), notice("n2", "second event"), notice("n3", "third needle event")];
+  const row = turnRow("t", entries);
+  if (row.kind !== "turn") throw new Error("not a turn row");
+  row.turn.source.items = entries.map((entry) => entry.item);
+  const [found] = findHits([row], "needle");
+  expect(found?.key).toBe("n3");
+  // The group renders under its first member, behind that member's disclosure.
+  expect(found?.anchor).toBe("n1");
+  expect(found?.opens).toContain("n1");
+  // Two notices do not group: each is its own line.
+  const pair = turnRow("t2", entries.slice(1));
+  if (pair.kind !== "turn") throw new Error("not a turn row");
+  pair.turn.source.items = entries.slice(1).map((entry) => entry.item);
+  expect(findHits([pair], "needle")[0]?.anchor).toBeUndefined();
 });

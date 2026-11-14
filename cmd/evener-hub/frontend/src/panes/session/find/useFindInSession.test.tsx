@@ -80,6 +80,7 @@ function Harness() {
     () => (model ? transcriptRowsForProjection(projectThread(model, preset(level))) : []),
     [model, level],
   );
+  const shown = useMemo(() => ({ sessionRef: REF, config: preset(level) }), [level]);
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
     scrollToIndex: () => {},
@@ -91,6 +92,7 @@ function Harness() {
     ref: REF,
     paneId: "pane_a",
     rows,
+    shown,
     disclosureScope: "pane_a",
     listRef: list,
     jumpToRow: (index) => jumps.push(index),

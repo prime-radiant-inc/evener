@@ -340,6 +340,31 @@ function StructuredResult({ notification }: { notification: ParsedNotification }
   );
 }
 
+/** A card's disclosure id within its transcript view. `delivery` is the
+ * per-delivery discriminator SteeringItem threads through (item id plus
+ * fragment index); Find opens a card by the same id. */
+export function notificationDisclosureId(
+  notification: ParsedNotification,
+  sessionRef: string | undefined,
+  delivery?: string,
+): string {
+  // The disclosure identity prefers the watch id for watch cards: two
+  // watches on the same job share a jobId, and keying by it couples their
+  // expand/collapse state. Content joins identity — repeat firings of one
+  // watch (timer repeats especially) are distinct deliveries that expand
+  // independently; keying by watch id alone re-collapses them into one.
+  // Legacy frames without a watch id fall back to the job id, then the raw
+  // text, exactly as before. Non-watch cards keep delegate → job → raw
+  // identity untouched.
+  const notificationId =
+    notification.type === "watch"
+      ? notification.watchId
+        ? `${notification.watchId}:${notification.rawText}`
+        : (notification.jobId ?? notification.rawText)
+      : (notification.delegateId ?? notification.jobId ?? notification.rawText);
+  return `notification:${sessionRef ?? "default"}:${notificationId}${delivery ? `:${delivery}` : ""}`;
+}
+
 export function NotificationCard({
   notification,
   sessionRef,
@@ -360,21 +385,7 @@ export function NotificationCard({
   const entityOwner = sessionRef ?? contextOwner;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
-  // The disclosure identity prefers the watch id for watch cards: two
-  // watches on the same job share a jobId, and keying by it couples their
-  // expand/collapse state. Content joins identity — repeat firings of one
-  // watch (timer repeats especially) are distinct deliveries that expand
-  // independently; keying by watch id alone re-collapses them into one.
-  // Legacy frames without a watch id fall back to the job id, then the raw
-  // text, exactly as before. Non-watch cards keep delegate → job → raw
-  // identity untouched.
-  const notificationId =
-    notification.type === "watch"
-      ? notification.watchId
-        ? `${notification.watchId}:${notification.rawText}`
-        : (notification.jobId ?? notification.rawText)
-      : (notification.delegateId ?? notification.jobId ?? notification.rawText);
-  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}${disclosureId ? `:${disclosureId}` : ""}`;
+  const scopedNotificationId = notificationDisclosureId(notification, sessionRef, disclosureId);
   const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
   const disclosureFallback =
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);

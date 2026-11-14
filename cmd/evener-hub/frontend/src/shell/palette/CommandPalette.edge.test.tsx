@@ -315,7 +315,12 @@ test("choosing an in-session result from a companion pane brings up the conversa
 test("an in-session match the conversation's verbosity hides is not offered", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  const thought: ItemModel = { ...item("c1", "search term in a thought"), type: "reasoning", status: "completed" };
+  const thought: ItemModel = {
+    ...item("c1", "search term in a thought"),
+    type: "reasoning",
+    reasoningSummaries: [["search term in a thought"]],
+    status: "completed",
+  };
   focusSession("ref_a", {
     turns: [turn([{ ...item("i1", "search term in a message"), type: "agentMessage" }, thought])],
   });

@@ -19,7 +19,7 @@ import { setDisclosureOpen } from "../../../widgets/disclosure/disclosureStore";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
 import { itemScopeKey } from "../transcript/tools/subagentModuleStore";
-import { type FindHit, findHits } from "./findHits";
+import { type FindContext, type FindHit, findHits } from "./findHits";
 import { markTranscript, scrollTopRevealing } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
 import { revealForFind } from "./findReveal";
@@ -56,6 +56,9 @@ interface FindInSessionOptions {
   /** The seat's pane id: the request address and the composer focus target. */
   paneId: string;
   rows: readonly TranscriptBodyRow[];
+  /** How this view shows the rows (findHits' context). Keep its identity
+   * stable: a new one recounts the hits. */
+  shown: FindContext;
   disclosureScope: string;
   listRef: RefObject<VirtualListHandle | null>;
   jumpToRow(index: number): void;
@@ -94,13 +97,14 @@ const JUMP_RETRY_MS = 150;
 
 // Everything a hit opens, as one comparable value.
 function opensOf(hit: FindHit): string {
-  return [...hit.opens, "", ...hit.sessionOpens].join("\0");
+  return [hit.anchor ?? "", ...hit.opens, "", ...hit.sessionOpens].join("\0");
 }
 
 export function useFindInSession({
   ref,
   paneId,
   rows,
+  shown,
   disclosureScope,
   listRef,
   jumpToRow,
@@ -137,7 +141,7 @@ export function useFindInSession({
   // being redone for nothing.
   const lastHits = useRef<FindHit[]>([]);
   const hits = useMemo(() => {
-    const next = isOpen ? findHits(rows, query) : [];
+    const next = isOpen ? findHits(rows, query, shown) : [];
     const previous = lastHits.current;
     const same =
       next.length === previous.length &&
@@ -152,13 +156,15 @@ export function useFindInSession({
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
-  }, [isOpen, rows, query]);
+  }, [isOpen, rows, query, shown]);
   const currentIndex = find?.key == null ? -1 : hits.findIndex((hit) => hit.key === find.key);
   const current = currentIndex < 0 ? null : (hits[currentIndex] ?? null);
   const historyEnded = olderPageKey === null;
 
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
 
   const openWith = useCallback(
     (request?: { query?: string; itemId?: string }) => {
@@ -169,7 +175,7 @@ export function useFindInSession({
       setState((previous) => {
         const kept = previous?.ref === ref ? previous : null;
         if (request?.query === undefined) return kept ?? { ref, query: "", key: null, seek: null };
-        const found = findHits(rowsRef.current, request.query);
+        const found = findHits(rowsRef.current, request.query, shownRef.current);
         const picked = found.find((hit) => hit.itemId === request.itemId) ?? found.at(-1);
         return { ref, query: request.query, key: picked?.key ?? null, seek: null };
       });
@@ -198,7 +204,7 @@ export function useFindInSession({
       // Typing lands on the newest loaded match, as the reader is usually at
       // the end. It never reads older history by itself: each keystroke of a
       // longer word would otherwise page the whole session for a prefix.
-      const newest = findHits(rowsRef.current, next).at(-1);
+      const newest = findHits(rowsRef.current, next, shownRef.current).at(-1);
       setState({ ref, query: next, key: newest?.key ?? null, seek: null });
     },
     [ref],

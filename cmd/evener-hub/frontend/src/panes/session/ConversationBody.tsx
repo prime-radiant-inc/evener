@@ -384,10 +384,15 @@ function LiveConversationBody({
     (itemId: string) => model?.turns.some((turn) => turn.items.some((item) => item.id === itemId)) ?? false,
     [model],
   );
+  const findShown = useMemo(
+    () => ({ sessionRef: ref, config: displayConfig, metadata: projection?.metadata }),
+    [ref, displayConfig, projection?.metadata],
+  );
   const find = useFindInSession({
     ref,
     paneId: seat.viewFallbackId,
     rows: renderRows,
+    shown: findShown,
     disclosureScope: seat.readView?.id ?? seat.viewFallbackId,
     listRef: virtualListRef,
     jumpToRow: flow.jumpToRow,

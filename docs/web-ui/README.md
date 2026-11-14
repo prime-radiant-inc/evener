@@ -215,12 +215,20 @@ without scrolling (a landscape phone); the palette command remains.
 - **Order.** Typing lands on the newest loaded match. Enter or the up control
   steps older; Shift+Enter or the down control steps newer. The position counts
   from the newest match, so it does not shift as older pages arrive.
+- **What is searched.** The words as the transcript shows them. A reply or a
+  thought is read as its rendered Markdown (no formatting marks, a link's
+  label without its address, code as written); a prompt, a steer and tool text
+  are read as typed. An entry whose renderer shows nothing is never a match:
+  a suppressed tool row, the daemon's task steers, a thought where thinking
+  traces are hidden.
 - **Folds.** Landing on a match inside a folded tool run or action group opens
   the fold, and a tool call's summary and body or a thought's body, so the
   words are on screen. They stay open, as a reader's own toggle would. A steer,
   a note or a memory refresh keeps its text behind a divider whose open state
   belongs to the session, so a match there opens that divider in every view of
-  the conversation. A tool
+  the conversation. A notification card holding the words opens too, and a
+  notice folded into a group of system events opens the group and is marked
+  there. A tool
   body that folds its output (a long read shows only its tail) shows the
   stretch holding the landed-on words instead, under a line saying so, for as
   long as that call is the landing. Any other tool body that does not show

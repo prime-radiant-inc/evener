@@ -65,7 +65,7 @@ function locate(mounted: MountedTranscript, hit: FindHit): LocatedHit | null {
     const call = mounted.calls.get(hit.itemId);
     return call !== undefined && fold.contains(call) ? { element: call, exact: true } : { element: fold, exact: false };
   }
-  const entry = mounted.entries.get(hit.key);
+  const entry = mounted.entries.get(hit.anchor ?? hit.key);
   return entry === undefined ? null : { element: entry, exact: true };
 }
 
@@ -204,6 +204,10 @@ export function markTranscript(
   const mine: Range[] = [];
   if (port && needle !== "") {
     const mounted = readMounted(port);
+    // Hits rendered under one entry (grouped notices) share its element,
+    // which is read once.
+    const spans = new Map<HTMLElement, { ranges: Range[]; current: boolean }>();
+    let budget = MAX_RANGES;
     for (const hit of hits) {
       // Hits far outside the mounted window cost nothing.
       if (hit.rowIndex < mounted.firstRow || hit.rowIndex > mounted.lastRow) continue;
@@ -212,9 +216,15 @@ export function markTranscript(
       const isCurrent = hit.key === currentKey;
       if (isCurrent) current = located;
       if (!registry || !located.exact) continue;
-      const found = rangesIn(located.element, needle, MAX_RANGES - all.length - mine.length);
-      (isCurrent ? mine : all).push(...found);
+      let span = spans.get(located.element);
+      if (span === undefined) {
+        span = { ranges: rangesIn(located.element, needle, budget), current: false };
+        budget -= span.ranges.length;
+        spans.set(located.element, span);
+      }
+      if (isCurrent) span.current = true;
     }
+    for (const span of spans.values()) (span.current ? mine : all).push(...span.ranges);
   }
   for (const marked of scope.querySelectorAll(`[${FIND_CURRENT_ATTRIBUTE}]`)) {
     if (marked !== current?.element) marked.removeAttribute(FIND_CURRENT_ATTRIBUTE);

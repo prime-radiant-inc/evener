@@ -48,7 +48,8 @@ export function findInSessionMatches(model: ThreadModel, query: string): InSessi
   for (const turn of model.turns) {
     turnNumber += 1;
     for (const item of turn.items) {
-      for (const raw of itemFindTexts(item)) {
+      // A thought carries the same words as its text and as its summary.
+      for (const raw of new Set(itemFindTexts(item))) {
         const text = findReadable(raw);
         const hit = findIndexIn(text, needle);
         if (hit < 0) continue;

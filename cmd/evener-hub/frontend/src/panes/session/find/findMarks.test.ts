@@ -116,3 +116,11 @@ test("two transcripts keep their own painted words", () => {
   markTranscript(left, [], null, "");
   expect(registry.size).toBe(0);
 });
+
+test("a hit rendered under another entry is marked there", () => {
+  const el = port({ first: "one notice, then the needle notice", later: "" });
+  const grouped: FindHit = { ...hit("later"), anchor: "first" };
+  const marks = markTranscript(el, [grouped], "later", "needle");
+  expect(marks.current?.element.getAttribute("data-view-anchor-id")).toBe("first");
+  expect(painted("evener-find-current")).toEqual(["needle"]);
+});
