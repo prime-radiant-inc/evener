@@ -52,6 +52,10 @@ const (
 // contributes nothing to a merged set) and the hub's MCP overview.
 const RepoLaunchConfigFile = ".evener/launch.toml"
 
+// ProjectLaunchConfigFile is the local project layer's file name, shared by
+// the trust UI and the settings probe's exclusion diagnostic.
+const ProjectLaunchConfigFile = ".evener/launch.local.toml"
+
 const (
 	LaunchPathNone       LaunchPathKind = ""
 	LaunchPathDir        LaunchPathKind = "dir"

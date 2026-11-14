@@ -19,6 +19,28 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	return resolveFS(afero.NewOsFs(), stateRoot, cwd, overrides)
 }
 
+// ResolveTrustedOnly resolves the layers the settings probe may treat as
+// user authorization: the global (user) layer, the trust-approved repo
+// layer, and the per-launch overrides. The local project layer
+// (<cwd>/.evener/launch.local.toml) is deliberately NOT loaded: a checkout
+// controls that file, the probe runs with no session launch and no trust
+// decision behind it, and its fields would reach the probe as trusted
+// input — env can redirect the probe's global MCP layer into
+// checkout-controlled files, and mcp_configs and mcps add MCP sources the
+// probe loads as user-authored — handing the probing process's own
+// credentials to whatever the checkout names, just by rendering Settings.
+// A local layer carrying any of those fields is reported as a diagnostic
+// so the probe can say why its list may differ from what a session
+// launched in the same directory would use; the session-side Resolve
+// keeps applying the layer as before.
+func ResolveTrustedOnly(stateRoot, cwd string, overrides Layer) (Resolved, error) {
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		return Resolved{}, fmt.Errorf("resolve project: %w", err)
+	}
+	return resolveLayersFS(afero.NewOsFs(), stateRoot, cwd, project, overrides, false)
+}
+
 // ResolveWithProject resolves filesystem layers from cwd while using project
 // for project-scoped legacy state and metadata. It is used when cwd is a
 // disposable existing probe directory for a path that has not been created.
@@ -73,6 +95,14 @@ func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, e
 }
 
 func resolveFSWithProject(fs afero.Fs, stateRoot, cwd string, project identifier.Project, overrides Layer) (Resolved, error) {
+	return resolveLayersFS(fs, stateRoot, cwd, project, overrides, true)
+}
+
+// resolveLayersFS is the shared resolution body; includeLocalLayer selects
+// whether the checkout-controlled local project layer is merged (a
+// session's Resolve) or excluded with a diagnostic (the settings probe's
+// ResolveTrustedOnly — see its doc for the trust rationale).
+func resolveLayersFS(fs afero.Fs, stateRoot, cwd string, project identifier.Project, overrides Layer, includeLocalLayer bool) (Resolved, error) {
 	paths := pathsForProject(stateRoot, cwd, project)
 	layers := map[LayerName]Layer{}
 	var pathDiags []Diagnostic
@@ -90,12 +120,22 @@ func resolveFSWithProject(fs afero.Fs, stateRoot, cwd string, project identifier
 		layers[LayerRepo] = repoLayer
 	}
 
-	p, projectDiags, err := loadProjectLayerFS(fs, paths)
-	if err != nil {
-		return Resolved{}, fmt.Errorf("project: %w", err)
+	if includeLocalLayer {
+		p, projectDiags, err := loadProjectLayerFS(fs, paths)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("project: %w", err)
+		}
+		p = validateAbsolutePaths(LayerProject, p, &pathDiags)
+		layers[LayerProject] = p
+		pathDiags = append(pathDiags, projectDiags...)
+	} else if local, _, err := loadProjectLayerFS(fs, paths); err == nil && localLayerTouchesProbe(local) {
+		repoDiags = append(repoDiags, Diagnostic{
+			Layer: LayerProject,
+			Field: ProjectLaunchConfigFile,
+			Message: "excluded from this resolution: the settings probe treats no checkout-controlled layer as authorization, " +
+				"so its env and MCP sources never reach it",
+		})
 	}
-	p = validateAbsolutePaths(LayerProject, p, &pathDiags)
-	layers[LayerProject] = p
 
 	layers[LayerLaunch] = overrides
 
@@ -104,8 +144,17 @@ func resolveFSWithProject(fs afero.Fs, stateRoot, cwd string, project identifier
 	resolved.Repo = repoStatus
 	resolved.Diagnostics = append(resolved.Diagnostics, pathDiags...)
 	resolved.Diagnostics = append(resolved.Diagnostics, repoDiags...)
-	resolved.Diagnostics = append(resolved.Diagnostics, projectDiags...)
 	return resolved, nil
+}
+
+// localLayerTouchesProbe reports whether the local project layer carries
+// any field the settings probe consumes: the env that answers its
+// expansions and routes its global MCP layer, and the MCP sources it would
+// otherwise load as trusted files or inline specs. Only such a layer can
+// change what the probe reports, so only such a layer gets an exclusion
+// note.
+func localLayerTouchesProbe(l Layer) bool {
+	return len(l.Env) > 0 || len(l.MCPConfigs) > 0 || len(l.MCPs) > 0
 }
 
 // LoadProjectLayer reads the local project layer. The canonical path is

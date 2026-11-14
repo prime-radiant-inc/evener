@@ -82,8 +82,11 @@ func settingsAgentRoster() []appwire.SettingsAgentEntry {
 // config, the project config at the discovery directory's git root, and the
 // launch configuration's MCP files and inline servers (the argv sources a
 // spawned session receives), with later layers shadowing earlier ones by
-// server name. An explicitly supplied cfg.MCPConfigPath, when it exists, is
-// appended as the highest-precedence file.
+// server name — with one deliberate difference from a session: the
+// checkout-controlled launch.local.toml is never applied (mcpOverviewResolveLaunch
+// resolves trusted layers only), because the probe runs with no launch or
+// trust decision behind it. An explicitly supplied cfg.MCPConfigPath, when it
+// exists, is appended as the highest-precedence file.
 //
 // A missing file is the empty state, not an error. A malformed explicit
 // session-local file surfaces as Error, as it does for a session (Discover
@@ -168,12 +171,14 @@ func mcpOverviewLaunchSources(cfg hubcore.WebConfig, dir string) (extraFiles, in
 // launchMCPDiagnostics renders the launch-resolution diagnostics that concern
 // the fields this probe consumes: the MCP fields themselves (mcp_configs,
 // mcps), the env map — including a key the credential blocklist dropped, whose
-// Field carries the key (env.NAME) — and the repo layer's own file, whose read,
-// hash or decode failure means it contributes nothing to the merged set. A
-// resolution can succeed while dropping or blocking any of these, and that
-// must surface beside the servers that did load rather than silently
-// shrinking the list; diagnostics about other fields belong to the sections
-// that read them.
+// Field carries the key (env.NAME) — the repo layer's own file, whose read,
+// hash or decode failure means it contributes nothing to the merged set, and
+// the local launch.local.toml the probe deliberately never applies, whose
+// exclusion note says why the probed list may differ from a launched
+// session's. A resolution can succeed while dropping, blocking or excluding
+// any of these, and that must surface beside the servers that did load rather
+// than silently shrinking the list; diagnostics about other fields belong to
+// the sections that read them.
 func launchMCPDiagnostics(diags []launchconfig.Diagnostic) []string {
 	var out []string
 	for _, d := range diags {
@@ -182,19 +187,24 @@ func launchMCPDiagnostics(diags []launchconfig.Diagnostic) []string {
 			d.Field == launchconfig.MCPsField,
 			d.Field == launchconfig.EnvField,
 			strings.HasPrefix(d.Field, launchconfig.EnvField+"."),
-			d.Field == launchconfig.RepoLaunchConfigFile:
+			d.Field == launchconfig.RepoLaunchConfigFile,
+			d.Field == launchconfig.ProjectLaunchConfigFile:
 			out = append(out, fmt.Sprintf("launch config %s %s: %s", d.Layer, d.Field, d.Message))
 		}
 	}
 	return out
 }
 
-// mcpOverviewResolveLaunch resolves every launch layer for dir. Without a
-// usable directory only the user layers exist, which ResolveUserOnly answers.
+// mcpOverviewResolveLaunch resolves every launch layer for dir that the
+// probe may treat as user authorization: ResolveTrustedOnly keeps the
+// global and trust-approved repo layers and excludes the
+// checkout-controlled launch.local.toml, which must never reach the probe
+// as trusted input (see its doc). Without a usable directory only the user
+// layers exist, which ResolveUserOnly answers.
 func mcpOverviewResolveLaunch(root, dir string) (launchconfig.Resolved, error) {
 	if dir != "" {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return launchconfig.Resolve(root, dir, launchconfig.Layer{})
+			return launchconfig.ResolveTrustedOnly(root, dir, launchconfig.Layer{})
 		}
 	}
 	return launchconfig.ResolveUserOnly(root, launchconfig.Layer{})

@@ -424,3 +424,96 @@ func checkValidateAndExpandRepoLayer_InvalidPaths(t *testing.T) {
 		t.Errorf("ExportATIFPath = %q, want empty", got.ExportATIFPath)
 	}
 }
+
+// ResolveTrustedOnly is the settings probe's resolution: it excludes the
+// checkout-controlled launch.local.toml (a checkout can ship one) while
+// keeping the user-global and trust-approved repo layers, so the probe never
+// treats checkout-controlled env or MCP sources as user authorization.
+
+func TestResolveTrustedOnly_ExcludesLaunchLocalOverrides(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(stateRoot, "launch.toml"), `env = { GLOBAL_VAR = "g" }
+mcp_configs = ["/global.json"]
+`)
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.local.toml"), `env = { XDG_CONFIG_HOME = "/checkout-probe" }
+mcp_configs = ["/checkout.json"]
+
+[[mcps]]
+name = "checkout-inline"
+command = "/bin/true"
+`)
+
+	got, err := ResolveTrustedOnly(stateRoot, cwd, Layer{})
+	if err != nil {
+		t.Fatalf("ResolveTrustedOnly: %v", err)
+	}
+	if got.Effective.Env["XDG_CONFIG_HOME"] != "" {
+		t.Errorf("Effective.Env carries the checkout-controlled XDG_CONFIG_HOME = %q", got.Effective.Env["XDG_CONFIG_HOME"])
+	}
+	if len(got.Effective.MCPConfigs) != 1 || got.Effective.MCPConfigs[0] != "/global.json" {
+		t.Errorf("Effective.MCPConfigs = %v, want the global layer's entry only", got.Effective.MCPConfigs)
+	}
+	if len(got.Effective.MCPs) != 0 {
+		t.Errorf("Effective.MCPs = %#v, want the checkout-controlled inline servers excluded", got.Effective.MCPs)
+	}
+	if got.Effective.Env["GLOBAL_VAR"] != "g" {
+		t.Errorf("global layer env lost: %#v", got.Effective.Env)
+	}
+	found := false
+	for _, d := range got.Diagnostics {
+		if d.Layer == LayerProject && d.Field == ProjectLaunchConfigFile {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Diagnostics = %#v, want the exclusion note naming %s", got.Diagnostics, ProjectLaunchConfigFile)
+	}
+}
+
+func TestResolveTrustedOnly_KeepsTrustedRepoLayer(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.toml"), `env = { REPO_VAR = "r" }`)
+	repoHash, err := CanonicalHashTOML([]byte(`env = { REPO_VAR = "r" }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(stateRoot, "projects", project.ID, "meta.toml"), `schema = 1
+cwd = "`+cwd+`"
+[trust]
+hashes = ["`+repoHash+`"]
+decision = "trusted"
+`)
+
+	got, err := ResolveTrustedOnly(stateRoot, cwd, Layer{})
+	if err != nil {
+		t.Fatalf("ResolveTrustedOnly: %v", err)
+	}
+	if got.Effective.Env["REPO_VAR"] != "r" {
+		t.Errorf("trust-approved repo env missing from the trusted-only resolution: %#v", got.Effective.Env)
+	}
+	if got.Repo == nil || got.Repo.Trust != TrustTrusted {
+		t.Errorf("repo status = %v, want trusted", got.Repo)
+	}
+}
+
+func TestResolveTrustedOnly_SilentWhenLocalLayerLacksProbeFields(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(cwd, ".evener", "launch.local.toml"), `model = "local-only"`)
+
+	got, err := ResolveTrustedOnly(stateRoot, cwd, Layer{})
+	if err != nil {
+		t.Fatalf("ResolveTrustedOnly: %v", err)
+	}
+	for _, d := range got.Diagnostics {
+		if d.Field == ProjectLaunchConfigFile {
+			t.Errorf("Diagnostics = %#v, want no exclusion note for a layer with no probe-consumed fields", got.Diagnostics)
+		}
+	}
+}

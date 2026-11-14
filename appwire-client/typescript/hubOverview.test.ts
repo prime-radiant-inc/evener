@@ -84,9 +84,36 @@ describe("fetch and refresh", () => {
     const { fake, store } = storeWithFake();
     fake.on(OVERVIEW, () => SAMPLE);
 
-    await Promise.all([store.getState().fetch(), store.getState().refresh(), store.getState().fetch()]);
+    // fetch joins an in-flight request; refresh no longer does - it queues a
+    // follow-up (the test below), so this pin covers the fetch members.
+    await Promise.all([store.getState().fetch(), store.getState().fetch()]);
 
     expect(fake.calls).toHaveLength(1);
+  });
+
+  // A refresh that arrives while a request is already in flight must not be
+  // answered by that request: it started before the update that caused the
+  // refresh (another tab saving launch settings mid-probe), so joining it
+  // leaves the discovered servers and diagnostics stale until the section is
+  // reopened or another update arrives. The refresh waits for the in-flight
+  // request and then issues a genuinely new one, coalescing concurrent
+  // refreshes into a single follow-up.
+  test("refresh during an in-flight request queues a fresh read after it lands", async () => {
+    const first = pending();
+    const second = pending();
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => (fake.calls.length === 1 ? first.promise : second.promise));
+
+    const read = store.getState().fetch();
+    const updated = store.getState().refresh(); // the update arrived mid-probe
+
+    first.resolve(SAMPLE);
+    second.resolve({ ...SAMPLE, agents: [{ name: "fresh" }] });
+    await read;
+    await updated;
+
+    expect(fake.calls).toHaveLength(2);
+    expect(store.getState().data?.agents).toEqual([{ name: "fresh" }]);
   });
 
   test("loading is true while the request is in flight", async () => {
