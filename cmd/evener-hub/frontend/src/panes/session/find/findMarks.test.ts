@@ -137,3 +137,14 @@ test("a transcript in another window paints in that window", () => {
   markTranscript(el, [], null, "");
   expect(popout.size).toBe(0);
 });
+
+test("words are painted in what the message says, not in the row's speaker header", () => {
+  const el = port({ a: "" });
+  (el.firstElementChild as HTMLElement).innerHTML =
+    "<div>Agent</div><div data-message-body><p>long opening</p><p>the agent replied</p></div>";
+  const marks = markTranscript(el, [hit("a")], "a", "agent");
+  expect(painted("evener-find-current")).toEqual(["agent"]);
+  expect(marks.focus?.startContainer.nodeValue).toBe("the agent replied");
+  // The outline stays on the whole row.
+  expect(marks.current?.getAttribute("data-view-anchor-id")).toBe("a");
+});

@@ -693,3 +693,43 @@ test("the current match stays on its message when loading older history renames 
     expect(document.querySelector(`[${FIND_CURRENT_ATTRIBUTE}]`)?.textContent).toContain("a beta needle"),
   );
 });
+
+test("a match whose page a refresh drops is read back to, even when a later reply takes over its key", async () => {
+  // The earlier reply of a round holds the round's key while it is loaded.
+  // A refresh that keeps only the later reply hands that key to it; the
+  // earlier reply is still the match, and its page is read again.
+  const fragment = (itemId: string, text: string): Turn => ({
+    id: "long",
+    status: "completed",
+    itemsView: "fragment",
+    items: [{ id: itemId, turnId: "long", type: "agentMessage", text, roundId: "r1", status: "completed" } as never],
+  });
+  const client = connectReadyFakeClient();
+  let requests = 0;
+  client.on("thread/read", (params) => ({
+    thread: thread([fragment("second", "a beta needle")]),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    requestGeneration: params.requestGeneration,
+    olderCursor: "page-0",
+  }));
+  client.on("thread/turns/list", () => {
+    requests += 1;
+    return { data: [fragment("first", "an alpha needle")], nextCursor: undefined };
+  });
+  const currentText = () => document.querySelector(`[${FIND_CURRENT_ATTRIBUTE}]`)?.textContent ?? "";
+  await mount(client);
+  openFind();
+  type("needle");
+  older();
+  await waitFor(() => expect(currentText()).toContain("an alpha needle"));
+  const pagesRead = requests;
+
+  await act(async () => {
+    await threadsStore.getState().refreshThread(REF);
+  });
+  await waitFor(() => expect(requests).toBeGreaterThan(pagesRead));
+  await waitFor(() => expect(currentText()).toContain("an alpha needle"));
+  expect(state()).toMatchObject({ status: "matches", position: 2, count: 2 });
+});

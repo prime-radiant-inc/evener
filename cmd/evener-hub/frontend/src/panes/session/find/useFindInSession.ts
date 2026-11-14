@@ -74,7 +74,10 @@ interface FindInSessionOptions {
 interface FindState {
   ref: string;
   query: string;
+  /** The current match: its entry's display key, and the source item that
+   * says which message it is. Both null with no current match. */
   key: string | null;
+  item: string | null;
   /** What older history is being read for, if anything: the next match
    * older than the current one, or the current match itself after a refresh
    * or resync dropped the page that held it. */
@@ -87,6 +90,18 @@ interface FindState {
 const SETTLE_WINDOW_MS = 1500;
 // How long a row jump gets to render its row before Find asks again.
 const JUMP_RETRY_MS = 150;
+
+const NO_MATCH = { key: null, item: null } as const;
+
+function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item"> {
+  return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId };
+}
+
+// A reply still streaming is an overlay item, keyed "stream:<id>:<type>"
+// (the wire's overlay slot key), until its round is recorded.
+function isStreamOverlay(itemId: string): boolean {
+  return itemId.startsWith("stream:");
+}
 
 export function useFindInSession({
   ref,
@@ -143,23 +158,19 @@ export function useFindInSession({
     if (!same) lastHits.current = next;
     return lastHits.current;
   }, [isOpen, rows, query]);
-  // The current match is a message, and its source item says which one. Its
-  // display key can pass to another message as the loaded window changes: a
-  // round's first loaded reply takes the round's key, so loading or dropping
-  // an earlier reply of that round renames the later one. While the key is
-  // the one last chosen, the message it was chosen for stays current.
-  const chosen = useRef<{ key: string; itemId: string } | null>(null);
-  let currentIndex = find?.key == null ? -1 : hits.findIndex((hit) => hit.key === find.key);
-  const keyed = hits[currentIndex];
-  if (find?.key == null) chosen.current = null;
-  else if (chosen.current?.key !== find.key) {
-    chosen.current = keyed === undefined ? null : { key: find.key, itemId: keyed.itemId };
-  } else if (keyed?.itemId !== chosen.current.itemId) {
-    const itemId = chosen.current.itemId;
-    const moved = hits.findIndex((hit) => hit.itemId === itemId);
-    if (moved >= 0) currentIndex = moved;
-    // The same entry under a new record: a streamed reply being recorded.
-    else if (keyed !== undefined) chosen.current = { key: find.key, itemId: keyed.itemId };
+  // The current match is a message, named by its source item. Its display
+  // key is not its identity: a round's first loaded reply takes the round's
+  // key, so loading or dropping an earlier reply of that round hands the key
+  // to a different message.
+  let currentIndex = -1;
+  if (find != null && find.key !== null) {
+    currentIndex = hits.findIndex((hit) => hit.itemId === find.item);
+    if (currentIndex < 0 && find.item !== null && isStreamOverlay(find.item)) {
+      // A streamed reply being recorded is the same message under a new
+      // item: the overlay item gives way to the recorded one, on one key.
+      const recorded = hits.findIndex((hit) => hit.key === find.key);
+      if (recorded >= 0 && !isStreamOverlay(hits[recorded]?.itemId ?? "")) currentIndex = recorded;
+    }
   }
   const current = currentIndex < 0 ? null : (hits[currentIndex] ?? null);
   const historyEnded = olderPageKey === null;
@@ -175,10 +186,10 @@ export function useFindInSession({
       if (request?.query !== undefined) setJumpEpoch((epoch) => epoch + 1);
       setState((previous) => {
         const kept = previous?.ref === ref ? previous : null;
-        if (request?.query === undefined) return kept ?? { ref, query: "", key: null, seek: null };
+        if (request?.query === undefined) return kept ?? { ref, query: "", ...NO_MATCH, seek: null };
         const found = findHits(rowsRef.current, request.query);
         const picked = found.find((hit) => hit.itemId === request.itemId) ?? found.at(-1);
-        return { ref, query: request.query, key: picked?.key ?? null, seek: null };
+        return { ref, query: request.query, ...matchOf(picked), seek: null };
       });
     },
     [ref],
@@ -206,7 +217,7 @@ export function useFindInSession({
       // the end. It never reads older history by itself: each keystroke of a
       // longer word would otherwise page the whole session for a prefix.
       const newest = findHits(rowsRef.current, next).at(-1);
-      setState({ ref, query: next, key: newest?.key ?? null, seek: null });
+      setState({ ref, query: next, ...matchOf(newest), seek: null });
     },
     [ref],
   );
@@ -216,7 +227,7 @@ export function useFindInSession({
       if (find === null || needle === "") return;
       const from = currentIndex < 0 ? (direction === -1 ? hits.length : -1) : currentIndex;
       const next = hits[from + direction];
-      if (next) setState({ ...find, key: next.key, seek: null });
+      if (next) setState({ ...find, ...matchOf(next), seek: null });
       // Nothing older is loaded: look in older history.
       else if (direction === -1 && !historyEnded) setState({ ...find, seek: "older" });
     },
@@ -231,15 +242,15 @@ export function useFindInSession({
   const lost = find !== null && find.key !== null && current === null;
   useEffect(() => {
     if (find === null) return;
-    if (current !== null && current.key !== find.key) {
-      // Renamed: follow the message to its new key.
-      setState({ ...find, key: current.key, seek: find.seek === "restore" ? null : find.seek });
+    if (current !== null && (current.key !== find.key || current.itemId !== find.item)) {
+      // Renamed or recorded: follow the message to what it goes by now.
+      setState({ ...find, ...matchOf(current), seek: find.seek === "restore" ? null : find.seek });
       return;
     }
     if (!lost || find.seek === "restore") return;
-    const evicted = chosen.current !== null && !itemLoaded(chosen.current.itemId);
+    const evicted = find.item !== null && !itemLoaded(find.item);
     if (evicted && !historyEnded) setState({ ...find, seek: "restore" });
-    else setState({ ...find, key: null, seek: null });
+    else setState({ ...find, ...NO_MATCH, seek: null });
   }, [find, current, lost, historyEnded, itemLoaded]);
 
   // While seeking, take the newest match older than the current one as soon
@@ -256,14 +267,14 @@ export function useFindInSession({
         return;
       }
       if (historyEnded) {
-        setState({ ...find, key: null, seek: null });
+        setState({ ...find, ...NO_MATCH, seek: null });
         return;
       }
     } else {
       if (lost) return;
       const older = currentIndex < 0 ? hits.at(-1) : hits[currentIndex - 1];
       if (older) {
-        setState({ ...find, key: older.key, seek: null });
+        setState({ ...find, ...matchOf(older), seek: null });
         return;
       }
       if (historyEnded) {
@@ -406,7 +417,7 @@ export function useFindInSession({
       if (previous?.ref !== ref || previous.seek === null) return previous;
       // A match being read back to is not loaded; keeping it would start the
       // read again.
-      return previous.seek === "restore" ? { ...previous, key: null, seek: null } : { ...previous, seek: null };
+      return previous.seek === "restore" ? { ...previous, ...NO_MATCH, seek: null } : { ...previous, seek: null };
     });
   }, [ref]);
 

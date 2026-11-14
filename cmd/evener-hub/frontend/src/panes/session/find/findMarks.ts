@@ -7,6 +7,8 @@
 import type { FindHit } from "./findHits";
 
 export const FIND_CURRENT_ATTRIBUTE = "data-find-current";
+/** Marks the element of a message row that holds the message's own text. */
+export const FIND_BODY_ATTRIBUTE = "data-message-body";
 const HIGHLIGHT_ALL = "evener-find";
 const HIGHLIGHT_CURRENT = "evener-find-current";
 // A bound on painted ranges, so a one-letter query over a long mounted window
@@ -203,7 +205,10 @@ export function markTranscript(
       const isCurrent = hit.key === currentKey;
       if (isCurrent) current = entry;
       if (!registry) continue;
-      const found = rangesIn(entry, needle, MAX_RANGES - all.length - mine.length);
+      // A message row also carries its speaker and time; only what the
+      // message says is searched, so only that is painted and scrolled to.
+      const body = entry.querySelector<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`) ?? entry;
+      const found = rangesIn(body, needle, MAX_RANGES - all.length - mine.length);
       (isCurrent ? mine : all).push(...found);
     }
   }
