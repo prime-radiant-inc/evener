@@ -269,11 +269,20 @@ func grepNamedFile(ctx context.Context, fd int, path string, a *grepAccum, globF
 	}
 	defer func() { _ = f.Close() }()
 	name := filepath.Base(path)
-	if strings.HasPrefix(name, ".") {
-		return "", nil
+	selected, selErr := grepFileSelected(name, ".", globFilters, skip)
+	if selErr != nil {
+		return "", selErr
 	}
-	if selected, err := grepFileSelected(name, ".", globFilters, skip); !selected {
-		return "", err
+	// The walk's -g override (#6201) applies to a named dotfile too: a filter
+	// that names it surfaces it, matching the unsandboxed arm and ripgrep.
+	// With no filter the named-dotfile default holds, as before.
+	if !selected || len(globFilters) == 0 {
+		if strings.HasPrefix(name, ".") {
+			return "", nil
+		}
+	}
+	if !selected {
+		return "", nil
 	}
 	data, err := grepCappedRead(&grepCtxFile{File: f, ctx: ctx})
 	if cancelErr := ctx.Err(); cancelErr != nil {
