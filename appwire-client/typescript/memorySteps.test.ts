@@ -159,10 +159,10 @@ test("counts logical lines when a read without a limit returns unterminated outp
     memoryReadSummary(
       step(
         { scope: "personal", file_path: "large.txt" },
-        "   1\thead-1\n   2\thead-2\n   8\thead-8\n\n[Output truncated: 1622 characters removed from the middle.]\n\n33-tail-fragment\n  34\ttail-34\n  41\t\n\n[Tool output was truncated.]\n[Lines 8-33 were cut; memory_read with offset=8 limit=26 returns them.]",
+        "   1\thead-1\n   2\thead-2\n   8\thead-8\n\n[Output truncated: 1616 characters removed from the middle.]\n\n33-tail-fragment\n  34\ttail-34\n\n[Tool output was truncated.]\n[Lines 8-33 were cut; memory_read with offset=8 limit=26 returns them.]",
       ),
     ),
-  ).toBe("Read memory personal/large.txt · lines 1-41");
+  ).toBe("Read memory personal/large.txt · lines 1-40");
 });
 
 test("an edit with neither old nor new string has no diff detail", () => {
