@@ -66,6 +66,7 @@ export type {
 export {
   awaitingFirstFrameSend,
   blockedEntries,
+  blockedEntriesIncludingDisplayed,
   canceledEntries,
   createPendingTurnsStore,
   outboxEntriesByState,

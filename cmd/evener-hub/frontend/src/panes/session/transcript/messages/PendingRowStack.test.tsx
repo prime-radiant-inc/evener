@@ -11,6 +11,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-li
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
+import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { connectFakeClient } from "../../../../testing/connectionTestUtils";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
@@ -221,6 +222,58 @@ test("renders the daemon's queued rows with their actions", async () => {
   expect(rows[0]!.textContent).toContain("parked");
   // The row carries its actions.
   expect(screen.getByRole("button", { name: "Steer now" })).toBeTruthy();
+});
+
+// A retargeted recovery consumed into a resend targets the destination the
+// peer chose, while the pane that authored it stays the displayed ref
+// (records.ts' displayedRef: the sending pane keeps authority over the
+// row). The core's own recovery and canceled selectors already match
+// displayedRef for exactly this reason - the author must keep seeing their
+// undelivered work - but the waiting and blocked message-row selectors
+// match targetRef alone, so the row vanishes from its author's pane for
+// the whole life of the resend (roborev's round-4 medium).
+test("a retargeted resend's row stays visible in the pane it was retargeted from", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  // Seed the reviewer's shape directly through the real storage: the
+  // original send, its rejection into recovery, the peer's retarget, and
+  // the consumed resend stamped with this pane as its displayed ref.
+  const storage = new MutationOutboxIndexedDB();
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "retargeted mid-flight" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retargeted mid-flight" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  await storage.retargetOutbox("ref_a", "local:resumed", { threadId: "thread-new" });
+  const sent = await storage.resendRecoveryResult(
+    original.clientMutationId,
+    {
+      targetRef: "local:resumed",
+      method: "turn/start",
+      payload: { ref: "local:resumed", input: [{ type: "text", text: "retargeted mid-flight" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retargeted mid-flight" }] },
+    },
+    undefined,
+    undefined,
+    undefined,
+    { stopEpoch: 0, displayedRef: "ref_a" },
+  );
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  render(
+    <SessionNowContext.Provider value={NOW}>
+      <PendingRowStack ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  // The waiting state's row is still the author's to see and act on.
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows.some((row) => row.textContent?.includes("retargeted mid-flight"))).toBe(true);
 });
 
 // The daemon's queue wire carries no per-entry image count: the preview

@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
+  blockedEntriesIncludingDisplayed,
   type ConsumedQueueEntry,
   canceledEntries,
   createMutationProjectionFence,
@@ -638,8 +639,14 @@ function isMessageRowRecord(record: { method: string }): boolean {
 }
 
 export function useBlockedMessageEntries(ref: string): MutationOutboxRecord[] {
-  const blocked = useBlockedMutationEntries(ref);
-  return useMemo(() => blocked.filter(isMessageRowRecord), [blocked]);
+  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
+  useEffect(() => {
+    void refreshPendingTurnsProjection(ref);
+  }, [ref]);
+  // Displayed-ref aware by design (blockedEntriesIncludingDisplayed's own
+  // comment): a retargeted resend's blocked row stays visible in the pane it
+  // was authored in. The routing tiers keep the targetRef-only read.
+  return useMemo(() => blockedEntriesIncludingDisplayed(outbox, ref).filter(isMessageRowRecord), [outbox, ref]);
 }
 
 export function useCanceledMessageEntries(ref: string): MutationOutboxRecord[] {

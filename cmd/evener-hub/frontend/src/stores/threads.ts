@@ -3939,9 +3939,19 @@ export function useEditableQueuedMutationEntries(ref: string): MutationOutboxRec
   useEffect(() => {
     void projection.refresh(ref);
   }, [ref]);
-  // Include removable controls so the strip can offer Remove without Edit.
+  // Include removable controls so the strip can offer Remove without Edit,
+  // and match a retargeted resend's displayed ref: the row targets the
+  // destination a peer retargeted to while the pane that authored it stays
+  // its displayedRef (records.ts' own field contract), so the author keeps
+  // seeing the waiting row - the same association canceledEntries,
+  // recoveryEntries and the blocked message rows already carry. Presentation
+  // ownership only; submission routing reads the pending projection, never
+  // this selector.
   return useMemo(
-    () => [...outbox.values()].filter((record) => record.targetRef === ref && canRemoveQueuedMessage(record)),
+    () =>
+      [...outbox.values()].filter(
+        (record) => (record.targetRef === ref || record.displayedRef === ref) && canRemoveQueuedMessage(record),
+      ),
     [outbox, ref],
   );
 }

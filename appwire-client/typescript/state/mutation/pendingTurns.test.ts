@@ -4,7 +4,13 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel } from "../../model";
 import { ownPendingSend } from "./pendingEntries";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
-import { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
+import {
+  awaitingFirstFrameSend,
+  blockedEntries,
+  blockedEntriesIncludingDisplayed,
+  createPendingTurnsStore,
+  recoveryEntries,
+} from "./pendingTurns";
 import type { ClientIdentity, MutationOptimisticRecord } from "./records";
 import { outboxRecord, recoveryRecord, threadModel } from "./testing";
 
@@ -573,5 +579,64 @@ describe("blockedEntries", () => {
       ],
     ]);
     expect(blockedEntries(outbox, "ref-a").map((record) => record.clientMutationId)).toEqual(["cmid-1", "cmid-2"]);
+  });
+});
+
+describe("blockedEntriesIncludingDisplayed", () => {
+  // A retargeted recovery's delivery-uncertain row targets the destination
+  // the peer chose while the pane it was authored in stays the displayed
+  // ref - the author's only durable copy, so the message rows must keep it.
+  test("includes a blocked row whose displayed ref is the pane, ordered oldest first", () => {
+    const outbox = new Map([
+      [
+        "cmid-displayed",
+        outboxRecord({
+          clientMutationId: "cmid-displayed",
+          targetRef: "ref-destination",
+          displayedRef: "ref-a",
+          state: "blockedUnknown",
+          intentSequence: 2,
+        }),
+      ],
+      [
+        "cmid-target",
+        outboxRecord({
+          clientMutationId: "cmid-target",
+          targetRef: "ref-a",
+          state: "blockedUnknown",
+          intentSequence: 1,
+        }),
+      ],
+      // A row with no association to this pane stays out, whichever state.
+      [
+        "cmid-foreign",
+        outboxRecord({
+          clientMutationId: "cmid-foreign",
+          targetRef: "ref-destination",
+          state: "blockedUnknown",
+          intentSequence: 0,
+        }),
+      ],
+    ]);
+    expect(blockedEntriesIncludingDisplayed(outbox, "ref-a").map((record) => record.clientMutationId)).toEqual([
+      "cmid-target",
+      "cmid-displayed",
+    ]);
+  });
+
+  test("never includes another pane's displayed row", () => {
+    const outbox = new Map([
+      [
+        "cmid-other-displayed",
+        outboxRecord({
+          clientMutationId: "cmid-other-displayed",
+          targetRef: "ref-destination",
+          displayedRef: "ref-b",
+          state: "blockedUnknown",
+          intentSequence: 1,
+        }),
+      ],
+    ]);
+    expect(blockedEntriesIncludingDisplayed(outbox, "ref-a")).toEqual([]);
   });
 });
