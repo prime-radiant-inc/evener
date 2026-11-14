@@ -255,8 +255,9 @@ and the chord remain.
   already in view): every landing ends bottom-following and supersedes any
   retained placement, so later output offers the way back to latest instead of
   carrying the reader off the match. Jumping to latest ends a search into older
-  history, so a match arriving later cannot pull the reader back; Find stays
-  open.
+  history and leaves no match current, so neither a match arriving later nor
+  a refresh reading back to the old one can pull the reader away again; Find
+  stays open on its words, and stepping starts over from the newest match.
 - **Phone.** The bar docks above the transcript, so the on-screen keyboard,
   which lifts the composer, never puts it over the send control.
 

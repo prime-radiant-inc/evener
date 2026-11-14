@@ -733,3 +733,28 @@ test("a match whose page a refresh drops is read back to, even when a later repl
   await waitFor(() => expect(currentText()).toContain("an alpha needle"));
   expect(state()).toMatchObject({ status: "matches", position: 2, count: 2 });
 });
+
+test("after jumping to latest, a refresh does not read back to the match the reader left", async () => {
+  const client = connectReadyFakeClient();
+  const script = scriptHistory(client, [turn("t1", "needle here")], ["nothing", "an old needle"]);
+  await mount(client);
+  openFind();
+  type("needle");
+  older();
+  await waitFor(() => expect(currentAnchor()).toBe("old-1-item"));
+
+  // The reader goes back to the live end; the search is over, the words stay.
+  fireEvent.click(screen.getByTestId("jump-latest"));
+  expect((field() as HTMLInputElement).value).toBe("needle");
+  const pagesRead = script.requests;
+
+  await act(async () => {
+    await threadsStore.getState().refreshThread(REF);
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+  expect(script.requests).toBe(pagesRead);
+  expect(state().status).not.toBe("searching");
+  expect((field() as HTMLInputElement).value).toBe("needle");
+});

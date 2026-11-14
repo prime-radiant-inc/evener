@@ -117,7 +117,8 @@ export function useFindInSession({
   view: FindView | null;
   open(): void;
   /** The reader left history for the live end: a search into older history
-   * stops, so a late match cannot pull them back. Find stays open. */
+   * stops and no match is current, so neither a late match nor a refresh can
+   * pull them back. Find stays open on its words. */
   leaveHistory(): void;
 } {
   const [state, setState] = useState<FindState | null>(null);
@@ -398,10 +399,11 @@ export function useFindInSession({
   const leaveHistory = useCallback(() => {
     settle.current = null;
     setState((previous) => {
-      if (previous?.ref !== ref || previous.seek === null) return previous;
-      // A match being read back to is not loaded; keeping it would start the
-      // read again.
-      return previous.seek === "restore" ? { ...previous, ...NO_MATCH, seek: null } : { ...previous, seek: null };
+      if (previous?.ref !== ref || (previous.key === null && previous.seek === null)) return previous;
+      // The reader left the match for the live end. Keeping it current would
+      // have a later refresh read history back to it and carry them off
+      // again; the words stay, and stepping starts over from the newest.
+      return { ...previous, ...NO_MATCH, seek: null };
     });
   }, [ref]);
 
