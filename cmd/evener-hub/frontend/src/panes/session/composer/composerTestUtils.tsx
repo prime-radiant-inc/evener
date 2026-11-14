@@ -12,6 +12,7 @@ import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils"
 import { Toast } from "../../../widgets";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { Composer as ComposerView } from "./Composer";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { defaultCompositionOwner } from "./sourceState";
@@ -94,6 +95,11 @@ export async function mountComposerWithHandle(
     <ClientProvider client={fake}>
       <Toast />
       <Composer ref={ref} source={source} focused={options.focused ?? false} />
+      {/* The pending rows render as the transcript's trailing row in
+          production (ConversationBody); mounted beside the composer here so
+          the queue/edit/cancel controls the journeys drive exist, same as
+          the retired strip's place in this harness. */}
+      <PendingRowStack ref={ref} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);

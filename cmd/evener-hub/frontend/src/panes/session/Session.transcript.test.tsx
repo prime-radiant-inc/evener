@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../mutationReceiptTestUtils";
@@ -628,9 +629,14 @@ test("a dormant live session keeps an idle drain in the QueueStrip", async () =>
   });
   await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(screen.getByTestId("queue-strip").dataset.queuedCount).toBe("2"));
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
-  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+  // The one-rendering rule: both undelivered messages render as transcript
+  // rows in the live-edge region, and the retired dock renders nowhere.
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelectorAll('[data-testid="user-message-item"]')).toHaveLength(2);
+  });
+  expect(screen.queryByTestId("queue-strip")).toBeNull();
   expect(screen.getByTestId("held-steer-announcements")).toBeTruthy();
 });
 
@@ -671,7 +677,7 @@ test("a restart-required session renders no held ghost for a seeded hold", async
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
   expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
@@ -713,7 +719,13 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByTestId("queue-strip")).toBeTruthy());
+  // The daemon's queued row renders inline: exactly one transcript row for
+  // the one undelivered message so far.
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelectorAll('[data-testid="user-message-item"]')).toHaveLength(1);
+  });
   await act(async () => {
     await mutationStorage.enqueueIntent({
       targetRef: "ref_a",
@@ -726,7 +738,11 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
     await refreshPendingTurnsProjection("ref_a");
   });
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(screen.getByTestId("queue-strip").dataset.queuedCount).toBe("2"));
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelectorAll('[data-testid="user-message-item"]')).toHaveLength(2);
+  });
 
   // Stop cancels attempted work, but this never-attempted row stays locally
   // owned by QueueStrip.
@@ -736,11 +752,16 @@ test("Stop keeps a dormant session's unattempted row in local queue ownership", 
   });
   await flushPendingTurnsProjectionForTests();
 
-  // Stop keeps the unattempted row under local queue ownership. It was never
-  // a held ghost, so there is no delivery/failure announcement to preserve.
-  await waitFor(() => expect(screen.getByTestId("queue-strip").dataset.queuedCount).toBe("2"));
+  // Stop keeps the unattempted row visible as its own transcript row - the
+  // canceled family renders inline too. It was never a held ghost, so there
+  // is no delivery/failure announcement to preserve.
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelectorAll('[data-testid="user-message-item"]')).toHaveLength(2);
+  });
   expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBeUndefined();
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("queue-strip")).toBeNull();
 });
 
 test("a dormant session announces held delivery after transcript reflection", async () => {
@@ -771,7 +792,7 @@ test("a dormant session announces held delivery after transcript reflection", as
   );
   await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
   const id = await act(async () => seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true }));
-  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-row-stack")).toBeTruthy());
 
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -800,7 +821,7 @@ test("a dormant session announces held delivery after transcript reflection", as
   await flushPendingTurnsProjectionForTests();
 
   await waitFor(() => expect(screen.getByTestId("held-steer-announcements").dataset.outcomes).toBe("delivered"));
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
   // This delivery adds a real user turn; it does not exercise disappearance
   // of the entire transcript subtree after the final ghost leaves.
 });
@@ -836,7 +857,7 @@ test("a dormant session keeps the held outcome region through final rejected gho
   const announcements = screen.getByTestId("held-steer-announcements");
 
   const id = await act(async () => seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true }));
-  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-row-stack")).toBeTruthy());
   expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   expect(screen.queryByTestId("empty-state")).toBeNull();
   expect(screen.getByTestId("held-steer-announcements")).toBe(announcements);
@@ -847,9 +868,16 @@ test("a dormant session keeps the held outcome region through final rejected gho
   });
   await flushPendingTurnsProjectionForTests();
 
-  await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
-  expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
-  expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("no-turns");
+  // The one-rendering rule's departure shape: a rejected steer keeps a
+  // visible refused row in the live-edge region (its recovery record now),
+  // announced once. The transcript subtree stays mounted with it.
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    const refused = row!.querySelector('[data-kind="refused"] [data-testid="user-message-item"]');
+    expect(refused).not.toBeNull();
+    expect(refused!.textContent).toContain("focus on the parser");
+  });
   expect(screen.getByTestId("held-steer-announcements")).toBe(announcements);
   expect(announcements.dataset.outcomes).toBe("rejected");
 });
@@ -891,7 +919,7 @@ test("a resume-required live session renders no held ghost", async () => {
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
   expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
@@ -935,7 +963,7 @@ test("a recovery-fenced live session renders no held ghost", async () => {
   await flushPendingTurnsProjectionForTests();
   await act(async () => {});
 
-  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("pending-row-stack")).toBeNull();
   expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
   expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
@@ -955,7 +983,7 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
   await waitFor(() => {
     const row = document.querySelector('[data-row-id="live-edge"]');
     expect(row).not.toBeNull();
-    expect(row!.querySelector("[data-testid='held-steer-stack']")).not.toBeNull();
+    expect(row!.querySelector("[data-testid='pending-row-stack']")).not.toBeNull();
   });
 
   // With the ask dock pending too, both live in the ONE trailing row, dock
@@ -1009,7 +1037,7 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
     fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
   await waitFor(() => {
-    const stack = document.querySelector("[data-testid='held-steer-stack']");
+    const stack = document.querySelector("[data-testid='pending-row-stack']");
     expect(stack).not.toBeNull();
     const dock = document.querySelector("[data-ask-response-dock]");
     expect(dock).not.toBeNull();
@@ -1059,7 +1087,7 @@ test("a held steer without an ask still counts in renderedRowCount (the one-row-
     await act(async () => {
       await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
     });
-    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("pending-row-stack")).toBeTruthy());
     const afterSeed = captured.at(-1)?.renderedRowCount;
     expect(afterSeed).toBe((beforeSeed ?? 0) + 1);
   } finally {
@@ -1105,7 +1133,7 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     await act(async () => {
       await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
     });
-    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("pending-row-stack")).toBeTruthy());
     expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
     // A departure: the daemon acknowledges the steer, and settling that
     // receipt removes the row.
@@ -1114,7 +1142,7 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
       answerSteer();
     });
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("pending-row-stack")).toBeNull());
     expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
     // ...and never RESETS it either: the last observed value is still the
     // arrival's 1. Math.max alone would let a reset-to-0 on removal slip
@@ -1163,15 +1191,386 @@ test("the held-steer announcements region lives outside the virtual list", async
   await act(async () => {
     await seedHeld("steer", "focus on the parser", { ref: "ref_a", attempted: true });
   });
-  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  await waitFor(() => expect(screen.getByTestId("pending-row-stack")).toBeTruthy());
 
   // The ghost stack itself IS inside the virtual list - it is the live-edge
   // trailing row, scrolling away with the content...
   const list = screen.getByTestId("transcript-virtual-list");
-  expect(list.contains(screen.getByTestId("held-steer-stack"))).toBe(true);
+  expect(list.contains(screen.getByTestId("pending-row-stack"))).toBe(true);
 
   // ...while its one aria-live region stays OUTSIDE the list, so a
   // virtualized remount of the row never re-announces unchanged text.
   const announcements = screen.getByTestId("held-steer-announcements");
   expect(list.contains(announcements)).toBe(false);
+});
+
+// --- undelivered messages render as transcript rows --------------------------
+//
+// The one-rendering rule (Jesse's ruling, 2026-11-13): every user message
+// that has not fully delivered to the session renders as ONE
+// transcript-shaped row in the live-edge trailing region - same
+// UserMessageView construction a delivered user message gets, actions on
+// the row - never a dock below the transcript and never a dimmed chip
+// beside the composer. The families below join the held-steer ghosts that
+// already live there.
+
+// A queued row from the daemon's authoritative queue renders as one
+// transcript-shaped row inside the live-edge region, carrying its actions.
+// The daemon queue is authoritative wire state, so this seeds through the
+// hydrate, the same way liveSurfaceThread's queue-bearing variant does.
+test("a queued message renders as a transcript row in the live-edge region, with its actions reachable", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      ...liveSurfaceThread(),
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 1,
+          depth: 1,
+          ids: ["q1"],
+          texts: ["parked behind the turn"],
+          preview: ["parked behind the turn"],
+        },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    // One transcript-shaped row: the same construction a delivered user
+    // message gets, inside the trailing region.
+    const message = row!.querySelector('[data-testid="user-message-item"]');
+    expect(message).not.toBeNull();
+    expect(message!.textContent).toContain("parked behind the turn");
+    // The row's own actions travel with it into the transcript.
+    expect(within(row as HTMLElement).getAllByRole("button").length).toBeGreaterThan(0);
+  });
+  // The dock is retired: no queue strip renders anywhere.
+  expect(screen.queryByTestId("queue-strip")).toBeNull();
+});
+
+// An in-flight send (the "Sending..." family) renders as one transcript
+// row too - the same one-rendering rule, not a chip beside the composer.
+test("an in-flight send renders as a transcript row in the live-edge region, not a composer chip", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    await seedHeld("send", "hello there", { ref: "ref_a", attempted: true });
+  });
+
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    const message = row!.querySelector('[data-testid="user-message-item"]');
+    expect(message).not.toBeNull();
+    expect(message!.textContent).toContain("hello there");
+  });
+  // The chip dock is retired: no pending chips render anywhere.
+  expect(screen.queryByTestId("pending-chips")).toBeNull();
+});
+
+// The failure families render in the same place: a Stop-canceled durable
+// row is one transcript row with its Retry affordance, never a dock entry.
+// Seeded through the same real durable write every Stop path makes
+// (storage cancelUnattempted on an unattempted row - QueueStrip.test's
+// seedCanceled shape).
+test("a canceled-by-Stop message renders as a transcript row with its retry affordance", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped mid-flight" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stopped mid-flight" }] },
+    });
+    await mutationStorage.cancelUnattempted("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    const message = row!.querySelector('[data-testid="user-message-item"]');
+    expect(message).not.toBeNull();
+    expect(message!.textContent).toContain("stopped mid-flight");
+  });
+  expect(screen.queryByTestId("queue-strip")).toBeNull();
+});
+
+// A delivery-uncertain (blocked) row renders as one transcript row as
+// well - the failure label rides the row's provisional caption, not a
+// dock slot.
+test("a delivery-uncertain message renders as a transcript row in the live-edge region", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "uncertain delivery" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "uncertain delivery" }] },
+    });
+    await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    const message = row!.querySelector('[data-testid="user-message-item"]');
+    expect(message).not.toBeNull();
+    expect(message!.textContent).toContain("uncertain delivery");
+  });
+  expect(screen.queryByTestId("queue-strip")).toBeNull();
+});
+
+// One rendering per message: the same pending id never produces two
+// user-message rows, and no family renders outside the trailing region.
+test("a pending send renders exactly one user message row and nothing outside the live-edge region", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    await seedHeld("send", "only one of me", { ref: "ref_a", attempted: true });
+  });
+
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelectorAll('[data-testid="user-message-item"]')).toHaveLength(1);
+  });
+  // The transcript's delivered rows (none here) and the trailing region
+  // together carry every user-message-item; nothing else may.
+  expect(document.querySelectorAll('[data-testid="user-message-item"]').length).toBe(1);
+});
+
+// The trailing region is pinned BELOW the server's rows: the live-edge
+// row is the last row of the virtual list, so a queued message always
+// renders after everything that came from the server.
+test("the live-edge region with a queued row renders below the server's transcript rows", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      ...liveSurfaceThread(),
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["queued below"], preview: ["queued below"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => {
+    const liveEdge = document.querySelector('[data-row-id="live-edge"]');
+    expect(liveEdge).not.toBeNull();
+    const serverTurn = document.querySelector('[data-testid="turn-block"]');
+    expect(serverTurn).not.toBeNull();
+    // DOM order: the server's turn block precedes the live-edge region.
+    expect(serverTurn!.compareDocumentPosition(liveEdge!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// The count the scroll coordinator reads (renderedRowCount) includes a
+// queued row too, not only the held-steer and ask families - the same
+// one-row-short regression the ghost test above pins for steers.
+test("a queued message without an ask counts in renderedRowCount (the one-row-short regression)", async () => {
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const captured: Array<{ renderedRowCount?: number }> = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      captured.push({ renderedRowCount: options.renderedRowCount });
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectReadyFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        ...liveSurfaceThread(),
+        evener: {
+          ref: "ref_a",
+          mutationStateAuthoritative: true,
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+        },
+      }),
+    );
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => {
+      expect(captured.length).toBeGreaterThan(0);
+      expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
+    });
+    const beforeSeed = captured.at(-1)?.renderedRowCount;
+    // An optimistic queue entry - the same durable path a real queue press
+    // takes - joins the trailing region.
+    await act(async () => {
+      await seedHeld("queue", "queued prose", { ref: "ref_a", attempted: true });
+    });
+    await waitFor(() => expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull());
+    const afterSeed = captured.at(-1)?.renderedRowCount;
+    expect(afterSeed).toBe((beforeSeed ?? 0) + 1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// The pill's arrival signal covers the queue/send families too: a queued
+// row appearing while the reader is scrolled away fires the new-content
+// pill, exactly as a held steer's heldEpoch does.
+test("a queued row appearing while scrolled away fires the new-content pill", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  const root = scrollRootOf(container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+
+  await act(async () => {
+    await seedHeld("queue", "arrived while away", { ref: "ref_a", attempted: true });
+  });
+
+  const pill = await screen.findByTestId("new-content-pill");
+  expect(pill.textContent).toContain("1");
+});
+
+// A refused-recovery row (the durable record a rejected submission
+// becomes) renders as one transcript row too - its Edit affordance rides
+// the row, never a dock slot below the transcript.
+test("a refused-recovery message renders as a transcript row in the live-edge region", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "refused at the hub" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "refused at the hub" }] },
+    });
+    await storage.transferToRecovery(outbox.clientMutationId, "rejected", "steer is not available");
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    const message = row!.querySelector('[data-testid="user-message-item"]');
+    expect(message).not.toBeNull();
+    expect(message!.textContent).toContain("refused at the hub");
+  });
+  expect(screen.queryByTestId("queue-strip")).toBeNull();
+});
+
+// The queued row's actions work from its transcript position: pressing
+// the row's steer action issues the promote mutation for that entry.
+test("a queued row's steer action promotes that entry from its transcript row", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      ...liveSurfaceThread(),
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["promote me"], preview: ["promote me"] },
+      },
+    }),
+  );
+  const promoted = deferred<void>();
+  fake.on("turn/promoteQueuedAsSteer", () => {
+    promoted.resolve();
+    return { receipt: appliedReceipt("m_promote", "thr_ref_a") };
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const row = await waitFor(() => {
+    const liveEdge = document.querySelector('[data-row-id="live-edge"]');
+    expect(liveEdge).not.toBeNull();
+    return liveEdge as HTMLElement;
+  });
+  const user = userEvent.setup();
+  await user.click(within(row).getByRole("button", { name: "Steer now" }));
+  await act(async () => {
+    await promoted.promise;
+  });
 });

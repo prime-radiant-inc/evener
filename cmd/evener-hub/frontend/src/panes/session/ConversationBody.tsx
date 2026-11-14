@@ -21,15 +21,16 @@ import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPen
 import { Composer } from "./composer/Composer";
 import {
   useBlockedMutationEntries,
+  useCanceledMutationEntries,
   usePendingTurnEntries,
   useQueueStripMutationIds,
+  useRecoveryEntries,
 } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
-import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
@@ -38,7 +39,7 @@ import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
-import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
+import { heldSteerEntries, PendingRowStack, useHeldSteerEpoch } from "./transcript/messages/PendingRowStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import {
   TranscriptBody,
@@ -245,6 +246,9 @@ function StandardConversationBody({
   const pendingEntries = usePendingTurnEntries(ref);
   const queueStripIds = useQueueStripMutationIds(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
+  const blockedRows = useBlockedMutationEntries(ref).filter((record) => record.method !== "notes/human/set");
+  const canceledRows = useCanceledMutationEntries(ref).filter((record) => record.method !== "notes/human/set");
+  const recoveryRows = useRecoveryEntries(ref).filter((record) => record.method !== "notes/human/set");
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle.
@@ -253,16 +257,28 @@ function StandardConversationBody({
     model.resumeRequired !== true &&
     !restartPending &&
     !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
-  const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
-  const heldVisible = heldSurfaceLive && heldSteers.length > 0;
+  const heldEpoch = useHeldSteerEpoch(ref, pendingEntries, heldSurfaceLive);
+  // The full pending set decides the trailing row: held steers, in-flight
+  // sends, queued rows, and the durable failure families all render as
+  // transcript rows now (the one-rendering rule), so the row mounts for any
+  // of them. The live gate below still hides the whole surface on read-only
+  // states, exactly as the steering-ghost spec's §1 gate did for steers.
+  const pendingRowsVisible =
+    heldSurfaceLive &&
+    (heldSteers.length > 0 ||
+      pendingEntries.length > 0 ||
+      blockedRows.length > 0 ||
+      canceledRows.length > 0 ||
+      recoveryRows.length > 0 ||
+      (model?.queue?.depth ?? 0) > 0);
   const trailingRow =
-    askPending || heldVisible || overlayHeight > 0
+    askPending || pendingRowsVisible || overlayHeight > 0
       ? {
           id: "live-edge",
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
-              {heldVisible && <HeldSteerStack ref={ref} />}
+              {pendingRowsVisible && <PendingRowStack ref={ref} />}
               {overlayHeight > 0 && (
                 <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
               )}
@@ -312,7 +328,7 @@ function StandardConversationBody({
     // signal a scrolled-away reader would get no new-content pill.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
-    heldVisible,
+    pendingRowsVisible,
     heldEpoch,
   });
   // Per-pane keyboard scroll registers against the shared registry and
@@ -362,10 +378,11 @@ function StandardConversationBody({
   if (deletedRef) return render({ state: "deleted", content: null, footer: null, cadence: null });
   if (!model) return render({ state: "loading", content: null, footer: null, cadence: null });
 
-  // A held ghost is mounted content even on a turnless transcript: the
-  // dormant empty surface yields to the transcript subtree so the ghost
-  // stack and its announcements mount (steering-ghost spec §2).
-  const showDormantSurface = isDormantTranscript(model.turns) && !heldVisible;
+  // A pending row is mounted content even on a turnless transcript: the
+  // dormant empty surface yields to the transcript subtree so the pending
+  // stack and its announcements mount (the steering-ghost spec §2 rule,
+  // extended to every pending family).
+  const showDormantSurface = isDormantTranscript(model.turns) && !pendingRowsVisible;
   const dormantSurface = showColdStartSkeleton ? (
     <ColdStartSkeleton />
   ) : (
@@ -515,7 +532,10 @@ function StandardConversationBody({
           seat.sessionMenu && (
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
-        <PendingChips sessionRef={ref} />
+        {/* The pending chips no longer render here: an in-flight send is a
+            transcript row in the live-edge trailing region (the
+            one-rendering rule), so the composer's measure row carries no
+            message renderings. */}
         {seat.composerSource && (
           <Composer
             ref={ref}

@@ -22,7 +22,7 @@ import {
   useQueueStripMutationIds,
   useRecoveryEntries,
 } from "../../composer/queue/pendingTurnsStore";
-import { heldSteerEntries } from "./HeldSteerStack";
+import { heldSteerEntries } from "./PendingRowStack";
 
 // What became of a held steer: it arrived held, or how it left.
 type HeldSteerOutcome = "held" | "delivered" | "rejected" | "canceled" | "uncertain" | "failed";

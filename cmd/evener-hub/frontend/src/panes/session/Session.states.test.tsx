@@ -521,7 +521,9 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await act(async () => {
     clientMutationId = await seedPendingSend(mutationStorage, "ref_a", { attempted: true });
   });
-  expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
+  // The one-rendering rule: the in-flight send renders as the transcript's
+  // pending row in the live-edge region, carrying its text.
+  expect(document.querySelector('[data-testid="user-message-item"]')?.textContent).toContain("hello");
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(
@@ -582,7 +584,9 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
   expect(userMessage.textContent).toContain("hello");
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(screen.queryByTestId("pending-chips")).toBeNull();
+  // One rendering per message: the delivered item replaced the pending row
+  // in place, so no second user-message row and no chip surface exists.
+  expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
 
   act(() => {
     fake.emitNotification({
@@ -661,7 +665,8 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   const userMessage = screen.getByTestId("user-message-item");
   const skeleton = screen.getByTestId("cold-start-skeleton");
   expect(userMessage.textContent).toContain("hello");
-  expect(screen.queryByTestId("pending-chips")).toBeNull();
+  // One rendering per message: the delivered item replaced the pending row.
+  expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
   await act(async () => {

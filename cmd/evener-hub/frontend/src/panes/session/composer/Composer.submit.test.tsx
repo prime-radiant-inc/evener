@@ -28,6 +28,7 @@ import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { TurnBlock } from "../transcript/TurnBlock";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
@@ -1354,7 +1355,16 @@ test.each(["", "  ", "occupied draft"])(
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(textarea().textContent).toBe(text);
     view.unmount();
-    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
+    render(
+      <>
+        <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+        {/* The recovery row renders as the transcript's trailing row in
+            production (ConversationBody); mounted beside the remounted
+            composer so its Edit affordance exists, same as the shared
+            mount helper. */}
+        <PendingRowStack ref="ref_a" />
+      </>,
+    );
     await flushPendingTurnsProjectionForTests();
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(await storage.listRecovery("ref_a")).toHaveLength(1);

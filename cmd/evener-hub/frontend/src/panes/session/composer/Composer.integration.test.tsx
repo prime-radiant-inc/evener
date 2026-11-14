@@ -39,6 +39,7 @@ import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
@@ -157,6 +158,11 @@ async function mountComposer(
     <ClientProvider client={fake}>
       <Toast />
       <Composer ref={ref} source={source} focused={false} />
+      {/* The pending rows render as the transcript's trailing row in
+          production (ConversationBody); mounted beside the composer here so
+          the queue/edit/cancel controls the journey drives exist, same as
+          the retired strip's place in this harness. */}
+      <PendingRowStack ref={ref} />
     </ClientProvider>,
   );
   await flushPendingTurnsProjectionForTests();
@@ -199,10 +205,12 @@ function textarea(): HTMLDivElement | null {
   return screen.queryByRole("textbox", { name: /message/i }) as HTMLDivElement | null;
 }
 
-// QueueStrip's drain-as-steer button. Its accessible name is exactly
-// "Steer queue now" (no KeyHint), so match it exactly.
+// The drain route's entry point: the retired strip's header button is gone,
+// and the composer's own Steer control routes to drain whenever the queue
+// holds depth (decideSteerRoute) - the same single-destination rule the
+// one-rendering change made real.
 function drainButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: "Steer queue now" }) as HTMLButtonElement;
+  return composerSteerButton();
 }
 
 // The composer's OWN Steer control, addressed by its stable testid: both this
@@ -2150,7 +2158,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   // in isolation (props handed to it directly) - this is the missing
   // end-to-end proof that the pending row is ALSO visible once driven
   // through the REAL, fully composed Composer+QueueStrip tree via an actual
-  // user submit, not just the store's own hook state (queue-strip stream
+  // user submit, not just the store's own hook state (the pending-row stack
   // review, Minor).
   expect(await screen.findByText("qm")).toBeTruthy();
 });
@@ -2337,7 +2345,7 @@ test("resolving the pending ask announces the composer's restoration via this co
 
 // --- full-tree sweep: cross-seam scenarios (task 5) -------------------------
 
-test("the queue strip stays rendered while an ask is pending, with the dock no longer in the composer", async () => {
+test("the pending rows stay rendered while an ask is pending, with the dock no longer in the composer", async () => {
   const fake = await mountComposer("ref_a", {
     status: { type: "idle" },
     evener: {
@@ -2352,8 +2360,8 @@ test("the queue strip stays rendered while an ask is pending, with the dock no l
   act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   // The queue strip is not part of the ask-pending hide: queued messages
   // stay visible (and manageable) while the input row is replaced.
-  const queueStrip = await screen.findByTestId("queue-strip");
-  expect(queueStrip.dataset.queuedCount).toBe("1");
+  const pendingRows = await screen.findByTestId("pending-row-stack");
+  expect(pendingRows.dataset.queuedCount).toBe("1");
   // The dock moved to the transcript's trailing row (Session.tsx) - it
   // renders nowhere under this component.
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
@@ -2406,7 +2414,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     });
   });
 
-  expect((await screen.findByTestId("queue-strip")).dataset.queuedCount).toBe("1");
+  expect((await screen.findByTestId("pending-row-stack")).dataset.queuedCount).toBe("1");
   expect(screen.getByText("fq")).toBeTruthy();
 
   fake.on("turn/cancelQueued", (params) => ({

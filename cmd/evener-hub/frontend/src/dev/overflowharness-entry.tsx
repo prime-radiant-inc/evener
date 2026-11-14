@@ -324,7 +324,7 @@ const intentTailSnapshot: ThreadReadResponse = {
   },
 };
 
-// ?heldtail=1: the trailing held-steer ghost fixture. HeldSteerStack renders
+// ?heldtail=1: the trailing held-steer ghost fixture. PendingRowStack renders
 // as Session's trailing virtual-list row, so this reuses the main snapshot's
 // settled turn (a real [data-testid="turn-block"] to measure against) under a
 // ref of its own, keeping the thread active (the live gate Session's
@@ -1586,7 +1586,7 @@ interface HeldSteerColumnMeasurement {
   turnRight: number | null;
 }
 
-// The trailing held-steer ghost stack (HeldSteerStack, Session's second
+// The trailing pending-row stack (PendingRowStack, Session's second
 // trailing-row tenant) must share the content column every .turn row reads:
 // same left edge, same right edge. It renders as the transcript's trailing
 // virtual-list row without TurnBlock's .turn wrapper, so the horizontal-
@@ -1599,7 +1599,7 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("Held steer column harness pane never mounted");
   const stack = await waitFor(
-    () => pane.querySelector<HTMLElement>('[data-testid="held-steer-stack"]'),
+    () => pane.querySelector<HTMLElement>('[data-testid="pending-row-stack"]'),
     "Held steer column",
     "held steer stack",
   );

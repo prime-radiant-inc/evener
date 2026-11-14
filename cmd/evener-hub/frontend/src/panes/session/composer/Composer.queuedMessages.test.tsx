@@ -18,12 +18,11 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "../../../stores/threads";
-import { PendingChips } from "../pending/PendingChips";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { HeldSteerAnnouncements } from "../transcript/messages/HeldSteerAnnouncements";
-import { HeldSteerStack } from "../transcript/messages/HeldSteerStack";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
 import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
@@ -103,6 +102,7 @@ function mount(fake: FakeClient, source = createTestComposerSource("root")) {
   const view = render(
     <ClientProvider client={fake}>
       <Composer ref="root" source={source} focused={false} />
+      <PendingRowStack ref="root" />
     </ClientProvider>,
   );
   return { source, ...view };
@@ -758,8 +758,7 @@ test.each(["turn/start", "turn/steer", "turn/drainAsSteer", "turn/promoteQueuedA
     const view = render(
       <ClientProvider client={fake}>
         <Composer ref="root" source={createTestComposerSource("root")} focused={false} />
-        <PendingChips sessionRef="root" />
-        <HeldSteerStack ref="root" />
+        <PendingRowStack ref="root" />
         <HeldSteerAnnouncements ref="root" />
       </ClientProvider>,
     );
@@ -767,7 +766,7 @@ test.each(["turn/start", "turn/steer", "turn/drainAsSteer", "turn/promoteQueuedA
     expect(screen.getAllByRole("button", { name: "Remove from queue" })).toHaveLength(1);
     expect(view.container.querySelectorAll("li")).toHaveLength(1);
     expect(screen.queryByTestId("pending-chips")).toBeNull();
-    expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+    expect(screen.queryByTestId("pending-row-stack")).toBeTruthy();
     expect(screen.getByTestId("held-steer-announcements").getAttribute("data-outcomes")).toBeNull();
   },
 );

@@ -98,7 +98,7 @@ S02's shared explicit-resume drive fences mutation dispatch through identity and
 outbox reconciliation, independently of overlapping reconnect reads. Releasing
 that owner wakes eligible work on both identities without disabling ordinary
 folded Send or bypassing Stop and recovery fences. A delivery-uncertain row is
-local work like any other: QueueStrip's Edit and Remove reach it, and removing it
+local work like any other: the transcript pending rows' Edit and Remove reach it, and removing it
 wakes the queue behind it. Editing it carries the inherited wire identity: an unchanged resend replays the existing mutation - the journal deduplicates already-delivered work - and changed content sends as a new message. A submitting row the client has already attempted and
 is waiting on stays locked, as do the verbs that have their own controls.
 
@@ -108,7 +108,7 @@ uses SQLite. S11's daemon journal owns accepted mutations, not either client's
 draft state. Outbox `superseded` retires dispatch while retaining predecessor
 identity and attempt evidence for late settlement. [Message recovery](message-recovery.md)
 owns the distinction between automatic own-pane draft restoration and deliberate
-QueueStrip actions on any owner's row; [lifecycles](lifecycles.md#recovery-and-preservation-ownership)
+pending-row actions on any owner's row; [lifecycles](lifecycles.md#recovery-and-preservation-ownership)
 links the preservation tests.
 
 For original transcript authors, **S10** owns durable author snapshots, first-live
