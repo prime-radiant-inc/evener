@@ -8,7 +8,6 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { resetActivitySidebarStoreForTests } from "../../../shell/activitybar/activitySidebarStore";
-import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -34,7 +33,7 @@ import { TurnBlock } from "../transcript/TurnBlock";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
-  ComposerWithPendingStack,
+  Composer,
   foldStatusFrame,
   installCanvasStubs,
   installNarrowComposer,
@@ -905,7 +904,7 @@ test("a phone-width draft keeps Send in the row and Stop and Steer in the sessio
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   // ...and the verbs answer from the session menu. Its items carry the
   // SessionMenu-owned labels, not the row buttons' testids (the menu has
-  // none), and "Steer" alone stays unambiguous - pending stack's longer
+  // none), and "Steer" alone stays unambiguous - QueueStrip's longer
   // "Steer queue now" does not exact-match.
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Steer" }));

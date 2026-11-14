@@ -12,6 +12,7 @@ import {
   pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
+  truncateForDisplay,
 } from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
@@ -41,6 +42,20 @@ test("queueEntryPreviewText prefers normalized text and falls back to images", (
   expect(queueEntryPreviewText("", 1)).toBe("[image]");
   expect(queueEntryPreviewText("   ", 2)).toBe("[2 images]");
   expect(queueEntryPreviewText("", 0)).toBe("");
+});
+
+test("truncateForDisplay returns text unchanged at or under the 140-char default cap", () => {
+  expect(truncateForDisplay("a".repeat(140))).toBe("a".repeat(140));
+  expect(truncateForDisplay("short text")).toBe("short text");
+});
+
+test("truncateForDisplay caps text over 140 chars to 140 chars plus a trailing ellipsis", () => {
+  expect(truncateForDisplay("a".repeat(141))).toBe(`${"a".repeat(140)}…`);
+});
+
+test("truncateForDisplay accepts a custom max length", () => {
+  expect(truncateForDisplay("abcdef", 4)).toBe("abcd…");
+  expect(truncateForDisplay("abcd", 4)).toBe("abcd");
 });
 
 test("pendingEntryPreview preserves the entry's own line structure", () => {

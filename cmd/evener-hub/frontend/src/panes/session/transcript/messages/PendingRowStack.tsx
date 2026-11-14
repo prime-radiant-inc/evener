@@ -57,8 +57,8 @@ import {
   retryBlockedPendingTurn,
   useBlockedMessageEntries,
   useCanceledMessageEntries,
+  useEditablePendingMutationIds,
   usePendingTurnEntries,
-  useQueueStripMutationIds,
   useRecoveryMessageEntries,
 } from "../../composer/queue/pendingTurnsStore";
 import {
@@ -200,7 +200,7 @@ export function PendingRowStack({
   paneId?: string;
 }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
-  const queueStripIds = useQueueStripMutationIds(sessionRef);
+  const queueStripIds = useEditablePendingMutationIds(sessionRef);
   const blockedEntries = useBlockedMessageEntries(sessionRef);
   const canceledEntries = useCanceledMessageEntries(sessionRef);
   const recoveryEntries = useRecoveryMessageEntries(sessionRef);

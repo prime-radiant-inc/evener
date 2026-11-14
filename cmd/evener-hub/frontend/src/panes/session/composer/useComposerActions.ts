@@ -11,7 +11,6 @@ import {
   useThreadsStore,
 } from "../../../stores/threads";
 import { useToasts } from "../../../widgets";
-import type { PendingActionContext } from "../pending/actionContext";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
 import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";

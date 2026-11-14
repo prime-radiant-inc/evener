@@ -1467,7 +1467,9 @@ export class Driver {
     // barrier scrolls the tail into view on every poll (the same correction
     // every transcript wait applies) so its render-side check can never pass
     // vacuously from a scrolled-away reader.
-    return this.withTranscriptTail(ref, `(async () => {
+    return this.withTranscriptTail(
+      ref,
+      `(async () => {
       const pane = ${this.paneScopeExpr(ref)};
       if (!pane) return null;
       const state = ${this.composerStateExpr(ref)};
@@ -1480,7 +1482,8 @@ export class Driver {
       if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
       if ((await ${this.noPendingTurnRecordExpr(ref)}) !== true) return null;
       return true;
-    })()`);
+    })()`,
+    );
   }
 
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
@@ -1776,7 +1779,7 @@ export class Driver {
     }
     const diagnosis = await evaluate(
       this.send,
-        `(() => { const strip = ${this.queueStripExpr()}; return strip ? JSON.stringify(strip) : "pending rows not rendered"; })()`,
+      `(() => { const strip = ${this.queueStripExpr()}; return strip ? JSON.stringify(strip) : "pending rows not rendered"; })()`,
     ).catch((error) => `diagnosis failed: ${error}`);
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
@@ -1851,7 +1854,8 @@ export class Driver {
     );
     if (result === "missing") throw new Error(`pressComposerSteerControl: no composer Steer control in ${ref}`);
     if (result === "disabled") throw new Error(`pressComposerSteerControl: composer Steer is disabled in ${ref}`);
-    if (result === "covered") throw new Error(`pressComposerSteerControl: composer Steer is covered at its center in ${ref}`);
+    if (result === "covered")
+      throw new Error(`pressComposerSteerControl: composer Steer is covered at its center in ${ref}`);
     if (result !== "clicked") throw new Error(`pressComposerSteerControl: unexpected result ${result} in ${ref}`);
   }
 
@@ -2344,8 +2348,10 @@ async function runScenarios(driver) {
   // wait brings the tail into view on every poll (withTranscriptTail) before
   // asking about rows -- a reader scrolled away unmounts them.
   let queue = await driver.waitPage(
-    driver.withTranscriptTail(driver.sessionA,
-      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`),
+    driver.withTranscriptTail(
+      driver.sessionA,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
+    ),
     { label: "pending rows with first pass settled" },
   );
   check(
@@ -2391,8 +2397,10 @@ async function runScenarios(driver) {
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue2));
   queue = await driver.waitPage(
-    driver.withTranscriptTail(driver.sessionA,
-      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`),
+    driver.withTranscriptTail(
+      driver.sessionA,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
+    ),
     { label: "pending rows with second pass" },
   );
   check(
@@ -2569,8 +2577,10 @@ async function runScenariosPart2(driver) {
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   const queue = await driver.waitPage(
-    driver.withTranscriptTail(driver.sessionA,
-      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`),
+    driver.withTranscriptTail(
+      driver.sessionA,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`,
+    ),
     { label: "pending rows with failing request" },
   );
   check(

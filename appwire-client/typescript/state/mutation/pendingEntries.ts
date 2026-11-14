@@ -201,6 +201,16 @@ function ownUnsettledInput(
   return (entries ?? []).some((entry) => methods.includes(entry.method) && isOwnUnsettledEntry(entry));
 }
 
+const DEFAULT_MAX_DISPLAY_LENGTH = 140;
+
+// The client-side visual cap layered on top of the daemon's own first-line
+// truncation - independent of and smaller than
+// most real messages, so this mostly matters for a single very long line.
+export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPLAY_LENGTH): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
 export function commandMarkers(names: readonly string[]): string {
   return names.map((name) => `[command: ${name}]`).join(" ");
 }
