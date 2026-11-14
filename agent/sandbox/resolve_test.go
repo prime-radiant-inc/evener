@@ -687,10 +687,11 @@ func TestInfraReadRootsReachTheSpawnedLayerOnly(t *testing.T) {
 					t.Errorf("a hook/MCP path must never become a write root: %v / %v", rp.FileTool.WriteRoots, rp.Spawned.WriteRoots)
 				}
 			}
-			// The spawned layer must be able to reach it: either it reads
-			// anywhere already, or the root is granted explicitly.
-			if rp.Spawned.Read != ReadAnywhere && !slices.Contains(rp.Spawned.ReadRoots, infra) {
-				t.Errorf("a hook/MCP path must be readable by spawned processes, got roots %v", rp.Spawned.ReadRoots)
+			// The spawned layer must carry the root explicitly in EVERY mode:
+			// reading anywhere is not enough, because the bwrap backends mount
+			// a private /tmp that shadows infra roots living there (#6208).
+			if !slices.Contains(rp.Spawned.ReadRoots, infra) {
+				t.Errorf("a hook/MCP path must be a spawned read root in every mode (reading anywhere does not survive the private /tmp), got roots %v", rp.Spawned.ReadRoots)
 			}
 		})
 	}
@@ -732,10 +733,12 @@ func TestInfraReadRootsNeverUnmaskADenylistedPath(t *testing.T) {
 		"/proc", // the non-removable pseudo-fs floor
 		"/proc/self",
 	} {
-		pol := SandboxPolicy{Mode: ModeRestricted, Network: new(true), InfraReadRoots: []string{masked}}
-		rp := mustResolve(t, pol, host, root)
-		if slices.Contains(rp.Spawned.ReadRoots, masked) {
-			t.Errorf("denylisted path %q was granted as a hook/MCP root: %v", masked, rp.Spawned.ReadRoots)
+		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+			pol := SandboxPolicy{Mode: mode, Network: new(true), InfraReadRoots: []string{masked}}
+			rp := mustResolve(t, pol, host, root)
+			if slices.Contains(rp.Spawned.ReadRoots, masked) {
+				t.Errorf("%v: denylisted path %q was granted as a hook/MCP root: %v", mode, masked, rp.Spawned.ReadRoots)
+			}
 		}
 	}
 }
