@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/appoverlay"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -772,11 +774,14 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	// owns the events, so nothing races the capture for them.
 	var evMu sync.Mutex
 	evs := []events.SessionEvent{}
+	overlay := appoverlay.New(appoverlay.NewBudget(appoverlay.DefaultBudgetBytes))
+	defer overlay.Close()
 	drained := make(chan struct{})
 	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		evMu.Lock()
 		evs = append(evs, ev)
 		evMu.Unlock()
+		overlay.Event(ev)
 	}, func() { close(drained) })
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
@@ -819,5 +824,23 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 	if got := s.Profile().Model(); got != "gpt-5.4" {
 		t.Fatalf("profile model = %q, want the committed switch's model %q; the failed queued pick must not swap", got, "gpt-5.4")
+	}
+	var warningCodes []string
+	sawRejectionCode := false
+	for _, item := range overlay.Snapshot() {
+		var raw struct {
+			Warning struct {
+				Code string `json:"code"`
+			} `json:"warning"`
+		}
+		if err := json.Unmarshal(item.Item.Raw, &raw); err == nil && raw.Warning.Code != "" {
+			warningCodes = append(warningCodes, raw.Warning.Code)
+			if raw.Warning.Code == "model_switch_rejected" {
+				sawRejectionCode = true
+			}
+		}
+	}
+	if !sawRejectionCode {
+		t.Fatalf("session-to-overlay warning codes = %v, want the queued-switch rejection marker", warningCodes)
 	}
 }

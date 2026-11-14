@@ -16,23 +16,28 @@ import {
   WarningCodeContextWindowAssumed,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
+  WarningCodeModelSwitchRejected,
   WarningCodePluginCompatibility,
-  warningNoticeSource,
+  warningNoticeCode,
   warningWords,
 } from "./warnings";
 
-test("warningNoticeSource reads a daemon overlay warning's checked source", () => {
+test("warningNoticeCode reads a daemon overlay warning's checked code", () => {
   expect(
-    warningNoticeSource({
+    warningNoticeCode({
       type: "systemMessage",
       eventKind: "warning",
-      raw: { warning: { source: "model_switch" } },
+      raw: { warning: { code: WarningCodeModelSwitchRejected } },
     }),
-  ).toBe("model_switch");
+  ).toBe(WarningCodeModelSwitchRejected);
   expect(
-    warningNoticeSource({ type: "systemMessage", eventKind: "error", raw: { warning: { source: "model_switch" } } }),
+    warningNoticeCode({
+      type: "systemMessage",
+      eventKind: "error",
+      raw: { warning: { code: WarningCodeModelSwitchRejected } },
+    }),
   ).toBeUndefined();
-  expect(warningNoticeSource({ type: "systemMessage", eventKind: "warning", raw: { warning: [] } })).toBeUndefined();
+  expect(warningNoticeCode({ type: "systemMessage", eventKind: "warning", raw: { warning: [] } })).toBeUndefined();
 });
 
 // goWarningCode reads one warning code's value out of agent/events/payloads.go
@@ -60,6 +65,10 @@ describe("the informational codes are bound to agent/events/payloads.go", () => 
 
   test("the context-window-assumed code is the daemon's own constant", () => {
     expect(WarningCodeContextWindowAssumed).toBe(goWarningCode("WarningCodeContextWindowAssumed"));
+  });
+
+  test("the model-switch rejection code is the daemon's own constant", () => {
+    expect(WarningCodeModelSwitchRejected).toBe(goWarningCode("WarningCodeModelSwitchRejected"));
   });
 });
 

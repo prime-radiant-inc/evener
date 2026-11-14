@@ -670,6 +670,11 @@ const WarningCodeDelegateStartDeliveryReplay = "delegate_start_delivery_replay"
 // codes, clients show it at every level: it is news the user must act on.
 const WarningCodeAttentionPaused = "attention_paused"
 
+// WarningCodeModelSwitchRejected identifies a queued model choice that could
+// not be applied after the active turn settled. Clients use it to reconcile
+// the accepted picker state with the model the session kept running.
+const WarningCodeModelSwitchRejected = "model_switch_rejected"
+
 // WarningCodeSummaryFailure identifies a failed conversation summarization.
 const WarningCodeSummaryFailure = "summary_failure"
 

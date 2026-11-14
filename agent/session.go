@@ -2036,10 +2036,11 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
 		release()
 		if err != nil {
-			s.emit(events.WarningData{
-				Message: "queued model switch to " + pending.model + " did not apply: " + err.Error(),
-				Source:  "model_switch",
-			})
+			s.emit(warningDataFromErrorCode(
+				events.WarningCodeModelSwitchRejected,
+				"queued model switch to "+pending.model+" did not apply",
+				err,
+			))
 		}
 	}
 }

@@ -388,9 +388,11 @@ and applying the choice. While a turn is running, a successful call makes the
 accepted next model visible in the picker immediately and in every composer for
 that session. The thread store retains it across pane remounts. The authoritative
 `thread/model/changed` update settles that label at the turn boundary. A refused
-call leaves the prior label intact, and a sourced model-switch warning restores
-it if the queued switch later fails history validation. Closing the desktop picker
-restores focus to its trigger, including after a selection.
+call leaves the prior label intact. A `model_switch_rejected` warning restores
+it if the queued switch later fails history validation, and a thread snapshot
+from a new daemon boot restores it if the daemon exited before applying the
+queued choice. Closing the desktop picker restores focus to its trigger,
+including after a selection.
 
 ## Directory fields
 

@@ -63,8 +63,9 @@ import {
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
+  WarningCodeModelSwitchRejected,
   WireError,
-  warningNoticeSource,
+  warningNoticeCode,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
 import {
@@ -258,6 +259,7 @@ export interface AcceptedModelSwitch {
   previousModelProvider: string;
   previousModel: string;
   previousInstanceId?: string;
+  previousBootGeneration?: string;
   previousRejectionNotice: number;
 }
 
@@ -624,13 +626,13 @@ function invalidateAcceptedModelSwitch(ref: string): void {
 
 function modelSwitchRejectionRef(n: AnyNotification): string | undefined {
   if (n.method !== "overlay/upserted") return undefined;
-  return warningNoticeSource(n.params.item.item) === "model_switch" ? n.params.ref : undefined;
+  return warningNoticeCode(n.params.item.item) === WarningCodeModelSwitchRejected ? n.params.ref : undefined;
 }
 
 function latestModelSwitchRejection(model: ThreadModel | undefined): number {
   let latest = -1;
   for (const item of Object.values(model?.overlay ?? {})) {
-    if (warningNoticeSource(item.item) !== "model_switch") continue;
+    if (warningNoticeCode(item.item) !== WarningCodeModelSwitchRejected) continue;
     const match = /^notice:(\d+)$/.exec(item.key);
     if (match) latest = Math.max(latest, Number(match[1]));
   }
@@ -644,6 +646,13 @@ function invalidatesAcceptedModelSwitch(model: ThreadModel, accepted: AcceptedMo
     accepted.previousInstanceId !== undefined &&
     instanceId !== undefined &&
     instanceId !== accepted.previousInstanceId
+  )
+    return true;
+  const bootGeneration = model.history?.bootGeneration || undefined;
+  if (
+    accepted.previousBootGeneration !== undefined &&
+    bootGeneration !== undefined &&
+    bootGeneration !== accepted.previousBootGeneration
   )
     return true;
   return latestModelSwitchRejection(model) > accepted.previousRejectionNotice;
@@ -8509,6 +8518,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         previousModelProvider: previous?.modelProvider ?? "",
         previousModel: previous?.model ?? "",
         previousInstanceId: threadInstanceID(previous),
+        previousBootGeneration: previous?.history?.bootGeneration || undefined,
         previousRejectionNotice,
       });
       return { acceptedModelSwitches };

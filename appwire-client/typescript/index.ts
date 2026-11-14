@@ -949,8 +949,9 @@ export {
   WarningCodeContextBudget,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
+  WarningCodeModelSwitchRejected,
   WarningCodePluginCompatibility,
-  warningNoticeSource,
+  warningNoticeCode,
   warningWords,
 } from "./warnings";
 export { hasWarningText } from "./warningText";

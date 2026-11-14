@@ -136,7 +136,7 @@ function modelSwitchRejectionNotice(sequence: number): OverlayItem {
       turnId: "turn_1",
       text: "The queued model switch was refused.",
       eventKind: "warning",
-      raw: { warning: { source: "model_switch" } },
+      raw: { warning: { code: "model_switch_rejected" } },
     },
   };
 }
@@ -424,6 +424,40 @@ test("reconnect hydration clears an accepted model when thread/read contains a n
   } finally {
     await lease.release();
   }
+});
+
+test("a new daemon boot snapshot clears an accepted model when the session identity and model are unchanged", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => ({}));
+  const model = testModel({
+    status: { type: "active" },
+    activeTurnId: "turn_1",
+    history: {
+      bootGeneration: "1@ref_a",
+      epoch: 1,
+      incarnation: "inc_a",
+      length: 0,
+      appliedGeneration: 1,
+      issuedGeneration: 1,
+      deferredPages: [],
+      turns: [],
+    },
+  });
+  putThreadModel("ref_a", model);
+  render(<ModelSwitch sessionRef="ref_a" model={model} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  act(() => {
+    putThreadModel("ref_a", {
+      ...model,
+      history: { ...model.history!, bootGeneration: "2@ref_a" },
+    });
+  });
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
 // A cold exited session takes the SAME wire call as a live one: the hub resumes

@@ -43,6 +43,9 @@ export const WarningCodeMCPReconnected = "mcp_reconnected";
  */
 export const WarningCodeContextWindowAssumed = "context_window_assumed";
 
+/** A queued model choice the session could not apply after its active turn. */
+export const WarningCodeModelSwitchRejected = "model_switch_rejected";
+
 // The codes whose warnings show only at Full.
 const INFORMATIONAL_WARNING_CODES: ReadonlySet<unknown> = new Set([
   WarningCodeContextBudget,
@@ -84,11 +87,11 @@ function noticeWarningCode(raw: unknown): unknown {
   return noticeWarningField(raw, "code");
 }
 
-/** The checked source of a daemon overlay warning, when it carries one. */
-export function warningNoticeSource(item: { type: string; eventKind?: string; raw?: unknown }): string | undefined {
+/** The checked code of a daemon overlay warning, when it carries one. */
+export function warningNoticeCode(item: { type: string; eventKind?: string; raw?: unknown }): string | undefined {
   if (item.type !== "systemMessage" || item.eventKind !== "warning") return undefined;
-  const source = noticeWarningField(item.raw, "source");
-  return typeof source === "string" ? source : undefined;
+  const code = noticeWarningCode(item.raw);
+  return typeof code === "string" ? code : undefined;
 }
 
 /** A warning's words as both clients show them, each once. */
