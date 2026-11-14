@@ -15,9 +15,9 @@ func TestMatchTarget(t *testing.T) {
 		{"Bash", "BashOutput", false, false}, // exact mode — the headline fix
 		{"Edit|Write|MultiEdit", "Write", true, false},
 		{"Edit|Write", "Read", false, false},
-		{"mcp__memory__.*", "mcp__memory__search", true, false}, // regex (has '.')
-		{"mcp__memory", "mcp__memory__search", false, false},    // exact, no substring
-		{"mcp__.*__write.*", "mcp__fs__write_file", true, false},
+		{"memory__.*", "memory__search", true, false}, // regex (has '.')
+		{"memory", "memory__search", false, false},    // exact, no substring
+		{".*__write.*", "fs__write_file", true, false},
 		{"(", "Bash", false, true}, // invalid regex => no match + error
 	}
 	for _, c := range cases {
