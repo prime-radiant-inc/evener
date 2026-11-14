@@ -66,25 +66,43 @@ if ! worktree_lines="$(git worktree list --porcelain 2>/dev/null)"; then
 	echo "golangci-cache-sweep: not inside a workable git repository; the live worktree set is unknown, refusing to sweep" >&2
 	exit 1
 fi
+# A bare repository succeeds with a degenerate set — only the bare root
+# itself — which would make every other worktree's cache look dead, so a
+# `bare` attribute line refuses the run for the same reason as a git failure.
+# The match is anchored to the full porcelain attribute line ("bare" on its
+# own line), not the substring, so a worktree path or branch name containing
+# "bare" cannot refuse a legitimate run.
 case "$worktree_lines" in
-	*bare*)
+	*'
+bare'*)
 		echo "golangci-cache-sweep: this is a bare repository; its worktree list cannot name this machine's lanes, refusing to sweep" >&2
 		exit 1
 		;;
 esac
 # One shasum per root is inherent (content-hash tools hash files, not argv
 # strings); the cut runs once over the whole set instead of once per root.
-live_keys="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' \
-	| while IFS= read -r root; do printf '%s' "$root" | shasum -a 256; done | cut -c1-16)"
+# A failed shasum must fail the run: set -e ends the pipeline's caller, but
+# the while-loop's explicit check makes the requirement local and visible.
+if ! live_keys="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' \
+	| while IFS= read -r root; do printf '%s' "$root" | shasum -a 256; done | cut -c1-16)"; then
+	echo "golangci-cache-sweep: hashing the live worktree roots failed; the live set is incomplete, refusing to sweep" >&2
+	exit 1
+fi
 
 [ -d "$cache_root" ] || { echo "$(date -Is) golangci-cache-sweep: no cache root at $cache_root; nothing to sweep"; exit 0; }
 
-# Candidates: 16-hex-named dirs under the cache root, already filtered by the
-# age predicate so the loop never re-stats. Folding the predicate into the
-# candidate find also makes its failure direction safe: an erroring find
-# yields no candidates instead of a fail-open guard.
-candidates="$(find "$cache_root" -mindepth 1 -maxdepth 1 -type d \
-	-regextype posix-extended -regex '.*/[0-9a-f]{16}' '!' -newermt "-${min_age_hours} hours")"
+# Candidates: dirs under the cache root old enough to sweep. The 16-hex name
+# filter runs in the shell because GNU find's -regextype is not portable to
+# the BSD find macOS ships, and a portable candidate scan must not abort the
+# sweep on a supported platform. The -newermt age predicate stays in find:
+# both finds support it, and folding it in keeps the failure direction safe
+# (an erroring find yields no candidates instead of a fail-open guard).
+candidates="$(find "$cache_root" -mindepth 1 -maxdepth 1 -type d '!' -newermt "-${min_age_hours} hours" \
+	| while IFS= read -r dir; do
+		case $(basename "$dir") in
+			[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$dir" ;;
+		esac
+	done)"
 
 # A plain loop, not a pipeline: a piped while-loop runs in a subshell where
 # set -e cannot fail the script, so a failed delete would print "swept" and
@@ -100,8 +118,12 @@ if [ -n "$candidates" ]; then
 			echo "would sweep $key (${size_kb}K, no worktree has this cache's key and the cache has carried an mtime older than ${min_age_hours}h)"
 			continue
 		fi
-		# find -exec rm is the testing.md-sanctioned delete shape: the audit
-		# reads {} as a literal operand, never a variable.
+		# find -exec rm reads to the audit as a delete of the literal {}
+		# placeholder (testing.md documents it as a blind spot the textual
+		# scan cannot hold). The safety here is not the audit's: this loop
+		# body only runs for dirs that passed the live-key and age filters,
+		# and the delete cannot be handed a path from outside the candidate
+		# set.
 		find "$dir" -mindepth 0 -maxdepth 0 -exec rm -rf {} +
 		echo "swept $key (${size_kb}K, no worktree has this cache's key and the cache has carried an mtime older than ${min_age_hours}h)"
 	done

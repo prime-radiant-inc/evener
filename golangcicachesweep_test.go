@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/gittest"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // golangciCacheSweepScript is the local cleanup target under test. It deletes
@@ -86,29 +89,20 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 		t.Skip("the fixture clones a git repo and registers a worktree")
 	}
 
-	fixture := t.TempDir()
+	fixture := testfs.CanonicalTempDir(t)
 	repo := filepath.Join(fixture, "repo")
-	run := func(args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
-		gitOut, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, gitOut)
-		}
-		return string(gitOut)
-	}
-	if _, err := exec.Command("git", "init", "-q", "--", repo).CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v", err)
-	}
+	// gittest.Run pins the author, committer, and config to nothing, so a
+	// developer's global git configuration (commit.gpgsign, hooks, init
+	// templates) cannot make the fixture nondeterministic.
+	gittest.Run(t, fixture, "init", "-q", "repo")
 	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run("add", "README")
-	run("-c", "user.name=Evener Test", "-c", "user.email=test@evener.invalid", "commit", "-qm", "baseline")
+	gittest.Run(t, repo, "add", "README")
+	gittest.Run(t, repo, "commit", "-qm", "baseline")
 
 	extra := filepath.Join(fixture, "extra-worktree")
-	run("worktree", "add", "-q", "--", extra)
+	gittest.Run(t, repo, "worktree", "add", "-q", "--", extra)
 
 	// The production helper and the sweeper both hash roots exactly the way
 	// this test does. Pin the shared format on the helper side too: if
@@ -216,7 +210,7 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	// Outside a git repo the script must delete nothing and fail loudly:
 	// `git worktree list` failing means the live-root set is unknown, and an
 	// unknown set must never be treated as empty.
-	farAway := t.TempDir()
+	farAway := testfs.CanonicalTempDir(t)
 	if err := os.WriteFile(filepath.Join(farAway, "README"), []byte("no repo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
