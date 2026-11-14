@@ -60,7 +60,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		if len(resultSchema) != 0 {
 			bound, err := provider.WithCommunicateOutputSchema(profile, resultSchema)
 			if err != nil {
-				return nil, false, err
+				return nil, false, fmt.Errorf("bind committed delegate result schema: %w", err)
 			}
 			profile = bound
 		}

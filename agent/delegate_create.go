@@ -445,10 +445,13 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		if err := s.worktreeAnchorGone(); err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: %w", err)
 		}
-		project, err := resolveWorktreeProject(local, local.WorkingDirectory())
+		resolvedProject, err := resolveWorktreeProject(local, local.WorkingDirectory())
 		if err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: resolve project: %w", err)
 		}
+		// Assign the outer `project`, which describe() returns; `:=` here
+		// would shadow it and return the zero Project.
+		project = resolvedProject
 		root, err := s.worktreeRootForProject(s.currentStateDir(), project)
 		if err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, err
