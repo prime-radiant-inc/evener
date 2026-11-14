@@ -517,11 +517,10 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // without a root keeps the shape it had before this field existed.
     artifactsDir: thread.evener.artifactsDir || undefined,
     scratchDir: thread.evener.scratchDir || undefined,
-    modelProvider: thread.modelProvider,
-    // Thread has no separate "model id" field on the wire snapshot — only
-    // ModelProvider, which appwire/types_thread.go documents as overloaded to
-    // "stay[ing] the model field" for this exact reason. thread/model/changed
-    // (below) is what later splits provider and model id apart properly.
+    // The snapshot carries the profile separately from its historically
+    // overloaded modelProvider field. Older daemons omit profile, so retain
+    // the modelProvider fallback for their snapshots.
+    modelProvider: thread.evener.profile || thread.modelProvider,
     model: thread.modelProvider,
     reasoningEffort: thread.evener.reasoningEffort,
     visionModel: thread.evener.visionModel ?? "",

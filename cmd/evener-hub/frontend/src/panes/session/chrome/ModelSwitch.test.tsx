@@ -1,5 +1,5 @@
 import type { ModelListResponse, OverlayItem, ThreadModel } from "@evener/appwire-client";
-import { WarningCodeModelSwitchRejected, WireError } from "@evener/appwire-client";
+import { hydrateThread, WarningCodeModelSwitchRejected, WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
@@ -440,11 +440,19 @@ test("reconnect hydration preserves a queued model selected after a live model c
   await pickModel(user, "opus", /claude-opus-5/i);
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
 
-  const hydratedModel = {
-    ...activeModel,
-    modelProvider: "openai/gpt-5.5",
-    model: "openai/gpt-5.5",
-  };
+  const snapshotThread = testThread("ref_a", { id: "thr_a", modelProvider: "gpt-5.5" });
+  const hydratedModel = hydrateThread(
+    {
+      thread: { ...snapshotThread, evener: { ...snapshotThread.evener, profile: "openai" } },
+      requestGeneration: 1,
+      bootGeneration: "1@ref_a",
+      epoch: 1,
+      snapshot: { incarnation: "inc_a", length: 0 },
+      overlay: [],
+    },
+    "ref_a",
+    Date.now(),
+  );
   act(() => putThreadModel("ref_a", hydratedModel));
   view.rerender(<ModelSwitch sessionRef="ref_a" model={hydratedModel} />);
 
