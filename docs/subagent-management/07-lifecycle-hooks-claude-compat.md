@@ -367,7 +367,7 @@ The matcher rules — empty/star matches all; a matcher of only letters, digits,
 
 ### Event-specific matcher targets
 
-- Tool events (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`): the **Claude** tool name. Evener translates its canonical names to Claude names before matching (`shell` → `Bash`); a matcher must name the Claude tool. MCP tools are the exception: evener registers them as `<server>__<tool>` with no `mcp__` prefix and matchers see that registered name (see [MCP tool names](../mcp.md#tool-names-failures-and-teardown)) — a Claude-style `mcp__.*` matcher does not match evener MCP calls; match on `<server>__<tool>` instead.
+- Tool events (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`): the **Claude** tool name. Evener translates its canonical names to Claude names before matching (`shell` → `Bash`); a matcher must name the Claude tool. MCP tools are the exception: evener registers them as `<server>__<tool>` with no `mcp__` prefix and matchers see that registered name (see [MCP tool names](../mcp.md#tool-names-failures-and-teardown)) — a Claude-style `mcp__.*` matcher does not match evener MCP calls; match on `<server>__<tool>` instead. A plugin-bundled server's registered name carries its plugin namespace: `plugin_<plugin>_<server>__<tool>`.
 - `SessionStart`: `startup`, `resume`, `clear`, or `compact`.
 - `Setup`: CLI setup flag.
 - `SessionEnd`: session end reason (`clear`, `prompt_input_exit`, `other`).
