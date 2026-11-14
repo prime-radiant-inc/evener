@@ -37,7 +37,7 @@ function port(entries: Record<string, string>): HTMLElement {
   return el;
 }
 
-const hit = (key: string): FindHit => ({ key, itemId: key, rowIndex: 0, opens: [], sessionOpens: [] });
+const hit = (key: string): FindHit => ({ key, itemId: key, rowIndex: 0 });
 const painted = (name: string) => (registry.get(name)?.ranges ?? []).map((range) => range.toString());
 
 test("the current entry's words and the other matches are painted separately", () => {
@@ -115,12 +115,4 @@ test("two transcripts keep their own painted words", () => {
   expect(painted("evener-find-current")).toEqual(["needle"]);
   markTranscript(left, [], null, "");
   expect(registry.size).toBe(0);
-});
-
-test("a hit rendered under another entry is marked there", () => {
-  const el = port({ first: "one notice, then the needle notice", later: "" });
-  const grouped: FindHit = { ...hit("later"), anchor: "first" };
-  const marks = markTranscript(el, [grouped], "later", "needle");
-  expect(marks.current?.element.getAttribute("data-view-anchor-id")).toBe("first");
-  expect(painted("evener-find-current")).toEqual(["needle"]);
 });

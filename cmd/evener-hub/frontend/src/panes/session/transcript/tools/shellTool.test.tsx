@@ -1,9 +1,8 @@
 import { stripRedundantCd, tailFold, toolExitCode } from "@evener/appwire-client";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
-import { revealForFind } from "../../find/findReveal";
 import { toolRendererFor } from "../toolRenderers";
 import { TOOL_BODY_MAX_CHARS } from "./bodies";
 import "./shellTool";
@@ -562,28 +561,4 @@ describe("stripRedundantCd", () => {
   test("prefix-only command (nothing after &&) is untouched", () => {
     expect(stripRedundantCd("cd /Users/jesse/work && ", cwd)).toBe("cd /Users/jesse/work && ");
   });
-});
-
-test("a shell body shows the stretch of output Find landed on when its tail does not hold it", () => {
-  const Body = toolRendererFor("shell").body!;
-  const output = `an early quokka line\n${"x".repeat(20000)}\nthe tail`;
-  const call = withCommand("make test", { id: "shell-found", output });
-  const view = render(<Body item={call} live={false} />);
-  expect(view.container.textContent).not.toContain("quokka");
-  act(() => revealForFind("", "shell-found", "early quokka"));
-  expect(view.container.textContent).toContain("an early quokka line");
-  // The tail the reader already had stays below the excerpt.
-  expect(view.container.textContent).toContain("the tail");
-  act(() => revealForFind("", null, ""));
-  expect(view.container.textContent).not.toContain("quokka");
-});
-
-test("a shell excerpt is found by the words as coloured output shows them", () => {
-  const Body = toolRendererFor("shell").body!;
-  const output = `an early \u001b[31mquokka\u001b[0m\u001b[1m line\u001b[0m\n${"x".repeat(20000)}\nthe tail`;
-  const view = render(<Body item={withCommand("make test", { id: "shell-ansi", output })} live={false} />);
-  expect(view.container.textContent).not.toContain("quokka");
-  act(() => revealForFind("", "shell-ansi", "quokka line"));
-  expect(view.container.textContent).toContain("an early quokka line");
-  act(() => revealForFind("", null, ""));
 });

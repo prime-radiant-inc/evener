@@ -13,19 +13,10 @@ const HIGHLIGHT_CURRENT = "evener-find-current";
 // cannot stall a frame; the count in the bar is unaffected.
 const MAX_RANGES = 1500;
 
-interface LocatedHit {
-  element: HTMLElement;
-  /** False when the element is the closed fold standing in for the entry. */
-  exact: boolean;
-}
-
 /** The mounted transcript as Find reads it, gathered in one pass: each
- * entry's own anchor, each tool call inside an open run, the fold standing in
- * for entries it hides, and the span of rows the virtual list has mounted. */
+ * entry's own anchor and the span of rows the virtual list has mounted. */
 interface MountedTranscript {
   entries: Map<string, HTMLElement>;
-  calls: Map<string, HTMLElement>;
-  folds: Map<string, HTMLElement>;
   firstRow: number;
   lastRow: number;
 }
@@ -33,8 +24,6 @@ interface MountedTranscript {
 function readMounted(port: HTMLElement): MountedTranscript {
   const mounted: MountedTranscript = {
     entries: new Map(),
-    calls: new Map(),
-    folds: new Map(),
     firstRow: Number.POSITIVE_INFINITY,
     lastRow: Number.NEGATIVE_INFINITY,
   };
@@ -44,29 +33,9 @@ function readMounted(port: HTMLElement): MountedTranscript {
       mounted.firstRow = Math.min(mounted.firstRow, row);
       mounted.lastRow = Math.max(mounted.lastRow, row);
     }
-    const members = anchor.getAttribute("data-view-anchor-members");
-    if (members === null) {
-      mounted.entries.set(anchor.getAttribute("data-view-anchor-id") ?? "", anchor);
-      continue;
-    }
-    for (const id of members.split(",")) mounted.folds.set(id, anchor);
-    for (const call of anchor.querySelectorAll<HTMLElement>("[data-item-id]")) {
-      mounted.calls.set(call.getAttribute("data-item-id") ?? "", call);
-    }
+    mounted.entries.set(anchor.getAttribute("data-view-anchor-id") ?? "", anchor);
   }
   return mounted;
-}
-
-// The mounted element for a hit: the entry's own anchor, the tool call inside
-// an open run, or - while its fold is still closed - the fold.
-function locate(mounted: MountedTranscript, hit: FindHit): LocatedHit | null {
-  const fold = mounted.folds.get(hit.key) ?? mounted.folds.get(hit.itemId);
-  if (fold !== undefined) {
-    const call = mounted.calls.get(hit.itemId);
-    return call !== undefined && fold.contains(call) ? { element: call, exact: true } : { element: fold, exact: false };
-  }
-  const entry = mounted.entries.get(hit.anchor ?? hit.key);
-  return entry === undefined ? null : { element: entry, exact: true };
 }
 
 function highlightRegistry(): { set(name: string, highlight: unknown): void; delete(name: string): void } | null {
@@ -183,8 +152,8 @@ function register(registry: NonNullable<ReturnType<typeof highlightRegistry>>): 
 }
 
 interface MarkedTranscript {
-  /** The current hit's element, when mounted. */
-  current: LocatedHit | null;
+  /** The current hit's entry, when mounted. */
+  current: HTMLElement | null;
   /** Where the current hit's first painted match sits, when it has one. */
   focus: Range | null;
 }
@@ -199,37 +168,27 @@ export function markTranscript(
 ): MarkedTranscript {
   const registry = highlightRegistry();
   const scope: ParentNode = port ?? document;
-  let current: LocatedHit | null = null;
+  let current: HTMLElement | null = null;
   const all: Range[] = [];
   const mine: Range[] = [];
   if (port && needle !== "") {
     const mounted = readMounted(port);
-    // Hits rendered under one entry (grouped notices) share its element,
-    // which is read once.
-    const spans = new Map<HTMLElement, { ranges: Range[]; current: boolean }>();
-    let budget = MAX_RANGES;
     for (const hit of hits) {
       // Hits far outside the mounted window cost nothing.
       if (hit.rowIndex < mounted.firstRow || hit.rowIndex > mounted.lastRow) continue;
-      const located = locate(mounted, hit);
-      if (!located) continue;
+      const entry = mounted.entries.get(hit.key);
+      if (entry === undefined) continue;
       const isCurrent = hit.key === currentKey;
-      if (isCurrent) current = located;
-      if (!registry || !located.exact) continue;
-      let span = spans.get(located.element);
-      if (span === undefined) {
-        span = { ranges: rangesIn(located.element, needle, budget), current: false };
-        budget -= span.ranges.length;
-        spans.set(located.element, span);
-      }
-      if (isCurrent) span.current = true;
+      if (isCurrent) current = entry;
+      if (!registry) continue;
+      const found = rangesIn(entry, needle, MAX_RANGES - all.length - mine.length);
+      (isCurrent ? mine : all).push(...found);
     }
-    for (const span of spans.values()) (span.current ? mine : all).push(...span.ranges);
   }
   for (const marked of scope.querySelectorAll(`[${FIND_CURRENT_ATTRIBUTE}]`)) {
-    if (marked !== current?.element) marked.removeAttribute(FIND_CURRENT_ATTRIBUTE);
+    if (marked !== current) marked.removeAttribute(FIND_CURRENT_ATTRIBUTE);
   }
-  current?.element.setAttribute(FIND_CURRENT_ATTRIBUTE, current.exact ? "entry" : "fold");
+  current?.setAttribute(FIND_CURRENT_ATTRIBUTE, "");
   if (registry && port) {
     if (all.length > 0 || mine.length > 0) painted.set(port, { all, current: mine });
     else painted.delete(port);

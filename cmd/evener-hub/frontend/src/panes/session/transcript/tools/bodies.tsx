@@ -13,14 +13,10 @@
 
 import { clip, editDiffText, parseArgs, str, tailFold, tailSlice } from "@evener/appwire-client";
 import { CodeBlock, DiffBlock } from "../../../../widgets";
-import { excerptAround, holdsNeedle } from "../../find/findExcerpt";
-import { useFindReveal } from "../../find/findReveal";
 import type { ToolRenderProps } from "../toolRenderers";
 
 interface OutputBodyProps {
-  // The id is how Find names the call it is landed on; a caller rendering
-  // loose output (no item) has none and is never a landing.
-  item: { id?: string; output?: string };
+  item: { output?: string };
   live: boolean;
 }
 
@@ -37,9 +33,8 @@ export const TOOL_BODY_MAX_CHARS = 8000;
 // the way it does for a long-running read/shell stream.
 export function HeadClippedOutputBody({ item }: OutputBodyProps) {
   const output = item.output ?? "";
-  const needle = useFindReveal(item.id ?? "");
   if (output === "") return null;
-  return <FoldedOutput output={output} shown={clip(output, TOOL_BODY_MAX_CHARS)} needle={needle} />;
+  return <CodeBlock text={clip(output, TOOL_BODY_MAX_CHARS)} copyLabel="Copy output" />;
 }
 
 // TailFoldedOutputBody mirrors renderer-tools.js's read_file/shell-specific
@@ -51,53 +46,9 @@ export function HeadClippedOutputBody({ item }: OutputBodyProps) {
 // item.output on the tail-fold path regardless of outcome.
 export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   const output = item.output ?? "";
-  const needle = useFindReveal(item.id ?? "");
   if (output === "") return null;
   const text = live ? tailSlice(output, TOOL_BODY_MAX_CHARS) : tailFold(output, TOOL_BODY_MAX_CHARS);
-  return <FoldedOutput output={output} shown={text} needle={needle} />;
-}
-
-// A folded body normally shows `shown`, line-folded by the block. While Find
-// is landed on words in this output it shows them: the block's line fold
-// comes off, and where `shown` dropped the words it gives way to the same
-// budget of text around them, under a line saying so.
-function FoldedOutput({ output, shown, needle }: { output: string; shown: string; needle: string }) {
-  const landing = needle === "" ? null : landingIn(output, shown, needle);
-  if (landing === null) return <CodeBlock text={shown} copyLabel="Copy output" />;
-  if (landing.excerpt === null) return <CodeBlock text={shown} copyLabel="Copy output" fold={false} />;
-  return <Excerpt text={landing.excerpt} />;
-}
-
-/** For a body that keeps its own rendering of the tail: whether Find is
- * landed on words in this call's output (so its block must not line-fold),
- * and the stretch holding them when what is shown does not. The two texts are
- * asked for only while Find is landed on this call, so a body that has to
- * decode its output to answer does not pay for that on every render. */
-export function useFindLanding(
-  itemId: string,
-  output: () => string,
-  shown: () => string,
-): { excerpt: string | null } | null {
-  const needle = useFindReveal(itemId);
-  return needle === "" ? null : landingIn(output(), shown(), needle);
-}
-
-// The excerpt is already bounded, so the block's own line fold stays off:
-// folding it to its last lines could hide the match again.
-export function Excerpt({ text, ansi }: { text: string; ansi?: boolean }) {
-  return (
-    <div data-find-excerpt="">
-      <CodeBlock text={text} copyLabel="Copy output" fold={false} ansi={ansi} />
-    </div>
-  );
-}
-
-// Null when the output does not hold the words at all (the match is
-// elsewhere in the call); a null excerpt when `shown` already holds them.
-function landingIn(output: string, shown: string, needle: string): { excerpt: string | null } | null {
-  if (!holdsNeedle(output, needle)) return null;
-  if (holdsNeedle(shown, needle)) return { excerpt: null };
-  return { excerpt: excerptAround(output, needle, TOOL_BODY_MAX_CHARS) };
+  return <CodeBlock text={text} copyLabel="Copy output" />;
 }
 
 // EditFileBody synthesizes an edit's diff from its old_string/new_string

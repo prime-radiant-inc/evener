@@ -26,7 +26,7 @@ import type { CapturedTranscriptView } from "./flow/transcriptViewRegistry";
 import { useTranscriptViewRegistration } from "./flow/useTranscriptViewRegistration";
 import { readingEntryPoint } from "./flow/viewAnchor";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
-import { foldTurnEntries, intentGroupId } from "./toolRuns";
+import { foldTurnEntries } from "./toolRuns";
 import type { TranscriptReadView } from "./transcriptReadView";
 import { asTurnError } from "./turnFailure";
 import { useEntityView } from "./useEntityView";
@@ -144,7 +144,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
     const sourceTurnIds = sourceTurnIndexes.map((turnIndex) => projection.turns[turnIndex]?.id ?? "");
     const finalSourceTurnIndex = sourceTurnIndexes.at(-1);
     const group: CrossTurnIntentRun = {
-      id: intentGroupId(entries[0]?.id),
+      id: `intent-group:${entries[0]?.id}`,
       entries,
       sourceTurnIndexes,
       sourceTurnIds,

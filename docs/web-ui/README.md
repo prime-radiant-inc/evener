@@ -198,49 +198,36 @@ history recovery remain owned by the existing reader and virtual viewport.
 
 ## Find in session
 
-Find searches the conversation in a session pane or a cascade's active column.
-It opens from ⌘F / Ctrl+F while that conversation holds the keyboard, from
+Find searches the messages of the conversation in a session pane or a
+cascade's active column: what the person typed and what the agent replied. It
+opens from ⌘F / Ctrl+F while that conversation holds the keyboard, from
 **Find in session…** in the session menu, from the palette's **Find in session**
-command, and by choosing an **In session** result in the palette, which opens
-Find on the typed words at that item. The palette offers only matches the
-conversation's verbosity shows, so every result has a place to land. The menu
-row is left out where the viewport is too short for the menu to hold it
-without scrolling (a landscape phone); the palette command remains.
+command, and by choosing a message in the palette's **In session** results,
+which opens Find on the typed words at that message. The menu row is left out
+where the viewport is too short for the menu to hold it without scrolling (a
+landscape phone); the palette command remains.
 
-- **What matches.** A match is one transcript entry the current verbosity
-  shows: a message, a thought, or a tool call, searched by its text, what the
-  call was asked to act on, and what came back. Case and the shape of
-  whitespace are ignored. The rule is shared with the phone and the palette
-  (`appwire-client/typescript/findInSession.ts`).
+- **What matches.** A match is one message the conversation shows. Tool calls
+  and their output, thoughts, steers, notes and system notices are not
+  searched, so every match Find counts is one it can land on with the words on
+  screen: a message is never folded, cut short or kept behind a disclosure.
+  Case and the shape of whitespace are ignored; that rule is shared with the
+  phone and the palette (`appwire-client/typescript/findInSession.ts`).
+- **What is searched.** A message as its row shows it
+  (`src/panes/session/find/messageText.ts`). A reply is read as its rendered
+  Markdown: no formatting marks, a link's label without its address, code and
+  authored HTML as written. A prompt is read as typed.
+- **The palette's In session section** still lists matches in tool output and
+  thoughts as well. Choosing a message hands it to Find; choosing any other row
+  only closes the palette, because Find has nowhere to land for it.
 - **Order.** Typing lands on the newest loaded match. Enter or the up control
   steps older; Shift+Enter or the down control steps newer. The position counts
   from the newest match, so it does not shift as older pages arrive.
-- **What is searched.** The words as the transcript shows them. A reply or a
-  thought is read as its rendered Markdown (no formatting marks, a link's
-  label without its address, code as written); a prompt, a steer and tool text
-  are read as typed. An entry whose renderer shows nothing is never a match:
-  a suppressed tool row, the daemon's task steers, a thought where thinking
-  traces are hidden.
-- **Folds.** Landing on a match inside a folded tool run or action group opens
-  the fold, and a tool call's summary and body or a thought's body, so the
-  words are on screen. They stay open, as a reader's own toggle would. A steer,
-  a note or a memory refresh keeps its text behind a divider whose open state
-  belongs to the session, so a match there opens that divider in every view of
-  the conversation. A notification card holding the words opens too, and a
-  notice folded into a group of system events opens the group and is marked
-  there. A tool
-  body that folds its output (a long read shows only its tail) shows the
-  stretch holding the landed-on words instead, under a line saying so, for as
-  long as that call is the landing. Any other tool body that does not show
-  the words (a write shows its confirmation, a fetch a short preview) gets the
-  same stretch beneath it: the tool row reads what its body rendered and adds
-  what is missing, so no renderer has to opt in. Coloured terminal output is
-  searched as it reads, without its control codes.
 - **Marks.** The current entry is outlined. Matching words are painted with the
   CSS Custom Highlight API, which changes no transcript DOM; where a browser
   lacks it, the outline alone marks the match. Painting follows the match
   rule: a phrase is painted across the elements it spans, read as continuous
-  across inline formatting (a colour run) and as separate words across a
+  across inline formatting (emphasis, a link) and as separate words across a
   block, a code block's line or a line break. Each open transcript keeps its
   own painted words.
 - **Older history.** Typing reads only what is loaded. Stepping older past the

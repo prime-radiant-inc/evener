@@ -30,7 +30,7 @@ import { ToolRunGroup } from "./ToolRunGroup";
 import { TurnDoneEndCap } from "./TurnDoneEndCap";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
-import { foldTurnEntries, intentGroupId, type ToolRun } from "./toolRuns";
+import { foldTurnEntries, type ToolRun } from "./toolRuns";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
@@ -160,7 +160,7 @@ export function ProjectedIntentGroup({
   const context = useTranscriptRenderContext();
   const { config } = context;
   const scope = disclosureScopeForSession(context, undefined);
-  const identity = rowId ?? intentGroupId(entries[0]?.id ?? "empty");
+  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}`;
   const disclosureKey = scopedDisclosureId(scope, identity);
   const namedIntent = config.content.kind === "preset" && config.content.level === "intent";
   const fallback = namedIntent || expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
@@ -347,7 +347,7 @@ export function TurnBlock({
       }
       renderedEntries.push(
         <ProjectedIntentGroup
-          key={intentGroupId(group[0]?.id)}
+          key={`intent-group:${group[0]?.id}`}
           entries={group}
           viewAnchorIndex={viewAnchorIndex}
           sessionRef={sessionRef}

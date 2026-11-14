@@ -123,14 +123,6 @@ test("findInSessionMatches scans tool output", () => {
   expect(hits[0]?.turn).toBe(1);
 });
 
-test("findInSessionMatches scans what a tool call was asked to act on, not the names of its arguments", () => {
-  const model = modelWithTurns([
-    turn("t1", [itemWith("i1", { type: "tool", argumentsJSON: JSON.stringify({ path: "/src/frobnitz.ts" }) })]),
-  ]);
-  expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
-  expect(findInSessionMatches(model, "path")).toEqual([]);
-});
-
 test("findInSessionMatches scans tool error text", () => {
   const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", error: "frobnitz not permitted" })])]);
   expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
@@ -185,4 +177,11 @@ test("highlightParts wraps the first case-insensitive match", () => {
 test("highlightParts returns a single unmarked part when there is no match or no query", () => {
   expect(highlightParts("Switch model", "")).toEqual([{ text: "Switch model", mark: false }]);
   expect(highlightParts("Switch model", "zzz")).toEqual([{ text: "Switch model", mark: false }]);
+});
+
+test("a reply is searched as it reads, the way the session's Find reads it", () => {
+  const reply: ItemModel = { id: "i1", turnId: "t", type: "agentMessage", text: "the build **fail**ed" };
+  const model = { turns: [{ id: "t", status: "completed", items: [reply] }] } as unknown as ThreadModel;
+  expect(findInSessionMatches(model, "build failed")).toHaveLength(1);
+  expect(findInSessionMatches(model, "**fail**")).toHaveLength(0);
 });

@@ -29,7 +29,6 @@
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
 import {
-  type ItemModel,
   isParentSteer,
   isSuppressedSteeringKind,
   labelledSteeringKind,
@@ -42,14 +41,6 @@ import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../typ
 import { NotificationCard } from "./NotificationCard";
 import { SteeringDivider } from "./SteeringDivider";
 import { UserMessageView } from "./UserMessageItem";
-
-/** Whether a steer renders anything: a note or a daemon steer needs text,
- * and the daemon's task bookkeeping is left to the tasks surfaces. */
-export function rendersSteer(item: ItemModel): boolean {
-  if (item.steeringKind === "human-note") return Boolean(item.text);
-  if (item.source === "user") return true;
-  return Boolean(item.text) && !isSuppressedSteeringKind(item.steeringKind);
-}
 
 export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
   // Parsed once per text: a live turn re-renders this row on every publish.
@@ -64,8 +55,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // the kind selects the divider: it labels the human's whiteboard update
   // distinctly rather than rendering as an indistinguishable user bubble.
   // Every other user-sourced steer still renders as a user message below.
-  if (!rendersSteer(item)) return null;
   if (item.steeringKind === "human-note") {
+    if (!item.text) return null; // no text, no images path here - nothing to show
     return (
       <SteeringDivider
         id={item.id}
@@ -80,6 +71,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // work already under way rather than starting a new exchange, so it renders
   // like a prompt without claiming the boundary a prompt marks.
   if (item.source === "user") return <UserMessageView item={item} opensExchange={false} />;
+  if (!item.text) return null; // no text, no images path here - nothing to show
+  if (isSuppressedSteeringKind(item.steeringKind)) return null;
 
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind

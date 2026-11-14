@@ -119,9 +119,3 @@ export function foldTurnEntries(turn: ProjectedTurn): (ProjectedEntry | ToolRun)
     descriptorFor: toolRendererFor,
   });
 }
-
-/** The id an action group goes by - as a transcript row, as a React key and
- * as its disclosure: the group is named after its first action. */
-export function intentGroupId(firstEntryId: string | undefined): string {
-  return `intent-group:${firstEntryId}`;
-}

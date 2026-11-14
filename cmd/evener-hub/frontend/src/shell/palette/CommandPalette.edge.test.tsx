@@ -14,7 +14,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
 import "../../panes/session";
 import "../../panes/sessionPanels";
-import { type ItemModel, makeTranscriptDisplayConfig, type ThreadModel, type TurnModel } from "@evener/appwire-client";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
 import { resetFindRequestsForTests, useFindRequest } from "../../panes/session/find/findRequest";
@@ -23,7 +23,7 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { NeedsYouProvider } from "../NeedsYouProvider";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../openInNewTab.testSupport";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -80,7 +80,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 }
 
 function item(id: string, text: string): ItemModel {
-  return { id, turnId: "t1", type: "message", text };
+  return { id, turnId: "t1", type: "agentMessage", text };
 }
 function turn(items: ItemModel[]): TurnModel {
   return { id: "t1", status: "completed", items };
@@ -312,26 +312,15 @@ test("choosing an in-session result from a companion pane brings up the conversa
   expect(asked.result.current).toMatchObject({ query: "search term", itemId: "i1" });
 });
 
-test("an in-session match the conversation's verbosity hides is not offered", async () => {
+test("an in-session row Find cannot land on is listed and only closes the palette", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
-  const thought: ItemModel = {
-    ...item("c1", "search term in a thought"),
-    type: "reasoning",
-    reasoningSummaries: [["search term in a thought"]],
-    status: "completed",
-  };
-  focusSession("ref_a", {
-    turns: [turn([{ ...item("i1", "search term in a message"), type: "agentMessage" }, thought])],
-  });
-  // Chat verbosity leaves settled thoughts out of the transcript, so Find
-  // could not land on the thought.
-  transcriptDisplayStore
-    .getState()
-    .setLocal(
-      transcriptDisplayStore.getState().viewport,
-      makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }),
-    );
+  // Find searches messages; a tool's output is listed here but is not a place
+  // Find can go.
+  const call: ItemModel = { ...item("c1", ""), type: "commandExecution", output: "search term in output" };
+  focusSession("ref_a", { turns: [turn([call])] });
+  const paneId = workspaceStore.getState().focusedPaneId ?? "";
+  const request = renderHook(() => useFindRequest("ref_a", paneId));
 
   render(
     <NeedsYouProvider>
@@ -341,17 +330,10 @@ test("an in-session match the conversation's verbosity hides is not offered", as
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), "search term");
   await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(1));
+  await user.keyboard("{ArrowDown}{Enter}");
 
-  act(() =>
-    transcriptDisplayStore
-      .getState()
-      .setLocal(
-        transcriptDisplayStore.getState().viewport,
-        makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
-      ),
-  );
-  await user.type(screen.getByRole("combobox"), " ");
-  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(2));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(request.result.current).toBeUndefined();
 });
 
 test("Enter on a plain query prefers the first session hit over the leading command", async () => {

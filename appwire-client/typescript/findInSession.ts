@@ -1,10 +1,6 @@
 // Find in session, the part every client shares: what counts as a match,
 // which loaded rows hold one, and stepping between them. Each client supplies
 // the text of its own rows; older-history demand stays with HistoryPaging.
-import { parseAnsiLines } from "./ansi";
-import type { ItemModel } from "./model";
-import { parseArgs } from "./toolCallText";
-
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, " ");
 }
@@ -28,45 +24,6 @@ export function findIndexIn(readable: string, needle: string): number {
 
 export function textMatchesFind(text: string, needle: string): boolean {
   return findIndexIn(findReadable(text), needle) >= 0;
-}
-
-/** Tool output as a reader sees it: terminal control codes interpreted away,
- * so words split by a colour change still read as one phrase. */
-export function outputAsShown(output: string): string {
-  if (!output.includes("\u001b")) return output;
-  return parseAnsiLines(output)
-    .map((line) => line.map((run) => run.text).join(""))
-    .join("\n");
-}
-
-// The string values inside a call's arguments, however nested (a question's
-// wording and its options sit in arrays of objects). Field names are plumbing
-// and are never collected.
-function collectStrings(value: unknown, into: string[]): void {
-  if (typeof value === "string") {
-    if (value !== "") into.push(value);
-  } else if (Array.isArray(value)) {
-    for (const each of value) collectStrings(each, into);
-  } else if (value !== null && typeof value === "object") {
-    for (const each of Object.values(value)) collectStrings(each, into);
-  }
-}
-
-/** Every text an item shows, or would show once opened: its message or
- * thought, what a tool call was asked to act on, and what came back. Each is
- * its own string so a match never spans two of them. */
-export function itemFindTexts(item: ItemModel): string[] {
-  const texts: string[] = [];
-  if (item.text) texts.push(item.text);
-  if (item.description) texts.push(item.description);
-  collectStrings(parseArgs(item.argumentsJSON), texts);
-  if (item.output) texts.push(outputAsShown(item.output));
-  if (item.error) texts.push(outputAsShown(item.error));
-  for (const summary of item.reasoningSummaries ?? []) {
-    const joined = summary.join("");
-    if (joined) texts.push(joined);
-  }
-  return texts;
 }
 
 /** The indexes of the rows holding `query`, oldest first. */

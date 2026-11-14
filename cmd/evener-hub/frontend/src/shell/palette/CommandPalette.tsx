@@ -665,12 +665,19 @@ function PaletteBody({
       return;
     }
     if (item.kind === "insession") {
-      // Hand the choice to the conversation's own Find: it opens on these
-      // words, lands on this item, and from there steps through the rest.
+      // A message the conversation shows is handed to its own Find, which
+      // opens on these words, lands on that message, and from there steps
+      // through the rest. Find searches messages only, so any other row (a
+      // tool's output, a thought) stays a listing and only closes the palette.
       const { sessionRef, sessionPaneId } = runContext();
+      const words = query.trim();
+      const model = focusedModel(sessionRef);
+      const landable =
+        model !== undefined &&
+        findableItemIds(model, transcriptDisplayStore.getState().effective(), words).has(item.match.itemId);
       closePalette();
-      if (sessionRef !== null)
-        showFindIn(sessionRef, sessionPaneId, { query: query.trim(), itemId: item.match.itemId });
+      if (sessionRef !== null && landable)
+        showFindIn(sessionRef, sessionPaneId, { query: words, itemId: item.match.itemId });
       return;
     }
     if (item.kind === "live" || item.kind === "past") {
@@ -956,12 +963,7 @@ function buildView(args: {
     pushCommandMatches(query);
     const grouped = groupSearchResults(searchResp?.live ?? [], searchResp?.past ?? []);
     const model = focusedModel(ctx.sessionRef);
-    // Only what the conversation's verbosity shows is offered: every row
-    // here has a place for the session's Find to land.
-    const findable = model
-      ? findableItemIds(model, transcriptDisplayStore.getState().effective(), trimmed)
-      : new Set<string>();
-    const inSession = model ? findInSessionMatches(model, trimmed).filter((match) => findable.has(match.itemId)) : [];
+    const inSession = model ? findInSessionMatches(model, trimmed) : [];
     if (grouped.live.length) {
       entries.push({ type: "header", section: "live", label: "Live" });
       for (const row of grouped.live) {

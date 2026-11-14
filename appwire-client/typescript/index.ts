@@ -294,10 +294,8 @@ export {
   findMatches,
   findNeedle,
   findReadable,
-  itemFindTexts,
   type MatchPosition,
   matchPosition,
-  outputAsShown,
   stepMatch,
   textMatchesFind,
 } from "./findInSession";

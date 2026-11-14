@@ -94,7 +94,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 }
 
 function item(id: string, text: string): ItemModel {
-  return { id, turnId: "t1", type: "message", text };
+  return { id, turnId: "t1", type: "agentMessage", text };
 }
 function turn(items: ItemModel[]): TurnModel {
   return { id: "t1", status: "completed", items };

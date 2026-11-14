@@ -11,7 +11,7 @@ import {
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
@@ -28,7 +28,7 @@ import { requestFindInSession, resetFindRequestsForTests } from "./findRequest";
 import { useFindInSession } from "./useFindInSession";
 
 const REF = "ref_a";
-const preset = (level: "intent" | "tools") => makeTranscriptDisplayConfig({ kind: "preset", level });
+const CONFIG = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
 
 function turn(id: string, text: string): Turn {
   return {
@@ -75,12 +75,7 @@ let ownsKeyboard = true;
 function Harness() {
   const transcript = useTranscript(REF, "pane_a");
   const { model } = transcript;
-  const [level, setLevel] = useState<"intent" | "tools">("tools");
-  const rows = useMemo(
-    () => (model ? transcriptRowsForProjection(projectThread(model, preset(level))) : []),
-    [model, level],
-  );
-  const shown = useMemo(() => ({ sessionRef: REF, config: preset(level) }), [level]);
+  const rows = useMemo(() => (model ? transcriptRowsForProjection(projectThread(model, CONFIG)) : []), [model]);
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
     scrollToIndex: () => {},
@@ -92,8 +87,6 @@ function Harness() {
     ref: REF,
     paneId: "pane_a",
     rows,
-    shown,
-    disclosureScope: "pane_a",
     listRef: list,
     jumpToRow: (index) => jumps.push(index),
     holdPosition: () => {
@@ -116,9 +109,6 @@ function Harness() {
       </button>
       <button type="button" data-testid="reader-older" onClick={() => void transcript.loadOlder().catch(() => {})}>
         reader older
-      </button>
-      <button type="button" data-testid="intent-verbosity" onClick={() => setLevel("intent")}>
-        intent
       </button>
       <button type="button" data-testid="jump-latest" onClick={() => find.leaveHistory()}>
         latest
@@ -665,40 +655,4 @@ test("jumping to latest while Find is reading back to a dropped match gives that
   const after = requests;
   await settle();
   expect(requests).toBe(after);
-});
-
-test("a verbosity change that renames the current entry keeps the match and reads no history", async () => {
-  const client = connectReadyFakeClient();
-  const calling: Turn = {
-    id: "t1",
-    status: "completed",
-    itemsView: "full",
-    items: [
-      {
-        id: "c1",
-        turnId: "t1",
-        type: "commandExecution",
-        text: "",
-        toolName: "read_file",
-        description: "Read the quokka notes",
-        callId: "c1",
-        output: "plain",
-        status: "completed",
-      },
-    ],
-  };
-  const script = scriptHistory(client, [calling], ["older"]);
-  await mount(client);
-  openFind();
-  type("quokka");
-  expect(currentAnchor()).toBe("c1");
-
-  // At Intent verbosity the same call is an action row under another key.
-  fireEvent.click(screen.getByTestId("intent-verbosity"));
-  await waitFor(() => expect(currentAnchor()).toBe("intent:c1"));
-  expect(state()).toMatchObject({ status: "matches", position: 1, count: 1 });
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  });
-  expect(script.requests).toBe(0);
 });

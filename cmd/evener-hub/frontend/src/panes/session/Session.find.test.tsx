@@ -13,7 +13,7 @@ import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../stores/threads";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
@@ -89,11 +89,7 @@ function call(turnId: string, index: number, output: string) {
   };
 }
 
-function steer(id: string, text: string, extra: Record<string, string>) {
-  return { id, turnId: "turn_2", type: "steering", text, status: "completed" as const, ...extra };
-}
-
-function renderSession(focusedPane = "p1", steers: ReturnType<typeof steer>[] = []) {
+function renderSession(focusedPane = "p1") {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {
@@ -107,7 +103,7 @@ function renderSession(focusedPane = "p1", steers: ReturnType<typeof steer>[] = 
             call("turn_1", 0, "plain"),
             call("turn_1", 1, "the quokka lives here"),
             call("turn_1", 2, "plain"),
-            message("turn_1", "agentMessage", "Done reading."),
+            message("turn_1", "agentMessage", "Done reading about the quokka."),
           ],
         },
         {
@@ -116,7 +112,6 @@ function renderSession(focusedPane = "p1", steers: ReturnType<typeof steer>[] = 
           itemsView: "full",
           items: [
             message("turn_2", "userMessage", "what about the quokka?"),
-            ...steers,
             message("turn_2", "agentMessage", "No more to say."),
           ],
         },
@@ -172,11 +167,9 @@ test("the find chord opens Find over the focused conversation and marks the newe
   view.unmount();
 });
 
-test("a match inside a folded run opens the run and the call, and marks the call itself", async () => {
+test("stepping older lands on the earlier message; what a tool call returned is not a match", async () => {
   renderSession();
   await screen.findByText("No more to say.");
-  // The three quiet calls fold into one closed run: the match is not on screen.
-  expect(screen.queryByText("the quokka lives here")).toBeNull();
 
   pressFind();
   const field = screen.getByRole("searchbox");
@@ -184,9 +177,10 @@ test("a match inside a folded run opens the run and the call, and marks the call
   fireEvent.keyDown(field, { key: "Enter" });
 
   expect(screen.getByTestId("find-bar").getAttribute("data-find-position")).toBe("2");
-  await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
-  expect(marked()?.getAttribute(FIND_CURRENT_ATTRIBUTE)).toBe("entry");
-  expect(await screen.findByText("the quokka lives here")).toBeTruthy();
+  await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("turn_1-agentMessage"));
+  expect(marked()?.textContent).toContain("Done reading about the quokka.");
+  // The call that returned the same word stays folded away, uncounted.
+  expect(screen.queryByText("the quokka lives here")).toBeNull();
 });
 
 test("a pane that does not hold the keyboard leaves the find chord to the browser", async () => {
@@ -199,149 +193,10 @@ test("a pane that does not hold the keyboard leaves the find chord to the browse
 test("a request from the menu or the palette opens Find on the named item", async () => {
   renderSession();
   await screen.findByText("No more to say.");
-  act(() => requestFindInSession("ref_a", { target: "p1", query: "quokka", itemId: "turn_1-call-1" }));
+  act(() => requestFindInSession("ref_a", { target: "p1", query: "quokka", itemId: "turn_1-agentMessage" }));
 
   const bar = screen.getByTestId("find-bar");
   expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("quokka");
   expect(bar.getAttribute("data-find-position")).toBe("2");
-  await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
-});
-
-test("calls that fold into a run after a match was found are opened again when the reader steps back to it", async () => {
-  // While the turn runs its calls are separate rows; once it completes they
-  // fold into one closed run, with the same entries on the same row.
-  let status: "inProgress" | "completed" = "inProgress";
-  const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => ({
-    thread: testThread("ref_a", {
-      turns: [
-        {
-          id: "turn_1",
-          status,
-          itemsView: "full",
-          items: [
-            message("turn_1", "userMessage", "read the quokka files"),
-            call("turn_1", 0, "plain"),
-            call("turn_1", 1, "the quokka lives here"),
-            call("turn_1", 2, "plain"),
-          ],
-        },
-      ],
-    }),
-  }));
-  workspaceStore.setState({
-    panes: [{ id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" }],
-    focusedPaneId: "p1",
-  });
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused />
-    </ClientProvider>,
-  );
-  await screen.findByText("read the quokka files");
-  pressFind();
-  const field = screen.getByRole("searchbox");
-  fireEvent.change(field, { target: { value: "quokka" } });
-  expect(screen.getByTestId("find-bar").getAttribute("data-find-count")).toBe("2");
-
-  status = "completed";
-  await act(async () => {
-    await threadsStore.getState().refreshThread("ref_a");
-  });
-  await waitFor(() => expect(screen.getByTestId("tool-run")).toBeTruthy());
-  // Stepping away and back lands on the call inside the run that now hides it.
-  fireEvent.keyDown(field, { key: "Enter" });
-  fireEvent.keyDown(field, { key: "Enter", shiftKey: true });
-  await waitFor(() => expect(marked()?.getAttribute("data-item-id")).toBe("turn_1-call-1"));
-  expect(marked()?.getAttribute(FIND_CURRENT_ATTRIBUTE)).toBe("entry");
-});
-
-test("a tool body that would not show the matched words shows them while it is the current match", async () => {
-  const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => ({
-    thread: testThread("ref_a", {
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [
-            message("turn_1", "userMessage", "write and fetch"),
-            {
-              id: "write",
-              turnId: "turn_1",
-              type: "commandExecution",
-              text: "",
-              toolName: "write_file",
-              callId: "write",
-              argumentsJson: JSON.stringify({
-                path: "/notes.md",
-                content: `${"filler ".repeat(200)}the wombat paragraph`,
-              }),
-              output: "wrote 1420 bytes to /notes.md",
-              status: "completed" as const,
-            },
-            {
-              id: "fetch",
-              turnId: "turn_1",
-              type: "commandExecution",
-              text: "",
-              toolName: "web_fetch",
-              callId: "fetch",
-              argumentsJson: JSON.stringify({ url: "https://example.com" }),
-              output: `${"page ".repeat(100)}a numbat sentence far past the preview`,
-              status: "completed" as const,
-            },
-            message("turn_1", "agentMessage", "Done."),
-          ],
-        },
-      ],
-    }),
-  }));
-  workspaceStore.setState({
-    panes: [{ id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" }],
-    focusedPaneId: "p1",
-  });
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused />
-    </ClientProvider>,
-  );
-  await screen.findByText("Done.");
-  pressFind();
-  const field = screen.getByRole("searchbox");
-
-  // write_file's body shows only its confirmation line.
-  fireEvent.change(field, { target: { value: "wombat paragraph" } });
-  await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("write"));
-  await waitFor(() => expect(marked()?.textContent).toContain("the wombat paragraph"));
-
-  // web_fetch's body shows a short preview of the page.
-  fireEvent.change(field, { target: { value: "numbat sentence" } });
-  await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("fetch"));
-  await waitFor(() => expect(marked()?.textContent).toContain("a numbat sentence"));
-
-  // Moving on puts the earlier call back as it was.
-  expect(document.querySelector('[data-view-anchor-id="write"]')?.textContent).not.toContain("wombat");
-});
-
-test("a match inside a closed steer or note opens it and marks the words' entry", async () => {
-  renderSession("p1", [
-    steer("steer_parent", "mind the wombat", { source: "parent" }),
-    steer("steer_note", "the numbat moved", { source: "user", steeringKind: "human-note" }),
-  ]);
-  await screen.findByText("No more to say.");
-  expect(screen.queryByText("mind the wombat")).toBeNull();
-  expect(screen.queryByText("the numbat moved")).toBeNull();
-
-  pressFind();
-  const field = screen.getByRole("searchbox");
-  fireEvent.change(field, { target: { value: "wombat" } });
-  expect(await screen.findByText("mind the wombat")).toBeTruthy();
-  await waitFor(() => expect(marked()?.textContent).toContain("mind the wombat"));
-  // Only the steer holding the words opened.
-  expect(screen.queryByText("the numbat moved")).toBeNull();
-
-  fireEvent.change(field, { target: { value: "numbat" } });
-  expect(await screen.findByText("the numbat moved")).toBeTruthy();
+  await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("turn_1-agentMessage"));
 });

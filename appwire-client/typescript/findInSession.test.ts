@@ -5,16 +5,10 @@ import {
   findMatches,
   findNeedle,
   findReadable,
-  itemFindTexts,
   matchPosition,
   stepMatch,
   textMatchesFind,
 } from "./findInSession";
-import type { ItemModel } from "./model";
-
-function item(fields: Partial<ItemModel>): ItemModel {
-  return { id: "item", turnId: "turn", type: "agentMessage", text: "", ...fields } as ItemModel;
-}
 
 describe("what counts as a find match", () => {
   it("ignores case and the shape of whitespace on both sides", () => {
@@ -34,57 +28,6 @@ describe("what counts as a find match", () => {
     const readable = findReadable("  One\n\nTwo  THREE ");
     const at = findIndexIn(readable, findNeedle("two three"));
     expect(readable.slice(at, at + "two three".length).toLowerCase()).toBe("two three");
-  });
-});
-
-describe("the text an item is searched by", () => {
-  it("covers a message, a thought, and a tool call's request and result", () => {
-    const tool = item({
-      type: "toolCall",
-      description: "Run the agent tests",
-      argumentsJSON: JSON.stringify({ command: "go test ./agent/...", timeout: 30 }),
-      output: "ok agent 1.2s",
-      error: "exit status 1",
-      reasoningSummaries: [["Thinking ", "about races"]],
-    });
-    const texts = itemFindTexts(tool);
-    const found = (query: string) => texts.some((text) => textMatchesFind(text, findNeedle(query)));
-    expect(found("agent tests")).toBe(true);
-    expect(found("go test ./agent")).toBe(true);
-    expect(found("ok agent")).toBe(true);
-    expect(found("exit status")).toBe(true);
-    expect(found("thinking about races")).toBe(true);
-    // An argument's name is plumbing, not something the row shows.
-    expect(found("timeout")).toBe(false);
-    expect(itemFindTexts(item({ text: "hello" }))).toEqual(["hello"]);
-  });
-
-  it("reads the text inside nested arguments, such as a question's wording and options", () => {
-    const ask = item({
-      type: "toolCall",
-      argumentsJSON: JSON.stringify({
-        questions: [{ header: "Deploy", question: "Ship the quokka build?", options: [{ label: "Hold it" }] }],
-      }),
-    });
-    const found = (query: string) => itemFindTexts(ask).some((text) => textMatchesFind(text, findNeedle(query)));
-    expect(found("ship the quokka build")).toBe(true);
-    expect(found("hold it")).toBe(true);
-    // Still by value: the names of the fields are plumbing.
-    expect(found("options")).toBe(false);
-    expect(found("question")).toBe(false);
-  });
-
-  it("reads coloured output as the reader sees it, without the control codes", () => {
-    const shell = item({ type: "commandExecution", output: "build \u001b[31merror\u001b[0m\u001b[1m code\u001b[0m 2" });
-    const found = (query: string) => itemFindTexts(shell).some((text) => textMatchesFind(text, findNeedle(query)));
-    expect(found("error code 2")).toBe(true);
-    // The codes themselves are not text.
-    expect(found("[31m")).toBe(false);
-    expect(found("31merror")).toBe(false);
-  });
-
-  it("survives arguments that are not an object", () => {
-    expect(itemFindTexts(item({ argumentsJSON: "not json", text: "kept" }))).toEqual(["kept"]);
   });
 });
 

@@ -327,9 +327,9 @@ from this one implementation.
 ## Find in session
 
 `findInSession.ts` holds what every client's Find agrees on: `findNeedle` and
-`textMatchesFind` (case and whitespace never decide a match), `itemFindTexts`
-(the text an item is searched by), and `findMatches`, `stepMatch` and
-`matchPosition` for stepping through matching rows. Each client supplies the
+`textMatchesFind` (case and whitespace never decide a match), and
+`findMatches`, `stepMatch` and `matchPosition` for stepping through matching
+rows. Each client supplies the
 text of its own rows and its own older-history demand.
 
 ## Older-history demand
