@@ -257,7 +257,9 @@ and the chord remain.
   carrying the reader off the match. The virtual list follows appended output
   for any reader within its end threshold, whatever the scroll owner was told,
   so a landing on a match already in view at the live end also moves the
-  reader a few pixels off the end. Jumping to latest ends a search into older
+  reader a few pixels off the end. A conversation that fits on screen has no
+  end to step off, so there a match is not held once later output makes the
+  transcript overflow. Jumping to latest ends a search into older
   history and leaves no match current, so neither a match arriving later nor
   a refresh reading back to the old one can pull the reader away again; Find
   stays open on its words, and stepping starts over from the newest match.

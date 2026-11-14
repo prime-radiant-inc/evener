@@ -91,6 +91,16 @@ const SETTLE_WINDOW_MS = 1500;
 // How long a row jump gets to render its row before Find asks again.
 const JUMP_RETRY_MS = 150;
 
+// By node type, not class: a popped-out session's elements belong to another
+// window and are not instances of this window's classes.
+function isElement(target: unknown): target is Element {
+  return target !== null && typeof target === "object" && (target as Node).nodeType === 1;
+}
+
+function isFocusable(target: unknown): target is HTMLElement {
+  return isElement(target) && typeof (target as HTMLElement).focus === "function";
+}
+
 const NO_MATCH = { key: null, item: null } as const;
 
 function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item"> {
@@ -166,7 +176,7 @@ export function useFindInSession({
   const openWith = useCallback(
     (request?: { query?: string; itemId?: string }) => {
       const active = document.activeElement;
-      if (active instanceof HTMLElement && active.closest("[data-find-bar]") === null) returnFocus.current = active;
+      if (active !== null && active.closest("[data-find-bar]") === null) returnFocus.current = active;
       setFocusEpoch((epoch) => epoch + 1);
       if (request?.query !== undefined) setJumpEpoch((epoch) => epoch + 1);
       setState((previous) => {
@@ -192,7 +202,7 @@ export function useFindInSession({
     setState(null);
     const target = returnFocus.current;
     returnFocus.current = null;
-    if (target instanceof HTMLElement && target.isConnected) target.focus();
+    if (isFocusable(target) && target.isConnected) target.focus();
     else requestComposerFocus(ref, paneId);
   }, [ref, paneId]);
 
@@ -390,7 +400,7 @@ export function useFindInSession({
     return keybindingsRegistry.getState().registerAction(ACTIONS.transcriptFind, (event) => {
       if (!ownsKeyboardRef.current()) return false;
       const target = event?.target;
-      if (target instanceof Element && target.closest("[data-find-bar]") !== null) return false;
+      if (isElement(target) && target.closest("[data-find-bar]") !== null) return false;
       open();
       return true;
     });

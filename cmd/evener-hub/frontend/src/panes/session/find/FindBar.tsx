@@ -55,7 +55,9 @@ export function FindBar({ view }: { view: FindView }) {
       view.close();
       return;
     }
-    if (event.key !== "Enter" || !(event.target instanceof HTMLInputElement)) return;
+    // By tag, not class: in a popped-out window the field is not an instance
+    // of this window's HTMLInputElement.
+    if (event.key !== "Enter" || (event.target as Element).tagName !== "INPUT") return;
     event.preventDefault();
     // Enter walks back through the session, as a reader at the live end
     // expects; Shift+Enter comes forward again.
