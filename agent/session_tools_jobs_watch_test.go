@@ -1330,8 +1330,10 @@ func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
 	if matched.WatchID == "" {
 		t.Fatal("terminal catch-up must return non-empty watch_id")
 	}
-	if !strings.Contains(watchRes.Output, "watch_id "+matched.WatchID) {
-		t.Fatalf("terminal catch-up tool output missing watch_id: %s", watchRes.Output)
+	// The model reads the rendered output, not the structured state, so the
+	// id must appear in it — asserted on the id alone, never on label copy.
+	if !strings.Contains(watchRes.Output, matched.WatchID) {
+		t.Fatalf("terminal catch-up tool output missing the watch id: %s", watchRes.Output)
 	}
 
 	// Inspect by the returned watch_id.
@@ -1406,8 +1408,8 @@ func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
 	if noMatch.WatchID == "" || noMatch.Watching || noMatch.Fired || !noMatch.TerminalCatchup {
 		t.Fatalf("no-match catch-up result = %+v, want non-empty WatchID, watching=false, fired=false, terminal_catchup=true", noMatch)
 	}
-	if !strings.Contains(noMatchRes.Output, "watch_id "+noMatch.WatchID) {
-		t.Fatalf("no-match catch-up tool output missing watch_id: %s", noMatchRes.Output)
+	if !strings.Contains(noMatchRes.Output, noMatch.WatchID) {
+		t.Fatalf("no-match catch-up tool output missing the watch id: %s", noMatchRes.Output)
 	}
 
 	inspectNoMatchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
