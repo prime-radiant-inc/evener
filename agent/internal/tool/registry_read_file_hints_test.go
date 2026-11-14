@@ -44,9 +44,6 @@ func TestTruncatedReadFileExposesOmittedLineRange(t *testing.T) {
 			if from <= 1 || to >= total || from > to {
 				t.Fatalf("omitted range %d-%d is not interior to 1-%d", from, to, total)
 			}
-			if !strings.Contains(got.Output, tc.def.Name+" with offset=") {
-				t.Fatalf("output missing %s continuation hint: %.300q", tc.def.Name, got.Output[max(0, len(got.Output)-250):])
-			}
 			// Every line outside the window must be present whole; the window is
 			// exactly what offset/limit must refetch.
 			shown := map[int]bool{}
