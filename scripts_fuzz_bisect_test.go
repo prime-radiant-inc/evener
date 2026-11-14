@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -126,7 +127,7 @@ func FuzzBoom(f *testing.F) {
 	}
 	if got, err := os.ReadFile(preexistingProbePath); err != nil {
 		t.Errorf("fuzz-bisect.sh removed pre-existing corpus file: %v", err)
-	} else if string(got) != string(preexistingProbe) {
+	} else if !bytes.Equal(got, preexistingProbe) {
 		t.Errorf("fuzz-bisect.sh changed pre-existing corpus file: got %q, want %q", got, preexistingProbe)
 	}
 
