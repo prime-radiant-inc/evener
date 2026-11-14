@@ -44,18 +44,18 @@ func localJobTrustedRoot(stateDir string) string {
 // callers treat as not found. The Lstat-to-open residual TOCTOU window remains.
 func validateLocalJobJournal(stateDir, path string) (os.FileInfo, bool, error) {
 	if validateLayoutPrefix(stateDir) != nil {
-		return nil, false, nil
+		return nil, false, nil //nolint:nilerr // symlinked prefix is skip-worthy, not an error
 	}
 	if err := symlinkErrorDeep(path, localJobTrustedRoot(stateDir)); err != nil {
 		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-			return nil, false, nil
+			return nil, false, nil //nolint:nilerr // journal gone through the symlink → not found
 		}
 		return nil, false, err
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, false, nil
+			return nil, false, nil //nolint:nilerr // journal gone → not found (skip-worthy)
 		}
 		return nil, false, fmt.Errorf("stat journal: %w", err)
 	}
