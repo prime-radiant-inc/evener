@@ -976,13 +976,13 @@ export class Driver {
     return `(() => {
       const stack = ${this.queueStripRootExpr(ref)};
       if (!stack) return null;
-      const rows = [...stack.querySelectorAll("[data-testid='pending-message-row']")].map((li) => ({
+      const rows = [...stack.querySelectorAll("li")].map((li) => ({
         text: li.textContent,
         kind: li.dataset.kind ?? null,
         busy: li.dataset.busy ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
-      return { queuedCount: strip.getAttribute("data-queued-count") ?? "", rows };
+      return { queuedCount: stack.getAttribute("data-queued-count") ?? "", rows };
     })()`;
   }
 
