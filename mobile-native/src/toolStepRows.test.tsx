@@ -124,7 +124,7 @@ describe("a step with no intent", () => {
 				),
 		].join("\n");
 		for (const summary of [
-			"Read agent/tree.go · lines 1-4",
+			"Read agent/tree.go · lines 1-3",
 			"Read agent/tree.go · lines 2-3",
 			'Searched "func settle" in agent (*.go) · 2 hits',
 			"Matched agent/**/*_test.go · 2 matches",

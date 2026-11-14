@@ -9,7 +9,7 @@ import { toolStepSummary, toolStepWords } from "./toolSummaries";
 // parts. Composing the parts must give these back byte for byte, so the web's
 // text doesn't move.
 const WEB_TEXT: Record<ToolWireCall, string> = {
-  call_read_file: "Read agent/tree.go · lines 1-4",
+  call_read_file: "Read agent/tree.go · lines 1-3",
   call_read_file_range: "Read agent/tree.go · lines 2-3",
   call_grep: 'Searched "func settle" in agent (*.go) · 2 hits',
   call_grep_capped: 'Searched "package|func" in agent/tree.go · 1 hits',
@@ -89,7 +89,7 @@ test.each(Object.entries(WEB_TEXT) as [ToolWireCall, string][])(
 // The target is what the step acted on, which the phone sets in Menlo: a
 // path, a command, a query or a ref. Text after it stays in the sentence.
 test.each<[ToolWireCall, StepWords]>([
-  ["call_read_file", { verb: "Read", target: "agent/tree.go", detail: "lines 1-4" }],
+  ["call_read_file", { verb: "Read", target: "agent/tree.go", detail: "lines 1-3" }],
   ["call_grep", { verb: "Searched", target: '"func settle"', after: "in agent (*.go)", detail: "2 hits" }],
   ["call_glob", { verb: "Matched", target: "agent/**/*_test.go", detail: "2 matches" }],
   ["call_list_dir", { verb: "Listed", target: "agent", detail: "3 entries" }],
