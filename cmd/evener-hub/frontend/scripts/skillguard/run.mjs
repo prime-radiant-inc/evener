@@ -1462,14 +1462,19 @@ export class Driver {
   // reading: the barrier below waits on it, and nothing else has a private
   // copy that could drift from it.
   turnIdleExpr(ref) {
-    // The stack renders as the transcript's trailing virtual-list row, so the
-    // in-flight rows are only in the DOM while the tail is mounted -- the
-    // barrier scrolls the tail into view on every poll (the same correction
-    // every transcript wait applies) so its render-side check can never pass
-    // vacuously from a scrolled-away reader.
-    return this.withTranscriptTail(
-      ref,
-      `(async () => {
+    // This barrier never moves the reader: journeys wheel the reader away
+    // and then wait for idle (cascadeguard's away-reader pill legs), and a
+    // tail-pinning poll would undo the wheel on its first tick, land the
+    // reply on a reader held at the bottom, and make the observed pill
+    // unreachable. So unlike the transcript-content waits, there is no
+    // withTranscriptTail here. The pending stack renders as the trailing
+    // virtual-list row, so a scrolled-away reader keeps it unmounted; the
+    // stack's DOM veto therefore only fires while the stack IS mounted (a
+    // mounted busy row is live state no store read should outrank), and the
+    // unmounted case falls to the durable-store checks below, which read the
+    // same outbox/optimistic/recovery stores the stack projects from and are
+    // scroll-independent.
+    return `(async () => {
       const pane = ${this.paneScopeExpr(ref)};
       if (!pane) return null;
       const state = ${this.composerStateExpr(ref)};
@@ -1477,13 +1482,13 @@ export class Driver {
       const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
       if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
       if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
-      if ([...pane.querySelectorAll(${JSON.stringify(`${PENDING_ROW_STACK_SELECTOR} li`)})]
+      const stack = pane.querySelector(${JSON.stringify(PENDING_ROW_STACK_SELECTOR)});
+      if (stack !== null && [...stack.querySelectorAll("li")]
         .some((li) => li.dataset.kind === "waiting" || li.dataset.busy === "true")) return null;
       if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
       if ((await ${this.noPendingTurnRecordExpr(ref)}) !== true) return null;
       return true;
-    })()`,
-    );
+    })()`;
   }
 
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
