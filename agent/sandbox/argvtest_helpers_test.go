@@ -100,27 +100,6 @@ func tmpMainCheckout(t *testing.T) string {
 	return root
 }
 
-// tmpInfraRoot is a hook/MCP-server directory under /tmp itself, whatever
-// TMPDIR says. The /tmp re-bind under test exists only for a root the
-// sandbox's fresh /tmp tmpfs would shadow, and with the gate's TMPDIR
-// elsewhere (on /dev/shm or /var/tmp), t.TempDir() no longer lands under /tmp.
-func tmpInfraRoot(t *testing.T) string {
-	t.Helper()
-	root, err := os.MkdirTemp("/tmp", "sbx-tmp-infra-")
-	if err != nil {
-		t.Skipf("this host offers no writable /tmp for the infra root: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	root = identifier.ResolveClean(root)
-	if !identifier.PathUnder(root, "/tmp") {
-		// /tmp is a symlink here (to /var/tmp, say): the sandbox's /tmp
-		// tmpfs does not shadow the resolved path, so there is no /tmp-based
-		// infra root this host can offer.
-		t.Skipf("/tmp resolves to %q on this host; no shadowed infra root exists", root)
-	}
-	return root
-}
-
 // resolveFixture materializes a main-checkout git repo, plants ~/.ssh and
 // ~/.git-credentials in a fake home so the mask flags have real targets to stat,
 // and resolves the requested mode against a bwrap host.
