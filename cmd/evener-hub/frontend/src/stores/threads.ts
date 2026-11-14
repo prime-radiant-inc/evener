@@ -617,10 +617,13 @@ interface ModelSwitchRequestState {
   settledPending: Set<string>;
 }
 
-interface ModelSwitchTarget {
-  sequence: number;
+interface ModelSwitchIdentity {
   modelProvider: string;
   model: string;
+}
+
+interface ModelSwitchTarget extends ModelSwitchIdentity {
+  sequence: number;
 }
 
 const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
@@ -646,23 +649,35 @@ function settleModelSwitchThrough(requests: ModelSwitchRequestState, sequence: n
 
 function matchingModelSwitchTarget(
   requests: ModelSwitchRequestState,
-  targets: readonly { modelProvider: string; model: string }[],
+  targets: readonly ModelSwitchIdentity[],
 ): ModelSwitchTarget | undefined {
   let match: ModelSwitchTarget | undefined;
   for (const candidates of [requests.unsettled, requests.pending]) {
     for (const candidate of candidates.values()) {
-      if (
-        targets.some((target) => target.modelProvider === candidate.modelProvider && target.model === candidate.model)
-      )
+      if (targets.some((target) => modelSwitchIdentitiesEqual(target, candidate)))
         if (!match || candidate.sequence > match.sequence) match = candidate;
     }
   }
   return match;
 }
 
+function modelSwitchIdentitiesEqual(left: ModelSwitchIdentity, right: ModelSwitchIdentity): boolean {
+  if (left.modelProvider === right.modelProvider && left.model === right.model) return true;
+  if (left.modelProvider === left.model) return left.model === `${right.modelProvider}/${right.model}`;
+  if (right.modelProvider === right.model) return right.model === `${left.modelProvider}/${left.model}`;
+  return false;
+}
+
+export function acceptedModelSwitchMatchesModel(accepted: AcceptedModelSwitch, model: ModelSwitchIdentity): boolean {
+  return modelSwitchIdentitiesEqual(model, {
+    modelProvider: accepted.previousModelProvider,
+    model: accepted.previousModel,
+  });
+}
+
 function settleModelSwitchAuthority(
   ref: string,
-  targets: readonly { modelProvider: string; model: string }[],
+  targets: readonly ModelSwitchIdentity[],
 ): ModelSwitchTarget | undefined {
   const requests = modelSwitchRequests.get(ref);
   if (!requests) return undefined;
@@ -686,9 +701,7 @@ function reconcileAcceptedModelSwitchAuthority(
   const accepted = current.get(ref);
   if (!accepted) return current;
   const identityInvalidated = authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted));
-  const modelInvalidated = authorityModels.some(
-    (model) => model.modelProvider !== accepted.previousModelProvider || model.model !== accepted.previousModel,
-  );
+  const modelInvalidated = authorityModels.some((model) => !acceptedModelSwitchMatchesModel(accepted, model));
   if (identityInvalidated || (modelInvalidated && authority === undefined)) {
     const requests = modelSwitchRequests.get(ref);
     if (requests) settleModelSwitchThrough(requests, accepted.sequence);
@@ -702,8 +715,7 @@ function reconcileAcceptedModelSwitchAuthority(
     next.delete(ref);
     return next;
   }
-  if (authority.modelProvider === accepted.previousModelProvider && authority.model === accepted.previousModel)
-    return current;
+  if (acceptedModelSwitchMatchesModel(accepted, authority)) return current;
   return new Map(current).set(ref, {
     ...accepted,
     previousModelProvider: authority.modelProvider,

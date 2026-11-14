@@ -20,7 +20,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { onConnectionNotification } from "../../../stores/connection";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { acceptedModelSwitchMatchesModel, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
@@ -50,7 +50,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
   const acceptedModel = useThreadsStore((state) => state.acceptedModelSwitches.get(sessionRef));
   const displayedModelLabel =
-    acceptedModel?.previousModelProvider === model.modelProvider && acceptedModel.previousModel === model.model
+    acceptedModel && acceptedModelSwitchMatchesModel(acceptedModel, model)
       ? modelLabel(acceptedModel.modelProvider, acceptedModel.model)
       : currentModelLabel;
 

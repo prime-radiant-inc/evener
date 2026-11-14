@@ -411,6 +411,46 @@ test("an earlier model change after the newer response preserves the newer accep
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
+test("reconnect hydration preserves a queued model selected after a live model change", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+    });
+  });
+  const liveModel = { ...activeModel, modelProvider: "openai", model: "gpt-5.5" };
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={liveModel} />);
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+
+  const hydratedModel = {
+    ...activeModel,
+    modelProvider: "openai/gpt-5.5",
+    model: "openai/gpt-5.5",
+  };
+  act(() => putThreadModel("ref_a", hydratedModel));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={hydratedModel} />);
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
 test("accepted model display follows pick order when responses arrive out of order", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
@@ -614,6 +654,10 @@ test("reconnect hydration clears an accepted model when thread/read contains a n
   let overlay = [oldRejection];
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", { id: "thr_a", modelProvider: "anthropic/claude-sonnet-4-5" }),
+    requestGeneration: 1,
+    bootGeneration: "1@ref_a",
+    epoch: 1,
+    snapshot: { incarnation: "inc_a", length: 0 },
     overlay,
   }));
   const model = testModel({
