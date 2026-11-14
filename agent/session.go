@@ -2054,7 +2054,10 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		if admissionErr != nil {
 			return
 		}
-		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{pickSeq: pending.seq})
+		err := s.applyModelSwitch(pending.model, pending.primedInstance, pending.primedListing, modelSwitchFence{
+			pickSeq:          pending.seq,
+			clientMutationID: pending.clientMutationID,
+		})
 		release()
 		if err != nil {
 			warning := warningDataFromErrorCode(
@@ -2257,6 +2260,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
+		ClientMutationID:      fence.clientMutationID,
 		OldProvider:           commitPrev.ID(),
 		OldModel:              commitPrev.Model(),
 		NewProvider:           nextProfile.ID(),

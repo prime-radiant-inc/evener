@@ -543,6 +543,7 @@ type SessionNameChangedData struct {
 // and SupportsReasoning describe the NEW profile so pickers re-key without a
 // separate model/list round trip.
 type ModelChangedData struct {
+	ClientMutationID      string   `json:"client_mutation_id,omitempty"`
 	OldProvider           string   `json:"old_provider"`
 	OldModel              string   `json:"old_model"`
 	NewProvider           string   `json:"new_provider"`

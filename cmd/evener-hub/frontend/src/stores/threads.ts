@@ -661,6 +661,13 @@ function matchingModelSwitchTarget(
   return match;
 }
 
+function modelSwitchTargetByMutationID(
+  requests: ModelSwitchRequestState,
+  clientMutationId: string,
+): ModelSwitchTarget | undefined {
+  return requests.unsettled.get(clientMutationId) ?? requests.pending.get(clientMutationId);
+}
+
 function modelSwitchIdentitiesEqual(left: ModelSwitchIdentity, right: ModelSwitchIdentity): boolean {
   if (left.modelProvider === right.modelProvider && left.model === right.model) return true;
   if (left.modelProvider === left.model) return left.model === `${right.modelProvider}/${right.model}`;
@@ -678,10 +685,13 @@ export function acceptedModelSwitchMatchesModel(accepted: AcceptedModelSwitch, m
 function settleModelSwitchAuthority(
   ref: string,
   targets: readonly ModelSwitchIdentity[],
+  clientMutationId?: string,
 ): ModelSwitchTarget | undefined {
   const requests = modelSwitchRequests.get(ref);
   if (!requests) return undefined;
-  const authority = matchingModelSwitchTarget(requests, targets);
+  const authority = clientMutationId
+    ? modelSwitchTargetByMutationID(requests, clientMutationId)
+    : matchingModelSwitchTarget(requests, targets);
   if (authority) {
     settleModelSwitchThrough(requests, authority.sequence);
     return authority;
@@ -694,10 +704,12 @@ function reconcileAcceptedModelSwitchAuthority(
   authorityModels: readonly ThreadModel[],
   current: ReadonlyMap<string, AcceptedModelSwitch>,
   source: "modelPublication" | "modelChangedNotification",
+  clientMutationId?: string,
 ): ReadonlyMap<string, AcceptedModelSwitch> {
   const authority = settleModelSwitchAuthority(
     ref,
     authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
+    clientMutationId,
   );
   const accepted = current.get(ref);
   if (!accepted) return current;
@@ -730,8 +742,9 @@ function reconcileAcceptedModelSwitchAuthority(
 
 function reconcileModelSwitchRejection(ref: string, clientMutationId: string): void {
   const requests = modelSwitchRequests.get(ref);
-  const rejected = requests?.unsettled.get(clientMutationId) ?? requests?.pending.get(clientMutationId);
-  if (!requests || !rejected) return;
+  if (!requests) return;
+  const rejected = modelSwitchTargetByMutationID(requests, clientMutationId);
+  if (!rejected) return;
   settleModelSwitchThrough(requests, rejected.sequence);
   const current = threadsStore.getState().acceptedModelSwitches;
   const accepted = current.get(ref);
@@ -6720,6 +6733,7 @@ function handleNotification(n: AnyNotification): void {
         [{ ...previous, modelProvider: n.params.modelProvider, model: n.params.model }],
         current,
         "modelChangedNotification",
+        n.params.clientMutationId,
       );
       if (next !== current) threadsStore.setState({ acceptedModelSwitches: next });
     }

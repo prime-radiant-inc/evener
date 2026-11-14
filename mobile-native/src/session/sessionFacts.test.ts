@@ -1,4 +1,4 @@
-import type { ModelDescriptor, ThreadCapabilities } from "@evener/appwire-client";
+import { hydrateThread, type ModelDescriptor, type Thread, type ThreadCapabilities } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import {
 	accessFacts,
@@ -235,6 +235,30 @@ describe("the model chip (spec 8.5)", () => {
 				[{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }],
 			),
 		).toBe("DeepSeek 4.1 Flash · XHigh");
+	});
+	it("names a profile-bearing snapshot by its provider and model pair", () => {
+		const thread = {
+			id: "thread-1",
+			sessionId: "session-1",
+			name: "",
+			status: { type: "active" },
+			modelProvider: "gpt-5.5",
+			cwd: "/work",
+			createdAt: 0,
+			updatedAt: 0,
+			evener: {
+				ref: "local:session-1",
+				profile: "openai",
+				capabilities: {},
+				queue: { revision: 0 },
+			},
+		} as unknown as Thread;
+		const session = hydrateThread({ thread }, "local:session-1", 0);
+		const profileCatalog = [{ provider: "openai", model: "gpt-5.5", displayName: "GPT-5.5" }];
+
+		expect(session.modelProvider).toBe("openai");
+		expect(session.model).toBe("gpt-5.5");
+		expect(modelChipLabel(session, profileCatalog, "Stale Board model")).toBe("GPT-5.5");
 	});
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
 		expect(

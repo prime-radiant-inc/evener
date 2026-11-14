@@ -409,7 +409,11 @@ test("an earlier model change after the newer response preserves the newer accep
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());
-  fake.on("thread/model/set", () => codedModelSetResponse());
+  let earlierMutationId: string | undefined;
+  fake.on("thread/model/set", (params) => {
+    if (params.model === "gpt-5.5") earlierMutationId = params.clientMutationId;
+    return codedModelSetResponse();
+  });
 
   const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
   const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
@@ -424,6 +428,7 @@ test("an earlier model change after the newer response preserves the newer accep
       params: {
         threadId: "thr_a",
         ref: "ref_a",
+        clientMutationId: earlierMutationId,
         modelProvider: "openai",
         model: "gpt-5.5",
         reasoningEffortLevels: [],
@@ -436,6 +441,39 @@ test("an earlier model change after the newer response preserves the newer accep
   );
 
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
+});
+
+test("another tab superseding the queued model with an older local target clears the newer local pick", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await pickModel(user, "opus", /claude-opus-5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5"));
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        clientMutationId: "another-tab-pick",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+    });
+  });
+  view.rerender(
+    <ModelSwitch sessionRef="ref_a" model={{ ...activeModel, modelProvider: "openai", model: "gpt-5.5" }} />,
+  );
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
 });
 
 test("reconnect hydration preserves a queued model selected after a live model change", async () => {

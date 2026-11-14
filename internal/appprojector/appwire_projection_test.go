@@ -63,6 +63,7 @@ func TestProject_ModelChanged(t *testing.T) {
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventModelChanged,
 		Data: events.ModelChangedData{
+			ClientMutationID:      "model-pick-a",
 			OldProvider:           "openai",
 			OldModel:              "gpt-5.4",
 			NewProvider:           "anthropic",
@@ -89,6 +90,9 @@ func TestProject_ModelChanged(t *testing.T) {
 	}
 	if params.ModelProvider != "anthropic" || params.Model != "claude-opus-4-6" {
 		t.Fatalf("params modelProvider/model = %s/%s, want anthropic/claude-opus-4-6", params.ModelProvider, params.Model)
+	}
+	if params.ClientMutationID != "model-pick-a" {
+		t.Fatalf("params ClientMutationID = %q, want the initiating request", params.ClientMutationID)
 	}
 	if !params.SupportsReasoning || len(params.ReasoningEffortLevels) != 2 {
 		t.Fatalf("params = %+v, want SupportsReasoning=true and 2 effort levels", params)

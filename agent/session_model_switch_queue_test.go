@@ -554,7 +554,7 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 		func(llm.Request) llm.Response {
 			// The queued pick: mid-turn, so it stores and the idle tail
 			// applies it.
-			if err := s.SetModel("gpt-5.4"); err != nil {
+			if err := s.SetModelWithMutationID("gpt-5.4", "model-pick-a"); err != nil {
 				t.Errorf("queued pick: %v", err)
 			}
 			return agenttest.CommunicateResponse(true, "first turn done")
@@ -585,7 +585,7 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 		// Release the older application first: its publication owns the lock,
 		// and the newer pick's application waits behind it.
 		close(releaseAPublish)
-		newerDone <- s.SetModel("gpt-4.1-mini")
+		newerDone <- s.SetModelWithMutationID("gpt-4.1-mini", "model-pick-b")
 	}()
 
 	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
@@ -596,15 +596,17 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 	}
 	stop()
 
-	var order []string
+	var order []events.ModelChangedData
 	for _, ev := range *evs {
 		if d, ok := ev.Data.(events.ModelChangedData); ok {
-			order = append(order, d.NewModel)
+			order = append(order, d)
 		}
 	}
-	want := []string{"gpt-5.4", "gpt-4.1-mini"}
-	if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
-		t.Fatalf("model-changed publications = %v, want the committed switch's publication to land before the newer pick's (%v)", order, want)
+	if len(order) != 2 || order[0].NewModel != "gpt-5.4" || order[1].NewModel != "gpt-4.1-mini" {
+		t.Fatalf("model-changed publications = %+v, want the committed switch's publication to land before the newer pick's", order)
+	}
+	if order[0].ClientMutationID != "model-pick-a" || order[1].ClientMutationID != "model-pick-b" {
+		t.Fatalf("model-changed mutation ids = %q, %q, want each committed switch's initiating request", order[0].ClientMutationID, order[1].ClientMutationID)
 	}
 	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
 		t.Fatalf("profile model = %q, want the newer pick (%q)", got, "gpt-4.1-mini")

@@ -393,11 +393,13 @@ the hub keeps its authoritative model label rather than displaying a choice that
 it cannot reconcile if deferred validation rejects it.
 
 The thread store retains an accepted choice across pane remounts. It reconciles
-responses and deferred rejections by request identity, and authoritative changes
-by model. A `thread/model/changed` update that matches an earlier request settles
-that request without hiding a newer choice whose provider check is still running. A coded
-rejection retires its exact request and earlier unsettled picks without clearing
-a newer accepted choice. A refused call leaves the prior label intact. A thread
+responses, successful changes and deferred rejections by request identity. A
+`thread/model/changed` update from a current daemon carries the initiating
+`clientMutationId`, so another tab's same-model pick supersedes this tab's queued
+choice while an earlier change from this tab does not hide its newer choice. An
+older daemon's notification falls back to model matching. A coded rejection
+retires its exact request and earlier unsettled picks without clearing a newer
+accepted choice. A refused call leaves the prior label intact. A thread
 snapshot from a new daemon boot restores the authoritative label if the daemon
 exited before applying the queued choice. Closing the desktop picker restores
 focus to its trigger, including after a selection.

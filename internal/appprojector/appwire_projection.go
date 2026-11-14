@@ -290,6 +290,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
 			ThreadID:              p.threadID,
 			Ref:                   p.ref,
+			ClientMutationID:      data.ClientMutationID,
 			ModelProvider:         data.NewProvider,
 			Model:                 data.NewModel,
 			ReasoningEffortLevels: data.ReasoningEffortLevels,

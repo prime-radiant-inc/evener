@@ -4884,6 +4884,7 @@ export interface ThreadListResponse {
 export interface ThreadModelChangedParams {
   threadId: string;
   ref: string;
+  clientMutationId?: string;
   modelProvider: string;
   model: string;
   reasoningEffortLevels?: string[];

@@ -276,6 +276,9 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	if params.ModelProvider != "fake" {
 		t.Fatalf("thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "fake")
 	}
+	if params.ClientMutationID != "e2e-model-pick" {
+		t.Fatalf("thread/model/changed ClientMutationID = %q, want the initiating request", params.ClientMutationID)
+	}
 
 	round2.RespondToolCall("communicate", communicateArgs("second turn done"))
 

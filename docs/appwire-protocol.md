@@ -4739,6 +4739,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `threadId` | string |  |  |
 | `ref` | string |  |  |
+| `clientMutationId` | string | yes |  |
 | `modelProvider` | string |  |  |
 | `model` | string |  |  |
 | `reasoningEffortLevels` | []string | yes |  |

@@ -1177,6 +1177,7 @@ type ThreadNameChangedParams struct {
 type ThreadModelChangedParams struct {
 	ThreadID              string   `json:"threadId"`
 	Ref                   string   `json:"ref"`
+	ClientMutationID      string   `json:"clientMutationId,omitempty"`
 	ModelProvider         string   `json:"modelProvider"`
 	Model                 string   `json:"model"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`

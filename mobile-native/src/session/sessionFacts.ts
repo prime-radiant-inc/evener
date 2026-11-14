@@ -154,26 +154,35 @@ export function effortName(level: string): string {
  * same name model/list gives), and only then the id. Right after a switch the
  * row may lag until the fleet re-reads it; that only shows while the catalog
  * is away too. */
-function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | undefined, rowName?: string): string {
-	const model = modelProvider.slice(modelProvider.indexOf("/") + 1);
+function modelName(
+	modelProvider: string,
+	model: string | undefined,
+	catalog: readonly ModelDescriptor[] | undefined,
+	rowName?: string,
+): string {
+	const modelRef = model ?? modelProvider;
+	const modelId = modelRef.slice(modelRef.indexOf("/") + 1);
+	const qualifiedModel =
+		model === undefined || modelProvider.includes("/") ? modelProvider : `${modelProvider}/${model}`;
 	// The exact provider instance first. A gateway and its upstream can name
 	// the same model under different provider keys, and the display name
 	// belongs to the model, so the bare id still finds it (#2988).
 	const match =
-		catalog?.find((entry) => `${entry.provider}/${entry.model}` === modelProvider) ??
-		catalog?.find((entry) => sameModel(entry.model, modelProvider));
-	return match?.displayName || rowName || model || "Model";
+		catalog?.find((entry) => `${entry.provider}/${entry.model}` === qualifiedModel) ??
+		catalog?.find((entry) => sameModel(entry.model, modelId));
+	return match?.displayName || rowName || modelId || "Model";
 }
 
 /** The composer's chip: the model's name, then its effort when the model has
  * levels. */
 export function modelChipLabel(
-	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning">,
+	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning"> &
+		Partial<Pick<ThreadModel, "model">>,
 	catalog: readonly ModelDescriptor[] | undefined,
 	/** The session's Board row's model_name, when the fleet has the row. */
 	rowName?: string,
 ): string {
-	const name = modelName(session.modelProvider, catalog, rowName);
+	const name = modelName(session.modelProvider, session.model, catalog, rowName);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
 }
@@ -195,7 +204,7 @@ export function canOpenModelSheet(
 export function visionModelLabel(visionModel: string, catalog: readonly ModelDescriptor[] | undefined): string {
 	if (visionModel === "off") return "Off";
 	if (visionModel === "") return "Session model";
-	return modelName(visionModel, catalog);
+	return modelName(visionModel, undefined, catalog);
 }
 
 /** The Notes & links row: "Your note · agent note · 3 links", naming only the
