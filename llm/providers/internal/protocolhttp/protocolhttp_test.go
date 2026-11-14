@@ -84,7 +84,7 @@ func (s *captureSink) records() []apilog.APIAttemptRecord {
 }
 
 func TestPrepareRunsPruneConstantsAuthPrepareInOrder(t *testing.T) {
-	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
 	registerTestSchemes()
 	res := testRes("https://api.example.test/v1", "test-runner-preparer")
 	body := map[string]any{"metadata": map[string]string{"a": "b"}, "store": false, "reasoning": map[string]any{"effort": "high"}}
@@ -329,7 +329,7 @@ func TestStreamPublishesStartThenHandsOff(t *testing.T) {
 }
 
 func TestCompleteViaStreamAccumulates(t *testing.T) {
-	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
 	open := func(context.Context) (llm.Stream, error) {
 		s := llm.NewChanStream(func() {})
 		go func() {

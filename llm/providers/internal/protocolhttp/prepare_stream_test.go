@@ -99,7 +99,7 @@ func TestPrepareSurfacesEachAssemblyFailure(t *testing.T) {
 // it without decoding, the shape listings rely on when they hand the body to
 // the caller directly.
 func TestDoWithoutFinishAcceptsA2xxBody(t *testing.T) {
-	// Not parallel: registerTestSchemes swaps the package's preparerSawAuth seam; RegisterAuthenticator swaps the package's authenticators seam.
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator swaps the package's authenticators seam.
 	registerTestSchemes()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"r1"}`))
