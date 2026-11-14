@@ -85,9 +85,11 @@ func TestDeveloperToolRootsNeverWidenTheWriteSurface(t *testing.T) {
 }
 
 // TestDeveloperToolRootsAreRestrictedModeOnly: the other modes' spawned layer
-// already reads anywhere-minus-the-denylist, so the grant must add nothing there
-// (a stray root list would turn ReadAnywhere into a roots-only surface for a
-// backend that consults ReadRoots).
+// already reads anywhere-minus-the-denylist, so this grant must add nothing
+// there (a stray root list would turn ReadAnywhere into a roots-only surface
+// for a backend that consults ReadRoots). The list is not empty by mode alone:
+// the session's InfraReadRoots (#6208) ride in Spawned.ReadRoots in these
+// modes too, but this policy configures none, so it must still resolve empty.
 func TestDeveloperToolRootsAreRestrictedModeOnly(t *testing.T) {
 	t.Parallel()
 	xcode, clt := developerToolDirs(t)

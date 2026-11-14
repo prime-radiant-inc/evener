@@ -368,7 +368,7 @@ func TestBuildBwrapArgvReadOnlySessionTmp(t *testing.T) {
 // stops that from regressing.
 func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	home := t.TempDir()
-	infra := t.TempDir()
+	infra := tmpInfraRoot(t)
 	cwd := MaterializeWorkspace(t, MainCheckout)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
@@ -381,6 +381,36 @@ func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	}
 	if seqIndex(args, "--bind", infra, infra) >= 0 {
 		t.Errorf("hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", infra, args)
+	}
+}
+
+// TestBuildBwrapArgvRebindsInfraReadRootsUnderPrivateTmpInReadAnywhereModes pins
+// the sandbox-monotonicity half of the 2026-08-06 ruling for #6208: a configured
+// hook/MCP-server directory under /tmp is executable under ModeRestricted, but
+// under ModeReadOnly and ModeWorkspaceWrite the private --tmpfs /tmp shadowed it
+// even though those modes read anywhere. The re-bind candidates come from
+// Spawned.ReadRoots, so the ReadAnywhere modes must carry the InfraReadRoots
+// grant too, or the infra root vanishes inside the sandbox.
+func TestBuildBwrapArgvRebindsInfraReadRootsUnderPrivateTmpInReadAnywhereModes(t *testing.T) {
+	home := t.TempDir()
+	infra := tmpInfraRoot(t)
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	net := true
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite} {
+		rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
+		if err != nil {
+			t.Fatalf("Resolve(%v): %v", mode, err)
+		}
+		if !slices.Contains(rp.Spawned.ReadRoots, infra) {
+			t.Errorf("%v: spawned read roots must carry the hook/MCP grant %q (masked paths are filtered later), got %v", mode, infra, rp.Spawned.ReadRoots)
+		}
+		args := buildBwrapArgv(rp, t.TempDir(), cwd)
+		if seqIndex(args, "--ro-bind", infra, infra) < 0 {
+			t.Errorf("%v: hook/MCP root %q under /tmp must be re-bound read-only, got argv:\n%v", mode, infra, args)
+		}
+		if seqIndex(args, "--bind", infra, infra) >= 0 {
+			t.Errorf("%v: hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", mode, infra, args)
+		}
 	}
 }
 
