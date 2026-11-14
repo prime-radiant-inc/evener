@@ -693,6 +693,7 @@ function reconcileAcceptedModelSwitchAuthority(
   ref: string,
   authorityModels: readonly ThreadModel[],
   current: ReadonlyMap<string, AcceptedModelSwitch>,
+  source: "modelPublication" | "modelChangedNotification",
 ): ReadonlyMap<string, AcceptedModelSwitch> {
   const authority = settleModelSwitchAuthority(
     ref,
@@ -702,7 +703,11 @@ function reconcileAcceptedModelSwitchAuthority(
   if (!accepted) return current;
   const identityInvalidated = authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted));
   const modelInvalidated = authorityModels.some((model) => !acceptedModelSwitchMatchesModel(accepted, model));
-  if (identityInvalidated || (modelInvalidated && authority === undefined)) {
+  // An unmatched live notification is another client's final authority, even
+  // when it repeats the model this client saw before its accepted pick. An
+  // unchanged model publication may be a reconnect snapshot, so it preserves
+  // that pick until its own change or rejection arrives.
+  if (identityInvalidated || (authority === undefined && (modelInvalidated || source === "modelChangedNotification"))) {
     const requests = modelSwitchRequests.get(ref);
     if (requests) settleModelSwitchThrough(requests, accepted.sequence);
     const next = new Map(current);
@@ -1698,6 +1703,7 @@ function putThreadModels(
     ref,
     authorityModels,
     state.acceptedModelSwitches,
+    "modelPublication",
   );
   if (acceptedModelSwitches !== state.acceptedModelSwitches) patch.acceptedModelSwitches = acceptedModelSwitches;
   if (!threadModel && !watchedModel) return;
@@ -6713,6 +6719,7 @@ function handleNotification(n: AnyNotification): void {
         n.params.ref,
         [{ ...previous, modelProvider: n.params.modelProvider, model: n.params.model }],
         current,
+        "modelChangedNotification",
       );
       if (next !== current) threadsStore.setState({ acceptedModelSwitches: next });
     }
