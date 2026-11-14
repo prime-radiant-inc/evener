@@ -142,6 +142,12 @@ test("the current match is found again by its message, whatever key that message
   // A streamed reply being recorded keeps its key and takes a new item.
   const recorded = hitsOf(reply("m1", "needle streamed", {}, "round:r2"));
   expect(indexOfMatch(recorded, { key: "round:r2", itemId: "stream:r2/0:agentMessage" })).toBe(0);
+  // A stream of several text runs is recorded as several messages, and only
+  // the first keeps the round's key. A match in a later run is found by its round.
+  const laterRun = hitsOf(reply("m3", "needle in the second run", { roundId: "r2" }));
+  expect(indexOfMatch(laterRun, { key: "round:r2", itemId: "stream:r2/0:agentMessage", roundId: "r2" })).toBe(0);
+  const otherRound = hitsOf(reply("m4", "needle elsewhere", { roundId: "r9" }));
+  expect(indexOfMatch(otherRound, { key: "round:r2", itemId: "stream:r2/0:agentMessage", roundId: "r2" })).toBe(-1);
   // A communicate preview being recorded takes a new item and a new key; its call says which.
   const delivered = hitsOf(
     reply("other", "needle other", { callId: "c0" }),

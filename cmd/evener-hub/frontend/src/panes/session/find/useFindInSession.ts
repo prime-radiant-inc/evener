@@ -78,6 +78,7 @@ interface FindState {
    * says which message it is. Both null with no current match. */
   key: string | null;
   item: string | null;
+  round: string | null;
   /** What older history is being read for, if anything: the next match
    * older than the current one, or the current match itself after a refresh
    * or resync dropped the page that held it. */
@@ -101,10 +102,10 @@ function isFocusable(target: unknown): target is HTMLElement {
   return isElement(target) && typeof (target as HTMLElement).focus === "function";
 }
 
-const NO_MATCH = { key: null, item: null } as const;
+const NO_MATCH = { key: null, item: null, round: null } as const;
 
-function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item"> {
-  return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId };
+function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item" | "round"> {
+  return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId, round: hit.roundId ?? null };
 }
 
 export function useFindInSession({
@@ -166,7 +167,7 @@ export function useFindInSession({
   const currentIndex =
     find == null || find.key === null || find.item === null
       ? -1
-      : indexOfMatch(hits, { key: find.key, itemId: find.item });
+      : indexOfMatch(hits, { key: find.key, itemId: find.item, roundId: find.round });
   const current = currentIndex < 0 ? null : (hits[currentIndex] ?? null);
   const historyEnded = olderPageKey === null;
 
@@ -220,8 +221,8 @@ export function useFindInSession({
   const step = useCallback(
     (direction: 1 | -1) => {
       if (find === null || needle === "") return;
-      const from = currentIndex < 0 ? (direction === -1 ? hits.length : -1) : currentIndex;
-      const next = hits[from + direction];
+      // With no match current, either direction starts at the newest.
+      const next = currentIndex < 0 ? hits.at(-1) : hits[currentIndex + direction];
       if (next) setState({ ...find, ...matchOf(next), seek: null });
       // Nothing older is loaded: look in older history.
       else if (direction === -1 && !historyEnded) setState({ ...find, seek: "older" });
@@ -234,11 +235,15 @@ export function useFindInSession({
   // Find then reads back to it rather than losing the reader's place. A match
   // whose message is still loaded but no longer holds the words is simply no
   // longer current.
+  // What the last landing was for, so the same match is not landed on twice.
+  const landed = useRef<{ item: string; needle: string; epoch: number } | null>(null);
   const lost = find !== null && find.key !== null && current === null;
   useEffect(() => {
     if (find === null) return;
     if (current !== null && (current.key !== find.key || current.itemId !== find.item)) {
-      // Renamed or recorded: follow the message to what it goes by now.
+      // Renamed or recorded: follow the message to what it goes by now. It is
+      // the same match, so no landing is owed for it.
+      if (landed.current?.item === find.item) landed.current.item = current.itemId;
       setState({ ...find, ...matchOf(current), seek: find.seek === "restore" ? null : find.seek });
       return;
     }
@@ -323,14 +328,23 @@ export function useFindInSession({
     if (port.scrollTop !== before) markGesture(true, before);
   };
 
-  // A landing is owed for a new current match and for new words inside the
-  // same entry (the place in it moves). Rows prepending above it are not one.
+  // A landing is owed for a new current match, for one named again by a
+  // caller, and for new words inside the same message (the place in it
+  // moves). A match that only goes by a new key or item is the same match:
+  // the reader may have scrolled on, and is not pulled back to it. Rows
+  // prepending above it are not a landing either.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the dependencies are the landing's causes, listed above
   useEffect(() => {
     if (current === null) {
       settle.current = null;
+      landed.current = null;
       return;
     }
+    const before = landed.current;
+    if (before !== null && before.item === current.itemId && before.needle === needle && before.epoch === jumpEpoch) {
+      return;
+    }
+    landed.current = { item: current.itemId, needle, epoch: jumpEpoch };
     // The reader chose this place, in view or not: output arriving later
     // must not carry them off it.
     holdPosition();
@@ -347,7 +361,7 @@ export function useFindInSession({
       if (settle.current !== null) settleFrame.current = requestAnimationFrame(tick);
     };
     if (settleFrame.current === null) settleFrame.current = requestAnimationFrame(tick);
-  }, [currentKey, jumpEpoch, needle]);
+  }, [currentKey, current?.itemId, jumpEpoch, needle]);
   // Marks are document state, not React output, so they follow what is
   // mounted: the virtual list mounting a row, a fold opening, a streamed
   // reply growing. One pass per frame at most; closing Find, or this

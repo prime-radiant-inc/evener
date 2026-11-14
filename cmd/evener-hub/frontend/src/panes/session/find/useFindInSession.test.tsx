@@ -685,6 +685,11 @@ test("the current match stays on its message when loading older history renames 
   expect(document.querySelector(`[${FIND_CURRENT_ATTRIBUTE}]`)?.textContent).toContain("a beta needle");
 
   // The reader pages older themselves: the earlier reply arrives and matches too.
+  await waitFor(() => expect(holds).toBeGreaterThan(0));
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  const landings = holds;
   fireEvent.click(screen.getByTestId("reader-older"));
   await waitFor(() => expect(state()).toMatchObject({ count: 2 }));
   // Still on the newest match, the same message, under whatever key it has now.
@@ -692,6 +697,13 @@ test("the current match stays on its message when loading older history renames 
   await waitFor(() =>
     expect(document.querySelector(`[${FIND_CURRENT_ATTRIBUTE}]`)?.textContent).toContain("a beta needle"),
   );
+  // The reader asked for older history, not for the match again: its new
+  // key is not a new landing, so nothing pulls them back to it.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  expect(holds).toBe(landings);
+  expect(jumps).toEqual([]);
 });
 
 test("a match whose page a refresh drops is read back to, even when a later reply takes over its key", async () => {
@@ -781,4 +793,20 @@ test("landing on a match already in view at the live end moves the reader just o
     await new Promise((resolve) => setTimeout(resolve, 80));
   });
   expect(port.scrollTop).toBe(rested);
+});
+
+test("with no match current, stepping in either direction starts at the newest match", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle one"), turn("t2", "needle two"), turn("t3", "needle three")], []);
+  await mount(client);
+  openFind();
+  type("needle");
+  older();
+  await waitFor(() => expect(state()).toMatchObject({ position: 2, count: 3 }));
+
+  fireEvent.click(screen.getByTestId("jump-latest"));
+  await waitFor(() => expect(state()).toMatchObject({ position: 0, count: 3 }));
+  newer();
+  await waitFor(() => expect(state()).toMatchObject({ position: 1, count: 3 }));
+  expect(currentAnchor()).toBe("t3-item");
 });

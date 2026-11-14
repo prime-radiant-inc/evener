@@ -27,6 +27,8 @@ export interface FindHit {
   readonly rowIndex: number;
   /** The call that delivered the message, for one said through a tool call. */
   readonly callId?: string;
+  /** The model round the message came from, when it has one. */
+  readonly roundId?: string;
 }
 
 // A reply still arriving is an overlay item until it is recorded: a streamed
@@ -43,13 +45,19 @@ function isOverlay(itemId: string): boolean {
  * by its source item; its display key is not its identity, because a round's
  * first loaded reply takes the round's key and so the key passes between
  * replies as the loaded window changes. The one time the item itself changes
- * is a reply being recorded: a streamed reply keeps its key, and a previewed
- * one is the recorded message of the same call. */
-export function indexOfMatch(hits: readonly FindHit[], chosen: { key: string; itemId: string }): number {
+ * is a reply being recorded: a streamed reply keeps its key, or, for a later
+ * text run of the stream, only its round; a previewed one is the recorded
+ * message of the same call. */
+export function indexOfMatch(
+  hits: readonly FindHit[],
+  chosen: { key: string; itemId: string; roundId?: string | null },
+): number {
   const same = hits.findIndex((hit) => hit.itemId === chosen.itemId);
   if (same >= 0) return same;
   if (chosen.itemId.startsWith(STREAM)) {
-    return hits.findIndex((hit) => hit.key === chosen.key && !isOverlay(hit.itemId));
+    const keyed = hits.findIndex((hit) => hit.key === chosen.key && !isOverlay(hit.itemId));
+    if (keyed >= 0 || !chosen.roundId) return keyed;
+    return hits.findIndex((hit) => hit.roundId === chosen.roundId && !isOverlay(hit.itemId));
   }
   if (chosen.itemId.startsWith(PREVIEW)) {
     const callId = chosen.itemId.slice(PREVIEW.length);
@@ -86,8 +94,14 @@ export function findHits(rows: readonly TranscriptBodyRow[], query: string): Fin
     if (row.kind !== "turn") return;
     for (const entry of row.turn.entries) {
       if (!matches(entry, needle)) continue;
-      const found = { key: entryDisplayKey(entry), itemId: entry.item.id, rowIndex };
-      hits.push(entry.item.callId ? { ...found, callId: entry.item.callId } : found);
+      const { id, callId, roundId } = entry.item;
+      hits.push({
+        key: entryDisplayKey(entry),
+        itemId: id,
+        rowIndex,
+        ...(callId ? { callId } : {}),
+        ...(roundId ? { roundId } : {}),
+      });
     }
   });
   return hits;
