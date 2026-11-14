@@ -35,6 +35,7 @@ import {
   isTurnActive,
   sessionActionError,
 } from "@evener/appwire-client";
+import type { PendingMessage } from "@evener/appwire-client/state/mutation";
 import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
@@ -63,6 +64,7 @@ import {
   useBlockedMessageEntries,
   useCanceledMessageEntries,
   useEditablePendingMutationIds,
+  usePendingMessages,
   usePendingTurnEntries,
   useRecoveryMessageEntries,
 } from "../../composer/queue/pendingTurnsStore";
@@ -234,6 +236,24 @@ export function PendingRowStack({
     (record) => record.state === "submitting" && !reflectedIds.has(record.clientMutationId),
   );
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
+  // The merged pending-message projection is the one place that joins a
+  // daemon queue row with the durable family that owns it: the queue wire
+  // carries no image field (its preview speaks the [image] grammar only
+  // for a textless entry), so a queued text-and-image row arrives with no
+  // image trace the row itself can read. The projection keeps the family's
+  // real imageCount - and the bytes, when this client holds them - so the
+  // queue rows below can refuse the image-destroying Edit and render the
+  // gallery the wire could not describe.
+  const mergedPendingRows = usePendingMessages(sessionRef);
+  const mergedRowByQueueEntryId = useMemo(() => {
+    const byEntryId = new Map<string, PendingMessage>();
+    for (const row of mergedPendingRows) {
+      for (const entryId of row.queueEntryIds) byEntryId.set(entryId, row);
+      if (row.queueEntryId) byEntryId.set(row.queueEntryId, row);
+    }
+    return byEntryId;
+  }, [mergedPendingRows]);
+  const mergedRowByWireId = useMemo(() => new Map(mergedPendingRows.map((row) => [row.id, row])), [mergedPendingRows]);
   // The caption reads the same clock the liveness line does: Session's 3s
   // SessionNowContext tick, so no per-second machinery re-renders the
   // virtualized row.
@@ -555,16 +575,25 @@ export function PendingRowStack({
         // The optimistic twin owns the row while this client's durable
         // record reconciles against the daemon's queue.
         if (pendingTexts.has(entryPreview) && entryId === undefined) return null;
+        // The merged projection row that owns this queue entry, when one
+        // does: its family holds what the wire dropped (image counts, and
+        // the bytes when this client submitted them).
+        const mutationId = queue?.clientMutationIds?.[index];
+        const mergedRow =
+          (entryId !== undefined ? mergedRowByQueueEntryId.get(entryId) : undefined) ??
+          (mutationId !== undefined ? mergedRowByWireId.get(mutationId) : undefined);
         const busy = entryId !== undefined && busyEntryIds.has(entryId);
         const actionsAvailable = hasIds && entryId !== undefined;
         // The restore seam is text-and-selections only: the queue projection
         // carries no image bytes, so an edit's cancel would destroy the row's
         // images permanently. Any image-bearing row refuses Edit for that
         // reason - not just a textless image-only row, which a selection
-        // would otherwise make look editable. The core's own queue-row
-        // reader carries the plain-text caveat: a literal "[image]" message
-        // is not an image row.
-        const carriesImages = queue !== null && queueEntryAt(queue, index).imageCount > 0;
+        // would otherwise make look editable. The wire's preview speaks the
+        // image grammar only for a textless entry, so the row's own reading
+        // joins the merged projection's: the durable family that owns this
+        // queue entry still knows the real image count the wire dropped.
+        const carriesImages =
+          (queue !== null && queueEntryAt(queue, index).imageCount > 0) || (mergedRow?.imageCount ?? 0) > 0;
         const imageOnly =
           hasTexts &&
           (fullText ?? "").trim() === "" &&
@@ -623,6 +652,9 @@ export function PendingRowStack({
                 turnId: "",
                 type: "userMessage",
                 text: [fullText ?? previewText, namedMarkers].filter(Boolean).join(" "),
+                // The gallery this client can still prove: the merged row's
+                // family holds the bytes the queue wire never carries.
+                ...(mergedRow !== undefined && mergedRow.images.length > 0 ? { images: mergedRow.images } : {}),
               }}
               opensExchange={false}
               provisional="Queued for the next turn"
@@ -822,10 +854,21 @@ function RetryButton({
   // Retry is offered only when retryBlockedMutation can actually act, and
   // it acts on the ROW's own target - which for a retargeted row is not
   // this pane's ref. A blocked target keeps Retry disabled exactly as its
-  // press would refuse.
+  // press would refuse. The busy state is a different verdict: transient
+  // (this press's own in-flight window), so it refuses through
+  // aria-disabled instead - a native disabled drops keyboard focus when
+  // the label flips to "Retrying…", stranding a keyboard reader whose
+  // retry then failed with no control to re-press. The widget swallows
+  // the click itself.
   const retryBlocked = useRetryBlockedForTarget(record.targetRef);
   return (
-    <Button size="sm" variant="quiet" disabled={busy || retryBlocked} onClick={onRetry}>
+    <Button
+      size="sm"
+      variant="quiet"
+      disabled={retryBlocked}
+      aria-disabled={busy ? "true" : undefined}
+      onClick={onRetry}
+    >
       {busy ? "Retrying…" : "Retry"}
     </Button>
   );

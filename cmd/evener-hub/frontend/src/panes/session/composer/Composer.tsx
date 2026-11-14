@@ -700,9 +700,15 @@ function ComposerWithSubmission({
     if (!request || request.id === consumedQueueRowRestoreIdRef.current) return;
     consumedQueueRowRestoreIdRef.current = request.id;
     if (request.recoveryRecord) {
-      void Promise.resolve(actions.queueRowActions.onEditRecovery?.(request.recoveryRecord)).finally(() =>
-        consumeQueueRowRestore(ref),
-      );
+      void Promise.resolve(actions.queueRowActions.onEditRecovery?.(request.recoveryRecord))
+        .then(() => {
+          // The retired strip's callback focused the editor after its
+          // activation; an edit that restores content without focus leaves
+          // typing ineffective until the user clicks the composer. The
+          // outbox-record branch below carries the same contract.
+          editorRef.current?.focus();
+        })
+        .finally(() => consumeQueueRowRestore(ref));
     } else if (request.outboxRecord) {
       // A durable outbox row's Edit: the retired strip's own sequence, run
       // where its gates live - the encoding gate and the recovery-operation

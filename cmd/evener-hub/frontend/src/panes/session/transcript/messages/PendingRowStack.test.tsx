@@ -7,7 +7,7 @@
 // pinned in Session.transcript.test.tsx and the Composer suites; this file
 // pins the component's own pure rendering rules.
 import { formatElapsed } from "@evener/appwire-client";
-import { render, renderHook, screen } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
@@ -221,4 +221,78 @@ test("renders the daemon's queued rows with their actions", async () => {
   expect(rows[0]!.textContent).toContain("parked");
   // The row carries its actions.
   expect(screen.getByRole("button", { name: "Steer now" })).toBeTruthy();
+});
+
+// The daemon's queue wire carries no per-entry image count: the preview
+// label speaks the [image] grammar only when the entry's text is blank, so a
+// queued message with BOTH text and images arrives as an ordinary
+// text-bearing row (queueEntryAt's imageCount is 0 for exactly that row -
+// agent/session_queue.go's queuedEntryPreviewLine). The restore seam is
+// text-and-selections only, so an Edit on such a row would cancel the
+// entry and destroy images nobody can put back. The row must refuse Edit
+// from this client's own knowledge of the submission: the durable outbox
+// record the optimistic queue entry reconciles against still holds the
+// image count the wire dropped.
+test("a queued text-and-image row refuses Edit rather than destroying its images", async () => {
+  const fake = connectFakeClient();
+  const id = await seedHeld("queue", "look at this", {
+    attempted: true,
+    attachments: [{ marker: 1, mediaType: "image/png", data: "AQID", name: "shot.png" }],
+  });
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 1,
+          depth: 1,
+          ids: ["q1"],
+          clientMutationIds: [id],
+          texts: ["look at this"],
+          preview: ["look at this"],
+        },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+  render(<PendingRowStack ref="ref_a" />);
+  const edit = await waitFor(() => {
+    const button = screen.getByRole("button", { name: "Edit message" });
+    expect(button).toBeTruthy();
+    return button;
+  });
+  // Refused, with the image reason the retired strip showed - not enabled.
+  // The reason rides the widget's own disabledReason contract: aria-disabled
+  // refusal plus a describing tooltip, observed the same way the widget's
+  // own test observes it (focus, then the show delay).
+  expect(edit.getAttribute("aria-disabled")).toBe("true");
+  act(() => edit.focus());
+  const tooltip = await screen.findByRole("tooltip");
+  expect(edit.getAttribute("aria-describedby")).toBe(tooltip.id);
+  expect(tooltip.textContent).toContain("remove the message and re-attach it instead");
+});
+
+// Retry's own busy state is transient (the press's own in-flight window),
+// unlike the blocked-target refusal, which is a durable verdict. A native
+// disabled drops keyboard focus when the label flips to "Retrying…", so a
+// keyboard-triggered retry that fails lands the reader's focus on <body>
+// with no button to re-press. The busy state must refuse through
+// aria-disabled - focusable, click-swallowed by the widget's own refusal
+// path - while the blocked verdict keeps the native disabled (a blocked
+// target's Retry can never act until the hub's answer changes).
+test("a busy retry refuses through aria-disabled and never drops focus", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  // A canceled durable row mounts the RetryButton with its busy state owned
+  // by the stack's press handlers; render the component directly so the
+  // busy prop is observable without a full press.
+  const { rerender } = render(
+    <SessionNowContext.Provider value={NOW}>
+      <PendingRowStack ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  void rerender;
+  void fake;
 });

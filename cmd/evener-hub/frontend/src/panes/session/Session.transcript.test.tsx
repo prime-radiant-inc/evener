@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnyNotification, Thread } from "@evener/appwire-client";
+import type { AnyNotification, Thread, TurnStartResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1597,6 +1597,118 @@ test("a refused-recovery message renders as a transcript row in the live-edge re
     expect(message!.textContent).toContain("refused at the hub");
   });
   expect(screen.queryByTestId("queue-strip")).toBeNull();
+});
+
+// A refused-recovery row's Edit hands the record to the composer through
+// the restore seam; the outbox-record branch of the same seam focuses the
+// editor after its activation (the retired strip's own contract), but the
+// recovery-record branch restored content without focusing, leaving the
+// restored draft unreachable to the keyboard until the user clicked the
+// composer. The press must end with the editor focused.
+test("a refused-recovery row's Edit focuses the composer's editor", async () => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "refused at the hub" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "refused at the hub" }] },
+    });
+    await storage.transferToRecovery(outbox.clientMutationId, "rejected", "steer is not available");
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const row = await waitFor(() => {
+    const liveEdge = document.querySelector('[data-row-id="live-edge"]');
+    expect(liveEdge).not.toBeNull();
+    return liveEdge as HTMLElement;
+  });
+  const user = userEvent.setup();
+  await user.click(within(row).getByRole("button", { name: "Edit message" }));
+  await waitFor(() => {
+    const editor = document.querySelector('[role="textbox"][aria-label="Message"]');
+    expect(editor).not.toBeNull();
+    expect(document.activeElement).toBe(editor);
+  });
+});
+
+// Retry's own busy state is transient (the press's in-flight window), unlike
+// the blocked-target refusal, which is a durable verdict. A native disabled
+// drops keyboard focus the moment the label flips to "Retrying…", so a
+// keyboard-triggered retry that fails strands the reader's focus on <body>
+// with no control to re-press. The busy state must refuse through
+// aria-disabled - focusable, click swallowed by the widget's own refusal -
+// while the blocked verdict keeps its native disabled (a blocked target's
+// Retry can never act until the hub's answer changes).
+test("a busy retry keeps its keyboard focus through the in-flight window", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      ...liveSurfaceThread(),
+      status: { type: "active" },
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  // Hold the retry's RPC answer open, so the busy window is observable: the
+  // deferred is never resolved - the test observes the in-flight state, not
+  // its outcome.
+  const retryAnswered = deferred<void>();
+  fake.on("turn/start", () => retryAnswered.promise as unknown as TurnStartResponse);
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  await act(async () => {
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "uncertain delivery" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "uncertain delivery" }] },
+    });
+    await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+
+  const retry = await waitFor(() => screen.getByRole("button", { name: "Retry" }));
+  retry.focus();
+  expect(document.activeElement).toBe(retry);
+  const user = userEvent.setup();
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Retrying…" })).toBeTruthy());
+  const busy = screen.getByRole("button", { name: "Retrying…" });
+  // The busy control refuses through aria-disabled, never the native
+  // attribute: focus never left it.
+  expect(busy.getAttribute("aria-disabled")).toBe("true");
+  expect(busy.hasAttribute("disabled")).toBe(false);
+  expect(document.activeElement).toBe(busy);
 });
 
 // The queued row's actions work from its transcript position: pressing
