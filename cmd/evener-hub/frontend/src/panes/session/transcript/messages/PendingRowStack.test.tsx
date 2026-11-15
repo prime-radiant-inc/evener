@@ -453,6 +453,8 @@ test.each(
   render(<PendingRowStack ref="ref_a" />);
   const rows = screen.getAllByTestId("user-message-item");
   expect(rows).toHaveLength(state === "canceled" ? 2 : 1);
+  const queuedRow = rows.find((row) => within(row).queryByRole("button", { name: "Steer now" }) !== null);
+  if (state === "canceled") expect(queuedRow).toBeDefined();
   const localRow =
     state === "submitting"
       ? rows[0]
@@ -467,6 +469,7 @@ test.each(
   });
   await flushPendingTurnsProjectionForTests();
   expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
+  if (state === "canceled") expect(screen.getByTestId("user-message-item")).toBe(queuedRow);
   expect(threadsStore.getState().threads.get("ref_a")?.queue?.ids).toEqual(["q1"]);
   expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
   const removed = new MutationOutboxIndexedDB();
