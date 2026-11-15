@@ -40,21 +40,22 @@ export type PendingRowAction = "edit" | "remove" | "retry" | "steerNow" | "dismi
 
 type PendingRowKind = "recovery" | "queue" | "local";
 
-function rowKind(row: PendingMessage): PendingRowKind {
+export function pendingRowActionOwner(row: PendingMessage): PendingRowKind {
   // A live queue entry owns the actions even when an unedited recovery copy
   // still accompanies it. Activating that recovery's edit would leave the
   // daemon's queued entry behind; an independently edited recovery is its own
   // composition and keeps recovery ownership.
   const editedRecovery = (row.recovery?.compositionRevision ?? 0) > 0;
-  // An unattempted or canceled local promotion inherits its source entry's
-  // queueIndex. That index describes the message this promotion would consume,
-  // not an entry the daemon owns on its behalf, so this must answer before the
-  // queue branch or Remove would cancel the original entry instead of only
-  // discarding the local promotion.
+  // An unattempted, canceled or uncertain local promotion inherits its source
+  // entry's queueIndex. That index names the message it would consume, not an
+  // entry the daemon owns on its behalf. Retry and Remove belong to the local
+  // command, so Remove leaves the original queue entry intact.
   const local = row.outbox;
   if (
     local?.method === "turn/promoteQueuedAsSteer" &&
-    (row.state === "canceled" || (local.attempted === false && row.state !== "delivering"))
+    (local.state === "blockedUnknown" ||
+      row.state === "canceled" ||
+      (local.attempted === false && row.state !== "delivering"))
   )
     return "local";
   if (row.queueEntryId !== undefined && row.queueIndex !== undefined && !editedRecovery) return "queue";
@@ -367,7 +368,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
   }
 
   function action(row: PendingMessage, verb: PendingRowAction): void {
-    const kind = rowKind(row);
+    const kind = pendingRowActionOwner(row);
     switch (verb) {
       case "edit":
         if (kind === "recovery") void handleRecoveryEdit(row);
@@ -399,7 +400,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
     draining,
     isBusy: (row: PendingMessage) => busyIds.has(row.id),
     canEdit: (row: PendingMessage) => {
-      switch (rowKind(row)) {
+      switch (pendingRowActionOwner(row)) {
         case "recovery":
           return row.interrupt !== true && row.recovery?.recoveryKind !== "orphaned";
         case "queue":
@@ -417,7 +418,7 @@ export function usePendingMessageActions(context: PendingActionContext) {
       }
     },
     canRemove: (row: PendingMessage) => {
-      switch (rowKind(row)) {
+      switch (pendingRowActionOwner(row)) {
         case "recovery":
           return false;
         case "queue":

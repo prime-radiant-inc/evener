@@ -1,32 +1,8 @@
-// PendingRowStack: every user message that has not fully delivered to the
-// session rendered as the provisional user message it will become - one
-// transcript-shaped row per message, same UserMessageView construction a
-// delivered message gets, actions on the row. This is the ONE surface for
-// undelivered user input (Jesse's ruling, 2026-11-13): no dock below the
-// transcript (the retired QueueStrip), no dimmed chip beside the composer
-// (the retired PendingChips). The families:
-//
-// - pending entries (usePendingTurnEntries): every method - steer/drain/
-//   promote hold through the running step exactly as the steering-ghost
-//   spec §2 defined them; send/queue render as the message awaiting its
-//   turn, with the same provisional caption the held steers carry. This
-//   stack never re-sorts: reconcilePendingEntries' shared known-first
-//   order (§4) is the order the whole transcript reads.
-// - the daemon's authoritative queue (model.queue): real rows the hub
-//   already accepted, rendered in queue position order after the pending
-//   entries, each with its Steer now / Edit / Remove actions.
-// - durable blocked/canceled rows: delivery-uncertain and Stop-canceled
-//   submissions with their Retry affordance.
-// - recovery rows: a refused submission's durable record with its Edit (or
-//   Dismiss for a failed interrupt) affordance.
-//
-// The stack renders as the transcript's trailing virtual-list row
-// (ConversationBody's trailingRow), so it always sits below anything the
-// server has sent and scrolls with the content instead of floating over it.
-// Order arrives from reconcilePendingEntries' shared sort for pending
-// entries; the daemon queue's rows follow in their own array order (the
-// hub's queue position), then the durable/recovery families' intent
-// sequence (QueueStrip's own ordering, carried over unchanged).
+// One provisional transcript row per undelivered message. The shared
+// pending-message projection owns membership, order and display identity;
+// each delivery family supplies the controls for its current owner.
+// ConversationBody mounts this stack in its trailing virtual-list row, below
+// the recorded transcript and scrolling with it.
 
 import {
   type ComposerMention,
@@ -83,6 +59,9 @@ import {
   waitForQueueRowRestoreConsumed,
 } from "../../composer/queueRowInsert";
 import { SessionNowContext } from "../../liveness";
+import { pendingMessageCaption } from "../../pending/pendingMessageCaption";
+import { rowMatchesIdentity, withoutActiveRecovery } from "../../pending/pendingMessageLiveEdge";
+import { pendingRowActionOwner } from "../../pending/usePendingMessageActions";
 import styles from "./pendingrowstack.module.css";
 import { UserMessageView } from "./UserMessageItem";
 
@@ -200,6 +179,19 @@ function recordPreview(record: MutationOutboxRecord): string {
   return pendingEntryPreview(outboxRecordPreview(record));
 }
 
+function recoveryPreview(record: MutationRecoveryRecord): string {
+  switch (record.method) {
+    case "turn/interrupt":
+      return "Stop didn't reach the session";
+    case "turn/cancelQueued":
+      return "Couldn't remove this message from the queue";
+    case "thread/clear":
+      return "Couldn't clear this session";
+    default:
+      return recordPreview(record);
+  }
+}
+
 export function PendingRowStack({
   ref: sessionRef,
   paneId,
@@ -254,7 +246,33 @@ export function PendingRowStack({
     }
     return byEntryId;
   }, [mergedPendingRows]);
-  const mergedRowByWireId = useMemo(() => new Map(mergedPendingRows.map((row) => [row.id, row])), [mergedPendingRows]);
+  const mergedRowByWireId = useMemo(() => {
+    const byId = new Map<string, PendingMessage>();
+    for (const row of mergedPendingRows) {
+      byId.set(row.id, row);
+      for (const record of [row.outbox, row.optimistic]) {
+        if (record) byId.set(record.clientMutationId, row);
+      }
+    }
+    for (const mutation of model?.pendingMutations ?? []) {
+      for (const id of mutation.queueEntryIds ?? []) {
+        const row = mergedRowByQueueEntryId.get(id);
+        if (!row) continue;
+        byId.set(mutation.clientMutationId, row);
+        break;
+      }
+    }
+    return byId;
+  }, [mergedPendingRows, mergedRowByQueueEntryId, model?.pendingMutations]);
+  // An edited recovery shares its storage id with the original wire attempt,
+  // but owns a separate row and separate controls.
+  const mergedRowByRecoveryId = useMemo(
+    () =>
+      new Map(
+        mergedPendingRows.flatMap((row) => (row.recovery ? [[row.recovery.clientMutationId, row] as const] : [])),
+      ),
+    [mergedPendingRows],
+  );
   // The caption reads the same clock the liveness line does: Session's 3s
   // SessionNowContext tick, so no per-second machinery re-renders the
   // virtualized row.
@@ -528,372 +546,383 @@ export function PendingRowStack({
     [blockedEntries, canceledEntries, queueStripIds],
   );
   const stackEntries = entries.filter((entry) => !durableRowIds.has(entry.id));
-  if (queuedCount === 0 && stackEntries.length === 0 && visibleRecoveryEntries.length === 0) return null;
+  const visibleMessages = withoutActiveRecovery(mergedPendingRows, activeRecoveryId ?? undefined);
+  if (visibleMessages.length === 0) return null;
 
   // The controls read the model at the press, not at the render: the turn can
   // have ended in between (stores/liveControls.ts).
   const controls = model ? controlsFor(model) : { drain: false, reason: { drain: undefined } };
 
+  function renderLocalActions(record: MutationOutboxRecord, rowBusy: boolean): JSX.Element {
+    return (
+      <>
+        {canEditQueuedMessage(record) && (
+          <IconButton
+            label="Edit message"
+            icon={<span aria-hidden="true">✎</span>}
+            size="sm"
+            // The composer's live busy gate keeps Edit from racing an
+            // in-flight submit, read through the seam store.
+            disabled={rowBusy || composerBusy}
+            disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
+            onClick={() => void handleLocalAction(record, "edit")}
+          />
+        )}
+        {canRemoveQueuedMessage(record) && (
+          <IconButton
+            label="Remove from queue"
+            icon={<span aria-hidden="true">✕</span>}
+            size="sm"
+            variant="danger"
+            disabled={rowBusy}
+            onClick={() => void handleLocalAction(record, "remove")}
+          />
+        )}
+      </>
+    );
+  }
+
+  const renderById = new Map<string, () => JSX.Element>();
+  stackEntries.forEach((entry) => {
+    const message = mergedRowByWireId.get(entry.id);
+    if (!message) return;
+    const hubRefused = entry.id === refusedId && entry.state === "submitting";
+    renderById.set(message.id, () => (
+      <li key={message.displayId ?? message.id} data-busy={hubRefused ? "true" : undefined}>
+        <UserMessageView
+          item={{
+            id: message.id,
+            turnId: "",
+            type: "userMessage",
+            text: message.displayText || "[queued messages]",
+            images: message.images,
+          }}
+          opensExchange={false}
+          provisional={pendingMessageCaption(message, turnActive, now, hubRefused)}
+        />
+      </li>
+    ));
+  });
+  for (let index = 0; index < rowCount; index += 1) {
+    if (!queue) break;
+    const queueEntry = queueEntryAt(queue, index);
+    const { entryId, fullText, clientMutationId: mutationId } = queueEntry;
+    const entrySkillNames = queue?.skillNames?.[index];
+    const entryCommandNames = queue?.commandNames?.[index];
+    const entryMentions = queue?.mentions?.[index]?.flatMap((item): ComposerMention[] =>
+      item.kind === "skill" || item.kind === "command" ? [{ ...item, kind: item.kind }] : [],
+    );
+    const entryPreview = truncateForDisplay(preview?.[index] ?? fullText ?? "");
+    const namedMarkers = [skillMarkers(entrySkillNames ?? []), commandMarkers(entryCommandNames ?? [])]
+      .filter(Boolean)
+      .join(" ");
+    // The daemon's generic "[N skills]" preview doubles the named
+    // markers a selection-only row already renders - suppress it so the
+    // synthetic placeholder never reads as the message (the retired
+    // strip's own rule).
+    const genericSelectionPlaceholder =
+      (fullText ?? "").trim() === "" &&
+      namedMarkers !== "" &&
+      /^\[\d*\s*(skills?|commands?)\]$/i.test(entryPreview.trim());
+    const previewText = genericSelectionPlaceholder ? "" : entryPreview;
+    // The optimistic twin owns the row while this client's durable
+    // record reconciles against the daemon's queue.
+    if (pendingTexts.has(entryPreview) && entryId === undefined) continue;
+    // The merged projection row that owns this queue entry, when one
+    // does: its family holds what the wire dropped (image counts, and
+    // the bytes when this client submitted them).
+    const mergedRow =
+      (entryId !== undefined ? mergedRowByQueueEntryId.get(entryId) : undefined) ??
+      (mutationId !== undefined ? mergedRowByWireId.get(mutationId) : undefined) ??
+      mergedPendingRows.find((row) => row.queueIndex === index);
+    if (!mergedRow || pendingRowActionOwner(mergedRow) !== "queue") continue;
+    const busy = (entryId !== undefined && busyEntryIds.has(entryId)) || mergedRow.method !== "queue";
+    const actionsAvailable = hasIds && entryId !== undefined;
+    // The restore seam is text-and-selections only: the queue projection
+    // carries no image bytes, so an edit's cancel would destroy the row's
+    // images permanently. Any image-bearing row refuses Edit for that
+    // reason - not just a textless image-only row, which a selection
+    // would otherwise make look editable. The wire's preview speaks the
+    // image grammar only for a textless entry, so the row's own reading
+    // joins the merged projection's: the durable family that owns this
+    // queue entry still knows the real image count the wire dropped.
+    const carriesImages = queueEntry.imageCount > 0 || mergedRow.imageCount > 0;
+    const imageOnly =
+      hasTexts &&
+      (fullText ?? "").trim() === "" &&
+      (entrySkillNames?.length ?? 0) === 0 &&
+      (entryCommandNames?.length ?? 0) === 0;
+    const actions = actionsAvailable ? (
+      <>
+        <IconButton
+          label="Steer now"
+          icon={<span aria-hidden="true">⇧</span>}
+          size="sm"
+          disabled={!controls.drain || busy}
+          onClick={() => {
+            if (entryId !== undefined) {
+              // The ghost's display text: the row's full text, or -
+              // for a blank row - the same stripped preview the row
+              // renders (nothing for a selection-only row, where the
+              // named markers carry the whole content). The merged row's
+              // images ride along: the promotion's optimistic input is
+              // the one place the in-flight and refused states read
+              // from, so it must carry the count the queue wire dropped
+              // or the entry's Edit would unlock mid-transition.
+              const rowText = fullText ?? "";
+              const displayText = rowText.trim() !== "" ? rowText : previewText;
+              void handlePromote(index, entryId, displayText, entrySkillNames, entryCommandNames, mergedRow?.images);
+            }
+          }}
+        />
+        <IconButton
+          label="Edit message"
+          icon={<span aria-hidden="true">✎</span>}
+          size="sm"
+          disabled={!hasTexts || imageOnly || carriesImages || busy}
+          disabledReason={
+            carriesImages ? "Editing can't take the image back - remove the message and re-attach it instead" : ""
+          }
+          onClick={() => {
+            if (entryId !== undefined && fullText !== undefined) {
+              handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
+            }
+          }}
+        />
+        <IconButton
+          label="Remove from queue"
+          icon={<span aria-hidden="true">✕</span>}
+          variant="danger"
+          size="sm"
+          disabled={busy}
+          onClick={() => {
+            if (entryId !== undefined) void handleCancel(index, entryId);
+          }}
+        />
+      </>
+    ) : undefined;
+    renderById.set(mergedRow.id, () => (
+      <li key={mergedRow.displayId ?? mergedRow.id} data-kind="queued">
+        <UserMessageView
+          item={{
+            id: entryId ?? `queue_${index}`,
+            turnId: "",
+            type: "userMessage",
+            // A blank full text leaves the preview to speak: the
+            // daemon's image grammar ("[image]", "[N images]") is the
+            // row's whole content for a textless foreign entry, so an
+            // empty composed body never renders an empty bubble.
+            text:
+              mergedRow.method !== "queue"
+                ? mergedRow.displayText
+                : [fullText !== undefined && fullText.trim() !== "" ? fullText : previewText, namedMarkers]
+                    .filter(Boolean)
+                    .join(" "),
+            // The gallery this client can still prove: the merged row's
+            // family holds the bytes the queue wire never carries.
+            ...(mergedRow !== undefined && mergedRow.images.length > 0 ? { images: mergedRow.images } : {}),
+          }}
+          opensExchange={false}
+          provisional={pendingMessageCaption(mergedRow, turnActive, now)}
+          footer={actions}
+        />
+      </li>
+    ));
+  }
+  editableEntries.forEach((record) => {
+    const message = mergedRowByWireId.get(record.clientMutationId);
+    if (
+      !message ||
+      message.outbox?.clientMutationId !== record.clientMutationId ||
+      pendingRowActionOwner(message) !== "local"
+    )
+      return;
+    // The waiting family: this client's unattempted editable rows - the
+    // same durable-local slot the retired strip's waiting kind held.
+    const rowBusy = busyEntryIds.has(record.clientMutationId);
+    const hubRefused = record.clientMutationId === refusedId;
+    const actions = renderLocalActions(record, rowBusy);
+    renderById.set(message.id, () => (
+      <li key={message.displayId ?? message.id} data-kind="waiting" data-busy={hubRefused ? "true" : undefined}>
+        <UserMessageView
+          item={{
+            id: record.clientMutationId,
+            turnId: "",
+            type: "userMessage",
+            text: recordPreview(record) || "[queued messages]",
+            // The merged projection row for this record holds the
+            // submission's image bytes - the waiting row renders the
+            // gallery the record's preview text cannot describe.
+            ...(message.images.length > 0 ? { images: message.images } : {}),
+          }}
+          opensExchange={false}
+          provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
+          footer={actions}
+        />
+      </li>
+    ));
+  });
+  [
+    ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
+    ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
+  ].forEach(({ kind, record }) => {
+    const message = mergedRowByWireId.get(record.clientMutationId);
+    if (
+      !message ||
+      message.outbox?.clientMutationId !== record.clientMutationId ||
+      pendingRowActionOwner(message) !== "local"
+    )
+      return;
+    const rowBusy = busyEntryIds.has(record.clientMutationId);
+    const retryError = retryErrors.get(record.clientMutationId);
+    const actions = (
+      <>
+        {renderLocalActions(record, rowBusy)}
+        <RetryButton record={record} busy={rowBusy} onRetry={() => void handleRetry(record)} />
+      </>
+    );
+    const label = kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain";
+    // A failed Retry has to announce itself: the provisional caption is
+    // an ordinary span, so the error gets its own live node - the
+    // retired strip rendered it with role="alert".
+    renderById.set(message.id, () => (
+      <li key={message.displayId ?? message.id} data-kind={kind}>
+        <UserMessageView
+          item={{
+            id: record.clientMutationId,
+            turnId: "",
+            type: "userMessage",
+            text: recordPreview(record),
+            // The merged projection row holds the submission's image
+            // bytes through these states too - the gallery survives a
+            // blocked or canceled delivery.
+            ...(message.images.length > 0 ? { images: message.images } : {}),
+          }}
+          opensExchange={false}
+          provisional={label}
+          footer={
+            <>
+              {actions}
+              {retryError !== undefined && <span role="alert">{retryError}</span>}
+            </>
+          }
+        />
+      </li>
+    ));
+  });
+  visibleRecoveryEntries.forEach((record) => {
+    const message = mergedRowByRecoveryId.get(record.clientMutationId);
+    if (!message || pendingRowActionOwner(message) !== "recovery") return;
+    const rowBusy = busyEntryIds.has(record.clientMutationId);
+    const isInterrupt = record.method === "turn/interrupt";
+    // Stop, queue cancellation and Clear carry no editable composition.
+    // Their refused rows offer Dismiss with the daemon's reason.
+    const isControlFailure = message.interrupt === true;
+    const reason = record.recoveryReason;
+    if (record.recoveryKind === "orphaned") {
+      renderById.set(message.id, () => (
+        <li key={message.displayId ?? message.id} data-kind="orphaned">
+          <UserMessageView
+            item={{
+              id: record.clientMutationId,
+              turnId: "",
+              type: "userMessage",
+              text: recordPreview(record),
+              // The merged projection's recovery row is built from the
+              // family's own input, so the gallery survives the refusal.
+              images: message.images,
+            }}
+            opensExchange={false}
+            provisional="Destination deleted"
+            footer={
+              <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleCopy(record)}>
+                Copy
+              </Button>
+            }
+          />
+        </li>
+      ));
+      return;
+    }
+    renderById.set(message.id, () => (
+      <li
+        key={message.displayId ?? message.id}
+        data-kind={isInterrupt ? "refused-stop" : isControlFailure ? "control-failure" : "refused"}
+      >
+        <UserMessageView
+          item={{
+            id: record.clientMutationId,
+            turnId: "",
+            type: "userMessage",
+            // A control failure is not a message: it carries no input,
+            // so say what failed instead of offering to edit a Stop or
+            // an empty removal.
+            text: recoveryPreview(record),
+            // The refused row keeps the gallery too: the projection's
+            // recovery row holds the family input's image bytes.
+            images: message.images,
+          }}
+          opensExchange={false}
+          provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
+          footer={
+            isControlFailure ? (
+              <IconButton
+                label="Dismiss"
+                icon={<span aria-hidden="true">✕</span>}
+                size="sm"
+                disabled={rowBusy}
+                onClick={() => void handleDismiss(record)}
+              />
+            ) : (
+              <IconButton
+                label="Edit message"
+                icon={<span aria-hidden="true">✎</span>}
+                size="sm"
+                // A refused control has to say so: the composer's live
+                // busy gate (an in-flight submit/steer/drain) keeps the
+                // press from racing, read through the seam store because
+                // only the composer knows its own busyAction. The
+                // refusal is aria-disabled rather than native, so the
+                // reason stays reachable from the keyboard.
+                disabled={rowBusy || composerBusy}
+                disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
+                onClick={() =>
+                  requestQueueRowRestore(sessionRef, { text: "", recoveryRecord: record, target: paneId ?? null })
+                }
+              />
+            )
+          }
+        />
+      </li>
+    ));
+  });
+  // Families supply their controls, but only the shared projection owns row
+  // membership and identity. One flat keyed list keeps the bubble mounted
+  // when its source moves between transport, queue and execution families.
   return (
     <ul className={styles.stack} data-testid="pending-row-stack" data-queued-count={queuedCount}>
-      {stackEntries.map((entry) => {
-        const hubRefused = entry.id === refusedId && entry.state === "submitting";
-        const entryPreview = entryPreviews.get(entry.id) ?? "";
-        // The merged projection row for this entry holds the submission's
-        // image bytes - the same join the queue rows use, so a sending row
-        // renders its gallery instead of bare preview text.
-        const entryImages = mergedRowByWireId.get(entry.id)?.images;
-        return (
-          <li key={entry.id} data-busy={hubRefused ? "true" : undefined}>
+      {visibleMessages.map((message) => {
+        const displayId = message.displayId ?? message.id;
+        const render = renderById.get(message.id);
+        return render ? (
+          render()
+        ) : (
+          <li key={displayId}>
             <UserMessageView
               item={{
-                id: entry.id,
+                id: message.id,
                 turnId: "",
                 type: "userMessage",
-                text: entryPreview || "[queued messages]",
-                ...(entryImages && entryImages.length > 0 ? { images: entryImages } : {}),
+                text: message.displayText,
+                images: message.images,
               }}
               opensExchange={false}
-              provisional={heldCaption(entry, turnActive, now, hubRefused)}
-            />
-          </li>
-        );
-      })}
-      {Array.from({ length: rowCount }, (_, index) => {
-        const entryId = ids?.[index];
-        const fullText = texts?.[index];
-        const entrySkillNames = queue?.skillNames?.[index];
-        const entryCommandNames = queue?.commandNames?.[index];
-        const entryMentions = queue?.mentions?.[index]?.flatMap((item): ComposerMention[] =>
-          item.kind === "skill" || item.kind === "command" ? [{ ...item, kind: item.kind }] : [],
-        );
-        const entryPreview = truncateForDisplay(preview?.[index] ?? fullText ?? "");
-        const namedMarkers = [skillMarkers(entrySkillNames ?? []), commandMarkers(entryCommandNames ?? [])]
-          .filter(Boolean)
-          .join(" ");
-        // The daemon's generic "[N skills]" preview doubles the named
-        // markers a selection-only row already renders - suppress it so the
-        // synthetic placeholder never reads as the message (the retired
-        // strip's own rule).
-        const genericSelectionPlaceholder =
-          (fullText ?? "").trim() === "" &&
-          namedMarkers !== "" &&
-          /^\[\d*\s*(skills?|commands?)\]$/i.test(entryPreview.trim());
-        const previewText = genericSelectionPlaceholder ? "" : entryPreview;
-        // The optimistic twin owns the row while this client's durable
-        // record reconciles against the daemon's queue.
-        if (pendingTexts.has(entryPreview) && entryId === undefined) return null;
-        // The merged projection row that owns this queue entry, when one
-        // does: its family holds what the wire dropped (image counts, and
-        // the bytes when this client submitted them).
-        const mutationId = queue?.clientMutationIds?.[index];
-        const mergedRow =
-          (entryId !== undefined ? mergedRowByQueueEntryId.get(entryId) : undefined) ??
-          (mutationId !== undefined ? mergedRowByWireId.get(mutationId) : undefined);
-        const busy = entryId !== undefined && busyEntryIds.has(entryId);
-        const actionsAvailable = hasIds && entryId !== undefined;
-        // The restore seam is text-and-selections only: the queue projection
-        // carries no image bytes, so an edit's cancel would destroy the row's
-        // images permanently. Any image-bearing row refuses Edit for that
-        // reason - not just a textless image-only row, which a selection
-        // would otherwise make look editable. The wire's preview speaks the
-        // image grammar only for a textless entry, so the row's own reading
-        // joins the merged projection's: the durable family that owns this
-        // queue entry still knows the real image count the wire dropped.
-        const carriesImages =
-          (queue !== null && queueEntryAt(queue, index).imageCount > 0) || (mergedRow?.imageCount ?? 0) > 0;
-        const imageOnly =
-          hasTexts &&
-          (fullText ?? "").trim() === "" &&
-          (entrySkillNames?.length ?? 0) === 0 &&
-          (entryCommandNames?.length ?? 0) === 0;
-        const actions = actionsAvailable ? (
-          <>
-            <IconButton
-              label="Steer now"
-              icon={<span aria-hidden="true">⇧</span>}
-              size="sm"
-              disabled={!controls.drain || busy}
-              onClick={() => {
-                if (entryId !== undefined) {
-                  // The ghost's display text: the row's full text, or -
-                  // for a blank row - the same stripped preview the row
-                  // renders (nothing for a selection-only row, where the
-                  // named markers carry the whole content). The merged row's
-                  // images ride along: the promotion's optimistic input is
-                  // the one place the in-flight and refused states read
-                  // from, so it must carry the count the queue wire dropped
-                  // or the entry's Edit would unlock mid-transition.
-                  const rowText = fullText ?? "";
-                  const displayText = rowText.trim() !== "" ? rowText : previewText;
-                  void handlePromote(
-                    index,
-                    entryId,
-                    displayText,
-                    entrySkillNames,
-                    entryCommandNames,
-                    mergedRow?.images,
-                  );
-                }
-              }}
-            />
-            <IconButton
-              label="Edit message"
-              icon={<span aria-hidden="true">✎</span>}
-              size="sm"
-              disabled={!hasTexts || imageOnly || carriesImages || busy}
-              disabledReason={
-                carriesImages ? "Editing can't take the image back - remove the message and re-attach it instead" : ""
-              }
-              onClick={() => {
-                if (entryId !== undefined && fullText !== undefined) {
-                  handleEdit(index, entryId, fullText, entrySkillNames, entryCommandNames, entryMentions);
-                }
-              }}
-            />
-            <IconButton
-              label="Remove from queue"
-              icon={<span aria-hidden="true">✕</span>}
-              variant="danger"
-              size="sm"
-              disabled={busy}
-              onClick={() => {
-                if (entryId !== undefined) void handleCancel(index, entryId);
-              }}
-            />
-          </>
-        ) : undefined;
-        return (
-          <li key={entryId ?? index} data-kind="queued">
-            <UserMessageView
-              item={{
-                id: entryId ?? `queue_${index}`,
-                turnId: "",
-                type: "userMessage",
-                // A blank full text leaves the preview to speak: the
-                // daemon's image grammar ("[image]", "[N images]") is the
-                // row's whole content for a textless foreign entry, so an
-                // empty composed body never renders an empty bubble.
-                text: [fullText !== undefined && fullText.trim() !== "" ? fullText : previewText, namedMarkers]
-                  .filter(Boolean)
-                  .join(" "),
-                // The gallery this client can still prove: the merged row's
-                // family holds the bytes the queue wire never carries.
-                ...(mergedRow !== undefined && mergedRow.images.length > 0 ? { images: mergedRow.images } : {}),
-              }}
-              opensExchange={false}
-              provisional="Queued for the next turn"
-              footer={actions}
-            />
-          </li>
-        );
-      })}
-      {editableEntries.map((record) => {
-        // The waiting family: this client's unattempted editable rows - the
-        // same durable-local slot the retired strip's waiting kind held.
-        const rowBusy = busyEntryIds.has(record.clientMutationId);
-        const hubRefused = record.clientMutationId === refusedId;
-        const actions = (
-          <>
-            {canEditQueuedMessage(record) && (
-              <IconButton
-                label="Edit message"
-                icon={<span aria-hidden="true">✎</span>}
-                size="sm"
-                // The composer's live busy gate keeps the press from
-                // racing an in-flight submit (the retired strip's own
-                // gate), read through the seam store.
-                disabled={rowBusy || composerBusy}
-                disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
-                onClick={() => void handleLocalAction(record, "edit")}
-              />
-            )}
-            {canRemoveQueuedMessage(record) && (
-              <IconButton
-                label="Remove from queue"
-                icon={<span aria-hidden="true">✕</span>}
-                size="sm"
-                variant="danger"
-                disabled={rowBusy}
-                onClick={() => void handleLocalAction(record, "remove")}
-              />
-            )}
-          </>
-        );
-        return (
-          <li key={record.clientMutationId} data-kind="waiting" data-busy={hubRefused ? "true" : undefined}>
-            <UserMessageView
-              item={{
-                id: record.clientMutationId,
-                turnId: "",
-                type: "userMessage",
-                text: recordPreview(record) || "[queued messages]",
-                // The merged projection row for this record holds the
-                // submission's image bytes - the waiting row renders the
-                // gallery the record's preview text cannot describe.
-                ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
-                  ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
-                  : {}),
-              }}
-              opensExchange={false}
-              provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
-              footer={actions}
-            />
-          </li>
-        );
-      })}
-      {[
-        ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
-        ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
-      ].map(({ kind, record }) => {
-        const rowBusy = busyEntryIds.has(record.clientMutationId);
-        const retryError = retryErrors.get(record.clientMutationId);
-        const actions = (
-          <>
-            {canEditQueuedMessage(record) && (
-              <IconButton
-                label="Edit message"
-                icon={<span aria-hidden="true">✎</span>}
-                size="sm"
-                disabled={rowBusy || composerBusy}
-                disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
-                onClick={() => void handleLocalAction(record, "edit")}
-              />
-            )}
-            {canRemoveQueuedMessage(record) && (
-              <IconButton
-                label="Remove from queue"
-                icon={<span aria-hidden="true">✕</span>}
-                size="sm"
-                variant="danger"
-                disabled={rowBusy}
-                onClick={() => void handleLocalAction(record, "remove")}
-              />
-            )}
-            <RetryButton record={record} busy={rowBusy} onRetry={() => void handleRetry(record)} />
-          </>
-        );
-        const label = kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain";
-        // A failed Retry has to announce itself: the provisional caption is
-        // an ordinary span, so the error gets its own live node - the
-        // retired strip rendered it with role="alert".
-        const retryAlert = retryError !== undefined ? <span role="alert">{retryError}</span> : null;
-        return (
-          <li key={record.clientMutationId} data-kind={kind}>
-            <UserMessageView
-              item={{
-                id: record.clientMutationId,
-                turnId: "",
-                type: "userMessage",
-                text: recordPreview(record),
-                // The merged projection row holds the submission's image
-                // bytes through these states too - the gallery survives a
-                // blocked or canceled delivery.
-                ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
-                  ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
-                  : {}),
-              }}
-              opensExchange={false}
-              provisional={label}
-              footer={
-                <>
-                  {actions}
-                  {retryAlert}
-                </>
-              }
-            />
-          </li>
-        );
-      })}
-      {visibleRecoveryEntries.map((record) => {
-        const rowBusy = busyEntryIds.has(record.clientMutationId);
-        const isInterrupt = record.method === "turn/interrupt";
-        // A rejected queue removal is the same shape: the control carries no
-        // editable message (its input is the wire's index/entryId pair), so
-        // the row offers Dismiss with the daemon's reason instead of an
-        // Edit on an empty body.
-        const isControlFailure = isInterrupt || record.method === "turn/cancelQueued";
-        const reason = record.recoveryReason;
-        if (record.recoveryKind === "orphaned") {
-          return (
-            <li key={record.clientMutationId} data-kind="orphaned">
-              <UserMessageView
-                item={{
-                  id: record.clientMutationId,
-                  turnId: "",
-                  type: "userMessage",
-                  text: recordPreview(record),
-                  // The merged projection's recovery row is built from the
-                  // family's own input, so the gallery survives the refusal.
-                  ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
-                    ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
-                    : {}),
-                }}
-                opensExchange={false}
-                provisional="Destination deleted"
-                footer={
-                  <Button size="sm" variant="quiet" disabled={rowBusy} onClick={() => void handleCopy(record)}>
-                    Copy
-                  </Button>
-                }
-              />
-            </li>
-          );
-        }
-        return (
-          <li
-            key={record.clientMutationId}
-            data-kind={isInterrupt ? "refused-stop" : isControlFailure ? "control-failure" : "refused"}
-          >
-            <UserMessageView
-              item={{
-                id: record.clientMutationId,
-                turnId: "",
-                type: "userMessage",
-                // A control failure is not a message: it carries no input,
-                // so say what failed instead of offering to edit a Stop or
-                // an empty removal.
-                text: isInterrupt
-                  ? "Stop didn't reach the session"
-                  : record.method === "turn/cancelQueued"
-                    ? "Couldn't remove this message from the queue"
-                    : recordPreview(record),
-                // The refused row keeps the gallery too: the projection's
-                // recovery row holds the family input's image bytes.
-                ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
-                  ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
-                  : {}),
-              }}
-              opensExchange={false}
-              provisional={reason ? `Not delivered · ${reason}` : "Not delivered"}
-              footer={
-                isControlFailure ? (
-                  <IconButton
-                    label="Dismiss"
-                    icon={<span aria-hidden="true">✕</span>}
-                    size="sm"
-                    disabled={rowBusy}
-                    onClick={() => void handleDismiss(record)}
-                  />
-                ) : (
-                  <IconButton
-                    label="Edit message"
-                    icon={<span aria-hidden="true">✎</span>}
-                    size="sm"
-                    // A refused control has to say so: the composer's live
-                    // busy gate (an in-flight submit/steer/drain) keeps the
-                    // press from racing, read through the seam store because
-                    // only the composer knows its own busyAction. The
-                    // refusal is aria-disabled rather than native, so the
-                    // reason stays reachable from the keyboard.
-                    disabled={rowBusy || composerBusy}
-                    disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
-                    onClick={() =>
-                      requestQueueRowRestore(sessionRef, { text: "", recoveryRecord: record, target: paneId ?? null })
-                    }
-                  />
-                )
-              }
+              provisional={pendingMessageCaption(
+                message,
+                turnActive,
+                now,
+                refusedId !== undefined && rowMatchesIdentity(message, refusedId),
+              )}
             />
           </li>
         );

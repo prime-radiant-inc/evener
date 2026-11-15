@@ -105,8 +105,11 @@ is waiting on stays locked, as do the verbs that have their own controls.
 Every undelivered user message renders in one identity-keyed stack at the
 transcript's trailing row, below every server-sourced turn. The queue, pending
 execution, outbox, optimistic and recovery projections are inputs to that one
-row; a row leaves only when a recorded transcript item with the same identity is
-visible, or on an explicit terminal dismissal.
+row. The shared pending-message projection owns membership and ordering; the
+browser stack supplies the current owner's controls. Queue-entry lineage joins
+a source to its consuming command while preserving the source's rendering key.
+A row leaves only when a recorded transcript item with the same identity or input
+lineage is visible, or on an explicit terminal dismissal.
 
 S02 and S03 both use the shared mutation outbox and dispatcher: the browser
 stores local intent in IndexedDB, while the [native mutation runtime](../../mobile-native/src/nativeMutationRuntime.ts)

@@ -546,6 +546,7 @@ export function usePendingMessages(ref: string): PendingMessage[] {
       outbox: [...outbox.values()],
       optimistic: [...optimistic.values()],
       recovery: [...recovery.values()],
+      previousMessages: cached?.rows,
       consumedQueueEntries,
       model,
       deliveredHere,
