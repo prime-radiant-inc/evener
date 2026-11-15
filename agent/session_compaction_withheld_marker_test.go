@@ -678,6 +678,20 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 		t.Fatalf("admitted inputs before the fold = %v, want %d", original, rounds)
 	}
 
+	// The boundary only decides anything when a turn sits at or after it, so
+	// the round being built needs a turn in flight. This one carries thinking
+	// from an instance the target does not speak for, which means the N4
+	// provenance rule would strip it: only the in-flight exemption keeps it.
+	// It is the newest turn, so the pre-fold boundary points at it and the
+	// fold moves that boundary left with the turn.
+	const leasedInFlightText = "opaque-leased-fold-commit-window-in-flight"
+	s.mu.Lock()
+	inFlight := assistantThinkingTurn("other-work", "gpt-5.2", "gpt-5.2")
+	inFlight.Message.Content[1].Text = leasedInFlightText
+	s.history = append(s.history, inFlight)
+	s.turnHistoryBaseline = len(s.history) - 1
+	s.mu.Unlock()
+
 	// The snapshot hook spawns the fold only after the round's first capture,
 	// then holds the request between its two history reads until the fold
 	// parks: the leased read must land inside the park, never before the fold
@@ -686,6 +700,7 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	releaseFold := make(chan struct{})
 	compactDone := make(chan error, 1)
 	beforeFoldTurns := 0
+	beforeFoldBaseline := 0
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.beforeFoldTranscriptCommit = func() {
 			close(inWindow)
@@ -702,6 +717,7 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 		cfg.afterModelHistorySnapshot = func() {
 			s.mu.Lock()
 			beforeFoldTurns = len(s.history)
+			beforeFoldBaseline = s.turnHistoryBaseline
 			s.mu.Unlock()
 			go func() { compactDone <- s.Compact(context.Background()) }()
 			<-inWindow
@@ -712,7 +728,10 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	go func() {
 		var timings events.RoundTimings
 		ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
-		_, _, _, req, _, _, err := s.prepareModelRequestWithError(ctx, 0, &timings)
+		// Round 1, not 0: round zero initializes the boundary to the current
+		// history length, which would erase the in-flight boundary seeded above
+		// and make the exemption vacuous.
+		_, _, _, req, _, _, err := s.prepareModelRequestWithError(ctx, 1, &timings)
 		builtReq <- req
 		requestDone <- err
 	}()
@@ -769,20 +788,43 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 
 	// The boundary indexes the projection it ships with. A fold landing between
 	// the round's first capture and the leased read shrinks the history, so the
-	// earlier boundary can point past what the leased snapshot holds — or, once
-	// a retained in-flight turn survives the fold, at a turn that is not the
-	// first of the in-flight round. Either way an in-flight round loses the
-	// replay exemption that keeps its thinking on a same-protocol fallback.
+	// earlier boundary can point past what the leased snapshot holds — or at a
+	// turn that is not the first of the in-flight round. Either way an in-flight
+	// round loses the replay exemption that keeps its thinking on a
+	// same-protocol fallback. Assert on the request this path actually built,
+	// not on a later re-projection: only the built request shows which boundary
+	// the round used.
+	if beforeFoldBaseline >= beforeFoldTurns {
+		t.Fatalf("the round's pre-fold capture held %d turns and a boundary at %d: no turn was in flight, so this window proves nothing about re-pairing the boundary", beforeFoldTurns, beforeFoldBaseline)
+	}
+	// The in-flight turn is the only history turn carrying thinking, so the
+	// presence check below speaks for that turn alone.
+	if !hasContentKind(req.Messages, llm.ContentThinking) {
+		t.Fatalf("the leased request stripped the in-flight turn's thinking: its boundary did not exempt a turn the fold had moved below the pre-fold index (pre-fold boundary %d, request built from %d turns)", beforeFoldBaseline, len(req.Messages))
+	}
+	carriedInFlight := false
+	for _, m := range req.Messages {
+		carriedInFlight = carriedInFlight || strings.Contains(m.Text(), leasedInFlightText)
+	}
+	if !carriedInFlight {
+		t.Fatalf("the leased request dropped the in-flight turn's answer text, so the thinking above came from somewhere else: %d turns", len(req.Messages))
+	}
+	// The divergence the exemption rests on: the fold moved the in-flight turn
+	// left, so the pre-fold boundary no longer indexes it. Reading a fresh
+	// projection here would confirm the session's own bookkeeping, which the
+	// fold corrects either way; this check proves the two captures disagree.
 	projection := s.delegateModelHistorySnapshotWithCoverage()
 	if projection.inFlightFrom < 0 || projection.inFlightFrom > len(projection.turns) {
 		t.Fatalf("leased projection boundary %d does not index its own snapshot of %d turns", projection.inFlightFrom, len(projection.turns))
 	}
-	// The window is only exercised if the two captures disagree: the folded
-	// history is shorter than what the round captured before the fold, so a
-	// boundary borrowed from that earlier capture indexes turns this snapshot
-	// no longer holds.
 	if len(projection.turns) >= beforeFoldTurns {
 		t.Fatalf("the fold did not shrink the snapshot (%d turns, before %d): the two captures agree, so this window proves nothing about re-pairing the boundary", len(projection.turns), beforeFoldTurns)
+	}
+	if projection.inFlightFrom >= beforeFoldBaseline {
+		t.Fatalf("the fold left the boundary where the round's first capture put it (%d, was %d) while shrinking the snapshot to %d turns: a boundary borrowed from the earlier capture indexes a turn this snapshot no longer holds, so the window never opens", projection.inFlightFrom, beforeFoldBaseline, len(projection.turns))
+	}
+	if at := indexOfTurnText(projection.turns, leasedInFlightText); at != projection.inFlightFrom {
+		t.Fatalf("projection boundary %d does not open at the in-flight turn's position %d", projection.inFlightFrom, at)
 	}
 }
 
