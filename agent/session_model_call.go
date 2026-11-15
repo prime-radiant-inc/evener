@@ -195,6 +195,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// the N4 replay-provenance exemption either way, so re-reading the
 	// baseline here changes no exemption decision — it only re-pairs the
 	// boundary with the exact history it guards.
+	//
+	// The capture also holds the transcript door: a fold publishes the
+	// compacted history — whose marker references the frontier the fold
+	// minted — and records that frontier in the chain only inside its own
+	// hold of that door, so a snapshot that waits for the door can never
+	// observe the half-committed span between the two. The door-then-session
+	// order is the lock order every transcript writer already follows.
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	// A request's coverage belongs to its history snapshot. A later fold may
@@ -210,6 +218,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if afterSnapshot != nil {
 		afterSnapshot()
 	}
@@ -252,7 +261,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
-		snapshot := s.delegateModelHistorySnapshot()
+		// The delegate projects its own snapshot, which can hold turns appended
+		// after historyTurns was taken, so its coverage and its in-flight
+		// boundary must come from that same snapshot rather than the earlier
+		// one: a fold landing in between leaves the earlier boundary indexing
+		// turns this snapshot no longer holds, and an in-flight turn that falls
+		// below it loses the replay exemption that keeps its thinking.
+		projection := s.delegateModelHistorySnapshotWithCoverage()
+		snapshot := projection.turns
+		historyCoverage = projection.coverage
+		scope.InFlightFrom = projection.inFlightFrom
+		inFlightFrom = projection.inFlightFrom
 		presentedBoundary = len(snapshot)
 		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
 			// An automatic attention drive projects the resident history,
@@ -305,7 +324,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
+	// Continuation planning can REBUILD req.Messages from the turns it is
+	// given: a delta is expressed relative to an anchor, so a turn present in
+	// the projected messages but absent from this slice is dropped from the
+	// dispatched request. It must therefore see the snapshot this request
+	// projects (presentedTurns), not the earlier capture: a leased round's
+	// snapshot can hold a turn — a parent steer, say — accepted after
+	// historyTurns was taken.
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}

@@ -486,7 +486,17 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 			// references (replaceRetractedFrontierLocked).
 			s.conversation.frontierID = frontierIDBeforeCommit
 			s.conversation.inputs = inputsBeforeCommit
-			s.conversation.retractedFrontierID = commit.retractedFrontierID
+			// A fold that minted no node changed no conversation state, so
+			// the standing retracted head stays: the earlier fold's live
+			// marker still references it for coverage, and clearing the name
+			// would orphan it in the chain — the next node a record carries
+			// would extend the same predecessor and fork the chain. A fold
+			// that did mint a node already replaced the standing head at its
+			// marker's adoption, so the assignment only ever names a node
+			// that stands live in the chain.
+			if commit.retractedFrontierID != "" {
+				s.conversation.retractedFrontierID = commit.retractedFrontierID
+			}
 			if commit.restoreNoteLocked != nil {
 				commit.restoreNoteLocked()
 			}
