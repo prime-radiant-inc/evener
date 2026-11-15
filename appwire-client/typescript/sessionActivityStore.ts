@@ -3,7 +3,7 @@ import { mutationErrorData, WireError } from "./errors";
 import { sameJsonValue } from "./plainObject";
 import { intentWithinBound } from "./sessionActivity";
 import { isThreadNotFound } from "./sessionErrors";
-import { activityInstant, joinDelegateState, revisionOf } from "./stableDelegate";
+import { activityAfter, activityInstant, joinDelegateState, revisionOf } from "./stableDelegate";
 import {
   acquireThreadSubscription,
   type ThreadSubscriptionLease,
@@ -603,16 +603,15 @@ export class SessionActivityStore {
           // A clean continuation cannot acknowledge an unresolved root scan.
           // Retain its issues and root recovery demand until fresh reconciliation.
           const issues = reconciled ? [] : mergeIssues(current.issues, freshIssues);
-          // A read whose row set is settled is the one place a buffered frame
-          // can be placed: the page served the whole collection (a
-          // continuation reaches that end too), or a bounded refresh reached
-          // the displayed boundary. A page the collection continues past is
-          // not settled yet, so the frames it could take keep waiting.
-          const rowsSettled = (page.page.complete && issues.length === 0) || (reconciled && reachedBoundary);
+          // A page that admits a buffered frame's identity is the one place
+          // the frame can be placed: the frame names its row exactly, and
+          // the applied record protects the merge against every later page
+          // of the same read, so an unsettled page loses nothing by placing
+          // it. An identity no loaded row carries keeps waiting.
           if (resource === "delegates") {
             // A read joins each row the same way a frame does, so it cannot
             // clobber a newer frame nor skip one applied in the gap; a buffered
-            // frame is placed by the settlement once the read is settled.
+            // frame is placed by the page that admits its identity.
             rows = this.joinDelegateRows(
               rows as readonly SessionDelegate[],
               current.rows as readonly SessionDelegate[],
@@ -645,17 +644,12 @@ export class SessionActivityStore {
             permanent: false,
           });
           if (resource === "delegates") {
-            this.settleBufferedFrames(rowsSettled);
+            this.settleBufferedFrames();
             // A frame buffered during a walk named a row that walk's frozen
-            // membership could not serve. The walk is over and its settlement
-            // placed every frame it could, so the frames still buffered are
-            // owed the one coalesced read that can admit their rows.
-            if (
-              this.followUpDelegateRead &&
-              rowsSettled &&
-              read.refresh === null &&
-              this.bufferedUnknownDelegates.size > 0
-            ) {
+            // membership could not serve. The walk is over and no page it
+            // served could place it, so the frames still buffered are owed
+            // the one coalesced read that can admit their rows.
+            if (this.followUpDelegateRead && read.refresh === null && this.bufferedUnknownDelegates.size > 0) {
               this.followUpDelegateRead = false;
               read.rootQueued = true;
             }
@@ -887,6 +881,13 @@ export class SessionActivityStore {
   private applyDelegateFrame(frame: EvenerDelegateInfo): void {
     if (!this.delegateFrameInScope(frame)) return;
     const rows = this.state.delegates.rows;
+    if (frame.childRef === undefined) {
+      // A legacy frame carries no identity, so everything but its heartbeat
+      // needs the read the revision ladder asks for.
+      this.mergeLegacyDelegateActivity(frame);
+      this.noteUnknownDelegate(frame, undefined);
+      return;
+    }
     let index = -1;
     if (frame.childRef !== undefined) {
       // The two fields are the identity the read row keys on; comparing them
@@ -911,7 +912,7 @@ export class SessionActivityStore {
       }
     }
     if (index === -1) {
-      this.noteUnknownDelegate(frame, frame.childRef === undefined ? undefined : delegateFrameIdentity(frame));
+      this.noteUnknownDelegate(frame, delegateFrameIdentity(frame));
       return;
     }
     const current = rows[index];
@@ -921,6 +922,34 @@ export class SessionActivityStore {
     const next = rows.slice();
     next[index] = merged;
     this.recordAppliedDelegate(merged, this.delegateEpoch());
+    this.publish({ delegates: { ...this.state.delegates, rows: next } });
+  }
+  /** A legacy frame cannot name its row, so its snapshot waits for the read
+   * its id's revision ladder asks for. Its delegate id, when the loaded set
+   * holds exactly one row under it, still names one child -- and
+   * latestActivityAt is the independent maximum every join takes, so the
+   * heartbeat can land directly: the producer's ReportActivityPhase advances
+   * activity without touching the durable projection revision, so the
+   * equal-revision ladder would otherwise drop a streaming legacy delegate's
+   * heartbeat and leave its row reading as quiet. An ambiguous or absent id,
+   * or an ordering with no established epoch, is left to the read. */
+  private mergeLegacyDelegateActivity(frame: EvenerDelegateInfo): void {
+    if (this.delegateEpoch() === undefined) return;
+    const rows = this.state.delegates.rows;
+    let at = -1;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (!row || row.delegateId !== frame.delegateId) continue;
+      // Two rows under the id leave the heartbeat unattributable, exactly as
+      // the frame's other fields: neither takes it.
+      if (at !== -1) return;
+      at = index;
+    }
+    if (at === -1) return;
+    const current = rows[at];
+    if (!current || !activityAfter(frame.latestActivityAt, current.latestActivityAt)) return;
+    const next = rows.slice();
+    next[at] = { ...current, latestActivityAt: frame.latestActivityAt };
     this.publish({ delegates: { ...this.state.delegates, rows: next } });
   }
   /** Hold the latest frame for an identity no loaded row can take, until a
@@ -1056,13 +1085,13 @@ export class SessionActivityStore {
   }
   /** Place the frames buffered for identities no loaded row could take -- or
    * for a row a frame matched before any read established the ordering's
-   * epoch. A read whose row set is settled -- the page served the whole
-   * collection, or a bounded refresh reached the displayed boundary -- carries
-   * a row under the same identity its frame named, so the frame takes exactly
-   * its own row. An identity the read does not serve keeps waiting: its row is
-   * not in the collection this read saw, and no other row may take its place. */
-  private settleBufferedFrames(settled: boolean): void {
-    if (!settled || this.bufferedUnknownDelegates.size === 0) return;
+   * epoch. A page that admits a row under the frame's identity places it on
+   * exactly that row, settled or not: the frame names its row directly, and
+   * the applied record protects the merge against every later page of the
+   * same read. An identity no loaded row carries keeps waiting: no other row
+   * may take its place. */
+  private settleBufferedFrames(): void {
+    if (this.bufferedUnknownDelegates.size === 0) return;
     const rows = this.state.delegates.rows as readonly SessionDelegate[];
     const loadedByIdentity = new Map<string, number>();
     for (let at = 0; at < rows.length; at += 1) {

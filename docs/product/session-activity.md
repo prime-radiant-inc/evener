@@ -483,11 +483,16 @@ logical owner. The frame carries the same child ref the read row's `childRef`
 names, so it patches exactly the loaded row that shares its delegate identity
 without a read: no row-set proof can reassign it to another child, because two
 rows under one delegate id never share a child ref. A frame from an older
-producer with no child ref can name no row, so it patches nothing itself and
-asks for one read per delegate id per strictly newer revision: the first frame
-for an id asks once, a repeat at the same or an older revision asks for
-nothing, and a terminal frame after a running one asks again, because only a
-read can land a legacy frame's change. An epoch change clears the ladder. A
+producer with no child ref can name no row, so it patches nothing but its
+heartbeat and asks for one read per delegate id per strictly newer revision:
+the first frame for an id asks once, a repeat at the same or an older revision
+asks for nothing, and a terminal frame after a running one asks again, because
+only a read can land a legacy frame's other changes. The heartbeat lands
+directly: the producer's activity publications advance `latestActivityAt`
+without touching the durable revision, so a legacy frame's advancing activity
+is taken by the one loaded row its delegate id names -- latestActivityAt is
+the independent maximum every join takes -- and an ambiguous or absent id is
+left to the read. An epoch change clears the ladder. A
 frame whose identity no loaded row matches
 asks for one read per identity per source epoch, and its latest frame waits for
 the read that admits its row. It reads
@@ -510,10 +515,13 @@ alone cannot recount them. An epoch the ordering has left is retired, and so is
 an announcement another one replaces, so a
 response that still names either is late rather than news: it does not re-retire
 the ordering or force a read, and a delegates read settling while such an
-announcement stands clears it. A buffered frame waits
-for the read whose row set is settled, which places it on the row its identity
-names, and leaves it waiting while that read does not
-serve it. A frame that matches a retained row before the first delegates
+announcement stands clears it. A buffered frame places on the row its
+identity names as soon as a page admits that identity, settled or not: the
+applied record protects the merge against every later page of the same read,
+so waiting for a settled read would strand a frame whose admitting page
+leaves the collection open with nothing but a user's paging to finish it.
+It keeps waiting while no loaded row carries its identity. A frame that
+matches a retained row before the first delegates
 response establishes the ordering's epoch is buffered until that response
 settles: recorded under no epoch, its merge would be first sight to the
 ordering the response establishes, and the response's older snapshot would
