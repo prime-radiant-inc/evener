@@ -7,7 +7,7 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { SessionActivityReadParams } from "@evener/appwire-client";
 import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
-import { CommonActions, StackRouter } from "@react-navigation/routers";
+import { CommonActions, StackActions, StackRouter } from "@react-navigation/routers";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -416,6 +416,52 @@ it("carries a covered conversation's identity through a Duo fold and reconstruct
 	await settle();
 	expect((stack.state.routes[0] as unknown as { params: { ref: string } }).params.ref).toBe("local:resumed");
 	act(() => reconstructed.unmount());
+});
+
+it("keeps a Reader on top when its conversation resumes before rerendering", async () => {
+	const router = StackRouter({ initialRouteName: "Conversation" });
+	const options = { routeNames: ["Conversation", "Reader"], routeParamList: {}, routeGetIdList: {} };
+	let state = router.getInitialState(options);
+	const conversation = { ...route, key: state.routes[0].key };
+	const withParams = router.getStateForAction(state, CommonActions.setParams(route.params), options);
+	if (!withParams) throw new Error("stack rejected session params");
+	state = router.getRehydratedState(withParams, options);
+	stack.state = state as typeof stack.state;
+	const dispatch = (action: Parameters<typeof router.getStateForAction>[1]) => {
+		const next = router.getStateForAction(state, action, options);
+		if (!next) throw new Error("stack rejected action");
+		state = router.getRehydratedState(next, options);
+		stack.state = state as typeof stack.state;
+	};
+	navigation.replace.mockImplementation((name, params) => dispatch(StackActions.replace(name, params)));
+	navigation.setParams.mockImplementation((params) =>
+		dispatch({ ...CommonActions.setParams(params), source: conversation.key }),
+	);
+	const { client } = sessionClient(thread, {});
+	harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+	const screenView = () => (
+		<SessionScreen route={conversation} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
+	);
+	const tree = render(screenView());
+	try {
+		await settle();
+		dispatch(StackActions.push("Reader", { hubId: "hub-1", sessionRef: ref, title: "Reader" }));
+		// The navigation state changes before React rerenders the covered conversation.
+		act(() => {
+			for (const listener of harness.identities) listener({ hubId: "hub-1", from: ref, to: "local:resumed" });
+			for (const listener of harness.identities)
+				listener({ hubId: "hub-1", from: "local:resumed", to: "local:resumed-again" });
+		});
+		expect(state.routes.map((entry) => entry.name)).toEqual(["Conversation", "Reader"]);
+		expect(state.routes[0].params).toMatchObject({ ref, pendingIdentity: "local:resumed-again" });
+		act(() => tree.update(screenView()));
+		dispatch(CommonActions.goBack());
+		act(() => tree.update(screenView()));
+		expect(state.routes).toHaveLength(1);
+		expect(state.routes[0].params).toMatchObject({ ref: "local:resumed-again" });
+	} finally {
+		act(() => tree.unmount());
+	}
 });
 
 // A session with shell jobs and no subagents has a Jobs list too, and the

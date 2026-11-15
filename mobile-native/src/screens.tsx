@@ -749,8 +749,11 @@ function ConversationScreenView({
 	useEffect(() => {
 		currentIdentity.current = route.params.ref;
 	}, [route.params.ref]);
-	const topmostNow = useRef(topmost);
-	topmostNow.current = topmost;
+	const isTopmostNow = useCallback(() => {
+		const state = navigation.getState();
+		const position = state.routes.findIndex((entry) => entry.key === route.key);
+		return position !== -1 && position === state.index;
+	}, [navigation, route.key]);
 	const replaceForIdentity = useCallback(
 		(to: string) => {
 			// Keep the route this screen was opened on: a Subagent route carries
@@ -778,19 +781,19 @@ function ConversationScreenView({
 			// for one). Replacing the conversation under it would release that host
 			// and dismiss the sheet without its discard guard. Hold the move until
 			// the conversation is topmost again; later changes replace the pending one.
-			if (topmostNow.current) replaceForIdentity(change.to);
+			if (isTopmostNow()) replaceForIdentity(change.to);
 			else {
 				pendingIdentity.current = change.to;
 				navigation.setParams({ pendingIdentity: change.to });
 			}
 		});
-	}, [recoveryAvailable, replaceForIdentity, route.params.hubId, navigation]);
+	}, [recoveryAvailable, replaceForIdentity, route.params.hubId, navigation, isTopmostNow]);
 	useEffect(() => {
-		if (!topmost || pendingIdentity.current === null) return;
+		if (!topmost || !isTopmostNow() || pendingIdentity.current === null) return;
 		const to = pendingIdentity.current;
 		pendingIdentity.current = null;
 		replaceForIdentity(to);
-	}, [topmost, replaceForIdentity]);
+	}, [topmost, isTopmostNow, replaceForIdentity]);
 	// Focus is permission for this view's actions, not ownership of the
 	// canonical data. A mounted view that comes back in front observes the
 	// shared store and asks for a read only when canonical authority is
