@@ -7,6 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { restoredStack } from "../location";
 import { hasTestID, markers, withTestID } from "../markerTestUtils";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
 import {
@@ -68,6 +69,7 @@ const KEY = { sessionRef: "local:fix", path: PATH };
 const PARAMS: {
 	hubId: string;
 	sessionRef: string;
+	messageSessionRef?: string;
 	path: string;
 	sessionTitle: string;
 	root?: "artifacts";
@@ -413,6 +415,90 @@ it("returns to the owning conversation after its session resumes elsewhere", asy
 	await settle();
 	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
 	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
+});
+
+it("returns from a restored Reader to the conversation that receives its review", async () => {
+	const resumed = "local:fix-2";
+	const restored = restoredStack({
+		hubId: "studio",
+		conversation: { ref: resumed, title: PARAMS.sessionTitle },
+		reader: {
+			sessionRef: PARAMS.sessionRef,
+			messageSessionRef: resumed,
+			path: PATH,
+			reference: { path: PATH, cwd: "/work/old", readTarget: `/work/old/${PATH}`, provenance: "relative" },
+		},
+	});
+	const routes: { key: string; name: string; params?: object }[] = [
+		...restored.routes.map((route, index) => ({ ...route, key: String(index) })),
+		{ key: "review", name: "ReviewSheet", params: { ...PARAMS, messageSessionRef: resumed } },
+	];
+	let index = routes.length - 1;
+	sheetNavigation.getState = () => ({ index, routes });
+	sheetNavigation.pop.mockImplementation((count: number) => {
+		index -= count;
+		routes.splice(index + 1);
+	});
+	sheetNavigation.navigate.mockImplementation((name: string, params: object) => {
+		routes.push({ key: String(routes.length), name, params });
+		index = routes.length - 1;
+	});
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	runtime.registerTarget("studio", resumed, client);
+	const tree = await mount({ ...PARAMS, messageSessionRef: resumed });
+	choose(tree, "Approve");
+	await send(tree);
+	expect(
+		client.calls.some((call) => call.method === "turn/start" && (call.params as { ref: string }).ref === resumed),
+	).toBe(true);
+	expect(routes[index]?.name).toBe("Conversation");
+	expect(routes[index]?.params).toMatchObject({ ref: resumed });
+});
+
+it("returns from a restored Reader to its owning route when the review resumes the message session again", async () => {
+	const resumed = "local:fix-2";
+	const next = "local:fix-3";
+	const restored = restoredStack({
+		hubId: "studio",
+		conversation: { ref: resumed, title: PARAMS.sessionTitle },
+		reader: {
+			sessionRef: PARAMS.sessionRef,
+			messageSessionRef: resumed,
+			path: PATH,
+			reference: { path: PATH, cwd: "/work/old", readTarget: `/work/old/${PATH}`, provenance: "relative" },
+		},
+	});
+	const routes: { key: string; name: string; params?: object }[] = [
+		...restored.routes.map((route, index) => ({ ...route, key: String(index) })),
+		{ key: "review", name: "ReviewSheet", params: { ...PARAMS, messageSessionRef: resumed } },
+	];
+	let index = routes.length - 1;
+	sheetNavigation.getState = () => ({ index, routes });
+	sheetNavigation.pop.mockImplementation((count: number) => {
+		index -= count;
+		routes.splice(index + 1);
+	});
+	sheetNavigation.navigate.mockImplementation((name: string, params: object) => {
+		routes.push({ key: String(routes.length), name, params });
+		index = routes.length - 1;
+	});
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		const owner = routes.find((route) => route.name === "Conversation");
+		if (owner?.params) Object.assign(owner.params, { pendingIdentity: next });
+		return readAt(next);
+	};
+	runtime.registerTarget("studio", resumed, client);
+	const tree = await mount({ ...PARAMS, messageSessionRef: resumed });
+	choose(tree, "Approve");
+	await send(tree);
+	expect(
+		client.calls.some((call) => call.method === "turn/start" && (call.params as { ref: string }).ref === next),
+	).toBe(true);
+	expect(routes[index]?.name).toBe("Conversation");
+	expect(routes[index]?.params).toMatchObject({ ref: resumed, pendingIdentity: next });
 });
 
 it("keeps a review pending when its send read finishes after the target moves", async () => {

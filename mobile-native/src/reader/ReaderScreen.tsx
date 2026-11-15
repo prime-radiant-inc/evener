@@ -42,7 +42,7 @@ import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { holdQuote } from "../session/pendingQuote";
 import { BackButton } from "../session/BackButton";
-import { popsToSession, returnToSession } from "../session/returnToSession";
+import { owningSessionRef, returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -351,11 +351,14 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		shareDocument(reference.readTarget, reference.path);
 	}, [shareDocument, reference.readTarget, reference.path]);
 	const returnToOwner = useCallback(() => {
-		// The covered route still has the document's original ref until it
-		// becomes topmost; without that route, open the resolved message ref.
-		const ref = popsToSession(navigation.getState(), sessionRef) !== null ? sessionRef : messageRef;
+		const ref = owningSessionRef(navigation.getState(), {
+			hubId,
+			documentRef: sessionRef,
+			openedMessageRef,
+			messageRef,
+		});
 		returnToSession(navigation, { hubId, ref, title: sessionTitle });
-	}, [navigation, hubId, sessionRef, messageRef, sessionTitle]);
+	}, [navigation, hubId, sessionRef, openedMessageRef, messageRef, sessionTitle]);
 
 	useEffect(() => {
 		const items: NativeStackHeaderItem[] = [

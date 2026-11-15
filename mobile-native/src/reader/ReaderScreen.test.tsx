@@ -869,6 +869,33 @@ it("pops to the conversation that owns the reader after its identity changes", a
 	expect(navigation.navigate).not.toHaveBeenCalled();
 });
 
+it("returns from a restored Reader to its covered owner after another resume", async () => {
+	stack.state.routes[1] = {
+		key: "fix",
+		name: "Conversation",
+		params: { hubId: "studio", ref: "local:fix-2", pendingIdentity: "local:fix-3", title: "Fix race" },
+	};
+	const { navigation } = await mount(PATH, { messageSessionRef: "local:fix-2" });
+	const listener = identity.listeners.at(-1);
+	if (!listener) throw new Error("the reader did not subscribe to identity changes");
+	act(() => listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" }));
+	await settle();
+	navigation.pop.mockImplementation((count: number) => {
+		stack.state.index -= count;
+		stack.state.routes.splice(stack.state.index + 1);
+	});
+	navigation.navigate.mockImplementation((name: string, params: object) => {
+		stack.state.routes.push({ key: String(stack.state.routes.length), name, params });
+		stack.state.index = stack.state.routes.length - 1;
+	});
+	menuAction(navigation, "Open session").onPress();
+	expect(stack.state.routes[stack.state.index]).toMatchObject({
+		name: "Conversation",
+		params: { ref: "local:fix-2", pendingIdentity: "local:fix-3" },
+	});
+	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
 it("saves a Reader's resumed message identity while keeping its original document", async () => {
 	const { navigation, params } = await mount();
 	navigation.setParams.mockImplementation((next) => Object.assign(params, next));

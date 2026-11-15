@@ -11,7 +11,7 @@ import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useConnection } from "../ConnectionProvider";
 import { getNativeMutationRuntime, subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
-import { returnToSession } from "../session/returnToSession";
+import { owningSessionRef, returnToSession } from "../session/returnToSession";
 import type { SendAction } from "../session/sendAction";
 import { SendButton } from "../session/SendButton";
 import { readSendAction, type SessionTarget, submitSessionMessage } from "../session/sessionMessage";
@@ -116,9 +116,17 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			return;
 		}
 		memory.clearComments(key);
-		// Return to the conversation that owns the document; its deferred
-		// replacement moves it to the resolved ref after this sheet closes.
-		sheet.finish(() => returnToSession(navigation, { hubId, ref: sessionRef, title: sessionTitle }));
+		// The owning route may still have the document's ref under this sheet;
+		// a restored reader instead sits above the resolved message session.
+		sheet.finish(() => {
+			const ref = owningSessionRef(navigation.getState(), {
+				hubId,
+				documentRef: sessionRef,
+				openedMessageRef,
+				messageRef: messageRef.current,
+			});
+			returnToSession(navigation, { hubId, ref, title: sessionTitle });
+		});
 	};
 
 	const why = !online
