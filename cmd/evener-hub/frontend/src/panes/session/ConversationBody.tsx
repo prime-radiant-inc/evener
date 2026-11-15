@@ -24,9 +24,11 @@ import {
   useBlockedMutationEntries,
   useCanceledMessageEntries,
   useEditablePendingMutationIds,
+  usePendingMessages,
   usePendingTurnEntries,
   useRecoveryMessageEntries,
 } from "./composer/queue/pendingTurnsStore";
+import { useActiveRecoveryId } from "./composer/queueRowInsert";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
@@ -287,7 +289,19 @@ function LiveConversationBody({
     model.resumeRequired !== true &&
     !restartPending &&
     !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
-  const heldEpoch = useHeldSteerEpoch(ref, pendingEntries, heldSurfaceLive);
+  // The new-content pill's arrival edge counts the visible pending
+  // MESSAGES, not this client's pending entries: the reconcile excludes
+  // identities the daemon's queue reflects, so an entries-keyed epoch never
+  // fired for a queue row another client queued (issue #6363). This is the
+  // same visible set the stack renders - the projection minus the live
+  // recovery composition, which is already on screen as the composition
+  // under edit.
+  const heldMessages = usePendingMessages(ref);
+  const heldActiveRecoveryId = useActiveRecoveryId(ref);
+  const heldVisibleMessages = heldActiveRecoveryId
+    ? heldMessages.filter((row) => row.recovery?.clientMutationId !== heldActiveRecoveryId)
+    : heldMessages;
+  const heldEpoch = useHeldSteerEpoch(ref, heldVisibleMessages, heldSurfaceLive);
   // The full pending set decides the trailing row: held steers, in-flight
   // sends, queued rows, and the durable failure families all render as
   // transcript rows now (the one-rendering rule), so the row mounts for any
