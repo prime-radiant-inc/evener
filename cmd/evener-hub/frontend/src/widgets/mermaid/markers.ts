@@ -4,3 +4,8 @@
 // own module so those non-widget callers import the string alone instead of the
 // whole widget.
 export const MERMAID_DIAGRAM_ATTR = "data-mermaid-diagram";
+
+// A mermaid fence's language, shown in a code block's header and in the
+// fallback a diagram that fails to render becomes. Find reads it as a word on
+// screen, so both the widget and that reader name it from here.
+export const MERMAID_FENCE_LANGUAGE = "mermaid";

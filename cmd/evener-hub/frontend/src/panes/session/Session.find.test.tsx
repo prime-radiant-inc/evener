@@ -228,9 +228,15 @@ test("a popout holding only a dormant session still opens Find in that popout", 
     { container: popdoc.body },
   );
 
-  const elsewhere = popdoc.createElement("button");
-  popdoc.body.append(elsewhere);
-  elsewhere.focus();
+  // The reader is in the popout; the opener holds focus of its own.
+  const openerTarget = document.createElement("button");
+  openerTarget.tabIndex = 0;
+  document.body.append(openerTarget);
+  act(() => openerTarget.focus());
+  const inPopout = popdoc.createElement("button");
+  inPopout.tabIndex = 0;
+  popdoc.body.append(inPopout);
+  act(() => inPopout.focus());
   const chord = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
     key: "f",
     code: "KeyF",
@@ -239,13 +245,22 @@ test("a popout holding only a dormant session still opens Find in that popout", 
     cancelable: true,
   });
   act(() => {
-    elsewhere.dispatchEvent(chord);
+    inPopout.dispatchEvent(chord);
   });
 
   expect(chord.defaultPrevented).toBe(true);
   const bar = popdoc.querySelector("[data-find-bar]");
   expect(bar).not.toBeNull();
   expect(document.querySelector("[data-find-bar]")).toBeNull();
+  // Escape must not move the reader's keyboard into the opener's window. The
+  // dormant surface has no scroll element, so the remembered target comes from
+  // the supplied document; an opener element is focusable and `isConnected`,
+  // and restoring it would pull focus out of the popout.
+  fireEvent.keyDown(bar as HTMLElement, { key: "Escape" });
+  expect(popdoc.querySelector("[data-find-bar]")).toBeNull();
+  expect(document.activeElement).not.toBe(openerTarget);
+  expect(popdoc.activeElement).toBe(inPopout);
   mounted.unmount();
+  openerTarget.remove();
   frame.remove();
 });

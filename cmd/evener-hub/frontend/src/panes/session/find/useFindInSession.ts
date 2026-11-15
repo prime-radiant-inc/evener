@@ -17,6 +17,7 @@ import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
 import { installKeybindings } from "../../../shell/installKeybindings";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import type { VirtualListHandle } from "../../../widgets";
+import { mermaidRenderVersion, subscribeMermaidRender } from "../../../widgets/mermaid/renderState";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
 import { type FindHit, findHits, indexOfMatch, isOverlay } from "./findHits";
@@ -186,12 +187,17 @@ export function useFindInSession({
 
   const query = find?.query ?? "";
   const needle = findNeedle(query);
+  // A diagram renders asynchronously: one can fail while Find is open, which
+  // puts its source on screen and must add matches without the query or the
+  // rows changing. The counter re-runs the search below when that happens.
+  const [renderVersion, setRenderVersion] = useState(0);
+  useEffect(() => subscribeMermaidRender(() => setRenderVersion(mermaidRenderVersion())), []);
   // Rows re-project on every streamed token, usually without changing the
   // matches; keeping the same array then keeps the marks and the step from
   // being redone for nothing.
   const lastHits = useRef<FindHit[]>([]);
   const hits = useMemo(() => {
-    const next = isOpen ? findHits(rows, query) : [];
+    const next = isOpen ? findHits(rows, query, renderVersion) : [];
     const previous = lastHits.current;
     const same =
       next.length === previous.length &&
@@ -206,7 +212,7 @@ export function useFindInSession({
       });
     if (!same) lastHits.current = next;
     return lastHits.current;
-  }, [isOpen, rows, query]);
+  }, [isOpen, rows, query, renderVersion]);
   const currentIndex =
     find == null || find.key === null || find.item === null
       ? -1
@@ -219,7 +225,9 @@ export function useFindInSession({
 
   const openWith = useCallback(
     (request?: { query?: string; itemId?: string }) => {
-      const active = (listRef.current?.getScrollElement()?.ownerDocument ?? document).activeElement;
+      // The reader's window, not the module's: a popout is its own document,
+      // and a dormant session has no scroll element to resolve it from.
+      const active = (listRef.current?.getScrollElement()?.ownerDocument ?? ownerDocument).activeElement;
       if (active !== null && active.closest("[data-find-bar]") === null) returnFocus.current = active;
       setFocusEpoch((epoch) => epoch + 1);
       if (request?.query !== undefined) setJumpEpoch((epoch) => epoch + 1);
@@ -231,7 +239,7 @@ export function useFindInSession({
         return { ref, query: request.query, ...matchOf(picked), seek: null };
       });
     },
-    [ref, listRef],
+    [ref, listRef, ownerDocument],
   );
   const open = useCallback(() => openWith(), [openWith]);
 
@@ -246,9 +254,13 @@ export function useFindInSession({
     setState(null);
     const target = returnFocus.current;
     returnFocus.current = null;
-    if (isFocusable(target) && target.isConnected) target.focus();
+    // A popout is its own document, and an element there is `isConnected`
+    // within it: focusing a target captured from the opener's document would
+    // move the reader's focus into a different window. The restore stays in
+    // the window the reader is in.
+    if (isFocusable(target) && target.isConnected && target.ownerDocument === ownerDocument) target.focus();
     else requestComposerFocus(ref, paneId);
-  }, [ref, paneId]);
+  }, [ref, paneId, ownerDocument]);
 
   const setQuery = useCallback(
     (next: string) => {

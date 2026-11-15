@@ -9,6 +9,7 @@ import { fenceLanguage, type ItemModel, pendingTextJoined } from "@evener/appwir
 import type { Token } from "marked";
 import { splitMarkdownSegments } from "../../../widgets/markdown/segments";
 import { closeOpenMarkdown } from "../../../widgets/markdown/streaming";
+import { MERMAID_FENCE_LANGUAGE } from "../../../widgets/mermaid/markers";
 import { mermaidSourceShown } from "../../../widgets/mermaid/renderState";
 
 // Marked preserves only semicolon-terminated references in ordinary text;
@@ -82,9 +83,10 @@ function markdownAsRead(source: string, live: boolean): string {
   // Mermaid fence as code: the synthetic closer is not a finished diagram.
   for (const segment of splitMarkdownSegments(closed, live ? source : null)) {
     // A diagram that failed to render falls back to a code block holding its
-    // source, so those words are on screen and must be searchable.
+    // source under the fence's language header, so those words are on screen
+    // and must be searchable.
     if (segment.kind === "markdown") read(segment.tokens, into);
-    else if (mermaidSourceShown(segment.text)) into.push(segment.text, "\n");
+    else if (mermaidSourceShown(segment.text)) into.push(MERMAID_FENCE_LANGUAGE, "\n", segment.text, "\n");
   }
   return into.join("");
 }

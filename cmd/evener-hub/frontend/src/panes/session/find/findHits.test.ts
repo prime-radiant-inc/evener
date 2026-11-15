@@ -230,3 +230,17 @@ test("a failed diagram's source becomes searchable when it falls back to code", 
   act(() => noteMermaidRender(source, "ok"));
   expect(findHits(rows, "secretNode")).toEqual([]);
 });
+
+// The fallback shows the same language header a mermaid fenced block does, so
+// "mermaid" is a word on screen and Find has to land on it.
+test("a failed diagram's language header becomes searchable too", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> secretNode";
+  const reply = `The flow:\n\n${fence}mermaid\n${source}\n${fence}\n\nDone.`;
+  const rows = [turnRow("t", [message("drawn", reply)])];
+  expect(findHits(rows, "mermaid")).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "mermaid").map((hit) => hit.key)).toEqual(["drawn"]);
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "mermaid")).toEqual([]);
+});

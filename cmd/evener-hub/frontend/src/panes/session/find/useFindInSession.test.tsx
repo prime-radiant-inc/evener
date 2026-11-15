@@ -25,6 +25,7 @@ import { useOwnedDocument } from "../../../widgets/internal/useOwnedDocument";
 import { transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { resetTranscriptPagingForTests, useTranscript } from "../transcript/useTranscript";
 import "../index";
+import { noteMermaidRender, resetMermaidRenderStateForTests } from "../../../widgets/mermaid/renderState";
 import { FindBar } from "./FindBar";
 import { FIND_CURRENT_ATTRIBUTE } from "./findMarks";
 import { requestFindInSession, resetFindRequestsForTests } from "./findRequest";
@@ -189,6 +190,7 @@ beforeEach(() => {
   resetTranscriptPagingForTests();
   resetWorkspaceStoreForTests();
   resetFindRequestsForTests();
+  resetMermaidRenderStateForTests();
   jumps.length = 0;
   holds = 0;
   releases = 0;
@@ -1103,4 +1105,21 @@ test("with no match current, stepping in either direction starts at the newest m
   newer();
   await waitFor(() => expect(state()).toMatchObject({ position: 1, count: 3 }));
   expect(currentAnchor()).toBe("t3-item");
+});
+
+test("a diagram that fails while Find is open adds its source to the matches", async () => {
+  const client = connectReadyFakeClient();
+  const source = "flowchart TD\n  A --> hiddenNode";
+  scriptHistory(client, [turn("t1", `The flow:\n\n\`\`\`mermaid\n${source}\n\`\`\`\n\nDone.`)], []);
+  await mount(client);
+  openFind();
+  type("hiddenNode");
+  expect(state()).toMatchObject({ status: "none", count: 0 });
+
+  // The render resolves after the search, and it fails: the source is now code
+  // on screen, so the match must appear without the query changing.
+  await act(async () => {
+    noteMermaidRender(source, "error");
+  });
+  expect(state()).toMatchObject({ status: "matches", count: 1 });
 });

@@ -74,10 +74,9 @@ export function indexOfMatch(
 // item is read again; every other entry is a substring test.
 const haystacks = new WeakMap<ItemModel, { version: number; text: string | null }>();
 
-function haystack(item: ItemModel): string | null {
+function haystack(item: ItemModel, version: number): string | null {
   // A diagram renders asynchronously, so one can fail after this message was
   // first read; the version changes then and the text is read again.
-  const version = mermaidRenderVersion();
   const cached = haystacks.get(item);
   if (cached === undefined || cached.version !== version) {
     const shown = messageAsShown(item);
@@ -88,19 +87,25 @@ function haystack(item: ItemModel): string | null {
   return cached.text;
 }
 
-function matches(entry: ProjectedEntry, needle: string): boolean {
-  return entry.kind === "item" && entry.isMessage && (haystack(entry.item)?.includes(needle) ?? false);
+function matches(entry: ProjectedEntry, needle: string, version: number): boolean {
+  return entry.kind === "item" && entry.isMessage && (haystack(entry.item, version)?.includes(needle) ?? false);
 }
 
-/** The messages holding `query`, oldest first. */
-export function findHits(rows: readonly TranscriptBodyRow[], query: string): FindHit[] {
+/** The messages holding `query`, oldest first. `version` is the diagram render
+ * state the text is read at: a caller that must react when a diagram fails
+ * passes the version it subscribed to, so the search is redone then. */
+export function findHits(
+  rows: readonly TranscriptBodyRow[],
+  query: string,
+  version: number = mermaidRenderVersion(),
+): FindHit[] {
   const needle = findNeedle(query);
   if (needle === "") return [];
   const hits: FindHit[] = [];
   rows.forEach((row, rowIndex) => {
     if (row.kind !== "turn") return;
     for (const entry of row.turn.entries) {
-      if (!matches(entry, needle)) continue;
+      if (!matches(entry, needle, version)) continue;
       const { id, callId, roundId } = entry.item;
       hits.push({
         key: entryDisplayKey(entry),

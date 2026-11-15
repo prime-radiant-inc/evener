@@ -38,6 +38,16 @@ describe("what counts as a find match", () => {
     const at = findIndexIn(readable, findNeedle("needle"));
     expect(readable.slice(at, at + "needle".length)).toBe("needle");
   });
+
+  it("finds a later occurrence when the first sits inside a character's expansion", () => {
+    // "İ" lower-cases to "i" plus a combining dot, and this text also holds
+    // that dot as a character of its own. The needle's first lower-cased
+    // occurrence starts on the expansion's dot, where no character of the text
+    // begins; its next starts at the dot that is a character. A snippet is cut
+    // at the second, so the walk has to try past the first.
+    const readable = findReadable("İb\u0307b");
+    expect(findIndexIn(readable, findNeedle("\u0307b"))).toBe(2);
+  });
 });
 
 describe("stepping between matches", () => {

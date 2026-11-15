@@ -11,6 +11,7 @@
 
 import {
   type AppwireClientLike,
+  findIndexIn,
   findNeedle,
   type ItemModel,
   type SearchResponse,
@@ -78,7 +79,7 @@ export function findInSessionMatches(model: ThreadModel, query: string): InSessi
       for (const raw of itemSearchTexts(item)) {
         const text = normalizeWhitespace(raw);
         if (!text) continue;
-        const hit = text.toLowerCase().indexOf(q);
+        const hit = findIndexIn(text, q);
         if (hit < 0) continue;
         out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, q.length) });
       }
@@ -104,11 +105,12 @@ export function buildSnippet(text: string, hit: number, len: number): HighlightP
 
 export function highlightParts(text: string, query: string): HighlightPart[] {
   if (!query) return [{ text, mark: false }];
-  const i = text.toLowerCase().indexOf(query.toLowerCase());
+  const needle = findNeedle(query);
+  const i = findIndexIn(text, needle);
   if (i < 0) return [{ text, mark: false }];
   return [
     { text: text.slice(0, i), mark: false },
-    { text: text.slice(i, i + query.length), mark: true },
-    { text: text.slice(i + query.length), mark: false },
+    { text: text.slice(i, i + needle.length), mark: true },
+    { text: text.slice(i + needle.length), mark: false },
   ];
 }

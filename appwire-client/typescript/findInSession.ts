@@ -22,22 +22,30 @@ export function findReadable(text: string): string {
  * A caller slices the readable text at the result, so the index counts
  * characters of `readable`, never of its lower-cased copy. Lower-casing can
  * make one character into two units ("İ" becomes "i" plus a combining dot),
- * which shifts every offset after it: the walk below keeps the two in step. */
+ * which shifts every offset after it: the table below keeps the two in step.
+ * Such an expansion can also place a copy offset where no character begins, so
+ * an occurrence starting there is skipped in favor of the next one. */
 export function findIndexIn(readable: string, needle: string): number {
   if (needle === "") return -1;
-  const at = readable.toLowerCase().indexOf(needle);
-  if (at < 0) return -1;
-  // Count the lower-cased units each character contributes until the match's
-  // offset in the copy is reached. The match cannot begin inside a character's
-  // expansion, since the needle came from text findReadable trimmed.
+  const loweredText = readable.toLowerCase();
+  // Where each offset of the lower-cased copy begins in `readable`. An offset
+  // inside a character's expansion has no entry: no character starts there.
+  const starts: number[] = [];
   let lowered = 0;
   let index = 0;
   for (const char of readable) {
-    if (lowered === at) return index;
+    starts[lowered] = index;
     lowered += char.toLowerCase().length;
     index += char.length;
   }
-  return lowered === at ? index : -1;
+  starts[lowered] = index;
+  // A match can begin inside an expansion, so try each occurrence until one
+  // starts on a character.
+  for (let at = loweredText.indexOf(needle); at >= 0; at = loweredText.indexOf(needle, at + 1)) {
+    const start = starts[at];
+    if (start !== undefined) return start;
+  }
+  return -1;
 }
 
 export function textMatchesFind(text: string, needle: string): boolean {
