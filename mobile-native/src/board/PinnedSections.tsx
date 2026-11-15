@@ -3,7 +3,7 @@ import { SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useReducer } from "react";
 import { type LayoutChangeEvent, Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { sectionLabel } from "./attention";
+import { sectionLabel } from "@evener/appwire-client/state/navigation";
 import { bandHeaderText, FoldChevron } from "./BoardRow";
 import { foldedSections } from "./nativeBoardMemory";
 

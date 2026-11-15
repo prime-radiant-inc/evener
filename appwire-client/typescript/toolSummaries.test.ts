@@ -19,8 +19,7 @@ import {
 // (agent/testdata/toolwire), merged as a client holds it. The core tools'
 // words are the web's, lifted unchanged.
 test.each<[ToolWireCall, string]>([
-  // The tool numbers a file's final empty line too.
-  ["call_read_file", "Read agent/tree.go · lines 1-4"],
+  ["call_read_file", "Read agent/tree.go · lines 1-3"],
   ["call_read_file_range", "Read agent/tree.go · lines 2-3"],
   ["call_grep", 'Searched "func settle" in agent (*.go) · 2 hits'],
   // A note after the hits, past a blank line, is not one of them.

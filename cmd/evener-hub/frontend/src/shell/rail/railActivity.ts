@@ -1,7 +1,7 @@
 // The rail's read of the hub's activity pulse (evener/activity/read), and the
 // one place a working row's status words are decided. The native Board settles
 // a working row through the same data in the same order
-// (mobile-native/src/board/attention.ts): running subagents first, then quiet
+// (liveAttention in @evener/appwire-client/state/navigation): running subagents first, then quiet
 // or stuck, then the session's latest tool intent, then the job it is running,
 // then the bare state word (#3637).
 //
@@ -24,6 +24,7 @@ import {
   quietState,
   type SessionActivity,
 } from "@evener/appwire-client";
+import { waitingOnSubagents } from "@evener/appwire-client/state/navigation";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../stores/connection";
 import { STATUS_LABEL } from "../../widgets";
@@ -141,10 +142,6 @@ export type RailStatusKind =
 export interface RailStatus {
   kind: RailStatusKind;
   text: string;
-}
-
-function waitingOnSubagents(count: number): string {
-  return `Waiting on ${count} subagent${count === 1 ? "" : "s"}`;
 }
 
 /** A working session's status words: the Board's precedence, with the row's

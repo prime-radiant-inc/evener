@@ -5,7 +5,12 @@
 // one list is what lets a row that changes band move instead of leaving and
 // arriving. `group` names the section container an item draws inside.
 import type { NavigationPinSectionDescriptor, NavigationSessionSummary } from "@evener/appwire-client";
-import { type Band, type ClassifiedRow, LIVE_BAND_ORDER, type LiveBands } from "./attention";
+import {
+	type Band,
+	type ClassifiedRow,
+	LIVE_BAND_ORDER,
+	type LiveBands,
+} from "@evener/appwire-client/state/navigation";
 import type { ProjectSection, ProjectTreeItem } from "./projectTree";
 
 export type LiveBand = Exclude<Band, "idle">;

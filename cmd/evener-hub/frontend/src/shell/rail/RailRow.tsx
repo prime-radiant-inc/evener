@@ -4,7 +4,8 @@
 // one compact line: an outdented status indicator when action or work is
 // present, the title, a trailing disclosure chevron, and the age/actions
 // slot. Session context that used to make rows taller lives in the title's
-// HoverCard. Pure presentation: every
+// HoverCard; a row in one of Live's bands may add one second line saying why
+// it is there (RailWhy). Pure presentation: every
 // mutation goes back out through the `actions` prop, which Rail.tsx
 // implements against actions.ts + the tree store's refresh().
 //
@@ -40,9 +41,11 @@ import {
   watchGloss,
 } from "@evener/appwire-client";
 import {
+  type Band,
+  type BoardState,
   quotaWaitRemainingMs,
-  subagentTallyToShow,
   waitingForQuotaText,
+  whyLine,
 } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
 import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
@@ -79,7 +82,8 @@ import styles from "./RailRow.module.css";
 import { type RailActivityRead, type RailStatus, useSessionActivityRead, workingStatus } from "./railActivity";
 import {
   activeWatchCount,
-  displayState,
+  type BandRailNode,
+  effectiveSessionState,
   type HostRailNode,
   type OverflowRailNode,
   type ProjectRailNode,
@@ -110,6 +114,10 @@ const CLASS = {
   contextStatus: requireClass(styles.contextStatus, "RailRow.module.css", "contextStatus"),
   contextSummary: requireClass(styles.contextSummary, "RailRow.module.css", "contextSummary"),
   quotaWait: requireClass(styles.quotaWait, "RailRow.module.css", "quotaWait"),
+  why: requireClass(styles.why, "RailRow.module.css", "why"),
+  whyReason: requireClass(styles.whyReason, "RailRow.module.css", "whyReason"),
+  bandLabel: requireClass(styles.bandLabel, "RailRow.module.css", "bandLabel"),
+  bandCount: requireClass(styles.bandCount, "RailRow.module.css", "bandCount"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
@@ -156,6 +164,8 @@ export { watchCadenceLabel, watchDurationLabel, watchGloss };
 
 export interface RailRowActions {
   onOpenOverview(session: RailSession): void;
+  /** A row's menu opened (true) or closed (false) one of its dialogs. */
+  onRowDialogChange(open: boolean): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -390,6 +400,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
         onDelete: () => actions.onDeleteSession(session),
       }}
       triggerTabIndex={-1}
+      onDialogOpenChange={actions.onRowDialogChange}
     />
   );
 }
@@ -468,26 +479,60 @@ function RailQuotaWait({ session }: { session: RailSession }): ReactNode {
   );
 }
 
-function effectiveSessionState(session: RailSession): string {
-  const presented = displayState(session);
-  const tally = isTopLevelSession(session) ? subagentTallyToShow(session) : null;
-  if (presented === "errored") return "errored";
-  // Only attention that waits on a person outranks work: a question, an
-  // approval (which displayState presents as awaiting), or a restart. A
-  // finished turn (awaiting without a question) is not attention: running
-  // work reads as working instead (#2629). A warning shares the amber dot
-  // family only when it also blocks on a question; otherwise running jobs
-  // remain what is happening.
-  const attentionOutranksWork =
-    (presented === "awaiting" && session.ask_pending === true) ||
-    session.approval_pending === true ||
-    presented === "restartRequired" ||
-    (presented === "warning" && session.ask_pending === true);
-  if (attentionOutranksWork) return presented;
-  if (session.state === "active" || (session.running_job_count ?? 0) > 0 || (tally?.running ?? 0) > 0) {
-    return "active";
-  }
-  return presented;
+// RailWhy is a Live row's second line: why the row sits in its band, then its
+// host where the band has to name it (liveBandNodes). It prints only what the
+// band header and the dot do not already say: which kind of attention a
+// Needs-you row wants, and what a working row is waiting on or running. A row
+// that is simply working or idle keeps its one line. Only a row waiting out a
+// usage limit counts down, so only that row reads the rail's clock
+// (RailWhyTicking): every other line is a function of the summary alone and
+// stays asleep through a tick.
+interface RailWhyProps {
+  session: RailSession;
+  state: BoardState;
+  host?: { label: string; online: boolean };
+}
+
+function RailWhy(props: RailWhyProps): ReactNode {
+  return props.session.failure?.resumes_at ? <RailWhyTicking {...props} /> : <RailWhyLine {...props} now={0} />;
+}
+
+function RailWhyTicking(props: RailWhyProps): ReactNode {
+  return <RailWhyLine {...props} now={useRailNow()} />;
+}
+
+function RailWhyLine({ session, state, host, now }: RailWhyProps & { now: number }): ReactNode {
+  const line = whyLine({ row: session, state }, undefined, 0, now);
+  // A reason line's word names the attention; the sentence after it only
+  // tells the reader to open the session, which the row already invites. The
+  // bare state word repeats the band's own name.
+  const said =
+    line === null || line.kind === "state"
+      ? undefined
+      : line.kind === "reason"
+        ? { text: line.word, hue: line.hue, kind: line.kind }
+        : { text: line.text, hue: undefined, kind: line.kind };
+  if (said === undefined && host === undefined) return null;
+  return (
+    <span data-testid="rail-row-why" className={CLASS.why}>
+      {said !== undefined && (
+        <span
+          data-testid="rail-row-why-text"
+          data-why-kind={said.kind}
+          data-hue={said.hue}
+          className={said.hue === undefined ? undefined : CLASS.whyReason}
+        >
+          {said.text}
+        </span>
+      )}
+      {said !== undefined && host !== undefined && " · "}
+      {host !== undefined && (
+        <span data-testid="rail-row-why-host" data-host-online={host.online ? "true" : "false"}>
+          {host.online ? host.label : `${host.label} (offline)`}
+        </span>
+      )}
+    </span>
+  );
 }
 
 function sessionStatusLabel(
@@ -669,7 +714,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           />
           <TrailingChevron info={info} />
         </span>
-        {cadenceStateFor(effectiveState) === "working" && <RailQuotaWait session={session} />}
+        {node.live !== undefined ? (
+          <RailWhy session={session} state={node.live} host={node.liveHost} />
+        ) : (
+          cadenceStateFor(effectiveState) === "working" && <RailQuotaWait session={session} />
+        )}
       </span>
       {/* The timestamp shares its slot with hover actions. */}
       <span className={CLASS.rightSlot}>
@@ -837,6 +886,32 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   );
 }
 
+// One of Live's bands as a fold: its name, and how many sessions it holds.
+// The count rides a Badge so a collapsed band still says what it hides, and
+// only Needs you spends the attention hue - the same rule the project row's
+// rollup follows.
+const BAND_LABEL: Record<Band, string> = { needsYou: "Needs you", working: "Working", idle: "Idle" };
+
+function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
+  return (
+    <span className={CLASS.railRow} data-testid="rail-row-band" data-band={node.band}>
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          <span className={`${CLASS.label} ${CLASS.bandLabel}`} onClick={info.activate}>
+            {BAND_LABEL[node.band]}
+          </span>
+          <TrailingChevron info={info} />
+        </span>
+      </span>
+      <span className={CLASS.bandCount} data-testid="rail-row-band-count">
+        <Badge count={node.children.length} tone={node.band === "needsYou" ? "attention" : undefined} />
+      </span>
+    </span>
+  );
+}
+
 // The clock a watch row leads with, DRAWN rather than typed: the app's font
 // ranges stop at U+2215, so a "◷" (or any other clock code point) falls back
 // to a system font - and the rail's accessible name is name-from-content, so a
@@ -951,6 +1026,8 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
       );
     case "host":
       return <HostRow node={node} info={info} />;
+    case "band":
+      return <BandRow node={node} info={info} />;
     case "session":
       return <SessionRow node={node} info={info} actions={actions} />;
   }
