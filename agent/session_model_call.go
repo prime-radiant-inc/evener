@@ -195,6 +195,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// the N4 replay-provenance exemption either way, so re-reading the
 	// baseline here changes no exemption decision — it only re-pairs the
 	// boundary with the exact history it guards.
+	//
+	// The capture also holds the transcript door: a fold publishes the
+	// compacted history — whose marker references the frontier the fold
+	// minted — and records that frontier in the chain only inside its own
+	// hold of that door, so a snapshot that waits for the door can never
+	// observe the half-committed span between the two. The door-then-session
+	// order is the lock order every transcript writer already follows.
+	s.attentionMu.Lock()
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	// A request's coverage belongs to its history snapshot. A later fold may
@@ -210,6 +218,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	}
 	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
+	s.attentionMu.Unlock()
 	if afterSnapshot != nil {
 		afterSnapshot()
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -506,5 +507,114 @@ func TestWithheldFoldReEmitsNotesContextOnTheNextRequest(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the request after the withheld fold omits the notes the fold projected away: the change gate must forget the last projected block so the next request re-emits it")
+	}
+}
+
+// TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown pins the pairing of a
+// request's history snapshot with the transcript door. A fold publishes the
+// compacted history — whose marker references the frontier the fold minted —
+// and records that frontier in the chain only when its transcript commit
+// writes the marker, all inside one hold of the door. A request snapshotting
+// inside that span would resolve the marker's frontier against a chain that
+// does not hold it yet: coverage resolution marks the conversation unknown for
+// good and caches empty coverage for the folded inputs, and a later successful
+// commit cannot repair that request. Here a Compact parks between its
+// publication and its transcript commit while a request builds; the request's
+// coverage must stay known and complete.
+func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "fold-commit-window-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-fold-commit-window-summary\n[END SUMMARY]")}
+	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	// The strategy is cleared so the request below runs no context-management
+	// fold of its own: a fold's publication holds the transcript door, and the
+	// request must reach its history snapshot while the competing fold holds
+	// that door mid-commit — the interleaving this test pins. The snapshot
+	// itself is the same code every request runs.
+	s.mu.Lock()
+	s.strategy = nil
+	s.mu.Unlock()
+	final := func(llm.Request) llm.Response { return agenttest.FinalResponse("opaque-fold-commit-window-result") }
+	steps := make([]func(llm.Request) llm.Response, 0, 4)
+	for range 4 {
+		steps = append(steps, final)
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	const rounds = 4
+	for i := range rounds {
+		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-fold-commit-window-input-%d", i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := s.ConversationProvenance().AdmittedInputs
+	if len(original) != rounds {
+		t.Fatalf("admitted inputs before the fold = %v, want %d", original, rounds)
+	}
+
+	// Park the fold between its publication and its transcript commit: the
+	// live history already references the minted frontier, and the chain does
+	// not hold it yet.
+	inWindow := make(chan struct{})
+	releaseFold := make(chan struct{})
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			close(inWindow)
+			select {
+			case <-releaseFold:
+			case <-time.After(2 * time.Second):
+				// A snapshot that holds the door cannot pass this park while
+				// the fold holds it, so the timeout ends the park for both.
+			}
+		}
+	})
+	compactDone := make(chan error, 1)
+	go func() { compactDone <- s.Compact(context.Background()) }()
+	<-inWindow
+
+	// The request builds against the parked fold. Its history snapshot runs
+	// either mid-commit or behind the door, and either way must not adopt the
+	// half-committed fold.
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() { close(releaseFold) }
+	})
+	requestDone := make(chan error, 1)
+	go func() {
+		var timings events.RoundTimings
+		_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings)
+		requestDone <- err
+	}()
+	if err := <-compactDone; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if err := <-requestDone; err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+
+	// The scenario really ran: the fold compacted the seeded prefix and left
+	// its marker in the live history, so a frontier was published for the
+	// snapshot to observe.
+	live := currentHistory(t, s)
+	if at := indexOfTurnText(live, "opaque-fold-commit-window-input-0"); at >= 0 {
+		t.Fatalf("the parked fold did not compact the seeded prefix: the first input still stands at %d, so the window under test never opened", at)
+	}
+	foundMarker := false
+	for _, turn := range live {
+		foundMarker = foundMarker || turn.Kind == schema.TurnCheckpoint || turn.Kind == schema.TurnSummary
+	}
+	if !foundMarker {
+		t.Fatal("the parked fold left no compaction marker in the live history, so no frontier was published for the snapshot to observe")
+	}
+
+	s.mu.Lock()
+	prepared := slices.Clone(s.conversation.preparedInputs)
+	s.mu.Unlock()
+	for _, id := range original {
+		if !slices.Contains(prepared, id) {
+			t.Fatalf("a request built while the fold committed lost the folded input %s: prepared=%v", id, prepared)
+		}
+	}
+	if state := s.ConversationProvenance(); !state.Authoritative {
+		t.Fatalf("a request built while the fold committed made the conversation unknown: state=%+v", state)
 	}
 }
