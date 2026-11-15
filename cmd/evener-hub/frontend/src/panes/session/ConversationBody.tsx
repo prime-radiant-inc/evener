@@ -19,28 +19,34 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { requestComposerFocus } from "./composer/composerFocus";
-import { useBlockedMutationEntries, usePendingMessages } from "./composer/queue/pendingTurnsStore";
+import {
+  useBlockedMessageEntries,
+  useBlockedMutationEntries,
+  useCanceledMessageEntries,
+  useEditablePendingMutationIds,
+  usePendingTurnEntries,
+  useRecoveryMessageEntries,
+} from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
-import { PendingMessageStack } from "./pending/PendingMessageStack";
-import { usePendingArrivalEpoch, withoutActiveRecovery } from "./pending/pendingMessageLiveEdge";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill, newContentPillVisible } from "./transcript/flow/NewContentPill";
-import { useSeenDivider } from "./transcript/flow/useSeenDivider";
+import { unseenOpeningTurnId, useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
+import { PendingRowStack, useHeldSteerEpoch } from "./transcript/messages/PendingRowStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import {
   TranscriptBody,
   transcriptAnchorEntriesForRows,
+  transcriptFirstRowIndexForTurn,
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
@@ -264,43 +270,50 @@ function LiveConversationBody({
   // subscribed boolean (see useNextNeedsYouMount), so queue churn re-renders
   // the small control, not this whole pane.
   const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
-  const pendingMessages = usePendingMessages(ref);
-  const activeRecoveryId = submission?.actions.pendingProps?.activeRecoveryId;
-  const visiblePendingMessages = useMemo(
-    () => withoutActiveRecovery(pendingMessages, activeRecoveryId),
-    [pendingMessages, activeRecoveryId],
-  );
-  // Spec §1's live gate still owns the departure announcements. The stack
-  // itself stays visible on a fenced or dormant session so the messages never
-  // lose their one rendering.
+  const pendingEntries = usePendingTurnEntries(ref);
+  const blockedRows = useBlockedMessageEntries(ref);
+  const canceledRows = useCanceledMessageEntries(ref);
+  const recoveryRows = useRecoveryMessageEntries(ref);
+  // The waiting family's own fact: a Send that queued while the session
+  // needs recovery is settled undelivered work, not a live composition - it
+  // mounts the trailing row through the read-only states, or its Edit and
+  // Remove controls would be reachable from nowhere if the resume stalls.
+  const editableRows = useEditablePendingMutationIds(ref);
+  // Spec §1's live gate, complete: the read-only status family, plus the two
+  // fence marks that can hold a session read-only while its status still
+  // reads active/idle.
   const heldSurfaceLive =
     model !== undefined &&
     model.resumeRequired !== true &&
     !restartPending &&
     !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
-  const pendingVisible = visiblePendingMessages.length > 0;
-  const pendingEpoch = usePendingArrivalEpoch(ref, visiblePendingMessages, pendingVisible);
+  const heldEpoch = useHeldSteerEpoch(ref, pendingEntries, heldSurfaceLive);
+  // The full pending set decides the trailing row: held steers, in-flight
+  // sends, queued rows, and the durable failure families all render as
+  // transcript rows now (the one-rendering rule), so the row mounts for any
+  // of them. The live gate applies to the live-composition families only -
+  // the steering-ghost spec's §1 rule for steers and the in-flight sends
+  // that share its surface. The durable families (blocked, canceled,
+  // refused recovery, the daemon's queue) render regardless of session
+  // status: they are settled facts about the user's undelivered work, and
+  // the retired footer strip showed them through ended/closed/notLoaded
+  // and restartRequired sessions - hiding their Retry/Edit on those states
+  // would leave the work reachable from nowhere.
+  const pendingRowsVisible =
+    (heldSurfaceLive && pendingEntries.length > 0) ||
+    blockedRows.length > 0 ||
+    canceledRows.length > 0 ||
+    recoveryRows.length > 0 ||
+    editableRows.size > 0 ||
+    (model?.queue?.depth ?? 0) > 0;
   const trailingRow =
-    askPending || pendingVisible || overlayHeight > 0
+    askPending || pendingRowsVisible || overlayHeight > 0
       ? {
           id: "live-edge",
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
-              {pendingVisible && (
-                <PendingMessageStack
-                  ref={ref}
-                  messages={pendingMessages}
-                  context={
-                    submission?.actions.pendingProps
-                      ? {
-                          ...submission.actions.pendingProps,
-                          focusComposer: () => requestComposerFocus(ref, seat.viewFallbackId),
-                        }
-                      : undefined
-                  }
-                />
-              )}
+              {pendingRowsVisible && <PendingRowStack ref={ref} paneId={seat.viewFallbackId} />}
               {overlayHeight > 0 && (
                 <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
               )}
@@ -325,6 +338,21 @@ function LiveConversationBody({
     [projection, renderRows, anchorEntries],
   );
 
+  const seenBoundary = useSeenDivider(ref, model);
+  const retainedCapture = seat.readView?.getCapture();
+  const openingTurnId = unseenOpeningTurnId(seenBoundary, {
+    thread: model,
+    askDockPending: askPending,
+    retained: retainedCapture,
+  });
+  const openAtRow = useMemo(
+    () => (openingTurnId === null ? -1 : transcriptFirstRowIndexForTurn(renderRows, openingTurnId)),
+    [renderRows, openingTurnId],
+  );
+  // A capture that was following the end asks for the end again; the unseen
+  // reply replaces that request, so the two never both place the reader.
+  const initialViewCapture = openAtRow >= 0 ? undefined : retainedCapture;
+
   const virtualListRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
@@ -335,7 +363,8 @@ function LiveConversationBody({
     keepViewRemount: seat.keepViewRemount,
     model,
     listRef: virtualListRef,
-    initialViewCapture: seat.readView?.getCapture(),
+    initialViewCapture,
+    openAtRow: openAtRow >= 0 ? openAtRow : undefined,
     onReaderIntent: seat.readView?.supersedePositioning,
     onReaderMovement: seat.readView?.syncPositioningMovement,
     loadOlder,
@@ -350,8 +379,8 @@ function LiveConversationBody({
     // signal a scrolled-away reader would get no new-content pill.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
-    heldVisible: pendingVisible,
-    heldEpoch: pendingEpoch,
+    pendingRowsVisible,
+    heldEpoch,
   });
   // Per-pane keyboard scroll registers against the shared registry and
   // declines unless the hosting pane is the focused one.
@@ -393,22 +422,17 @@ function LiveConversationBody({
   }, [attentionMounted, attentionOwner, attentionController]);
 
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
-  const seenDividerTurnId = useSeenDivider(ref, model);
 
   // A deleted ref never hydrates a fresh model and its cached snapshot is
   // stale: the seat's deleted face outranks anything this body could render.
   if (deletedRef) return render({ state: "deleted", content: null, footer: null, cadence: null });
   if (!model) return render({ state: "loading", content: null, footer: null, cadence: null });
 
-  // A held ghost is mounted content even on a turnless transcript: the
-  // dormant empty surface yields to the transcript subtree so the ghost
-  // stack and its announcements mount (steering-ghost spec §2).
-  // A pending row is only actionable with a composer source to move it back
-  // to. Without one - a remote share, a seat with no composer - the stack
-  // would render rows with no actions and no way to dismiss them, so the
-  // dormant surface keeps the pane instead.
-  const pendingActionable = pendingVisible && submission?.actions.pendingProps !== undefined;
-  const showDormantSurface = isDormantTranscript(model.turns) && !pendingActionable;
+  // A pending row is mounted content even on a turnless transcript: the
+  // dormant empty surface yields to the transcript subtree so the pending
+  // stack and its announcements mount (the steering-ghost spec §2 rule,
+  // extended to every pending family).
+  const showDormantSurface = isDormantTranscript(model.turns) && !pendingRowsVisible;
   const dormantSurface = showColdStartSkeleton ? (
     <ColdStartSkeleton />
   ) : (
@@ -454,14 +478,14 @@ function LiveConversationBody({
         sessionRef={ref}
         sourcePaneId={seat.viewFallbackId}
         viewId={seat.readView?.id}
-        initialViewCapture={seat.readView?.getCapture()}
+        initialViewCapture={initialViewCapture}
         readView={seat.readView ?? undefined}
         followingBottom={flow.isFollowingBottom}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
         }}
-        showSeenDividerTurnId={seenDividerTurnId ?? undefined}
+        showSeenDividerTurnId={seenBoundary.dividerTurnId ?? undefined}
         loadOlderRow={
           hasOlder && (
             <LoadOlderRow
@@ -558,7 +582,11 @@ function LiveConversationBody({
           seat.sessionMenu && (
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
-        {seat.composerSource && submission && (
+        {/* The pending chips no longer render here: an in-flight send is a
+            transcript row in the live-edge trailing region (the
+            one-rendering rule), so the composer's measure row carries no
+            message renderings. */}
+        {seat.composerSource && (
           <Composer
             ref={ref}
             paneId={seat.viewFallbackId}

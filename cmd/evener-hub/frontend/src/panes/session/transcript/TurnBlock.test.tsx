@@ -296,9 +296,57 @@ test("showSeenDivider defaults to false: no divider marker rendered", () => {
   expect(screen.queryByTestId("seen-divider")).toBeNull();
 });
 
-test("showSeenDivider renders the divider marker above this turn's content", () => {
+test("showSeenDivider renders one divider marker inside the turn block", () => {
   render(<TurnBlock turn={turn([], { id: "turn_42" })} showSeenDivider />);
-  expect(screen.getByTestId("seen-divider")).toBeTruthy();
+  const dividers = screen.getAllByTestId("seen-divider");
+  expect(dividers).toHaveLength(1);
+  expect(screen.getByTestId("turn-block").contains(dividers[0] ?? null)).toBe(true);
+});
+
+function anchored(container: HTMLElement, id: string): Element {
+  const found = container.querySelector(`[data-view-anchor-id="${id}"]`);
+  if (!found) throw new Error(`no rendered entry ${id}`);
+  return found;
+}
+
+function follows(a: Element, b: Element): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+test("the seen divider follows the turn's leading user messages and precedes its first reply", () => {
+  const items = [
+    item({ id: "u1", type: "userMessage", text: "ask" }),
+    item({ id: "u2", type: "userMessage", text: "ask more" }),
+    item({ id: "a1", type: "agentMessage", text: "reply" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(follows(anchored(container, "u1"), divider)).toBe(true);
+  expect(follows(anchored(container, "u2"), divider)).toBe(true);
+  expect(follows(divider, anchored(container, "a1"))).toBe(true);
+});
+
+test("the seen divider comes first in a turn that has no user message", () => {
+  const items = [
+    item({ id: "a1", type: "agentMessage", text: "reply" }),
+    item({ id: "a2", type: "agentMessage", text: "more" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(follows(divider, anchored(container, "a1"))).toBe(true);
+  expect(follows(divider, anchored(container, "a2"))).toBe(true);
+});
+
+test("the seen divider follows every entry of a turn that only has user messages", () => {
+  const items = [
+    item({ id: "u1", type: "userMessage", text: "ask" }),
+    item({ id: "u2", type: "userMessage", text: "ask more" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(screen.getAllByTestId("seen-divider")).toHaveLength(1);
+  expect(follows(anchored(container, "u1"), divider)).toBe(true);
+  expect(follows(anchored(container, "u2"), divider)).toBe(true);
 });
 
 test("renders items in order via the item-renderer registry", () => {

@@ -367,7 +367,7 @@ The matcher rules — empty/star matches all; a matcher of only letters, digits,
 
 ### Event-specific matcher targets
 
-- Tool events (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`): the **Claude** tool name, including `mcp__<server>__<tool>`. Evener translates its canonical names to Claude names before matching (`shell` → `Bash`); a matcher must name the Claude tool.
+- Tool events (`PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`): the **Claude** tool name. Evener translates its canonical names to Claude names before matching (`shell` → `Bash`); a matcher must name the Claude tool. MCP tools are the exception: evener registers them as `<server>__<tool>` with no `mcp__` prefix and matchers see that registered name (see [MCP tool names](../mcp.md#tool-names-failures-and-teardown)) — a Claude-style `mcp__.*` matcher does not match evener MCP calls; match on `<server>__<tool>` instead. A plugin-bundled server's registered name carries its plugin namespace: `plugin_<plugin>_<server>__<tool>`.
 - `SessionStart`: `startup`, `resume`, `clear`, or `compact`.
 - `Setup`: CLI setup flag.
 - `SessionEnd`: session end reason (`clear`, `prompt_input_exit`, `other`).
@@ -707,7 +707,7 @@ These are the contract the implemented behavior satisfies (Phase 1 — shipped a
 - Matcher behavior follows Claude semantics for empty/star, exact, pipe-list, and regex modes, with the documented Go RE2 caveat.
 - `Bash` no longer regex-substring matches `BashOutput`; `Edit|Write` and `Edit, Write` exact-list forms match only those names.
 - Negative matcher tests cover non-substring behavior for tools and MCP names, pipe-list matching for non-tool events, invalid-regex diagnostics, and empty-matcher behavior.
-- MCP tool names such as `mcp__memory__search` match regex `mcp__memory__.*` but not exact matcher `mcp__memory`.
+- MCP tool names such as `memory__search` match regex `memory__.*` but not exact matcher `memory`.
 - Command hooks support shell form and exec-form `args` without requiring plugin authors to wrap every path in `bash -c`.
 - Hook input includes official common fields when available and preserves legacy aliases during migration.
 - `additionalContext` is delivered to the model (system reminder); `systemMessage` is shown to the user only — the two fields are distinct in data model and delivery channel.

@@ -781,7 +781,7 @@ func TestLoadPlugin_MCPConfig_CommandExpressionRefused(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted", nil }
 
 	dir := makePluginDir(t, "cmdmcp")
 	metaDir := filepath.Join(dir, ".claude-plugin")

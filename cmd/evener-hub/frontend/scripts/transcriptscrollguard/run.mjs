@@ -43,6 +43,13 @@ const VIEWPORT = { width: 1400, height: 900 };
 // tolerance the fix's own jsdom suite uses for the same assertion.
 const BOTTOM_TOLERANCE_PX = 1;
 
+// The unseen-reply open: the turn this browser last saw finished, and the turn
+// after it, which carries one of the fixture's tall replies (every sixth turn),
+// so its start and the transcript's end cannot share a viewport.
+// The landing's tolerance: the hook places within 1.5px, and offsets round.
+const UNSEEN_LANDING_TOLERANCE_PX = 2;
+const UNSEEN_OPEN = { seen: "turn_35", opensAt: "turn_36" };
+
 // Every post-settle wait, with the setup each needs to reach its own read of the
 // transcript: clickPillAndSettle needs a pill, which only exists once the reader
 // is away from the bottom. Each `wait` is the harness's own name for that wait,
@@ -365,6 +372,43 @@ async function main() {
         "the session-ref transcript pane recovered as the live conversation",
         recoveredOpened,
       );
+      // A session with a finished reply this browser has not shown opens at
+      // that reply instead of the end: the turn at the top of the viewport
+      // with the seen divider and the reply under it, the reader not following the end
+      // (the jump pill on offer), and the landing held through the
+      // measurement corrections of the estimate-only rows around it. jsdom
+      // cannot see any of this: the landing is the divider's measured offset.
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?seen=${UNSEEN_OPEN.seen}`, BOOT);
+      await waitForFonts(send);
+      const unseenOpen = JSON.parse(
+        await evaluate(send, "(async () => JSON.stringify(await window.waitForUnseenOpenSettled()))()"),
+      );
+      if (unseenOpen.errors.length > 0)
+        failures.push(`page errors opening at the unseen reply: ${unseenOpen.errors.join("; ")}`);
+      if (unseenOpen.dividerTurnId !== UNSEEN_OPEN.opensAt)
+        failures.push(
+          `the seen divider sits in ${unseenOpen.dividerTurnId}, not the first unseen turn ${UNSEEN_OPEN.opensAt}`,
+        );
+      // The fixture's asks are a line or two, so the landing is the top of
+      // the turn: the ask gives the reply its context, with the divider and
+      // the reply's start just under it.
+      if (!(Math.abs(unseenOpen.turnTop) <= UNSEEN_LANDING_TOLERANCE_PX))
+        failures.push(
+          `a session with an unseen reply opened with that turn ${unseenOpen.turnTop}px from the top of the ` +
+            `viewport (scrollTop ${unseenOpen.scrollTop}, bottomGap ${unseenOpen.bottomGap})`,
+        );
+      if (!(unseenOpen.dividerTop > 0 && unseenOpen.dividerTop < unseenOpen.clientHeight / 2))
+        failures.push(
+          `the seen divider is ${unseenOpen.dividerTop}px from the viewport top, not in its upper half ` +
+            `(clientHeight ${unseenOpen.clientHeight})`,
+        );
+      if (unseenOpen.bottomGap <= unseenOpen.clientHeight)
+        failures.push(
+          `the unseen reply did not leave the end out of view (bottomGap ${unseenOpen.bottomGap}) - ` +
+            `the fixture cannot tell this open from the plain one`,
+        );
+      if (!unseenOpen.pill) failures.push("no jump pill on a session opened above its end at the unseen reply");
+
       // The dock leg's retained-reader guarantees now run on conversation
       // panes too: the harness's openTranscript calls open the live
       // conversation pane for session refs, so the dock group below proves
@@ -568,6 +612,7 @@ async function main() {
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
           `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom; ` +
           `a session opened with older history stayed at the bottom without auto-loading a page; ` +
+          `a session with an unseen reply opened at that reply instead of the end; ` +
           `a large ended dock session merged older history and preserved its measured keyed-row geometry; ` +
           `the session-ref transcript pane recovered as the live conversation and did the same; deferred hydration waited for the mounted paged viewport; ` +
           `all ${MID_PASS_UNMOUNT_WAITS.length} post-settle waits named a pane that unmounted under them`,

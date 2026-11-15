@@ -22,7 +22,7 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "../../composer/queue/pendingTurnsStore";
-import { heldSteerEntries } from "../../pending/pendingMessageLiveEdge";
+import { heldSteerEntries } from "./PendingRowStack";
 
 // What became of a held steer: it arrived held, or how it left.
 type HeldSteerOutcome = "held" | "delivered" | "rejected" | "canceled" | "uncertain" | "failed";
@@ -33,7 +33,7 @@ const ANNOUNCEMENTS: Record<HeldSteerOutcome, string> = {
   rejected: "Steering message was rejected. It's kept with the queue.",
   canceled: "Steering message was canceled by Stop. It's kept with the queue.",
   uncertain: "Steering message delivery is uncertain. It's kept with the queue.",
-  // Post-settle failed delivery: nothing holds the id anywhere. No pending stack
+  // Post-settle failed delivery: nothing holds the id anywhere. No pending row
   // row exists for this departure (spec §5) - the announcement is the
   // message's only trace; the failed turn's error surface is the explanation.
   failed: "Steering message failed to deliver.",
@@ -63,7 +63,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     const announce = (outcomes: HeldSteerOutcome[]) => setAnnouncement((a) => ({ outcomes, key: a.key + 1 }));
     const appeared = held.some((entry: PendingTurnEntry) => !prev.ids.has(entry.id));
     // A local ownership move is neither delivery nor failure. The same
-    // identity is still visibly held by the pending stack - but a Stop-canceled or
+    // identity is still visibly held by a pending row - but a Stop-canceled or
     // delivery-uncertain departure is a real outcome, and the strip owning the
     // row is exactly where its explanation lives.
     const disappeared = [...prev.ids].filter(

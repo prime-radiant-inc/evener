@@ -16,21 +16,20 @@ The mechanism moved with the frontend rewrite (`660376f78`), and moved in a
 way that matters:
 
 - The placeholder is no longer a `details.steering` chip spliced into the
-  conversation. It is the pending stack's trailing row —
-  `[data-testid="pending-message-row"]`, one row per identity, whose status
-  caption carries the state (`Sending`, `Delivers when this step finishes`,
-  …) (`pending/PendingMessageStack.tsx:50-69`,
-  `pending/pendingMessageCaption.ts:12-40`). The authoritative entry renders
-  in the transcript, and the row retires when a transcript item carries the
-  same identity (`state/mutation/pendingMessages.ts:346-351,380`), so the old
-  "duplicate divider" failure mode cannot reappear.
-- Reconciliation is no longer a text match. The row retires when its
-  `clientMutationId` comes back — a queue row on `thread/queueChanged`, or a
-  transcript item on `evener/steering/injected` or an `item/*` / `turn/*`
-  frame (`stores/threads.ts:6619-6642`), collected by
-  `reflectedMutationIds` (`state/mutation/pendingEntries.ts:229-238`). So
-  the old text-normalize-mismatch failure mode is gone too; an id that never
-  comes back is the failure now.
+  conversation. It is a provisional row in the transcript's trailing
+  pending stack — `[data-testid="pending-row-stack"]`, one `<li>` per
+  undelivered message with a stage caption (`Sending`, `Joining this turn`,
+  `Queued for the next turn`; the table at
+  `transcript/messages/PendingRowStack.tsx:110-117`). The authoritative
+  entry renders in the transcript. Two different containers, so the old
+  "duplicate divider" failure mode is structurally impossible.
+- Reconciliation is no longer a text match. The chip clears when its
+  `clientMutationId` comes back — on `thread/queueChanged`,
+  `evener/steering/injected`, or an `item/*` / `turn/*` frame carrying it
+  (`stores/threads.ts:797-810`), collected by `reflectedMutationIds`
+  (`composer/queue/pendingReconcile.ts:45-54`). So the old
+  text-normalize-mismatch failure mode is gone too; an id that never comes
+  back is the failure now.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" —
 specifically "Synchronous vs. async assertion shape", which is this card's
@@ -69,21 +68,20 @@ HUB=http://127.0.0.1:$PORT
    assertion; everything after it is confirmation:
    ```javascript
    (async () => {
-     const rows = () => Array.from(
-       document.querySelectorAll('[data-testid="pending-message-row"]'),
-       (li) => li.textContent);
+     const pendingRows = () => Array.from(
+       document.querySelectorAll('[data-testid="pending-row-stack"] li'), (li) => li.textContent);
      const steers = () => document.querySelectorAll(
        '[data-testid="user-message-item"]:not([data-opens-exchange])').length;
-     const before = { rows: rows(), steers: steers() };
+     const before = { pendingRows: pendingRows(), steers: steers() };
      const ta = document.querySelector('[data-testid="composer-input-card"] textarea');
      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
      setter.call(ta, "Stop and write a haiku instead.");
      ta.dispatchEvent(new Event("input", { bubbles: true }));
      document.querySelector('[data-testid="composer-steer"]').click();
-     const sync = { rows: rows(), steers: steers() };      // no await: right now
+     const sync = { pendingRows: pendingRows(), steers: steers() };  // no await: right now
      await new Promise((r) => setTimeout(r, 3000));
      const after = {
-       rows: rows(),
+       pendingRows: pendingRows(),
        steers: steers(),
        toast: document.querySelector('[aria-label="Notifications"]')?.textContent,
      };
@@ -98,14 +96,13 @@ HUB=http://127.0.0.1:$PORT
 ## Expected
 
 - **`before`**: no pending rows; note the steer count as the baseline.
-- **`sync` (the point of the card)**: exactly one pending row, whose text
-  contains the steer text and whose caption carries the in-flight state
-  (`pending/PendingMessageStack.tsx:50-69`,
-  `pending/pendingMessageCaption.ts:12-40`). Falsify: `sync.rows` is empty
+- **`sync` (the point of the card)**: exactly one provisional row carrying
+  the steer text with its `Joining this turn` caption
+  (`transcript/messages/PendingRowStack.tsx:503-519`). Falsify: `sync.pendingRows` is empty
   — the optimistic render never happened and the reader stares at an
   unchanged composer until the round trip completes. This is the exact
   regression kata `wymv` was filed for.
-- **`after`**: `rows` is empty again — the row retired when its
+- **`after`**: `pendingRows` is empty again — the row cleared when its
   `clientMutationId` came back — and `steers` is `before.steers + 1`: the
   authoritative entry is in the transcript. `toast` is empty. Falsify:
   - a row is still present after 3s → the ack never echoed the id;
@@ -129,12 +126,12 @@ rm -rf "$tmpdir"
 
 ## Sharp edges
 
-- **The row is the transcript's live edge, not a transcript item.**
-  `PendingMessageStack` mounts at the conversation's trailing row,
-  deliberately (`ConversationBody.tsx:283-303`), rather than injecting an
-  optimistic row into the turn list. Looking for the placeholder among the
-  transcript items finds nothing and reads as "the optimistic path is
-  broken".
+- **The optimistic row is in the transcript's trailing pending stack, not
+  the turn list.** `PendingRowStack` renders as the trailing virtual-list
+  row below anything the server has sent, deliberately kept out of the
+  delivered turn list (`transcript/messages/PendingRowStack.tsx:502-519`).
+  Looking for the placeholder among the delivered turn items finds nothing
+  and reads as "the optimistic path is broken".
 - **A human steer renders as `user-message-item` with no
   `data-opens-exchange`**, not as `[data-testid="steering-item"]` — the
   latter is the daemon-steering divider
@@ -144,14 +141,13 @@ rm -rf "$tmpdir"
   microtask queue and can let the ack land before the "synchronous" read.
   Take `sync` on the same tick, as the snippet does.
 - **Queue depth and staged attachments change the method.** With either
-  present the same button routes to `turn/drainAsSteer` and the row's
-  caption reflects a steering row (`submitRouting.ts:33-39`,
-  `pending/pendingMessageCaption.ts:12-40`). Start from an empty composer
-  state.
+  present the same button routes to `turn/drainAsSteer` and the row is a
+  `turn/drainAsSteer` entry (`submitRouting.ts:33-39`). Start from an empty
+  composer state.
 - **The `blockedUnknown` case looks different on purpose.** A mutation whose
-  fate the client could not determine is a pending row with the
-  `Delivery uncertain` caption and a `Retry` action
-  (`pending/pendingMessageCaption.ts:23-24`,
-  `pending/PendingMessageStack.tsx:103-108`). Seeing that instead of a
+  fate the client could not determine does not stay a provisional row; it
+  becomes a `li[data-kind=blocked]` row reading `Delivery uncertain — <text>`
+  with a `Retry` button
+  (`transcript/messages/PendingRowStack.tsx:686-704`). Seeing that instead of a
   cleared row means the socket dropped mid-flight, not that reconciliation
   is broken.

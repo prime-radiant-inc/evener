@@ -161,7 +161,11 @@ func (l *SessionLog) Append(entry SessionLogEntry) error {
 	l.entries = append(l.entries, entry)
 
 	// Persist to disk (append-only)
-	return l.appendToDisk(data)
+	if err := l.appendToDisk(data); err != nil {
+		l.entries = l.entries[:len(l.entries)-1]
+		return err
+	}
+	return nil
 }
 
 // appendToDisk writes one marshaled entry to the log file.

@@ -1179,17 +1179,18 @@ func TestMatchHooks_NegativeMatcherCoverage(t *testing.T) {
 		t.Errorf("pipe-list: startup|clear|compact must match startup; got %d", len(got))
 	}
 
-	// MCP regex-vs-exact: "mcp__memory__.*" (regex) matches; "mcp__memory" (exact) does not.
+	// MCP regex-vs-exact, on evener's registered names (no mcp__ prefix):
+	// "memory__.*" (regex) matches; "memory" (exact) does not.
 	r2 := newRunner(nil, "")
 	r2.Add(plugin.HookPreToolUse,
-		plugin.RegisteredHook{Matcher: "mcp__memory__.*", Type: "command", Command: "echo regex", Timeout: 5},
-		plugin.RegisteredHook{Matcher: "mcp__memory", Type: "command", Command: "echo exact", Timeout: 5},
+		plugin.RegisteredHook{Matcher: "memory__.*", Type: "command", Command: "echo regex", Timeout: 5},
+		plugin.RegisteredHook{Matcher: "memory", Type: "command", Command: "echo exact", Timeout: 5},
 	)
-	if got := r2.MatchHooks(plugin.HookPreToolUse, "mcp__memory__search"); len(got) != 1 {
-		t.Errorf("MCP: regex mcp__memory__.* must match mcp__memory__search; got %d", len(got))
+	if got := r2.MatchHooks(plugin.HookPreToolUse, "memory__search"); len(got) != 1 {
+		t.Errorf("MCP: regex memory__.* must match memory__search; got %d", len(got))
 	}
-	if got := r2.MatchHooks(plugin.HookPreToolUse, "mcp__memory__write"); len(got) != 1 {
-		t.Errorf("MCP: regex mcp__memory__.* must match mcp__memory__write; got %d", len(got))
+	if got := r2.MatchHooks(plugin.HookPreToolUse, "memory__write"); len(got) != 1 {
+		t.Errorf("MCP: regex memory__.* must match memory__write; got %d", len(got))
 	}
 
 	// Invalid regex: hook must be skipped, must not panic, and runner must not run it.

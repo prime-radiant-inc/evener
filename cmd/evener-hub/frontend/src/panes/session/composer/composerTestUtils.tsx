@@ -10,15 +10,12 @@ import { threadsStore } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
-import { PendingMessageStack } from "../pending/PendingMessageStack";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { Composer as ComposerView } from "./Composer";
-import { requestComposerFocus } from "./composerFocus";
-import { usePendingMessages } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { defaultCompositionOwner } from "./sourceState";
-import { useBuiltinSubmission } from "./useBuiltinSubmission";
 
 export function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -27,29 +24,6 @@ export function Composer(props: React.ComponentProps<typeof ComposerView>) {
     <ClientProvider client={client}>
       <ComposerView {...props} />
     </ClientProvider>
-  );
-}
-
-// The production composition without the transcript: one composer submission
-// and the one pending stack that reads its actions.
-export function ComposerWithPendingStack({
-  source,
-  ...props
-}: Omit<React.ComponentProps<typeof ComposerView>, "submission">) {
-  const submission = useBuiltinSubmission(source, props.paneId);
-  const messages = usePendingMessages(props.ref);
-  return (
-    <>
-      <PendingMessageStack
-        ref={props.ref}
-        messages={messages}
-        context={{
-          ...submission.actions.pendingProps,
-          focusComposer: () => requestComposerFocus(props.ref, props.paneId),
-        }}
-      />
-      <ComposerView source={source} submission={submission} {...props} />
-    </>
   );
 }
 
@@ -111,7 +85,6 @@ export async function mountComposerWithHandle(
     prepare?: (fake: FakeClient) => void;
     holdMountProjection?: boolean;
     source?: ReturnType<typeof createTestComposerSource>;
-    pendingStack?: boolean;
   } = {},
 ) {
   const fake = connectReadyFakeClient(options.prepare);
@@ -121,11 +94,12 @@ export async function mountComposerWithHandle(
   const view = render(
     <ClientProvider client={fake}>
       <Toast />
-      {options.pendingStack === false ? (
-        <Composer ref={ref} source={source} focused={options.focused ?? false} />
-      ) : (
-        <ComposerWithPendingStack ref={ref} source={source} focused={options.focused ?? false} />
-      )}
+      <Composer ref={ref} source={source} focused={options.focused ?? false} />
+      {/* The pending rows render as the transcript's trailing row in
+          production (ConversationBody); mounted beside the composer here so
+          the queue/edit/cancel controls the journeys drive exist, same as
+          the retired strip's place in this harness. */}
+      <PendingRowStack ref={ref} />
     </ClientProvider>,
   );
   await settleActivityDiscovery(ref);

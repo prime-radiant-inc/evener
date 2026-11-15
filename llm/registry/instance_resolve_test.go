@@ -423,7 +423,7 @@ func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -453,7 +453,7 @@ func TestHeaderOverriddenAPIKeyIsNeverEvaluated(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	var ran []string
-	valueexpr.RunCommand = func(cmd string) (string, error) {
+	valueexpr.RunCommand = func(cmd string, _ []string) (string, error) {
 		ran = append(ran, cmd)
 		if cmd == "gw-hdr" {
 			return "header-minted", nil

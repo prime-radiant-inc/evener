@@ -105,7 +105,30 @@ func TestListSessionsCancelDuringDelegateJournalRead(t *testing.T) {
 				Task: "t", AgentType: "explorer", ToolNameCeiling: []string{"communicate"}, Resumable: true,
 			}}})
 	}
-	writeDelegateEvents(t, filepath.Join(bucket, "sessions", sid, "delegates.jsonl"), events)
+	// One batch line per event: the countdown context fires once its allowed
+	// observations run out, and a line-per-event journal gives the scan a
+	// cancellation checkpoint per line — however few underlying reads the
+	// scan pays — instead of one per buffer fill.
+	delegatesPath := filepath.Join(bucket, "sessions", sid, "delegates.jsonl")
+	store, err := delegatestore.Open(delegatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := delegatestore.Fold(nil)
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		_, state, err = store.AppendBatch(state, []delegatestore.Event{event})
+		if err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := ListSessions(cancelMidRead(20), base, SessionsOpts{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
