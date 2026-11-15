@@ -48,6 +48,12 @@ import { readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import {
+  activeRecoveryIdsForTest,
+  requestQueueRowRestore,
+  resetQueueRowRestoreStoreForTests,
+  waitForQueueRowRestoreConsumed,
+} from "./queueRowInsert";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -178,6 +184,7 @@ beforeEach(() => {
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
   resetMobileViewportForTests();
+  resetQueueRowRestoreStoreForTests();
 });
 
 afterEach(() => {
@@ -2427,4 +2434,84 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   await flushPendingTurnsProjectionForTests();
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+});
+
+// Two composers of one ref (a standalone seat and an embedded cascade
+// column) can each edit a DIFFERENT refused recovery at the same time. The
+// per-ref activeRecoveryId publication was one slot: the second composer's
+// activation overwrote the first's, so both pending stacks excluded only
+// the second composer's recovery and the first's recovery row rendered
+// beside its own live composition - and closing the first pane could never
+// restore its exclusion (issue #6364). Publications scope to the owning
+// pane; a stack reads the aggregate across panes.
+test("two composers of one ref keep independent recovery exclusions", async () => {
+  // Two refused recoveries through the real storage, so each composer opens a
+  // composition of its own.
+  const storage = new MutationOutboxIndexedDB();
+  const seedRecovery = async (text: string) => {
+    const row = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thr_root",
+      method: "turn/start",
+      payload: { ref: "root", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+    const recovery = await storage.transferToRecovery(row.clientMutationId, "rejected");
+    if (!recovery) throw new Error("recovery fixture missing");
+    return recovery;
+  };
+  const recoveryA = await seedRecovery("edit from pane a");
+  const recoveryB = await seedRecovery("edit from pane b");
+  storage.close();
+  const sourceA = createTestComposerSource("root");
+  const sourceB = createTestComposerSource("root");
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("root", {}));
+  await threadsStore.getState().ensureThread("root");
+  const { unmount: unmountPaneA } = render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="root" source={sourceA} paneId="pane_a" focused={false} />
+    </ClientProvider>,
+  );
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref="root" source={sourceB} paneId="pane_b" focused={false} />
+    </ClientProvider>,
+  );
+  await flushPendingTurnsProjectionForTests();
+  // Each pane's composer opens its own recovery. The requests drive the
+  // composers' own effects (the recovery lease and the publication), so
+  // each round trip is act-wrapped the way the restore journeys above wrap
+  // their effect-driving steps.
+  await act(async () => {
+    requestQueueRowRestore("root", { text: "", recoveryRecord: recoveryA, target: "pane_a" });
+    await waitForQueueRowRestoreConsumed("root");
+  });
+  await act(async () => {
+    requestQueueRowRestore("root", { text: "", recoveryRecord: recoveryB, target: "pane_b" });
+    await waitForQueueRowRestoreConsumed("root");
+  });
+  // BOTH recoveries are excluded from the pending rows: a stack reads the
+  // aggregate across panes (the old single-slot publication lost pane A's
+  // exclusion the moment pane B activated).
+  await waitFor(() => {
+    expect(activeRecoveryIdsForTest("root").sort()).toEqual(
+      [recoveryA.clientMutationId, recoveryB.clientMutationId].sort(),
+    );
+  });
+  // Closing pane A clears only pane A's publication; pane B's recovery stays
+  // excluded (the old single-slot store let a closing pane's clear be
+  // refused forever, or wipe the sibling's).
+  await act(async () => {
+    unmountPaneA();
+  });
+  await waitFor(() => {
+    expect(activeRecoveryIdsForTest("root")).toEqual([recoveryB.clientMutationId]);
+  });
+  // And pane B closing too leaves nothing excluded - the ref reads empty
+  // again, the honest "nothing is being edited".
+  cleanup();
+  expect(activeRecoveryIdsForTest("root")).toEqual([]);
 });

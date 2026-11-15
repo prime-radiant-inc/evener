@@ -12,6 +12,7 @@
 // activation lease - which only it can hold - stays the single owner.
 
 import type { ComposerMention } from "@evener/appwire-client";
+import { useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../stores/mutationOutbox";
@@ -164,20 +165,50 @@ function createPerRefPublicationStore<V>(isClear: (value: V) => boolean) {
   }));
 }
 
-// The composer's live recovery composition, published per ref: the pending
-// rows exclude a recovery record whose composition the composer already
-// holds (the retired strip's activeRecoveryId prop, moved to the one seam
-// both surfaces already share). The publisher is Composer's own snapshot
+// The composer's live recovery composition, published per ref AND per
+// pane: one ref can carry two mounted composers (a standalone seat and an
+// embedded cascade column), each editing its own recovery, so a single
+// per-ref slot would let the second activation overwrite the first's
+// exclusion (issue #6364). Values key by `ref` for a composer with no pane
+// id (the standalone seat's own ref-scoped publication) and by
+// `ref\x1fpane` for a seated composer; the pending rows read the AGGREGATE
+// across panes - a recovery is excluded when the composer of ANY pane
+// holds its composition live. The publisher is Composer's own snapshot
 // effect; a ref with no mounted composer holds no active recovery here,
 // which is also the honest reading - nothing is being edited.
 const activeRecoveryStore = createPerRefPublicationStore<string | null>((id) => id === null);
 
-export function publishActiveRecovery(ref: string, id: string | null, owner?: string): void {
-  activeRecoveryStore.getState().publish(ref, id, owner);
+function publicationKey(ref: string, pane?: string): string {
+  return pane === undefined ? ref : `${ref}\u001f${pane ?? ""}`;
 }
 
-export function useActiveRecoveryId(ref: string): string | null {
-  return useStore(activeRecoveryStore, (s) => s.values.get(ref) ?? null);
+export function publishActiveRecovery(ref: string, id: string | null, owner?: string, pane?: string): void {
+  activeRecoveryStore.getState().publish(publicationKey(ref, pane), id, owner);
+}
+
+// The ref's excluded recovery ids across every pane's composer, in
+// publication order. A recovery the composer of any pane holds live is
+// excluded from the pending rows: its composition is already on screen in
+// that pane (the retired strip's activeRecoveryId prop, widened to the
+// multi-composer shape).
+function activeRecoveryIdsFrom(values: ReadonlyMap<string, string | null>, ref: string): string[] {
+  const ids: string[] = [];
+  const own = values.get(ref);
+  if (own !== undefined && own !== null) ids.push(own);
+  const panePrefix = `${ref}\u001f`;
+  for (const [key, value] of values) {
+    if (!key.startsWith(panePrefix)) continue;
+    if (value === null || value === undefined) continue;
+    if (ids.includes(value)) continue;
+    ids.push(value);
+  }
+  return ids;
+}
+
+// The aggregate as a set: every recovery a composer of ANY pane holds live.
+export function useActiveRecoveryIds(ref: string): ReadonlySet<string> {
+  const values = useStore(activeRecoveryStore, (s) => s.values);
+  return useMemo(() => new Set(activeRecoveryIdsFrom(values, ref)), [values, ref]);
 }
 
 // The composer's shared busy gate (its own busyAction: an in-flight
@@ -194,4 +225,11 @@ export function publishComposerBusy(ref: string, busy: boolean, owner?: string):
 
 export function useComposerBusy(ref: string): boolean {
   return useStore(composerBusyStore, (s) => s.values.get(ref) === true);
+}
+
+/** Test-only: the ref's active recovery ids the pending rows currently
+ * exclude, in publication order (a plain store read, not a hook, so it
+ * works inside waitFor outside React's render). */
+export function activeRecoveryIdsForTest(ref: string): string[] {
+  return activeRecoveryIdsFrom(activeRecoveryStore.getState().values, ref);
 }
