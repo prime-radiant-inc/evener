@@ -27,6 +27,10 @@ working procedure.
   transcript's icon-rail seat. A stylesheet `composes:` these, one class per
   `composes` line, instead of restating the declarations; a layoutguard case
   that loads a composing stylesheet lists the shared module in its `cssFiles`.
+- **Motion:** [docs/web-ui/motion.md](../web-ui/motion.md) is the reference for any
+  animation or transition. Compose a recipe from `src/styles/motion.module.css`, take
+  durations and easings from the tokens, and gate movement behind reduced motion;
+  `src/styles/motion.contract.test.ts` fails a stylesheet that breaks the rules.
 - **Galleries:** run the frontend dev server (`npm run dev` in
   `cmd/evener-hub/frontend`) and open `/dev/widgets` (every widget, every
   state, both themes), `/dev/surfaces` (composed surfaces), and `/dev/type`

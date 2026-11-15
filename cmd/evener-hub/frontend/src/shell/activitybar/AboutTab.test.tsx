@@ -85,7 +85,7 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/overview");
   expect(screen.getByTestId("session-details-created")).toBeTruthy();
   expect(screen.getByTestId("session-details-updated")).toBeTruthy();
-  expect(screen.getAllByRole("radio").map((el) => el.textContent?.split("\n")[0])).toEqual([
+  expect(screen.getAllByRole("radio").map((el) => el.querySelector("span")?.textContent)).toEqual([
     "Agents",
     "Jobs",
     "Watches",

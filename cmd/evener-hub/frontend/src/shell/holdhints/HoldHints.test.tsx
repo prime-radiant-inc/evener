@@ -368,30 +368,6 @@ test("the composer chip anchors to the FOCUSED pane's composer when several are 
   }
 });
 
-test("prefers-reduced-motion marks the root for the instant (no-fade) path", () => {
-  vi.stubGlobal(
-    "matchMedia",
-    vi.fn((media: string) => ({
-      media,
-      matches: media === "(prefers-reduced-motion: reduce)",
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    })),
-  );
-  addAnchors();
-  render(<HoldHints />);
-  showHints();
-  expect(hintRoot()?.hasAttribute("data-reduced-motion")).toBe(true);
-});
-
-test("without the reduced-motion preference the root is unmarked", () => {
-  // jsdom has no matchMedia at all: the guarded read degrades to false.
-  addAnchors();
-  render(<HoldHints />);
-  showHints();
-  expect(hintRoot()?.hasAttribute("data-reduced-motion")).toBe(false);
-});
-
 test("mobile: no listeners installed, no chips on a touch viewport", async () => {
   // Real timers: RTL's findByText cannot advance vitest's fake ones, and
   // with no listeners installed there is no pending hold timer to advance.

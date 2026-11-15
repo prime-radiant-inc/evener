@@ -34,8 +34,8 @@ export interface ActivityTabSpec {
   mobileCount(counts: ScopeCounts): string;
   /** The chip's accessible label. */
   chipLabel(counts: ScopeCounts): string;
-  /** Category and shared fraction on separate lines within the tab. */
-  tabLabel(counts: ScopeCounts): string;
+  /** The fraction shown under the label within the Overview tab; absent when the kind has none. */
+  tabDetail?(counts: ScopeCounts): string;
   /** The kind shows in the bar only when there's something to say (tasks hide
    * with no list); About has no chip. The sidebar lists every category. */
   chipVisible(counts: ScopeCounts): boolean;
@@ -56,7 +56,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     chipCount: (c) => fraction(c.activeSubagents, c.delegatesTotal),
     mobileCount: (c) => count(c.activeSubagents),
     chipLabel: (c) => countLabel("Agents", c.activeSubagents, c.delegatesTotal, "active"),
-    tabLabel: (c) => `Agents\n${fraction(c.activeSubagents, c.delegatesTotal)}`,
+    tabDetail: (c) => fraction(c.activeSubagents, c.delegatesTotal),
     chipVisible: () => true,
     Body: AgentsTab,
   },
@@ -67,7 +67,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     chipCount: (c) => fraction(c.runningJobs, c.jobsTotal),
     mobileCount: (c) => count(c.runningJobs),
     chipLabel: (c) => countLabel("Jobs", c.runningJobs, c.jobsTotal, "running"),
-    tabLabel: (c) => `Jobs\n${fraction(c.runningJobs, c.jobsTotal)}`,
+    tabDetail: (c) => fraction(c.runningJobs, c.jobsTotal),
     chipVisible: () => true,
     Body: JobsTab,
   },
@@ -78,7 +78,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     chipCount: (c) => fraction(c.armedWatches, c.watchesTotal),
     mobileCount: (c) => count(c.armedWatches),
     chipLabel: (c) => countLabel("Watches", c.armedWatches, c.watchesTotal, "armed"),
-    tabLabel: (c) => `Watches\n${fraction(c.armedWatches, c.watchesTotal)}`,
+    tabDetail: (c) => fraction(c.armedWatches, c.watchesTotal),
     chipVisible: () => true,
     Body: WatchesTab,
   },
@@ -89,7 +89,7 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     chipCount: (c) => fraction(c.tasksSettled, c.tasksTotal),
     mobileCount: (c) => count(c.tasksSettled),
     chipLabel: (c) => countLabel("Tasks", c.tasksSettled, c.tasksTotal, "settled"),
-    tabLabel: (c) => `Tasks\n${fraction(c.tasksSettled, c.tasksTotal)}`,
+    tabDetail: (c) => fraction(c.tasksSettled, c.tasksTotal),
     chipVisible: (c) => c.tasksTotal > 0,
     Body: TasksTab,
   },
@@ -100,7 +100,6 @@ export const ACTIVITY_TABS: readonly ActivityTabSpec[] = [
     chipCount: () => "",
     mobileCount: () => "",
     chipLabel: () => "About",
-    tabLabel: () => "About",
     chipVisible: () => false,
     Body: AboutTab,
   },

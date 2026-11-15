@@ -60,25 +60,6 @@
   flex: none;
 }
 
-.tabs [role="radiogroup"] {
-  display: flex;
-  flex-wrap: wrap;
-}
-
-.tabs [role="radio"] {
-  inline-size: auto;
-  flex: 1 1 max-content;
-  block-size: auto;
-  min-block-size: max(28px, var(--tap-min, 0px));
-  padding-block: var(--space-1);
-}
-
-.tabs [role="radio"] > span {
-  white-space: pre-line;
-  overflow: visible;
-  text-overflow: clip;
-}
-
 .body {
   flex: 1;
   overflow-y: auto;
@@ -177,16 +158,4 @@
 .pending {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-}
-
-.tabs [role="radio"] {
-  block-size: auto;
-  min-block-size: var(--tap-min);
-  padding-block: var(--space-1);
-  font-size: var(--font-size-caption);
-}
-
-.tabs [role="radio"] > span {
-  white-space: pre-line;
-  font-variant-numeric: tabular-nums;
 }

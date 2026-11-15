@@ -4,24 +4,16 @@
  * getBoundingClientRect(), so showing never reflows page content and no
  * clipping ancestor can cut a chip off. The layer itself is aria-hidden
  * decoration - the same chords live in the cheatsheet overlay and the
- * controls' own tooltips. */
+ * controls' own tooltips. The layer fades in and out without the scale (the
+ * Float recipe's text-only form, .fade), whose reduced-motion gate makes the
+ * chips appear and disappear instantly. */
 
 .root {
+  composes: fade from "../../styles/motion.module.css";
   position: fixed;
   inset: 0;
   z-index: var(--z-menu);
   pointer-events: none;
-  animation: holdHintsIn var(--motion-duration-overlay) var(--motion-easing-standard);
-}
-
-@keyframes holdHintsIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
 }
 
 .chip {
@@ -49,19 +41,4 @@
 .or {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-}
-
-/* prefers-reduced-motion: the chips appear/disappear instantly - no fade.
- * The @media rule is the first-paint source of truth (the house pattern -
- * widgets/popover et al.); the [data-reduced-motion] mirror is the same
- * preference read JS-side (usePrefersReducedMotion) so the instant path is
- * observable where media queries are not evaluated (jsdom tests). */
-@media (prefers-reduced-motion: reduce) {
-  .root {
-    animation: none;
-  }
-}
-
-.root[data-reduced-motion] {
-  animation: none;
 }

@@ -260,6 +260,20 @@ test("exact child focus switches demand without sibling leakage or a navigation 
   expect(client.calls.filter((c) => c.method === "evener/navigation/read")).toHaveLength(0);
 });
 
+// The Slide recipe (docs/web-ui/motion.md): the distance is the surface's own
+// size, never a pixel constant, and what slid in slides back out.
+test("the Overview slides in by its own width and leaves again", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  mount(true);
+  act(() => activitySidebarStore.getState().openWith("agents"));
+  const aside = await screen.findByTestId("activity-sidebar");
+  expect(aside.style.transform).toMatch(/translateX\(100%\)/);
+  act(() => activitySidebarStore.getState().close());
+  await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+});
+
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {
   const client = activityClient();
   connectionStore.getState().connect(client);
@@ -747,6 +761,22 @@ test("activity tabs keep a named keyboard radio group without a visible heading"
   expect(activitySidebarStore.getState().tab).toBe("agents");
   await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("jobs");
+});
+
+test("activity tabs show each fraction as a detail line and About stays a single line", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  mount();
+  await screen.findByRole("button", { name: /inspect/ });
+  const tabs = screen.getAllByRole("radio");
+  expect(tabs).toHaveLength(5);
+  for (const tab of tabs.slice(0, 4)) {
+    const spans = tab.querySelectorAll("span");
+    expect(spans).toHaveLength(2);
+    expect(tab.textContent).not.toContain("\n");
+  }
+  expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
 });
 
 test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {

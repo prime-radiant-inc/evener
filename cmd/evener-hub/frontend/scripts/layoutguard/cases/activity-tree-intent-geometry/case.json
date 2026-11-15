@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/motion.module.css",
     "widgets/dialog/dialog.module.css",
     "widgets/sheet/sheet.module.css",
     "panes/session/chrome/activitypanel.module.css",

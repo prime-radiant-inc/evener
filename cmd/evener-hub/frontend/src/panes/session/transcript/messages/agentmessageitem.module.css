@@ -189,33 +189,13 @@
  * StreamingText's .live class anymore; it reattaches here as an inline
  * ::after inside the markdown root's LAST block child, which seats the bar
  * at the end of the last line of text whatever block that is (paragraph,
- * heading, list). Same bar geometry and blink timing streamingtext.module
- * .css's caret uses; currentColor for the same reason its comment records -
+ * heading, list). The bar and its blink are the shared caret recipe
+ * (styles/motion.module.css), the same one StreamingText uses; currentColor for the same reason its comment records -
  * streaming is not an attention state. The wrapper exists ONLY in the live
  * branch, so the caret can never idle on a settled message (the honest-
  * liveness rule). */
-.stream > div > :last-child::after {
-  content: "";
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: var(--space-1);
-  background: currentColor;
-  animation: streamingCaretBlink 1s step-end infinite;
-}
-
-@keyframes streamingCaretBlink {
-  50% {
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .stream > div > :last-child::after {
-    /* Disables the blink but keeps the static caret - the glyph itself
-     * still honestly reflects "still live", only the motion is removed. */
-    animation: none;
-  }
+.stream {
+  composes: caretLast from "../../../../styles/motion.module.css";
 }
 
 /* Last in the file on purpose: the base .opener rule sets display: flex at

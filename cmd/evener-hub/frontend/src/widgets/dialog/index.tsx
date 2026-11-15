@@ -24,17 +24,24 @@ const SIZE_CLASS: Record<NonNullable<DialogProps["size"]>, string> = {
 };
 
 /**
- * Modal dialog: centered, 120ms fade-scale on open, Escape and scrim-click
+ * Modal dialog: centered, floating in and out (the Float recipe), Escape and scrim-click
  * both close it, focus is trapped inside while open and restored to
  * whatever triggered it on close. Sheet (../sheet) shares this exact
- * contract via OverlayPanel, swapping only the panel's geometry/animation;
+ * contract via OverlayPanel, swapping only the panel's geometry and motion;
  * `size` (above) is a second, narrower axis of the same kind - still the
- * centered fade-scale dialog, just a different cap on how big it's allowed
+ * centered floating dialog, just a different cap on how big it's allowed
  * to grow.
  */
 export function Dialog({ open, onClose, title, children, footer, size = "default" }: DialogProps) {
   return (
-    <OverlayPanel open={open} onClose={onClose} title={title} footer={footer} panelClassName={SIZE_CLASS[size]}>
+    <OverlayPanel
+      open={open}
+      onClose={onClose}
+      title={title}
+      footer={footer}
+      panelClassName={SIZE_CLASS[size]}
+      motion="float"
+    >
       {children}
     </OverlayPanel>
   );

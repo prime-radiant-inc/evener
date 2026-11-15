@@ -211,13 +211,23 @@ test("side=right, side=bottom, and side=left each render a distinct, non-empty p
 });
 
 // As in dialog.test.tsx: jsdom does not evaluate real CSS animations or
-// media queries, so the slide-in animation and its reduced-motion opt-out
-// are verified by reading the CSS module's own source.
-test("all side variants' slide-in animations honor prefers-reduced-motion, using only tokens", () => {
+// media queries, so the motion is pinned at the declaration level. Each side
+// slides by the shared recipe for its own edge (which owns the keyframes, the
+// spatial durations and the reduced-motion gate), and the expandable sheet's
+// height change runs on the spatial budget, gated.
+test("each side slides in from and out to its own edge by the shared recipe", () => {
   const css = readModuleCss(import.meta.url, "sheet.module.css");
-  expect(css).toContain("animation:");
-  expect(css).toContain("var(--motion-duration-overlay)");
-  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+  const recipe = { left: "slideLeft", right: "slideRight", bottom: "slideBottom" };
+  for (const [side, slide] of Object.entries(recipe)) {
+    expect(topRuleBlock(css, `.${side}`)).toMatch(
+      new RegExp(`composes:\\s*${slide} from "\\.\\./\\.\\./styles/motion\\.module\\.css"`),
+    );
+  }
+  expect(css).not.toMatch(/animation|@keyframes/);
+  expect(topRuleBlock(css, ".expandableBottom")).toMatch(
+    /transition:\s*height var\(--motion-duration-spatial\) var\(--motion-easing-standard\)/,
+  );
+  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.expandableBottom\s*\{\s*transition:\s*none/);
 });
 
 // The mobile sessions drawer is a full-height side="left" Sheet. jsdom has no

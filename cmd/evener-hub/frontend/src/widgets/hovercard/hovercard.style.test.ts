@@ -35,14 +35,13 @@ test("the bubble rides the overlay surface family, not the tooltip mini-palette"
   expect(bubble).toMatch(/z-index:\s*var\(--z-tooltip\)/);
 });
 
-test("the bubble fades and scales in on the shared overlay motion budget", () => {
+test("the bubble floats in and out by the shared overlay recipe", () => {
   const bubble = topRuleBlock(CSS, ".bubble");
-  expect(bubble).toMatch(
-    /animation:\s*hovercardFadeScale\s+var\(--motion-duration-overlay\)\s+var\(--motion-easing-pop\)/,
-  );
-  expect(CSS).toMatch(/@keyframes hovercardFadeScale\s*\{/);
-  // The same off-ramp popover carries: no motion under prefers-reduced-motion.
-  expect(mediaBlock(CSS, "prefers-reduced-motion: reduce")).toMatch(/animation:\s*none/);
+  // The recipe owns the fade-scale keyframes, the overlay/exit budgets and the
+  // reduced-motion gate (styles/motion.contract.test.ts); the card declares
+  // no motion of its own.
+  expect(bubble).toMatch(/composes:\s*float from "\.\.\/\.\.\/styles\/motion\.module\.css"/);
+  expect(CSS).not.toMatch(/animation|@keyframes/);
 });
 
 test("hoverless devices hide ordinary cards but retain explicitly long-press-enabled cards", () => {

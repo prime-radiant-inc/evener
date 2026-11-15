@@ -36,6 +36,8 @@ export function tabbable(root: HTMLElement): HTMLElement[] {
   for (const node of nodes) {
     if (node.getAttribute("tabindex") === "-1") continue;
     if (!isRendered(node)) continue;
+    // An inert subtree (a layer leaving with motion) takes no focus.
+    if (node.closest("[inert]") !== null) continue;
     out.push(node);
   }
   return out;

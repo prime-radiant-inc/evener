@@ -9,7 +9,11 @@
   max-width: 360px;
 }
 
+/* A toast is an arrival that asks for the user: it floats in and out (the
+ * Float recipe) from the corner its region is pinned to. */
 .toast {
+  composes: float from "../../styles/motion.module.css";
+  transform-origin: right bottom;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-pane);
   background: var(--surface-2);

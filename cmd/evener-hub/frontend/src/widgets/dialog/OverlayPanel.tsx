@@ -1,6 +1,7 @@
 import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
-import { FocusScope } from "../focusscope";
+import { LayerFocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
+import { usePresence } from "../internal/usePresence";
 import { CloseIcon } from "./CloseIcon";
 import styles from "./dialog.module.css";
 
@@ -11,10 +12,16 @@ export interface OverlayPanelProps {
   children: ReactNode;
   footer?: ReactNode;
   /** Caller-composed class for the panel element: a shared base class plus
-   * whichever variant geometry/animation class applies (centered fade-scale
-   * for Dialog, slide-in-from-an-edge for Sheet). OverlayPanel itself picks
-   * the scrim, header, body, and footer classes - those never vary. */
+   * whichever variant geometry/motion class applies (the Float recipe for
+   * Dialog, the Slide recipe for Sheet). OverlayPanel itself picks the
+   * header, body, and footer classes - those never vary. */
   panelClassName: string;
+  /** Which recipe the panel moves by, so the scrim fades on the same
+   * durations and the exit is bounded by the matching token: "float" for a
+   * centered dialog, "slide" for an edge-attached sheet, "none" for a panel
+   * whose caller mounts and unmounts it outright (it neither arrives nor
+   * leaves with motion, so its scrim does not fade either). */
+  motion: "float" | "slide" | "none";
   /** Optional element rendered before the <header>, e.g. a drag handle for a
    * Sheet on a touch viewport. Defaults to undefined; existing consumers
    * that don't pass it are unchanged. */
@@ -31,8 +38,14 @@ export interface OverlayPanelProps {
   style?: CSSProperties;
 }
 
+const SCRIM = requireClass(styles.scrim, "dialog.module.css", "scrim");
+const SCRIM_CLASS: Record<OverlayPanelProps["motion"], string> = {
+  none: SCRIM,
+  float: `${SCRIM} ${requireClass(styles.scrimFloat, "dialog.module.css", "scrimFloat")}`,
+  slide: `${SCRIM} ${requireClass(styles.scrimEdge, "dialog.module.css", "scrimEdge")}`,
+};
+
 const CLASS = {
-  scrim: requireClass(styles.scrim, "dialog.module.css", "scrim"),
   header: requireClass(styles.header, "dialog.module.css", "header"),
   title: requireClass(styles.title, "dialog.module.css", "title"),
   body: requireClass(styles.body, "dialog.module.css", "body"),
@@ -61,8 +74,19 @@ export function OverlayPanel({
   bodyClassName,
   headerClassName,
   style,
+  motion,
 }: OverlayPanelProps) {
   const titleId = useId();
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const { mounted, phase } = usePresence(open, scrimRef, {
+    exit: motion === "slide" ? "--motion-duration-spatial-exit" : "--motion-duration-exit",
+  });
+  // While the layer leaves it renders what it showed when it closed: a caller
+  // that clears its own state on close must not see its dialog empty out
+  // mid-exit.
+  const shownRef = useRef({ title, children, footer, handle });
+  if (open) shownRef.current = { title, children, footer, handle };
+  const shown = shownRef.current;
   // Radix-style pointer-down-outside semantics: the gesture that decides
   // whether this counts as "outside the panel" is where the PRESS
   // started, not where it ends. scrimPressStartedOnScrimRef records that
@@ -83,7 +107,8 @@ export function OverlayPanel({
   // false for it, since the press itself never touched the scrim.
   const scrimPressStartedOnScrimRef = useRef(false);
 
-  if (!open) return null;
+  if (!mounted) return null;
+  const closing = phase === "closing";
 
   function handleScrimMouseDown(event: MouseEvent<HTMLDivElement>) {
     scrimPressStartedOnScrimRef.current = event.target === event.currentTarget;
@@ -118,31 +143,45 @@ export function OverlayPanel({
     // never "Tab to the backdrop, then Enter" - that isn't how any modal
     // convention works. Both close the same way (onClose), so keyboard
     // users already have full, more-discoverable equivalence via Escape.
+    //
+    // A closing layer is inert and drops its dialog semantics at once: focus
+    // has gone back to the trigger, the pointer reaches what it uncovers, and
+    // nothing that asks whether a modal or dialog is open (an [aria-modal] or
+    // [role="dialog"] query) still finds one.
     // biome-ignore lint/a11y/noStaticElementInteractions: mouse-only scrim dismiss; Escape is the keyboard path, see above
     // biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only scrim dismiss; Escape is the keyboard path, see above
-    <div className={CLASS.scrim} onMouseDown={handleScrimMouseDown} onClick={handleScrimClick}>
-      <FocusScope trap>
+    <div
+      ref={scrimRef}
+      className={SCRIM_CLASS[motion]}
+      data-motion={phase}
+      inert={closing}
+      onMouseDown={handleScrimMouseDown}
+      onClick={handleScrimClick}
+    >
+      <LayerFocusScope trap released={closing}>
+        {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole lint/a11y/noStaticElementInteractions: the dialog role and aria-modal are dropped together only while the layer leaves, inert, see above */}
         <div
-          role="dialog"
-          aria-modal="true"
+          role={closing ? undefined : "dialog"}
+          aria-modal={closing ? undefined : "true"}
           aria-labelledby={titleId}
           className={panelClassName}
+          data-motion={phase}
           onKeyDown={handleKeyDown}
           style={style}
         >
-          {handle}
+          {shown.handle}
           <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header}>
             <h2 id={titleId} className={CLASS.title}>
-              {title}
+              {shown.title}
             </h2>
           </header>
-          <div className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>{children}</div>
-          {footer !== undefined && <div className={CLASS.footer}>{footer}</div>}
+          <div className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>{shown.children}</div>
+          {shown.footer !== undefined && <div className={CLASS.footer}>{shown.footer}</div>}
           <button type="button" className={CLASS.closeButton} onClick={onClose} aria-label="Close">
             <CloseIcon />
           </button>
         </div>
-      </FocusScope>
+      </LayerFocusScope>
     </div>
   );
 }

@@ -5,6 +5,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "shell/rail/RailRow.module.css",
+    "styles/motion.module.css",
     "widgets/menu/menu.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css",

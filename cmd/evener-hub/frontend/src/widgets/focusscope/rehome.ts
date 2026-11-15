@@ -15,17 +15,24 @@
 import { type RefObject, useEffect, useRef } from "react";
 import { tabbable } from "./tabbable";
 
+/** Whether `element` is still somewhere focus can rest: in the document and
+ * outside every inert subtree. */
+function canHoldFocus(element: HTMLElement): boolean {
+  return element.isConnected && element.closest("[inert]") === null;
+}
+
 /**
  * Hands focus to the root's first tabbable control. Called once the caller has
  * established that the control holding focus INSIDE the root lost the ability to
  * hold it (useFocusRehome owns that judgement), passed here as `lost`.
  *
  * Focus is handed on when the browser left it nowhere (`<body>` is where an
- * unmounted control's focus goes) or when it is still sitting on `lost` - which
+ * unmounted control's focus goes), when it is still sitting on `lost` - which
  * is how a natively disabled control reads in engines that do not drop focus
- * themselves (jsdom), while Chrome has already moved it to `<body>`. Focus that
- * is anywhere else by now is the user's or another component's and is left where
- * it is.
+ * themselves (jsdom), while Chrome has already moved it to `<body>` - or when
+ * it sits inside an inert layer that is leaving with motion, where it is as
+ * stranded as on a removed control. Focus that is anywhere else by now is the
+ * user's or another component's and is left where it is.
  *
  * A root with no tabbable control left - a row a one-way expansion emptied, a
  * block a retry swapped for loading - falls back to the root itself when the
@@ -37,7 +44,8 @@ import { tabbable } from "./tabbable";
 export function rehomeFocus(root: HTMLElement | null, lost: HTMLElement | null = null): void {
   if (root === null) return;
   const active = document.activeElement;
-  if (active !== document.body && active !== lost) return;
+  const stranded = active instanceof HTMLElement && !canHoldFocus(active);
+  if (active !== document.body && active !== lost && !stranded) return;
   const next = tabbable(root)[0] ?? (root.hasAttribute("tabindex") ? root : null);
   next?.focus();
 }
@@ -101,11 +109,15 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
     // aria-disabled is deliberately NOT this case - a control refused that way
     // keeps the keyboard where it is, which is why it is not the native
     // attribute.
-    if (remembered.target.isConnected && !remembered.target.matches(":disabled")) return;
+    //
+    // Inside an inert subtree counts as gone: a layer leaving with motion stays
+    // in the document, inert, until its exit has played, and an inert control
+    // can hold focus no more than a removed one.
+    if (canHoldFocus(remembered.target) && !remembered.target.matches(":disabled")) return;
     lastFocused.current = null;
     // An overlay that closed with the control goes with it: the surface's own
     // container is then what is left to hand focus to.
-    const container = remembered.container.isConnected ? remembered.container : root.current;
+    const container = canHoldFocus(remembered.container) ? remembered.container : root.current;
     rehomeFocus(container, remembered.target);
   });
 }
