@@ -26,6 +26,7 @@ import {
 import { SwipeRow, swipeAccessibility } from "../board/SwipeRow";
 import { scaledType, typeRoles } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
+import { subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
@@ -55,6 +56,13 @@ const NOTES_SHEET_GUTTER_PT = 20;
 
 export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes, "NotesSheet">) {
 	const { hubId, ref, focusEditor = false } = route.params;
+	const messageRef = useRef(ref);
+	useEffect(() => {
+		messageRef.current = ref;
+		return subscribeNativeIdentities((change) => {
+			if (change.hubId === hubId && change.from === messageRef.current) messageRef.current = change.to;
+		});
+	}, [hubId, ref]);
 	const toast = useToast();
 	const live = useRef<NotesHost | undefined>(undefined);
 	// Closing saves (ruling 37): Done and a swipe down both land here, and
@@ -115,6 +123,7 @@ export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 							navigation.navigate("Reader", {
 								hubId,
 								sessionRef: ref,
+								...(messageRef.current !== ref ? { messageSessionRef: messageRef.current } : {}),
 								path: reference.path,
 								reference,
 								sessionTitle: host.title,

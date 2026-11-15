@@ -30,6 +30,7 @@ import {
 	untilRendered,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
+import { takeQuote } from "../session/pendingQuote";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
 import { DocumentMemory } from "./documentMemory";
@@ -855,7 +856,7 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(navigation.pop).toHaveBeenCalledWith(1);
 });
 
-it("returns to the identity its session resumes to while reading", async () => {
+it("pops to the conversation that owns the reader after its identity changes", async () => {
 	const { navigation } = await mount();
 	const listener = identity.listeners.at(-1);
 	if (!listener) throw new Error("the reader did not subscribe to identity changes");
@@ -863,7 +864,64 @@ it("returns to the identity its session resumes to while reading", async () => {
 	act(() => listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" }));
 	await settle();
 	menuAction(navigation, "Open session").onPress();
-	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", expect.objectContaining({ ref: "local:fix-3" }));
+	expect(navigation.pop).toHaveBeenCalledWith(1);
+	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("returns a quote to the covered Subagent route while holding it for the resumed identity", async () => {
+	stack.state = {
+		index: 3,
+		routes: [
+			{ key: "board", name: "Sessions" },
+			{ key: "coordinator", name: "Conversation", params: { hubId: "studio", ref: "local:coordinator" } },
+			{ key: "fix", name: "Subagent", params: { hubId: "studio", ref: "local:fix" } },
+			{ key: "reader-1", name: "Reader" },
+		],
+	};
+	const { tree, navigation } = await mount();
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	const row = documentList(tree).props.renderItem({ item: { kind: "block", block } });
+	act(() => row.props.onAction("quote", block));
+	expect(takeQuote("studio", "local:fix-2")).toBe(block.text);
+	expect(navigation.pop).toHaveBeenCalledWith(1);
+	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("opens the resumed conversation when the reader has no owning session route", async () => {
+	stack.state = {
+		index: 1,
+		routes: [
+			{ key: "board", name: "Sessions" },
+			{ key: "reader-1", name: "Reader" },
+		],
+	};
+	const { navigation } = await mount(PATH, { messageSessionRef: "local:fix-2" });
+	menuAction(navigation, "Open session").onPress();
+	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: "studio",
+		ref: "local:fix-2",
+		title: "Fix race",
+	});
+	expect(navigation.pop).not.toHaveBeenCalled();
+});
+
+it("uses the resolved message target passed by a document opener without changing its document key", async () => {
+	const { tree } = await mount(PATH, { messageSessionRef: "local:fix-2" });
+	const reads = client.calls.filter((call) => call.method === "thread/read");
+	expect(reads.some((call) => (call.params as { ref: string }).ref === "local:fix-2")).toBe(true);
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	const row = documentList(tree).props.renderItem({ item: { kind: "block", block } });
+	act(() => row.props.onAction("quote", block));
+	expect(takeQuote("studio", "local:fix-2")).toBe(block.text);
+	expect(takeQuote("studio", "local:fix")).toBeNull();
+	act(() => trees.pop()?.unmount());
+	expect(memory.lastRead(KEY)).not.toBeNull();
+	expect(memory.lastRead({ sessionRef: "local:fix-2", path: PATH })).toBeNull();
 });
 
 // A retained artifact's folder-relative path names a different file when pasted

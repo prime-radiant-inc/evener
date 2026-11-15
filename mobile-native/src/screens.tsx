@@ -299,9 +299,10 @@ export type Routes = {
 	Reader: {
 		hubId: string;
 		reference: FileReference;
-		/** The document's session, whose folder holds the file; Open session,
-		 * Quote in reply and the review go to it too (ruling 16). */
+		/** The document's session, whose folder holds the file and its comments. */
 		sessionRef: string;
+		/** The resumed session's message target, when it changed before opening. */
+		messageSessionRef?: string;
 		path: string;
 		/** That session's title, for Open session, Quote in reply and the review. */
 		sessionTitle: string;

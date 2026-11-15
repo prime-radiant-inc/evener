@@ -90,6 +90,13 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 			// read it, so Send asks again: queue while it works, never steer.
 			const runtime = getNativeMutationRuntime();
 			const now = await readSendAction(runtime, client, hubId, messageTarget);
+			// A resume can retire this ref while the read is pending. Keep the
+			// review intact so Send can use the new target after it is read.
+			if (now.target.ref !== messageRef.current) {
+				setSend((current) => (current?.target.ref === now.target.ref ? null : current));
+				setSending(false);
+				return;
+			}
 			setSend(now);
 			if (now.action === "none") {
 				setSending(false);

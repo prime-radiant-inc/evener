@@ -42,7 +42,7 @@ import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { holdQuote } from "../session/pendingQuote";
 import { BackButton } from "../session/BackButton";
-import { returnToSession } from "../session/returnToSession";
+import { popsToSession, returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
@@ -90,19 +90,20 @@ function rowsOf(document: LoadedDocument | null): Row[] {
 }
 
 export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Routes, "Reader">) {
-	const { hubId, sessionRef, path, sessionTitle, updatedAt } = route.params;
+	const { hubId, sessionRef, messageSessionRef, path, sessionTitle, updatedAt } = route.params;
 	// The session may resume to a different ref while this reader is open. Its
 	// document stays the one opened here, but returning to the session or filing
 	// a quote must land on the identity the resume resolved to.
-	const [messageRef, setMessageRef] = useState(sessionRef);
+	const openedMessageRef = messageSessionRef ?? sessionRef;
+	const [messageRef, setMessageRef] = useState(openedMessageRef);
 	useEffect(() => {
-		setMessageRef(sessionRef);
+		setMessageRef(openedMessageRef);
 		return subscribeNativeIdentities((change) => {
 			if (change.hubId === hubId) {
 				setMessageRef((current) => (change.from === current ? change.to : current));
 			}
 		});
-	}, [hubId, sessionRef]);
+	}, [hubId, openedMessageRef]);
 	const memory = documentMemory(hubId);
 	const { client, activeProfile, state } = useConnection();
 	const inFront = useScreenInFront(route.key);
@@ -335,6 +336,12 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		// exactly what the Reader itself fetched.
 		shareDocument(reference.readTarget, reference.path);
 	}, [shareDocument, reference.readTarget, reference.path]);
+	const returnToOwner = useCallback(() => {
+		// The covered route still has the document's original ref until it
+		// becomes topmost; without that route, open the resolved message ref.
+		const ref = popsToSession(navigation.getState(), sessionRef) !== null ? sessionRef : messageRef;
+		returnToSession(navigation, { hubId, ref, title: sessionTitle });
+	}, [navigation, hubId, sessionRef, messageRef, sessionTitle]);
 
 	useEffect(() => {
 		const items: NativeStackHeaderItem[] = [
@@ -370,7 +377,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 						{
 							type: "action",
 							label: "Open session",
-							onPress: () => returnToSession(navigation, { hubId, ref: messageRef, title: sessionTitle }),
+							onPress: returnToOwner,
 						},
 						{ type: "action", label: "Copy path", onPress: () => void copyText(namedFileTarget(reference)) },
 						...(text === null
@@ -409,7 +416,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		about,
 		reload,
 		share,
-		messageRef,
+		returnToOwner,
 	]);
 
 	const cellRenderer = useMemo(
@@ -485,7 +492,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			case "quote":
 				setSelecting(null);
 				holdQuote(hubId, messageRef, selected);
-				returnToSession(navigation, { hubId, ref: messageRef, title: sessionTitle });
+				returnToOwner();
 				return;
 			case "copy":
 				void copyText(block.text);

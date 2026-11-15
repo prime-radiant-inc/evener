@@ -415,6 +415,42 @@ it("returns to the owning conversation after its session resumes elsewhere", asy
 	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
 });
 
+it("keeps a review pending when its send read finishes after the target moves", async () => {
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readAt("local:fix-2");
+	};
+	const first = await mount();
+	const otherPath = "docs/other.md";
+	const second = await mount({ ...PARAMS, path: otherPath });
+	choose(first, "Approve");
+	choose(second, "Approve");
+	let answer: ((value: ThreadReadResponse) => void) | undefined;
+	let started: (() => void) | undefined;
+	const reading = new Promise<void>((resolve) => (started = resolve));
+	let held = false;
+	client.on("thread/read", (params) => {
+		const ref = String((params as { ref: string }).ref);
+		if (!held) {
+			held = true;
+			started?.();
+			return new Promise<ThreadReadResponse>((resolve) => (answer = resolve));
+		}
+		return readAt(ref);
+	});
+	act(() => sendButton(first)?.props.onPress());
+	await reading;
+	await send(second);
+	await act(async () => answer?.(readAt("local:fix")));
+	await settle();
+	expect(client.calls.filter((call) => call.method.startsWith("turn/"))).toHaveLength(1);
+	expect(memory.comments(KEY)).toHaveLength(2);
+	expect(pressable(first, "Approve")?.props.accessibilityState).toMatchObject({ selected: true });
+	expect(sendDisabled(first)).toBe(false);
+});
+
 it("waits for the connection, and reads again when it returns", async () => {
 	harness.connection = { state: "reconnecting", client };
 	const tree = await mount();

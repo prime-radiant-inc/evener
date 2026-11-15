@@ -13,6 +13,18 @@ import type { SessionDocument } from "./sessionDocuments";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown>, memory: null as unknown }));
 const sheetNavigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn(), navigate: vi.fn() }));
+const identity = vi.hoisted(() => ({
+	listeners: [] as ((change: { hubId: string; from: string; to: string }) => void)[],
+}));
+
+vi.mock("../nativeMutationRuntime", () => ({
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+		identity.listeners.push(listener);
+		return () => {
+			identity.listeners = identity.listeners.filter((entry) => entry !== listener);
+		};
+	},
+}));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -57,6 +69,7 @@ function storage(): SyncStringStorage {
 
 beforeEach(() => {
 	forgetDocumentSummaries("studio");
+	identity.listeners = [];
 	sheetNavigation.goBack.mockReset();
 	sheetNavigation.navigate.mockReset();
 	harness.connection = { profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }], state: "ready" };
@@ -163,6 +176,22 @@ it("opens a document in the Reader over the session, after the sheet goes", asyn
 		sessionTitle: "Fix race",
 		updatedAt,
 	});
+});
+
+it("opens a document for its original session while addressing a resumed session", async () => {
+	const tree = await sheet([{ path: PLAN, kind: "Plan" }]);
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	act(() => rows(tree)[0]?.props.onPress());
+	expect(sheetNavigation.navigate).toHaveBeenCalledWith(
+		"Reader",
+		expect.objectContaining({
+			sessionRef: "local:fix",
+			messageSessionRef: "local:fix-2",
+			reference: { path: PLAN, cwd: "/work/owner", readTarget: `/work/owner/${PLAN}`, provenance: "relative" },
+		}),
+	);
 });
 
 it("captures literal raw-space artifact paths from this sheet's owning cwd", async () => {
