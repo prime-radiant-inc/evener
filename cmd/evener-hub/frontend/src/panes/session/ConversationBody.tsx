@@ -28,13 +28,14 @@ import {
   usePendingTurnEntries,
   useRecoveryMessageEntries,
 } from "./composer/queue/pendingTurnsStore";
-import { useActiveRecoveryId } from "./composer/queueRowInsert";
+import { useActiveRecoveryIds } from "./composer/queueRowInsert";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
 import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
+import { withoutActiveRecoveries } from "./pending/pendingMessageLiveEdge";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
@@ -297,10 +298,11 @@ function LiveConversationBody({
   // recovery composition, which is already on screen as the composition
   // under edit.
   const heldMessages = usePendingMessages(ref);
-  const heldActiveRecoveryId = useActiveRecoveryId(ref);
-  const heldVisibleMessages = heldActiveRecoveryId
-    ? heldMessages.filter((row) => row.recovery?.clientMutationId !== heldActiveRecoveryId)
-    : heldMessages;
+  // The union of every pane's live composition (the same set the stack
+  // excludes rows by): a sibling pane's activation is never an arrival
+  // here, because the row it took up stays invisible in this pane's
+  // visible set both before and after.
+  const heldVisibleMessages = withoutActiveRecoveries(heldMessages, useActiveRecoveryIds(ref));
   const heldEpoch = useHeldSteerEpoch(ref, heldVisibleMessages, heldSurfaceLive);
   // The full pending set decides the trailing row: held steers, in-flight
   // sends, queued rows, and the durable failure families all render as

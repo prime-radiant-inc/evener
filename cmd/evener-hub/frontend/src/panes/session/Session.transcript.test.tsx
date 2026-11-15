@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnyNotification, Thread, TurnStartResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
@@ -1287,6 +1287,123 @@ test("heldEpoch bumps on a foreign queue arrival, not only this client's holds",
       expect(screen.queryByText("queued elsewhere", { selector: "[data-testid=user-bubble] *" })).toBeNull(),
     );
     expect(Math.max(...epochs)).toBe(baseline + 1); // removal never bumps
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// The per-pane recovery publications (#6364) exclude the union of every
+// pane's live composition in the rendered stack. The epoch feeds on the
+// same visible set (the invariant pinned in pendingMessageLiveEdge: one
+// predicate for the mount gate, the stack's list, and the arrival edge, so
+// the epoch and the rendered rows cannot disagree) - so pane B activating
+// its OWN recovery must never read as an arrival in pane A: recovery-a
+// stays excluded there, invisible to pane A's reader before and after
+// pane B's activation. A pill that fired would name content the reader
+// cannot see.
+test("a sibling pane activating its own recovery never bumps this pane's arrival epoch", async () => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(stubSessionSlots);
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  // The scroll options' viewId is the retained read view's id when a view
+  // exists, or the seat's fallback paneId before it does - both carry the
+  // pane id (transcriptReadView.ts embeds it in the JSON id array). Bucket
+  // every observation under the pane it belongs to.
+  const epochsByPane = new Map<string, number[]>();
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      const paneOf = (viewId: string | undefined) => {
+        const fallback = viewId && !viewId.startsWith("[") ? viewId : (JSON.parse(viewId ?? "null")?.[1] as string);
+        return fallback ?? "unknown";
+      };
+      const bucket = epochsByPane.get(paneOf(options.viewId)) ?? [];
+      bucket.push(options.heldEpoch ?? 0);
+      epochsByPane.set(paneOf(options.viewId), bucket);
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectReadyFakeClient();
+    fake.on("thread/read", () => versionedReadResponse("ref_a", liveSurfaceThread()));
+    const paneA = render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="pane_a" focused={true} />
+      </ClientProvider>,
+    );
+    const paneB = render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="pane_b" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => {
+      expect(within(paneA.container).getByText("earlier reply")).toBeTruthy();
+      expect(within(paneB.container).getByText("earlier reply")).toBeTruthy();
+    });
+    // Two durable refused-recovery rows for the one ref - the two-composer
+    // shape of #6364: each pane's composer will edit its own.
+    await act(async () => {
+      const storage = new MutationOutboxIndexedDB();
+      const recoveryA = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "recovery from pane A" }] },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recovery from pane A" }] },
+      });
+      const recoveryB = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "recovery from pane B" }] },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "recovery from pane B" }] },
+      });
+      await storage.transferToRecovery(recoveryA.clientMutationId, "rejected", "refused at the hub");
+      await storage.transferToRecovery(recoveryB.clientMutationId, "rejected", "refused at the hub");
+      storage.close();
+      await refreshPendingTurnsProjection("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    // Both refused rows are visible in both panes' stacks.
+    await waitFor(() => {
+      expect(within(paneA.container).getAllByTestId("user-message-item").length).toBe(2);
+      expect(within(paneB.container).getAllByTestId("user-message-item").length).toBe(2);
+    });
+    // Pane A edits its recovery; the row disappears from every pane's stack
+    // (the union rule: any pane's live composition is excluded everywhere),
+    // the same visible set the epoch counts.
+    const user = userEvent.setup();
+    const editInRow = (pane: RenderResult, text: string) => {
+      const row = within(pane.container)
+        .getAllByTestId("user-message-item")
+        .find((item) => item.textContent?.includes(text));
+      const refusedRow = row?.closest('li[data-kind="refused"]');
+      if (!(refusedRow instanceof HTMLElement)) throw new Error(`no refused row for ${text}`);
+      const button = within(refusedRow).getByRole("button", { name: "Edit message" });
+      if (!button) throw new Error(`no Edit button in the ${text} row`);
+      return button;
+    };
+    await user.click(editInRow(paneA, "recovery from pane A"));
+    await waitFor(() => {
+      expect(within(paneA.container).getAllByTestId("user-message-item").length).toBe(1);
+    });
+    const epochsA = epochsByPane.get("pane_a") ?? [];
+    const baselineA = Math.max(...epochsA);
+    // Pane B edits its own recovery. In pane A nothing visible changed:
+    // recovery-a was already excluded, and the epoch counts the same set
+    // the stack renders. The pre-fix joined-string aggregate matched
+    // neither row (the epoch's filter saw BOTH rows as visible), so this
+    // activation read as recovery-a reappearing - a spurious arrival.
+    await user.click(editInRow(paneB, "recovery from pane B"));
+    await waitFor(() => {
+      expect(within(paneA.container).queryByText("recovery from pane B")).toBeNull();
+    });
+    const epochsALate = epochsByPane.get("pane_a") ?? [];
+    expect(Math.max(...epochsALate)).toBe(baselineA); // no arrival in pane A
+    // The rows' delivery (both edits end) never bumps either: removals are
+    // not arrivals.
+    expect(epochsALate.at(-1)).toBe(baselineA);
   } finally {
     spy.mockRestore();
   }

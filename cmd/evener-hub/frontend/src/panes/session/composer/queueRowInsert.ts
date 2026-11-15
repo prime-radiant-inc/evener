@@ -205,14 +205,6 @@ function activeRecoveryIdsFrom(values: ReadonlyMap<string, string | null>, ref: 
   return ids;
 }
 
-export function useActiveRecoveryId(ref: string): string | null {
-  // The raw per-key values map is the stable selector input; the aggregate
-  // derives from it in the hook body (useStore's selector must return a
-  // stable reference or every store change re-renders forever).
-  const values = useStore(activeRecoveryStore, (s) => s.values);
-  return useMemo(() => activeRecoveryIdsFrom(values, ref).join("\u001f") || null, [values, ref]);
-}
-
 // The aggregate as a set: every recovery a composer of ANY pane holds live.
 export function useActiveRecoveryIds(ref: string): ReadonlySet<string> {
   const values = useStore(activeRecoveryStore, (s) => s.values);
