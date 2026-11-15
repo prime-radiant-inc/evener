@@ -433,6 +433,7 @@ it("a pushed delegate frame patches a loaded row with zero collection reads when
           logicalOwnerSessionId: "owner",
           rootSessionId: "owner",
           childSessionId: "child",
+          childRef: "remote:child",
           transcriptRef: "remote:child",
           type: "delegate",
           lifecycle: "running",
