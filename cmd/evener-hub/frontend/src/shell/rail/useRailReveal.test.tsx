@@ -1,5 +1,6 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { railLiveBands } from "./liveBands";
 import type { RailResources } from "./railPending";
 import { useRailReveal } from "./useRailReveal";
 
@@ -29,6 +30,7 @@ function revealRenderedRow(): { scroll: ReturnType<typeof vi.fn>; consumed: Retu
       revealTarget: "local:target",
       onRevealConsumed: consumed,
       resources: {} as RailResources,
+      liveBands: railLiveBands([], []),
       archivedLists: {},
       expansion: new Map(),
       isExpanded: () => true,
