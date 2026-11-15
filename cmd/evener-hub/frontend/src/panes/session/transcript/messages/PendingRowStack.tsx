@@ -54,13 +54,13 @@ import {
 } from "../../composer/queue/queueDisplay";
 import {
   requestQueueRowRestore,
-  useActiveRecoveryId,
+  useActiveRecoveryIds,
   useComposerBusy,
   waitForQueueRowRestoreConsumed,
 } from "../../composer/queueRowInsert";
 import { SessionNowContext } from "../../liveness";
 import { pendingMessageCaption } from "../../pending/pendingMessageCaption";
-import { rowMatchesIdentity, withoutActiveRecovery } from "../../pending/pendingMessageLiveEdge";
+import { rowMatchesIdentity, withoutActiveRecoveries } from "../../pending/pendingMessageLiveEdge";
 import { pendingRowActionOwner } from "../../pending/usePendingMessageActions";
 import styles from "./pendingrowstack.module.css";
 import { UserMessageView } from "./UserMessageItem";
@@ -210,11 +210,9 @@ export function PendingRowStack({
   // The composer's live recovery composition never renders as a row: the
   // message being edited is already visible as the composition under edit,
   // and the retired strip's activeRecoveryId exclusion moves with it.
-  const activeRecoveryId = useActiveRecoveryId(sessionRef);
+  const activeRecoveryIds = useActiveRecoveryIds(sessionRef);
   const composerBusy = useComposerBusy(sessionRef);
-  const visibleRecoveryEntries = activeRecoveryId
-    ? recoveryEntries.filter((record) => record.clientMutationId !== activeRecoveryId)
-    : recoveryEntries;
+  const visibleRecoveryEntries = recoveryEntries.filter((record) => !activeRecoveryIds.has(record.clientMutationId));
   // This client's unattempted editable rows (the queueStripIds set's own
   // selector): an empty drain or a remove-only promotion parks here as a
   // durable local row - the waiting family, rendered with its own
@@ -546,7 +544,7 @@ export function PendingRowStack({
     [blockedEntries, canceledEntries, queueStripIds],
   );
   const stackEntries = entries.filter((entry) => !durableRowIds.has(entry.id));
-  const visibleMessages = withoutActiveRecovery(mergedPendingRows, activeRecoveryId ?? undefined);
+  const visibleMessages = withoutActiveRecoveries(mergedPendingRows, activeRecoveryIds);
   if (visibleMessages.length === 0) return null;
 
   // The controls read the model at the press, not at the render: the turn can

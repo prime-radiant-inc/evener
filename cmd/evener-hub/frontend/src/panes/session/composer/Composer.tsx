@@ -676,18 +676,18 @@ function ComposerWithSubmission({
   // every activation change, including the automatic ones no seam request
   // drives.
   useEffect(() => {
-    publishActiveRecovery(ref, activeRecoveryId, composerSeationToken);
-  }, [ref, activeRecoveryId, composerSeationToken]);
+    publishActiveRecovery(ref, activeRecoveryId, composerSeationToken, paneId);
+  }, [ref, activeRecoveryId, composerSeationToken, paneId]);
   // Unmount clears both publications: a pane closed mid-activation must not
   // keep excluding its recovery row or holding the busy gate for the ref.
   // The owner token keeps a closing pane from clearing a sibling composer's
   // publication for the same ref (an embedded cascade column).
   useEffect(() => {
     return () => {
-      publishActiveRecovery(ref, null, composerSeationToken);
+      publishActiveRecovery(ref, null, composerSeationToken, paneId);
       publishComposerBusy(ref, false, composerSeationToken);
     };
-  }, [ref, composerSeationToken]);
+  }, [ref, composerSeationToken, paneId]);
   // The shared busy gate, published beside it: the pending rows' Edit/Retry
   // affordances read the composer's live in-flight state (the retired
   // strip's busy prop).

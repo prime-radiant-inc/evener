@@ -45,10 +45,22 @@ export function withoutActiveRecovery<T extends PendingRowIdentity>(
   activeRecoveryId: string | undefined,
 ): readonly T[] {
   if (activeRecoveryId === undefined) return rows;
+  return withoutActiveRecoveries(rows, new Set([activeRecoveryId]));
+}
+
+// The multi-composer shape: one ref can carry two mounted composers (a
+// standalone seat and an embedded cascade column), each editing its own
+// recovery, so the exclusion is a SET of live compositions across panes -
+// a row is excluded when any pane's composer holds it.
+export function withoutActiveRecoveries<T extends PendingRowIdentity>(
+  rows: readonly T[],
+  activeRecoveryIds: ReadonlySet<string>,
+): readonly T[] {
+  if (activeRecoveryIds.size === 0) return rows;
   return rows.filter((row) =>
     row.recovery
-      ? row.recovery.clientMutationId !== activeRecoveryId
-      : !(row.recoveryKind !== undefined && row.id === activeRecoveryId),
+      ? !activeRecoveryIds.has(row.recovery.clientMutationId)
+      : !(row.recoveryKind !== undefined && activeRecoveryIds.has(row.id)),
   );
 }
 
