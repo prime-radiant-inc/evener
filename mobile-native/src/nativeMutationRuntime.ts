@@ -1029,19 +1029,37 @@ function createNativeMutationRuntime(): NativeMutationRuntime {
 }
 
 let sharedNativeMutationRuntime: NativeMutationRuntime | undefined;
+const waitingIdentitySubscriptions = new Set<{
+	listener: NativeMutationIdentityListener;
+	unsubscribe?: () => void;
+}>();
 
 export function getNativeMutationRuntime(): NativeMutationRuntime {
 	sharedNativeMutationRuntime ??= createNativeMutationRuntime();
+	for (const subscription of waitingIdentitySubscriptions) {
+		try {
+			subscription.unsubscribe = sharedNativeMutationRuntime.subscribeIdentities(subscription.listener);
+			waitingIdentitySubscriptions.delete(subscription);
+		} catch {
+			// Keep this listener for the next successful acquisition.
+		}
+	}
 	return sharedNativeMutationRuntime;
 }
 
-/** Subscribe to identity changes without making a screen's effect depend on
- * opening the mutations database. The recovery surface owns that failure and
- * its Retry; a screen with no runtime simply has no identity to follow. */
+/** A mounted screen follows identity changes once a runtime exists, including
+ * when that runtime is acquired after the screen subscribes. */
 export function subscribeNativeIdentities(listener: NativeMutationIdentityListener): () => void {
+	const subscription: { listener: NativeMutationIdentityListener; unsubscribe?: () => void } = { listener };
+	waitingIdentitySubscriptions.add(subscription);
 	try {
-		return getNativeMutationRuntime().subscribeIdentities(listener);
+		getNativeMutationRuntime();
 	} catch {
-		return () => {};
+		// Runtime acquisition can recover while this screen remains mounted.
 	}
+	return () => {
+		waitingIdentitySubscriptions.delete(subscription);
+		subscription.unsubscribe?.();
+		subscription.unsubscribe = undefined;
+	};
 }
