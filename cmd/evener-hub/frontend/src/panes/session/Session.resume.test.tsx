@@ -37,6 +37,7 @@ import { readDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import "./index";
+import { NOW_TICK_MS } from "./liveness";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
@@ -572,7 +573,7 @@ test("a merely-resumable local session shows no standalone Resume notice", async
     const refresh = refreshPendingTurnsProjection(ref);
     // A busy suite can cross the liveness tick during this durable read.
     // Drive that boundary explicitly rather than relying on host speed.
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(NOW_TICK_MS);
     await refresh;
   });
   // Readiness now follows the fence's own ownership check: the runtime's
