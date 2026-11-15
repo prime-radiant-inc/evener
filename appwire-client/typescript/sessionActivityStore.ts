@@ -103,6 +103,10 @@ interface ResourceRead {
 /** Cap on the buffered latest frame per unknown row identity; the per-key
  * seen-unknown set bounds reads, so this only guards an unbounded store. */
 const MAX_BUFFERED_DELEGATE_FRAMES = 128;
+/** The producer publishes activity at most once per second, so one read per
+ * heartbeat cadence -- coalesced across every streaming id -- keeps a paged
+ * roster's rows reading as live without a read per frame. */
+const DELEGATE_HEARTBEAT_READ_PACE_MS = 1000;
 const resources: readonly SessionActivityResource[] = ["summary", "delegates", "jobs", "watches"];
 const defaultClock: SessionActivityClock = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -883,7 +887,9 @@ export class SessionActivityStore {
    * matches asks for one root read (bounded per identity) and its latest frame
    * waits for a read to admit the row. A frame from an older producer carries
    * no child ref and can name no row: it asks for one read per delegate id
-   * per strictly newer revision and patches nothing itself. A frame that
+   * per strictly newer revision -- or one paced, coalesced read while its
+   * activity keeps advancing at the same revision -- and patches nothing
+   * itself. A frame that
    * matches a loaded row before any read has established the delegates
    * ordering's epoch -- a replacement's retained
    * rows with the first response still pending -- is buffered like an unknown
@@ -1046,15 +1052,34 @@ export class SessionActivityStore {
       return;
     }
     // A legacy frame names no row, so only a read can land its change: the
-    // first frame for an id asks once, a repeat at the same or an older
-    // revision asks for nothing, and a strictly newer revision asks again --
+    // first frame for an id asks once, a strictly newer revision asks again --
     // a terminal frame after a running one is newer news, and the row it
-    // would leave stale is the one the first read served.
+    // would leave stale is the one the first read served -- and an advancing
+    // repeat at the same revision asks for one paced, coalesced read: the
+    // producer's activity phase moves no revision a ladder could ask with,
+    // and a paged roster cannot take the heartbeat directly.
     const revision = revisionOf(frame.projectionRevision);
     const asked = this.legacyDelegateReadRevisions.get(frame.delegateId);
-    if (asked !== undefined && asked >= revision) return;
+    if (asked !== undefined && asked >= revision) {
+      if (read.timer === null && this.legacyHeartbeatAdvances(frame)) {
+        this.schedule("delegates", DELEGATE_HEARTBEAT_READ_PACE_MS);
+      }
+      return;
+    }
     this.legacyDelegateReadRevisions.set(frame.delegateId, revision);
     void this.request("delegates", "root");
+  }
+  /** Whether a legacy heartbeat's activity moves past every loaded row under
+   * its id. Demand only, never a landing: a paged set cannot prove which row
+   * a heartbeat belongs to, so this decides whether the collection is owed a
+   * read, and the read's join owns where the activity lands. */
+  private legacyHeartbeatAdvances(frame: EvenerDelegateInfo): boolean {
+    let current: string | undefined;
+    for (const row of this.state.delegates.rows) {
+      if (row.delegateId !== frame.delegateId) continue;
+      if (current === undefined || activityAfter(row.latestActivityAt, current)) current = row.latestActivityAt;
+    }
+    return activityAfter(frame.latestActivityAt, current);
   }
   /** The projector's join: the strictly greater revision supplies the snapshot
    * fields, while latestActivityAt is the independent maximum -- a lower

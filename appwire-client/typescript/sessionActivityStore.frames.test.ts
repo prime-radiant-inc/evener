@@ -1356,6 +1356,69 @@ test("a legacy frame's advancing activity lands on its one row without a newer r
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads);
 });
 
+test("a paged collection's advancing heartbeats share one paced read", async () => {
+  const client = pushClient();
+  // A producer that holds only part of the roster pages its answers: the row
+  // is loaded but the collection never reaches its end, so a heartbeat cannot
+  // be attributed to the row directly -- only a read's join can move its
+  // activity -- and the answer carries the activity the hub holds now.
+  let served = "2026-09-30T12:00:00Z";
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: false, issues: [], nextCursor: "next" },
+    delegates: [delegateRow({ status: "running", projectionRevision: 1, latestActivityAt: served })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  expect(store.getSnapshot().delegates.complete).toBe(false);
+  // The first frame spends the id's one ladder read; its answer predates the
+  // activity the hub carries by the time the stream reports again.
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 1, latestActivityAt: "2026-09-30T12:00:01Z" }),
+      childRef: undefined,
+    }),
+  );
+  await store.settleForTests("delegates");
+  const activity = () => store.getSnapshot().delegates.rows[0]?.latestActivityAt;
+  expect(activity()).toBe("2026-09-30T12:00:00Z");
+  const reads = callsTo(client, "evener/thread/delegates/list");
+  // A streaming legacy delegate reports activity twice at the same revision
+  // while the hub's answer moves with it: both heartbeats are demand for one
+  // coalesced read, and the read lands the activity the hub holds now -- the
+  // row must not read as quiet while its child works.
+  served = "2026-09-30T12:00:02Z";
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 1, latestActivityAt: "2026-09-30T12:00:02Z" }),
+      childRef: undefined,
+    }),
+  );
+  served = "2026-09-30T12:00:03Z";
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 1, latestActivityAt: "2026-09-30T12:00:03Z" }),
+      childRef: undefined,
+    }),
+  );
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(activity()).toBe("2026-09-30T12:00:03Z");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads + 1);
+  // A repeat that moves nothing is no demand: the read it would ask for has
+  // nothing new to serve.
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 1, latestActivityAt: "2026-09-30T12:00:03Z" }),
+      childRef: undefined,
+    }),
+  );
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(activity()).toBe("2026-09-30T12:00:03Z");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads + 1);
+});
+
 test("a malformed legacy heartbeat cannot poison a blank row's activity", async () => {
   const { client, store } = await pushOwner();
   const activity = () => store.getSnapshot().delegates.rows[0]?.latestActivityAt;
