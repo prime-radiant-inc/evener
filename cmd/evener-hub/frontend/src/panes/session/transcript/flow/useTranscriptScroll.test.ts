@@ -90,13 +90,13 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
 // see VirtualList's own test suite doc comment). scrollToIndex is a spy -
 // this suite proves WHAT the hook asks the widget to do, not react-virtual's
 // own offset math (already covered by virtuallist.test.tsx).
-function makeListHandle(): {
+function makeListHandle(ownerDocument: Document = document): {
   ref: React.RefObject<VirtualListHandle | null>;
   el: HTMLDivElement;
   scrollToIndex: ReturnType<typeof vi.fn>;
   setVisibleRange: (range: { startIndex: number; endIndex: number } | null) => void;
 } {
-  const el = document.createElement("div");
+  const el = ownerDocument.createElement("div");
   const scrollToIndex = vi.fn();
   // getVisibleRange: scriptable, like makeMeasure below - defaults to null
   // ("unknown/not visible"), which is exactly what every scenario that
@@ -3039,6 +3039,51 @@ describe("the error anchor (failed turn)", () => {
     });
     expect(result.current.holdsPlace).toBe(false);
     expect(result.current.isFollowingBottom()).toBe(true);
+  });
+
+  test("a popout wheel to the end releases a Find hold and resumes following", () => {
+    const frame = document.createElement("iframe");
+    document.body.append(frame);
+    try {
+      const popdoc = frame.contentDocument;
+      const popup = frame.contentWindow;
+      if (!popdoc || !popup) throw new Error("missing popout document");
+      const popEvents = popup as Window & { Event: typeof Event; WheelEvent: typeof WheelEvent };
+      const { ref, el } = makeListHandle(popdoc);
+      popdoc.body.append(el);
+      const { measure, set } = makeMeasure({ scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+      definePort(el, { scrollTop: 0, scrollHeight: 50, clientHeight: 50 });
+      const { result, unmount } = renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          listRef: ref,
+          model: model([]),
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      );
+      try {
+        act(() => result.current.holdPosition());
+        set({ scrollHeight: 400 });
+        definePort(el, { scrollTop: 0, scrollHeight: 400, clientHeight: 50 });
+        act(() => el.dispatchEvent(new popEvents.Event("scroll")));
+        expect(result.current.holdsPlace).toBe(true);
+        expect(result.current.isFollowingBottom()).toBe(false);
+
+        act(() => {
+          el.dispatchEvent(new popEvents.WheelEvent("wheel", { deltaY: 350, bubbles: true }));
+          set({ scrollTop: 350 });
+          el.scrollTop = 350;
+          el.dispatchEvent(new popEvents.Event("scroll"));
+        });
+        expect(result.current.holdsPlace).toBe(false);
+        expect(result.current.isFollowingBottom()).toBe(true);
+      } finally {
+        unmount();
+      }
+    } finally {
+      frame.remove();
+    }
   });
 
   test("a scroll command that moved the port before reporting it ends a held place", () => {
