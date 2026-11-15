@@ -218,8 +218,8 @@ test("Details owns a clock after hydration", () => {
   expect(setIntervalSpy).toHaveBeenCalledExactlyOnceWith(expect.any(Function), NOW_TICK_MS);
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("1s");
 
-  act(() => vi.advanceTimersByTime(3_000));
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
+  act(() => vi.advanceTimersByTime(NOW_TICK_MS));
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${1 + NOW_TICK_MS / 1000}s`);
 });
 
 test("Details resolves a local session's branch for its branch row", async () => {
@@ -243,21 +243,21 @@ test("retains Details rendering and the current clock value across a pane remoun
   seedModel(model);
 
   const first = render(panel({ params: { ref: model.ref }, paneId: "panel-details", focused: true, kind: "details" }));
-  act(() => vi.advanceTimersByTime(3_000));
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
+  act(() => vi.advanceTimersByTime(NOW_TICK_MS));
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${1 + NOW_TICK_MS / 1000}s`);
 
   const mutated = { ...model, workMillis: 2_000 };
   act(() => {
     threadsStore.setState({ threads: new Map([[mutated.ref, mutated]]) });
   });
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("5s");
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${2 + NOW_TICK_MS / 1000}s`);
   first.unmount();
 
   seedModel(mutated);
   render(panel({ params: { ref: mutated.ref }, paneId: "panel-details-remount", focused: true, kind: "details" }));
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("5s");
-  act(() => vi.advanceTimersByTime(3_000));
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("8s");
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${2 + NOW_TICK_MS / 1000}s`);
+  act(() => vi.advanceTimersByTime(NOW_TICK_MS));
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${2 + (2 * NOW_TICK_MS) / 1000}s`);
 });
 
 test("claims and releases the session ref with the pane lifecycle", async () => {

@@ -28,6 +28,7 @@ test.each([
   ["panes/session/chrome/statusrow.module.css", ".figure"],
   ["shell/rail/RailRow.module.css", ".time"],
   ["panes/session/transcript/messages/turnseparator.module.css", ".row"],
+  ["widgets/timestamp/timestamp.module.css", ".time"],
 ])("%s %s is sans with tabular figures", (path, selector) => {
   const body = rule(path, selector);
   expect(body).not.toMatch(/--font-mono/);

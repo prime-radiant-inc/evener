@@ -379,7 +379,7 @@ test("visible About work time advances during an active turn", async () => {
   act(() => threadsStore.getState().releaseThread(ref));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("14s");
   act(() => vi.advanceTimersByTime(NOW_TICK_MS * 2));
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain("20s");
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${14 + (2 * NOW_TICK_MS) / 1000}s`);
   expect(activitySidebarStore.getState().tab).toBe("about");
   act(() =>
     client.emitNotification({

@@ -10,6 +10,11 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
+  /* Tabular figures: the label re-renders as the clock advances, and with
+   * proportional digits the same-length label ("41s ago" vs "48s ago")
+   * measures anywhere from 40px to 44px — the stamp visibly jitters on its
+   * rail every tick. Fixed-width digits hold the box still. */
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: help;
   border-bottom: 1px dotted transparent;

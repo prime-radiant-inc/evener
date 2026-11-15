@@ -4,11 +4,11 @@
 // pane back into this leaf module.
 import { createContext, useContext, useEffect, useState } from "react";
 
-// Same interval as the legacy renderer's own liveness tick
-// (cmd/evener-hub/assets/renderer.js LIVENESS_TICK_MS=3000) - fine-grained
-// enough that Cadence's tick decay visibly advances promptly, coarse enough
-// to be a non-issue re-rendering cost-wise.
-export const NOW_TICK_MS = 3_000;
+// The session's one live clock. A relative timestamp that rewrites itself
+// every few seconds reads as churn, so the floor is 5s: coarse enough that
+// the reader sees a label settle, fine enough that ages still feel live.
+// Cadence's tick decay advances one step per tick, which 5s keeps prompt.
+export const NOW_TICK_MS = 5_000;
 
 // Session owns the live clock; transcript descendants only consume it. The
 // fixed default keeps standalone renders deterministic and timer-free.
