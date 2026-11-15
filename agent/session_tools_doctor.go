@@ -212,7 +212,18 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 		return doctor.Tree(stateBase, selector, opts)
 
 	case "turnids":
-		return doctor.ScanTurnIDs(stateBase)
+		opts := doctor.TurnIDOpts{}
+		if v := stringArg(args, "since"); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil {
+				return nil, fmt.Errorf("turnids since: %w", err)
+			}
+			opts.Since = d
+		}
+		if v := stringArg(args, "bucket"); v != "" {
+			opts.Bucket = v
+		}
+		return doctor.ScanTurnIDs(ctx, stateBase, opts)
 
 	case "sessions":
 		opts := doctor.SessionsOpts{Since: tool.DoctorSessionsDefaultSince}

@@ -80,6 +80,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "derived",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "ReasoningField": "snapshot/row",
@@ -88,6 +89,7 @@
     "Surface": "snapshot/row",
     "ToolChoiceForcing": "overlay/provider",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:kimi-k2.5"
   },
   "default_model": "kimi-k3",

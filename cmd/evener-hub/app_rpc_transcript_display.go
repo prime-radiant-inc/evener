@@ -11,6 +11,13 @@ import (
 )
 
 func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.TranscriptDisplayStore) {
+	// The store owns the post-commit notification (#1634): a patch that
+	// advanced a layout's published revision broadcasts the canonical value,
+	// including the post-apply-failure case. Wiring the port here, once,
+	// removes the manual pairing a new handler could forget.
+	store.OnCommitted(func(changed appwire.TranscriptDisplayChangedParams) {
+		server.BroadcastAll(appwire.NotifyEvenerSettingsTranscriptDisplayChanged, changed)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsTranscriptDisplayGet,
 		func(context.Context, appwire.EmptyParams) (appwire.TranscriptDisplayDefaults, error) {
 			return store.Snapshot(), nil
@@ -24,19 +31,12 @@ func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.
 			result, err := store.Patch(params)
 			if err != nil {
 				// A post-apply durable error means the patch APPLIED: the
-				// store already published the new revision. Returning the
-				// error without broadcasting would leave every other client
-				// on the pre-patch revision, so fan out the applied layout
-				// before surfacing the failure - and carry that same value in
-				// the error itself so the REQUESTING client can reconcile
-				// from it instead of treating its write as rejected (mirrors
+				// store already published the new revision and broadcast it
+				// through OnCommitted. Carry that same value in the error so
+				// the REQUESTING client can reconcile from it instead of
+				// treating its write as rejected (mirrors
 				// KeybindingsPostRenameError's rule in app_rpc_keybindings.go).
 				if postApply, ok := errors.AsType[*hubcore.TranscriptDisplayPostApplyError](err); ok {
-					server.BroadcastAll(appwire.NotifyEvenerSettingsTranscriptDisplayChanged, appwire.TranscriptDisplayChangedParams{
-						Layout:   postApply.Layout,
-						Revision: postApply.Applied.Revision,
-						Config:   postApply.Applied.Config,
-					})
 					return nil, appwire.WireError{
 						Code:    appwire.CodeInternalError,
 						Message: err.Error(),
@@ -48,10 +48,6 @@ func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.
 					}
 				}
 				return nil, err
-			}
-			if result.Revision != params.ExpectedRevision {
-				server.BroadcastAll(appwire.NotifyEvenerSettingsTranscriptDisplayChanged,
-					appwire.TranscriptDisplayChangedParams(result))
 			}
 			return result, nil
 		})

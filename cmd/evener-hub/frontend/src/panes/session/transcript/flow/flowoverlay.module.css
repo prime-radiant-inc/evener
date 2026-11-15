@@ -5,12 +5,13 @@
 
 .top {
   position: absolute;
-  top: 0;
+  top: var(--space-3);
   left: 0;
   right: 0;
   z-index: var(--z-raised);
   display: flex;
   flex-direction: column;
+  align-items: center;
   pointer-events: none; /* only its own interactive children (LoadOlderRow) opt back in */
 }
 

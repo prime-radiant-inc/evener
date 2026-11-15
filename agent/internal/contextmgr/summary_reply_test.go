@@ -135,7 +135,7 @@ func TestSummarizeWithLLM_RejectedCheapReplyFallsBackToSessionModel(t *testing.T
 					steps = append(steps, sessionNarration)
 				}
 			}
-			adapter := &fakeAdapter{name: "openai", steps: steps}
+			adapter := newFakeAdapter("openai", steps)
 			client := llm.NewClient()
 			client.Register(adapter)
 			profile := provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini")
@@ -187,12 +187,12 @@ func TestSummaryPromptSectionsComeFromThePrompt(t *testing.T) {
 // daemon nudges stay labeled as system text.
 func TestSummarizeWithLLM_LabelsPartnerSteeringAsUser(t *testing.T) {
 	var prompt string
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			prompt = req.Messages[0].Text()
 			return llm.Response{Message: llm.Assistant("## Progress\nDone")}
 		},
-	}}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
@@ -218,12 +218,12 @@ func TestSummarizeWithLLM_LabelsPartnerSteeringAsUser(t *testing.T) {
 // reach the summarizer at all.
 func TestForceCompact_PartnerSteeringReachesTheSummarizer(t *testing.T) {
 	var prompt string
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			prompt = req.Messages[0].Text()
 			return llm.Response{Message: llm.Assistant("## Progress\nDone")}
 		},
-	}}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))

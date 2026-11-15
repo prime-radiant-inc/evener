@@ -5,8 +5,9 @@
 //     (resolveHeadBranch), and
 //   - the session location line, which also links the branch to its
 //     forge repo page and so needs the "origin" remote (useGitLocation),
-//   - the About tab's branch row (useHeadBranch), which like the Spawn chip
-//     renders only the branch and so does not ask for the origin.
+//   - the About tab's and the desktop session Details pane's branch row
+//     (useLocalSessionBranch), which like the Spawn chip renders only the
+//     branch and so does not ask for the origin.
 //
 // Origin is opt-in on the wire: resolveHeadBranch does not ask for it, so the
 // hub neither runs the origin lookup nor sends the remote to a caller that
@@ -17,9 +18,10 @@
 // than a thrown error, so a caller can render "nothing to show" without an error
 // path of its own - the same contract the Spawn pane's branch chip has always
 // had (floor §1.7).
-import type { AppwireClientLike } from "@evener/appwire-client";
+import type { AppwireClientLike, ThreadModel } from "@evener/appwire-client";
 import { hostRequest } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import { useClient } from "./clientContext";
 
 export interface GitLocation {
   // Branch name, or a detached-HEAD short SHA, or "" when unknown.
@@ -119,4 +121,16 @@ export function useHeadBranch(client: AppwireClientLike, cwd: string, enabled: b
 /** The mounted, fail-soft, retry-on-recovery branch-plus-origin lookup. */
 export function useGitLocation(client: AppwireClientLike, cwd: string, enabled: boolean = true): GitLocation {
   return useGitHead(client, cwd, true, enabled);
+}
+
+// A local session's branch row: the phone's About tab and the desktop session
+// Details pane both resolve it at view time from the session's cwd on this hub,
+// because the hub's local read paths never populate the wire's thread.gitInfo.
+// The lookup runs for local refs only - a source-backed session's cwd belongs to
+// another host, whose repositories this hub cannot speak for (RepoLocation's own
+// locality rule) - and a wire-carried gitBranch wins and asks nothing.
+export function useLocalSessionBranch(ref: string, model: ThreadModel | undefined): string {
+  const client = useClient();
+  const cwd = model?.cwd ?? "";
+  return useHeadBranch(client, cwd, ref.startsWith("local:") && (model?.gitBranch ?? "") === "");
 }

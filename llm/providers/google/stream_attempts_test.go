@@ -29,6 +29,7 @@ const twoGeminiChunks = "data: {\"candidates\":[{\"content\":{\"role\":\"model\"
 // stream's terminal event, so a caller that reacts to FINISH always finds
 // the attempt already in the log.
 func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, 200, generateSSE)
 	sink := &captureSink{}
 	ctx := llm.WithAPIAttemptSink(
@@ -64,6 +65,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 // reached the provider and the response headers arrived, so neither a
 // connect nor a request-deadline classification would be honest.
 func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
 		stall := make(chan struct{})
@@ -107,6 +109,7 @@ type idleAttemptRoundTripper func(*http.Request) (*http.Response, error)
 func (f idleAttemptRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestStreamCompressedWireProgressDoesNotRequireDecodedSSEBytes(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var compressed bytes.Buffer
 		zw := gzip.NewWriter(&compressed)

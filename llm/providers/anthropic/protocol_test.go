@@ -39,6 +39,7 @@ func protoBuild(t *testing.T, req llm.Request, res registry.Resolved) map[string
 }
 
 func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
+	t.Parallel()
 	p, ok := llm.ProtocolFor(registry.ProtocolAnthropic)
 	if !ok {
 		t.Fatal("anthropic not registered")
@@ -64,6 +65,7 @@ func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
 // layer - nil is let through right here, by design - and that the
 // explicit false actually holds the tool back.
 func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.WebSearch = true
 	res := protoRes(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
@@ -80,6 +82,7 @@ func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
 }
 
 func TestProtocolBuildBody_ThinkingShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		shape        string
@@ -139,6 +142,7 @@ func anyOrNil(m map[string]any) any {
 }
 
 func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
+	t.Parallel()
 	req := protoReq("high")
 	req.MaxTokens = new(64000)
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}
@@ -199,6 +203,7 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 // budget that meets or exceeds the effective ceiling is the adapter's own
 // arithmetic, not caller input to validate.
 func TestProtocolBuildBody_HighThinkingClampsUnderUnknownOutputCapFallback(t *testing.T) {
+	t.Parallel()
 	res := protoRes(func(c *registry.Caps) {
 		c.MaxOutputTokens = nil
 		c.ThinkingShape = new("budget")
@@ -216,6 +221,7 @@ func TestProtocolBuildBody_HighThinkingClampsUnderUnknownOutputCapFallback(t *te
 }
 
 func TestProtocolBuildBody_ProviderOptionMaxTokensRespectsCapsAndLowerWireValue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		wire int
@@ -237,6 +243,7 @@ func TestProtocolBuildBody_ProviderOptionMaxTokensRespectsCapsAndLowerWireValue(
 }
 
 func TestProtocolBuildBody_ProviderOnlyThinkingBudgetFailsWithinAdmittedMax(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.MaxTokens = new(1000)
 	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{
@@ -257,6 +264,7 @@ func TestProtocolBuildBody_ProviderOnlyThinkingBudgetFailsWithinAdmittedMax(t *t
 }
 
 func TestProtocolBuildBody_MixedCaseProviderThinkingBudgetFailsWithinAdmittedMax(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.MaxTokens = new(1000)
 	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{
@@ -282,6 +290,7 @@ func TestProtocolBuildBody_MixedCaseProviderThinkingBudgetFailsWithinAdmittedMax
 // 1024-token thinking minimum keeps it too: silently sending a sub-minimum
 // budget would only move the failure to the provider's 400.
 func TestProtocolBuildBody_BudgetEffortClampedToOutputCeiling(t *testing.T) {
+	t.Parallel()
 	// kimi-for-coding k3's shape: budget+effort thinking, a 131072-token
 	// output cap, and the admitted allocation ApplyTokenBudget produces for
 	// effort max (the full cap).
@@ -343,6 +352,7 @@ func TestProtocolBuildBody_BudgetEffortClampedToOutputCeiling(t *testing.T) {
 // keeps the explicit error rather than silently sending a sub-minimum
 // budget.
 func TestProtocolBuildBody_BudgetEffortClampedUnderProviderOptionMaxTokens(t *testing.T) {
+	t.Parallel()
 	res := protoRes(func(c *registry.Caps) {
 		c.ThinkingShape = new("budget+effort")
 		c.MaxOutputTokens = new(131072)
@@ -366,6 +376,7 @@ func TestProtocolBuildBody_BudgetEffortClampedUnderProviderOptionMaxTokens(t *te
 }
 
 func TestProtocolBuildBody_FinalThinkingOverlayStateControlsReconciliation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		thinking       any
@@ -400,6 +411,7 @@ func TestProtocolBuildBody_FinalThinkingOverlayStateControlsReconciliation(t *te
 }
 
 func TestBetaHeaderMergesRowAndCallerBetas(t *testing.T) {
+	t.Parallel()
 	res := protoRes(nil)
 	res.Headers = map[string]string{"anthropic-beta": "context-1m-2025-08-07"}
 	req := protoReq("")
@@ -415,6 +427,7 @@ func TestBetaHeaderMergesRowAndCallerBetas(t *testing.T) {
 // TestProtocolUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5
 // rule that every error stamp is res.Instance, not a provider literal.
 func TestProtocolUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
+	t.Parallel()
 	res := protoRes(nil)
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,8 +48,8 @@ type Client struct {
 	orderedFrames func(Message, error)
 	featuresMu    sync.RWMutex
 	features      FeatureSet
-	// logf sinks connection-lifecycle events; nil discards them. See SetLogf.
-	logf func(format string, args ...any)
+	// log sinks connection-lifecycle events; nil discards them. See SetLogger.
+	log *slog.Logger
 	// closed latches the read loop's exit. failPending only fails the entries
 	// registered at that instant; a request that registers afterwards would
 	// otherwise wait forever for a response no goroutine can deliver (a first
@@ -116,7 +117,7 @@ func (c *Client) Start(ctx context.Context) {
 
 func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeout time.Duration) {
 	if pinger, ok := c.transport.(Pinger); ok {
-		go runClientKeepalive(ctx, pinger, c.transport.Close, pingInterval, pongTimeout, c.logf)
+		go runClientKeepalive(ctx, pinger, c.transport.Close, pingInterval, pongTimeout, c.log)
 	}
 	go func() {
 		for {
@@ -175,7 +176,7 @@ func (c *Client) SetOrderedFrameHandler(handler func(Message, error)) {
 	c.orderedFrames = handler
 }
 
-// SetLogf installs a sink for connection-lifecycle events a peer cannot
+// SetLogger installs a sink for connection-lifecycle events a peer cannot
 // observe from its own side of the socket (today: keepalive teardown, see
 // runClientKeepalive). Until it is called the sink is nil and those events
 // are discarded: this client runs inside interactive TUI sessions where the
@@ -183,10 +184,10 @@ func (c *Client) SetOrderedFrameHandler(handler func(Message, error)) {
 // bubbletea's live grid in -debug mode (no alternate screen) and corrupt the
 // render permanently (issue #783), so silence is the only default safe
 // everywhere. Callers that want these events (hub, TUI) provide their own
-// sink. Set it before Start, which reads the sink once to hand to the
+// logger. Set it before Start, which reads the sink once to hand to the
 // keepalive goroutine.
-func (c *Client) SetLogf(logf func(format string, args ...any)) {
-	c.logf = logf
+func (c *Client) SetLogger(log *slog.Logger) {
+	c.log = log
 }
 
 type requestIDObserverKey struct{}
@@ -216,10 +217,11 @@ func requestIDObserverFrom(ctx context.Context) func(ID) {
 // with an ordinary transport error, so without the log a pong-timeout
 // teardown under load — e.g. the hub subprocess starved past
 // interval+timeout by concurrent CI gates (#154) — is indistinguishable
-// from a dead hub. The line goes through logf (installed via SetLogf, nil
+// from a dead hub. The line goes through the logger (installed via SetLogger;
+// nil
 // discards it) rather than the standard log package, so it can never land on
 // a live TUI session's terminal (issue #783).
-func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error, interval, timeout time.Duration, logf func(format string, args ...any)) {
+func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error, interval, timeout time.Duration, log *slog.Logger) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -231,8 +233,9 @@ func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error
 			err := pinger.Ping(pingCtx)
 			cancel()
 			if err != nil {
-				if logf != nil {
-					logf("appwire: keepalive ping failed (ping interval %s, pong timeout %s): %v; closing connection", interval, timeout, err)
+				if log != nil {
+					log.Warn("appwire: keepalive ping failed, closing connection",
+						"ping_interval", interval, "pong_timeout", timeout, "err", err)
 				}
 				_ = closeFn()
 				return

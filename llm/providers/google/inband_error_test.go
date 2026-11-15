@@ -33,6 +33,7 @@ func collectStream(t *testing.T, body string) (text string, streamErr error) {
 // an HTTP 200 stream. It must surface as a typed provider error carrying the
 // envelope's status, not as the generic incomplete-stream error.
 func TestInbandError_ResourceExhausted_TypedRateLimit(t *testing.T) {
+	t.Parallel()
 	body := "data: {\"error\":{\"code\":429,\"message\":\"Resource has been exhausted (e.g. check quota).\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n"
 	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
@@ -57,6 +58,7 @@ func TestInbandError_ResourceExhausted_TypedRateLimit(t *testing.T) {
 // the real cause; the in-band path reclassifies it exactly like the non-2xx
 // path does.
 func TestInbandError_AmbiguousCode_ReclassifiedByGRPCStatus(t *testing.T) {
+	t.Parallel()
 	body := "data: {\"error\":{\"code\":400,\"message\":\"quota exceeded\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n"
 	_, streamErr := collectStream(t, body)
 	if streamErr == nil {
@@ -70,6 +72,7 @@ func TestInbandError_AmbiguousCode_ReclassifiedByGRPCStatus(t *testing.T) {
 // An error envelope arriving after real content must still terminate with the
 // typed error; the already-delivered deltas stay delivered.
 func TestInbandError_AfterContent(t *testing.T) {
+	t.Parallel()
 	body := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial \"}]}}]}\n\n" +
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"answer\"}]}}]}\n\n" +
 		"data: {\"error\":{\"code\":503,\"message\":\"The model is overloaded\",\"status\":\"UNAVAILABLE\"}}\n\n"
@@ -92,6 +95,7 @@ func TestInbandError_AfterContent(t *testing.T) {
 // Unparseable line noise keeps today's behavior: forwarded raw, and a stream
 // that then ends without a finishReason still reports the generic error.
 func TestInbandError_LineNoiseStillSkipped(t *testing.T) {
+	t.Parallel()
 	body := "data: this is not json\n\n" +
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\"}]}}]}\n\n"
 	text, streamErr := collectStream(t, body)

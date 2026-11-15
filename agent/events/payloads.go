@@ -553,7 +553,12 @@ type ModelChangedData struct {
 	// → <new>", plus any warning lines) — the exact text SetModel wrote to
 	// the transcript's TurnModelSwitch turn. The live projector renders it
 	// verbatim as a systemMessage item so live and replay stay byte-identical.
-	MarkerText string `json:"marker_text,omitempty"`
+	MarkerText          string  `json:"marker_text,omitempty"`
+	ContextUsed         int     `json:"context_used,omitempty"`
+	ContextWindow       int     `json:"context_window,omitempty"`
+	ContextPressure     float64 `json:"context_pressure,omitempty"`
+	ContextAssumed      bool    `json:"context_assumed,omitempty"`
+	CompactionThreshold int     `json:"compaction_threshold,omitempty"`
 }
 
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged
@@ -663,6 +668,11 @@ const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undelivera
 // committed delegate start could not replay an owed delivery. The parcel is
 // requeued and the start continues.
 const WarningCodeDelegateStartDeliveryReplay = "delegate_start_delivery_replay"
+
+// WarningCodeDelegateDeliveryResultLost identifies the notice that a stop
+// abandoned an inline delivery receipt after proving the owning tool commit
+// was gone: the delegate's result reached no tool result and is lost.
+const WarningCodeDelegateDeliveryResultLost = "delegate_delivery_result_lost"
 
 // WarningCodeAttentionPaused identifies the notice that a permanent provider
 // failure (a dead credential, a spent quota) has paused delivering background

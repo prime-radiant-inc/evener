@@ -9,6 +9,7 @@ export function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () 
     loading: false,
     error: null,
     fetch: vi.fn(async () => {}),
+    refresh: vi.fn(async () => {}),
     ...overrides,
   };
   return () => state;

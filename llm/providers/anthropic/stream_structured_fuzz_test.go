@@ -347,6 +347,7 @@ func FuzzAnthropicStreamStructured(f *testing.F) {
 // bytes interpreted as SSE essentially never form a valid completed stream; the
 // structured generator does so on most inputs.
 func TestStructuredAnthropicReachesDeeper(t *testing.T) {
+	t.Parallel()
 	const iters = 2000
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security

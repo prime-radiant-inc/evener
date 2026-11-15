@@ -1004,11 +1004,15 @@ func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMil
 		}
 	}
 	var delRefusal struct {
-		RoutePresent  bool `json:"routePresent"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routePresent.
-		RowsAfterOpen int  `json:"rowsAfterOpen"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rowsAfterOpen.
+		RouteBeforePresent bool `json:"routeBeforePresent"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routeBeforePresent.
+		RoutePresent       bool `json:"routePresent"`       //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routePresent.
+		RowsAfterOpen      int  `json:"rowsAfterOpen"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rowsAfterOpen.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-refusal", &delRefusal) {
-		if delRefusal.RoutePresent {
+		// Only a route the acquisition OPENED is a resurrection. A sibling that
+		// already held the session's route before the open retains it; that is
+		// why the driver records the pre-open state and this comparison uses it.
+		if !delRefusal.RouteBeforePresent && delRefusal.RoutePresent {
 			t.Error("two-tab-delete-refusal: the sibling's fresh acquisition opened an entry route for a deleted ref")
 		}
 		if delRefusal.RowsAfterOpen != 0 {

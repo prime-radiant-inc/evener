@@ -11,6 +11,7 @@ import (
 // sentinel they were built from, so errors.Is works for downstream callers
 // (the agent's cancellation/drain logic, external consumers).
 func TestWrapContextError_AbortUnwrapsToCanceled(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := WrapContextError("openai", context.Canceled)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal("errors.Is(WrapContextError(Canceled), context.Canceled) = false, want true")
@@ -21,6 +22,7 @@ func TestWrapContextError_AbortUnwrapsToCanceled(t *testing.T) {
 }
 
 func TestWrapContextError_TimeoutUnwrapsToDeadline(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := WrapContextError("openai", context.DeadlineExceeded)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("errors.Is(WrapContextError(DeadlineExceeded), context.DeadlineExceeded) = false, want true")
@@ -31,6 +33,7 @@ func TestWrapContextError_TimeoutUnwrapsToDeadline(t *testing.T) {
 }
 
 func TestWrapContextError_ResponseHeaderTimeoutPreservesRetryability(t *testing.T) {
+	t.Parallel()
 	original := newResponseHeaderTimeoutError(
 		"",
 		"timed out awaiting response headers",
@@ -60,6 +63,7 @@ func TestWrapContextError_ResponseHeaderTimeoutPreservesRetryability(t *testing.
 }
 
 func TestWrapContextError_WrappedCanceledUnwraps(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	wrapped := fmt.Errorf("dialing upstream: %w", context.Canceled)
 	err := WrapContextError("openai", wrapped)
 	if !errors.Is(err, context.Canceled) {
@@ -68,6 +72,7 @@ func TestWrapContextError_WrappedCanceledUnwraps(t *testing.T) {
 }
 
 func TestWrapContextError_PassThrough(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	sentinel := errors.New("boom")
 	if got := WrapContextError("openai", sentinel); !errors.Is(got, sentinel) {
 		t.Fatalf("WrapContextError(non-context) = %v, want the error returned unchanged", got)
@@ -80,6 +85,7 @@ func TestWrapContextError_PassThrough(t *testing.T) {
 // Classify's output must be identical after honest Unwrap: its context-sentinel
 // branches and its typed-error branches already agreed for these inputs.
 func TestClassify_UnchangedByHonestUnwrap(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if got := Classify(WrapContextError("openai", context.Canceled)); got != ErrorClassPermanent {
 		t.Fatalf("Classify(abort) = %v, want Permanent", got)
 	}
@@ -93,6 +99,7 @@ func TestClassify_UnchangedByHonestUnwrap(t *testing.T) {
 // only on BARE context sentinels; a typed llm timeout is a transient HTTP-level
 // timeout, not budget exhaustion.
 func TestRetryableError_RequestTimeoutWrappingDeadline_StaysRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := WrapContextError("openai", context.DeadlineExceeded)
 	if !retryableError(err) {
 		t.Fatal("retryableError(RequestTimeoutError wrapping DeadlineExceeded) = false, want true")
@@ -100,6 +107,7 @@ func TestRetryableError_RequestTimeoutWrappingDeadline_StaysRetryable(t *testing
 }
 
 func TestRetryableError_BareContext_NotRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if retryableError(context.DeadlineExceeded) {
 		t.Fatal("retryableError(bare DeadlineExceeded) = true, want false (budget exhausted)")
 	}
@@ -111,6 +119,7 @@ func TestRetryableError_BareContext_NotRetryable(t *testing.T) {
 // An AbortError wrapping context.Canceled must not retry (user cancellation is
 // permanent), whether caught by the bare-sentinel guard or the classifier.
 func TestRetryableError_AbortWrappingCanceled_NotRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if retryableError(WrapContextError("openai", context.Canceled)) {
 		t.Fatal("retryableError(AbortError wrapping Canceled) = true, want false")
 	}
@@ -119,6 +128,7 @@ func TestRetryableError_AbortWrappingCanceled_NotRetryable(t *testing.T) {
 // NewStreamError carries an optional underlying cause so adapters can surface
 // the real mid-stream read failure (e.g. an SSE parse error) via errors.Is.
 func TestNewStreamError_UnwrapsCause(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cause := errors.New("sse parse failed")
 	err := NewStreamError("anthropic", "stream read failed", cause)
 	if !errors.Is(err, cause) {
@@ -127,6 +137,7 @@ func TestNewStreamError_UnwrapsCause(t *testing.T) {
 }
 
 func TestNewStreamError_NilCauseDoesNotUnwrap(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if errors.Unwrap(NewStreamError("openai", "stream ended", nil)) != nil {
 		t.Fatal("NewStreamError(..., nil) should not unwrap to anything")
 	}

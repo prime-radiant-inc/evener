@@ -61,9 +61,10 @@ refresh-model-catalog:
 # produces the per-family target tables inside docs/developing-evener/'s marked
 # regions from the `##` annotations in these make/*.mk files;
 # internal/knobtable produces docs/developing-evener/config-knobs.md from the
-# envvars registry and the hub.toml decoder. lint-generated
-# runs this target and diffs all of those outputs, so both are gated for
-# staleness by the required lint gate.
+# envvars registry and the hub.toml decoder; internal/devtool/gatesurface
+# produces scripts/lib/gate-surface-lib.sh from the Go definition of the gate's
+# test-selection surface. lint-generated runs this target and diffs all of those
+# outputs, so both are gated for staleness by the required lint gate.
 ## Run the appwire, maketargetsdoc and knobtable `go generate` directives:
 ## the AppWire protocol reference and frontend TypeScript declarations from
 ## appwire/protocol.go, the per-family make-target tables in
@@ -73,6 +74,7 @@ generate:
 	go generate ./internal/effortts/...
 	go generate ./internal/maketargetsdoc/...
 	go generate ./internal/knobtable/...
+	go generate ./internal/devtool/gatesurface/...
 
 ## Remove the built binaries from the repo root.
 clean:

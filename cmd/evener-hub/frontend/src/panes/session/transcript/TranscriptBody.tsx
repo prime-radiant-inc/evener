@@ -290,6 +290,14 @@ export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptB
   return indexes;
 }
 
+/** The first row that renders any of a source turn: where the seen divider
+ * for that turn goes, and the row a session opening at it scrolls to. */
+export function transcriptFirstRowIndexForTurn(rows: readonly TranscriptBodyRow[], turnId: string): number {
+  return rows.findIndex((row) =>
+    row.kind === "intentGroup" ? row.sourceTurnIds.includes(turnId) : row.turn.source.id === turnId,
+  );
+}
+
 export interface TranscriptBodyProps {
   model: ThreadModel;
   config: TranscriptDisplayConfigV1;
@@ -341,6 +349,8 @@ export interface TranscriptBodyProps {
   sourcePaneId?: string;
   initialViewCapture?: CapturedTranscriptView;
   readView?: TranscriptReadView;
+  /** The owning reader's following-bottom intent, used by reflow captures. */
+  followingBottom?: () => boolean;
   onAnnounceViewChange?: (summary: string) => void;
 }
 
@@ -364,6 +374,7 @@ export function TranscriptBody({
   sourcePaneId: explicitSourcePaneId,
   initialViewCapture,
   readView,
+  followingBottom,
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const inheritedSourcePaneId = useContext(TranscriptSourcePaneContext);
@@ -416,6 +427,7 @@ export function TranscriptBody({
     viewKey: configFingerprint(config),
     initialViewCapture,
     readView,
+    followingBottom,
     listRef,
     anchorEntries: preparedView?.anchorEntries ?? transcriptAnchorEntriesForRows(rows),
     // Include the synthetic trailing row: following-bottom view restores
@@ -426,18 +438,13 @@ export function TranscriptBody({
     announce: onAnnounceViewChange,
   });
 
+  const seenDividerRowIndex = useMemo(
+    () => (showSeenDividerTurnId === undefined ? -1 : transcriptFirstRowIndexForTurn(rows, showSeenDividerTurnId)),
+    [rows, showSeenDividerTurnId],
+  );
+
   const renderRow = (row: TranscriptBodyRow, index: number) => {
-    const seenTurnId = showSeenDividerTurnId;
-    const seenAlreadyRendered =
-      seenTurnId !== undefined &&
-      rows
-        .slice(0, index)
-        .some((previous) =>
-          previous.kind === "intentGroup"
-            ? previous.sourceTurnIds.includes(seenTurnId)
-            : previous.turn.source.id === seenTurnId,
-        );
-    const showSeenDivider = seenTurnId !== undefined && !seenAlreadyRendered;
+    const showSeenDivider = index === seenDividerRowIndex;
     if (row.kind === "intentGroup") {
       return (
         <div data-testid="transcript-row" data-row-id={row.id}>
@@ -447,7 +454,7 @@ export function TranscriptBody({
             sourceTurnIds={row.sourceTurnIds}
             separatorTurn={row.separatorTurn}
             viewAnchorIndex={index}
-            showSeenDivider={showSeenDivider && row.sourceTurnIds.includes(seenTurnId ?? "")}
+            showSeenDivider={showSeenDivider}
             sessionRef={sessionRef}
             renderContext={itemRenderContext}
             thread={model}
@@ -460,7 +467,7 @@ export function TranscriptBody({
         <TurnBlock
           turn={row.turn}
           sessionRef={sessionRef}
-          showSeenDivider={showSeenDivider && row.turn.source.id === seenTurnId}
+          showSeenDivider={showSeenDivider}
           exchangeOpeners={openers}
           exchangeClosers={closers}
           agentLabel={agentLabel}

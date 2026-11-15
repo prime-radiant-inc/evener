@@ -1,0 +1,75 @@
+{
+  "benchmark": "BenchmarkCatalogLookupAndList/model-ids",
+  "iterations": 100000,
+  "benchmark_source_sha256": "fa94f4b58427725e94349a84626e4e7284d72aca25eb97a99c869a2893009e32",
+  "driver_sha256": "973edc14729367b9e7e7096d11c300949b74aedd26e964892dd9b1679f54e2be",
+  "process_helper_sha256": "b866dde5273ed841cc4ec4bd1c83fca95fe37fe5538031ca6e2df5654ee4e581",
+  "samples": [
+    {
+      "pair": 1,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 46720,
+      "peak_rss_bytes": 47841280,
+      "user_cpu_seconds": 0.996799,
+      "system_cpu_seconds": 0.022994999999999998,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t  100000\t      7486 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 1,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 37736,
+      "peak_rss_bytes": 38641664,
+      "user_cpu_seconds": 0.986799,
+      "system_cpu_seconds": 0.023042,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t  100000\t      7527 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 2,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38492,
+      "peak_rss_bytes": 39415808,
+      "user_cpu_seconds": 1.007856,
+      "system_cpu_seconds": 0.021079999999999998,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t  100000\t      7728 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 2,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 46280,
+      "peak_rss_bytes": 47390720,
+      "user_cpu_seconds": 0.954753,
+      "system_cpu_seconds": 0.020928,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t  100000\t      7254 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 3,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+      "peak_rss_kib": 46976,
+      "peak_rss_bytes": 48103424,
+      "user_cpu_seconds": 0.953405,
+      "system_cpu_seconds": 0.019028,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t  100000\t      7234 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    },
+    {
+      "pair": 3,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb",
+      "peak_rss_kib": 38272,
+      "peak_rss_bytes": 39190528,
+      "user_cpu_seconds": 0.972861,
+      "system_cpu_seconds": 0.020121,
+      "output": "goos: linux\ngoarch: amd64\npkg: primeradiant.com/evener/llm/registry\ncpu: AMD Ryzen 9 PRO 8945HS w/ Radeon 780M Graphics\nBenchmarkCatalogLookupAndList/model-ids-2         \t  100000\t      7428 ns/op\t    6136 B/op\t      15 allocs/op\nPASS\n"
+    }
+  ]
+}

@@ -38,9 +38,7 @@ import (
 // error nothing is left running.
 func startDiagnostics(opts hubOptions, stderr io.Writer) (*appserver.WebSocketTrace, func(), error) {
 	log := componentlog.NewWriter("hub", stderr)
-	_, stopPprof, err := cmdutil.StartLivePprof(func(format string, args ...any) {
-		log.Info(fmt.Sprintf(format, args...))
-	})
+	_, stopPprof, err := cmdutil.StartLivePprof(log)
 	if err != nil {
 		log.Info(fmt.Sprintf("%v", err))
 		return nil, nil, err
@@ -525,7 +523,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	// the default and an opt-out are visible rather than inferred.
 	deploy := r.opts.deployWiring()
 	if line := r.opts.deployPathLogLine(); line != "" {
-		_, _ = fmt.Fprintln(r.stderr, line)
+		r.logf("%s", line)
 	}
 	newSSHManager := r.deps.newSSHManager
 	if newSSHManager == nil {

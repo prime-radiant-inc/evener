@@ -27,6 +27,7 @@ import (
 // token it minted is the one every request carries, and each instance has its
 // own source.
 func TestGCPADCCachesPerInstanceWhileTheCredentialStands(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	minted := 0
 	credential := `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
@@ -64,6 +65,7 @@ func TestGCPADCCachesPerInstanceWhileTheCredentialStands(t *testing.T) {
 }
 
 func TestGCPADCReportsMissingCredentials(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return nil, errors.New("could not find default credentials")
 	}}
@@ -90,6 +92,7 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 // failure, not an absent one: the sentinel would tell the picker "no
 // credential" and hide that the file exists but will not load.
 func TestGCPADCDistinguishesABrokenADCFromAnAbsentOne(t *testing.T) {
+	t.Parallel()
 	unparsable := errors.New("google: could not parse credentials: invalid character 'x'")
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return nil, unparsable
@@ -114,6 +117,7 @@ func (f failingTokenSource) Token() (*oauth2.Token, error) { return nil, f.err }
 // unreachable endpoint: the hub's credential test reports the class, and
 // "sign in again" is the remedy it offers for it.
 func TestGCPADCReportsARefusedRefreshAsAuthentication(t *testing.T) {
+	t.Parallel()
 	refused := &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: "Token has been expired or revoked."}
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return &google.Credentials{JSON: []byte(storedUserJSON), TokenSource: failingTokenSource{err: refused}}, nil
@@ -137,6 +141,7 @@ func TestGCPADCReportsARefusedRefreshAsAuthentication(t *testing.T) {
 // A token that could not be minted because the token endpoint was unreachable
 // keeps its transport meaning: nothing says the credential is bad.
 func TestGCPADCAFailingTransportIsNotAnAuthFailure(t *testing.T) {
+	t.Parallel()
 	unreachable := errors.New("dial tcp 169.254.169.254:80: connect: no route to host")
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return &google.Credentials{TokenSource: failingTokenSource{err: unreachable}}, nil
@@ -159,6 +164,7 @@ func TestGCPADCAFailingTransportIsNotAnAuthFailure(t *testing.T) {
 // are not verdicts on the credential, and must keep their retryable meaning
 // rather than telling the reader to sign in again.
 func TestGCPADCATransientTokenFailureKeepsItsRetryableMeaning(t *testing.T) {
+	t.Parallel()
 	transient := &oauth2.RetrieveError{ErrorCode: "temporarily_unavailable", ErrorDescription: "The authorization server is currently unable to handle the request."}
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return &google.Credentials{JSON: []byte(storedUserJSON), TokenSource: failingTokenSource{err: transient}}, nil
@@ -182,6 +188,7 @@ func TestGCPADCATransientTokenFailureKeepsItsRetryableMeaning(t *testing.T) {
 // A stored credential the token endpoint refuses is reported as a refused
 // credential too, with the stored JSON named as the thing to replace.
 func TestGCPADCReportsAStoredCredentialRefusal(t *testing.T) {
+	t.Parallel()
 	refused := &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: "Token has been expired or revoked."}
 	a := &GCPADC{
 		CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
@@ -212,6 +219,7 @@ func TestGCPADCReportsAStoredCredentialRefusal(t *testing.T) {
 // foreign token_uri (spec §4), so this is the only offline way to reach that
 // shape — and check both a verdict and a transient condition.
 func TestGCPADCReadsARefusalFromTheJWTStyleError(t *testing.T) {
+	t.Parallel()
 	key := testServiceAccountKey(t)
 	for _, tc := range []struct {
 		name   string
@@ -262,6 +270,7 @@ func testServiceAccountKey(t *testing.T) []byte {
 // credential it was built from no longer matches, while an unchanged
 // credential keeps it.
 func TestGCPADCRebuildsADCSourceWhenTheCredentialFileChanges(t *testing.T) {
+	t.Parallel()
 	credential := `{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"first"}`
 	token := "token-first"
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
@@ -296,6 +305,7 @@ func TestGCPADCRebuildsADCSourceWhenTheCredentialFileChanges(t *testing.T) {
 }
 
 func TestDefaultsAreRegistered(t *testing.T) {
+	t.Parallel()
 	if a, ok := llm.AuthenticatorFor(registry.AuthGCPADC); !ok || a != llm.Authenticator(DefaultGCPADC) {
 		t.Fatal("gcp-adc not registered as DefaultGCPADC")
 	}
@@ -314,6 +324,7 @@ func staticADC() *GCPADC {
 }
 
 func TestGCPADCSetsQuotaProjectFromTransportVars(t *testing.T) {
+	t.Parallel()
 	req, _ := http.NewRequest(http.MethodGet, "https://x", nil)
 	res := registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"},
 		Transport: registry.Transport{Vars: map[string]string{"GOOGLE_VERTEX_PROJECT": "my-project", "GOOGLE_VERTEX_LOCATION": "global"}}}
@@ -326,6 +337,7 @@ func TestGCPADCSetsQuotaProjectFromTransportVars(t *testing.T) {
 }
 
 func TestGCPADCOmitsQuotaProjectWithoutTheVariable(t *testing.T) {
+	t.Parallel()
 	req, _ := http.NewRequest(http.MethodGet, "https://x", nil)
 	if err := staticADC().Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}}); err != nil {
 		t.Fatal(err)
@@ -336,6 +348,7 @@ func TestGCPADCOmitsQuotaProjectWithoutTheVariable(t *testing.T) {
 }
 
 func TestGCPADCOmitsQuotaProjectForServiceAccounts(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return &google.Credentials{
 			JSON:        []byte(`{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com"}`),
@@ -357,6 +370,7 @@ func TestGCPADCOmitsQuotaProjectForServiceAccounts(t *testing.T) {
 }
 
 func TestGCPADCOmitsQuotaProjectWithoutCredentialJSON(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 		return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "metadata-token"})}, nil
 	}}
@@ -379,6 +393,7 @@ func storedRes(instance, value string) registry.Resolved {
 }
 
 func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
+	t.Parallel()
 	var fromJSON [][]byte
 	finds := 0
 	a := &GCPADC{
@@ -419,6 +434,7 @@ func TestGCPADCUsesStoredJSONAndCachesByValue(t *testing.T) {
 }
 
 func TestGCPADCRebuildsWhenTheCredentialSourceChanges(t *testing.T) {
+	t.Parallel()
 	// The registry re-resolves an instance with no credential once its ADC
 	// file is gone; the cached ADC source must not keep answering for it.
 	adcGone := false
@@ -449,6 +465,7 @@ func TestGCPADCRebuildsWhenTheCredentialSourceChanges(t *testing.T) {
 }
 
 func TestGCPADCClassifiesAStoredCredentialFromTheStoredJSON(t *testing.T) {
+	t.Parallel()
 	// The parser seam returns no JSON echo; the stored value itself must
 	// decide that this is a user credential and so needs the quota header.
 	a := &GCPADC{
@@ -466,6 +483,7 @@ func TestGCPADCClassifiesAStoredCredentialFromTheStoredJSON(t *testing.T) {
 }
 
 func TestGCPADCReplacesStoredSourceOnRotation(t *testing.T) {
+	t.Parallel()
 	var fromJSON [][]byte
 	a := &GCPADC{
 		CredentialsFromJSON: func(_ context.Context, data []byte, scopes ...string) (*google.Credentials, error) {
@@ -510,6 +528,7 @@ func TestGCPADCReplacesStoredSourceOnRotation(t *testing.T) {
 }
 
 func TestGCPADCReplacesADCSourceWhenAStoredCredentialArrives(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{
 		FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
 			return &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "adc-token"})}, nil
@@ -543,6 +562,7 @@ func TestGCPADCReplacesADCSourceWhenAStoredCredentialArrives(t *testing.T) {
 }
 
 func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
 		t.Fatal("non-JSON must be rejected before the CredentialsFromJSON seam is called")
 		return nil, nil
@@ -558,6 +578,7 @@ func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
 const externalAccountJSON = `{"type":"external_account","audience":"//iam.googleapis.com/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"file":"/etc/passwd"}}`
 
 func TestValidateCredentialJSON(t *testing.T) {
+	t.Parallel()
 	if err := ValidateCredentialJSON([]byte(storedUserJSON)); err != nil {
 		t.Fatalf("authorized_user JSON rejected: %v", err)
 	}
@@ -630,6 +651,7 @@ func testServiceAccountJSON(t *testing.T) string {
 }
 
 func TestGCPADCRejectsUnsupportedStoredCredentialType(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
 		t.Fatal("the allowlist must reject external_account before the CredentialsFromJSON seam is called")
 		return nil, nil

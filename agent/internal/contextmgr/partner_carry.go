@@ -106,8 +106,8 @@ func middleTrim(text string, edge int) string {
 // checkpoint holds is input to the new summary, which supersedes it; carrying
 // every earlier summary forward as well would grow each summary turn with
 // every compaction. Checkpoints written by the opt-in session-log strategy
-// keep no conversation section, so nothing is recovered from them here
-// (#4181).
+// carry their partner messages in this same section, so they are recovered
+// here too (#4181).
 //
 // Past ceiling characters (partnerCarryCeiling; 0 means none) the oldest
 // messages are left out, newest kept, and returned as summarized: the

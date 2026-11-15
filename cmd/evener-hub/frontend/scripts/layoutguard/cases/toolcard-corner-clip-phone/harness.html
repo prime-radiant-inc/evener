@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>toolcard-corner-clip-phone layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; gap: 32px; padding: 24px 12px; }
+</style>
+</head>
+<body data-font-size="m">
+<!-- TurnBlock.tsx's intent group: one element holds the card and each member
+     sits in its own wrapper, which is empty when the member's descriptor
+     suppresses its row.
+
+       <div class="intentGroupRows">
+         <div><div class="call"><div class="row">…</div>[<div class="body">…</div>]</div></div>
+         <div></div>
+       </div>
+
+     The rows are ToolRow.tsx's intent-less write row with its trailing
+     OpenButton, as toolrow-intentless-hit-area copies it. -->
+<main class="fixtures">
+  <div class="intentGroupRows" id="card-open">
+    <div><div class="call" data-testid="tool-call-item"><div class="row" data-testid="tool-row" id="row-open"><span class="rowIconSlot fieldSeatBehind"><span class="rowIcon" data-testid="tool-row-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M3.2 12.8 L3.9 10.2 L10.6 3.5 A1.5 1.5 0 0 1 12.7 5.6 L6 12.3 L3.2 12.8 Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></span><div class="summaryLine"><span class="summary" data-testid="tool-row-summary" id="summary-open">Wrote src/fizzbuzz.py</span><span class="inline" data-open-shell="true"><button title="Open" type="button" aria-label="Open src/fizzbuzz.py beside" class="button quiet squareSm" id="open-open"><span class="icon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></span></div><button type="button" class="trigger" data-testid="tool-row-trigger" id="trigger-open" aria-expanded="false" aria-controls="b2" aria-label="Wrote src/fizzbuzz.py"><span class="chevron" aria-hidden="true" data-open="false" data-testid="tool-row-chevron"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></div></div></div>
+  </div>
+  <div class="intentGroupRows" id="card-band">
+    <div><div class="call" data-testid="tool-call-item"><div class="row" data-testid="tool-row" id="row-band"><span class="rowIconSlot fieldSeatBehind"><span class="rowIcon" data-testid="tool-row-icon" aria-hidden="true"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M3.2 12.8 L3.9 10.2 L10.6 3.5 A1.5 1.5 0 0 1 12.7 5.6 L6 12.3 L3.2 12.8 Z" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></span><div class="summaryLine"><span class="summary" data-testid="tool-row-summary" id="summary-band">Wrote src/fizzbuzz.py</span><span class="inline" data-open-shell="true"><button title="Open" type="button" aria-label="Open src/fizzbuzz.py beside" class="button quiet squareSm" id="open-band"><span class="icon"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></span></div><button type="button" class="trigger" data-testid="tool-row-trigger" id="trigger-band" aria-expanded="false" aria-controls="b2" aria-label="Wrote src/fizzbuzz.py"><span class="chevron" aria-hidden="true" data-open="false" data-testid="tool-row-chevron"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display: block;"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></span></button></div><div class="body" id="band" data-testid="tool-call-body">evidence</div></div></div>
+    <div></div>
+  </div>
+</main>
+<script>
+window.measure = () => {
+  const name = (el) => (el ? `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}` : "nothing");
+  const owns = (target, hit) => hit !== null && (hit === target || target.contains(hit));
+  const open = document.getElementById("open-open");
+  const o = open.getBoundingClientRect();
+  const x = o.left + o.width / 2;
+  const topHit = document.elementFromPoint(x, o.top + 1);
+  const bottomHit = document.elementFromPoint(x, o.bottom - 1);
+  const card = document.getElementById("card-band");
+  const band = document.getElementById("band");
+  const b = band.getBoundingClientRect();
+  const c = card.getBoundingClientRect();
+  const cornerHit = document.elementFromPoint(b.left + 0.5, b.bottom - 0.5);
+  return {
+    openHeight: o.height,
+    openTopReachesControl: owns(open, topHit),
+    openTopHit: name(topHit),
+    openBottomReachesControl: owns(open, bottomHit),
+    openBottomHit: name(bottomHit),
+    cardRadius: parseFloat(getComputedStyle(card).borderBottomLeftRadius),
+    bandReachesCardEdge: Math.abs(b.bottom - (c.bottom - 1)) <= 0.5 && Math.abs(b.left - (c.left + 1)) <= 0.5,
+    bandCornerPainted: owns(band, cornerHit),
+  };
+};
+</script>
+</body>
+</html>

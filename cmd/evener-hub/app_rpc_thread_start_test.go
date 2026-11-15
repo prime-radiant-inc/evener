@@ -206,15 +206,7 @@ func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) 
 			// the spawn's roster refresh must report that decode failure for the
 			// session it just spawned. The other faults inject their failure
 			// elsewhere and must not produce a roster-refresh diagnostic at all.
-			// The startup-phase lifecycle trace is its own diagnostic stream;
-			// this assertion is about roster-refresh failures.
-			var lines []string
-			for _, line := range capture.recorded() {
-				if strings.HasPrefix(line, "[hub] lifecycle ") {
-					continue
-				}
-				lines = append(lines, line)
-			}
+			lines := capture.recorded()
 			if fault == "listing" || fault == "stale-instance" {
 				if len(lines) != 1 {
 					t.Fatalf("hub diagnostics = %q, want exactly one roster refresh failure", lines)

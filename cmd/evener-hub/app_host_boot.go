@@ -89,7 +89,7 @@ func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool, write
 	if !required {
 		return false
 	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
+	if err := m.persistChange(hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
 		m.logf("boot host-record prune for %s not written: %v", m.cfg.configPath, err)
 	}
 	return true
@@ -148,7 +148,7 @@ func (m *hubHostManager) materializeHostRecords(records hostRecordSet, hasFile b
 		drifted := record.IncarnationID != entry.IncarnationID || record.PresenceEpoch != entry.PresenceEpoch ||
 			mark.Generation != entry.Generation || mark.IncarnationID != entry.IncarnationID || mark.PresenceEpoch != entry.PresenceEpoch
 		if !record.complete() || !mark.complete() || drifted {
-			if err := m.persistHosts(entries, entries, hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
+			if err := m.persistChange(hostPersistChange{recordsOnly: write == bootWriteRecordsOnly}); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
 			}
 			return
@@ -386,7 +386,6 @@ func (m *hubHostManager) reconcileGenerationMirror(doc hostRecordDocument) {
 // Update would mint a fresh identity. The durable high-water is what prevents
 // reuse, and it is the file's own record.
 func (m *hubHostManager) applyMirrorHighWater(highWater map[string]hostops.Boundary) {
-	entries := m.cfg.store.snapshot()
 	raises := make(map[string]HostGeneration, len(highWater))
 	marks := make(map[string]hostreg.HighWater, len(highWater))
 	for name, boundary := range highWater {
@@ -397,28 +396,10 @@ func (m *hubHostManager) applyMirrorHighWater(highWater map[string]hostops.Bound
 		}
 		raises[name] = raised
 		marks[name] = hostreg.HighWater{Generation: raised.Generation, PresenceEpoch: raised.PresenceEpoch}
-		for i := range entries {
-			if entries[i].Name != name {
-				continue
-			}
-			if entries[i].IncarnationID != raised.IncarnationID {
-				// The raise came from a store-mirror identity the live entry
-				// does not carry (a preserved mirror under an unmaterialized
-				// name): only the counters are seeded, never the entry's own
-				// incarnation.
-				continue
-			}
-			// The entry carries the whole raised triple: a live name's
-			// incarnation is the file mark's own (the raise preserves it), and
-			// writing the full triple keeps the live entry, its [generations]
-			// mark and the registry's seeded counters one operation rather than
-			// three that could drift.
-			entries[i].Generation = raised.Generation
-			entries[i].IncarnationID = raised.IncarnationID
-			entries[i].PresenceEpoch = raised.PresenceEpoch
-		}
 	}
-	if err := m.persistHosts(entries, entries, hostPersistChange{highWaterRaises: raises}); err != nil {
+	if err := m.persistChangeEdited(hostPersistChange{highWaterRaises: raises}, func(entries []hostreg.Host) {
+		raiseMirrorHighWaterEntries(entries, highWater)
+	}); err != nil {
 		m.logf("boot generation-mirror high-water for %s not written: %v", m.cfg.configPath, err)
 		return
 	}
@@ -427,7 +408,31 @@ func (m *hubHostManager) applyMirrorHighWater(highWater map[string]hostops.Bound
 	// the next removal or edit records the raised generation, never the
 	// discarded one.
 	m.cfg.hosts.SeedHighWater(marks)
-	m.cfg.store.set(entries)
+}
+
+// raiseMirrorHighWaterEntries applies one boot mirror pass's raises to the live
+// entries that carry the raised incarnation. A raise for a store-mirror
+// identity the live entry does not carry (a preserved mirror under an
+// unmaterialized name) seeds only the counters, never the entry's own
+// incarnation. Writing the full triple keeps the live entry, its [generations]
+// mark and the registry's seeded counters one operation rather than three that
+// could drift.
+func raiseMirrorHighWaterEntries(entries []hostreg.Host, highWater map[string]hostops.Boundary) {
+	for name, boundary := range highWater {
+		raised := HostGeneration{
+			Generation:    boundary.Generation,
+			IncarnationID: boundary.IncarnationID,
+			PresenceEpoch: boundary.PresenceEpoch,
+		}
+		for i := range entries {
+			if entries[i].Name != name || entries[i].IncarnationID != raised.IncarnationID {
+				continue
+			}
+			entries[i].Generation = raised.Generation
+			entries[i].IncarnationID = raised.IncarnationID
+			entries[i].PresenceEpoch = raised.PresenceEpoch
+		}
+	}
 }
 
 // reconcileTokenRows runs §9's closing reverse direction: store rows with no

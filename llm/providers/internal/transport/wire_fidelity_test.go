@@ -29,6 +29,7 @@ func gzipBytes(t *testing.T, body []byte) []byte {
 }
 
 func TestDoWithAPIAttemptsRecordsAdapterVisibleGzipBody(t *testing.T) {
+	t.Parallel()
 	providerBody := []byte(`{"provider":"decoded by net/http"}`)
 	compressed := gzipBytes(t, providerBody)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -79,11 +80,8 @@ func (t declaredCompressionTransport) RoundTrip(*http.Request) (*http.Response, 
 	}, nil
 }
 
-func (declaredCompressionTransport) APILogTransportUsesStandardCompression() bool {
-	return true
-}
-
 func TestDoWithAPIAttemptsDoesNotEmulateOrUnwrapGzipTransport(t *testing.T) {
+	t.Parallel()
 	compressed := gzipBytes(t, []byte("provider body"))
 	client := &http.Client{Transport: declaredCompressionTransport{body: compressed}}
 	sink := &responseAssociationSink{}
@@ -113,6 +111,7 @@ func TestDoWithAPIAttemptsDoesNotEmulateOrUnwrapGzipTransport(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsHTTPTraceEventsDoNotSplitRoundTrip(t *testing.T) {
+	t.Parallel()
 	traceEvents := 0
 	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) {
 		traceEvents++

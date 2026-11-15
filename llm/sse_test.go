@@ -10,6 +10,7 @@ import (
 )
 
 func TestSSEReadTimeoutErrorMatchesSentinelWithoutLosingItsDuration(t *testing.T) {
+	t.Parallel()
 	err := error(&sseReadTimeoutError{timeout: 90 * time.Second})
 
 	// Callers classify this with errors.Is against the sentinel, so Is is what
@@ -29,6 +30,7 @@ func TestSSEReadTimeoutErrorMatchesSentinelWithoutLosingItsDuration(t *testing.T
 }
 
 func TestParseSSE_BasicEvent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	input := "data: hello\n\n"
 	var events []SSEEvent
 	err := ParseSSE(context.Background(), strings.NewReader(input), func(ev SSEEvent) error {
@@ -47,6 +49,7 @@ func TestParseSSE_BasicEvent(t *testing.T) {
 }
 
 func TestParseSSE_MultipleEvents(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	input := "data: one\n\ndata: two\n\n"
 	var events []SSEEvent
 	err := ParseSSE(context.Background(), strings.NewReader(input), func(ev SSEEvent) error {
@@ -68,6 +71,7 @@ func TestParseSSE_MultipleEvents(t *testing.T) {
 }
 
 func TestParseSSE_WithEventType(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	input := "event: message\ndata: payload\n\n"
 	var events []SSEEvent
 	err := ParseSSE(context.Background(), strings.NewReader(input), func(ev SSEEvent) error {
@@ -86,6 +90,7 @@ func TestParseSSE_WithEventType(t *testing.T) {
 }
 
 func TestParseSSE_ContextCancellation_WithTimeout(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// The blocking path cannot detect context cancellation while stuck on
 	// ReadString. When a StreamReadTimeout is configured, context cancellation
 	// is handled via select, so it works reliably.
@@ -114,6 +119,7 @@ func TestParseSSE_ContextCancellation_WithTimeout(t *testing.T) {
 }
 
 func TestParseSSE_StreamReadTimeout_FiresOnStall(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Create a reader that sends one event then stalls.
 	pr, pw := io.Pipe()
 	go func() {
@@ -143,6 +149,7 @@ func TestParseSSE_StreamReadTimeout_FiresOnStall(t *testing.T) {
 }
 
 func TestParseSSE_StreamReadTimeout_ResetsOnData(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Verify that the timeout resets after each line of data, not just events.
 	pr, pw := io.Pipe()
 	go func() {
@@ -174,6 +181,7 @@ func TestParseSSE_StreamReadTimeout_ResetsOnData(t *testing.T) {
 }
 
 func TestParseSSE_StreamReadTimeout_ZeroMeansNoTimeout(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Zero timeout should behave like the original (no per-read timeout).
 	input := "data: hello\n\n"
 	var events []SSEEvent
@@ -191,6 +199,7 @@ func TestParseSSE_StreamReadTimeout_ZeroMeansNoTimeout(t *testing.T) {
 }
 
 func TestParseSSE_NoOptions_PreservesExistingBehavior(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Verify that calling ParseSSE without options still works identically.
 	input := "event: delta\ndata: content\n\nevent: done\ndata: [DONE]\n\n"
 	var events []SSEEvent
@@ -213,6 +222,7 @@ func TestParseSSE_NoOptions_PreservesExistingBehavior(t *testing.T) {
 }
 
 func TestAPITimeoutSourceForSSERecognizesItsReadTimeout(t *testing.T) {
+	t.Parallel()
 	if got := APITimeoutSourceForSSE(&sseReadTimeoutError{timeout: 5e9}); got != APITimeoutSSERead {
 		t.Fatalf("APITimeoutSourceForSSE(sseReadTimeoutError) = %q, want %q", got, APITimeoutSSERead)
 	}

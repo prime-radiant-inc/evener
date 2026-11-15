@@ -355,6 +355,7 @@ matcher must name the **Claude** tool:
 | web fetch / search | `web_fetch` / `web_search` | `WebFetch` / `WebSearch` |
 | notebook edits | `notebook_edit` | `NotebookEdit` |
 | asking the user a question | `ask_user` | `AskUserQuestion` |
+| activating a skill | `use_skill` | `Skill` |
 
 MCP tools keep their `<server>__<tool>` name in both vocabularies.
 

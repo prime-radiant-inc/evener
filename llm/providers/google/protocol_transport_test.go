@@ -104,6 +104,7 @@ func vertexAuthorityRes(t *testing.T, srv *httptest.Server, loc string) registry
 }
 
 func TestProtocolCompleteUsesHeaderAuthAndModelInPath(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, 200, generateJSON)
 	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
 	if err != nil {
@@ -118,6 +119,7 @@ func TestProtocolCompleteUsesHeaderAuthAndModelInPath(t *testing.T) {
 }
 
 func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, 200, generateSSE)
 	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), protoLive(srv))
 	if err != nil {
@@ -141,6 +143,7 @@ func TestProtocolStreamUsageOnFinishChunk(t *testing.T) {
 }
 
 func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -181,6 +184,7 @@ func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing
 }
 
 func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, 400, `{"error":{"code":400,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`)
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), protoLive(srv))
 	le, ok := errors.AsType[llm.Error](err)
@@ -197,6 +201,7 @@ func TestProtocolReclassifiesGRPCStatus(t *testing.T) {
 // on 2026-09-12 reads "Publisher model", and the same message with a capital M
 // takes the same path rather than dropping the guidance silently.
 func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) {
+	t.Parallel()
 	for _, phrase := range []string{"Publisher model", "Publisher Model"} {
 		t.Run(phrase, func(t *testing.T) {
 			body := `{"error":{"code":404,"message":"` + phrase + ` ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
@@ -221,6 +226,7 @@ func TestProtocolRegionalVertexPublisherModelNotFoundIsActionable(t *testing.T) 
 // remedy would hide a genuine permissions failure, so it stays the provider's
 // own error.
 func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
+	t.Parallel()
 	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash`" + ` was not found or your project does not have access to it."}}`
 	srv, _ := protoServer(t, http.StatusNotFound, body)
 	res := vertexAuthorityRes(t, srv, "us-central1")
@@ -240,6 +246,7 @@ func TestProtocolRegionalNonGlobalOnly404StaysProviderError(t *testing.T) {
 // regional endpoint, whatever variables its URL templates read, so its 404
 // must not be rewritten into a Vertex location configuration error.
 func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
+	t.Parallel()
 	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
 	srv, _ := protoServer(t, http.StatusNotFound, body)
 	res := vertexAuthorityRes(t, srv, "us-central1")
@@ -265,6 +272,7 @@ func TestProtocolNonVertexTransport404StaysProviderError(t *testing.T) {
 // TestResolve_LiteralHost* and TestResolve_DirectHost*); this covers the
 // remedy's side of the contract, and states the supplied-host shape.
 func TestProtocolUnderivedHost404StaysProviderError(t *testing.T) {
+	t.Parallel()
 	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/us-central1/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
 	srv, _ := protoServer(t, http.StatusNotFound, body)
 	res := protoLive(srv)
@@ -288,6 +296,7 @@ func TestProtocolUnderivedHost404StaysProviderError(t *testing.T) {
 // The same 404 against the global endpoint already names the endpoint that
 // serves the model, so it stays the provider's own error.
 func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing.T) {
+	t.Parallel()
 	body := `{"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/global/publishers/google/models/gemini-3.8-flash`" + ` was not found or your project does not have access to it."}}`
 	srv, _ := protoServer(t, http.StatusNotFound, body)
 	res := vertexAuthorityRes(t, srv, "global")
@@ -302,6 +311,7 @@ func TestProtocolGlobalVertexPublisherModelNotFoundStaysProviderError(t *testing
 }
 
 func TestProtocolListModelsAndCountTokens(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, 200, `{"models":[{"name":"models/gemini-2.5-flash","inputTokenLimit":922000,"outputTokenLimit":128000,"supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}`)
 	res := protoLive(srv)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res)
@@ -324,6 +334,7 @@ func TestProtocolListModelsAndCountTokens(t *testing.T) {
 // TestProtocolEndpointFamilies pins the api-log endpoint_family of each
 // operation; the stream must not report the non-streaming family.
 func TestProtocolEndpointFamilies(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -373,6 +384,7 @@ func TestProtocolEndpointFamilies(t *testing.T) {
 // TestProtocolIncompleteStreamNamesTheInstance pins that a stream that ends
 // before a finishReason reports the instance, not the protocol's own name.
 func TestProtocolIncompleteStreamNamesTheInstance(t *testing.T) {
+	t.Parallel()
 	truncated := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n"
 	srv, _ := protoServer(t, 200, truncated)
 	res := protoLive(srv)

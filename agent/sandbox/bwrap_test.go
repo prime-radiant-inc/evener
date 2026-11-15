@@ -19,6 +19,27 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
+// tmpInfraRoot is a hook/MCP-server directory under /tmp itself, whatever
+// TMPDIR says. The /tmp re-bind under test exists only for a root the
+// sandbox's fresh /tmp tmpfs would shadow, and with the gate's TMPDIR
+// elsewhere (on /dev/shm or /var/tmp), t.TempDir() no longer lands under /tmp.
+func tmpInfraRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "sbx-tmp-infra-")
+	if err != nil {
+		t.Skipf("this host offers no writable /tmp for the infra root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root = identifier.ResolveClean(root)
+	if !identifier.PathUnder(root, "/tmp") {
+		// /tmp is a symlink here (to /var/tmp, say): the sandbox's /tmp
+		// tmpfs does not shadow the resolved path, so there is no /tmp-based
+		// infra root this host can offer.
+		t.Skipf("/tmp resolves to %q on this host; no shadowed infra root exists", root)
+	}
+	return root
+}
+
 // A read-only session whose worktree lives under /tmp: the /tmp tmpfs shadows the
 // cwd, so without a re-bind --chdir aborts the sandbox. Read-only mode grants no
 // write root to save the cwd, so it must be re-bound read-only AFTER the tmpfs.
@@ -368,7 +389,7 @@ func TestBuildBwrapArgvReadOnlySessionTmp(t *testing.T) {
 // stops that from regressing.
 func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	home := t.TempDir()
-	infra := t.TempDir()
+	infra := tmpInfraRoot(t)
 	cwd := MaterializeWorkspace(t, MainCheckout)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
@@ -381,6 +402,36 @@ func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	}
 	if seqIndex(args, "--bind", infra, infra) >= 0 {
 		t.Errorf("hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", infra, args)
+	}
+}
+
+// TestBuildBwrapArgvRebindsInfraReadRootsUnderPrivateTmpInReadAnywhereModes pins
+// the sandbox-monotonicity half of the 2026-08-06 ruling for #6208: a configured
+// hook/MCP-server directory under /tmp is executable under ModeRestricted, but
+// under ModeReadOnly and ModeWorkspaceWrite the private --tmpfs /tmp shadowed it
+// even though those modes read anywhere. The re-bind candidates come from
+// Spawned.ReadRoots, so the ReadAnywhere modes must carry the InfraReadRoots
+// grant too, or the infra root vanishes inside the sandbox.
+func TestBuildBwrapArgvRebindsInfraReadRootsUnderPrivateTmpInReadAnywhereModes(t *testing.T) {
+	home := t.TempDir()
+	infra := tmpInfraRoot(t)
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	net := true
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite} {
+		rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
+		if err != nil {
+			t.Fatalf("Resolve(%v): %v", mode, err)
+		}
+		if !slices.Contains(rp.Spawned.ReadRoots, infra) {
+			t.Errorf("%v: spawned read roots must carry the hook/MCP grant %q (masked paths are filtered later), got %v", mode, infra, rp.Spawned.ReadRoots)
+		}
+		args := buildBwrapArgv(rp, t.TempDir(), cwd)
+		if seqIndex(args, "--ro-bind", infra, infra) < 0 {
+			t.Errorf("%v: hook/MCP root %q under /tmp must be re-bound read-only, got argv:\n%v", mode, infra, args)
+		}
+		if seqIndex(args, "--bind", infra, infra) >= 0 {
+			t.Errorf("%v: hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", mode, infra, args)
+		}
 	}
 }
 

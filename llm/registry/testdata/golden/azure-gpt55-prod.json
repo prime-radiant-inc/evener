@@ -88,6 +88,7 @@
     "web_search": false
   },
   "provenance": {
+    "AliasOf": "config/row",
     "ContextWindow": "snapshot/row",
     "Cost": "alias",
     "EffortValues": "alias",
@@ -100,6 +101,7 @@
     "KnowledgeCutoff": "alias",
     "MaxInputTokens": "alias",
     "MaxOutputTokens": "alias",
+    "Protocol": "snapshot/provider",
     "Reasoning": "alias",
     "ReasoningControls": "alias",
     "Sampling": "alias",

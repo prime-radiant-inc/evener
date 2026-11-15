@@ -147,6 +147,7 @@ func newMessagingRootIn(t *testing.T, adapter *messagingAdapter, env execenv.Exe
 	if configure != nil {
 		configure(&cfg)
 	}
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

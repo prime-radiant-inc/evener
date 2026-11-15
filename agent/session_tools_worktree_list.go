@@ -13,6 +13,16 @@ import (
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
+// WorktreeListResult holds the paged results and metadata of a list operation.
+type WorktreeListResult struct {
+	Entries        []WorktreeListEntry
+	Unmanaged      []WorktreeListEntry
+	TotalEntries   int
+	TotalUnmanaged int
+	Truncated      bool
+	NextOffset     int
+}
+
 // partitionWorktreeListEntries splits list's entries into the ones evener
 // manages and the ones it merely found sitting under the managed root. The
 // sidecar is the whole test (spec §6 "Metadata sidecar": a worktree without
@@ -52,21 +62,75 @@ func worktreeUnmanagedEntryToMap(e WorktreeListEntry) map[string]any {
 // treatment goes meanwhile — the two facts a reader needs to act. The digest
 // promises only what remove step 5 delivers: an unmanaged worktree is never
 // pruned, and never removed unless the caller passes force.
+const (
+	defaultWorktreeListLimit = 15
+	maxWorktreeListLimit     = 15
+	maxSummaryItemsUnpaged   = 10
+	maxSummaryItemsPaged     = 5
+)
+
+// worktreeUnmanagedSummary renders the unmanaged section's digest, naming the
+// operation that converts one and stating exactly how far evener's hands-off
+// treatment goes meanwhile — the two facts a reader needs to act. The digest
+// promises only what remove step 5 delivers: an unmanaged worktree is never
+// pruned, and never removes unless the caller passes force.
 func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
 	if len(unmanaged) == 0 {
 		return ""
 	}
-	parts := make([]string, len(unmanaged))
-	for i, e := range unmanaged {
+	limit := len(unmanaged)
+	capped := false
+	if limit > maxSummaryItemsUnpaged {
+		limit = maxSummaryItemsUnpaged
+		capped = true
+	}
+	parts := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		e := unmanaged[i]
 		branch := e.Branch
 		if branch == "" {
 			branch = "detached HEAD"
 		}
 		parts[i] = fmt.Sprintf("%s (%s)", e.Path, branch)
 	}
+	joined := strings.Join(parts, "; ")
+	if capped {
+		joined += fmt.Sprintf("; and %d more", len(unmanaged)-maxSummaryItemsUnpaged)
+	}
 	return fmt.Sprintf(
 		" %d unmanaged worktree(s) under the managed root, which evener never prunes and never removes without force — use manage_worktree adopt with the path to take one over: %s.",
-		len(unmanaged), strings.Join(parts, "; "))
+		len(unmanaged), joined)
+}
+
+func worktreeUnmanagedSummaryPaged(unmanaged []WorktreeListEntry, totalUnmanaged int) string {
+	if totalUnmanaged == 0 {
+		return ""
+	}
+	if len(unmanaged) == 0 {
+		return fmt.Sprintf(" 0 of %d unmanaged worktree(s) under the managed root.", totalUnmanaged)
+	}
+	limit := len(unmanaged)
+	capped := false
+	if limit > maxSummaryItemsPaged {
+		limit = maxSummaryItemsPaged
+		capped = true
+	}
+	parts := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		e := unmanaged[i]
+		branch := e.Branch
+		if branch == "" {
+			branch = "detached HEAD"
+		}
+		parts[i] = fmt.Sprintf("%s (%s)", e.Path, branch)
+	}
+	joined := strings.Join(parts, "; ")
+	if capped {
+		joined += fmt.Sprintf("; and %d more", len(unmanaged)-maxSummaryItemsPaged)
+	}
+	return fmt.Sprintf(
+		" %d of %d unmanaged worktree(s) under the managed root, which evener never prunes and never removes without force — use manage_worktree adopt with the path to take one over: %s.",
+		len(unmanaged), totalUnmanaged, joined)
 }
 
 // worktreeListSummary builds the human-readable list message: a count plus a
@@ -83,29 +147,93 @@ func worktreeUnmanagedSummary(unmanaged []WorktreeListEntry) string {
 // labeled clause rather than folded into the count, so a reader never mistakes
 // one for a lane evener will clean up.
 func worktreeListSummary(entries, unmanaged []WorktreeListEntry) string {
-	if len(entries) == 0 {
-		return "0 managed worktree(s)." + worktreeUnmanagedSummary(unmanaged)
+	return worktreeListSummaryPagedWithTotals(entries, unmanaged, false, 0, len(entries), len(unmanaged))
+}
+
+func worktreeListSummaryPaged(entries, unmanaged []WorktreeListEntry, truncated bool, nextOffset int) string {
+	return worktreeListSummaryPagedWithTotals(entries, unmanaged, truncated, nextOffset, len(entries), len(unmanaged))
+}
+
+func worktreeListSummaryPagedWithTotals(entries, unmanaged []WorktreeListEntry, truncated bool, nextOffset, totalEntries, totalUnmanaged int) string {
+	paged := truncated || nextOffset > 0 || totalEntries != len(entries) || totalUnmanaged != len(unmanaged)
+	msg := ""
+	if !paged {
+		if len(entries) == 0 {
+			msg = "0 managed worktree(s)." + worktreeUnmanagedSummary(unmanaged)
+		} else {
+			limit := len(entries)
+			capped := false
+			if limit > maxSummaryItemsUnpaged {
+				limit = maxSummaryItemsUnpaged
+				capped = true
+			}
+			parts := make([]string, limit)
+			for i := 0; i < limit; i++ {
+				e := entries[i]
+				ahead := fmt.Sprintf("%d ahead", e.AheadCommits)
+				if e.AheadUnknown {
+					ahead = "ahead unknown"
+				}
+				state := "clean"
+				switch {
+				case e.DirtyUnknown:
+					state = "dirty unknown"
+				case e.Dirty:
+					state = "dirty"
+				}
+				merged := "unmerged"
+				if e.Merged {
+					merged = "merged"
+				}
+				parts[i] = fmt.Sprintf("%s (%s, %s, %s)", e.Name, ahead, state, merged)
+			}
+			joined := strings.Join(parts, "; ")
+			if capped {
+				joined += fmt.Sprintf("; and %d more", len(entries)-maxSummaryItemsUnpaged)
+			}
+			msg = fmt.Sprintf("%d managed worktree(s): %s.", len(entries), joined) + worktreeUnmanagedSummary(unmanaged)
+		}
+	} else {
+		if len(entries) == 0 {
+			msg = fmt.Sprintf("0 of %d managed worktree(s).", totalEntries) + worktreeUnmanagedSummaryPaged(unmanaged, totalUnmanaged)
+		} else {
+			limit := len(entries)
+			capped := false
+			if limit > maxSummaryItemsPaged {
+				limit = maxSummaryItemsPaged
+				capped = true
+			}
+			parts := make([]string, limit)
+			for i := 0; i < limit; i++ {
+				e := entries[i]
+				ahead := fmt.Sprintf("%d ahead", e.AheadCommits)
+				if e.AheadUnknown {
+					ahead = "ahead unknown"
+				}
+				state := "clean"
+				switch {
+				case e.DirtyUnknown:
+					state = "dirty unknown"
+				case e.Dirty:
+					state = "dirty"
+				}
+				merged := "unmerged"
+				if e.Merged {
+					merged = "merged"
+				}
+				parts[i] = fmt.Sprintf("%s (%s, %s, %s)", e.Name, ahead, state, merged)
+			}
+			joined := strings.Join(parts, "; ")
+			if capped {
+				joined += fmt.Sprintf("; and %d more", len(entries)-maxSummaryItemsPaged)
+			}
+			msg = fmt.Sprintf("%d of %d managed worktree(s): %s.", len(entries), totalEntries, joined) + worktreeUnmanagedSummaryPaged(unmanaged, totalUnmanaged)
+		}
+		if truncated {
+			msg += fmt.Sprintf(" (offset=%d for next page)", nextOffset)
+		}
 	}
-	parts := make([]string, len(entries))
-	for i, e := range entries {
-		ahead := fmt.Sprintf("%d ahead", e.AheadCommits)
-		if e.AheadUnknown {
-			ahead = "ahead unknown"
-		}
-		state := "clean"
-		switch {
-		case e.DirtyUnknown:
-			state = "dirty unknown"
-		case e.Dirty:
-			state = "dirty"
-		}
-		merged := "unmerged"
-		if e.Merged {
-			merged = "merged"
-		}
-		parts[i] = fmt.Sprintf("%s (%s, %s, %s)", e.Name, ahead, state, merged)
-	}
-	return fmt.Sprintf("%d managed worktree(s): %s.", len(entries), strings.Join(parts, "; ")) + worktreeUnmanagedSummary(unmanaged)
+	return msg
 }
 
 // worktreeListEntryToMap renders a WorktreeListEntry into the tool result
@@ -166,7 +294,7 @@ func worktreePruneEntryMaps(es []WorktreePruneEntry) []map[string]any {
 // symlink-canonicalized comparison remove/switch use, and report each with
 // its lock/prunable state plus disposal-relevant staleness pulled from the
 // metadata sidecar and cheap git queries.
-func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error) {
+func (s *Session) worktreeList(ctx context.Context, pagination ...int) (WorktreeListResult, error) {
 	// list is read-only, so it is the one operation allowed to resolve the
 	// project from a live restore root when the session's own anchor is gone
 	// (issue #4671): the lanes that still exist are still enumerated, and the
@@ -174,37 +302,81 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 	// only its directory was removed).
 	st := s.worktreeStateSnapshotWith(true)
 	if err := st.resolutionError("list"); err != nil {
-		return nil, err
+		return WorktreeListResult{}, err
 	}
 	if st.env == nil {
-		return nil, errors.New("manage_worktree requires a local execution environment")
+		return WorktreeListResult{}, errors.New("manage_worktree requires a local execution environment")
 	}
 	if st.mainRepoRoot == "" {
-		return nil, errors.New("manage_worktree list: not in a git repository")
+		return WorktreeListResult{}, errors.New("manage_worktree list: not in a git repository")
 	}
 	run, done, err := s.worktreeControlRun(ctx, st.mainRepoRoot)
 	if err != nil {
-		return nil, err
+		return WorktreeListResult{}, err
 	}
 	defer done()
 
 	// Step 1: `git worktree list --porcelain` — never `git worktree prune`.
 	out, err := run("worktree", "list", "--porcelain")
 	if err != nil {
-		return nil, fmt.Errorf("manage_worktree list: listing worktrees: %w", err)
+		return WorktreeListResult{}, fmt.Errorf("manage_worktree list: listing worktrees: %w", err)
 	}
 
 	// Step 2: filter to evener-managed worktrees, canonicalized comparison.
 	projectDir := filepath.Join(st.worktreeRoot, st.project.ID)
 	metaDir := metaDirForProject(projectDir)
-	managed := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
+	managedPorcelain := managedPorcelainEntries(worktree.ParsePorcelain(out), projectDir)
+
+	totalManaged := 0
+	totalUnmanaged := 0
+	hasMetaList := make([]bool, len(managedPorcelain))
+	sidecars := make([]worktree.Sidecar, len(managedPorcelain))
+
+	for i, e := range managedPorcelain {
+		if sc, scErr := worktree.ReadSidecar(metaDir, e.Name); scErr == nil {
+			hasMetaList[i] = true
+			sidecars[i] = sc
+			totalManaged++
+		} else {
+			totalUnmanaged++
+		}
+	}
+
+	limit := defaultWorktreeListLimit
+	offset := 0
+	if len(pagination) > 0 && pagination[0] > 0 {
+		limit = pagination[0]
+	}
+	if limit > maxWorktreeListLimit {
+		limit = maxWorktreeListLimit
+	}
+	if len(pagination) > 1 && pagination[1] > 0 {
+		offset = pagination[1]
+	}
+
+	var page []managedEntry
+	truncated := false
+	nextOffset := 0
+
+	totalItems := len(managedPorcelain)
+	if offset < totalItems {
+		remaining := totalItems - offset
+		take := min(limit, remaining)
+		page = managedPorcelain[offset : offset+take]
+		if remaining > take {
+			truncated = true
+			nextOffset = offset + take
+		}
+	}
 
 	activeRoot := filepath.Clean(st.env.WorkingDirectory())
 	now := s.sclock().Now()
 
-	// Step 3: build one structured entry per managed worktree.
-	entries := make([]WorktreeListEntry, 0, len(managed))
-	for _, e := range managed {
+	// Step 3: build one structured entry per worktree on the sliced page.
+	entries := make([]WorktreeListEntry, 0, len(page))
+	unmanaged := make([]WorktreeListEntry, 0)
+	for pageIdx, e := range page {
+		origIdx := offset + pageIdx
 		entry := WorktreeListEntry{
 			Name:           e.Name,
 			Path:           e.Path,
@@ -216,7 +388,8 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 			PrunableReason: e.PrunableReason,
 		}
 
-		if sc, scErr := worktree.ReadSidecar(metaDir, e.Name); scErr == nil {
+		if hasMetaList[origIdx] {
+			sc := sidecars[origIdx]
 			entry.HasMetadata = true
 			entry.CreatorSession = sc.CreatorSession
 			entry.DelegateID = sc.DelegateID
@@ -228,7 +401,7 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 			}
 		}
 
-		// Cheap git queries: best-effort, and only meaningful when the
+		// Cheap git queries: best-effort, only run for the sliced page when the
 		// worktree directory actually exists (a `prunable` entry's directory
 		// is momentarily or permanently absent — spec §5 list step 1).
 		if _, statErr := os.Stat(e.Path); statErr == nil {
@@ -274,8 +447,19 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 			}
 		}
 
-		entries = append(entries, entry)
+		if entry.HasMetadata {
+			entries = append(entries, entry)
+		} else {
+			unmanaged = append(unmanaged, entry)
+		}
 	}
 
-	return entries, nil
+	return WorktreeListResult{
+		Entries:        entries,
+		Unmanaged:      unmanaged,
+		TotalEntries:   totalManaged,
+		TotalUnmanaged: totalUnmanaged,
+		Truncated:      truncated,
+		NextOffset:     nextOffset,
+	}, nil
 }

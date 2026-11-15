@@ -1,0 +1,16 @@
+/* "You are here": the one definition of a selected row, shared by Tree
+ * (aria-selected) and ListRow (aria-current). The row lifts onto the content
+ * surface as a raised pill in semibold ink, so it reads as an object rather
+ * than a darker wash. The 1px --edge ring in the lift keeps it distinct from
+ * a hovered neighbour's --hover-1 wash in the dark theme, where the two fills
+ * sit close together.
+ *
+ * A widget puts .selectableRow on every row that can be selected and keeps
+ * its own hover and pressed washes off a selected row, so the state holds
+ * under the pointer. The state is keyed on the row's ARIA, which also lifts
+ * these rules above each widget's resting row rule. */
+.selectableRow:is([aria-selected="true"], [aria-current]:not([aria-current="false"])) {
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card-ringed);
+  font-weight: var(--font-weight-semibold);
+}

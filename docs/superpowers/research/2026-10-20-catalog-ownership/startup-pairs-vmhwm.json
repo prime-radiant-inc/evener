@@ -1,0 +1,129 @@
+{
+  "platform": "linux",
+  "parent_pad_mib": 0,
+  "process_helper_sha256": "b7986b20c2f9364e072d90144fc7f132b89d1a95a3784a01bd8310cd658f7e66",
+  "probe_sha256": "fef8deb8ff383431b80d98ed47927e71685824147ad84a01b89b0d0d39a3497e",
+  "driver_sha256": "0c5300b1e3ed61212e879c569f81bdcdee29cf2a8a9196f9b55e3da0418c4628",
+  "samples": [
+    {
+      "pair": 1,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "4c7e94770f158204e373548076dcb6b54b7b56e0ec445fd0dba73cd12d1d19a8",
+      "peak_rss_kib": 31816,
+      "peak_rss_bytes": 32579584,
+      "rusage_maxrss_kib": 31488,
+      "rusage_maxrss_bytes": 32243712,
+      "user_cpu_seconds": 0.059057,
+      "system_cpu_seconds": 0.018017,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 17029320,
+        "total_alloc_bytes": 34821736,
+        "vm_hwm_kib": 31816
+      }
+    },
+    {
+      "pair": 1,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "426782bd7474c02f496bfa6319d6915ff3f2532d171dde99ad817c56aea007a6",
+      "peak_rss_kib": 30236,
+      "peak_rss_bytes": 30961664,
+      "rusage_maxrss_kib": 29568,
+      "rusage_maxrss_bytes": 30277632,
+      "user_cpu_seconds": 0.060558,
+      "system_cpu_seconds": 0.011913,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 18439688,
+        "total_alloc_bytes": 30418504,
+        "vm_hwm_kib": 30236
+      }
+    },
+    {
+      "pair": 2,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "426782bd7474c02f496bfa6319d6915ff3f2532d171dde99ad817c56aea007a6",
+      "peak_rss_kib": 30520,
+      "peak_rss_bytes": 31252480,
+      "rusage_maxrss_kib": 29824,
+      "rusage_maxrss_bytes": 30539776,
+      "user_cpu_seconds": 0.060544999999999995,
+      "system_cpu_seconds": 0.011482,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 18428368,
+        "total_alloc_bytes": 30418872,
+        "vm_hwm_kib": 30520
+      }
+    },
+    {
+      "pair": 2,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "4c7e94770f158204e373548076dcb6b54b7b56e0ec445fd0dba73cd12d1d19a8",
+      "peak_rss_kib": 31724,
+      "peak_rss_bytes": 32485376,
+      "rusage_maxrss_kib": 31488,
+      "rusage_maxrss_bytes": 32243712,
+      "user_cpu_seconds": 0.060617,
+      "system_cpu_seconds": 0.009092,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 17027392,
+        "total_alloc_bytes": 34859392,
+        "vm_hwm_kib": 31724
+      }
+    },
+    {
+      "pair": 3,
+      "side": "before",
+      "revision": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+      "binary_sha256": "4c7e94770f158204e373548076dcb6b54b7b56e0ec445fd0dba73cd12d1d19a8",
+      "peak_rss_kib": 30448,
+      "peak_rss_bytes": 31178752,
+      "rusage_maxrss_kib": 29824,
+      "rusage_maxrss_bytes": 30539776,
+      "user_cpu_seconds": 0.050101,
+      "system_cpu_seconds": 0.018404,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 17049200,
+        "total_alloc_bytes": 34816168,
+        "vm_hwm_kib": 30448
+      }
+    },
+    {
+      "pair": 3,
+      "side": "after",
+      "revision": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+      "binary_sha256": "426782bd7474c02f496bfa6319d6915ff3f2532d171dde99ad817c56aea007a6",
+      "peak_rss_kib": 27836,
+      "peak_rss_bytes": 28504064,
+      "rusage_maxrss_kib": 29568,
+      "rusage_maxrss_bytes": 30277632,
+      "user_cpu_seconds": 0.056931999999999996,
+      "system_cpu_seconds": 0.014981999999999999,
+      "checkpoint": {
+        "providers": 219,
+        "registry_loads": 1,
+        "gomaxprocs": 2,
+        "heap_alloc_bytes": 12657832,
+        "total_alloc_bytes": 30413800,
+        "vm_hwm_kib": 27836
+      }
+    }
+  ]
+}

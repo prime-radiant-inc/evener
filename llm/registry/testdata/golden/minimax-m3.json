@@ -71,11 +71,13 @@
     "Family": "snapshot/row",
     "InputModalities": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "Surface": "overlay/glob:*",
     "ThinkingShape": "overlay/glob:*",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:MiniMax-M3"
   },
   "default_model": "MiniMax-M3",

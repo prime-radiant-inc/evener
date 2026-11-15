@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 type lockedAttemptSink struct {
@@ -103,13 +104,14 @@ func (s *lockedAttemptSink) snapshot() []apilog.APIAttemptRecord {
 }
 
 func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			body := &streamCloseResponseBody{
 				readEntered: make(chan struct{}),
 				closed:      make(chan struct{}),
 			}
-			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			client := &http.Client{Transport: transporttest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -162,6 +164,7 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 }
 
 func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, streaming := range []bool{false, true} {
 			name := "complete"
@@ -177,7 +180,7 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 				}
 				closeErr := errors.New("underlying response close sentinel")
 				body := &closeCountingReadCloser{Reader: strings.NewReader(responseBody), closeErr: closeErr}
-				client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				client := &http.Client{Transport: transporttest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
 					return &http.Response{
 						StatusCode: http.StatusOK,
 						Header:     http.Header{"Content-Type": []string{contentType}},
@@ -223,6 +226,7 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 }
 
 func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, testCase := range []struct {
 			name        string
@@ -284,6 +288,7 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 }
 
 func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, testCase := range []struct {
 			name        string
@@ -362,6 +367,7 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 }
 
 func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -392,6 +398,7 @@ func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.
 }
 
 func TestCoreCompleteWireCaptureClassifiesAdapterConnectDeadline(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			dialStarted := make(chan struct{})

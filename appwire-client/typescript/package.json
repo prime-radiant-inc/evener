@@ -15,6 +15,11 @@
       "import": "./dist/index.js",
       "require": "./dist/index.js"
     },
+    "./palette": {
+      "types": "./dist/palette.d.ts",
+      "import": "./dist/palette.js",
+      "require": "./dist/palette.js"
+    },
     "./docContent": {
       "types": "./dist/docContent.d.ts",
       "import": "./dist/docContent.js",

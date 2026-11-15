@@ -108,6 +108,7 @@ const REQUIRED_THREAD_MODEL_KEYS: Record<RequiredKeysOf<ThreadModel>, true> = {
   contextWindow: true,
   contextPressure: true,
   contextAssumed: true,
+  compactionThreshold: true,
   usage: true,
   workMillis: true,
   reasoningEffortLevels: true,
@@ -166,11 +167,27 @@ describe("threadModelFromCache", () => {
     expect(model.olderCursor).toBe("cursor-old");
     expect(model.lastFrameAt).toBe(5000);
     expect(model.status).toEqual({ type: "" }); // the neutral status
+    expect(model.compactionThreshold).toBe(0);
   });
 
   it("derives display turns from the recorded history (turn_1 renders)", () => {
     const model = threadModelFromCache(record, 5000);
     expect(model.turns.map((turn) => turn.id)).toEqual(["turn_1"]);
+  });
+
+  it("hydrates compactionThreshold from thread.evener and defaults cached records to 0", () => {
+    const fixture = readResponseFixture();
+    fixture.thread.evener.compactionThreshold = 250_000;
+    const hydrated = hydrateThread(fixture, "local:thr_1", 7000);
+    expect(hydrated.compactionThreshold).toBe(250_000);
+
+    const omitted = hydrateThread(readResponseFixture(), "local:thr_1", 7000);
+    expect(omitted.compactionThreshold).toBe(0);
+
+    const encoded = cachedSessionRecord(hydrated, 7000);
+    if (encoded === undefined) throw new Error("expected cached session record");
+    const restored = threadModelFromCache(encoded, 8000);
+    expect(restored.compactionThreshold).toBe(0);
   });
 });
 

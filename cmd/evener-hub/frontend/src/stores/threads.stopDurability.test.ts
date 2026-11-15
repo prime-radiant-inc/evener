@@ -260,8 +260,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // would commit "submitting" and dispatch into the session the user just
   // stopped. The durable stop-epoch barrier (§4) closes it: the enqueue
   // captures the ref's stop epoch at click time, and a Stop landing in
-  // between makes the row commit born-"canceled" - still announced for the
-  // canceled queue strip, never dispatched. The seam wrapper below only
+  // between makes the row commit born-"canceled" - still announced as a
+  // canceled pending row, never dispatched. The seam wrapper below only
   // delays the adapter's real write; the write that lands is the real one.
   test("an in-flight enqueue whose write lands after the stop's cancel commits canceled, never dispatched", async () => {
     const storage = new MutationOutboxIndexedDB();

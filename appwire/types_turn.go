@@ -256,6 +256,11 @@ type ThreadItem struct {
 	// non-steering items and on steering items the daemon didn't classify.
 	SteeringKind     string `json:"steeringKind,omitempty"`
 	ClientMutationID string `json:"clientMutationId,omitempty"`
+	// ConversationInputIDs names the conversation inputs this recorded item
+	// speaks for. A promotion or drain records ITS OWN clientMutationId but
+	// inherits the consumed entry's input ids, so this is the lineage that ties
+	// a recorded message back to the queue entry another client consumed.
+	ConversationInputIDs []string `json:"conversationInputIds,omitempty"`
 	// Version is the highest entry ordinal (below) among the entries that
 	// contributed to this item, stored and sent as ordinal + 1 so 0 means "no
 	// history version" (an overlay item). The higher version wins.
@@ -1173,6 +1178,11 @@ type ThreadModelChangedParams struct {
 	Model                 string   `json:"model"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
+	ContextUsed           int      `json:"contextUsed,omitempty"`
+	ContextWindow         int      `json:"contextWindow,omitempty"`
+	ContextPressure       float64  `json:"contextPressure,omitempty"`
+	ContextAssumed        bool     `json:"contextAssumed,omitempty"`
+	CompactionThreshold   int      `json:"compactionThreshold,omitempty"`
 }
 
 // ThreadReasoningEffortChangedParams reports a mid-session reasoning-effort

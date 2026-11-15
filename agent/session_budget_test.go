@@ -31,6 +31,7 @@ func newBudgetSession(
 	cfg.testOnly.skipGitSnapshot = true
 	cfg.testOnly.minimalSystemPrompt = true
 	cfg.testOnly.noSyncJobStore = true
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := NewSession(
 		client,
 		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),

@@ -4,7 +4,13 @@ import { ChipStrip } from "../design/ChipStrip";
 import { scaledType, uiType } from "../design/tokens";
 import { useHeaderTextScale } from "../headerText";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type Band, type LiveSummary, LIVE_BAND_ORDER, plural, summaryText } from "./attention";
+import {
+	type Band,
+	type LiveSummary,
+	LIVE_BAND_ORDER,
+	plural,
+	summaryText,
+} from "@evener/appwire-client/state/navigation";
 import { FreshDot } from "../reader/FreshDot";
 import { FoldChevron } from "./BoardRow";
 import { PulseMeter } from "./PulseMeter";

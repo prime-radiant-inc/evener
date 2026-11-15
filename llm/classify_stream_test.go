@@ -12,6 +12,7 @@ import (
 // error (e.g. 403 access denied) burns exactly one attempt of the retry
 // budget rather than draining the full MaxRetries.
 func TestRetryChainShortCircuitsOnPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	err403 := ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil)
 	a := &scriptedStreamAdapter{
@@ -85,6 +86,7 @@ func TestRetryChainShortCircuitsOnPermanent(t *testing.T) {
 // TestRetryChainExhaustsOnRetryable verifies that a retryable provider error
 // (e.g. 429 rate-limit) burns the full MaxRetries budget before surfacing.
 func TestRetryChainExhaustsOnRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	err429 := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 	a := &scriptedStreamAdapter{

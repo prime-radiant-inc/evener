@@ -868,7 +868,10 @@ export async function openEntryTranscript(
             // replaced the view is followed by the local re-open that
             // promotes its restored bodies into the display.
             if (!stillOwnsLateResult()) return;
-            await openEntryTranscript(ref);
+            // A re-open that misses its own window leaves the route's
+            // stranding markers set; only the paced chain clears them, the
+            // same handoff the claim's certification open makes below.
+            if (!(await openEntryTranscript(ref))) scheduleEntryOpeningRecovery(ref);
           })
           .catch(() => {
             // A failed recovery read keeps the ordinary owner-scoped retry.

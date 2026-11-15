@@ -25,6 +25,54 @@ type sharedWorkspaceBarrier struct {
 	parked map[string]int // calls each session has parked right now
 }
 
+func TestCreateDelegateSharedWorkspaceAdvisory_ReadOnlySuppressed(t *testing.T) {
+	t.Parallel()
+	root, client, _ := newDelegateResourceBootstrapSession(t)
+	barrier := newSharedWorkspaceBarrier()
+	client.Register(barrier.adapter())
+	t.Cleanup(barrier.releaseRuns)
+
+	// 1. First explorer delegate (read-only toolset)
+	first := root.createDelegate(context.Background(), delegateArgs{
+		Task:      "scout the shared workspace",
+		AgentType: "explorer",
+	})
+	if first.Err != nil || first.DelegateID == "" {
+		t.Fatalf("first explorer did not launch: %+v", first)
+	}
+	if len(first.Warnings) != 0 {
+		t.Fatalf("first explorer warned: %q", first.Warnings)
+	}
+	firstSession := barrier.awaitRun(t)
+	if !barrier.isParked(firstSession) {
+		t.Fatal("first delegate was not parked")
+	}
+
+	// 2. Second explorer delegate (also read-only): warning must be suppressed!
+	second := root.createDelegate(context.Background(), delegateArgs{
+		Task:      "second scout in shared workspace",
+		AgentType: "explorer",
+	})
+	if second.Err != nil || second.DelegateID == "" {
+		t.Fatalf("second explorer did not launch: %+v", second)
+	}
+	if len(second.Warnings) != 0 {
+		t.Fatalf("second read-only explorer should have no collision warning, got: %q", second.Warnings)
+	}
+
+	// 3. Third delegate with explicit sandbox: "read-only": warning must also be suppressed!
+	third := root.createDelegate(context.Background(), delegateArgs{
+		Task:    "read-only sandboxed in shared workspace",
+		Sandbox: "read-only",
+	})
+	if third.Err != nil || third.DelegateID == "" {
+		t.Fatalf("third read-only delegate did not launch: %+v", third)
+	}
+	if len(third.Warnings) != 0 {
+		t.Fatalf("third read-only delegate should have no collision warning, got: %q", third.Warnings)
+	}
+}
+
 func newSharedWorkspaceBarrier() *sharedWorkspaceBarrier {
 	return &sharedWorkspaceBarrier{
 		entered: make(chan string, 8),

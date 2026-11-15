@@ -50,6 +50,7 @@ multimodal_tool_results = true
 `
 
 func TestParseConfig_SpecExample(t *testing.T) {
+	t.Parallel()
 	l, err := ParseConfig([]byte(specExampleConfig))
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +87,7 @@ func TestParseConfig_SpecExample(t *testing.T) {
 }
 
 func TestParseConfig_ExplicitEmptyAPIKeyEnv(t *testing.T) {
+	t.Parallel()
 	l, err := ParseConfig([]byte("[providers.x]\napi_key_env = []\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +98,7 @@ func TestParseConfig_ExplicitEmptyAPIKeyEnv(t *testing.T) {
 }
 
 func TestParseConfig_ThinkingDisplayValues(t *testing.T) {
+	t.Parallel()
 	l, err := ParseConfig([]byte("[providers.x.models.m]\nthinking_display = \"\"\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +119,7 @@ func TestParseConfig_ThinkingDisplayValues(t *testing.T) {
 }
 
 func TestParseConfig_ThinkingShapeLevel(t *testing.T) {
+	t.Parallel()
 	// "level" is the google protocol's level-shaped thinking body (Gemini
 	// 3.x); a custom level-model needs no catalog entry.
 	l, err := ParseConfig([]byte("[providers.x.models.m]\nthinking_shape = \"level\"\n"))
@@ -129,6 +133,7 @@ func TestParseConfig_ThinkingShapeLevel(t *testing.T) {
 }
 
 func TestParseConfig_Rejects(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"unknown key":              "[providers.x]\nthinking_levels = { a = \"b\" }\n",
 		"curated-only implicit":    "[providers.x]\nimplicit = true\n",
@@ -178,6 +183,7 @@ func TestParseConfig_Rejects(t *testing.T) {
 }
 
 func TestParseConfig_TokenCapsMustBePositiveIntegers(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		src   string
@@ -202,6 +208,7 @@ func TestParseConfig_TokenCapsMustBePositiveIntegers(t *testing.T) {
 }
 
 func TestParseConfig_UnknownKeyNamesIt(t *testing.T) {
+	t.Parallel()
 	_, err := ParseConfig([]byte("[providers.x]\nthinking_levels = { a = \"b\" }\n"))
 	if err == nil || !strings.Contains(err.Error(), "thinking_levels") {
 		t.Fatalf("error must name the key: %v", err)
@@ -216,6 +223,7 @@ func TestParseConfig_UnknownKeyNamesIt(t *testing.T) {
 // The second half confirms the exemption is narrow: a real typo elsewhere
 // in the same document is still caught.
 func TestParseConfig_ChatTemplateKwargsNestedValueParses(t *testing.T) {
+	t.Parallel()
 	l, err := ParseConfig([]byte("[providers.x.chat_template_kwargs]\nenable_thinking = true\n[providers.x.chat_template_kwargs.options]\nmode = \"fast\"\n"))
 	if err != nil {
 		t.Fatalf("a nested chat_template_kwargs value must parse, not read as an unknown key: %v", err)
@@ -238,6 +246,7 @@ func TestParseConfig_ChatTemplateKwargsNestedValueParses(t *testing.T) {
 // intermediate table name, or a bare top-level chat_template_kwargs table
 // that no schema owns, must still produce the unknown-key error (spec §10).
 func TestParseConfig_ChatTemplateKwargsExemptionIsPositionScoped(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		src   string
@@ -299,6 +308,7 @@ func TestParseConfig_ChatTemplateKwargsExemptionIsPositionScoped(t *testing.T) {
 }
 
 func TestParseConfig_OldSchema(t *testing.T) {
+	t.Parallel()
 	for _, src := range []string{
 		"[instances.openai]\ntype = \"openai\"\n",
 		"[providers.openai]\ntype = \"openai\"\n",
@@ -317,6 +327,7 @@ func TestParseConfig_OldSchema(t *testing.T) {
 }
 
 func TestParseOverlay_CuratedKeys(t *testing.T) {
+	t.Parallel()
 	src := `
 default_order = ["a", "b"]
 [transports.t]
@@ -353,6 +364,7 @@ implicit = true
 }
 
 func TestParseOverlay_DefaultOrderMustBeImplicit(t *testing.T) {
+	t.Parallel()
 	_, err := ParseOverlay([]byte("default_order = [\"a\"]\n[providers.a]\n"))
 	if err == nil || !strings.Contains(err.Error(), "default_order") {
 		t.Fatalf("want default_order error, got %v", err)
@@ -364,6 +376,7 @@ func TestParseOverlay_DefaultOrderMustBeImplicit(t *testing.T) {
 }
 
 func TestParseConfig_ModelRowKeysAndTransport(t *testing.T) {
+	t.Parallel()
 	src := `
 [providers.azure.models."claude-prod"]
 alias_of = "claude-opus-4-5"
@@ -401,6 +414,7 @@ reasoning_summary = "detailed"
 // never reach a provider the way an unvalidated one would (the clamp passes an
 // unrankable level through untouched).
 func TestParseConfig_DefaultEffortVocabulary(t *testing.T) {
+	t.Parallel()
 	for _, level := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
 		l, err := ParseConfig([]byte("[providers.x]\ndefault_effort = \"" + level + "\"\n[providers.x.models.m]\ndefault_effort = \"" + level + "\"\n"))
 		if err != nil {
@@ -420,12 +434,14 @@ func TestParseConfig_DefaultEffortVocabulary(t *testing.T) {
 }
 
 func TestParseConfig_SchemaTwoAccepted(t *testing.T) {
+	t.Parallel()
 	if _, err := ParseConfig([]byte("schema = 2\n\n[providers.openai]\n")); err != nil {
 		t.Fatalf("schema = 2 must parse: %v", err)
 	}
 }
 
 func TestParseConfig_SchemaOneIsOldSchema(t *testing.T) {
+	t.Parallel()
 	_, err := ParseConfig([]byte("schema = 1\n\n[providers.openai]\n"))
 	if !errors.Is(err, ErrOldSchema) {
 		t.Fatalf("schema = 1: want ErrOldSchema, got %v", err)
@@ -436,6 +452,7 @@ func TestParseConfig_SchemaOneIsOldSchema(t *testing.T) {
 }
 
 func TestParseConfig_UnsupportedSchemaNamesIt(t *testing.T) {
+	t.Parallel()
 	_, err := ParseConfig([]byte("schema = 3\n"))
 	if err == nil || !strings.Contains(err.Error(), "unsupported schema 3") || !strings.Contains(err.Error(), "2") {
 		t.Fatalf("schema = 3 must name the unsupported version and the supported one: %v", err)
@@ -443,6 +460,7 @@ func TestParseConfig_UnsupportedSchemaNamesIt(t *testing.T) {
 }
 
 func TestParseConfig_OldSchemaIsErrOldSchema(t *testing.T) {
+	t.Parallel()
 	_, err := ParseConfig([]byte("[instances.kimi]\ntype = \"kimi\"\n"))
 	if !errors.Is(err, ErrOldSchema) {
 		t.Fatalf("want ErrOldSchema, got %v", err)

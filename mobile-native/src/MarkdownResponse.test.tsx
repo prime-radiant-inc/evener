@@ -77,7 +77,7 @@ it("picks dark code colors in dark mode", () => {
 
 it("fills a checked task box with accent-fill so its white checkmark stays legible", () => {
 	mode.scheme = "dark";
-	expect(markdownStyle("- [x] done").taskList.checkedColor).toBe("#0070E0");
+	expect(markdownStyle("- [x] done").taskList.checkedColor).toBe("#4F5BF5");
 });
 
 it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font", () => {
@@ -108,10 +108,10 @@ it("keeps tables in the system font and ink-hi, unlike the serif prose", () => {
 	mode.scheme = "light";
 	const light = markdownStyle("| a |\n|---|\n| 1 |").table;
 	expect(light.fontFamily).toBeUndefined();
-	expect(light.color).toBe("#1C1C1E");
+	expect(light.color).toBe("#1A1D23");
 
 	mode.scheme = "dark";
-	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F5F5F7");
+	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F1F3F6");
 });
 
 it("stays selectable with its Copy response item by default, for the task and subagent sheets", () => {

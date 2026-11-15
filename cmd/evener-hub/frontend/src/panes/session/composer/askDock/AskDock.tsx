@@ -378,8 +378,8 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
           <span className={CLASS.count} data-testid="ask-dock-count" data-answered={answeredCount} data-total={total}>
             {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
           </span>
-          {/* Blue primary, same pattern as sandboxEscalation's Allow button
-            (topic 16: amber owns the container above, blue owns the one
+          {/* Accent primary, same pattern as sandboxEscalation's Allow button
+            (attention owns the container above, accent owns the one
             action that resolves it) - Button's own primary variant is the
             token-contract-ungated --accent, so this needs no allowlisting.
             Label follows advanceTarget so the button never claims

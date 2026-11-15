@@ -23,6 +23,37 @@ func requireGit(t *testing.T) {
 // normalization so temp-dir symlinks (e.g. /tmp) don't cause spurious mismatches.
 func clean(p string) string { return identifier.ResolveClean(p) }
 
+// TestClassifyWorkspaceStopsAtCeiling covers the GIT_CEILING_DIRECTORIES
+// boundary a probe harness uses to make its WorkDir its own workspace even when
+// that directory sits inside another repository (#3724).
+func TestClassifyWorkspaceStopsAtCeiling(t *testing.T) {
+	root := clean(t.TempDir())
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(root, "nested", "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	layout, err := ClassifyWorkspaceWithCeilings(work, []string{root})
+	if err != nil {
+		t.Fatalf("ClassifyWorkspaceWithCeilings: %v", err)
+	}
+	if layout.Kind != NonGit || layout.WorktreeRoot != work {
+		t.Fatalf("layout = %+v, want NonGit rooted at %q", layout, work)
+	}
+
+	// Without the ceiling the same directory belongs to the enclosing checkout.
+	layout, err = ClassifyWorkspace(work)
+	if err != nil {
+		t.Fatalf("ClassifyWorkspace: %v", err)
+	}
+	if layout.Kind != MainCheckout || layout.WorktreeRoot != root {
+		t.Fatalf("layout without the ceiling = %+v, want MainCheckout at %q", layout, root)
+	}
+}
+
 func mustContain(t *testing.T, set []string, want, label string) {
 	t.Helper()
 	if !slices.Contains(set, want) {

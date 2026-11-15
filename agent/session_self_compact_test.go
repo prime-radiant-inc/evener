@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1108,4 +1109,49 @@ func TestMaybeElicitNoteBeforeCompaction_SkipsWhenNoteAlreadySet(t *testing.T) {
 // exact model steps are not perturbed by the default-on elicitation call.
 func muteNoteElicitation(s *Session) {
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
+}
+
+func TestForceCompact_EnqueuesSingleTaskListReminder(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	muteNoteElicitation(sess)
+	if _, err := sess.getOrCreateTaskStore().Append([]taskpkg.TaskInput{{
+		Type:        taskpkg.TaskTypeImplement,
+		Description: "Fix compaction dedupe",
+		Prompt:      "Ensure single task reminder",
+	}}); err != nil {
+		t.Fatalf("seed taskStore: %v", err)
+	}
+
+	seedNumberedSessionHistory(t, sess, 12)
+	if err := sess.requestForceCompact("summarize earlier rounds"); err != nil {
+		t.Fatalf("requestForceCompact: %v", err)
+	}
+	sess.applyPendingForceCompact(context.Background())
+
+	sess.mu.Lock()
+	queued := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+	var taskReminders int
+	for _, msg := range queued {
+		if msg.Kind == events.SteeringKindTaskList {
+			taskReminders++
+		}
+	}
+	if taskReminders != 1 {
+		t.Fatalf("ForceCompact enqueued %d SteeringKindTaskList reminders across checkpoint+summary layers, want 1", taskReminders)
+	}
+
+	sess.mu.Lock()
+	sess.steeringQueue = nil
+	sess.mu.Unlock()
+	sess.handleCompactionTurn(schema.NewTurn(schema.TurnUserInput, llm.User("ordinary turn")))
+	sess.mu.Lock()
+	afterNonCompaction := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+	for _, msg := range afterNonCompaction {
+		if msg.Kind == events.SteeringKindTaskList {
+			t.Fatalf("non-compaction turn passed to handleCompactionTurn enqueued SteeringKindTaskList: %+v", msg)
+		}
+	}
 }

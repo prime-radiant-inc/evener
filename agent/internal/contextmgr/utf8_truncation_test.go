@@ -61,9 +61,9 @@ func TestRenderHistoryForElicitTailKeepsRunesWhole(t *testing.T) {
 // summarizeFold caps user messages at 5000 bytes, tool results at 200 and
 // assistant text at 500; each cap here lands mid-rune.
 func TestSummarizeFoldCapsKeepRunesWhole(t *testing.T) {
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("## Progress\nsummary")} },
-	}}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := testOpenAIProfileWithContextWindow(1_000_000)

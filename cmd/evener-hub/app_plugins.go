@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
 	agentplugin "primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -43,6 +43,7 @@ import (
 type hubPluginsController struct {
 	mgr              *plugins.Manager
 	launchConfigRoot string
+	log              *slog.Logger
 }
 
 // newHubPluginsController builds a controller rooted at root, or the default
@@ -53,6 +54,17 @@ func newHubPluginsController(root string, launchConfigRoots ...string) *hubPlugi
 		launchConfigRoot = launchConfigRoots[0]
 	}
 	return &hubPluginsController{mgr: plugins.NewManager(root), launchConfigRoot: launchConfigRoot}
+}
+
+// logger is the controller's diagnostic sink: the server's wired logger when
+// the production path sets it, otherwise a hub logger resolved per call so a
+// test that redirects os.Stderr after constructing the controller still
+// captures the line.
+func (c *hubPluginsController) logger() *slog.Logger {
+	if c.log != nil {
+		return c.log
+	}
+	return componentlog.New("hub")
 }
 
 // Preview resolves the same launch plugin inventory used by session startup.
@@ -137,11 +149,7 @@ func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.Ma
 	if err != nil {
 		return appwire.MarketplaceListResponse{}, err
 	}
-	names := make([]string, 0, len(mk))
-	for name := range mk {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(mk))
 	entries := make([]appwire.MarketplaceEntry, 0, len(names))
 	for _, name := range names {
 		ref := mk[name]
@@ -242,7 +250,9 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 				// clone-litter text, so without this line the discarded
 				// listErr would vanish - the same server-side log the
 				// success path's failed re-list already uses.
-				fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after unregistration failed: %v\n", params.Name, listErr)
+				c.logger().Info(fmt.Sprintf(
+					"marketplace %q: reading the updated list after unregistration failed: %v",
+					params.Name, listErr))
 				data.AppliedUnavailable = true
 			} else {
 				data.Applied = applied
@@ -272,7 +282,9 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 	hubPluginsReconcileAfterAppliedRemove()
 	applied, listErr := c.listMarketplaces(ctx)
 	if listErr != nil {
-		fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after removal failed: %v\n", params.Name, listErr)
+		c.logger().Info(fmt.Sprintf(
+			"marketplace %q: reading the updated list after removal failed: %v",
+			params.Name, listErr))
 		return appwire.MarketplaceListResponse{}, appwire.WireError{
 			Code:    appwire.CodeInternalError,
 			Message: fmt.Sprintf("marketplace %q: removed, but the updated list could not be read", params.Name),
@@ -459,7 +471,7 @@ func barePluginMCPServerNames(instance agentplugin.Instance) []string {
 	for _, server := range instance.MCPConfigs {
 		names = append(names, strings.TrimPrefix(server.Name, prefix))
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -481,8 +493,9 @@ func pluginHookEvents(hooks map[agentplugin.HookEvent][]agentplugin.RegisteredHo
 // component file (kind and file the loader recorded, then its own reason),
 // and one note per declared hook event evener will never fire. Reserved
 // events (recognized Claude events evener does not fire) and unrecognized
-// event names use the sentence shape the session-load warnings use, so a
-// plugin's diagnostics read the same wherever they surface.
+// event names take their sentences from the plugin package, which the
+// session-load warnings use too, so a plugin's diagnostics read the same
+// wherever they surface.
 func pluginLoadWarnings(instance agentplugin.Instance) []string {
 	var warnings []string
 	warnings = append(warnings, instance.MCPConfigWarnings...)
@@ -490,14 +503,10 @@ func pluginLoadWarnings(instance agentplugin.Instance) []string {
 		warnings = append(warnings, fmt.Sprintf("%s %s skipped: %s", skipped.Kind, filepath.Base(skipped.File), skipped.Reason))
 	}
 	for _, event := range slices.Sorted(maps.Keys(instance.UnsupportedHooks)) {
-		warnings = append(warnings, fmt.Sprintf(
-			"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
-			instance.Manifest.Name, event))
+		warnings = append(warnings, agentplugin.UnsupportedHookEventWarning(instance.Manifest.Name, string(event)))
 	}
 	for _, event := range slices.Sorted(maps.Keys(instance.UnknownHooks)) {
-		warnings = append(warnings, fmt.Sprintf(
-			"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
-			instance.Manifest.Name, event))
+		warnings = append(warnings, agentplugin.UnknownHookEventWarning(instance.Manifest.Name, event))
 	}
 	return warnings
 }

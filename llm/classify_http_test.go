@@ -22,6 +22,7 @@ var responsesRes = registry.Resolved{Instance: "groq-responses", Protocol: regis
 var anthropicRes = registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic, ModelID: "claude-opus-5"}
 
 func TestClassifyHTTPErrorTable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		status    int
@@ -223,6 +224,7 @@ func TestClassifyHTTPErrorTable(t *testing.T) {
 }
 
 func TestClassifyHTTPErrorKeepsProviderMessageVerbatim(t *testing.T) {
+	t.Parallel()
 	err := ClassifyHTTPError("messages.create", 400, nil, []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 1 > 0 maximum"}}`), anthropicRes)
 	if !strings.Contains(err.Error(), "prompt is too long: 1 > 0 maximum") || !strings.HasPrefix(err.Error(), "anthropic error (status=400): messages.create") {
 		t.Fatalf("message = %q", err.Error())
@@ -236,6 +238,7 @@ func TestClassifyHTTPErrorKeepsProviderMessageVerbatim(t *testing.T) {
 // re-matching provider prose: the structured error.param code path, every
 // message pattern the classifier recognizes, and the no-parameter cases.
 func TestRejectedParameter(t *testing.T) {
+	t.Parallel()
 	structured := ClassifyHTTPError("responses.create", 400, nil,
 		[]byte(`{"error":{"message":"Unsupported parameter","type":"invalid_request_error","param":"temperature","code":"unknown_parameter"}}`),
 		responsesRes)

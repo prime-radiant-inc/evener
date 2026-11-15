@@ -8,6 +8,7 @@ import (
 )
 
 func TestRetry_RateLimitDeadlineUsesRunBudget(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	clk.now = time.Now()
 	policy := budgetPolicy(clk, 30*time.Minute)
@@ -27,6 +28,7 @@ func TestRetry_RateLimitDeadlineUsesRunBudget(t *testing.T) {
 }
 
 func TestRetryStream_RateLimitDeadlineUsesRunBudget(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	clk.now = time.Now()
 	policy := budgetPolicy(clk, 30*time.Minute)
@@ -46,6 +48,7 @@ func TestRetryStream_RateLimitDeadlineUsesRunBudget(t *testing.T) {
 }
 
 func TestRetry_RateLimitLongRunDeadlineOutlivesThirtyMinuteFallback(t *testing.T) {
+	t.Parallel()
 	clk := newBudgetClock()
 	clk.now = time.Now()
 	policy := budgetPolicy(clk, 30*time.Minute)

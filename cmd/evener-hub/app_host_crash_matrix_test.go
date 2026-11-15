@@ -115,7 +115,7 @@ func (h *crashHub) boot(t *testing.T, restart bool) (*hubHostManager, *hostops.S
 		t.Fatalf("hostreg.NewSeeded: %v", err)
 	}
 	webCfg := hubcore.WebConfig{RemoteHostOpsStore: store, RemoteHostConfigPath: h.configPath}
-	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, h.configPath, hosts, func(string, ...any) {})
+	m := newHubHostManager(appsource.NewRegistry(), nil, webCfg, h.configPath, hosts, silentLogger())
 	return m, store
 }
 

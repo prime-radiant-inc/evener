@@ -1,7 +1,10 @@
 // The navigation state layer, published together at
 // `@evener/appwire-client/state/navigation`: the resource vocabulary (types),
 // the snapshot and delta codec, host grouping (where a row, and a project on
-// several hosts, sit when sessions are organized by host), the graph merge,
+// several hosts, sit when sessions are organized by host), the live attention
+// model (liveAttention: Live's Needs you / Working / Idle bands, their order
+// and each row's why line, shared by the phone Board and the web rail), the
+// graph merge,
 // the deep-freeze helpers the codec and merge share, the rule matching an
 // invalidation target to a loaded resource (invalidation), the revalidator
 // that re-reads loaded resources on the hub's invalidations, the store an
@@ -47,6 +50,44 @@ export {
 } from "./hostGrouping";
 export { cloneAndDeepFreezeJSON, equalJSON } from "./immutable";
 export { isSequenceGap, matchesTarget, matchingTargets, requiredRevision } from "./invalidation";
+export type {
+  Band,
+  BoardState,
+  ClassifiedRow,
+  Hue,
+  LastLine,
+  LiveBands,
+  LiveSummary,
+  Usual,
+  WhyKind,
+  WhyLine,
+} from "./liveAttention";
+export {
+  AGENT_QUIET_AFTER_MS,
+  approvalRefs,
+  bandOf,
+  boardState,
+  hostLabeler,
+  hubTime,
+  LIVE_BAND_ORDER,
+  lastLine,
+  liveBands,
+  liveRows,
+  liveSummary,
+  plural,
+  quietOrWorking,
+  rowClassifier,
+  sectionLabel,
+  stateWord,
+  subagentChipText,
+  subagentQuietLine,
+  summaryText,
+  taskLine,
+  usualPlace,
+  waitingOnSubagents,
+  whyLine,
+  workingActivity,
+} from "./liveAttention";
 export { applyDelta, normalizeSnapshot, reconcileSnapshot } from "./merge";
 export type { NavigationInvalidationWaiter } from "./revalidator";
 export {

@@ -1,9 +1,10 @@
-import type { Task, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import type { AppwireClientLike, Task, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient } from "../../stores/sessionActivityTestUtils";
 import { tasksPanelStore } from "../../stores/tasksPanel";
@@ -13,7 +14,7 @@ import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosur
 import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import { NOW_TICK_MS } from "../session/liveness";
 import { sessionPanelTitle } from "./index";
-import { SessionPanelPane } from "./SessionPanelPane";
+import { SessionPanelPane, type SessionPanelPaneProps } from "./SessionPanelPane";
 
 beforeEach(() => {
   resetConnectionStoreForTests();
@@ -63,6 +64,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -74,6 +76,16 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 
 function seedModel(model: ThreadModel): void {
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+}
+
+// The Details pane resolves a local session's branch through the shell's
+// client, so every mount needs the provider the app shell supplies.
+function panel(props: SessionPanelPaneProps, client: AppwireClientLike = activityClient()) {
+  return (
+    <ClientProvider client={client}>
+      <SessionPanelPane {...props} />
+    </ClientProvider>
+  );
 }
 
 function connectFakeClient(): FakeClient {
@@ -112,7 +124,7 @@ function readResponse(ref: string): ThreadReadResponse {
 }
 
 test("renders a scaffold loading state before the session model hydrates", () => {
-  render(<SessionPanelPane params={{ ref: "ref_a" }} paneId="panel-1" focused kind="tasks" />);
+  render(panel({ params: { ref: "ref_a" }, paneId: "panel-1", focused: true, kind: "tasks" }));
 
   expect(screen.getByRole("status", { name: "Loading session panel" })).toBeTruthy();
 });
@@ -121,7 +133,7 @@ test("keeps the scaffold heading consistent with the registered title after rena
   const model = testModel({ name: "Initial name" });
   seedModel(model);
   const { rerender } = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-title" focused kind="details" />,
+    panel({ params: { ref: model.ref }, paneId: "panel-title", focused: true, kind: "details" }),
   );
   expect(screen.getByRole("heading", { name: sessionPanelTitle("details", model.ref, model.name) })).toBeTruthy();
 
@@ -129,7 +141,7 @@ test("keeps the scaffold heading consistent with the registered title after rena
   await act(async () => {
     seedModel(renamed);
   });
-  rerender(<SessionPanelPane params={{ ref: renamed.ref }} paneId="panel-title" focused kind="details" />);
+  rerender(panel({ params: { ref: renamed.ref }, paneId: "panel-title", focused: true, kind: "details" }));
   expect(screen.getByRole("heading", { name: sessionPanelTitle("details", renamed.ref, renamed.name) })).toBeTruthy();
 });
 
@@ -141,7 +153,7 @@ test("mounts Tasks body and fetches after the model is hydrated", async () => {
   const model = testModel({ tasks: { total: 1, done: 0 } });
   seedModel(model);
 
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
+  render(panel({ params: { ref: model.ref }, paneId: "panel-tasks", focused: true, kind: "tasks" }));
 
   expect(await screen.findByText("Run checks")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "evener/tasks/list")).toHaveLength(1);
@@ -153,7 +165,7 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
   const model = testModel({ tasks: { total: 1, done: 0 } });
   seedModel(model);
 
-  const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
+  const first = render(panel({ params: { ref: model.ref }, paneId: "panel-tasks", focused: true, kind: "tasks" }));
   const summary = await screen.findByText("Retain the first task");
   await userEvent.click(summary);
   expect(screen.getByTestId("task-prompt")).toBeTruthy();
@@ -161,7 +173,7 @@ test("retains Tasks rows and disclosure state across a pane remount", async () =
 
   expect(tasksPanelStore.getState().entries.get(model.ref)?.rows).toHaveLength(1);
   seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks-remount" focused kind="tasks" />);
+  render(panel({ params: { ref: model.ref }, paneId: "panel-tasks-remount", focused: true, kind: "tasks" }));
 
   expect(await screen.findByText("Retain the first task")).toBeTruthy();
   expect(screen.getByTestId("task-prompt")).toBeTruthy();
@@ -175,7 +187,7 @@ test("renders daemon-gone state from the retained Tasks store result", async () 
   const model = testModel({ tasks: { total: 1, done: 0 } });
   seedModel(model);
 
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
+  render(panel({ params: { ref: model.ref }, paneId: "panel-tasks", focused: true, kind: "tasks" }));
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["ended"]));
 });
@@ -187,7 +199,7 @@ test("Tasks pane does not install the Details clock", async () => {
   seedModel(model);
   const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-tasks" focused kind="tasks" />);
+  render(panel({ params: { ref: model.ref }, paneId: "panel-tasks", focused: true, kind: "tasks" }));
   await act(async () => Promise.resolve());
 
   expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
@@ -202,12 +214,25 @@ test("Details owns a clock after hydration", () => {
   seedModel(model);
   const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
 
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-details" focused kind="details" />);
+  render(panel({ params: { ref: model.ref }, paneId: "panel-details", focused: true, kind: "details" }));
   expect(setIntervalSpy).toHaveBeenCalledExactlyOnceWith(expect.any(Function), NOW_TICK_MS);
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("1s");
 
   act(() => vi.advanceTimersByTime(3_000));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
+});
+
+test("Details resolves a local session's branch for its branch row", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/git/head", () => ({ head: "trunk" }));
+  const model = testModel({ ref: "local:ref_branch", cwd: "/tmp/project" });
+  seedModel(model);
+
+  render(panel({ params: { ref: model.ref }, paneId: "panel-branch", focused: true, kind: "details" }, fake));
+
+  expect((await screen.findByTestId("session-details-branch")).textContent).toContain("trunk");
+  // Branch-only caller, like the About tab: the cwd is sent and origin is not asked for.
+  expect(fake.calls.find((call) => call.method === "evener/git/head")?.params).toEqual({ cwd: "/tmp/project" });
 });
 
 test("retains Details rendering and the current clock value across a pane remount", () => {
@@ -217,7 +242,7 @@ test("retains Details rendering and the current clock value across a pane remoun
   const model = testModel({ activeTurnStartedAt: start.toISOString(), workMillis: 1_000 });
   seedModel(model);
 
-  const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-details" focused kind="details" />);
+  const first = render(panel({ params: { ref: model.ref }, paneId: "panel-details", focused: true, kind: "details" }));
   act(() => vi.advanceTimersByTime(3_000));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
 
@@ -229,7 +254,7 @@ test("retains Details rendering and the current clock value across a pane remoun
   first.unmount();
 
   seedModel(mutated);
-  render(<SessionPanelPane params={{ ref: mutated.ref }} paneId="panel-details-remount" focused kind="details" />);
+  render(panel({ params: { ref: mutated.ref }, paneId: "panel-details-remount", focused: true, kind: "details" }));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("5s");
   act(() => vi.advanceTimersByTime(3_000));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("8s");
@@ -240,7 +265,7 @@ test("claims and releases the session ref with the pane lifecycle", async () => 
   const model = testModel();
   seedModel(model);
   const { unmount } = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-claim" focused kind="details" />,
+    panel({ params: { ref: model.ref }, paneId: "panel-claim", focused: true, kind: "details" }),
   );
 
   await act(async () => {
@@ -258,7 +283,7 @@ test("claims after a delayed connection becomes ready and releases the hydrated 
   connectionStore.getState().connect(fake);
   const model = testModel();
   const { unmount } = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-delayed-claim" focused kind="details" />,
+    panel({ params: { ref: model.ref }, paneId: "panel-delayed-claim", focused: true, kind: "details" }),
   );
   expect(threadsStore.getState().threads.has(model.ref)).toBe(false);
 
@@ -280,7 +305,7 @@ test("does not claim a ref when unmounted before the delayed connection is ready
   connectionStore.getState().connect(fake);
   const model = testModel();
   const { unmount } = render(
-    <SessionPanelPane params={{ ref: model.ref }} paneId="panel-delayed-unmount" focused kind="details" />,
+    panel({ params: { ref: model.ref }, paneId: "panel-delayed-unmount", focused: true, kind: "details" }),
   );
 
   unmount();
@@ -297,11 +322,11 @@ test("does not claim a ref when unmounted before the delayed connection is ready
 test("ordinary body remount does not move focus into the scaffold", () => {
   const model = testModel();
   seedModel(model);
-  const first = render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-focus" focused kind="details" />);
+  const first = render(panel({ params: { ref: model.ref }, paneId: "panel-focus", focused: true, kind: "details" }));
   document.body.focus();
   first.unmount();
   seedModel(model);
-  render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-focus-2" focused kind="details" />);
+  render(panel({ params: { ref: model.ref }, paneId: "panel-focus-2", focused: true, kind: "details" }));
 
   expect(document.activeElement).not.toBe(screen.getByRole("heading", { name: /details/i }));
 });

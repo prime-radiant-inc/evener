@@ -239,7 +239,7 @@ func (m *hubHostManager) migrateLegacyRecords(ops *hostops.Store) {
 		return
 	}
 	m.cfg.store.installRecords(records)
-	m.useRecordStore(hostOpsRecordStore{path: m.cfg.configPath, ops: ops, logf: m.cfg.logf})
+	m.useRecordStore(hostOpsRecordStore{path: m.cfg.configPath, ops: ops, log: m.cfg.log})
 	m.logf("moved %d host record(s) from %s into the operation store", len(set.HostRecords), m.cfg.configPath)
 	m.stripLegacySections(false)
 }
@@ -353,7 +353,7 @@ func keepPreRecordsCopy(path string, original []byte) error {
 // host change never reached hub.toml, finalizes the commits whose host change
 // did, and rebuilds what is derived from the records.
 func (m *hubHostManager) bootStoreRecords(ops *hostops.Store) {
-	store := hostOpsRecordStore{path: m.cfg.configPath, ops: ops, logf: m.cfg.logf}
+	store := hostOpsRecordStore{path: m.cfg.configPath, ops: ops, log: m.cfg.log}
 	m.useRecordStore(store)
 	records, err := store.records()
 	if err != nil {

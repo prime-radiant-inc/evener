@@ -20,6 +20,7 @@ import (
 // A credential resolution failure that is not the login sentinel surfaces as
 // the instance's own error, wrapped, without pretending the user must sign in.
 func TestCodexApplySurfacesACredentialResolutionFailure(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("credential backend unavailable")
 	c := &Codex{StateDir: t.TempDir(), Credentials: func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
 		return authopenai.RuntimeCredentials{}, boom
@@ -38,6 +39,7 @@ func TestCodexApplySurfacesACredentialResolutionFailure(t *testing.T) {
 // service, creating it on first use: an empty state dir has no OAuth record,
 // so the service's answer is the login requirement.
 func TestCodexApplyResolvesThroughTheDefaultService(t *testing.T) {
+	t.Parallel()
 	c := &Codex{StateDir: t.TempDir()}
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
 	err := c.Apply(context.Background(), req, codexRes("openai-codex"))
@@ -54,6 +56,7 @@ func TestCodexApplyResolvesThroughTheDefaultService(t *testing.T) {
 // environment (t.Setenv) and cannot run in parallel with package tests that
 // read the ambient state home.
 func TestCodexCredentialLookupWithoutAStateHomeFails(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "")
 	c := &Codex{}
@@ -67,6 +70,7 @@ func TestCodexCredentialLookupWithoutAStateHomeFails(t *testing.T) {
 // The scope read fails when the record store cannot answer: no record, no
 // claims to hash into the storage scope.
 func TestCodexAuthScopeWithoutARecordFails(t *testing.T) {
+	t.Parallel()
 	c := &Codex{StateDir: t.TempDir()}
 	account, workspace, err := c.AuthScope(context.Background(), codexRes("openai-codex"))
 	if err == nil {
@@ -81,6 +85,7 @@ func TestCodexAuthScopeWithoutARecordFails(t *testing.T) {
 // token yields the account it actually has: the claims fallback is best-effort
 // and must not drop the one claim that survived.
 func TestCodexAuthScopeKeepsTheAccountWhenTheIDTokenIsUnparsable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	now := time.Now()
 	rec := authopenai.AuthRecord{Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth, ObtainedAt: now, TokenType: "Bearer", AccessToken: "tok", RefreshToken: "rt", Expiry: now.Add(time.Hour), AccountID: "acct_9", IDToken: "not-a-jwt"}
@@ -102,6 +107,7 @@ func TestCodexAuthScopeKeepsTheAccountWhenTheIDTokenIsUnparsable(t *testing.T) {
 // process-wide package variable, so this test cannot run in parallel with
 // anything else reading it.
 func TestCodexUserAgentFallsBackToDevWhenTheVersionIsBlank(t *testing.T) {
+	// Not parallel: swaps the package's ClientVersion seam.
 	prev := ClientVersion
 	ClientVersion = ""
 	defer func() { ClientVersion = prev }()
@@ -129,6 +135,7 @@ func gcpadcRes(instance, value string) registry.Resolved {
 // real parser: a well-formed service account builds a token source offline
 // (the key is read, never used over the network) and the source is cached.
 func TestGCPADCStoredCredentialParsesThroughTheDefaultParser(t *testing.T) {
+	t.Parallel()
 	a := &GCPADC{}
 	res := gcpadcRes("vertex", testServiceAccountJSON(t))
 	if _, err := a.tokenSource(context.Background(), res); err != nil {
@@ -143,6 +150,7 @@ func TestGCPADCStoredCredentialParsesThroughTheDefaultParser(t *testing.T) {
 // parser's failure: the gate and the parser are two checks, and the second
 // one's verdict must not be swallowed.
 func TestGCPADCStoredCredentialParserFailureSurfaces(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("parser refused the document")
 	a := &GCPADC{CredentialsFromJSON: func(context.Context, []byte, ...string) (*google.Credentials, error) {
 		return nil, boom
@@ -160,6 +168,7 @@ func TestGCPADCStoredCredentialParserFailureSurfaces(t *testing.T) {
 // source. Serializes the process environment, so it cannot run in parallel
 // with tests that read the ambient home.
 func TestGCPADCDefaultCredentialLookupReportsAbsence(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-such-credentials.json"))
 	a := &GCPADC{}
 	_, err := a.tokenSource(context.Background(), registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}})

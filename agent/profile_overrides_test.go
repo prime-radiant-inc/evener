@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -230,6 +231,43 @@ func TestWithCommunicateOutputSchema_NilOrEmpty_NoOp(t *testing.T) {
 	if got := WithCommunicateOutputSchema(base, map[string]any{}); got != base {
 		t.Fatal("empty schema should return profile unchanged")
 	}
+}
+
+// TestWithCommunicateOutputSchema_RejectsInvalidSchema pins the chokepoint
+// for issue #6298: every binder of a caller-supplied output schema goes
+// through this validation, because an invalid schema spliced into the
+// communicate tool ships on the child's first model call and providers that
+// validate tool parameters reject the request before the delegate works.
+func TestWithCommunicateOutputSchema_RejectsInvalidSchema(t *testing.T) {
+	t.Parallel()
+	base := NewOpenAIProfile("gpt-5.2")
+
+	// A properties value that is a bare type string — the exact rejected shape
+	// from lunaroute's draft-2020-12 tool validation in issue #6298.
+	bound, err := provider.WithCommunicateOutputSchema(base, map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"rows": "array"},
+	})
+	if err == nil {
+		t.Fatal("invalid output schema should fail to bind")
+	}
+	if bound != nil {
+		t.Fatalf("invalid output schema should bind nothing, got a profile")
+	}
+	// The base profile is untouched: its communicate output stays the default
+	// envelope.
+	for _, td := range base.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		if _, isEnvelope := output["properties"].(map[string]any)["message"]; !isEnvelope {
+			t.Fatal("the base profile's communicate output schema was mutated by the rejected bind")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
 }
 
 func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {

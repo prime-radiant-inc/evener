@@ -5,6 +5,7 @@ import "testing"
 // Every provenance tag a window can carry maps into the documented source
 // set. A new layer constant must be added to the table, then to the mapping.
 func TestContextWindowSourceMapsEveryLayerIntoTheDocumentedSet(t *testing.T) {
+	t.Parallel()
 	documented := map[string]bool{"live": true, "overlay": true, "config": true, "snapshot": true}
 	for _, layer := range []string{LayerSnapshot, LayerCache, LayerOverlay, LayerLive, LayerConfig} {
 		for _, suffix := range []string{"", "/row", "/provider", "/glob:x*"} {

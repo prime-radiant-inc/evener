@@ -647,7 +647,16 @@ test.each([false, true])("restart-required empty transcript suppresses first-sen
   if (pending) await act(async () => seedPendingSend(mutationStorage));
   expect(emptyStateReasons(document.body)).not.toContain("no-turns");
   expect(screen.queryByTestId("cold-start-skeleton")).toBeNull();
-  expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);
+  if (pending) {
+    // The seeded send's waiting row mounts through the read-only state (a
+    // settled undelivered fact keeps its Edit/Remove reachable, the retired
+    // footer strip's reach), and the mounted content yields the dormant
+    // empty state to the stack.
+    expect(screen.getAllByTestId("pending-row-stack")).toHaveLength(1);
+    expect(emptyStateReasons(document.body)).toEqual([]);
+  } else {
+    expect(emptyStateReasons(document.body)).toEqual(["version-mismatch"]);
+  }
 });
 
 test("Send follows the returned identity through transcript and new sends", async ({ onTestFinished }) => {

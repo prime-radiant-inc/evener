@@ -141,7 +141,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	// Read the overlap before this delegate is prepared or tracked, while the
 	// siblings it would join are still the only running children.
-	sharedWorkspaceAdvisory := s.sharedWorkspaceDelegateWarning(isolationName)
+	sharedWorkspaceAdvisory := s.sharedWorkspaceDelegateWarning(isolationName, &descriptor)
 	reservation, err := s.delegateController.ReserveCreate(actor, descriptor)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -302,8 +302,7 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 }
 
 func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.grantsDelegation())
-	return delegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.grantsDelegation(), isolationName)
+	return s.subagentToolNameCeiling(selection.agent, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
@@ -353,10 +352,16 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			}
 		}
 	}
-	resultSchema, err := json.Marshal(args.ResultSchema)
-	if err != nil {
-		return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid result schema: %w", err)
+	if len(args.ResultSchema) != 0 {
+		// An invalid result_schema spliced into the child's communicate tool
+		// makes its first model call a provider 400 about tool schemas (issue
+		// #6298); reject it here, at the call the model can repair.
+		if err := llm.ValidateSchemaDocument(args.ResultSchema); err != nil {
+			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid result schema: %w", err)
+		}
 	}
+	// A non-empty schema passed the gate above, which proves it JSON-marshalable.
+	resultSchema, _ := json.Marshal(args.ResultSchema)
 	if len(args.ResultSchema) == 0 {
 		resultSchema = nil
 	}
@@ -393,7 +398,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
 		Task:                          brief,
-		Description:                   brief,
+		Description:                   "",
 		AgentType:                     agentType,
 		RequestedModel:                selection.requestedModel,
 		ResolvedProfileID:             selection.profile.ID(),
@@ -440,10 +445,13 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		if err := s.worktreeAnchorGone(); err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: %w", err)
 		}
-		project, err = resolveWorktreeProject(local, local.WorkingDirectory())
+		resolvedProject, err := resolveWorktreeProject(local, local.WorkingDirectory())
 		if err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: resolve project: %w", err)
 		}
+		// Assign the outer `project`, which describe() returns; `:=` here
+		// would shadow it and return the zero Project.
+		project = resolvedProject
 		root, err := s.worktreeRootForProject(s.currentStateDir(), project)
 		if err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, err

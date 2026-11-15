@@ -47,6 +47,7 @@
     "web_search": false
   },
   "provenance": {
+    "Protocol": "snapshot/provider",
     "ReasoningControls": "derived",
     "StructuredOutput": "overlay/glob:*anthropic.*",
     "Surface": "derived",

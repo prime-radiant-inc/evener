@@ -1,7 +1,8 @@
 package cmdutil
 
 import (
-	"fmt"
+	"bytes"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -10,11 +11,11 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-func discardLogf(string, ...any) {}
+func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 func TestStartLivePprofIsOffWhenUnset(t *testing.T) {
 	t.Setenv(envvars.EVENERPprofAddr.Name, "")
-	url, stop, err := StartLivePprof(discardLogf)
+	url, stop, err := StartLivePprof(discardLogger())
 	if err != nil {
 		t.Fatalf("StartLivePprof: %v", err)
 	}
@@ -36,7 +37,7 @@ func TestStartLivePprofRejectsNonLoopbackAddresses(t *testing.T) {
 	} {
 		t.Run(addr, func(t *testing.T) {
 			t.Setenv(envvars.EVENERPprofAddr.Name, addr)
-			got, stop, err := StartLivePprof(discardLogf)
+			got, stop, err := StartLivePprof(discardLogger())
 			if err == nil {
 				stop()
 				t.Fatalf("StartLivePprof(%q) bound %q; want a refusal", addr, got)
@@ -52,7 +53,7 @@ func TestStartLivePprofServesProfilesOnLoopback(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:0", "localhost:0"} {
 		t.Run(addr, func(t *testing.T) {
 			t.Setenv(envvars.EVENERPprofAddr.Name, addr)
-			index, stop, err := StartLivePprof(discardLogf)
+			index, stop, err := StartLivePprof(discardLogger())
 			if err != nil {
 				t.Fatalf("StartLivePprof: %v", err)
 			}
@@ -90,10 +91,8 @@ func TestStartLivePprofWarnsAndContinuesWhenTheAddressIsTaken(t *testing.T) {
 	defer func() { _ = taken.Close() }()
 	t.Setenv(envvars.EVENERPprofAddr.Name, taken.Addr().String())
 
-	var logged strings.Builder
-	url, stop, err := StartLivePprof(func(format string, args ...any) {
-		fmt.Fprintf(&logged, format+"\n", args...)
-	})
+	var logged bytes.Buffer
+	url, stop, err := StartLivePprof(slog.New(slog.NewTextHandler(&logged, nil)))
 	if err != nil {
 		t.Fatalf("StartLivePprof on a taken address = %v; want a warning, not an error", err)
 	}
@@ -101,7 +100,10 @@ func TestStartLivePprofWarnsAndContinuesWhenTheAddressIsTaken(t *testing.T) {
 	if url != "" {
 		t.Fatalf("StartLivePprof reported %q on a taken address; want no endpoint", url)
 	}
-	if !strings.Contains(logged.String(), "warning") || !strings.Contains(logged.String(), envvars.EVENERPprofAddr.Name) {
-		t.Fatalf("log = %q; want a warning naming %s", logged.String(), envvars.EVENERPprofAddr.Name)
+	line := logged.String()
+	for _, want := range []string{"level=WARN", `msg="running without pprof"`, "env=" + envvars.EVENERPprofAddr.Name, "err="} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log = %q; want field %q", line, want)
+		}
 	}
 }

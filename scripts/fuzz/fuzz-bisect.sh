@@ -72,10 +72,10 @@ while IFS=: read -r tag m p n _rest; do
 done < <(bash "$runner" --list)
 [ -n "$name" ] || { echo "fuzz-bisect: no native target '$target' in the registry" >&2; exit 2; }
 
-# Where Go reads the corpus for this target, and the fixed name we replay under.
+# Where Go reads the corpus for this target. The replay name is unique per run
+# so cleanup cannot remove a corpus entry that was already there.
 seed_dir="$repo_root/$module/${pkg#./}/testdata/fuzz/$name"
 [ "$pkg" = "." ] && seed_dir="$repo_root/$module/testdata/fuzz/$name"
-probe_name="__bisect_probe"
 
 # Generate a SELF-CONTAINED probe. `git bisect run` checks out each candidate
 # commit in $repo_root, which DELETES any tracked file that did not exist at that
@@ -89,6 +89,7 @@ probe_name="__bisect_probe"
 #   off arbitrary words in a panic/oracle message — 'unknown', 'cannot find', etc.
 #   appear in real failure text and must not be read as "did not build".
 probe="$(mktemp -t fuzz-bisect-probe.XXXXXX.sh)"
+probe_name="__bisect_probe_$(basename "$probe" .sh)"
 cat >"$probe" <<PROBE
 #!/usr/bin/env bash
 seed_dir='$seed_dir'

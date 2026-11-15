@@ -104,6 +104,7 @@ func deadlineRecoveryRequest(t *testing.T) (llm.Request, registry.Resolved) {
 }
 
 func TestImageRecoveryAttemptDeadlineStopsRepair(t *testing.T) {
+	t.Parallel()
 	for _, stream := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete", true: "stream"}[stream], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -134,6 +135,7 @@ func TestImageRecoveryAttemptDeadlineStopsRepair(t *testing.T) {
 }
 
 func TestImageRecoveryDeadlineRetryOwnership(t *testing.T) {
+	t.Parallel()
 	for _, stream := range []bool{false, true} {
 		for _, callerDeadline := range []bool{false, true} {
 			name := map[bool]string{false: "complete", true: "stream"}[stream] + map[bool]string{false: "/attempt", true: "/caller"}[callerDeadline]

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func checkCompletePaths_EmptyHomeUsesRoot(t *testing.T) {
@@ -550,6 +551,59 @@ func TestResolveInRoot_CurrentTrustedAliasDoesNotAuthorizeOtherRoots(t *testing.
 		if _, err := ResolveInRoot(aliasRoot, filepath.Join(root, "plan.md")); !errors.Is(err, ErrPathEscapesRoot) {
 			t.Fatalf("ResolveInRoot(alias, %q) error = %v, want ErrPathEscapesRoot", root, err)
 		}
+	}
+}
+
+// A request can name a served file through a symlinked ancestor even when the
+// root itself is canonical: macOS spells /private/var/folders/... as
+// /var/folders/.... Canonicalizing the existing parent before the lexical
+// check accepts that spelling, while a symlinked spelling of a different
+// directory stays outside the root.
+func checkResolveInRoot_AllowsSymlinkedSpellingOfCanonicalRoot(t *testing.T) {
+	base := testfs.CanonicalTempDir(t)
+	root := filepath.Join(base, "scratch")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "notes.md")
+	if err := os.WriteFile(want, []byte("scratch notes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aliasBase := t.TempDir()
+	alias := filepath.Join(aliasBase, "scratch-root")
+	symlinkOrSkip(t, base, alias)
+	requested := filepath.Join(alias, "scratch", "notes.md")
+	got, err := ResolveInRoot(root, requested)
+	if err != nil || got != want {
+		t.Fatalf("ResolveInRoot(canonical root, symlinked spelling %q) = %q, %v; want %q", requested, got, err, want)
+	}
+	rootAlias := filepath.Join(aliasBase, "root-alias")
+	symlinkOrSkip(t, root, rootAlias)
+	got, err = ResolveInRoot(root, rootAlias)
+	if err != nil || got != root {
+		t.Fatalf("ResolveInRoot(canonical root, symlink to the root %q) = %q, %v; want %q", rootAlias, got, err, root)
+	}
+	missing := filepath.Join(alias, "scratch", "missing.md")
+	if _, err := ResolveInRoot(root, missing); err == nil || errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("ResolveInRoot(canonical root, missing file through %q) = %v, want a not-found error", alias, err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outsideAlias := filepath.Join(aliasBase, "outside")
+	symlinkOrSkip(t, outside, outsideAlias)
+	requested = filepath.Join(outsideAlias, "secret.txt")
+	if _, err := ResolveInRoot(root, requested); !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("ResolveInRoot(canonical root, symlinked outside %q) error = %v, want ErrPathEscapesRoot", requested, err)
+	}
+}
+
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
 	}
 }
 

@@ -236,6 +236,45 @@ test("the Details action exposes its expansion state and the body it opens", asy
   expect(document.getElementById(controls ?? "")?.getAttribute("data-kind")).toBe("plugin-detail");
 });
 
+test("two mounted panels keep their detail body ids distinct", async () => {
+  const user = userEvent.setup();
+  // The launcher renders its panel twice - the desktop form and the mobile
+  // sheet - and CSS only hides one. Each instance's opener must point at its
+  // own body.
+  render(
+    <>
+      <PluginSelectionPanel
+        preview={preview}
+        selection={{ mode: "default" }}
+        client={new FakeClient()}
+        onSelectionChange={() => {}}
+        onRetry={() => {}}
+      />
+      <PluginSelectionPanel
+        preview={preview}
+        selection={{ mode: "default" }}
+        client={new FakeClient()}
+        onSelectionChange={() => {}}
+        onRetry={() => {}}
+      />
+    </>,
+  );
+  const panels = screen.getAllByTestId("plugin-selection-panel");
+  expect(panels).toHaveLength(2);
+  const first = within(panels[0] as HTMLElement).getAllByRole("button", { name: "Details" })[0] as HTMLElement;
+  const second = within(panels[1] as HTMLElement).getAllByRole("button", { name: "Details" })[0] as HTMLElement;
+  await user.click(first);
+  await user.click(second);
+
+  const controls = [first, second].map((action) => action.getAttribute("aria-controls"));
+  expect(controls[0]).not.toBeNull();
+  expect(controls[1]).not.toBeNull();
+  expect(controls[0]).not.toBe(controls[1]);
+  for (const id of controls) {
+    expect(document.getElementById(id ?? "")?.getAttribute("data-kind")).toBe("plugin-detail");
+  }
+});
+
 test("shows a removable retained stale name while preserving other selected names", async () => {
   const user = userEvent.setup();
   const onSelectionChange = vi.fn();

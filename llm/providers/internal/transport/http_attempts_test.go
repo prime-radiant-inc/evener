@@ -161,6 +161,7 @@ func assertDurableAttemptExcludes(t *testing.T, attempt apilog.APIAttemptRecord,
 }
 
 func TestDoWithAPIAttemptsRecordsOneAttemptPerRoundTrip(t *testing.T) {
+	t.Parallel()
 	const (
 		requestBytes  = "request bytes read by transport"
 		responseBytes = "response bytes read by adapter"
@@ -240,6 +241,7 @@ func TestDoWithAPIAttemptsRecordsOneAttemptPerRoundTrip(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsRedirectCloseDoesNotReadBody(t *testing.T) {
+	t.Parallel()
 	redirectBody := &observingReadCloser{reader: strings.NewReader(strings.Repeat("r", 3<<10))}
 	baseCalls := 0
 	var redirectObservation bodyObservationReporter
@@ -308,6 +310,7 @@ func TestDoWithAPIAttemptsRedirectCloseDoesNotReadBody(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsRedirectCredentialMaterialRemainsCumulative(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID        = "sess-redirect-credentials"
 		credentialHeader = "X-Redirect-Credential"
@@ -417,6 +420,7 @@ func TestDoWithAPIAttemptsRedirectCredentialMaterialRemainsCumulative(t *testing
 }
 
 func TestDoWithAPIAttemptsSharedGroupLearnsEachCallsCredentialValue(t *testing.T) {
+	t.Parallel()
 	const (
 		credentialHeader = "X-Shared-Credential"
 		firstSecret      = "first-call-secret"
@@ -491,6 +495,7 @@ func TestDoWithAPIAttemptsSharedGroupLearnsEachCallsCredentialValue(t *testing.T
 }
 
 func TestDoWithAPIAttemptsRecordsEffectiveRedirectHost(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		host             string
@@ -580,6 +585,7 @@ func TestDoWithAPIAttemptsRecordsEffectiveRedirectHost(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsDoesNotUseGetBodyClone(t *testing.T) {
+	t.Parallel()
 	original := &observingReadCloser{reader: strings.NewReader("request")}
 	var clone *observingReadCloser
 	getBodyCalls := 0
@@ -628,6 +634,7 @@ func TestDoWithAPIAttemptsDoesNotUseGetBodyClone(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsRedirectSourceWaitsForNextHopCredentialMaterial(t *testing.T) {
+	t.Parallel()
 	const secret = "next-hop-secret"
 	tests := []struct {
 		name          string
@@ -771,6 +778,7 @@ func TestDoWithAPIAttemptsRedirectSourceWaitsForNextHopCredentialMaterial(t *tes
 }
 
 func TestDoWithAPIAttemptsFlushesRedirectSourceWhenNoNextRoundTripOccurs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		location  string
@@ -832,6 +840,7 @@ func TestDoWithAPIAttemptsFlushesRedirectSourceWhenNoNextRoundTripOccurs(t *test
 }
 
 func TestDoWithAPIAttemptsRejectedRedirectCandidateSanitizesDurableSource(t *testing.T) {
+	t.Parallel()
 	const (
 		locationSecret = "candidate-location-secret"
 		headerSecret   = "candidate-header-secret"
@@ -952,6 +961,7 @@ func TestDoWithAPIAttemptsRejectedRedirectCandidateSanitizesDurableSource(t *tes
 }
 
 func TestDoWithAPIAttemptsDefaultRedirectRejectionSanitizesLocationCredential(t *testing.T) {
+	t.Parallel()
 	const secret = "default-policy-location-secret"
 	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -992,6 +1002,7 @@ func TestDoWithAPIAttemptsDefaultRedirectRejectionSanitizesLocationCredential(t 
 }
 
 func TestDoWithAPIAttemptsRejectedRedirectSanitizesRealJarCookieFromSource(t *testing.T) {
+	t.Parallel()
 	const secret = "rejected-source-cookie-secret"
 	tests := []struct {
 		name     string
@@ -1054,6 +1065,7 @@ func TestDoWithAPIAttemptsRejectedRedirectSanitizesRealJarCookieFromSource(t *te
 }
 
 func TestDoWithAPIAttemptsRejectedRedirectSanitizesDecodedResponseCookie(t *testing.T) {
+	t.Parallel()
 	const (
 		encodedSecret = "abc%2Fdef"
 		decodedSecret = "abc/def"
@@ -1119,6 +1131,7 @@ func TestDoWithAPIAttemptsRejectedRedirectSanitizesDecodedResponseCookie(t *test
 }
 
 func TestDoWithAPIAttemptsFutureRedirectCredentialSanitizesEveryEarlierSource(t *testing.T) {
+	t.Parallel()
 	const secret = "third-hop-future-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -1188,6 +1201,7 @@ func (b *closeSequenceBody) closes() int {
 }
 
 func TestDoWithAPIAttemptsRedirectHookDoubleCloseDefersSourceOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		secret         = "double-close-candidate-secret"
 		credentialName = "X-Double-Close-Credential"
@@ -1252,6 +1266,7 @@ func TestDoWithAPIAttemptsRedirectHookDoubleCloseDefersSourceOnce(t *testing.T) 
 }
 
 func TestDoWithAPIAttemptsExplicitRetriesCreateSeparateAttempts(t *testing.T) {
+	t.Parallel()
 	sink := &responseAssociationSink{}
 	ctx := attemptContext("ag_explicit_retries", sink)
 	transportCalls := 0
@@ -1287,6 +1302,7 @@ func TestDoWithAPIAttemptsExplicitRetriesCreateSeparateAttempts(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsWaitsForPriorCallCredentialScope(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		const (
 			trailerName   = "X-Gateway-Credential"
@@ -1399,6 +1415,7 @@ func TestDoWithAPIAttemptsWaitsForPriorCallCredentialScope(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsTransportErrorRetainsOneAttempt(t *testing.T) {
+	t.Parallel()
 	transportErr := errors.New("transport failed")
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 		return nil, transportErr
@@ -1426,6 +1443,7 @@ func TestDoWithAPIAttemptsTransportErrorRetainsOneAttempt(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsLearnsCredentialTrailerPopulatedWhileReadingRequestBody(t *testing.T) {
+	t.Parallel()
 	const (
 		trailerName      = "X-Gateway-Credential"
 		configuredSecret = "configured-secret-sentinel"
@@ -1497,6 +1515,7 @@ func TestDoWithAPIAttemptsLearnsCredentialTrailerPopulatedWhileReadingRequestBod
 }
 
 func TestDoWithAPIAttemptsWaitsForAsyncRequestTrailerBeforePersistence(t *testing.T) {
+	t.Parallel()
 	const (
 		trailerName   = "X-Gateway-Credential"
 		trailerSecret = "async-request-trailer-secret-sentinel"
@@ -1555,6 +1574,7 @@ func TestDoWithAPIAttemptsWaitsForAsyncRequestTrailerBeforePersistence(t *testin
 }
 
 func TestDoWithAPIAttemptsFreezesContextStateWhenCompletionIsQueued(t *testing.T) {
+	t.Parallel()
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
 	sink := &responseAssociationSink{}
@@ -1594,6 +1614,7 @@ func TestDoWithAPIAttemptsFreezesContextStateWhenCompletionIsQueued(t *testing.T
 }
 
 func TestDoWithAPIAttemptsFreezesRedirectContextWhenSourceCompletionIsQueued(t *testing.T) {
+	t.Parallel()
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
 	sink := &responseAssociationSink{}
@@ -1662,6 +1683,7 @@ func TestDoWithAPIAttemptsFreezesRedirectContextWhenSourceCompletionIsQueued(t *
 }
 
 func TestRedirectSourceCapturesFinishedAtBeforeDeferredPersistence(t *testing.T) {
+	t.Parallel()
 	sink := &responseAssociationSink{}
 	requestCtx := attemptContext("ag_redirect_finished_at", sink)
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "https://provider.test/start", nil)
@@ -1691,6 +1713,7 @@ func TestRedirectSourceCapturesFinishedAtBeforeDeferredPersistence(t *testing.T)
 }
 
 func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempts(t *testing.T) {
+	t.Parallel()
 	const (
 		trailerName   = "X-Gateway-Credential"
 		trailerSecret = "redirect-trailer-secret-sentinel"
@@ -1761,6 +1784,7 @@ func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempt
 }
 
 func TestDoWithAPIAttemptsFinalDynamicTrailerSanitizesEarlierRedirectSource(t *testing.T) {
+	t.Parallel()
 	const (
 		trailerName   = "X-Gateway-Credential"
 		trailerSecret = "final-trailer-secret-sentinel"
@@ -1837,6 +1861,7 @@ func TestDoWithAPIAttemptsFinalDynamicTrailerSanitizesEarlierRedirectSource(t *t
 }
 
 func TestDoWithAPIAttemptsAsyncTrailerOnTransportErrorSanitizesRedirectSource(t *testing.T) {
+	t.Parallel()
 	const (
 		trailerName   = "X-Gateway-Credential"
 		trailerSecret = "async-error-trailer-secret-sentinel"
@@ -1921,6 +1946,7 @@ func TestDoWithAPIAttemptsAsyncTrailerOnTransportErrorSanitizesRedirectSource(t 
 }
 
 func TestRedirectCredentialMaterialRetainsOnlyUniqueValues(t *testing.T) {
+	t.Parallel()
 	roundTripper := &apiAttemptRoundTripper{}
 	roundTripper.mergeCredentialMaterial(llm.NewAPILogCredentialMaterial(
 		[]string{"X-Redirect-Credential"},
@@ -1946,6 +1972,7 @@ func TestRedirectCredentialMaterialRetainsOnlyUniqueValues(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsLearnsCredentialTrailerMutatedBeforeTransportError(t *testing.T) {
+	t.Parallel()
 	const (
 		trailerName   = "X-Gateway-Credential"
 		initialSecret = "initial-trailer-secret-sentinel"
@@ -2002,6 +2029,7 @@ func TestDoWithAPIAttemptsLearnsCredentialTrailerMutatedBeforeTransportError(t *
 }
 
 func TestDoWithAPIAttemptsNilResponsePreservesHTTPClientError(t *testing.T) {
+	t.Parallel()
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 		return nil, nil
 	})}
@@ -2024,6 +2052,7 @@ func TestDoWithAPIAttemptsNilResponsePreservesHTTPClientError(t *testing.T) {
 }
 
 func TestDoWithAPIAttemptsNilBodyWithPositiveLengthPreservesHTTPClientError(t *testing.T) {
+	t.Parallel()
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode:    http.StatusOK,
@@ -2089,6 +2118,7 @@ func assertMatchingHTTPClientErrors(t *testing.T, inactiveErr, activeErr error) 
 }
 
 func TestDoWithAPIAttemptsNormalizesNilBodyWhenHTTPClientPermitsIt(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name          string
 		method        string
@@ -2137,6 +2167,7 @@ func assertEmptyResponseBody(t *testing.T, response *http.Response) {
 }
 
 func TestDoWithAPIAttemptsInactiveRequestRemainsUnwrapped(t *testing.T) {
+	t.Parallel()
 	body := io.NopCloser(bytes.NewReader([]byte("response")))
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
@@ -2163,6 +2194,7 @@ func TestDoWithAPIAttemptsInactiveRequestRemainsUnwrapped(t *testing.T) {
 // keeps -- that work scales with the whole conversation and ran every model
 // round. The group still learns the protocol the agent stamps on the turn.
 func TestDoWithAPIAttemptsOwnershipLoggerRetainsNoEvidence(t *testing.T) {
+	t.Parallel()
 	logger, err := llm.NewSessionOwnershipAPILogger(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionOwnershipAPILogger: %v", err)

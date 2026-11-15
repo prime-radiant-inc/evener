@@ -105,6 +105,74 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 	}
 }
 
+func TestHTTPRecorderRedactsCredentials(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	handler := newHTTPRequestRecorder(root)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/SECRET?token=QUERYSECRET&keep=yes", nil)
+	req.Header.Set("Authorization", "Bearer SECRET")
+	req.Header.Set("Cookie", "session=COOKIESECRET")
+	req.Header.Set("Set-Cookie", "session=SETCOOKIESECRET; HttpOnly")
+	req.Header.Set("X-Request-Id", "request-123")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	path := filepath.Join(root, "hub-http.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recording: %v", err)
+	}
+	line := string(data)
+	for _, secret := range []string{"SECRET", "COOKIESECRET", "SETCOOKIESECRET", "QUERYSECRET"} {
+		if strings.Contains(line, secret) {
+			t.Errorf("recording contains secret %q: %s", secret, line)
+		}
+	}
+	recs := readHTTPRecordings(t, path)
+	if len(recs) != 1 {
+		t.Fatalf("got %d recordings, want 1", len(recs))
+	}
+	got := recs[0]
+	if got.Method != http.MethodGet || got.Path != "/auth/[redacted]" || got.Query != "keep=yes&token=%5Bredacted%5D" {
+		t.Errorf("recording mismatch: %+v", got)
+	}
+	for _, header := range []string{"Authorization", "Cookie", "Set-Cookie"} {
+		if got.Headers[header][0] != "[redacted]" {
+			t.Errorf("%s not redacted: %+v", header, got.Headers[header])
+		}
+	}
+	if got.Headers["X-Request-Id"][0] != "request-123" {
+		t.Errorf("non-secret header not recorded: %+v", got.Headers)
+	}
+
+	other := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), other)
+	recs = readHTTPRecordings(t, path)
+	if len(recs) != 2 || recs[1].Path != "/api/health" {
+		t.Errorf("non-secret path not recorded: %+v", recs)
+	}
+}
+
+func TestNewHTTPRequestRecorderRepairsFileMode(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	path := filepath.Join(root, "hub-http.jsonl")
+	if err := os.WriteFile(path, nil, 0o664); err != nil {
+		t.Fatalf("create recording: %v", err)
+	}
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatalf("set recording mode: %v", err)
+	}
+	newHTTPRequestRecorder(root)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat recording: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("recording mode = %04o, want 0600", got)
+	}
+}
+
 // Oversized bodies are capped, not buffered without bound, and the downstream
 // handler still sees the full body.
 func TestHTTPRecorderCapsBody(t *testing.T) {

@@ -6,7 +6,7 @@ import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { escapeRegExp, readModuleCss } from "../../styles/cssBlock";
+import { escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -256,13 +256,11 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   // "a stylesheet assertion that matches its own comment" trap).
   const css = readModuleCss(import.meta.url, "panescaffold.module.css");
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
-  expect(footerRule).toContain(
-    "padding-bottom: calc(var(--space-3) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
-  );
+  expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + var(--dock-clearance))");
   // The phone keeps only keyboard-aware safe-area clearance below the card.
   expect(css).toMatch(
     new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footer \\{[^}]*padding: var\\(--space-3\\) var\\(--space-4\\);[^}]*padding-bottom: max\\(0px, env\\(safe-area-inset-bottom\\) - var\\(--keyboard-inset, 0px\\)\\)`,
+      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footer \\{[^}]*padding: var\\(--space-3\\) var\\(--space-4\\);[^}]*padding-bottom: var\\(--dock-clearance\\)`,
     ),
   );
   // A flush edge footer below this one (the session status bar) is the pane's
@@ -275,19 +273,42 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   // While the composer is focused the status bar hides, so the dock takes
   // the home-indicator band back (focus can outlive the keyboard).
   expect(css).toMatch(
-    /:global\(body\):has\(\[data-composer-editing\]\) \.footerBeforeEdge \{[^}]*padding-bottom: max\(0px, env\(safe-area-inset-bottom\) - var\(--keyboard-inset, 0px\)\)/,
+    /:global\(body\):has\(\[data-composer-editing\]\) \.footerBeforeEdge \{[^}]*padding-bottom: var\(--dock-clearance\)/,
   );
+  // The composer's activity line is the pane's bottom edge: its chips already
+  // occupy the tap floor, so reserving the home-indicator band below them
+  // spends that band twice and eats the transcript's height. A phone pane
+  // renders no edge footer, so this must address .footer - the composer's
+  // actual home on a phone - not the session's .footerBeforeEdge exemption.
+  expect(css).toMatch(/\.footer:has\(:global\(\[data-composer-activity-line="true"\]\)\) \{[^}]*padding-bottom: 0;/);
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
 // content covered by StackHost's blanket host padding; with that gone (the
 // composer owns its own dock), the body's scroll padding carries the inset
 // so the last content still clears the home indicator.
+//
+// That inset belongs to the pane's bottom edge. Any slot below the body (the
+// session pane's composer footer, or a flush edgeFooter alone) hands the edge
+// to that surface's top hairline, so the inset there would be a dead band
+// between the last row and the surface. The step is a property on .body so the
+// phone block can change it at (0,1,0); a .body:last-child override there would
+// be (0,2,0) and beat .bodyNoScroll, padding the cascade's flush columns.
+// Every step composes the shared --dock-clearance token. jsdom computes no
+// cascade, so the geometry is pinned by layoutguard's pane-body-composer-gap
+// cases; this pins the declarations.
 test("the body keeps end-of-scroll content clear of the home indicator", () => {
   const css = readModuleCss(import.meta.url, "panescaffold.module.css");
-  const bodyRule = css.match(/\.body \{([^}]*)\}/)?.[1] ?? "";
-  expect(bodyRule).toContain(
-    "padding-bottom: calc(var(--space-5) + max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px)))",
+  // Whitespace collapsed, so reformatting the declaration (a line wrap the
+  // Biome pass is free to choose) cannot fail an assertion about its value.
+  const bodyRule = topRuleBlock(css, ".body").replace(/\s+/g, " ");
+  expect(bodyRule).toContain("--pane-body-edge-inset: calc(var(--space-5) + var(--dock-clearance));");
+  expect(topRuleBlock(css, ".body:not(:last-child)")).toContain("padding-bottom: 0");
+  expect(topRuleBlock(css, ".body:last-child")).toContain("padding-bottom: var(--pane-body-edge-inset)");
+  // The phone changes only the step, and must use its own: a block repeating
+  // --space-5 would change nothing.
+  expect(mediaBlock(css, "max-width: 899px").replace(/\s+/g, " ")).toContain(
+    "--pane-body-edge-inset: calc(var(--space-4) + var(--dock-clearance));",
   );
 });
 

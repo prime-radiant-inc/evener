@@ -7,9 +7,9 @@
 // These cases evaluate the REAL expression string in jsdom, so the
 // not-ready (null) / ready (rows) contract is pinned without a browser.
 
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { rmSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
   CHROME_ANNOUNCEMENT_DEADLINE_MS,
@@ -94,9 +94,11 @@ describe("settleExpression holds two consecutive equal readings", () => {
     script([{ text: "a" }, { text: "a" }]);
     const d = newDriver();
     d.page = fakePage();
-    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toEqual({
-      text: "a",
-    });
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 2000, label: "sample" })).resolves.toEqual(
+      {
+        text: "a",
+      },
+    );
     expect(window.__samples).toHaveLength(0);
   });
 
@@ -104,9 +106,11 @@ describe("settleExpression holds two consecutive equal readings", () => {
     script([{ text: "b" }, null, { text: "b" }, { text: "b" }]);
     const d = newDriver();
     d.page = fakePage();
-    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 3000, label: "sample" })).resolves.toEqual({
-      text: "b",
-    });
+    await expect(d.settleExpression("window.__samples.shift()", { timeoutMs: 3000, label: "sample" })).resolves.toEqual(
+      {
+        text: "b",
+      },
+    );
     expect(window.__samples).toHaveLength(0);
   });
 
@@ -180,7 +184,10 @@ describe("pressRailRowExpr finds, hit-tests and presses in one turn", () => {
   });
 
   function renderRows() {
-    document.body.innerHTML = `<button data-session-ref="target">status chip</button><nav data-sidebar-rail>${["other", "target"]
+    document.body.innerHTML = `<button data-session-ref="target">status chip</button><nav data-sidebar-rail>${[
+      "other",
+      "target",
+    ]
       .map((ref) => `<span data-session-ref="${ref}"><span class="text"><b>${ref}</b></span><span>now</span></span>`)
       .join("")}</nav>`;
     const clicks = [];
@@ -535,6 +542,87 @@ describe("waitForReply brings a virtualized transcript tail into view", () => {
     expect(restoredAwayWithReplyUnseen).toBe(true);
     expect(port.scrollTop).toBeGreaterThanOrEqual(896);
     expect(document.querySelector("[data-testid='turn-block']")?.getAttribute("data-turn-id")).toBe("turn_m12");
+  });
+});
+
+// The turn-idle barrier waits INSIDE journeys that leave the reader scrolled
+// away on purpose (cascadeguard's away-reader legs wheel away, then prove the
+// new-content pill). A barrier that pins the tail on every poll would undo the
+// wheel the moment the first poll runs, the reply would land on a reader held
+// at the bottom, and the pill the journey exists to observe could never
+// appear - reported as the cascadeguard timeout "a real new turn surfaces the
+// New Content pill for an away reader" on every head that carried the wrapper.
+// The barrier must read "idle" without moving the reader: its DOM veto is
+// conditional (a pending stack unmounted by a scrolled-away reader cannot
+// veto), and the durable-store checks it falls back on are scroll-independent.
+describe("turnIdleExpr reads idle without moving an away reader", () => {
+  // A pane whose transcript port is 900px from the bottom of a 1000px scroll:
+  // the away geometry every away-reader leg creates with a real wheel. The
+  // composer wrapper mounts too, because the barrier reads composerStateExpr
+  // first and returns null when it cannot see a composer at all.
+  function renderAwayPane() {
+    document.body.innerHTML = `<div><div data-pane-scaffold="session:ref_a">
+      <section data-testid="pane-cadence-slot"><div role="img" aria-label="Idle"></div></section>
+      <section data-testid="transcript-virtual-list"><div id="port"></div></section>
+      <div data-composer="ref_a"><div id="editor" contenteditable="true" role="textbox" aria-label="Message"></div></div>
+    </div></div>`;
+    const port = document.getElementById("port");
+    let scrollTopValue = 0;
+    Object.defineProperty(port, "scrollHeight", { configurable: true, get: () => 1000 });
+    Object.defineProperty(port, "clientHeight", { configurable: true, get: () => 100 });
+    Object.defineProperty(port, "scrollTop", {
+      configurable: true,
+      get: () => scrollTopValue,
+      set: (value) => {
+        scrollTopValue = value;
+      },
+    });
+    return port;
+  }
+
+  // The durable-store reads are async (indexedDB round trips in a real page);
+  // jsdom has none here, so the expression's own reads are answered by
+  // stubbing the two store expressions the barrier awaits.
+  function stubIdleStores(d, { recovery = [], outbox = [], optimistic = [] }) {
+    d.durableRecordsExpr = () =>
+      `(async () => ({ recovery: ${JSON.stringify(recovery)}, outbox: ${JSON.stringify(outbox)}, optimistic: ${JSON.stringify(optimistic)} }))()`;
+  }
+
+  test("an away reader with nothing pending is idle, and the poll never writes scrollTop", async () => {
+    const port = renderAwayPane();
+    const d = newDriver();
+    stubIdleStores(d, {});
+    const idle = await evaluateExpr(d.turnIdleExpr("ref_a"));
+    // The composer's steerVisible is read from composerStateExpr, which the
+    // scripted pane satisfies through its real expression (no Steer control
+    // in the DOM): the reading is idle with the reader 900px away.
+    expect(idle).toBe(true);
+    expect(port.scrollTop).toBe(0);
+  });
+
+  test("a busy pending row that IS mounted still vetoes while the reader stays away", async () => {
+    const port = renderAwayPane();
+    const d = newDriver();
+    stubIdleStores(d, {});
+    const pane = document.querySelector("[data-pane-scaffold='session:ref_a']");
+    const stack = document.createElement("ul");
+    stack.setAttribute("data-testid", "pending-row-stack");
+    const row = document.createElement("li");
+    row.dataset.kind = "waiting";
+    stack.appendChild(row);
+    pane.appendChild(stack);
+    const idle = await evaluateExpr(d.turnIdleExpr("ref_a"));
+    expect(idle).toBeNull();
+    expect(port.scrollTop).toBe(0);
+  });
+
+  test("a durable outbox record vetoes even though the away reader keeps the stack unmounted", async () => {
+    const port = renderAwayPane();
+    const d = newDriver();
+    stubIdleStores(d, { outbox: [{ targetRef: "ref_a", method: "turn/input" }] });
+    const idle = await evaluateExpr(d.turnIdleExpr("ref_a"));
+    expect(idle).toBeNull();
+    expect(port.scrollTop).toBe(0);
   });
 });
 

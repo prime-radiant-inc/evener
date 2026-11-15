@@ -6,6 +6,7 @@
 import type { HistoryServingFacts } from "./historyServing";
 import type {
   CommandDescriptor,
+  ConversationProvenanceState,
   EvenerDelegateInfo,
   EvenerSkillInfo,
   EvenerTurnSlots,
@@ -64,6 +65,20 @@ export interface ItemModel {
   // guess (see UserMessageItem.tsx).
   transcriptEntryIndex?: number;
   clientMutationId?: string;
+  // Wire ThreadItem.conversationInputIds: the conversation inputs a recorded
+  // user item speaks for. A promotion or drain records its own
+  // clientMutationId but inherits the consumed entry's input ids, so this is
+  // what ties a delivered message back to the queue entry another client
+  // consumed (see recordedInputLineage).
+  conversationInputIds?: string[];
+  // Wire ThreadItem.observation.answerToTurnIds: the pending question
+  // executions (by turn id) this accepted input resolved — the server-stamped
+  // link naming the ask round a reply answers (issue #5836). Undefined for
+  // ordinary messages, for answers from a daemon that predates the
+  // observation, and for any item whose wire carried no observation; a
+  // consumer must fall back to the composed "[answers]" text shape there.
+  // Names the QUESTION's turn, not the reply's own turn.
+  answerToTurnIds?: string[];
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
@@ -385,6 +400,11 @@ export interface ThreadModel {
   runningTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
+  // The daemon's materialized conversation provenance. `retiredInputs` names
+  // inputs that ended before reaching canonical history (a canceled or
+  // failed-before-recording message), which is the only durable evidence a
+  // pending row has that its message will never arrive.
+  conversationProvenance?: ConversationProvenanceState;
   tasks: TaskAggregate | null;
   // Snapshot-only catalogs from the owning thread/read. Live completion uses
   // commands directly, the separate palette still scopes its global plugins.
@@ -483,6 +503,11 @@ export interface ThreadModel {
   // vouches for - the meters mark the capacity as an estimate ("~") when it
   // is set. Absent means the window is real.
   contextAssumed: boolean;
+  // CompactionThreshold is the active token threshold at which automatic
+  // context compaction triggers for this session's model (wire:
+  // EvenerThread.CompactionThreshold, omitempty), or 0 when the default
+  // window-percentage threshold governs.
+  compactionThreshold: number;
   // Usage is null (not a zero-valued object) when the daemon has no token
   // data at all (an old daemon or a source-backed thread that omits the field) -
   // EvenerThread.Usage uses nil to signal "no token data" rather than rendering

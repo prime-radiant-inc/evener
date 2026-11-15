@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -44,6 +45,7 @@ type runner struct {
 	uiRunner             string
 	identity             buildIdentity
 	statusReads          int
+	unlockLogs           int
 }
 
 func main() {
@@ -333,38 +335,110 @@ func (r *runner) projectIdentity(ctx context.Context, phase, script, base string
 }
 
 // resolvePods installs against the copied committed lock. When CocoaPods
-// refuses because a local podspec version changed, the lock's local
-// development pods are unlocked with one `pod update --no-repo-update`; a
-// second install completes the candidate lock for review. The unlock is
-// deliberately broad, every local pod rather than only the one the refusal
-// names, because the closure the named pod needs is not derivable from the
-// refusal text. Registry pods reachable only through those local pods may
-// move with their parents (the voice-pod candidate moved onnxruntime
-// alongside the new EvenerVoice pod), so the committed-lock comparison plus
-// review is what keeps unrelated movement out of the branch, not this
-// unlock's breadth.
+// refuses because a local podspec version changed, only the pods that refusal
+// names are unlocked with `pod update --no-repo-update`; the install repeats
+// while CocoaPods names another changed pod, so unrelated local parents stay
+// locked. The update itself can refuse on another still-locked local pod, so
+// its log is read the same way and the accumulated validated names retry the
+// update. A name the committed lock does not declare as local, or a refusal
+// that names nothing new, is surfaced instead of widening the update. Registry
+// pods reachable only through a named local pod may still move with their
+// parent (the voice-pod candidate moved onnxruntime alongside the new
+// EvenerVoice pod), so the committed-lock comparison plus review remains the
+// guard on what reaches the branch.
 func (r *runner) resolvePods(ctx context.Context, committedLock []byte) error {
-	if _, err := r.commandOutput(ctx, "pod-resolve", false, "bundle", "exec", "pod", "install", "--project-directory=ios"); err == nil {
-		return nil
-	} else if ctx.Err() != nil {
-		return err
+	var local, unlocked []string
+	for attempt := 1; ; attempt++ {
+		logName := "pod-resolve"
+		if attempt > 1 {
+			logName = "pod-resolve-" + strconv.Itoa(attempt)
+		}
+		if _, err := r.commandOutput(ctx, logName, false, "bundle", "exec", "pod", "install", "--project-directory=ios"); err == nil {
+			return nil
+		} else if ctx.Err() != nil {
+			return err
+		}
+		installLog, readErr := os.ReadFile(filepath.Join(r.output, logName+".log"))
+		if readErr != nil {
+			return readErr
+		}
+		if !podUnlockNeeded(installLog) {
+			return fmt.Errorf("pod install failed without the changed-local-podspec refusal; inspect %s.log", logName)
+		}
+		if local == nil {
+			local = localPodNames(committedLock)
+			if len(local) == 0 {
+				return fmt.Errorf("the committed lock declares no local pods to unlock; inspect %s.log", logName)
+			}
+		}
+		named := podRefusalNames(installLog)
+		if len(named) == 0 {
+			return fmt.Errorf("the changed-local-podspec refusal named no pod; inspect %s.log", logName)
+		}
+		added := false
+		for _, name := range named {
+			if !slices.Contains(local, name) {
+				return fmt.Errorf("%w: %s; inspect %s.log", errPodRefusalName, name, logName)
+			}
+			if !slices.Contains(unlocked, name) {
+				unlocked = append(unlocked, name)
+				added = true
+			}
+		}
+		if !added {
+			return fmt.Errorf("%w; inspect %s.log", errPodRefusalStuck, logName)
+		}
+		next, err := r.unlockPods(ctx, local, unlocked)
+		if err != nil {
+			return err
+		}
+		unlocked = next
 	}
-	installLog, readErr := os.ReadFile(filepath.Join(r.output, "pod-resolve.log"))
-	if readErr != nil {
-		return readErr
+}
+
+// unlockPods re-resolves every local pod validated so far and reads a
+// changed-local-podspec refusal out of the update's own log, because updating
+// one named pod can refuse on another still-locked local pod before the
+// candidate lock is complete. Each retry carries the accumulated names so the
+// update resolves them together. Log names continue across attempts: the
+// first is pod-unlock, later ones pod-unlock-N.
+func (r *runner) unlockPods(ctx context.Context, local, unlocked []string) ([]string, error) {
+	for {
+		r.unlockLogs++
+		logName := "pod-unlock"
+		if r.unlockLogs > 1 {
+			logName = "pod-unlock-" + strconv.Itoa(r.unlockLogs)
+		}
+		if _, err := r.commandOutput(ctx, logName, false, podUnlockCommand(unlocked)...); err == nil {
+			return unlocked, nil
+		} else if ctx.Err() != nil {
+			return nil, err
+		}
+		updateLog, readErr := os.ReadFile(filepath.Join(r.output, logName+".log"))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !podUnlockNeeded(updateLog) {
+			return nil, fmt.Errorf("pod update failed without the changed-local-podspec refusal; inspect %s.log", logName)
+		}
+		named := podRefusalNames(updateLog)
+		if len(named) == 0 {
+			return nil, fmt.Errorf("the changed-local-podspec refusal named no pod; inspect %s.log", logName)
+		}
+		added := false
+		for _, name := range named {
+			if !slices.Contains(local, name) {
+				return nil, fmt.Errorf("%w: %s; inspect %s.log", errPodRefusalName, name, logName)
+			}
+			if !slices.Contains(unlocked, name) {
+				unlocked = append(unlocked, name)
+				added = true
+			}
+		}
+		if !added {
+			return nil, fmt.Errorf("%w; inspect %s.log", errPodRefusalStuck, logName)
+		}
 	}
-	if !podUnlockNeeded(installLog) {
-		return errors.New("pod install failed without the changed-local-podspec refusal; inspect pod-resolve.log")
-	}
-	names := localPodNames(committedLock)
-	if len(names) == 0 {
-		return errors.New("the committed lock declares no local pods to unlock; inspect pod-resolve.log")
-	}
-	if _, err := r.commandOutput(ctx, "pod-unlock", false, podUnlockCommand(names)...); err != nil {
-		return err
-	}
-	_, err := r.commandOutput(ctx, "pod-resolve-2", false, "bundle", "exec", "pod", "install", "--project-directory=ios")
-	return err
 }
 
 func (r *runner) generatedMetadata(ctx context.Context) error {

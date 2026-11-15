@@ -108,6 +108,7 @@ func comparePixels(t *testing.T, a, b image.Image, tolerance int) {
 
 // Catches missing repair, pixel changes in untagged sRGB, metadata leakage and alias mutation.
 func TestRepairCleanJPEG(t *testing.T) {
+	t.Parallel()
 	j := fixture(t, "patches.jpg")
 	original, e := jpeg.Decode(bytes.NewReader(j))
 	if e != nil {
@@ -132,6 +133,7 @@ func TestRepairCleanJPEG(t *testing.T) {
 
 // Catches selecting profiles by name, omitted TRCs, missing D50 adaptation and wrong clipping.
 func TestRepairLittleCMSReference(t *testing.T) {
+	t.Parallel()
 	var refs struct {
 		Profiles map[string][]struct{ Input, Output [3]uint8 }
 	}
@@ -174,6 +176,7 @@ func compareColorSamples(t *testing.T, transform *iccTransform, samples []struct
 
 // Literal row layouts, not the production coordinate mapping, are the orientation oracle.
 func TestRepairOrientations(t *testing.T) {
+	t.Parallel()
 	im := image.NewGray(image.Rect(0, 0, 3, 2))
 	copy(im.Pix, []byte{20, 60, 100, 140, 180, 220})
 	var b bytes.Buffer
@@ -206,6 +209,7 @@ func TestRepairOrientations(t *testing.T) {
 }
 
 func TestRepairFallbackPreservesEveryOtherByte(t *testing.T) {
+	t.Parallel()
 	j := fixture(t, "progressive.jpg")
 	unrelated := segment(0xe2, []byte("not an ICC profile"))
 	base := inject(j, exif(6, binary.LittleEndian), unrelated, segment(0xfe, []byte{0, 255, 216, 255, 217}))
@@ -224,6 +228,7 @@ func TestRepairFallbackPreservesEveryOtherByte(t *testing.T) {
 }
 
 func TestRepairMultipartICC(t *testing.T) {
+	t.Parallel()
 	j, p := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	n := len(p) / 2
 	input := inject(j, iccChunk(p[n:], 2, 2), segment(0xe2, []byte("other")), iccChunk(p[:n], 1, 2))
@@ -239,6 +244,7 @@ func TestRepairMultipartICC(t *testing.T) {
 }
 
 func TestRepairMalformedEXIFFallsBack(t *testing.T) {
+	t.Parallel()
 	j, p := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	bad := [][]byte{exif(0, binary.LittleEndian), exif(9, binary.BigEndian), segment(0xe1, []byte("Exif\x00\x00bad"))}
 	corrupt := exif(6, binary.LittleEndian)
@@ -260,6 +266,7 @@ func TestRepairMalformedEXIFFallsBack(t *testing.T) {
 }
 
 func TestRepairRefusesMultipictureAndUnsafeStructure(t *testing.T) {
+	t.Parallel()
 	j, p := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	cases := [][]byte{nil, []byte("not a jpeg"), j[:len(j)-1], {255, 216, 255, 226, 0, 1, 255, 217}, {255, 216, 255, 226, 255, 255}, append(bytes.Clone(j), j...), append(bytes.Clone(j), []byte("trailing data")...), inject(j, segment(0xe2, []byte("MPF\x00anything"))), inject(j, segment(0xe2, []byte("MPF\x00")))}
 	for _, b := range cases {
@@ -285,6 +292,7 @@ func profileTag(t testing.TB, p []byte, name string) (entry, off, size int) {
 	return
 }
 func TestRepairRejectsInvalidAndUnsupportedICC(t *testing.T) {
+	t.Parallel()
 	j, source := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	mutations := map[string]func([]byte){
 		"nonRGB": func(p []byte) { copy(p[16:], "CMYK") }, "nonXYZ": func(p []byte) { copy(p[20:], "Lab ") }, "deviceLink": func(p []byte) { copy(p[12:], "link") }, "badSignature": func(p []byte) { copy(p[36:], "oops") }, "wrongSize": func(p []byte) { binary.BigEndian.PutUint32(p, uint32(len(p)+1)) },
@@ -315,6 +323,7 @@ func TestRepairRejectsInvalidAndUnsupportedICC(t *testing.T) {
 }
 
 func TestRepairBudgets(t *testing.T) {
+	t.Parallel()
 	j, p := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	large := make([]byte, 32*1024*1024+1)
 	copy(large, tagged(j, p))
@@ -358,6 +367,7 @@ func (c *cancelAfterChecks) Err() error {
 	return c.Context.Err()
 }
 func TestRepairCancellation(t *testing.T) {
+	t.Parallel()
 	j := tagged(fixture(t, "patches.jpg"), fixture(t, "p3.icc"))
 	// Cancel at every cooperative boundary reached by a complete repair. No timing race.
 	completed := false

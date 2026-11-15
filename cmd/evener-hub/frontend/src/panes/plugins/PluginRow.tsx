@@ -148,12 +148,15 @@ export function LauncherPluginRow({
   selected,
   removeOnly,
   expanded = false,
+  detailBodyInstance,
   onToggleSelected,
   onOpen,
 }: {
   candidate: PluginLaunchCandidate;
   selected: boolean;
   removeOnly: boolean;
+  /** The panel instance's id segment, matching its detail body's id. */
+  detailBodyInstance?: string;
   /** Whether this row's detail body is expanded; the Details action says
    * which way it goes. */
   expanded?: boolean;
@@ -199,7 +202,7 @@ export function LauncherPluginRow({
                 size="xs"
                 type="button"
                 aria-expanded={expanded}
-                aria-controls={expanded ? pluginDetailBodyId(candidate.name) : undefined}
+                aria-controls={expanded ? pluginDetailBodyId(candidate.name, undefined, detailBodyInstance) : undefined}
                 onClick={onOpen}
               >
                 {expanded ? "Hide details" : "Details"}

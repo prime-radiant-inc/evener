@@ -494,6 +494,17 @@ const servingFacts: client.HistoryServingFacts = { servedFrom: "saved-index" };
 const replacesWindow: boolean = client.historyReplacesWindow(servingFacts); void replacesWindow;`,
       smoke: rootSmokeCalls,
     },
+    // The one color palette both apps render, and the OKLab mix their tints
+    // derive with.
+    "./palette": {
+      esmTypeUses: `const light: ThemePalette = palettes.light;
+const ink: string = light["ink-hi"];
+const mixed: string = mix("#000000", "#FFFFFF", 0.5); void ink; void mixed;`,
+      cjsTypeUses: `const mixed: string = client.mix("#000000", "#FFFFFF", 0.5);
+const ink: string = client.palettes.light["ink-hi"]; void ink; void mixed;`,
+      smoke: `assert.equal(client.mix("#000000", "#FFFFFF", 0.5), "#636363");
+assert.equal(client.palettes.light["surface-0"], "#F6F7F9");`,
+    },
     // The doc-pane data layer, published as its own specifier because
     // readDocFile is not a root export: it needs a fetch, and a consumer that
     // wants to substitute one (or spy on the module) needs a real subpath to
@@ -629,7 +640,8 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // port, and re-reads the port on reset - with no client wired, so
       // nothing opens a socket), selectors (an unloaded store names no launch
       // sources and no needs-you rows, and the row age formatter is pure),
-      // hostGrouping (a project's hosts come from its rows).
+      // hostGrouping (a project's hosts come from its rows), liveAttention (an
+      // empty Live has three empty bands).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -664,6 +676,7 @@ assert.deepEqual(client.selectSources(navigationStore.getState()), []);
 assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
 assert.equal(client.relativeAge(new Date().toISOString()), "now");
 assert.deepEqual(client.projectHostIds(undefined, [{ host_id: "devbox" }]), ["devbox"]);
+assert.deepEqual(client.liveBands([], [], () => true), { needsYou: [], working: [], idle: [] });
 `,
     },
     // The credentials state layer: the listing core each app's Providers &

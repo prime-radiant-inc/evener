@@ -809,6 +809,14 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 //     queueRetained, else handed to the caller — the writer stays usable;
 //   - only part of the buffer is in the file (a partial line): the writer is
 //     poisoned permanently, hard = the error.
+//
+// This is the survive-and-reconcile rule, not poison-on-any-rollback-failure
+// (the durability ruling on #1198). A whole line that landed is a record every
+// reader finds, so the writer keeps it and lets the next fsync settle the
+// debt; poisoning it would make the better outcome fatal while the worse one
+// stays survivable. The residual window is a crash between the failed rollback
+// and that next fsync: the file keeps the pre-rollback state, and OpenWriter's
+// recovery truncates a torn tail, so the original stays readable.
 func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOffset int64, written, bufLen int, attemptRollback, previousDirty, queueRetained bool) (retained, hard error) {
 	if attemptRollback {
 		removed, rollbackErr := w.rollbackAppendLocked(startOffset)

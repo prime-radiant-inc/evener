@@ -6,6 +6,7 @@ import (
 )
 
 func TestPositiveInt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		value any
@@ -33,6 +34,7 @@ func TestPositiveInt(t *testing.T) {
 }
 
 func TestPositivePointerInt(t *testing.T) {
+	t.Parallel()
 	if got := PositivePointerInt(nil); got != 0 {
 		t.Fatalf("PositivePointerInt(nil) = %d, want 0", got)
 	}
@@ -51,6 +53,7 @@ func TestPositivePointerInt(t *testing.T) {
 }
 
 func TestMinPositiveInt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		values []int
@@ -70,6 +73,7 @@ func TestMinPositiveInt(t *testing.T) {
 }
 
 func TestReconcileOutputField(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{"max_tokens": json.Number("500")}
 	ReconcileOutputField(body, "max_tokens", new(400), new(300))
 	if got := body["max_tokens"]; got != 300 {

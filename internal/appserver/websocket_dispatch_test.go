@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -871,19 +871,27 @@ func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives
 	}
 }
 
-// TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured pins the
+// TestPanicLogfFallsBackToComponentLoggerWhenNoSinkIsConfigured pins the
 // never-silent guarantee: with no ServerConfig.Logf, a panic report goes to
-// the standard logger instead of being dropped the way logf drops advisory
-// lines.
-func TestPanicLogfFallsBackToStandardLoggerWhenNoSinkIsConfigured(t *testing.T) {
+// the appserver component logger instead of being dropped the way logf drops
+// advisory lines.
+func TestPanicLogfFallsBackToComponentLoggerWhenNoSinkIsConfigured(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	var buf strings.Builder
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(prev) })
+	stderr, err := os.CreateTemp(t.TempDir(), "appserver-panic-")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	original := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = original })
 	server.panicLogf("appserver: panic handling %s: %v", appwire.MethodThreadList, "boom")
-	if !strings.Contains(buf.String(), "panic handling thread/list: boom") {
-		t.Fatalf("standard logger output = %q, want the panic line", buf.String())
+	os.Stderr = original
+	raw, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.HasPrefix(string(raw), "[appserver] ") || !strings.Contains(string(raw), "panic handling thread/list: boom") {
+		t.Fatalf("component logger output = %q, want the panic line tagged appserver", raw)
 	}
 }
 

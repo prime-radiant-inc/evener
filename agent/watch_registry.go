@@ -10,8 +10,12 @@ func watchConfigSnapshot(cfg *watchConfig) *jobstore.WatchConfigSnapshot {
 	if cfg == nil {
 		return nil
 	}
+	target := cfg.target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
 	snapshot := &jobstore.WatchConfigSnapshot{
-		Target:                   cfg.target,
+		Target:                   target,
 		OutputMatch:              cfg.outputMatch,
 		ProgressIntervalMS:       cfg.progressIntervalMS,
 		Events:                   append([]string(nil), cfg.events...),
@@ -54,6 +58,10 @@ func (jm *jobManager) appendWatchRegisteredEvent(cfg *watchConfig) error {
 }
 
 func watchRegisteredEvent(jm *jobManager, cfg *watchConfig) jobstore.Event {
+	target := cfg.target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
 	return jobstore.Event{
 		Kind:    jobstore.EventWatchRegistered,
 		TS:      jm.now(),
@@ -62,16 +70,17 @@ func watchRegisteredEvent(jm *jobManager, cfg *watchConfig) jobstore.Event {
 			Generation:       cfg.generation,
 			OwnerSessionID:   jm.sessionID,
 			VisibleSessionID: jm.sessionID,
-			Target:           cfg.target,
+			Target:           target,
 			SendTo:           watchSendTo(cfg),
 			ConfigHash:       cfg.configHash,
 			Condition:        watchConditionSummary(cfg),
 			Config:           watchConfigSnapshot(cfg),
+			Deliveries:       cfg.deliveries,
 		},
 	}
 }
 
-func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string) jobstore.Event {
+func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string, deliveries int) jobstore.Event {
 	return jobstore.Event{
 		Kind:    jobstore.EventWatchCleared,
 		TS:      jm.now(),
@@ -79,6 +88,7 @@ func watchClearedEvent(jm *jobManager, cfg *watchConfig, endReason string) jobst
 		Watch: &jobstore.WatchEvent{
 			Generation: cfg.generation,
 			EndReason:  endReason,
+			Deliveries: deliveries,
 		},
 	}
 }
@@ -90,7 +100,7 @@ func (jm *jobManager) appendWatchReplacementBatch(cfg *watchConfig, targets []wa
 		if target.cfg == nil || target.endReason == "" {
 			continue
 		}
-		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason))
+		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason, target.deliveries))
 	}
 	return jm.appendWatchRegistryEvents(events)
 }
@@ -101,7 +111,7 @@ func (jm *jobManager) appendWatchTeardownBatch(snapshots []watchSendTerminalSnap
 		if target.cfg == nil || target.endReason == "" {
 			continue
 		}
-		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason))
+		events = append(events, watchClearedEvent(jm, target.cfg, target.endReason, target.deliveries))
 	}
 	return jm.appendWatchRegistryEvents(events)
 }
@@ -171,10 +181,14 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	if cfg.receiverDelegateID != "" {
 		sendTo = ""
 	}
+	target := cfg.target
+	if target == runtimeMessageAliasCaller {
+		target = "self"
+	}
 	jm.watchHistory = append(jm.watchHistory, watchHistoryEntry{
 		id:                 cfg.watchID,
 		source:             cfg.sourcePublic,
-		target:             cfg.target,
+		target:             target,
 		condition:          watchConditionSummary(cfg),
 		note:               cfg.note,
 		sendTo:             sendTo,

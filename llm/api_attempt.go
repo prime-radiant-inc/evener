@@ -354,9 +354,6 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 // boundary. A pre-transport failure is recorded as a zero-attempt transport
 // failure.
 func (g *APIAttemptGroup) SettleResult(ctx context.Context, err error) {
-	if g == nil {
-		return
-	}
 	outcome := apilog.AttemptSuccess
 	useFinalAttemptOutcome := false
 	if err != nil {

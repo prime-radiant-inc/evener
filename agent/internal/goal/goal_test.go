@@ -120,6 +120,71 @@ func TestSetTerminal(t *testing.T) {
 	}
 }
 
+func TestTransitionTerminal(t *testing.T) {
+	t.Parallel()
+	// 1. No goal configured.
+	s := NewStore()
+	snap, res := s.TransitionTerminal(StatusComplete, "", clock())
+	if res != SetTerminalNoGoal {
+		t.Fatalf("on empty store: want SetTerminalNoGoal, got %v", res)
+	}
+	if snap != (Snapshot{}) {
+		t.Fatalf("on empty store: want empty snapshot, got %+v", snap)
+	}
+
+	// 2. Transition active to complete.
+	s.Set("obj", clock())
+	snap, res = s.TransitionTerminal(StatusComplete, "", clock())
+	if res != SetTerminalSuccess {
+		t.Fatalf("on active goal: want SetTerminalSuccess, got %v", res)
+	}
+	if snap.Status != StatusComplete || snap.Objective != "obj" {
+		t.Fatalf("want complete status on obj, got %+v", snap)
+	}
+
+	// 3. Goal already terminal (complete) - call again.
+	snap, res = s.TransitionTerminal(StatusBlocked, "stuck", clock())
+	if res != SetTerminalAlreadyTerminal {
+		t.Fatalf("on already complete goal: want SetTerminalAlreadyTerminal, got %v", res)
+	}
+	if snap.Status != StatusComplete {
+		t.Fatalf("want complete status unchanged, got %v", snap.Status)
+	}
+	if snap.StopReason != "" {
+		t.Fatalf("want stop reason unchanged (empty), got %q", snap.StopReason)
+	}
+
+	// 4. Transition active to blocked, then call again.
+	s2 := NewStore()
+	s2.Set("obj2", clock())
+	snap, res = s2.TransitionTerminal(StatusBlocked, "reason", clock())
+	if res != SetTerminalSuccess {
+		t.Fatalf("on active goal: want SetTerminalSuccess, got %v", res)
+	}
+	if snap.Status != StatusBlocked || snap.StopReason != "reason" {
+		t.Fatalf("want blocked with reason, got %+v", snap)
+	}
+	snap, res = s2.TransitionTerminal(StatusComplete, "", clock())
+	if res != SetTerminalAlreadyTerminal {
+		t.Fatalf("on already blocked goal: want SetTerminalAlreadyTerminal, got %v", res)
+	}
+	if snap.Status != StatusBlocked || snap.StopReason != "reason" {
+		t.Fatalf("want blocked with reason unchanged, got %+v", snap)
+	}
+
+	// 5. Invalid status.
+	s3 := NewStore()
+	s3.Set("obj3", clock())
+	_, res = s3.TransitionTerminal("invalid", "", clock())
+	if res != SetTerminalInvalidStatus {
+		t.Fatalf("on invalid status: want SetTerminalInvalidStatus, got %v", res)
+	}
+	_, res = s3.TransitionTerminal(StatusActive, "", clock())
+	if res != SetTerminalInvalidStatus {
+		t.Fatalf("on active status (non-terminal): want SetTerminalInvalidStatus, got %v", res)
+	}
+}
+
 // TestPersistSnapshotRestoreRoundTrip verifies that PersistSnapshot captures all
 // fields and Restore reconstitutes them faithfully, including madeProgressOnce.
 // The key behavioral invariant: a restored goal with prior progress must use

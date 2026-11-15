@@ -18,6 +18,7 @@ type idleRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f idleRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func TestCompleteProviderIdleIsTimeout(t *testing.T) {
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	synctest.Test(t, func(t *testing.T) {
 		registerTestSchemes()
 		r, w := io.Pipe()
@@ -56,6 +57,7 @@ func TestCompleteProviderIdleIsTimeout(t *testing.T) {
 }
 
 func TestStreamRejectedBodyPreservesIdleAndCallerCancellation(t *testing.T) {
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	for _, callerCancel := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			registerTestSchemes()

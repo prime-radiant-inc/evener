@@ -115,6 +115,7 @@
     "MaxInputTokens": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
     "MaxTokensField": "overlay/provider",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
     "ReasoningSummary": "overlay/glob:gpt-5*",
@@ -124,6 +125,7 @@
     "Surface": "snapshot/row",
     "Tools": "snapshot/row",
     "WebSearch": "overlay/provider",
+    "WireID": "snapshot/row",
     "model": "row:gpt-5.5"
   },
   "default_model": "gpt-5.6",

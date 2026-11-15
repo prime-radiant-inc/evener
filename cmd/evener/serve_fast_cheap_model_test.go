@@ -104,13 +104,13 @@ func TestApplyFastCheapModel_BlankUsesPrimaryModel(t *testing.T) {
 
 func TestApplyVisionModel_PassthroughStates(t *testing.T) {
 	profile := provider.NewOpenAIProfile("gpt-5.2")
-	for _, raw := range []string{"", "off", "OFF", "gpt-4.1-mini", "openai/gpt-4.1-mini"} {
+	for _, raw := range []string{"", "off", "OFF", "none", "NONE", "disabled", "DISABLED", "gpt-4.1-mini", "openai/gpt-4.1-mini"} {
 		got, err := applyVisionModel(profile, raw, clientWithProviders("openai"))
 		if err != nil {
 			t.Fatalf("applyVisionModel(%q): %v", raw, err)
 		}
 		want := raw
-		if raw == "OFF" {
+		if strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "disabled") {
 			want = "off" // sentinel canonicalizes to lowercase
 		}
 		if got != want {

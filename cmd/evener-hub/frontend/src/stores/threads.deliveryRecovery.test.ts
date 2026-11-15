@@ -764,6 +764,117 @@ test("periodic discovery recovers reconciliation after the final durable record 
   }
 });
 
+// A waiting message leaves an accepted display copy as its only durable
+// record, so listTargetRefs keeps naming the ref for as long as it waits.
+// Discovery must not re-transfer the transcript every two seconds for state
+// the client already holds. The acceptance itself is a durable change, so one
+// read is owed: that is the read that carries a pending reply or settles the
+// copy against authoritative state. Once that read publishes, the poll stops
+// until the next durable change reopens it.
+test("periodic discovery stops re-reading a hydrated waiting ref until a durable change", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    let minted = 0;
+    const storage = new MutationOutboxIndexedDB({
+      createMutationId: () => (++minted === 1 ? "waiting-send" : `waiting-send-${minted}`),
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        status: { type: "idle" },
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 1 } },
+      }),
+    );
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // ensureThread resolves on model publication; the explicit refresh waits
+    // for its durable reconciliation too, so the first interval below is not
+    // gated by a reconcile still in flight.
+    await threadsStore.getState().refreshThread("ref_a");
+    await settleCallerContinuations();
+    const reads = () => fake.calls.filter((call) => call.method === "thread/read").length;
+    // Each discovery pass fires the read and its durable reconciliation; both
+    // must settle before the next interval can be judged, or a later pass
+    // would skip on the still-pending reconciliation rather than on the gate.
+    const drain = () => flushIndexedDBUntil(() => false, 60);
+    // A hydrated ref is not polled: with no durable record naming it, the
+    // interval has nothing to discover.
+    const hydratedReads = reads();
+    await vi.advanceTimersByTimeAsync(2000);
+    await drain();
+    expect(reads()).toBe(hydratedReads);
+    // A message accepted behind the running turn: its pending receipt retains
+    // an accepted display copy and retires the outbox row, so the ref stays
+    // discoverable with no live work.
+    const leaveWaitingCopy = async (): Promise<void> => {
+      const record = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "waiting" }] },
+        attachments: [],
+        optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "waiting" }] },
+      });
+      await storage.markAttempted(record.clientMutationId);
+      await storage.settleReceipt(record.clientMutationId, "pending");
+    };
+    await leaveWaitingCopy();
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+    expect(await storage.listTargetRefs()).toEqual(["ref_a"]);
+
+    // The acceptance advanced the ref's mutation generation. The next pass is
+    // the one read that carries any reply or settlement, then the snapshot is
+    // current and further passes have nothing to recover.
+    const readsBefore = reads();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => reads() > readsBefore);
+    expect(reads()).toBe(readsBefore + 1);
+    await drain();
+    await vi.advanceTimersByTimeAsync(2000);
+    await drain();
+    expect(reads()).toBe(readsBefore + 1);
+
+    // A real invalidation - another accepted copy landing - reopens the gate
+    // for exactly one read, and the poll stops again.
+    await leaveWaitingCopy();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => reads() > readsBefore + 1);
+    expect(reads()).toBe(readsBefore + 2);
+    await drain();
+    await vi.advanceTimersByTimeAsync(2000);
+    await drain();
+    expect(reads()).toBe(readsBefore + 2);
+
+    // Live work another tab enqueued is not a generation change this tab
+    // observed, so only the fresh outbox read can see it. It must read, and
+    // once that row settles into another accepted copy the poll stops again.
+    const peer = new MutationOutboxIndexedDB({ createMutationId: () => "peer-send" });
+    try {
+      await peer.enqueueIntent({
+        targetRef: "ref_a",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "peer" }] },
+        attachments: [],
+        optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "peer" }] },
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushIndexedDBUntil(() => reads() > readsBefore + 2);
+      expect(reads()).toBe(readsBefore + 3);
+      await peer.settleReceipt("peer-send", "pending");
+      await drain();
+      await vi.advanceTimersByTimeAsync(2000);
+      await drain();
+      expect(reads()).toBe(readsBefore + 3);
+    } finally {
+      peer.close();
+    }
+    expect(await storage.listOutbox("ref_a")).toEqual([]);
+    expect(await storage.listTargetRefs()).toEqual(["ref_a"]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test.each(["active", "idle"])(
   "recovered %s descendant without uncertain messages permits new sends",
   async (status) => {

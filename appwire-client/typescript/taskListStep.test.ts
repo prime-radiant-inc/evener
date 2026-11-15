@@ -2,7 +2,7 @@
 
 import { expect, test } from "vitest";
 import type { TaskRow } from "./taskListData";
-import { autoStartedTask, taskLabel } from "./taskListStep";
+import { autoStartedTask, mutationRows, taskLabel } from "./taskListStep";
 
 function task(overrides: Partial<TaskRow> & Pick<TaskRow, "id" | "status">): TaskRow {
   return { type: "implement", description: `task ${overrides.id}`, prompt: "", ...overrides };
@@ -62,4 +62,13 @@ test("autoStartedTask is undefined when state is absent - never fabricated witho
 test("autoStartedTask is undefined when every task is already settled (all done, nothing to advance to)", () => {
   const tasks = [task({ id: 4, status: "done" }), task({ id: 5, status: "done" })];
   expect(autoStartedTask(tasks, new Set([4]), true)).toBeUndefined();
+});
+
+test("mutationRows uses title alias for add items when description is absent", () => {
+  const item = {
+    argumentsJSON: JSON.stringify({ add: [{ title: "step one", prompt: "p1" }] }),
+    raw: null,
+  };
+  const rows = mutationRows(item);
+  expect(rows).toEqual([{ key: "append_0", touch: "added", label: "step one" }]);
 });

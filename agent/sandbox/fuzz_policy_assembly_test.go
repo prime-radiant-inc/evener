@@ -434,7 +434,7 @@ func fuzzGitMetadataHelpers(t *testing.T, fixture structuralFixture) {
 	if !isUnderAnyRoot(filepath.Join(fixture.main, "nested"), []string{fixture.main}) || isUnderAnyRoot(fixture.root, []string{fixture.main}) {
 		t.Fatal("isUnderAnyRoot lost containment direction")
 	}
-	if _, _, ok := findGitEntry(filepath.Join(fixture.nonGit, "child")); ok {
+	if _, _, ok := findGitEntry(filepath.Join(fixture.nonGit, "child"), nil); ok {
 		t.Fatal("findGitEntry found metadata outside a repository")
 	}
 	if got := moduleConfigProtections(filepath.Join(fixture.root, "no-modules")); got != nil {

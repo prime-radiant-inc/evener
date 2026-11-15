@@ -46,6 +46,7 @@ func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
 // TestRawArgs_NonStream_InvalidUTF8 asserts invalid-UTF-8 bytes in the
 // tool_use input object survive the non-streaming anthropic decode.
 func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	// input is a JSON object containing a raw 0xff byte in a string value.
 	inputJSON := `{"path":"` + "\xff" + `file.txt"}`
 	body := rawInputJSON(t, inputJSON)
@@ -63,6 +64,7 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 // (spacing/key-order) in the input object survives byte-identical — not
 // re-marshaled to canonical form.
 func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	inputJSON := `{ "b" : 2 , "a" : 1 }`
 	body := rawInputJSON(t, inputJSON)
 	got := decodeRawArgsComplete(t, body)
@@ -75,6 +77,7 @@ func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_NonStream_FallbackOnNull asserts null input falls back
 // gracefully (degrade, never drop).
 func TestRawArgs_NonStream_FallbackOnNull(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{"type":"tool_use","id":"toolu_1","name":"f","input":null}],"stop_reason":"tool_use"}`)
 	srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, string(body) })
 	res := protoLive(srv)
@@ -166,6 +169,7 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 // TestRawArgs_Stream_InvalidUTF8 asserts invalid-UTF-8 bytes in streamed
 // tool-call arguments survive the decode byte-identical.
 func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	argsContent := `{"path":"` + "\xff" + `file.txt"}`
 	sseBody := rawArgsAnthropicSSE(argsContent)
 	got := decodeRawArgsStream(t, sseBody)
@@ -181,6 +185,7 @@ func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
 // TestRawArgs_Stream_NonCanonicalJSON asserts non-canonical valid JSON in
 // streamed tool-call arguments survives the decode byte-identical.
 func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	argsContent := `{ "b" : 2 , "a" : 1 }`
 	sseBody := rawArgsAnthropicSSE(argsContent)
 	got := decodeRawArgsStream(t, sseBody)
@@ -193,6 +198,7 @@ func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_Stream_FallbackOnEmpty asserts a tool_use with no
 // input_json_delta (empty args) still completes (degrade, never drop).
 func TestRawArgs_Stream_FallbackOnEmpty(t *testing.T) {
+	t.Parallel()
 	sseBody := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"f\",\"input\":{}}}\n\n" +
 		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
@@ -225,6 +231,7 @@ func TestRawArgs_Stream_FallbackOnEmpty(t *testing.T) {
 }
 
 func TestRawArgs_Stream_ToolCallEndArgumentsOwnBytes(t *testing.T) {
+	t.Parallel()
 	first := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"write_file\",\"input\":{}}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"x\\\"}\"}}\n\n" +
@@ -293,6 +300,7 @@ func TestRawArgs_Stream_ToolCallEndArgumentsOwnBytes(t *testing.T) {
 }
 
 func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-x-wire","content":[` +
@@ -305,6 +313,7 @@ func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
 }
 
 func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	firstToken := string(chatJSONToken(first))

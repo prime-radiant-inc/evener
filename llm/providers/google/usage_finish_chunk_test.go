@@ -7,6 +7,7 @@ import "testing"
 // in this package's own fixtures). The streaming decoder must capture that usage,
 // not only usage that arrives in a separate earlier chunk.
 func TestStream_UsageOnFinishChunk(t *testing.T) {
+	t.Parallel()
 	sse := []byte("data: " + `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"totalTokenCount":33}}` + "\n\n")
 
 	resp, sawErr := accumulateGeminiSSE(sse, false)
@@ -27,6 +28,7 @@ func TestStream_UsageOnFinishChunk(t *testing.T) {
 // cachedContentTokenCount, so the accumulated usage must report only the
 // uncached remainder as InputTokens and keep the cached count separate.
 func TestStream_UsageExcludesCachedContent(t *testing.T) {
+	t.Parallel()
 	sse := []byte("data: " + `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":40,"candidatesTokenCount":10,"totalTokenCount":117,"thoughtsTokenCount":7}}` + "\n\n")
 
 	resp, sawErr := accumulateGeminiSSE(sse, false)

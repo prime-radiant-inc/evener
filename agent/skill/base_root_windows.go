@@ -21,3 +21,7 @@ func defaultSkillsBaseRoot() (string, error) {
 	}
 	return cache, nil
 }
+
+// defaultSkillsFallbackRoot is empty on Windows: the base is already the
+// per-user cache directory, and there is no second verified temp root.
+func defaultSkillsFallbackRoot() string { return "" }

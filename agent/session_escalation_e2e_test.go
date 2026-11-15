@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -189,7 +190,7 @@ func fileToolTurn(name string, args map[string]any) []func(llm.Request) llm.Resp
 // symlink naming it, and returns both.
 func symlinkedOutsideDir(t *testing.T) (realDir, link string) {
 	t.Helper()
-	base := t.TempDir()
+	base := testfs.CanonicalTempDir(t)
 	realDir = filepath.Join(base, "real")
 	if err := os.Mkdir(realDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -198,11 +199,7 @@ func symlinkedOutsideDir(t *testing.T) (realDir, link string) {
 	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
-	// The card names the canonical location, whatever the temp dir crosses.
-	realDir, err := filepath.EvalSymlinks(realDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The base is canonical, so the card names the canonical location.
 	return realDir, link
 }
 

@@ -99,6 +99,7 @@ func assertPNGDataURI(t *testing.T, url string) {
 // A tool-result BMP must reach the wire as a PNG data URI. OpenAI rejects
 // image/bmp in an input_image (#4464).
 func TestBuildBody_ToolResultBitmapRidesAsPNGDataURI(t *testing.T) {
+	t.Parallel()
 	req := userReq("look")
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -119,6 +120,7 @@ func TestBuildBody_ToolResultBitmapRidesAsPNGDataURI(t *testing.T) {
 
 // A user-message BMP takes the same path.
 func TestBuildBody_UserBitmapRidesAsPNGDataURI(t *testing.T) {
+	t.Parallel()
 	req := userReq("look")
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: bitmapFixture(t), MediaType: "image/bmp"}},
@@ -134,6 +136,7 @@ func TestBuildBody_UserBitmapRidesAsPNGDataURI(t *testing.T) {
 // A supported raster keeps its bytes and media type on the wire (the
 // non-regression guard for #4464).
 func TestBuildBody_SupportedRasterKeepsItsMediaType(t *testing.T) {
+	t.Parallel()
 	png := rasterFixturePNG(t)
 	req := userReq("look")
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
@@ -158,6 +161,7 @@ func TestBuildBody_SupportedRasterKeepsItsMediaType(t *testing.T) {
 // builder enforce: a BMP or TIFF becomes PNG, a supported raster passes
 // through, and undecodable bytes are an error.
 func TestNormalizeImageInput(t *testing.T) {
+	t.Parallel()
 	data, mediaType, err := normalizeImageInput(bitmapFixture(t), "image/bmp")
 	if err != nil {
 		t.Fatalf("normalizeImageInput(bmp): %v", err)
@@ -176,6 +180,7 @@ func TestNormalizeImageInput(t *testing.T) {
 // An animated GIF is flattened to its first frame: OpenAI's input_image carries
 // a single still, and gif decoding must survive a second frame.
 func TestNormalizeImageInput_FlattensAnimatedGIF(t *testing.T) {
+	t.Parallel()
 	frames := multiFrameGIF(t)
 	all, err := gif.DecodeAll(bytes.NewReader(frames))
 	if err != nil || len(all.Image) != 2 {
@@ -197,6 +202,7 @@ func TestNormalizeImageInput_FlattensAnimatedGIF(t *testing.T) {
 // rejected locally, not passed through to the provider as-is: image.Decode
 // reads only the first frame, so gif.DecodeAll is the only full-file check.
 func TestNormalizeImageInput_RejectsCorruptLaterGIFFrame(t *testing.T) {
+	t.Parallel()
 	full := multiFrameGIF(t)
 	truncated := full[:len(full)-10]
 	if _, format, err := image.Decode(bytes.NewReader(truncated)); err != nil || format != "gif" {

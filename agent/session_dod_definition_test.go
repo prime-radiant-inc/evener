@@ -1187,19 +1187,16 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 	started := make(chan struct{}, 1)
 	releaseAbort := make(chan struct{})
 
-	c.Register(&fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				started <- struct{}{}
-				<-releaseAbort
-				return llm.Response{}, llm.NewAbortError("user canceled", nil)
-			},
-			func(req llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("queued turn completed after abort error"), nil
-			},
+	c.Register(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			started <- struct{}{}
+			<-releaseAbort
+			return llm.Response{}, llm.NewAbortError("user canceled", nil)
 		},
-	})
+		func(req llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("queued turn completed after abort error"), nil
+		},
+	}))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	drainSessionEvents(sess)

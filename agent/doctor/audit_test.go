@@ -623,6 +623,32 @@ func TestRunAudit_APIHealthMetricsAreAddressable(t *testing.T) {
 	}
 }
 
+func TestRunAudit_UnrecordedSessionReportedAsUnreadableWhenAPIHealthNeeded(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("hello")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("hi")}}),
+	}
+	// Session with model turns but no .api.jsonl file
+	writeRichSession(t, bucket, sidA, turns, nil, schema.SessionMeta{TurnCount: 1})
+
+	rb, err := ParseRunbook("api-health-fixture", []byte(apiHealthAuditRunbookMD))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := RunAudit(context.Background(), base, rb, AuditOpts{Sessions: []string{sidA}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 0 {
+		t.Errorf("SessionsChecked = %d, want 0", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 1 || res.Unreadable[0].SessionID != sidA {
+		t.Fatalf("Unreadable = %+v, want exactly sidA", res.Unreadable)
+	}
+}
+
 func TestRunAudit_UnreadableExplicitSessionSurfacedNotSkipped(t *testing.T) {
 	base, tripSID, _ := auditFixture(t)
 	res := runFixtureAudit(t, base, AuditOpts{Sessions: []string{tripSID, "02wMz5TxvEMoJEDTDGOTix"}})
@@ -658,6 +684,49 @@ func TestRunAudit_RequiresSessionsOrSince(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
 	if _, err := RunAudit(context.Background(), t.TempDir(), rb, AuditOpts{}); err == nil {
 		t.Fatal("want error when neither --sessions nor --since is given")
+	}
+}
+
+func TestMetricSourceResolve_AssistantFabrications(t *testing.T) {
+	t.Parallel()
+
+	emptySrc := metricSource{health: HealthResult{}}
+	for _, path := range []string{
+		"assistant_fabrications",
+		"assistant_fabrications.harness_envelope",
+		"assistant_fabrications.tool_markup",
+	} {
+		got, err := emptySrc.resolve(path)
+		if err != nil || got != 0 {
+			t.Fatalf("empty resolve(%q) = (%v, %v), want (0, nil)", path, got, err)
+		}
+	}
+
+	populated := metricSource{
+		health: HealthResult{
+			AssistantFabrications: 3,
+			AssistantFabricationsByKind: map[string]int{
+				fabricationKindHarnessEnvelope: 2,
+				fabricationKindToolMarkup:      1,
+			},
+		},
+	}
+	if got, err := populated.resolve("assistant_fabrications"); err != nil || got != 3 {
+		t.Fatalf("resolve(assistant_fabrications) = (%v, %v), want (3, nil)", got, err)
+	}
+	if got, err := populated.resolve("assistant_fabrications.harness_envelope"); err != nil || got != 2 {
+		t.Fatalf("resolve(harness_envelope) = (%v, %v), want (2, nil)", got, err)
+	}
+	if got, err := populated.resolve("assistant_fabrications.tool_markup"); err != nil || got != 1 {
+		t.Fatalf("resolve(tool_markup) = (%v, %v), want (1, nil)", got, err)
+	}
+	for _, invalid := range []string{
+		"assistant_fabrications.bogus",
+		"assistant_fabrications.harness_envelope.extra",
+	} {
+		if _, err := populated.resolve(invalid); err == nil {
+			t.Fatalf("resolve(%q) succeeded, want loud error", invalid)
+		}
 	}
 }
 

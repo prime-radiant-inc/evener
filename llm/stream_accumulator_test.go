@@ -6,6 +6,7 @@ import (
 )
 
 func TestStreamAccumulator_FinishWithResponse_UsesIt(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "ignored"})
@@ -23,6 +24,7 @@ func TestStreamAccumulator_FinishWithResponse_UsesIt(t *testing.T) {
 }
 
 func TestStreamAccumulator_NoFinishResponse_BuildsFromText(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
@@ -57,6 +59,7 @@ func TestStreamAccumulator_NoFinishResponse_BuildsFromText(t *testing.T) {
 }
 
 func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedContent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
@@ -90,6 +93,7 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 }
 
 func TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
@@ -134,6 +138,7 @@ func TestStreamAccumulator_FinishWithContentResponsePreservesFinalToolCallItemID
 }
 
 func TestStreamAccumulator_ReasoningEvents_AccumulatedInResponse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventReasoningStart})
@@ -159,6 +164,7 @@ func TestStreamAccumulator_ReasoningEvents_AccumulatedInResponse(t *testing.T) {
 }
 
 func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
@@ -194,6 +200,7 @@ func TestStreamAccumulator_ToolCallEvents_AccumulatedInResponse(t *testing.T) {
 }
 
 func TestStreamAccumulator_ToolCallThoughtSignature(t *testing.T) {
+	t.Parallel()
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
 		ID: "call_gemini", Name: "read_file", Type: "function", ThoughtSignature: "sig-1",
@@ -215,6 +222,7 @@ func TestStreamAccumulator_ToolCallThoughtSignature(t *testing.T) {
 }
 
 func TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumentsAndName(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
@@ -252,6 +260,7 @@ func TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumentsAndName(t *te
 }
 
 func TestStreamAccumulator_MultipleToolCalls(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 
@@ -299,6 +308,7 @@ func TestStreamAccumulator_MultipleToolCalls(t *testing.T) {
 }
 
 func TestStreamAccumulator_PartialResponse_RebuildsOncePerDirtyRound(t *testing.T) {
+	t.Parallel()
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
@@ -331,6 +341,7 @@ func TestStreamAccumulator_PartialResponse_RebuildsOncePerDirtyRound(t *testing.
 }
 
 func TestStreamAccumulator_ReasoningAndToolCallsTogether(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventStreamStart})
 
@@ -380,6 +391,7 @@ func TestStreamAccumulator_ReasoningAndToolCallsTogether(t *testing.T) {
 // opened with a ToolCallStart, so the accumulator must create the record and
 // fill its name/item/type/arguments lazily.
 func TestStreamAccumulatorToolCallDeltaWithoutStart(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventTextStart})
 	acc.Process(StreamEvent{Type: StreamEventTextDelta, Delta: "hello"})
@@ -412,6 +424,7 @@ func TestStreamAccumulatorToolCallDeltaWithoutStart(t *testing.T) {
 // the provider Response carries no content, so the accumulator rebuilds it from
 // accumulated deltas and copies the provider metadata across.
 func TestStreamAccumulatorFinishRebuildsEmptyResponse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	acc := NewStreamAccumulator()
 	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t0", Delta: "body"})
 	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &Response{

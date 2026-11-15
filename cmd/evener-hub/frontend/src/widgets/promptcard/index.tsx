@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useReducer, useRef } from "react";
 import { animate, spatialTransition, useReducedMotion } from "../../motion";
 import { requireClass } from "../internal/requireClass";
 import styles from "./promptcard.module.css";
@@ -63,6 +63,7 @@ export function PromptCard({
   controlsTestId,
   "data-testid": testId,
 }: PromptCardProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   // The shape whose height the card is leaving. A fold swaps the layout, so
   // the natural height steps; capture the old height during the render that
@@ -70,30 +71,48 @@ export function PromptCard({
   // interpolate between two real measurements rather than guess.
   const priorShape = useRef<{ folded: boolean; height: number | null }>({ folded, height: null });
   const shapeChanged = useRef(false);
+  const committedFolded = useRef(folded);
   const hiddenBefore = useRef(hidden);
+  const [, releaseHold] = useReducer((release: number) => release + 1, 0);
   const reducedMotion = useReducedMotion();
 
   if (priorShape.current.folded !== folded) {
     priorShape.current = { folded, height: cardRef.current?.offsetHeight ?? null };
     shapeChanged.current = true;
   }
+  // The commit that swaps the shape lays out the new one, and any layout read
+  // before the effect below (a transcript list measuring its rows) would see
+  // it. The root holds the outgoing height through that commit, so the layout
+  // around the card keeps its size until the animation starts: a scroll port
+  // above the composer that grew for one layout would clamp its offset and
+  // keep the clamped offset when it shrank back, leaving its reader short of
+  // the end. The hold follows the committed shape, so a render React discards
+  // never holds a later one, and React both writes and releases it.
+  const heldHeight =
+    folded !== committedFolded.current && !hidden && !hiddenBefore.current && !reducedMotion
+      ? priorShape.current.height
+      : null;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the fold flag is the shape-change trigger; the measured heights live in refs.
   useLayoutEffect(() => {
+    const root = rootRef.current;
     const card = cardRef.current;
     const wasHidden = hiddenBefore.current;
     hiddenBefore.current = hidden;
     const changed = shapeChanged.current;
     shapeChanged.current = false;
-    if (!card) return undefined;
+    committedFolded.current = folded;
+    if (!root || !card) return undefined;
+    // The release re-renders before paint, after the card holds its own height.
+    if (root.style.height !== "") releaseHold();
     // Height stays auto at rest: the field's own autogrow and any control
     // change reflow normally. Only the fold switch interpolates.
     card.style.removeProperty("height");
     card.removeAttribute("data-animating");
     const from = wasHidden ? null : priorShape.current.height;
-    if (!changed || hidden || reducedMotion || from === null) return undefined;
-    const to = card.offsetHeight;
-    if (Math.abs(to - from) < 1) return undefined;
+    const animates = changed && !hidden && !reducedMotion && from !== null;
+    // Measured while the root still holds the outgoing height.
+    const to = animates ? card.offsetHeight : null;
+    if (from === null || to === null || Math.abs(to - from) < 1) return undefined;
     card.style.height = `${from}px`;
     card.dataset.animating = "true";
     const animation = animate(card, { height: `${to}px` }, spatialTransition());
@@ -112,7 +131,7 @@ export function PromptCard({
   }, [folded, hidden, reducedMotion]);
 
   return (
-    <div className={CLASS.root}>
+    <div ref={rootRef} className={CLASS.root} style={heldHeight === null ? undefined : { height: heldHeight }}>
       <div
         ref={cardRef}
         className={CLASS.card}

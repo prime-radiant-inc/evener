@@ -38,6 +38,7 @@ export type {
 } from "@evener/appwire-client/state/mutation";
 export {
   acceptedRecord,
+  carriesOptimisticInput,
   effectiveWireId,
   MutationOutbox,
   retainsAcceptedCopy,

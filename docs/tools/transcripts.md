@@ -273,7 +273,7 @@ conversation budget it keeps a head and tail of lines and drops the middle under
 
 ### `format: "markdown"` (default) — read it
 
-Condensed conversation: assistant text and thinking in full, tool results truncated.
+Condensed conversation: assistant text and thinking in full (or head+tail truncated inline when oversized), tool results truncated.
 
 ```
 { "transcript_ref"?, "format":"markdown", "content_type":"text/markdown",
@@ -293,7 +293,7 @@ Rendering rules:
 - **Conversation grouping** — `## Turn N — User/Assistant/Steering/Summary/Checkpoint`
   headings (the same `Turn N`). `SYSTEM`/deprecated `TOOL` turns render as a one-line
   omitted note; unknown kinds get a labeled note. Nothing is silently dropped.
-- **Reasoning shown** — assistant thinking and text render in full, in recorded order.
+- **Reasoning shown** — assistant thinking and text render in full in recorded order when within the conversation budget, and degrade to an inline head+tail excerpt with an `expand_turn` recovery pointer when oversized.
 - **Tool-call condensation** — calls render as condensed cards under a **Tools** block:
   `- [status] \`name\` — intent: <X> — input: <summary>`. Intent comes only from an
   explicit `intent` arg, never inferred. Input summaries are

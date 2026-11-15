@@ -8,7 +8,7 @@ import {
   selectNoPlugins,
   setPluginSelected,
 } from "@evener/appwire-client";
-import { Fragment, type ReactElement, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactElement, useEffect, useId, useRef, useState } from "react";
 import { Button, Card, Disclosure, EmptyState, InlineNotice } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { LauncherPluginRow } from "../plugins/PluginRow";
@@ -54,6 +54,10 @@ export function PluginSelectionPanel({
   // same action collapses it. The body mounts only while it is expanded,
   // so its read starts when it does.
   const [expandedName, setExpandedName] = useState<string | null>(null);
+  // This panel instance's id segment: the launcher mounts the panel twice (the
+  // desktop form and the mobile sheet, one CSS-hidden), so body ids must not
+  // collide across the copies.
+  const detailBodyInstance = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const expandedCandidate = preview.plugins.find((plugin) => plugin.name === expandedName);
   // The list rows' focus-rehome root: collapsing a candidate's details
   // unmounts the body's focused control, and the keyboard returns to the row.
@@ -134,6 +138,7 @@ export function PluginSelectionPanel({
                   selected={selected}
                   removeOnly={removeOnly}
                   expanded={isExpanded}
+                  detailBodyInstance={detailBodyInstance}
                   onToggleSelected={(next) =>
                     onSelectionChange(setPluginSelected(selection, preview, plugin.name, next))
                   }
@@ -146,6 +151,7 @@ export function PluginSelectionPanel({
                     host={host}
                     selected={selected}
                     selectionDisabled={removeOnly && !selected}
+                    detailBodyInstance={detailBodyInstance}
                     onCollapse={() => setExpandedName(null)}
                     onToggleSelected={(next) => {
                       // The same remove-only guard the row's own switch

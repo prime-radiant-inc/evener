@@ -4,7 +4,11 @@ version: "2"
 # analysis cache legitimately takes longer than a fixed deadline allows, and
 # the CI job's timeout-minutes bounds a run that hangs.
 run:
-  concurrency: 2
+  # One process per build regime now (host, GOOS=darwin, each build tag), so
+  # this knob is the lane's whole CPU footprint. 4 matches the old CI total
+  # (LINT_PARALLEL=2 modules x 2 workers) and halves the old local default
+  # (4 modules x 2 workers).
+  concurrency: 4
   tests: true
 
 # golangci truncates its own output by default — max-same-issues 3, and

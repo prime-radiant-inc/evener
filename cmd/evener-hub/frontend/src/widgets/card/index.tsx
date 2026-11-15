@@ -2,9 +2,10 @@ import type { HTMLAttributes, ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./card.module.css";
 
-/** flat is the page-ground section; outlined is a bordered box on the first
- * surface step, for a block that sits inside a denser flow (a transcript
- * tool body, a spawn-form panel, a review summary) and needs its own edge. */
+/** flat is the roomy rounded surface for a section of a page; outlined is the
+ * same surface with a real border and tighter padding, for a block that sits
+ * inside a denser flow (a transcript tool body, a spawn-form panel, a review
+ * summary). */
 export type CardVariant = "flat" | "outlined";
 
 /** attention is the "a human is needed right now" envelope (a pending ask
@@ -30,8 +31,8 @@ function surfaceClass(variant: CardVariant, tone: CardTone): string | undefined 
   return undefined;
 }
 
-/** A surface for grouping related content. The flat card's 1px ring comes
- * from --shadow-card, not a border; outlined and attention draw a real one.
+/** A surface for grouping related content. The flat card's 1px ring is drawn
+ * in its box-shadow, not a border; outlined and attention draw a real one.
  * Passive container - no focus ring of its own. Native attributes (role,
  * aria-*, data-*, tabIndex, key handlers) spread onto the element BEFORE
  * className, so a loosely-typed spread cannot replace the card's classes

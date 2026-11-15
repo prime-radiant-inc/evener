@@ -493,7 +493,7 @@ func TestLaunchCheckNeverMintsCommandCredentials(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -524,7 +524,7 @@ func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -570,7 +570,7 @@ func TestRunLaunchCheckModelNeverMintsCommandCredentials(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -607,7 +607,7 @@ func TestRunLaunchCheckModelNeverMintsCommandCredentials(t *testing.T) {
 func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		return "token", nil
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

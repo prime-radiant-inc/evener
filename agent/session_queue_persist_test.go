@@ -32,7 +32,7 @@ func newQueuePersistTestSession(t *testing.T, dir string) *Session {
 	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -59,6 +59,7 @@ func restoreQueuePersistTestSessionWith(t *testing.T, dir, id string, restoreCfg
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	restoreCfg.StateDir = dir
+	restoreCfg.testOnly = sharingHostProbe(restoreCfg.testOnly)
 	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, restoreCfg)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)

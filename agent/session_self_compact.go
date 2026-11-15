@@ -42,7 +42,8 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	if s.pendingSkillCompactionSnapshot() != nil {
 		return // an operation already owns this compaction cycle — its response is recorded
 	}
-	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
+	_, pressure, prof := s.contextMgr.EstimateStatusFor(history, sysPromptChars)
+	if pressure < s.contextMgr.CheckpointThresholdFor(prof) {
 		return // no compaction imminent — nothing to capture yet
 	}
 	// Elicit only over the prefix the compaction will fold into a lossy summary;
@@ -100,6 +101,22 @@ func (s *Session) pinnedNote() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pinnedNoteText
+}
+
+// hasFoldableHistory reports whether s.history holds turns older than
+// PreserveRecentTurns that a compaction would fold. It simulates the
+// in-flight TurnToolResults turn that persistToolResults is guaranteed to
+// append before applyPendingForceCompact runs at the round seam.
+func (s *Session) hasFoldableHistory() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	preserve := 6
+	if s.contextMgr != nil {
+		preserve = s.contextMgr.PreserveRecentTurns
+	}
+	simulated := append(slices.Clip(s.history), schema.Turn{Kind: schema.TurnToolResults})
+	_, foldable := attentionTransparentRecentCutoff(simulated, preserve)
+	return foldable
 }
 
 // pinnedNoteSnapshot returns the current note together with its generation,
@@ -190,7 +207,8 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	hist := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 
-	if s.contextMgr.Pressure(hist, sysPromptChars) < s.contextMgr.WarnThreshold {
+	_, pressure, prof := s.contextMgr.EstimateStatusFor(hist, sysPromptChars)
+	if pressure < s.contextMgr.WarnThresholdFor(prof) {
 		return false
 	}
 	s.mu.Lock()

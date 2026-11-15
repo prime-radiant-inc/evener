@@ -473,8 +473,9 @@ type testConfig struct {
 
 	// sandboxProber, when non-nil, supplies the host facts used to RE-RESOLVE a
 	// resumed delegate's persisted sandbox policy against its lane. Production
-	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
-	// sandbox.FakeProber so the resume path never shells out to bwrap.
+	// leaves it nil and probes the live host (sandbox.RealProber) every session;
+	// tests inject a sandbox.FakeProber for fixed facts, or a prober that shares
+	// one real probe across the test process.
 	sandboxProber sandbox.Prober
 	// fileToolEnforceable replaces the runtime secure-open capability probe for
 	// deterministic delegate sandbox tests. Nil probes the live process.

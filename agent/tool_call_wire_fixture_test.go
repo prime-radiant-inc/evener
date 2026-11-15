@@ -50,6 +50,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -135,10 +136,7 @@ func (c toolWireCall) arguments(earlier map[string]tool.ExecResult) map[string]a
 // macOS temp dir lives behind /private).
 func toolWireWorkspace(t *testing.T) (string, *Session) {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 	files := map[string]string{
 		"agent/tree.go":       "package agent\n\nfunc settle() {}\n",
 		"agent/tree_test.go":  "package agent\n\nfunc settleForTest() {}\n",
@@ -202,13 +200,10 @@ func sortedOutput(res tool.ExecResult) tool.ExecResult {
 	return res
 }
 
-// nativeGrepForm writes a grep result the way execenv's native Grep fallback
-// does, sorted: each path relative to the searched directory, no trailing
-// newline. ripgrep, which Grep uses when it is installed, prints absolute
-// paths and a trailing newline; the fallback's own output passes through
-// unchanged.
+// nativeGrepForm writes a grep result the way execenv's Grep outputs, sorted:
+// each path relative to the workspace root (#6176), no trailing newline.
 func nativeGrepForm(dir, searched string) func(tool.ExecResult) tool.ExecResult {
-	base := filepath.Join(dir, searched) + string(filepath.Separator)
+	base := dir + string(filepath.Separator)
 	return func(res tool.ExecResult) tool.ExecResult {
 		lines := strings.Split(strings.TrimSuffix(res.Output, "\n"), "\n")
 		for i, line := range lines {
@@ -342,6 +337,7 @@ var (
 	toolWireJobMs     = regexp.MustCompile(`"(running_for_ms|quiet_for_ms)":\d+`)
 	toolWireJobAt     = regexp.MustCompile(`"(started_at|last_event_at)":"[^"]+"`)
 	toolWireJobListAt = regexp.MustCompile(`started \d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
+	toolWireJobListMs = regexp.MustCompile(`\b(running_for_ms|quiet_for_ms) \d+`)
 )
 
 // withFixedJobClock records a job tool's result with the job fixed as
@@ -350,7 +346,8 @@ func withFixedJobClock(res tool.ExecResult) tool.ExecResult {
 	res = withFixedJob(res)
 	out := toolWireJobMs.ReplaceAllString(res.Output, `"$1":2000`)
 	out = toolWireJobAt.ReplaceAllString(out, `"$1":"`+wireFixtureStart.UTC().Format(time.RFC3339)+`"`)
-	res.Output = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	out = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	res.Output = toolWireJobListMs.ReplaceAllString(out, "$1 2000")
 	return res
 }
 
@@ -495,7 +492,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_list_dir_page", tool: "list_dir",
-			note: "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many of how many, and where the next page starts.",
+			note: "A page of a longer listing, paged with the tool's own limit (its default page is 1000 entries): the footer says how many entries were returned, where the next page starts, and where the budgeted walk stopped.",
 			args: map[string]any{"path": "agent", "limit": 2},
 		},
 		{

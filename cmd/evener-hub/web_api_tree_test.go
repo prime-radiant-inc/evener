@@ -203,7 +203,7 @@ func TestLiveSessionGroupsBeforePastIndex(t *testing.T) {
 	roster := hubcore.NewRosterWithEntries(
 		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: project.CanonicalPath}, SessionID: "01L", Status: "active"},
 	)
-	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
 	_, live, projects := web.navigationTreeInputs(context.Background())
 	tree := hubBuildNavigationTree(nil, live, map[hubcore.ArchiveKey]bool{}, projects)
 	if len(tree.Projects) != 1 {
@@ -242,7 +242,7 @@ func TestNavigationTreeInputsUsesRemoteCarriedProject(t *testing.T) {
 		ProjectPath: project.CanonicalPath,
 		Status:      appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 	}})
-	web := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{RemoteThreadCache: cache})
 
 	_, live, _ := web.navigationTreeInputs(t.Context())
 	if len(live) != 1 {

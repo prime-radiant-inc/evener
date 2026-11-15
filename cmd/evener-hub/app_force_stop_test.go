@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -277,11 +278,8 @@ func TestForceStopRejectsDiscoveryChangeDuringLockedRevalidation(t *testing.T) {
 // A failed ancillary discovery refresh cannot undo the verified exit.
 func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 	// Keep this top-level test sequential: captureHubLog uses the shared logger.
-	// Compare the entire output so unrelated or repeated warnings also fail.
+	// Compare the records so unrelated or repeated warnings also fail.
 	logged := captureHubLog(t)
-	flags := log.Flags()
-	log.SetFlags(0)
-	t.Cleanup(func() { log.SetFlags(flags) })
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: "owner"})
 	roster := hubcore.NewRoster(runDir, failedRPCProber{})
@@ -297,6 +295,7 @@ func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 			}}, nil
 		}),
 	}
+	cfg.Log = logged.logger()
 	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:owner"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -309,9 +308,17 @@ func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 	if err := roster.RefreshAndWait(t.Context()); err == nil {
 		t.Fatal("fixture did not fail discovery")
 	}
-	const expected = "daemon stopped; roster refresh remains incomplete: decode rendezvous 4243.json: unexpected end of JSON input\n"
-	if got := logged.String(); got != expected {
-		t.Fatalf("expected exactly one incomplete-roster warning, got %q", got)
+	records := logged.records.all()
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one incomplete-roster warning, got %+v", records)
+	}
+	if got := records[0].level; got != slog.LevelWarn {
+		t.Errorf("incomplete-roster warning level = %v, want Warn", got)
+	}
+	for _, want := range []string{"roster refresh remains incomplete", "decode rendezvous 4243.json", "unexpected end of JSON input"} {
+		if !strings.Contains(records[0].message, want) {
+			t.Errorf("incomplete-roster warning %q lacks %q", records[0].message, want)
+		}
 	}
 }
 

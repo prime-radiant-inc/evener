@@ -2,6 +2,7 @@ package registry
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -50,7 +51,8 @@ func rankEffortLadder(ladder []string) []string {
 // anthropic thinking shape / always-on / display. Each is applied only
 // where the field is still unset (the junk cap excepted) and recorded as
 // "derived" in prov.
-func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
+func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) []string {
+	var warnings []string
 	reasoningOff := c.Reasoning != nil && !*c.Reasoning
 	if reasoningOff {
 		if c.ReasoningControls != nil || c.EffortValues != nil {
@@ -92,6 +94,14 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		if strings.HasPrefix(src, LayerSnapshot) || strings.HasPrefix(src, LayerCache) || strings.HasPrefix(src, LayerLive) {
 			c.MaxOutputTokens = nil
 			prov["MaxOutputTokens"] = provDerived
+		}
+	}
+
+	if c.CompactionThreshold != nil {
+		if ceiling := c.InputCeiling(); ceiling > 0 && *c.CompactionThreshold >= ceiling {
+			warnings = append(warnings, fmt.Sprintf("compaction_threshold %d >= input ceiling %d; ignored", *c.CompactionThreshold, ceiling))
+			c.CompactionThreshold = nil
+			prov["CompactionThreshold"] = provDerived
 		}
 	}
 
@@ -157,7 +167,7 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	}
 
 	if in.Protocol != ProtocolAnthropic || reasoningOff {
-		return
+		return warnings
 	}
 	// 4. Thinking shape, keyed on family (never on Surface).
 	claude := strings.HasPrefix(m.Family, "claude") || (in.Synthesized && in.ProviderFamily == "claude")
@@ -182,7 +192,7 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		}
 	}
 	if c.ThinkingShape == nil || *c.ThinkingShape != "adaptive" {
-		return
+		return warnings
 	}
 	// 5. Adaptive rows send the thinking object on every request.
 	if c.ThinkingAlwaysOn == nil {
@@ -195,6 +205,7 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		c.ThinkingDisplay = &display
 		prov["ThinkingDisplay"] = provDerived
 	}
+	return warnings
 }
 
 // EffortOffCapable reports whether the row's ladder lists the explicit off

@@ -2,6 +2,11 @@ package llm
 
 import "testing"
 
+// FuzzRootScenarioReplay calls the tests below as plain calls on the fuzz
+// body's shared t. They must not call t.Parallel(): one callee that does
+// defers this whole body into the package's parallel phase, and a second
+// panics with "t.Parallel called multiple times". Keep the "Not parallel"
+// comment on any test added to this list.
 func FuzzRootScenarioReplay(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {

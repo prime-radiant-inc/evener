@@ -16,8 +16,8 @@ import (
 // tool writes must carry exactly the listed providers that were present, and
 // every listed provider the input lacked must be named on stderr as skipped.
 func TestSampleKeepsOnlyListedProviders(t *testing.T) {
-	// Not parallel: main registers its flags on the process-wide
-	// flag.CommandLine and swaps os.Args, so it runs once per test process.
+	// Not parallel: main registers its flags on the process-wide flag.CommandLine,
+	// swaps os.Args and process-wide os.Stdout/os.Stderr, so it runs once per test process.
 	in := filepath.Join(t.TempDir(), "api.json")
 	out := filepath.Join(t.TempDir(), "fixture.json")
 	catalog, err := json.Marshal(map[string]json.RawMessage{

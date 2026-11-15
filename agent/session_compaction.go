@@ -282,7 +282,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		commit.prepareVoicePresentationLocked(voiceBefore, published)
 	}
 	// The appended turns may reallocate, so the history takes the new slice.
-	published, restoredAt := withAttentionTurns(published, keptAttention)
+	published, restoredAt := s.restoreUncoveredAttentionLocked(published, keptAttention)
 	s.history = published
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
@@ -1003,6 +1003,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		}
 		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
 		if artifactProduced && !superseded {
+			s.steerCompactionTaskReminderForFold(commit.publishedRevision)
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
 		if noteCommit != nil {

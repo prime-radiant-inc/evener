@@ -57,7 +57,7 @@ func TestJobListLabelConfiguredBudget(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	ids := seedJobListLabels(t, s, 120)
-	for _, budget := range []int{12_000, 1} {
+	for _, budget := range []int{14_000, 1} {
 		t.Run(strconv.Itoa(budget), func(t *testing.T) {
 			s.reg.OverrideLimits(map[string]schema.ToolOutputLimit{"job_list": {MaxChars: budget}})
 			if got := s.reg.Get("job_list").Limit.MaxChars; got != budget {

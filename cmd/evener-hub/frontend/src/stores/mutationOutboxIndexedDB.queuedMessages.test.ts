@@ -278,6 +278,21 @@ test("settlement leaves recovery advanced to revision one for reconciliation", a
   });
 });
 
+test("settleApplied can keep the accepted display copy for the queue handoff", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent(queuedIntent());
+  await f.storage.markAttempted(outbox.clientMutationId);
+  expect(await f.storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
+  expect(await f.storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
+
+  await f.storage.settleApplied(outbox.clientMutationId, { retainDisplayCopy: true });
+
+  expect(await f.storage.getOptimistic(outbox.clientMutationId)).toMatchObject({
+    clientMutationId: outbox.clientMutationId,
+    state: "accepted",
+  });
+});
+
 test("stale cross-adapter recovery consolidation refuses without deleting the secondary", async () => {
   const f = fixture();
   const seedImageRecovery = async (text: string, imageName: string) => {
@@ -1630,6 +1645,72 @@ test("a settlement never retires an edited recovery sibling of the settled wire"
   expect(await f.storage.getRecovery(b.clientMutationId)).toMatchObject({
     compositionRevision: 1,
   });
+});
+
+test("a retained copy from an edited recovery keeps the frozen original input", async () => {
+  const f = fixture();
+  const queued = await f.storage.enqueueIntent(queuedIntent());
+  const originalInput = (queued.payload as { input: InputItem[] }).input;
+  const originalText = originalInput[0]?.text ?? "";
+  await f.storage.markAttempted(queued.clientMutationId);
+  await f.storage.transferToRecovery(queued.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  const edited = await f.storage.updateRecoveryInput(
+    queued.clientMutationId,
+    [{ type: "text", text: "edited after refusal" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("failed to edit recovery");
+
+  await f.storage.settleApplied(queued.clientMutationId, { retainDisplayCopy: true });
+
+  const optimistic = await f.storage.getOptimistic(queued.clientMutationId);
+  if (!optimistic) throw new Error("retained display copy missing");
+  expect((optimistic.payload as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((optimistic.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+});
+
+test("a retained receipt from an edited recovery keeps the frozen original input", async () => {
+  const f = fixture();
+  const queued = await f.storage.enqueueIntent(queuedIntent());
+  const originalInput = (queued.payload as { input: InputItem[] }).input;
+  const originalText = originalInput[0]?.text ?? "";
+  await f.storage.markAttempted(queued.clientMutationId);
+  await f.storage.transferToRecovery(queued.clientMutationId, "rejected", "invalid params", {
+    wireDeliveryUncertain: true,
+  });
+  const edited = await f.storage.updateRecoveryInput(
+    queued.clientMutationId,
+    [{ type: "text", text: "edited after refusal" }],
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    0,
+  );
+  if (!edited) throw new Error("failed to edit recovery");
+
+  expect(await f.storage.settleReceipt(queued.clientMutationId, "pending")).toBe(true);
+
+  const optimistic = await f.storage.getOptimistic(queued.clientMutationId);
+  if (!optimistic) throw new Error("retained display copy missing");
+  expect((optimistic.payload as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((optimistic.optimisticDisplay as { input: InputItem[] }).input[0]?.text).toBe(originalText);
+  expect((await f.storage.getRecovery(queued.clientMutationId))?.compositionRevision).toBe(1);
+});
+
+test("a queue receipt stores its confirmed lineage on the accepted copy", async () => {
+  const f = fixture();
+  const queued = await f.storage.enqueueIntent(queuedIntent());
+  expect(await f.storage.settleReceipt(queued.clientMutationId, "pending", ["entry-a"])).toBe(true);
+  expect((await f.storage.getOptimistic(queued.clientMutationId))?.queueEntryIds).toEqual(["entry-a"]);
 });
 
 test("a consumed recovery retires its canceled wire sibling, whose chip leaves the strip", async () => {

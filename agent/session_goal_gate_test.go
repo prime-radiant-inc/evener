@@ -20,7 +20,7 @@ func newGateSession(t *testing.T) (*Session, func() []events.SessionEvent) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

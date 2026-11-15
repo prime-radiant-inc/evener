@@ -3,7 +3,6 @@ package hubcore
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -21,14 +20,11 @@ type StatusProber struct {
 	client  *http.Client
 }
 
-// hubConnectionLogf is the appwire.Client connection-lifecycle sink (see
-// appwire.Client.SetLogf) for probe connections: the hub is a plain daemon,
-// never a TUI rendering over an interactive terminal, so its own stderr —
-// labelled like every other hub diagnostic (past.go, roster.go) — is a safe
-// destination, unlike the TUI's stderr (issue #783).
-func hubConnectionLogf(format string, args ...any) {
-	componentlog.New("hub").Info(fmt.Sprintf(format, args...))
-}
+// hubLog labels this package's operational diagnostics with the hub component.
+// A probe connection's keepalive teardown rides the same sink; the hub is a
+// plain daemon, never a TUI rendering over an interactive terminal, so its own
+// stderr is a safe destination (issue #783).
+var hubLog = componentlog.New("hub")
 
 // Probe implements Prober.
 func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
@@ -50,7 +46,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	defer transport.Close() //nolint:errcheck // probe cleanup; error is not actionable
 	appClient := appwire.NewClient(transport)
-	appClient.SetLogf(hubConnectionLogf)
+	appClient.SetLogger(hubLog)
 	appClient.Start(ctx)
 	if _, err := appClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
 		var wire appwire.WireError

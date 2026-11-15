@@ -62,7 +62,7 @@ test("failed creation retains images and advanced/plugin settings through remoun
   await screen.findByRole("button", { name: "View retained.png" });
   await openDesktopPluginSelection(user);
   await user.click(screen.getByRole("switch", { name: "beta" }));
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.clear(screen.getByLabelText("Max rounds"));
   await user.type(screen.getByLabelText("Max rounds"), "7");
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
@@ -73,7 +73,7 @@ test("failed creation retains images and advanced/plugin settings through remoun
   renderSpawn(fake);
   expect(promptField().textContent).toBe("retained-sentinel[image 1]");
   expect(screen.getByRole("button", { name: "View retained.png" })).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect((screen.getByLabelText("Max rounds") as HTMLInputElement).value).toBe("7");
   await openDesktopPluginSelection(user);
   expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false");

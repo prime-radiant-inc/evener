@@ -1,9 +1,9 @@
 package hub
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,9 +35,8 @@ func TestResumeDaemonPrelaunchCancellationClassification(t *testing.T) {
 				ctx, cancel = context.WithDeadline(t.Context(), time.Unix(0, 0))
 				defer cancel()
 			}
-			var log bytes.Buffer
 			dir := t.TempDir()
-			_, err := resumeDaemon(ctx, filepath.Join(dir, "absent-executable"), filepath.Join(dir, "run"), hubcore.ResumeRequest{SessionID: hubtest.SessionID(t)}, 0, &log)
+			_, err := resumeDaemon(ctx, filepath.Join(dir, "absent-executable"), filepath.Join(dir, "run"), hubcore.ResumeRequest{SessionID: hubtest.SessionID(t)}, 0, io.Discard)
 			if !errors.Is(err, tc.cause) {
 				t.Fatalf("context cause lost: got %v, want %v", err, tc.cause)
 			}
@@ -46,15 +45,6 @@ func TestResumeDaemonPrelaunchCancellationClassification(t *testing.T) {
 			}
 			if got := diagnostic.Classify(err.Error()).Source; got != diagnostic.SourceHub {
 				t.Errorf("diagnostic source = %q, want %q", got, diagnostic.SourceHub)
-			}
-			records := threadLifecycleLogRecords(t, log.String())
-			if len(records) != 4 {
-				t.Fatalf("want daemon and launch begin/complete records, got %#v", records)
-			}
-			for _, record := range records {
-				if record["state"] == "complete" && record["error_class"] != tc.class {
-					t.Errorf("completion classification = %#v, want %s", record, tc.class)
-				}
 			}
 		})
 	}

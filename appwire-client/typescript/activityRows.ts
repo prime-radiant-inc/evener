@@ -16,7 +16,6 @@ import {
   isActivityFailure,
   isFailedDelegateOutcome,
   isFailedJobOutcome,
-  isTurnContainer,
 } from "./activityData";
 import { formatClockTime } from "./displayFormat";
 import { stableDelegateDisplayStatus } from "./stableDelegate";
@@ -297,49 +296,18 @@ export function shellJobState(job: ActivityJob): "running" | "failed" | "done" {
   return job.terminal ? "done" : "running";
 }
 
-// Stable delegates describe one reusable resource; other delegate types are
-// turn containers. Keep this in one place so row visibility and the status
-// shown by the row both use the protocol's same truth.
+// A delegate describes one reusable resource. Keep this in one place so row
+// visibility and the status shown by the row both use the protocol's same
+// truth.
 export function activityDelegateState(delegate: ActivityDelegate): ActivityDelegateState {
-  const childActive = delegate.child ? sessionIsActive(delegate.child) : false;
   const childFailed = (delegate.child?.counts.failed ?? 0) > 0;
-  if (!isTurnContainer(delegate)) {
-    const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
-    const ownFailure =
-      delegate.terminal === true ? isFailedDelegateOutcome(delegate.outcome) : isActivityFailure(undefined, status);
-    return {
-      active: delegateHasActiveWork(delegate),
-      failed: ownFailure || childFailed,
-      status,
-    };
-  }
-  const turns = delegate.turns ?? [];
-  let activeTurn: ActivityJob | undefined;
-  for (const turn of turns) {
-    if (!turn.terminal) activeTurn = turn;
-  }
-  const latest = turns.at(-1);
-  if (turns.length === 0) {
-    return {
-      active: childActive,
-      failed: childFailed,
-      status: delegate.child?.aggregate ?? "unknown",
-    };
-  }
-  const failed = childFailed || turns.some(jobIsFailed);
-  const active = delegateHasActiveWork(delegate);
+  const status = stableDelegateDisplayStatus(delegate) ?? delegate.child?.aggregate ?? "unknown";
+  const ownFailure =
+    delegate.terminal === true ? isFailedDelegateOutcome(delegate.outcome) : isActivityFailure(undefined, status);
   return {
-    active,
-    failed,
-    status: activeTurn
-      ? activeTurn.status
-      : childActive
-        ? (delegate.child?.aggregate ?? "working")
-        : failed
-          ? "failed"
-          : latest
-            ? latest.status
-            : (delegate.child?.aggregate ?? "unknown"),
+    active: delegateHasActiveWork(delegate),
+    failed: ownFailure || childFailed,
+    status,
   };
 }
 
@@ -347,13 +315,9 @@ function jobIsActive(job: ActivityJob): boolean {
   return !job.terminal;
 }
 
-function sessionIsActive(session: ActivitySessionNode): boolean {
-  return session.counts.active > 0 || session.entries.some(entryIsActive);
-}
-
 function entryIsActive(entry: ActivityEntry): boolean {
   if (entry.kind === "shell") return jobIsActive(entry.job);
-  return activityDelegateState(entry.delegate).active;
+  return delegateHasActiveWork(entry.delegate);
 }
 
 export function jobRowFields(

@@ -41,9 +41,7 @@ func budgetingWindow(profile *provider.Profile) (window int, source string) {
 	if profile == nil {
 		return 0, ""
 	}
-	if window = profile.ContextWindowSize(); window <= 0 {
-		window = contextmgr.AssumedContextWindow
-	}
+	window, _ = contextmgr.EffectiveWindow(profile)
 	return window, profile.ContextWindowSource()
 }
 

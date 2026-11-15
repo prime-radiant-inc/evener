@@ -20,6 +20,7 @@ func marshalRecordLine(t *testing.T, record APILogRecord) []byte {
 }
 
 func TestAPIAttemptDecoderReturnsAttemptAndSettlementRecords(t *testing.T) {
+	t.Parallel()
 	attemptLine := marshalRecordLine(t, validAPIAttemptRecord(t))
 	settlementLine := marshalRecordLine(t, validSettlement(t))
 	data := append(append(append([]byte{}, attemptLine...), '\n'), settlementLine...)
@@ -47,6 +48,7 @@ func TestAPIAttemptDecoderReturnsAttemptAndSettlementRecords(t *testing.T) {
 }
 
 func TestPartialTailIsDistinctFromCleanEOF(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	partial := marshalRecordLine(t, validSettlement(t))
 	data := append(append(append([]byte{}, complete...), '\n'), partial...)
@@ -71,6 +73,7 @@ func TestPartialTailIsDistinctFromCleanEOF(t *testing.T) {
 }
 
 func TestAPIAttemptDecoderRejectsInteriorCorruptionWithLineAndOffset(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	data := append(append(append([]byte{}, complete...), '\n'), []byte("{broken}\n")...)
 	decoder := NewDecoder(bytes.NewReader(data), len(complete)+1)
@@ -96,6 +99,7 @@ func TestAPIAttemptDecoderRejectsInteriorCorruptionWithLineAndOffset(t *testing.
 // (kata 7x84): a consumer that wants offsets programmatically must not have to
 // scrape them out of Next()'s formatted error text.
 func TestDecoderRecordOffsetAndLineTrackMostRecentAttempt(t *testing.T) {
+	t.Parallel()
 	first := marshalRecordLine(t, validAPIAttemptRecord(t))
 	second := marshalRecordLine(t, validSettlement(t))
 	data := append(append(append([]byte{}, first...), '\n'), second...)
@@ -120,6 +124,7 @@ func TestDecoderRecordOffsetAndLineTrackMostRecentAttempt(t *testing.T) {
 }
 
 func TestDecoderRecordOffsetAndLineMatchInteriorCorruptionError(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	data := append(append(append([]byte{}, complete...), '\n'), []byte("{broken}\n")...)
 	decoder := NewDecoder(bytes.NewReader(data), len(complete)+1)
@@ -137,6 +142,7 @@ func TestDecoderRecordOffsetAndLineMatchInteriorCorruptionError(t *testing.T) {
 }
 
 func TestDecoderRecordOffsetAndLineMatchPartialTail(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	partial := marshalRecordLine(t, validSettlement(t))
 	data := append(append(append([]byte{}, complete...), '\n'), partial...)
@@ -156,6 +162,7 @@ func TestDecoderRecordOffsetAndLineMatchPartialTail(t *testing.T) {
 }
 
 func TestAPIAttemptDecoderRejectsUnknownRecordKind(t *testing.T) {
+	t.Parallel()
 	decoder := NewDecoder(strings.NewReader("{\"kind\":\"future_record\",\"schema_version\":1}\n"), 1024)
 	if _, err := decoder.Next(); err == nil {
 		t.Fatal("Next() accepted unknown record kind")
@@ -165,6 +172,7 @@ func TestAPIAttemptDecoderRejectsUnknownRecordKind(t *testing.T) {
 }
 
 func TestAPIAttemptDecoderEnforcesMaximumLineBytes(t *testing.T) {
+	t.Parallel()
 	line := marshalRecordLine(t, validAPIAttemptRecord(t))
 	decoder := NewDecoder(bytes.NewReader(append(append([]byte{}, line...), '\n')), len(line)-1)
 	if _, err := decoder.Next(); err == nil {
@@ -180,6 +188,7 @@ func TestAPIAttemptDecoderEnforcesMaximumLineBytes(t *testing.T) {
 }
 
 func TestAPIAttemptDecodeRecordRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
+	t.Parallel()
 	record := validAPIAttemptRecord(t)
 	line := marshalRecordLine(t, record)
 	var fields map[string]any
@@ -200,6 +209,7 @@ func TestAPIAttemptDecodeRecordRejectsUnknownFieldsAndTrailingJSON(t *testing.T)
 }
 
 func TestAPIAttemptDecodeRecordRejectsInvalidUTF8JSON(t *testing.T) {
+	t.Parallel()
 	line := marshalRecordLine(t, validAPIAttemptRecord(t))
 	provider := []byte("openai-primary")
 	index := bytes.Index(line, provider)
@@ -213,6 +223,7 @@ func TestAPIAttemptDecodeRecordRejectsInvalidUTF8JSON(t *testing.T) {
 }
 
 func TestPartialTailIsReturnedForOversizedFinalFragment(t *testing.T) {
+	t.Parallel()
 	decoder := NewDecoder(strings.NewReader(strings.Repeat("x", 32)), 8)
 	if _, err := decoder.Next(); !errors.Is(err, ErrPartialTail) {
 		t.Fatalf("Next() error = %v, want ErrPartialTail", err)
@@ -220,6 +231,7 @@ func TestPartialTailIsReturnedForOversizedFinalFragment(t *testing.T) {
 }
 
 func TestScanRecoveryReturnsLastCompleteOffsetAndPartialTail(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	partial := marshalRecordLine(t, validSettlement(t))
 	prefix := append(append([]byte(nil), complete...), '\n')
@@ -243,6 +255,7 @@ func TestScanRecoveryReturnsLastCompleteOffsetAndPartialTail(t *testing.T) {
 }
 
 func TestScanRecoveryRejectsInvalidCompleteLinesAtCanonicalBoundary(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	prefix := append(append([]byte(nil), complete...), '\n')
 	tests := []struct {
@@ -268,6 +281,7 @@ func TestScanRecoveryRejectsInvalidCompleteLinesAtCanonicalBoundary(t *testing.T
 }
 
 func TestScanRecoveryRejectsInvalidRecordBeforePartialTail(t *testing.T) {
+	t.Parallel()
 	invalid := []byte("{broken}\n")
 	partial := []byte(`{"kind":"api_attempt"`)
 	data := append(append([]byte(nil), invalid...), partial...)
@@ -282,6 +296,7 @@ func TestScanRecoveryRejectsInvalidRecordBeforePartialTail(t *testing.T) {
 }
 
 func TestScanRecoveryRejectsOversizedPartialTail(t *testing.T) {
+	t.Parallel()
 	const maxLineBytes = 64
 	data := []byte(strings.Repeat("x", maxLineBytes+1))
 
@@ -295,6 +310,7 @@ func TestScanRecoveryRejectsOversizedPartialTail(t *testing.T) {
 }
 
 func TestScanRecoveryBoundsWorkToCanonicalTail(t *testing.T) {
+	t.Parallel()
 	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
 	partial := []byte(`{"kind":"api_attempt"`)
 	tail := append([]byte{'\n'}, complete...)
@@ -410,6 +426,7 @@ func (f *flakyRecoveryReader) Read(p []byte) (int, error) {
 // first read (the final byte) always succeeds, so the failing read is the
 // one each case names.
 func TestScanRecoverySurfacesReaderFailures(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		failReadsFrom int

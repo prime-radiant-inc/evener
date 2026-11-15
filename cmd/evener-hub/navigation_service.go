@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log/slog"
 	"math"
 	"reflect"
 	"slices"
@@ -96,9 +97,9 @@ type navigationServiceConfig struct {
 	NewTimer     func(time.Duration) navigationTimer
 	BuildTimeout time.Duration
 	RetryAfter   time.Duration
-	// Logf receives one line per slow or periodic build and per timed-out
-	// build. Nil disables them.
-	Logf func(format string, args ...any)
+	// Log receives one line per slow or periodic build and per failed
+	// build, timed out or not. Nil disables them.
+	Log *slog.Logger
 	// historyEntries and historyBytes override the default delta-history
 	// retention. Production leaves both zero for the full default budget;
 	// tests set them to force eviction with small fixtures.
@@ -268,7 +269,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		now:              now,
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
-		statsLog:         navigationBuildStatsLog{logf: cfg.Logf, slow: cfg.statsSlow, lastLogged: now()},
+		statsLog:         navigationBuildStatsLog{log: cfg.Log, slow: cfg.statsSlow, lastLogged: now()},
 		retryAfter:       cfg.RetryAfter,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		subagentParent:   cfg.SubagentParent,
@@ -681,21 +682,38 @@ func navigationDeltaResponse(
 
 // Refresh always requests a new source capture, but all concurrent callers join
 // its service-owned flight. Caller cancellation stops only that caller's wait.
+//
+// A deadline is deferrable only when an invalidation is still armed: the
+// durable decision that caused it is followed by a rebuild, so Refresh returns
+// the live generation with Deferred set and no error rather than failing the
+// mutation. The claim is that a rebuild is armed, not that it will succeed:
+// the scheduler retries a persistently failing build. Every other failure
+// (sequence exhaustion, invalid generation, missing source, cancellation) can
+// never publish a later receipt and stays an error.
 func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
 	if s.sequenceAtSafeLimit() {
 		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
 	ticket := &navigationRefreshTicket{done: make(chan struct{})}
 	_, err := s.ensureSnapshot(ctx, true, []navigationChangeHint{hint}, ticket)
+	var mutation hubapi.NavigationMutation
+	if err == nil {
+		select {
+		case <-ctx.Done():
+			err = navigationUnavailable(ctx.Err())
+		case <-ticket.done:
+			mutation, err = ticket.outcome, ticket.err
+		}
+	}
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && s.invalidationPending() {
+			mutation = s.EmptyMutation()
+			mutation.Deferred = true
+			return mutation, nil
+		}
 		return hubapi.NavigationMutation{}, err
 	}
-	select {
-	case <-ctx.Done():
-		return hubapi.NavigationMutation{}, navigationUnavailable(ctx.Err())
-	case <-ticket.done:
-		return ticket.outcome, ticket.err
-	}
+	return mutation, nil
 }
 
 // PublicationReady is the sole notification that committed invalidations are
@@ -840,9 +858,17 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 	started := time.Now()
 	stats := navigationBuildStats{phase: "capture"}
 	defer func() {
-		if flight.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			stats.Total = time.Since(started)
+		if flight.err == nil {
+			return
+		}
+		stats.Total = time.Since(started)
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			s.statsLog.timedOut(stats)
+		case ctx.Err() == nil:
+			// A canceled build is the service stopping; any other failure
+			// leaves the navigation surface stale, so the log must say why.
+			s.statsLog.failed(stats, flight.err)
 		}
 	}()
 	for {
@@ -924,6 +950,20 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 			continue
 		}
+		// A non-forced recovery capture can be the first successful build
+		// after a forced receipt refresh timed out. Adopt the armed
+		// invalidation for this capture; otherwise the change advances
+		// without a publication and the later forced refresh finds no
+		// changes and clears the invalidation silently. Mark the flight
+		// mutating only when the capture observed a change, so a no-op
+		// recovery does not wake the scheduler for nothing. The commit below
+		// consumes the invalidation it publishes, so the retry does not
+		// republish a newer source change as a second receipt.
+		adoptPending := !flight.mutated && s.pendingInvalidation
+		adoptedEpoch := s.pendingEpoch
+		if adoptPending {
+			flight.hint = mergeNavigationChangeHints(flight.hint, s.pendingHint)
+		}
 		stats.phase = "next_states"
 		phaseStart = time.Now()
 		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies, projection.locations, s.aliasServed, s.aliasServedFloor)
@@ -936,6 +976,9 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 				flight.err = err
 			}
 			return
+		}
+		if adoptPending && len(changes) != 0 {
+			flight.mutated = true
 		}
 		navigationBeforeSnapshotCommit(ctx)
 		// This is the publication linearization point. State transition work
@@ -958,6 +1001,7 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		s.core = &navigationCoreSnapshot{projection: projection, source: after, epoch: epoch, nextBoundary: snapshot.NextBoundary}
 		s.coreBuilds++
 		if flight.mutated {
+			stats.phase = "commit"
 			flight.mutation, err = s.commitTargetsLocked(changes, flight.hint)
 			if err != nil {
 				s.mu.Unlock()
@@ -978,6 +1022,12 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 				default:
 				}
 				navigationPublicationCommittedLocked(s)
+			}
+			if adoptPending && s.pendingEpoch == adoptedEpoch {
+				s.pendingHint = navigationChangeHint{}
+				s.pendingInvalidation = false
+				s.nextAttemptAt = time.Time{}
+				navigationPendingCleared()
 			}
 			s.completeRefreshTicketsLocked(flight, flight.mutation, nil)
 		}
@@ -1525,7 +1575,8 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	if at, pending := s.pendingAttemptAt(); pending && s.now().Before(at) {
 		return
 	}
-	if _, err := s.Refresh(ctx, hint); err != nil {
+	mutation, err := s.Refresh(ctx, hint)
+	if err != nil || mutation.Deferred {
 		s.mu.Lock()
 		if s.pendingEpoch == epoch {
 			// The pending hint was NOT consumed by a successful build, so it
@@ -1565,6 +1616,11 @@ func (s *NavigationService) pendingAttemptAt() (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nextAttemptAt, s.pendingInvalidation
+}
+
+func (s *NavigationService) invalidationPending() bool {
+	_, pending := s.pendingAttemptAt()
+	return pending
 }
 
 // waitUntil parks until deadline, an invalidation wake, or cancellation.

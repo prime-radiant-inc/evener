@@ -33,6 +33,7 @@ const imageRejection = `{"error":{"message":"Image normalization failed","type":
 // value makes the old unconditional json.Marshal fail, proving the new path
 // does not serialize.
 func TestImageRecoveryStageZeroSkipsMarshalWithoutImagePart(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{
 		"messages":    []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "hi"}}}},
 		"unsupported": math.Inf(1),
@@ -47,6 +48,7 @@ func TestImageRecoveryStageZeroSkipsMarshalWithoutImagePart(t *testing.T) {
 }
 
 func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{
 		"messages": []map[string]any{{"role": "user", "content": []map[string]any{
 			{"type": "image_url", "image_url": map[string]any{"url": "data:image/jpeg;base64,AAAA"}},

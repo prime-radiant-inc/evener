@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,6 +35,17 @@ import (
 // frontendDir is where the web checks run, relative to the repository root the
 // gates run from.
 const frontendDir = "cmd/evener-hub/frontend"
+
+// defaultCheckTimeout is a hang tripwire for one web check, not a performance
+// budget: the full vitest suite legitimately takes tens of minutes under load.
+const defaultCheckTimeout = 60 * time.Minute
+
+// checkKillGrace is how long a timed-out check gets to exit after its TERM
+// before it is KILLed.
+const checkKillGrace = 10 * time.Second
+
+// webCheckTimedOutStatus is a timed-out check's verdict status.
+const webCheckTimedOutStatus = 124
 
 // guardSpec is how one guard is started: the command, the directory it runs
 // in, what it adds to the environment, and whether it first needs a private Go
@@ -65,6 +77,8 @@ type guardProcess interface {
 	Wait() int
 	// Terminate sends the guard SIGTERM.
 	Terminate()
+	// Kill sends the guard SIGKILL.
+	Kill()
 }
 
 // guardLauncher is the gate's only contact with the outside world, so the
@@ -102,9 +116,16 @@ type webGate struct {
 	slots         int
 	scratch       string
 	buildFrontend bool
-	signals       <-chan os.Signal
-	stdout        io.Writer
-	stderr        io.Writer
+	// checkTimeout bounds each check's run. Zero disables it; the web-checks
+	// gate sets the default. A check still running at its deadline is TERMed,
+	// KILLed after killGrace, and reported as timed out.
+	checkTimeout time.Duration
+	// killGrace is how long a timed-out check gets to exit after its TERM.
+	// Zero means checkKillGrace.
+	killGrace time.Duration
+	signals   <-chan os.Signal
+	stdout    io.Writer
+	stderr    io.Writer
 }
 
 type guardExit struct {
@@ -139,6 +160,9 @@ func signalStatus(sig os.Signal) int {
 func (g *webGate) run() (int, bool) {
 	if g.now == nil {
 		g.now = time.Now
+	}
+	if g.killGrace <= 0 {
+		g.killGrace = checkKillGrace
 	}
 	specs := make([]guardSpec, len(g.checks))
 	for i, check := range g.checks {
@@ -194,6 +218,16 @@ func (g *webGate) run() (int, bool) {
 	elapsed := make([]time.Duration, n)
 	live := make([]guardProcess, n)
 	exits := make(chan guardExit, n)
+	timeouts := make(chan int, n)
+	timers := make([]*time.Timer, n)
+	timedOut := make([]atomic.Bool, n)
+	defer func() {
+		for _, timer := range timers {
+			if timer != nil {
+				timer.Stop()
+			}
+		}
+	}()
 	next, running, done := 0, 0, 0
 	for done < n {
 		for running < g.slots && next < n {
@@ -233,6 +267,20 @@ func (g *webGate) run() (int, bool) {
 			live[index] = proc
 			running++
 			go func() { exits <- guardExit{index, proc.Wait()} }()
+			if g.checkTimeout > 0 {
+				// TERM and the grace KILL run from the timer, not the gate's
+				// select: an interrupt replaces that select with stop's wait,
+				// and a wedged check must still reach its deadline there.
+				timers[index] = time.AfterFunc(g.checkTimeout, func() {
+					// Latch before TERM: the check may exit on that signal
+					// and its exit event may reach the gate before the
+					// timeout event does.
+					timedOut[index].Store(true)
+					proc.Terminate()
+					time.AfterFunc(g.killGrace, proc.Kill)
+					timeouts <- index
+				})
+			}
 		}
 		if done == n {
 			// The last guard was accounted for without starting (a failed
@@ -244,8 +292,19 @@ func (g *webGate) run() (int, bool) {
 			statuses[exit.index] = exit.status
 			elapsed[exit.index] = g.now().Sub(started[exit.index])
 			live[exit.index] = nil
+			if timers[exit.index] != nil {
+				timers[exit.index].Stop()
+			}
+			if timedOut[exit.index].Load() {
+				statuses[exit.index] = webCheckTimedOutStatus
+			}
 			running--
 			done++
+		case index := <-timeouts:
+			if live[index] == nil {
+				continue
+			}
+			timedOut[index].Store(true)
 		case sig := <-g.signals:
 			return g.stop(sig, specs, live, exits), true
 		}
@@ -253,6 +312,10 @@ func (g *webGate) run() (int, bool) {
 
 	status := 0
 	for i, guard := range g.checks {
+		wallTime := ""
+		if !started[i].IsZero() {
+			wallTime = fmt.Sprintf(", %.1fs", elapsed[i].Seconds())
+		}
 		switch {
 		case statuses[i] == 0:
 			_, _ = fmt.Fprintf(g.stdout, "PASS  web-%s (%.1fs)\n", guard, elapsed[i].Seconds())
@@ -260,11 +323,10 @@ func (g *webGate) run() (int, bool) {
 		case specs[i].needsBuild && buildStatus != 0:
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (frontend build, exit %d)\n", guard, buildStatus)
 			g.replay(buildLog)
+		case timedOut[i].Load():
+			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (timed out after %s%s)\n", guard, g.checkTimeout, wallTime)
+			g.replay(filepath.Join(g.scratch, guard+".log"))
 		default:
-			wallTime := ""
-			if !started[i].IsZero() {
-				wallTime = fmt.Sprintf(", %.1fs", elapsed[i].Seconds())
-			}
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (exit %d%s)\n", guard, statuses[i], wallTime)
 			g.replay(filepath.Join(g.scratch, guard+".log"))
 		}
@@ -530,5 +592,19 @@ func (p *execGuard) Terminate() {
 	case <-p.reaped:
 	default:
 		procgroup.Terminate(p.cmd.Process.Pid)
+	}
+}
+
+// Kill KILLs the guard: through its pidfd-backed process handle, which refuses
+// a reaped process, or, for a grouped guard, its whole process group.
+func (p *execGuard) Kill() {
+	if !p.group {
+		_ = p.cmd.Process.Kill()
+		return
+	}
+	select {
+	case <-p.reaped:
+	default:
+		procgroup.Kill(p.cmd.Process.Pid)
 	}
 }

@@ -470,6 +470,9 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 		s.attentionMu.Unlock()
 	}
 	s.handleCompactionTurnEffects(t, writeErr, false, publishedRevision)
+	if isSessionNameCompactionTurn(t) {
+		s.steerCompactionTaskReminderForFold(publishedRevision)
+	}
 	// A retained compaction-turn write (whole line landed, sync failed) returns
 	// nil and queues its diagnostic; surface it now, outside the door.
 	s.surfaceTranscriptWarnings()
@@ -484,10 +487,9 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // appendEnvironmentContext's EventEnvironment, which needs the door's ordering
 // and pays a single emit for it; the effects this function runs stay outside
 // because they are unbounded work that re-enters the locks the door holds. superseded reports that a NEWER fold publication has
-// already flushed its deferred effects: the last-write-wins pieces
-// (compaction naming, the task-list reminder) are skipped so a stale parked
-// flush cannot overwrite the newer fold's; the compaction-turn event still
-// runs because it describes published work.
+// already flushed its deferred effects: the last-write-wins compaction naming
+// is skipped so a stale parked flush cannot overwrite the newer fold's; the
+// compaction-turn event still runs because it describes published work.
 // publishedRevision is the launching fold's publication sequence
 // (historyRevision at its publish; the fallback path passes the newest
 // published fold revision), re-checked at naming COMPLETION against
@@ -507,13 +509,18 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 		return
 	}
 	s.launchCompactionNamerGated(s.sessionCtx, t, publishedRevision)
-	// After compaction, inject full task list if tasks exist — refused at
-	// enqueue time if a newer fold has published since this flush's check.
-	if s.taskStore != nil {
-		if reminder := taskReminderFull(s.taskStore); reminder != "" {
-			if err := s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision); err != nil {
-				s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
-			}
+}
+
+// steerCompactionTaskReminderForFold injects the full task list once for a
+// compaction published at publishedRevision; refused at enqueue time if a newer
+// fold has published since this flush's supersession check.
+func (s *Session) steerCompactionTaskReminderForFold(publishedRevision int) {
+	if s.taskStore == nil {
+		return
+	}
+	if reminder := taskReminderFull(s.taskStore); reminder != "" {
+		if err := s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision); err != nil {
+			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 		}
 	}
 }

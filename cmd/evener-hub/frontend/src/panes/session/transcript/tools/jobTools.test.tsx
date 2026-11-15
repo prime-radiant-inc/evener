@@ -565,6 +565,33 @@ test("job_list: body renders stable direct raw state when the producer supplies 
   expect(screen.queryByText("formatted listing text")).toBeNull();
 });
 
+test("job_list: body falls back to task when description is omitted", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  render(
+    <Body
+      item={item({
+        toolName: "job_list",
+        output: "formatted listing text",
+        raw: {
+          items: [
+            {
+              id: "dlg_task_fallback",
+              type: "delegate",
+              status: "running",
+              task: "research task without distinct description",
+            },
+          ],
+          count: 1,
+          total: 1,
+        },
+      })}
+      live={false}
+    />,
+  );
+  expect(screen.getByText(/research task without distinct description/)).toBeTruthy();
+});
+
 test("job_list: rows render one entity ref and exactly one open control per identity", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;

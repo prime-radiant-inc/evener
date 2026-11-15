@@ -79,13 +79,7 @@ func SafetyReserveTokens(contextWindow int) int {
 }
 
 func tokenSafetyReserve(caps registry.Caps) int {
-	smallest := 0
-	if positiveLimit(caps.MaxInputTokens) {
-		smallest = *caps.MaxInputTokens
-	}
-	if positiveLimit(caps.ContextWindow) && (smallest == 0 || *caps.ContextWindow < smallest) {
-		smallest = *caps.ContextWindow
-	}
+	smallest := caps.InputCeiling()
 	if smallest == 0 {
 		return minimumTokenSafetyReserve
 	}

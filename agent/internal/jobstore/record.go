@@ -57,22 +57,25 @@ const (
 )
 
 type WatchRecord struct {
-	WatchID                  string `json:"watch_id"`
-	HubRef                   string `json:"hub_ref,omitempty"`
-	Generation               string `json:"generation"`
-	OwnerSessionID           string `json:"owner_session_id"`
-	VisibleSessionID         string `json:"visible_session_id"`
-	Target                   string `json:"target"`
-	SendTo                   string `json:"send_to,omitempty"`
-	ConfigHash               string `json:"config_hash"`
-	Condition                string `json:"condition,omitempty"`
-	Deliveries               int    `json:"deliveries,omitempty"`
-	Active                   bool   `json:"active"`
-	EndReason                string `json:"end_reason,omitempty"`
-	Source                   string `json:"source,omitempty"`
-	SourceDelegateID         string `json:"source_delegate_id,omitempty"`
-	SourceDelegateGeneration uint64 `json:"source_delegate_generation,omitempty"`
-	StableReceiver           bool   `json:"stable_receiver,omitempty"`
+	WatchID                  string    `json:"watch_id"`
+	HubRef                   string    `json:"hub_ref,omitempty"`
+	Generation               string    `json:"generation"`
+	OwnerSessionID           string    `json:"owner_session_id"`
+	VisibleSessionID         string    `json:"visible_session_id"`
+	Target                   string    `json:"target"`
+	SendTo                   string    `json:"send_to,omitempty"`
+	ConfigHash               string    `json:"config_hash"`
+	Condition                string    `json:"condition,omitempty"`
+	Note                     string    `json:"note,omitempty"`
+	Deliveries               int       `json:"deliveries,omitempty"`
+	Active                   bool      `json:"active"`
+	EndReason                string    `json:"end_reason,omitempty"`
+	Source                   string    `json:"source,omitempty"`
+	SourceDelegateID         string    `json:"source_delegate_id,omitempty"`
+	SourceDelegateGeneration uint64    `json:"source_delegate_generation,omitempty"`
+	StableReceiver           bool      `json:"stable_receiver,omitempty"`
+	EndedAt                  time.Time `json:"ended_at,omitzero"`
+	EndedSeq                 int       `json:"ended_seq,omitempty"`
 	// Receiver identity, folded out of the registration's config snapshot: WHO
 	// this watch reports to, which owner/visible cannot say because a receiver
 	// watch installs on the owner's manager and names the owner in both. Empty on

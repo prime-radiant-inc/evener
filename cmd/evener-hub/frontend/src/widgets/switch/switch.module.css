@@ -29,7 +29,11 @@
   display: block;
   width: 32px;
   height: 18px;
-  padding: 2px;
+  /* --field alone is within a hair of the page ground in the light theme, so
+   * the track carries its own edge. Edge plus padding is the 2px the thumb
+   * sits inside. */
+  padding: 1px;
+  border: 1px solid var(--edge-strong);
   border-radius: var(--radius-pill);
   background: var(--field);
 }
@@ -46,6 +50,7 @@
 }
 
 .control[aria-checked="true"] .track {
+  border-color: var(--accent);
   background: var(--accent);
 }
 
@@ -63,7 +68,10 @@
   transform: translateX(0);
 }
 
+/* On the accent fill the thumb takes the on-accent role, the one ink that
+ * clears contrast on a solid accent in both themes. */
 .control[aria-checked="true"] .thumb {
+  background: var(--on-accent);
   transform: translateX(14px);
 }
 
@@ -78,11 +86,15 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .thumb {
-    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+    transition:
+      transform var(--motion-duration-overlay) var(--motion-easing-standard),
+      background-color var(--motion-duration-overlay) var(--motion-easing-standard);
   }
 
   .track {
-    transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+    transition:
+      background-color var(--motion-duration-hover) var(--motion-easing-standard),
+      border-color var(--motion-duration-hover) var(--motion-easing-standard);
   }
 }
 

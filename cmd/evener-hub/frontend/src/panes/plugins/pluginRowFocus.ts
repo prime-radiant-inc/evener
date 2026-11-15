@@ -16,12 +16,25 @@ import { rehomeFocus } from "../../widgets";
 
 /** The id an expanded row's detail body carries, so its opener can point at
  * it with aria-controls. One function for opener and body, so the two cannot
- * disagree. The launcher addresses a row by name alone. */
-export function pluginDetailBodyId(plugin: string, marketplace?: string): string {
-  const name = encodeURIComponent(plugin);
-  return marketplace === undefined
-    ? `plugin-details-${name}`
-    : `plugin-details-${name}-${encodeURIComponent(marketplace)}`;
+ * disagree. The launcher addresses a row by name alone, and a surface mounted
+ * twice (the launcher's desktop panel and mobile sheet, one of them only CSS
+ * hidden) passes its own `instance` so the copies keep distinct ids. */
+export function pluginDetailBodyId(plugin: string, marketplace?: string, instance?: string): string {
+  const parts = ["plugin-details"];
+  if (instance !== undefined) parts.push(instance);
+  parts.push(encodeURIComponent(plugin));
+  if (marketplace !== undefined) parts.push(encodeURIComponent(marketplace));
+  return parts.join("-");
+}
+
+/** The id an expanded marketplace row's detail body carries (aria-controls
+ * on its opener). Keyed by name, with an optional instance segment for a
+ * surface mounted more than once. */
+export function marketplaceDetailBodyId(name: string, instance?: string): string {
+  const parts = ["marketplace-detail"];
+  if (instance !== undefined) parts.push(instance);
+  parts.push(encodeURIComponent(name));
+  return parts.join("-");
 }
 
 /** The expanded row owns Escape for the details it opened: opening leaves
@@ -78,4 +91,28 @@ export function usePluginRowFocusRehome(
     opened.current = null;
     focusPluginRow(root.current, target);
   }, [open, root]);
+}
+
+/** Focuses the marketplace row for `name`, if it is rendered under `root`. */
+export function focusMarketplaceRow(root: ParentNode | null, name: string): void {
+  if (root === null) return;
+  const row = [...root.querySelectorAll<HTMLElement>("[data-marketplace-row]")].find(
+    (el) => el.dataset.marketplaceRow === name,
+  );
+  rehomeFocus(row ?? null);
+}
+
+/** Rehomes focus to the marketplace row whose body just closed: the collapsed
+ * body unmounted the control that held the keyboard (its Hide details action,
+ * for instance), and the row is the stable handle to come back to. */
+export function useMarketplaceRowFocusRehome(expanded: ReadonlySet<string>, root: RefObject<HTMLElement | null>): void {
+  const previous = useRef<ReadonlySet<string> | null>(null);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = expanded;
+    if (before === null) return;
+    for (const name of before) {
+      if (!expanded.has(name)) focusMarketplaceRow(root.current, name);
+    }
+  }, [expanded, root]);
 }

@@ -52,7 +52,14 @@ import (
 // decode). The ctx an Extend call actually runs with is detached from any
 // single caller's cancellation (context.WithoutCancel) — see Get's doc
 // comment.
-type Extend[T any] func(ctx context.Context, path string, fromOffset int64, prior T) (value T, toOffset int64, err error)
+//
+// restarted reports that the fold could not preserve the prior value's order:
+// it rebuilt from byte zero rather than extending prior in place. The cache
+// advances the path's generation for it, because a continuation minted over
+// the old order cannot safely apply its position to the new one. An ordinary
+// append leaves it false, even when the delta needed a full reread of the
+// bytes for some other reason.
+type Extend[T any] func(ctx context.Context, path string, fromOffset int64, prior T) (value T, toOffset int64, restarted bool, err error)
 
 // Result is what Get returns.
 type Result[T any] struct {
@@ -211,7 +218,11 @@ type Cache[T any] struct {
 	// see epochState's doc comment.
 	epochStates map[string]*epochState
 
-	flights map[string]struct{}
+	// flights maps a path to the file size its in-flight Extend's owner
+	// observed when it started. A Get that joins the flight keeps that number:
+	// if its own, later stat saw a longer file, the joined fold cannot have
+	// read the bytes that stat named, and the waiter must not accept it.
+	flights map[string]int64
 	group   singleflight.Group
 
 	// stat is os.Stat, indirected so a test can pin what happens to the
@@ -233,7 +244,7 @@ func New[T any](maxEntries int) *Cache[T] {
 		order:       list.New(),
 		maxEntries:  maxEntries,
 		epochStates: make(map[string]*epochState),
-		flights:     make(map[string]struct{}),
+		flights:     make(map[string]int64),
 		stat:        os.Stat,
 	}
 }
@@ -249,7 +260,20 @@ func New[T any](maxEntries int) *Cache[T] {
 // independently, so a caller
 // whose own context is canceled or expires still returns promptly with its
 // own ctx.Err(), regardless of what the shared call is doing.
+//
+// A waiter whose own stat saw a longer file than the flight it joined began
+// with does not accept that flight's older snapshot: after the shared call
+// returns, it re-runs once against a fold that started after its observation.
+// Without that, a reader that had already seen a complete new record could be
+// served a view from before its own stat.
 func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Result[T], error) {
+	return c.get(ctx, path, extend, 1)
+}
+
+// get is Get with the number of coalesced-snapshot retries left. One retry is
+// enough to cover an observation the joined flight predates; the retry's own
+// flight starts after that observation, so it cannot be stale the same way.
+func (c *Cache[T]) get(ctx context.Context, path string, extend Extend[T], retries int) (Result[T], error) {
 	if err := ctx.Err(); err != nil {
 		var zero Result[T]
 		return zero, err
@@ -276,10 +300,13 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 
 	c.mu.Lock()
 	flightKey := path
-	if _, inflight := c.flights[flightKey]; inflight {
+	observed := info.Size()
+	flightStartSize, inflight := c.flights[flightKey]
+	if inflight {
 		c.coalesced++
 	} else {
-		c.flights[flightKey] = struct{}{}
+		flightStartSize = observed
+		c.flights[flightKey] = observed
 		c.misses++
 	}
 	detached := context.WithoutCancel(ctx)
@@ -302,7 +329,14 @@ func (c *Cache[T]) Get(ctx context.Context, path string, extend Extend[T]) (Resu
 			var zero Result[T]
 			return zero, res.Err
 		}
-		return res.Val.(Result[T]), nil
+		result := res.Val.(Result[T])
+		if retries > 0 && flightStartSize < observed && result.Offset < observed {
+			// The flight we joined started before our stat observed these
+			// bytes, and its fold did not consume them. Read again now that
+			// the old flight has finished.
+			return c.get(ctx, path, extend, retries-1)
+		}
+		return result, nil
 	}
 }
 
@@ -546,9 +580,14 @@ func (c *Cache[T]) refresh(ctx context.Context, path string, info os.FileInfo, e
 		c.mu.Unlock()
 	}
 
-	value, offset, err := extend(ctx, path, fromOffset, prior)
+	value, offset, restarted, err := extend(ctx, path, fromOffset, prior)
 	if err != nil {
 		return Result[T]{}, err
+	}
+	if restarted {
+		// The fold rebuilt its order from zero. A resumable position counted
+		// over the value it replaced is no longer safe to apply.
+		epoch++
 	}
 
 	tail, tailErr := captureTailProbe(path, offset)
@@ -697,7 +736,7 @@ func (c *Cache[T]) readUncached(ctx context.Context, path string, extend Extend[
 		return zero, err
 	}
 	var zero T
-	value, offset, err := extend(ctx, path, 0, zero)
+	value, offset, _, err := extend(ctx, path, 0, zero)
 	if err != nil {
 		var zeroResult Result[T]
 		return zeroResult, err

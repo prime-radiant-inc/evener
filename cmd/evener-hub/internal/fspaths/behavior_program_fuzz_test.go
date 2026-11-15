@@ -40,6 +40,7 @@ func FuzzFSPathsBehaviorProgram(f *testing.F) {
 		checkResolveInRoot_MissingFileNotEscape,
 		checkResolveInRoot_RejectsEmpty,
 		checkResolveInRoot_RejectsMissingRoot,
+		checkResolveInRoot_AllowsSymlinkedSpellingOfCanonicalRoot,
 	}
 	for i := range checks {
 		f.Add(uint8(i))

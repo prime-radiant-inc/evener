@@ -342,11 +342,17 @@ func clampFindLimit(p *int) int {
 // live session's in-memory meta: the current session's on-disk meta is stale
 // mid-run (its turn count and updated-at are only flushed at turn boundaries),
 // so those freshness fields are overlaid from memory.
-func buildSessionRecord(c findCandidate, snips []snippet, currentID string, currentMeta func() schema.SessionMeta) sessionRecord {
+func buildSessionRecord(c findCandidate, snips []snippet, currentID string, currentMeta func() schema.SessionMeta, resolver ...*projectNameResolver) sessionRecord {
 	turnCount, updatedAt := candidateFreshness(c, currentID, currentMeta)
 	parentRef := ""
 	if c.meta.ParentSessionID != "" {
 		parentRef = refFor(c.projectID, c.meta.ParentSessionID)
+	}
+	pName := ""
+	if len(resolver) > 0 && resolver[0] != nil {
+		pName = resolver[0].projectName(c.meta, c.bucketDir)
+	} else {
+		pName = projectName(c.meta, c.bucketDir)
 	}
 	return sessionRecord{
 		TranscriptRef: refFor(c.projectID, c.meta.ID),
@@ -355,7 +361,7 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string, curr
 		UpdatedAt:     updatedAt,
 		ApproxTurns:   turnCount,
 		ParentRef:     parentRef,
-		Project:       projectName(c.meta),
+		Project:       pName,
 		IsCurrent:     c.projectID == "" && c.meta.ID == currentID,
 		Snippets:      snips,
 		SessionID:     c.meta.ID,
@@ -398,6 +404,7 @@ func sortCandidatesNewestFirst(candidates []findCandidate, currentID string) {
 // recordsUpTo builds sessionRecords for the first limit already-sorted candidates
 // that have a readable transcript on disk.
 func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []snippet, currentID string, limit int, currentMeta func() schema.SessionMeta) []sessionRecord {
+	resolver := newProjectNameResolver()
 	var out []sessionRecord
 	for _, c := range candidates {
 		if len(out) >= limit {
@@ -406,7 +413,7 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 		if !transcriptExists(c.bucketDir, c.meta.ID) {
 			continue
 		}
-		out = append(out, buildSessionRecord(c, snipsFor(c), currentID, currentMeta))
+		out = append(out, buildSessionRecord(c, snipsFor(c), currentID, currentMeta, resolver))
 	}
 	return out
 }
@@ -437,6 +444,7 @@ func execFindAcrossSessions(ctx context.Context, deps *toolDeps, query, scope st
 		records = recordsUpTo(candidates, func(_ findCandidate) []snippet { return nil }, currentID, limit, deps.currentMeta)
 	} else {
 		// Content-search: track coverage.
+		resolver := newProjectNameResolver()
 		n := 0
 		trunc := false
 		needle := strings.ToLower(query)
@@ -451,7 +459,7 @@ func execFindAcrossSessions(ctx context.Context, deps *toolDeps, query, scope st
 				continue
 			}
 			if snips, matched := matchCandidate(ctx, c, query, needle, &n, &trunc); matched {
-				records = append(records, buildSessionRecord(c, snips, currentID, deps.currentMeta))
+				records = append(records, buildSessionRecord(c, snips, currentID, deps.currentMeta, resolver))
 			}
 		}
 		// A cancellation inside the last candidate's read is swallowed as a
@@ -778,16 +786,181 @@ func sessionKind(m schema.SessionMeta) string {
 }
 
 // projectName is the display project string: basename of EnvInfo.GitOriginURL
-// when present, else basename of EnvInfo.WorkingDir.
+// when present, else derived from the main repository root (for git worktrees or
+// checkouts) or bucket metadata, falling back to WorkingDir basename.
 // A trailing ".git" is stripped so "…/evener.git" displays as "evener".
-func projectName(m schema.SessionMeta) string {
+func projectName(m schema.SessionMeta, bucketDir ...string) string {
+	bDir := ""
+	if len(bucketDir) > 0 {
+		bDir = bucketDir[0]
+	}
+	return newProjectNameResolver().projectName(m, bDir)
+}
+
+type projectNameResolver struct {
+	env                *execenv.LocalExecutionEnvironment
+	mainRootCache      map[string]string
+	bucketProjectCache map[string]string
+}
+
+func newProjectNameResolver() *projectNameResolver {
+	return &projectNameResolver{
+		env:                execenv.NewLocalExecutionEnvironment(""),
+		mainRootCache:      make(map[string]string),
+		bucketProjectCache: make(map[string]string),
+	}
+}
+
+func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string) string {
 	if origin := strings.TrimSpace(m.EnvInfo.GitOriginURL); origin != "" {
 		return repoBasename(origin)
 	}
-	if wd := strings.TrimSpace(m.EnvInfo.WorkingDir); wd != "" {
-		return filepath.Base(wd)
+	wd := strings.TrimSpace(m.HomeDir())
+	if wd == "" {
+		wd = strings.TrimSpace(m.EnvInfo.WorkingDir)
 	}
-	return ""
+	if wd == "" {
+		return ""
+	}
+
+	// 1. Check ResolveMainRepoRoot (cached by wd)
+	if root, ok := r.mainRootCache[wd]; ok {
+		if root != "" {
+			return filepath.Base(root)
+		}
+	} else {
+		root := execenv.ResolveMainRepoRoot(r.env, wd)
+		r.mainRootCache[wd] = root
+		if root != "" {
+			return filepath.Base(root)
+		}
+	}
+
+	// 2. ONLY if wd is structurally a worktree path whose checkout directory no longer resolves via ResolveMainRepoRoot:
+	if name, isWorktree := r.worktreePathFallback(wd, bucketDir); isWorktree {
+		return name
+	}
+
+	// 3. For any ordinary directory (e.g. /home/jesse/my-notes), return filepath.Base(wd)
+	return filepath.Base(wd)
+}
+
+func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string, bool) {
+	clean := filepath.Clean(wd)
+	sep := string(filepath.Separator)
+
+	// (a) In-repo worktrees (/.worktrees/<name>, /.claude/worktrees/<name>, /.git/worktrees/<name>)
+	for _, marker := range []string{
+		sep + ".claude" + sep + "worktrees" + sep,
+		sep + ".git" + sep + "worktrees" + sep,
+		sep + ".worktrees" + sep,
+	} {
+		if repoDir, _, ok := strings.Cut(clean, marker); ok {
+			if base := filepath.Base(repoDir); base != "" && base != "." && base != sep {
+				return base, true
+			}
+			return "", true
+		}
+	}
+	if repoDir, ok := strings.CutSuffix(clean, sep+".worktrees"); ok {
+		return filepath.Base(repoDir), true
+	}
+
+	// (b) Evener state-dir worktrees (.../projects/<bucket>/worktrees/... or .../sessions/<sid>/worktrees/...)
+	isStateWorktree := false
+	parts := strings.Split(clean, sep)
+	for i, part := range parts {
+		if part == "worktrees" && i > 0 {
+			isStateWorktree = true
+			break
+		}
+	}
+	if !isStateWorktree {
+		return "", false
+	}
+
+	if bucketDir == "" {
+		return "", true
+	}
+	if name, ok := r.bucketProjectCache[bucketDir]; ok {
+		return name, true
+	}
+
+	// Try loading sid's own SessionMeta if wd is .../sessions/<sid>/worktrees/...
+	for i, part := range parts {
+		if part == "sessions" && i+2 < len(parts) && parts[i+2] == "worktrees" {
+			sid := parts[i+1]
+			if meta, err := schema.LoadSessionMeta(bucketDir, sid); err == nil {
+				if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
+					p := repoBasename(origin)
+					r.bucketProjectCache[bucketDir] = p
+					return p, true
+				}
+				if restore := strings.TrimSpace(meta.WorktreeRestoreRoot); restore != "" {
+					p := filepath.Base(restore)
+					r.bucketProjectCache[bucketDir] = p
+					return p, true
+				}
+				if home := strings.TrimSpace(meta.HomeDir()); home != "" && !strings.Contains(home, "worktrees") {
+					if root := r.resolveMainRoot(home); root != "" {
+						p := filepath.Base(root)
+						r.bucketProjectCache[bucketDir] = p
+						return p, true
+					}
+					p := filepath.Base(home)
+					r.bucketProjectCache[bucketDir] = p
+					return p, true
+				}
+			}
+		}
+	}
+
+	// Scan bucket sessions in two passes:
+	// Pass 1: authoritative GitOriginURL or WorktreeRestoreRoot
+	metas, err := schema.ListSessionMetas(bucketDir)
+	if err == nil {
+		for _, sm := range metas {
+			if origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL); origin != "" {
+				p := repoBasename(origin)
+				r.bucketProjectCache[bucketDir] = p
+				return p, true
+			}
+			if restore := strings.TrimSpace(sm.WorktreeRestoreRoot); restore != "" {
+				p := filepath.Base(restore)
+				r.bucketProjectCache[bucketDir] = p
+				return p, true
+			}
+		}
+		// Pass 2: ordinary home directory, resolved via resolveMainRoot
+		for _, sm := range metas {
+			home := strings.TrimSpace(sm.HomeDir())
+			if home == "" {
+				home = strings.TrimSpace(sm.EnvInfo.WorkingDir)
+			}
+			if home != "" && !strings.Contains(home, "worktrees") {
+				if root := r.resolveMainRoot(home); root != "" {
+					p := filepath.Base(root)
+					r.bucketProjectCache[bucketDir] = p
+					return p, true
+				}
+				p := filepath.Base(home)
+				r.bucketProjectCache[bucketDir] = p
+				return p, true
+			}
+		}
+	}
+
+	r.bucketProjectCache[bucketDir] = ""
+	return "", true
+}
+
+func (r *projectNameResolver) resolveMainRoot(dir string) string {
+	if root, ok := r.mainRootCache[dir]; ok {
+		return root
+	}
+	root := execenv.ResolveMainRepoRoot(r.env, dir)
+	r.mainRootCache[dir] = root
+	return root
 }
 
 // repoBasename returns the final path segment of a git origin URL, stripping a

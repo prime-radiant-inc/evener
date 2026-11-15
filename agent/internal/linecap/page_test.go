@@ -96,3 +96,62 @@ func TestReadJournalPageAccountsForPrefetch(t *testing.T) {
 		t.Fatalf("prefetch accounting offset=%d read=%d", cursor.Offset, cursor.ReadBytes)
 	}
 }
+
+// TestReadJournalPageLargeBufferReadsFewTimes pins the page reader's read
+// granularity: one underlying read per 64 KiB, not one per bufio's 4 KiB
+// default.
+// Not parallel: overrides the page open seam.
+func TestReadJournalPageLargeBufferReadsFewTimes(t *testing.T) {
+	origOpen := openJournalPageFile
+	var reads int
+	openJournalPageFile = func(path string) (pageFile, error) {
+		file, err := origOpen(path)
+		if err != nil {
+			return nil, err
+		}
+		return &countingPageFile{pageFile: file, reads: &reads}, nil
+	}
+	t.Cleanup(func() { openJournalPageFile = origOpen })
+
+	path := filepath.Join(t.TempDir(), "journal")
+	const lineCount = 2000
+	content := strings.Repeat(strings.Repeat("x", 79)+"\n", lineCount)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var cursor JournalCursor
+	page, done, err := ReadJournalPage(context.Background(), path, &cursor, 1<<20, lineCount, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != lineCount || !done {
+		t.Fatalf("page lines = %d, done = %v — the page must read the whole journal", len(page), done)
+	}
+	if cursor.Offset != info.Size() {
+		t.Fatalf("cursor offset = %d, want %d", cursor.Offset, info.Size())
+	}
+	wantReads := int((info.Size() + 64*1024 - 1) / (64 * 1024))
+	// The slack covers the EOF probe that ends every page read plus at most
+	// one fill stranded by a line boundary; a 4 KiB regression still pays
+	// dozens of reads over this bound.
+	if reads > wantReads+2 {
+		t.Fatalf("page read the %d byte journal with %d underlying reads; a 64 KiB buffer pays about %d", info.Size(), reads, wantReads)
+	}
+}
+
+// countingPageFile counts the underlying reads a page issues, so a test can
+// pin a buffer's read granularity without timing anything.
+type countingPageFile struct {
+	pageFile
+	reads *int
+}
+
+func (c *countingPageFile) Read(p []byte) (int, error) {
+	*c.reads++
+	return c.pageFile.Read(p)
+}

@@ -148,6 +148,10 @@ If the task needs a tool listed as unavailable in this session, or an Evener cap
 
 Add every GitHub pull request you open, update, review or merge to the session URL list with `urls_add`, and add any other link your human partner should look at, such as a CI run, an issue, a design or a deployed preview. Label each so the list reads on its own.{{ if .HasTool "urls_remove" }} When the list is full, drop an entry that no longer matters with `urls_remove`.{{ end }}
 
+{{ end }}{{ if .IsSubagent }}## Session links
+
+Only the coordinator can add or remove session links. If a link matters, ask the parent to add it.
+
 {{ end }}## Finishing
 
 Before you finish, leave the workspace the way the work needs it to count.{{ if .HasAskUser }} If that end state is unclear, ask your human partner.{{ end }} Everything the task asked you to produce or leave running stays. Delete files that were there before you started only when the task asks. A final check that destroys what it built proves nothing.
@@ -296,8 +300,7 @@ Activated skill instructions:
 {{ . }}
 {{ end }}{{ end }}
 
-{{ if not .IsSubagent }}
-{{ if .Skills }}<skill-catalog>
+{{ if and .Skills (or (not .IsSubagent) (or .HasUseSkill (.HasTool "read_file"))) }}<skill-catalog>
 {{ if .HasUseSkill }}Load a skill by calling use_skill with its name. Resolve relative references to scripts and other collateral against the response's base_directory, and load only the referenced resources needed for the current task when they are needed. Treat a slash token matching a canonical catalog name as a skill request only when it starts at message start or after whitespace and ends at message end or before whitespace, including inline prose; call use_skill with the exact catalog key before acting. Ignore paths, URLs, code or literal/negated mentions, and unknown names.
 {{ else }}Load a skill by reading its SKILL.md file path with read_file. The skill directory may contain scripts and other collateral.
 {{ end }}{{ range .Skills }}{{ if $.HasUseSkill }}- {{ .CatalogNameOrName }}: {{ .Description }} [{{ .Dir }}]
@@ -305,6 +308,7 @@ Activated skill instructions:
 {{ end }}{{ end }}</skill-catalog>
 {{ end }}
 
+{{ if not .IsSubagent }}
 {{ if .AvailableAgents }}<available_agents>
 The following subagent types are available for `delegate` with the `agent_type` parameter:
 {{ range .AvailableAgents }}<agent>

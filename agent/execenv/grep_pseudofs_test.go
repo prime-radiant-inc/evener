@@ -150,7 +150,7 @@ func TestGrepWalkSkipsPseudoFsDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantInside := []string{filepath.FromSlash("deep/keep.txt"), "keep.txt", "named.txt"}
+	wantInside := []string{filepath.FromSlash("pseudo/deep/keep.txt"), filepath.FromSlash("pseudo/keep.txt"), filepath.FromSlash("pseudo/named.txt")}
 	if lines := strings.Split(got, "\n"); !slices.Equal(lines, wantInside) {
 		t.Fatalf("walk rooted inside the pseudo tree = %q, want %q", got, wantInside)
 	}
