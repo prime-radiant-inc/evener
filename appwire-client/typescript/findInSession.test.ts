@@ -29,6 +29,15 @@ describe("what counts as a find match", () => {
     const at = findIndexIn(readable, findNeedle("two three"));
     expect(readable.slice(at, at + "two three".length).toLowerCase()).toBe("two three");
   });
+
+  it("locates a match that follows a character its lower case makes longer", () => {
+    // "İ" lower-cases to "i" plus a combining dot: two units for one
+    // character, so an offset into the lower-cased copy is not an offset into
+    // the text a snippet is cut from.
+    const readable = findReadable("İ needle");
+    const at = findIndexIn(readable, findNeedle("needle"));
+    expect(readable.slice(at, at + "needle".length)).toBe("needle");
+  });
 });
 
 describe("stepping between matches", () => {

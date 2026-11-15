@@ -5,7 +5,7 @@
 // inline runs are joined with nothing, the same way Find reads the rendered
 // DOM. This module stays free of the transcript's renderers so the palette's
 // search can share it.
-import { type ItemModel, pendingTextJoined } from "@evener/appwire-client";
+import { fenceLanguage, type ItemModel, pendingTextJoined } from "@evener/appwire-client";
 import type { Token } from "marked";
 import { splitMarkdownSegments } from "../../../widgets/markdown/segments";
 import { closeOpenMarkdown } from "../../../widgets/markdown/streaming";
@@ -54,7 +54,9 @@ function read(tokens: readonly Token[], into: string[]): void {
         if (token.block) into.push("\n");
         break;
       case "code":
-        into.push(token.text, "\n");
+        // The row shows the fence's language in a header above the code, on its
+        // own line, so the label is a word of its own before the block's text.
+        into.push(fenceLanguage(token), "\n", token.text, "\n");
         break;
       default:
         if ("tokens" in token && token.tokens) {

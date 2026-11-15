@@ -1,3 +1,4 @@
+import { fenceLanguage } from "@evener/appwire-client";
 import DOMPurify from "dompurify";
 import type { RendererObject, Token, Tokens } from "marked";
 import { memo, type Ref, useMemo, useRef } from "react";
@@ -69,8 +70,11 @@ const renderer: RendererObject = {
   // React children - so there's no copy button here; that's a deliberate,
   // documented scope cut, the same way CodeBlock itself skips a
   // highlighter this wave.
-  code({ text, lang }: Tokens.Code) {
-    const language = lang?.trim().split(/\s+/)[0];
+  code(token: Tokens.Code) {
+    const { text } = token;
+    // The same derivation the transcript's Find reads, so the header's words
+    // and the searched words agree.
+    const language = fenceLanguage(token);
     const header = language
       ? `<div class="${CODEBLOCK_CLASS.header}"><span class="${CODEBLOCK_CLASS.language}">${escapeHtml(language)}</span></div>`
       : "";

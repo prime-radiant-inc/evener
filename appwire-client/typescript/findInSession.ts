@@ -17,9 +17,27 @@ export function findReadable(text: string): string {
   return collapseWhitespace(text).trim();
 }
 
-/** Where `needle` (from findNeedle) first sits in findReadable(text), or -1. */
+/** Where `needle` (from findNeedle) first sits in findReadable(text), or -1.
+ *
+ * A caller slices the readable text at the result, so the index counts
+ * characters of `readable`, never of its lower-cased copy. Lower-casing can
+ * make one character into two units ("İ" becomes "i" plus a combining dot),
+ * which shifts every offset after it: the walk below keeps the two in step. */
 export function findIndexIn(readable: string, needle: string): number {
-  return needle === "" ? -1 : readable.toLowerCase().indexOf(needle);
+  if (needle === "") return -1;
+  const at = readable.toLowerCase().indexOf(needle);
+  if (at < 0) return -1;
+  // Count the lower-cased units each character contributes until the match's
+  // offset in the copy is reached. The match cannot begin inside a character's
+  // expansion, since the needle came from text findReadable trimmed.
+  let lowered = 0;
+  let index = 0;
+  for (const char of readable) {
+    if (lowered === at) return index;
+    lowered += char.toLowerCase().length;
+    index += char.length;
+  }
+  return lowered === at ? index : -1;
 }
 
 export function textMatchesFind(text: string, needle: string): boolean {

@@ -135,6 +135,19 @@ test("a live Mermaid fence remains searchable until its real closing fence arriv
   expect(findHits(rows, "flowchart TD").map((hit) => hit.key)).toEqual(["open"]);
 });
 
+// A fenced block's row shows its language in a header above the code, so the
+// words there are on screen and Find must be able to land on them. A reader
+// that skipped the header would count fewer matches than the page shows.
+test("a fenced block's language label is on screen and searched", () => {
+  const fence = "```";
+  const reply = `Try this:\n\n${fence}go\nfunc main() {}\n${fence}\n\nThat is all.`;
+  const rows = [turnRow("t", [message("a", reply)])];
+  expect(findHits(rows, "go").map((hit) => hit.key)).toEqual(["a"]);
+  expect(findHits(rows, "func main").map((hit) => hit.key)).toEqual(["a"]);
+  // The label is its own word, so it does not run on into the code.
+  expect(findHits(rows, "gofunc")).toEqual([]);
+});
+
 test("a character reference in a reply is searched as the character it shows", () => {
   const reply = "The R&amp;D report costs &#36;5 &lt;today&gt;.\n\n`a &amp; b` stays code, and \\&amp; stays escaped.";
   const rows = [turnRow("t", [message("a", reply), message("u", "typed &amp; kept", "userMessage")])];
