@@ -28,13 +28,7 @@ func TestSessionActivityDelegateNameSurvivesRetainedRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			key := s.stateDir + "\x00" + s.ID()
-			sessionActivityIndexes.Lock()
-			if cached := sessionActivityIndexes.entries[key]; cached != nil {
-				delete(sessionActivityIndexes.entries, key)
-				sessionActivityIndexes.order.Remove(cached.element)
-			}
-			sessionActivityIndexes.Unlock()
+			dropSessionActivityIndexCache(s.stateDir, s.ID())
 			retained, err := LoadSessionActivityDelegates(t.Context(), s.stateDir, s.ID(), params)
 			if err != nil {
 				t.Fatal(err)
@@ -147,13 +141,7 @@ func TestSessionActivityContextDelegateNamesLiveAndRetained(t *testing.T) {
 	for _, retained := range []bool{false, true} {
 		if retained {
 			// Reconstruct from journals, never from the live controller's cached index.
-			key := s.stateDir + "\x00" + s.ID()
-			sessionActivityIndexes.Lock()
-			if cached := sessionActivityIndexes.entries[key]; cached != nil {
-				delete(sessionActivityIndexes.entries, key)
-				sessionActivityIndexes.order.Remove(cached.element)
-			}
-			sessionActivityIndexes.Unlock()
+			dropSessionActivityIndexCache(s.stateDir, s.ID())
 		}
 		leafContext := read(leaf.ChildSessionID, retained)
 		if !leafContext.AncestryKnown || leafContext.Ref != encodeRef("", leaf.ChildSessionID) || leafContext.RootRef != ref || leafContext.ParentRef != encodeRef("", parent.ChildSessionID) || leafContext.SessionID != leaf.ChildSessionID || leafContext.DelegateID != "dlg_leaf" || len(leafContext.Ancestors) != 2 {
@@ -276,13 +264,7 @@ func TestSessionActivityContextAncestorTitleFallsBackToParentTask(t *testing.T) 
 				var err error
 				if retained {
 					// Reconstruct from journals, never from the live controller's cached index.
-					key := s.stateDir + "\x00" + s.ID()
-					sessionActivityIndexes.Lock()
-					if cached := sessionActivityIndexes.entries[key]; cached != nil {
-						delete(sessionActivityIndexes.entries, key)
-						sessionActivityIndexes.order.Remove(cached.element)
-					}
-					sessionActivityIndexes.Unlock()
+					dropSessionActivityIndexCache(s.stateDir, s.ID())
 					summary, err = LoadSessionActivitySummary(t.Context(), s.stateDir, leaf.ChildSessionID, params)
 				} else {
 					summary, err = s.ActivitySummary(t.Context(), params)
