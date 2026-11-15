@@ -14,6 +14,7 @@ import {
   type ThreadModel,
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
+import { mermaidRenderVersion } from "../../../widgets/mermaid/renderState";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { messageAsShown } from "./messageText";
 
@@ -71,16 +72,20 @@ export function indexOfMatch(
 // A message's searchable text, normalised once. Settled items keep their
 // identity across re-projection, so while a reply streams only the growing
 // item is read again; every other entry is a substring test.
-const haystacks = new WeakMap<ItemModel, string | null>();
+const haystacks = new WeakMap<ItemModel, { version: number; text: string | null }>();
 
 function haystack(item: ItemModel): string | null {
-  let cached = haystacks.get(item);
-  if (cached === undefined) {
+  // A diagram renders asynchronously, so one can fail after this message was
+  // first read; the version changes then and the text is read again.
+  const version = mermaidRenderVersion();
+  const cached = haystacks.get(item);
+  if (cached === undefined || cached.version !== version) {
     const shown = messageAsShown(item);
-    cached = shown === null ? null : findReadable(shown).toLowerCase();
-    haystacks.set(item, cached);
+    const text = shown === null ? null : findReadable(shown).toLowerCase();
+    haystacks.set(item, { version, text });
+    return text;
   }
-  return cached;
+  return cached.text;
 }
 
 function matches(entry: ProjectedEntry, needle: string): boolean {

@@ -13,7 +13,7 @@ import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { connectReadyFakeClient } from "../../testing/connectionTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
@@ -199,4 +199,53 @@ test("a request from the menu or the palette opens Find on the named item", asyn
   expect((screen.getByRole("searchbox") as HTMLInputElement).value).toBe("quokka");
   expect(bar.getAttribute("data-find-position")).toBe("2");
   await waitFor(() => expect(marked()?.getAttribute("data-view-anchor-id")).toBe("turn_1-agentMessage"));
+});
+
+test("a popout holding only a dormant session still opens Find in that popout", async () => {
+  // The dormant surface replaces the transcript subtree, so a container ref
+  // inside the transcript never attaches. Document ownership therefore has to
+  // come from the pane the seat names, which the scaffold registers whether or
+  // not the transcript is mounted.
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a", { turns: [] }) }));
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popup = frame.contentWindow;
+  const popdoc = frame.contentDocument;
+  if (!popup || !popdoc) throw new Error("missing popout window");
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+
+  const mounted = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused />
+    </ClientProvider>,
+    { container: popdoc.body },
+  );
+
+  const elsewhere = popdoc.createElement("button");
+  popdoc.body.append(elsewhere);
+  elsewhere.focus();
+  const chord = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+    key: "f",
+    code: "KeyF",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => {
+    elsewhere.dispatchEvent(chord);
+  });
+
+  expect(chord.defaultPrevented).toBe(true);
+  const bar = popdoc.querySelector("[data-find-bar]");
+  expect(bar).not.toBeNull();
+  expect(document.querySelector("[data-find-bar]")).toBeNull();
+  mounted.unmount();
+  frame.remove();
 });

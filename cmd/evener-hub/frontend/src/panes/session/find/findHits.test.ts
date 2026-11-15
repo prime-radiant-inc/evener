@@ -7,9 +7,11 @@ import {
   type ThreadModel,
   type TurnModel,
 } from "@evener/appwire-client";
-import { expect, test } from "vitest";
+import { act } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import "../transcript/tools";
+import { noteMermaidRender, resetMermaidRenderStateForTests } from "../../../widgets/mermaid/renderState";
 import { findableItemIds, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { messageAsShown } from "./messageText";
 
@@ -208,4 +210,23 @@ test("the current match is found again by its message, whatever key that message
   expect(
     indexOfMatch(hitsOf(reply("other", "needle other", { callId: "c0" })), { key: "preview:c1", itemId: "preview:c1" }),
   ).toBe(-1);
+});
+
+beforeEach(() => {
+  resetMermaidRenderStateForTests();
+});
+
+// A diagram that fails to render falls back to a code block holding its
+// source, so its words are on screen and Find has to count them.
+test("a failed diagram's source becomes searchable when it falls back to code", () => {
+  const fence = "```";
+  const source = "flowchart TD\n  A --> secretNode";
+  const reply = `The flow:\n\n${fence}mermaid\n${source}\n${fence}\n\nDone.`;
+  const rows = [turnRow("t", [message("drawn", reply)])];
+  expect(findHits(rows, "secretNode")).toEqual([]);
+  act(() => noteMermaidRender(source, "error"));
+  expect(findHits(rows, "secretNode").map((hit) => hit.key)).toEqual(["drawn"]);
+  // A diagram that starts rendering again stops being a code block.
+  act(() => noteMermaidRender(source, "ok"));
+  expect(findHits(rows, "secretNode")).toEqual([]);
 });

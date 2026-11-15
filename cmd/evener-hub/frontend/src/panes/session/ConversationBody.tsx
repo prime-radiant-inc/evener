@@ -1,6 +1,7 @@
 import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
+import { chromeStore } from "../../shell/chromeStore";
 import { focusedSessionRef } from "../../shell/focusedSession";
 import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
@@ -244,7 +245,15 @@ function LiveConversationBody({
 }) {
   const virtualListRef = useRef<VirtualListHandle>(null);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
-  const ownerDocument = useOwnedDocument(transcriptContainerRef);
+  // A dormant conversation renders the empty surface instead of the transcript
+  // subtree, so the transcript container never mounts and its ref stays null -
+  // which resolves to the opener's document. Find would then install its
+  // dispatcher on the wrong window and the chord would not open in a popout.
+  // The pane publishes its own document whether or not the transcript mounts,
+  // so prefer that registration whenever the container is absent.
+  const mountedDocument = useOwnedDocument(transcriptContainerRef);
+  const paneDocument = useStore(chromeStore, (s) => s.paneDocuments.get(seat.viewFallbackId) ?? null);
+  const ownerDocument = transcriptContainerRef.current === null ? (paneDocument ?? mountedDocument) : mountedDocument;
   const {
     model,
     hasOlder,
