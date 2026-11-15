@@ -705,9 +705,10 @@ function settleModelSwitchThrough(requests: ModelSwitchRequestState, sequence: n
 }
 
 function matchingModelSwitchTarget(
-  requests: ModelSwitchRequestState,
+  requests: ModelSwitchRequestState | undefined,
   targets: readonly ModelSwitchIdentity[],
 ): ModelSwitchTarget | undefined {
+  if (!requests) return undefined;
   let match: ModelSwitchTarget | undefined;
   for (const candidates of [requests.unsettled, requests.pending]) {
     for (const candidate of candidates.values()) {
@@ -719,9 +720,10 @@ function matchingModelSwitchTarget(
 }
 
 function modelSwitchTargetByMutationID(
-  requests: ModelSwitchRequestState,
+  requests: ModelSwitchRequestState | undefined,
   clientMutationId: string,
 ): ModelSwitchTarget | undefined {
+  if (!requests) return undefined;
   return requests.unsettled.get(clientMutationId) ?? requests.pending.get(clientMutationId);
 }
 
@@ -767,11 +769,6 @@ function reconcileAcceptedModelSwitchAuthority(
   const accepted = current.get(ref);
   const appliedOrder = modelPickOrder(ref);
   const pickOrder = authorityPick?.sequence ?? 0;
-  // The session stamps an order on every acceptance, identified or not, so a
-  // sample carrying an order older than the newest one this page applied is a
-  // cached republication and never a supersession.
-  if (authorityPick !== undefined && pickOrder > 0 && pickOrder < appliedOrder) return current;
-  for (const model of authorityModels) noteModelPickOrder(ref, authorityPick, model);
   const requests = modelSwitchRequests.get(ref);
   const correlated =
     clientMutationId !== undefined &&
@@ -779,53 +776,66 @@ function reconcileAcceptedModelSwitchAuthority(
     modelSwitchTargetByMutationID(requests, clientMutationId) !== undefined;
   // A request that already settled leaves the pending maps, so the accepted
   // entry itself is the second record of which pick this page issued.
+  const pickMutationId = authorityPick?.clientMutationId;
   const pickOurs =
-    authorityPick !== undefined &&
-    authorityPick.clientMutationId !== "" &&
-    (modelSwitchTargetByMutationID(requests, authorityPick.clientMutationId) !== undefined ||
-      accepted?.clientMutationId === authorityPick.clientMutationId);
+    pickMutationId !== undefined &&
+    pickMutationId !== "" &&
+    (modelSwitchTargetByMutationID(requests, pickMutationId) !== undefined ||
+      accepted?.clientMutationId === pickMutationId);
+  // The session stamps an order on every acceptance, identified or not, so any
+  // sample this page has already accounted for is a cached republication and
+  // never a supersession. A rejection is the one thing that still needs
+  // acting on: it may arrive for a pick whose pending acceptance was already
+  // reported, and it is durable session state that the display has to obey.
+  const accounted = pickOrder > 0 && pickOrder <= appliedOrder;
+  if (authorityPick !== undefined && accounted && authorityPick.outcome !== MODEL_PICK_REJECTED && !pickOurs)
+    return current;
+  for (const model of authorityModels) noteModelPickOrder(ref, authorityPick, model);
   if (authorityPick !== undefined && pickOurs) {
-    // This page's own pick. Record the order the session assigned it, which is
-    // what lets a later sample be ordered against it; an accepted entry only
-    // moves with a pick that is already the displayed one.
-    settleModelSwitchAuthority(ref, [], authorityPick.clientMutationId);
-    if (!accepted || accepted.clientMutationId !== authorityPick.clientMutationId) return current;
-    if (accepted.authoritySequence === pickOrder) return current;
-    return new Map(current).set(ref, { ...accepted, authoritySequence: pickOrder });
-  }
-  // Evidence this page did not issue retires every request still in flight: a
-  // live notification is the session's final authority the moment it is
-  // emitted, so a request issued before it whose response has not arrived must
-  // not install a choice the session already moved past.
-  const foreign = authorityPick !== undefined ? true : source === "modelChangedNotification" && !correlated;
-  if (foreign) {
-    supersedeAllModelSwitches(ref);
-    if (!accepted) return current;
-    // The displayed pick outranks evidence that is not newer than it. A pick
-    // this page accepted carries the session's order once one has been
-    // reported, and an accepted pick still awaiting that order is outranked
-    // only by evidence newer than everything already applied: the bare
-    // presence of some other identity is not proof of a later acceptance.
-    if (accepted.authoritySequence > 0) {
-      if (pickOrder > 0 && pickOrder <= accepted.authoritySequence) return current;
-    } else if (authorityPick !== undefined && pickOrder > 0 && pickOrder <= appliedOrder) {
-      return current;
-    }
-    const next = new Map(current);
-    next.delete(ref);
-    return next;
-  }
-  // A rejection is durable session state, so it settles the pick even when the
-  // notice that announced it was evicted from the session's bounded ring. It
-  // clears the display only when it names that pick: a rejected pick belonging
-  // to another client says nothing about this page's accepted one.
-  if (authorityPick !== undefined && authorityPick.outcome === MODEL_PICK_REJECTED) {
-    if (accepted && accepted.clientMutationId === authorityPick.clientMutationId) {
+    settleModelSwitchAuthority(ref, [], pickMutationId);
+    // A rejection is durable session state, so the snapshot still carries it
+    // after the notice that announced it was evicted from the session's
+    // bounded ring. It clears the display it names whether or not that notice
+    // ever reached this page.
+    if (authorityPick.outcome === MODEL_PICK_REJECTED) {
       supersedeAllModelSwitches(ref);
+      if (!accepted || accepted.clientMutationId !== authorityPick.clientMutationId) return current;
       const next = new Map(current);
       next.delete(ref);
       return next;
     }
+    // This page's own pick. Record the order the session assigned it, which is
+    // what lets a later sample be ordered against it; an accepted entry only
+    // moves with a pick that is already the displayed one.
+    if (!accepted || accepted.clientMutationId !== authorityPick.clientMutationId) return current;
+    if (accepted.authoritySequence === pickOrder) return current;
+    return new Map(current).set(ref, { ...accepted, authoritySequence: pickOrder });
+  }
+  // A pick this page did not issue owns the model outcome: it retires the
+  // displayed entry and every request still in flight. A live notification no
+  // request of this page answers is that same authority, so a request issued
+  // before it whose response has not arrived cannot install a choice the
+  // session already moved past.
+  const answer = matchingModelSwitchTarget(
+    requests,
+    authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
+  );
+  if (authorityPick !== undefined || (source === "modelChangedNotification" && !correlated && !answer)) {
+    supersedeAllModelSwitches(ref);
+  }
+  // A pick this page did not issue retires the display only when it is newer
+  // than the order already applied: a sample this page accounted for is a
+  // cached republication and never a supersession.
+  if (authorityPick !== undefined && !pickOurs) {
+    if (accepted) {
+      const displayedOrder = accepted.authoritySequence > 0 ? accepted.authoritySequence : appliedOrder;
+      if (pickOrder > 0 && pickOrder <= displayedOrder) return current;
+      const next = new Map(current);
+      next.delete(ref);
+      return next;
+    }
+    // A rejected pick is durable session state and settles any request behind
+    // it, but it names no display this page holds.
     return current;
   }
   // A named pick settles by identity alone. An unchanged running model is not
@@ -10130,6 +10140,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  modelPickOrders.clear();
   resolvedEscalationsByRef.clear();
   threadReadsByRef.clear();
   resetEntryTranscriptRoutesForTests();
