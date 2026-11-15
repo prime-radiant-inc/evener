@@ -19,7 +19,7 @@ import { paletteStore } from "../../../shell/palette/paletteController";
 import type { VirtualListHandle } from "../../../widgets";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
-import { type FindHit, findHits, indexOfMatch } from "./findHits";
+import { type FindHit, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { landingScrollTop, markTranscript } from "./findMarks";
 import { consumeFindRequest, useFindRequest } from "./findRequest";
 
@@ -291,7 +291,10 @@ export function useFindInSession({
       return;
     }
     if (!lost || find.seek === "restore") return;
-    const evicted = find.item !== null && !itemLoaded(find.item);
+    // A discarded overlay was never recorded, so no page of older history can
+    // bring it back: reading for it would page the whole session in vain. Only
+    // a recorded message can have been evicted.
+    const evicted = find.item !== null && !isOverlay(find.item) && !itemLoaded(find.item);
     if (evicted && !historyEnded) setState({ ...find, seek: "restore" });
     else setState({ ...find, ...NO_MATCH, seek: null });
   }, [find, current, lost, historyEnded, itemLoaded]);

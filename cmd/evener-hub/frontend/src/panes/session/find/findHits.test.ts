@@ -10,7 +10,7 @@ import {
 import { expect, test } from "vitest";
 import { type TranscriptBodyRow, transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import "../transcript/tools";
-import { findableItemIds, findHits, indexOfMatch } from "./findHits";
+import { findableItemIds, findHits, indexOfMatch, isOverlay } from "./findHits";
 import { messageAsShown } from "./messageText";
 
 type ItemEntry = Extract<ProjectedEntry, { kind: "item" }>;
@@ -183,6 +183,12 @@ test("the current match is found again by its message, whatever key that message
   // A streamed reply being recorded keeps its key and takes a new item.
   const recorded = hitsOf(reply("m1", "needle streamed", {}, "round:r2"));
   expect(indexOfMatch(recorded, { key: "round:r2", itemId: "stream:r2/0:agentMessage" })).toBe(0);
+
+  // An overlay id names live state no refresh can bring back, unlike a
+  // recorded item id, whatever it looks like.
+  expect(isOverlay("stream:r2/0:agentMessage")).toBe(true);
+  expect(isOverlay("preview:c1")).toBe(true);
+  expect(isOverlay("m1")).toBe(false);
   // A stream of several text runs is recorded as several messages, and only
   // the first keeps the round's key. A match in a later run is found by its round.
   const laterRun = hitsOf(reply("m3", "needle in the second run", { roundId: "r2" }));

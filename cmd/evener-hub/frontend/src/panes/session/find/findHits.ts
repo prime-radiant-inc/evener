@@ -37,7 +37,9 @@ export interface FindHit {
 const STREAM = "stream:";
 const PREVIEW = "preview:";
 
-function isOverlay(itemId: string): boolean {
+/** Whether an item id names an overlay slot: live state no refresh can bring
+ * back, because it was never recorded. */
+export function isOverlay(itemId: string): boolean {
   return itemId.startsWith(STREAM) || itemId.startsWith(PREVIEW);
 }
 
