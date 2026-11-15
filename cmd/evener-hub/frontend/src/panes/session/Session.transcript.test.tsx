@@ -1217,6 +1217,81 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
   }
 });
 
+// A queue row arriving from another client must bump the held epoch too
+// (issue #6363): reconcilePendingEntries excludes identities the daemon's
+// queue already reflects, so keying the epoch on this client's pending
+// entries alone never fires for a foreign arrival and a scrolled-away
+// reader gets no new-content pill. The epoch counts the visible pending
+// MESSAGE set - the same rows the stack renders - so the arrival edge
+// covers every family the pane can see.
+test("heldEpoch bumps on a foreign queue arrival, not only this client's holds", async () => {
+  // Same spy shape as the removal pin above: the epoch Session feeds the
+  // scroll coordinator, observed through the options the coordinator
+  // actually received.
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const epochs: number[] = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      epochs.push(options.heldEpoch ?? 0);
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectReadyFakeClient();
+    fake.on("thread/read", () => versionedReadResponse("ref_a", liveSurfaceThread()));
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("earlier reply")).toBeTruthy());
+    const baseline = Math.max(...epochs);
+    // A foreign arrival: another client (or the TUI) queues a message. No
+    // pending entry of THIS client exists; the row arrives through the
+    // daemon's queue alone.
+    await act(async () => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          queue: {
+            revision: 1,
+            depth: 1,
+            ids: ["q_foreign"],
+            texts: ["queued elsewhere"],
+            preview: ["queued elsewhere"],
+          },
+          consumedClientMutationIds: [],
+        },
+      });
+    });
+    // The row is visible in the pane's pending stack.
+    await waitFor(() =>
+      expect(screen.getByText("queued elsewhere", { selector: "[data-testid=user-bubble] *" })).toBeTruthy(),
+    );
+    expect(Math.max(...epochs)).toBe(baseline + 1); // the arrival bumped it
+    // The row leaving (delivered or consumed elsewhere) never bumps again.
+    await act(async () => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          queue: { revision: 2, depth: 0, ids: [] },
+          consumedClientMutationIds: [],
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("queued elsewhere", { selector: "[data-testid=user-bubble] *" })).toBeNull(),
+    );
+    expect(Math.max(...epochs)).toBe(baseline + 1); // removal never bumps
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 test("held steering renders only on a live surface: a notLoaded session shows no ghost", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { ...liveSurfaceThread(), status: { type: "notLoaded" } }));
