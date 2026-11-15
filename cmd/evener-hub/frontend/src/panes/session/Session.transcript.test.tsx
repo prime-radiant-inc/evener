@@ -1713,153 +1713,174 @@ test("a busy retry keeps its keyboard focus through the in-flight window", async
 
 // Keep the pane mounted while the queue source, consuming command and
 // recorded steering item hand the message to each other.
-test.each(["local", "remote"])("a queued row stays visible once through %s promotion and recording", async (origin) => {
-  const fake = connectReadyFakeClient();
-  const text = "promotion lifecycle sentinel";
-  const sourceId = origin === "local" ? await seedHeld("queue", text, { attempted: true }) : "remote_source";
-  const history: Thread["turns"] = [
-    {
-      id: "earlier_turn",
-      status: "completed",
-      itemsView: "full",
-      items: [
-        {
-          id: "earlier_input",
-          turnId: "earlier_turn",
-          type: "userMessage",
-          text: "earlier request",
-          clientMutationId: "earlier_mutation",
-          status: "completed",
-        },
-      ],
-    },
-  ];
-  let snapshot = readResponse("ref_a", {
-    turns: history,
-    evener: {
-      ref: "ref_a",
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: [sourceId], texts: [text], preview: [text] },
-    },
-  });
-  fake.on("thread/read", () => snapshot);
-  const promoted = deferred<string>();
-  const answerPromotion = deferred<void>();
-  fake.on("turn/promoteQueuedAsSteer", async (params: { clientMutationId: string; expectedEntryId: string }) => {
-    expect(params.expectedEntryId).toBe("q1");
-    promoted.resolve(params.clientMutationId);
-    await answerPromotion.promise;
-    return {
-      receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", {
-        projectionState: "pending",
-        queueEntryIds: ["q1"],
-        consumedClientMutationIds: [sourceId],
-      }),
-    };
-  });
-
-  const { container } = render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-
-  const messageRows = () =>
-    screen.queryAllByTestId("user-message-item").filter((row) => row.textContent?.includes(text));
-  await waitFor(() => expect(messageRows()).toHaveLength(1));
-  const observations: number[] = [];
-  const observer = new MutationObserver(() => observations.push(messageRows().length));
-  observer.observe(container, { childList: true, subtree: true, characterData: true });
-  onTestFinished(() => observer.disconnect());
-  const originalRow = messageRows()[0];
-  let promoteId = "remote_promote";
-  if (origin === "local") {
-    const user = userEvent.setup();
-    await user.click(within(originalRow!).getByRole("button", { name: "Steer now" }));
-    promoteId = await act(() => promoted.promise);
-  }
-  expect(promoteId).not.toBe(sourceId);
-  await flushPendingTurnsProjectionForTests();
-  expect(messageRows()).toHaveLength(1);
-  expect(messageRows()[0]).toBe(originalRow);
-
-  snapshot = readResponse("ref_a", {
-    turns: history,
-    evener: {
-      ref: "ref_a",
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      queue: { revision: 2, depth: 0, ids: [] },
-      pendingMutations: [
-        {
-          clientMutationId: promoteId,
-          method: "turn/promoteQueuedAsSteer",
-          input: [{ type: "text", text }],
-          executionState: "claimed",
-          projectionState: "pending",
-          queueEntryIds: ["q1"],
-        },
-      ],
-    },
-  });
-  await act(async () => {
-    fake.emitNotification({
-      method: "thread/queueChanged",
-      params: {
-        threadId: "thr_ref_a",
-        ref: "ref_a",
-        queue: { revision: 2, depth: 0, ids: [] },
-        consumedClientMutationIds: [sourceId],
-      },
-    });
-    answerPromotion.resolve();
-    await threadsStore.getState().refreshThread("ref_a");
-  });
-  await flushPendingTurnsProjectionForTests();
-  expect(messageRows()).toHaveLength(1);
-  expect(messageRows()[0]).toBe(originalRow);
-
-  snapshot = readResponse("ref_a", {
-    evener: {
-      ref: "ref_a",
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      queue: { revision: 2, depth: 0, ids: [] },
-      pendingMutations: [],
-    },
-    turns: [
-      ...history,
+test.each(["local", "local-read", "remote", "remote-read", "remote-reconnect"])(
+  "a queued row stays visible once through %s promotion and recording",
+  async (origin) => {
+    const fake = connectReadyFakeClient();
+    const text = "promotion lifecycle sentinel";
+    const local = origin === "local" || origin === "local-read";
+    const sourceId = local ? await seedHeld("queue", text, { attempted: true }) : "remote_source";
+    const history: Thread["turns"] = [
       {
-        id: "turn_promoted",
+        id: "earlier_turn",
         status: "completed",
         itemsView: "full",
         items: [
           {
-            id: "item_promoted",
-            turnId: "turn_promoted",
-            type: "steering",
-            source: "user",
-            text,
-            clientMutationId: promoteId,
-            conversationInputIds: [`client:${sourceId}`],
+            id: "earlier_input",
+            turnId: "earlier_turn",
+            type: "userMessage",
+            text: "earlier request",
+            clientMutationId: "earlier_mutation",
             status: "completed",
           },
         ],
       },
-    ],
-  });
-  await act(async () => {
-    await threadsStore.getState().refreshThread("ref_a");
-  });
-  await flushPendingTurnsProjectionForTests();
-  await waitFor(() => {
+    ];
+    let snapshot = readResponse("ref_a", {
+      turns: history,
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: [sourceId], texts: [text], preview: [text] },
+      },
+    });
+    fake.on("thread/read", () => snapshot);
+    const promoted = deferred<string>();
+    const answerPromotion = deferred<void>();
+    fake.on("turn/promoteQueuedAsSteer", async (params: { clientMutationId: string; expectedEntryId: string }) => {
+      expect(params.expectedEntryId).toBe("q1");
+      promoted.resolve(params.clientMutationId);
+      await answerPromotion.promise;
+      return {
+        receipt: appliedReceipt(params.clientMutationId, "thr_ref_a", {
+          projectionState: "pending",
+          queueEntryIds: ["q1"],
+          consumedClientMutationIds: [sourceId],
+        }),
+      };
+    });
+
+    const { container, rerender } = render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+
+    const messageRows = () =>
+      screen.queryAllByTestId("user-message-item").filter((row) => row.textContent?.includes(text));
+    await waitFor(() => expect(messageRows()).toHaveLength(1));
+    const observations: number[] = [];
+    const observer = new MutationObserver(() => observations.push(messageRows().length));
+    observer.observe(container, { childList: true, subtree: true, characterData: true });
+    onTestFinished(() => observer.disconnect());
+    const originalRow = messageRows()[0];
+    let promoteId = "remote_promote";
+    if (local) {
+      const user = userEvent.setup();
+      await user.click(within(originalRow!).getByRole("button", { name: "Steer now" }));
+      promoteId = await act(() => promoted.promise);
+    }
+    expect(promoteId).not.toBe(sourceId);
+    await flushPendingTurnsProjectionForTests();
     expect(messageRows()).toHaveLength(1);
-    expect(messageRows()[0]?.getAttribute("data-provisional")).not.toBe("true");
-  });
-  expect(observations.length).toBeGreaterThan(0);
-  expect(observations.every((count) => count === 1)).toBe(true);
-});
+    expect(messageRows()[0]).toBe(originalRow);
+
+    snapshot = readResponse("ref_a", {
+      turns: history,
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 2, depth: 0, ids: [] },
+        pendingMutations: [
+          {
+            clientMutationId: promoteId,
+            method: "turn/promoteQueuedAsSteer",
+            input: [{ type: "text", text }],
+            executionState: "claimed",
+            projectionState: "pending",
+            queueEntryIds: ["q1"],
+          },
+        ],
+      },
+    });
+    await act(async () => {
+      if (origin !== "remote-read" && origin !== "local-read") {
+        fake.emitNotification({
+          method: "thread/queueChanged",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            queue: { revision: 2, depth: 0, ids: [] },
+            consumedClientMutationIds: [sourceId],
+          },
+        });
+      }
+      answerPromotion.resolve();
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(messageRows()).toHaveLength(1);
+    expect(messageRows()[0]).toBe(originalRow);
+
+    if (origin === "remote-reconnect") {
+      await act(async () => {
+        const replacement = connectReadyFakeClient((client) => client.on("thread/read", () => snapshot));
+        rerender(
+          <ClientProvider client={replacement}>
+            <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+          </ClientProvider>,
+        );
+        await threadsStore.getState().refreshThread("ref_a");
+      });
+      await flushPendingTurnsProjectionForTests();
+      expect(messageRows()).toHaveLength(1);
+      expect(messageRows()[0]).toBe(originalRow);
+    }
+
+    snapshot = readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: { revision: 2, depth: 0, ids: [] },
+        pendingMutations: [],
+      },
+      turns: [
+        ...history,
+        {
+          id: "turn_promoted",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_promoted",
+              turnId: "turn_promoted",
+              type: "steering",
+              source: "user",
+              text,
+              clientMutationId: promoteId,
+              conversationInputIds: [`client:${sourceId}`],
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    });
+    await act(async () => {
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => {
+      expect(messageRows()).toHaveLength(1);
+      expect(messageRows()[0]?.getAttribute("data-provisional")).not.toBe("true");
+    });
+    expect(observations.length).toBeGreaterThan(0);
+    expect(observations.every((count) => count === 1)).toBe(true);
+  },
+);
 
 // The row's steer action carries the entry's own selections through the
 // promote (the retired strip passed them; dropping them steers a

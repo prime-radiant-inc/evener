@@ -692,6 +692,25 @@ test("a promote row suppresses its queue entry", () => {
   });
   expect(settledSource).toHaveLength(1);
   expect(settledSource[0]).toMatchObject({ id: "m2", displayId: "m1", method: "promote" });
+
+  const refreshedModel = { ...model, queue: { depth: 0, revision: 4, ids: [] } };
+  for (const previousMessages of [rows, withSource, consumed, settledSource]) {
+    const refreshedInput = { model: refreshedModel, previousMessages };
+    const refreshed = project(refreshedInput);
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0]).toMatchObject({ id: "m2", displayId: "m1", method: "promote" });
+
+    const retainedSource = project({ ...refreshedInput, optimistic: [source] });
+    expect(retainedSource).toHaveLength(1);
+    expect(retainedSource[0]).toMatchObject({ id: "m1", displayId: "m1", method: "promote" });
+
+    expect(project({ ...refreshedInput, model: { ...refreshedModel, pendingMutations: [] } })).toHaveLength(0);
+    const otherSession = {
+      ...refreshedInput,
+      previousMessages: previousMessages.map((row) => ({ ...row, ref: "ref_other" })),
+    };
+    expect(project(otherSession)[0]?.displayId).toBeUndefined();
+  }
 });
 
 test("an accepted send with no daemon pending entry and no visible item stays as a delivering row", () => {

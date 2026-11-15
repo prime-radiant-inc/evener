@@ -110,6 +110,9 @@ export interface PendingMessagesInput<A extends MutationAttachmentRef = Mutation
   outbox: readonly MutationOutboxRecord<A>[];
   optimistic: readonly MutationOptimisticRecord<A>[];
   recovery: readonly MutationRecoveryRecord<A>[];
+  // Previous rows supply identity links only. Their content and action owners
+  // cannot create a row that the current inputs no longer contain.
+  previousMessages?: readonly PendingMessage<A>[];
   // Queue entries this client saw consumed by another client's transition but
   // never owned locally. Their content has no other durable copy here, so they
   // stay visible until an authoritative snapshot names their replacement.
@@ -765,6 +768,13 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     if (!source || source.queueEntryIds.includes(entryId)) return;
     rows.set(source.id, { ...source, queueEntryIds: [...source.queueEntryIds, entryId] });
   };
+  // A read can replace the queue without a queue-change frame. Connection
+  // replacement also retires carried content, but neither changes the identity
+  // of a message the caller already displayed in this session.
+  for (const previous of input.previousMessages ?? []) {
+    if (previous.ref !== ref) continue;
+    for (const entryId of previous.queueEntryIds) linkSourceEntry(entryId, previous.displayId ?? previous.id);
+  }
   for (const [index, entryId] of (queue?.ids ?? []).entries()) {
     linkSourceEntry(entryId, queue?.clientMutationIds?.[index]);
   }

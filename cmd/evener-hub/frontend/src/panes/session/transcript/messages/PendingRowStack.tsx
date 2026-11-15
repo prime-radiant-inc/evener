@@ -179,6 +179,19 @@ function recordPreview(record: MutationOutboxRecord): string {
   return pendingEntryPreview(outboxRecordPreview(record));
 }
 
+function recoveryPreview(record: MutationRecoveryRecord): string {
+  switch (record.method) {
+    case "turn/interrupt":
+      return "Stop didn't reach the session";
+    case "turn/cancelQueued":
+      return "Couldn't remove this message from the queue";
+    case "thread/clear":
+      return "Couldn't clear this session";
+    default:
+      return recordPreview(record);
+  }
+}
+
 export function PendingRowStack({
   ref: sessionRef,
   paneId,
@@ -540,6 +553,35 @@ export function PendingRowStack({
   // have ended in between (stores/liveControls.ts).
   const controls = model ? controlsFor(model) : { drain: false, reason: { drain: undefined } };
 
+  function renderLocalActions(record: MutationOutboxRecord, rowBusy: boolean): JSX.Element {
+    return (
+      <>
+        {canEditQueuedMessage(record) && (
+          <IconButton
+            label="Edit message"
+            icon={<span aria-hidden="true">✎</span>}
+            size="sm"
+            // The composer's live busy gate keeps Edit from racing an
+            // in-flight submit, read through the seam store.
+            disabled={rowBusy || composerBusy}
+            disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
+            onClick={() => void handleLocalAction(record, "edit")}
+          />
+        )}
+        {canRemoveQueuedMessage(record) && (
+          <IconButton
+            label="Remove from queue"
+            icon={<span aria-hidden="true">✕</span>}
+            size="sm"
+            variant="danger"
+            disabled={rowBusy}
+            onClick={() => void handleLocalAction(record, "remove")}
+          />
+        )}
+      </>
+    );
+  }
+
   const renderById = new Map<string, () => JSX.Element>();
   stackEntries.forEach((entry) => {
     const message = mergedRowByWireId.get(entry.id);
@@ -561,8 +603,8 @@ export function PendingRowStack({
       </li>
     ));
   });
-  Array.from({ length: rowCount }, (_, index) => index).forEach((index) => {
-    if (!queue) return;
+  for (let index = 0; index < rowCount; index += 1) {
+    if (!queue) break;
     const queueEntry = queueEntryAt(queue, index);
     const { entryId, fullText, clientMutationId: mutationId } = queueEntry;
     const entrySkillNames = queue?.skillNames?.[index];
@@ -585,7 +627,7 @@ export function PendingRowStack({
     const previewText = genericSelectionPlaceholder ? "" : entryPreview;
     // The optimistic twin owns the row while this client's durable
     // record reconciles against the daemon's queue.
-    if (pendingTexts.has(entryPreview) && entryId === undefined) return;
+    if (pendingTexts.has(entryPreview) && entryId === undefined) continue;
     // The merged projection row that owns this queue entry, when one
     // does: its family holds what the wire dropped (image counts, and
     // the bytes when this client submitted them).
@@ -593,7 +635,7 @@ export function PendingRowStack({
       (entryId !== undefined ? mergedRowByQueueEntryId.get(entryId) : undefined) ??
       (mutationId !== undefined ? mergedRowByWireId.get(mutationId) : undefined) ??
       mergedPendingRows.find((row) => row.queueIndex === index);
-    if (!mergedRow || pendingRowActionOwner(mergedRow) !== "queue") return;
+    if (!mergedRow || pendingRowActionOwner(mergedRow) !== "queue") continue;
     const busy = (entryId !== undefined && busyEntryIds.has(entryId)) || mergedRow.method !== "queue";
     const actionsAvailable = hasIds && entryId !== undefined;
     // The restore seam is text-and-selections only: the queue projection
@@ -686,7 +728,7 @@ export function PendingRowStack({
         />
       </li>
     ));
-  });
+  }
   editableEntries.forEach((record) => {
     const message = mergedRowByWireId.get(record.clientMutationId);
     if (
@@ -699,33 +741,7 @@ export function PendingRowStack({
     // same durable-local slot the retired strip's waiting kind held.
     const rowBusy = busyEntryIds.has(record.clientMutationId);
     const hubRefused = record.clientMutationId === refusedId;
-    const actions = (
-      <>
-        {canEditQueuedMessage(record) && (
-          <IconButton
-            label="Edit message"
-            icon={<span aria-hidden="true">✎</span>}
-            size="sm"
-            // The composer's live busy gate keeps the press from
-            // racing an in-flight submit (the retired strip's own
-            // gate), read through the seam store.
-            disabled={rowBusy || composerBusy}
-            disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
-            onClick={() => void handleLocalAction(record, "edit")}
-          />
-        )}
-        {canRemoveQueuedMessage(record) && (
-          <IconButton
-            label="Remove from queue"
-            icon={<span aria-hidden="true">✕</span>}
-            size="sm"
-            variant="danger"
-            disabled={rowBusy}
-            onClick={() => void handleLocalAction(record, "remove")}
-          />
-        )}
-      </>
-    );
+    const actions = renderLocalActions(record, rowBusy);
     renderById.set(message.id, () => (
       <li key={message.displayId ?? message.id} data-kind="waiting" data-busy={hubRefused ? "true" : undefined}>
         <UserMessageView
@@ -737,9 +753,7 @@ export function PendingRowStack({
             // The merged projection row for this record holds the
             // submission's image bytes - the waiting row renders the
             // gallery the record's preview text cannot describe.
-            ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
-              ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
-              : {}),
+            ...(message.images.length > 0 ? { images: message.images } : {}),
           }}
           opensExchange={false}
           provisional={hubRefused ? "Waiting for the hub" : "Waiting to send"}
@@ -763,26 +777,7 @@ export function PendingRowStack({
     const retryError = retryErrors.get(record.clientMutationId);
     const actions = (
       <>
-        {canEditQueuedMessage(record) && (
-          <IconButton
-            label="Edit message"
-            icon={<span aria-hidden="true">✎</span>}
-            size="sm"
-            disabled={rowBusy || composerBusy}
-            disabledReason={composerBusy ? "Wait for the current message to finish sending" : ""}
-            onClick={() => void handleLocalAction(record, "edit")}
-          />
-        )}
-        {canRemoveQueuedMessage(record) && (
-          <IconButton
-            label="Remove from queue"
-            icon={<span aria-hidden="true">✕</span>}
-            size="sm"
-            variant="danger"
-            disabled={rowBusy}
-            onClick={() => void handleLocalAction(record, "remove")}
-          />
-        )}
+        {renderLocalActions(record, rowBusy)}
         <RetryButton record={record} busy={rowBusy} onRetry={() => void handleRetry(record)} />
       </>
     );
@@ -801,9 +796,7 @@ export function PendingRowStack({
             // The merged projection row holds the submission's image
             // bytes through these states too - the gallery survives a
             // blocked or canceled delivery.
-            ...(mergedRowByWireId.get(record.clientMutationId)?.images.length
-              ? { images: mergedRowByWireId.get(record.clientMutationId)?.images }
-              : {}),
+            ...(message.images.length > 0 ? { images: message.images } : {}),
           }}
           opensExchange={false}
           provisional={label}
@@ -864,13 +857,7 @@ export function PendingRowStack({
             // A control failure is not a message: it carries no input,
             // so say what failed instead of offering to edit a Stop or
             // an empty removal.
-            text: isInterrupt
-              ? "Stop didn't reach the session"
-              : record.method === "turn/cancelQueued"
-                ? "Couldn't remove this message from the queue"
-                : record.method === "thread/clear"
-                  ? "Couldn't clear this session"
-                  : recordPreview(record),
+            text: recoveryPreview(record),
             // The refused row keeps the gallery too: the projection's
             // recovery row holds the family input's image bytes.
             images: message.images,
