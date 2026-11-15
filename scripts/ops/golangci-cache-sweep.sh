@@ -111,9 +111,15 @@ sweep_root="$cache_root/$repo_key"
 # The hash loop is the LAST pipeline element into a guarded substitution.
 # Each failed hash exits the loop explicitly: shell errexit behavior inside
 # a tested substitution differs, and a later success cannot repair a missing
-# live key. The registered-root guard above excludes an empty live set.
+# live key. The registered-root guard above excludes an empty live set. Every
+# parsed root must exist: porcelain separates records by newline, so a path
+# with a newline can otherwise yield a truncated root and an incomplete set.
 if ! shasum_lines="$(printf '%s\n' "$worktree_roots" \
 	| while IFS= read -r root; do
+		if [ ! -d "$root" ]; then
+			echo "golangci-cache-sweep: a registered worktree root is missing; the live worktree set is unknown, refusing to sweep" >&2
+			exit 1
+		fi
 		printf '%s' "$root" | shasum -a 256 || exit 1
 	done)"; then
 	echo "golangci-cache-sweep: hashing the live worktree roots failed; the live set is incomplete, refusing to sweep" >&2

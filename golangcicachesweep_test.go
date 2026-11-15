@@ -479,6 +479,30 @@ printf '%s' "$root" | "$SWEEP_REAL_SHASUM" -a 256
 		t.Errorf("a bare-backed orphan cache was not swept: %v\n%s", err, bareOut)
 	}
 
+	// A worktree root split by porcelain's newline record format makes
+	// the live set untrustworthy; no cache may be judged against it.
+	newlineWorktree := filepath.Join(fixture, "registered\nodd")
+	gittest.Run(t, repo, "worktree", "add", "-q", "--detach", newlineWorktree)
+	newlineWorktreeHome := filepath.Join(fixture, "worktree-newline-cache")
+	newlineWorktreeBucket := filepath.Join(newlineWorktreeHome, "evener", "golangci-lint", sweepRepoHash(commonA))
+	newlineLive := makeSweepCacheDir(t, newlineWorktreeBucket, sweepCacheHash(newlineWorktree))
+	newlineOrphan := makeSweepCacheDir(t, newlineWorktreeBucket, sweepCacheHash(filepath.Join(fixture, "newline-orphan")))
+	for _, dir := range []string{newlineLive, newlineOrphan} {
+		if err := os.Chtimes(dir, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	worktreeOut, worktreeStatus := runSweep(t, repo, newlineWorktreeHome)
+	if worktreeStatus == 0 {
+		t.Errorf("sweeper accepted an incomplete live set from a newline-containing worktree root:\n%s", worktreeOut)
+	}
+	if _, err := os.Stat(newlineLive); err != nil {
+		t.Errorf("sweeper deleted a registered newline-containing worktree's cache: %v\n%s", err, worktreeOut)
+	}
+	if _, err := os.Stat(newlineOrphan); err != nil {
+		t.Errorf("sweeper deleted a cache with an untrustworthy worktree list: %v\n%s", err, worktreeOut)
+	}
+
 	// Outside a git repo the script must delete nothing and fail loudly:
 	// `git worktree list` failing means the live-root set is unknown, and an
 	// unknown set must never be treated as empty.
