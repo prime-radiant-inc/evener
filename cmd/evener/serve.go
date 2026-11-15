@@ -1168,17 +1168,34 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 	sess.CloseWithReason("clear")
 }
 
-// processNextServeInput gives durable turn/start work priority over the
+// processNextServeInput gives durable accepted work priority over the
 // process-local wake channel. The caller repeats it after every processed
-// message, so an accepted start still progresses when its wake was coalesced
+// message, so accepted work still progresses when its wake was coalesced
 // because the channel was full.
+//
+// Both probes exist for the same reason: the wake that names the work is a
+// channel send, and everything about it -- the parked goroutine of a coalesced
+// kick, the whole channel -- dies with the process. A durable receipt the
+// client already holds must not depend on a signal that only lives as long as
+// one daemon. The queued-input probe covers an accepted message or steer whose
+// only wake never arrived; without it such work waits for the next attach,
+// which is a restart away.
 func processNextServeInput(
 	ctx context.Context,
 	input <-chan server.InputMessage,
 	sessionID string,
 	process func(server.InputMessage) bool,
 ) bool {
+	if ctx.Err() != nil {
+		// A cancelled daemon runs nothing new. The probes below claim real work
+		// and would start a turn out of shutdown, which delays the teardown the
+		// supervisor is waiting for.
+		return false
+	}
 	if process(server.InputMessage{ClientMutationStart: true, SessionID: sessionID}) {
+		return true
+	}
+	if process(server.InputMessage{QueuedInput: true, SessionID: sessionID}) {
 		return true
 	}
 	select {

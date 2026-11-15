@@ -297,6 +297,9 @@ func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T)
 			durableStart = false
 			return true
 		}
+		if msg.QueuedInput {
+			return false
+		}
 		processed = append(processed, msg.Text)
 		durableStart = true
 		input <- server.InputMessage{Text: "later queued"}
@@ -319,6 +322,66 @@ func TestProcessNextServeInputClaimsDurableStartAfterCoalescedWake(t *testing.T)
 		}
 	default:
 		t.Fatal("durable start did not take priority over the full wake channel")
+	}
+}
+
+// TestProcessNextServeInputClaimsDurablePendingInputAfterLostWake pins the
+// backstop for a wake that never arrives.
+//
+// A queued message or an accepted steer reaches ProcessPendingUserInput only
+// through a QueuedInput message, and that message is a process-local channel
+// send whose parked goroutine dies with the daemon. An accepted steer therefore
+// has no second path to the work unless the loop asks on its own -- the same
+// reason the durable-start probe above exists.
+func TestProcessNextServeInputClaimsDurablePendingInputAfterLostWake(t *testing.T) {
+	// An empty channel is the lost-wake case: no kick is ever sent, so the only
+	// thing that can reach the work is the loop's own question.
+	input := make(chan server.InputMessage, 1)
+	// Closed rather than merely silent, so the test never waits on a real
+	// timeout to prove that no wake is coming.
+	close(input)
+	claimed := false
+	process := func(msg server.InputMessage) bool {
+		if msg.ClientMutationStart {
+			return false
+		}
+		if !msg.QueuedInput {
+			t.Fatalf("processed %#v, want a queued-input probe", msg)
+		}
+		if msg.SessionID != "session-1" {
+			t.Fatalf("pending input session = %q, want session-1", msg.SessionID)
+		}
+		claimed = true
+		return true
+	}
+
+	if !processNextServeInput(context.Background(), input, "session-1", process) {
+		t.Fatal("iteration stopped although durable pending input was runnable")
+	}
+	if !claimed {
+		t.Fatal("pending user input was never claimed: a lost wake strands an accepted message")
+	}
+}
+
+// TestProcessNextServeInputRunsNoDurableWorkAfterCancel pins that the probes
+// stand down when the daemon is shutting down.
+//
+// Both probes claim real work and start a turn, so probing ahead of the
+// cancellation check would keep a cancelled daemon starting turns instead of
+// returning to its teardown. A supervisor waiting on that teardown -- the hub
+// reaping a daemon, a host going down -- would wait for work nobody asked for.
+func TestProcessNextServeInputRunsNoDurableWorkAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	input := make(chan server.InputMessage, 1)
+	input <- server.InputMessage{Text: "queued before the cancel"}
+	process := func(msg server.InputMessage) bool {
+		t.Fatalf("processed %#v after cancel, want no durable work", msg)
+		return true
+	}
+
+	if processNextServeInput(ctx, input, "session-1", process) {
+		t.Fatal("iteration continued after cancel")
 	}
 }
 
