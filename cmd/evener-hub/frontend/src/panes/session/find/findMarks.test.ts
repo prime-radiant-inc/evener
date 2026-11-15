@@ -59,6 +59,18 @@ test("a letter whose lowercase form is longer does not shift or break the painte
   expect(painted("evener-find-current")).toEqual(["stanbul"]);
 });
 
+test("a word-final Greek sigma paints where the same whole-string search finds it", () => {
+  const el = port({ a: "ΟΣ" });
+  markTranscript(el, [hit("a")], "a", "ος");
+  expect(painted("evener-find-current")).toEqual(["ΟΣ"]);
+});
+
+test("a supplementary uppercase letter paints its entire two-unit source character", () => {
+  const el = port({ a: "𐐀" });
+  markTranscript(el, [hit("a")], "a", "𐐨");
+  expect(painted("evener-find-current")).toEqual(["𐐀"]);
+});
+
 test("a phrase is painted across the nodes it spans, skipping what is hidden from readers", () => {
   // A code block renders each line as its own element, with a line number
   // between them that is not part of the text.

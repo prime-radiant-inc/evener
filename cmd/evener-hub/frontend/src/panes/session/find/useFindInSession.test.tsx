@@ -2,6 +2,7 @@
 // client answers reads and older pages, and a plain list stands in for the
 // virtualized transcript so the marks have anchors to land on.
 import {
+  ACTIONS,
   entryDisplayKey,
   makeTranscriptDisplayConfig,
   projectThread,
@@ -13,6 +14,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useMemo, useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -427,6 +429,132 @@ test("Escape closes Find, clears its marks, and returns focus to where it was", 
   expect(screen.queryByTestId("find-bar")).toBeNull();
   expect(currentAnchor()).toBeNull();
   expect(document.activeElement).toBe(elsewhere);
+});
+
+test.each(["scrollbar", "keyboard"])(
+  "a reader moving the transcript by %s stops Find's pending landing",
+  async (gesture) => {
+    const client = connectReadyFakeClient();
+    scriptHistory(client, [turn("t1", "needle")], []);
+    await mount(client);
+    const port = screen.getByTestId("port");
+    port.getBoundingClientRect = () => ({ top: 0, bottom: 500, height: 500 }) as DOMRect;
+    openFind();
+    type("needle");
+    const entry = document.querySelector('[data-view-anchor-id="t1-item"]') as HTMLElement;
+    entry.getBoundingClientRect = () =>
+      ({ top: 2000 - port.scrollTop, bottom: 2100 - port.scrollTop, height: 100 }) as DOMRect;
+    await waitFor(() => expect(port.scrollTop).toBeGreaterThan(0));
+    act(() => {
+      port.scrollTop = 450;
+      if (gesture === "scrollbar") fireEvent.scroll(port);
+      else fireEvent.keyDown(port, { key: "PageUp" });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(port.scrollTop).toBe(450);
+  },
+);
+
+test("Find chord opens in a popout and Escape restores focus in that same window", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle")], []);
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popup = frame.contentWindow;
+  const popdoc = frame.contentDocument;
+  if (!popup || !popdoc) throw new Error("missing popout window");
+  await act(async () => {
+    await threadsStore.getState().ensureThread(REF);
+  });
+  const mounted = render(<Harness />, { container: popdoc.body });
+  const elsewhere = popdoc.querySelector('[data-testid="elsewhere"]') as HTMLElement;
+  elsewhere.focus();
+  const chord = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+    key: "f",
+    code: "KeyF",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => {
+    elsewhere.dispatchEvent(chord);
+  });
+  const field = popdoc.querySelector('input[type="search"]') as HTMLInputElement | null;
+  expect(chord.defaultPrevented).toBe(true);
+  expect(field).not.toBeNull();
+  expect(popdoc.activeElement).toBe(field);
+  if (field) fireEvent.keyDown(field, { key: "Escape" });
+  expect(popdoc.activeElement).toBe(elsewhere);
+  mounted.unmount();
+  frame.remove();
+});
+
+test("moving an existing conversation into a popout moves its Find shortcut too", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle")], []);
+  await act(async () => {
+    await threadsStore.getState().ensureThread(REF);
+  });
+  const mounted = render(<Harness />);
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popup = frame.contentWindow;
+  const popdoc = frame.contentDocument;
+  if (!popup || !popdoc) throw new Error("missing popout window");
+  popdoc.body.append(popdoc.adoptNode(mounted.container));
+  mounted.rerender(<Harness />);
+  const event = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+    key: "f",
+    code: "KeyF",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => {
+    popdoc.querySelector('[data-testid="elsewhere"]')?.dispatchEvent(event);
+  });
+  expect(event.defaultPrevented).toBe(true);
+  expect(popdoc.querySelector('[data-testid="find-bar"]')).not.toBeNull();
+  mounted.unmount();
+  frame.remove();
+});
+
+test("two sessions in one popout dispatch a global shortcut only once", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle")], []);
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popup = frame.contentWindow;
+  const popdoc = frame.contentDocument;
+  if (!popup || !popdoc) throw new Error("missing popout window");
+  await act(async () => {
+    await threadsStore.getState().ensureThread(REF);
+  });
+  const mounted = render(
+    <>
+      <Harness />
+      <Harness />
+    </>,
+    { container: popdoc.body },
+  );
+  let toggles = 0;
+  const unregister = keybindingsRegistry.getState().registerAction(ACTIONS.railToggle, () => {
+    toggles += 1;
+  });
+  const chord = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+    key: "b",
+    code: "KeyB",
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => {
+    popdoc.querySelector('[data-testid="elsewhere"]')?.dispatchEvent(chord);
+  });
+  expect(toggles).toBe(1);
+  unregister();
+  mounted.unmount();
+  frame.remove();
 });
 
 test("the find chord belongs to the conversation the keyboard is in", async () => {

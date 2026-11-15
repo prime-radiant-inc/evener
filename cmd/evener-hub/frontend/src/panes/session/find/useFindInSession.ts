@@ -13,7 +13,9 @@
 import { ACTIONS, findNeedle } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
+import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
 import { installKeybindings } from "../../../shell/installKeybindings";
+import { paletteStore } from "../../../shell/palette/paletteController";
 import type { VirtualListHandle } from "../../../widgets";
 import { requestComposerFocus } from "../composer/composerFocus";
 import type { TranscriptBodyRow } from "../transcript/TranscriptBody";
@@ -106,6 +108,37 @@ function isFocusable(target: unknown): target is HTMLElement {
 
 const NO_MATCH = { key: null, item: null, round: null } as const;
 
+const popoutDispatchers = new WeakMap<Window, { users: number; detach: () => void }>();
+
+function attachPopoutDispatcher(view: Window): () => void {
+  let attached = popoutDispatchers.get(view);
+  if (!attached) {
+    const dispatcher = createKeybindingDispatcher({
+      isModalOpen: (event) =>
+        paletteStore.getState().open ||
+        (isElement(event.target) && event.target.closest('[aria-modal="true"]') !== null),
+    });
+    const onKeyDown = (event: KeyboardEvent) => dispatcher.handleKeyDown(event);
+    view.addEventListener("keydown", onKeyDown);
+    attached = {
+      users: 0,
+      detach: () => {
+        view.removeEventListener("keydown", onKeyDown);
+        dispatcher.dispose();
+      },
+    };
+    popoutDispatchers.set(view, attached);
+  }
+  attached.users += 1;
+  return () => {
+    attached.users -= 1;
+    if (attached.users === 0) {
+      attached.detach();
+      popoutDispatchers.delete(view);
+    }
+  };
+}
+
 function matchOf(hit: FindHit | undefined): Pick<FindState, "key" | "item" | "round"> {
   return hit === undefined ? NO_MATCH : { key: hit.key, item: hit.itemId, round: hit.roundId ?? null };
 }
@@ -179,7 +212,7 @@ export function useFindInSession({
 
   const openWith = useCallback(
     (request?: { query?: string; itemId?: string }) => {
-      const active = document.activeElement;
+      const active = (listRef.current?.getScrollElement()?.ownerDocument ?? document).activeElement;
       if (active !== null && active.closest("[data-find-bar]") === null) returnFocus.current = active;
       setFocusEpoch((epoch) => epoch + 1);
       if (request?.query !== undefined) setJumpEpoch((epoch) => epoch + 1);
@@ -191,7 +224,7 @@ export function useFindInSession({
         return { ref, query: request.query, ...matchOf(picked), seek: null };
       });
     },
-    [ref],
+    [ref, listRef],
   );
   const open = useCallback(() => openWith(), [openWith]);
 
@@ -303,6 +336,7 @@ export function useFindInSession({
   // mounted entry into view. The reader's own scroll ends the window.
   const settle = useRef<{ key: string; until: number; jumpedAt: number } | null>(null);
   const settleFrame = useRef<number | null>(null);
+  const lastFindScrollTop = useRef<number | null>(null);
   const currentKey = current?.key ?? null;
 
   const sync = useRef(() => {});
@@ -321,6 +355,7 @@ export function useFindInSession({
       if (now - pending.jumpedAt < JUMP_RETRY_MS) return;
       pending.jumpedAt = now;
       jumpToRow(hit.rowIndex);
+      lastFindScrollTop.current = port.scrollTop;
       return;
     }
     const rect = (marked.focus ?? marked.current).getBoundingClientRect();
@@ -328,6 +363,7 @@ export function useFindInSession({
     if (target === null) return;
     const before = port.scrollTop;
     port.scrollTop = target;
+    lastFindScrollTop.current = port.scrollTop;
     if (port.scrollTop !== before) markGesture(true, before);
   };
 
@@ -359,6 +395,7 @@ export function useFindInSession({
       until: performance.now() + SETTLE_WINDOW_MS,
       jumpedAt: Number.NEGATIVE_INFINITY,
     };
+    lastFindScrollTop.current = listRef.current?.getScrollElement()?.scrollTop ?? null;
     // Frames, not this effect, drive the scroll: the virtual list flushes its
     // own state when it moves, which React forbids inside a commit.
     const tick = () => {
@@ -391,12 +428,25 @@ export function useFindInSession({
     const readerMoved = () => {
       settle.current = null;
     };
+    const readerScrolled = () => {
+      if (port.scrollTop !== lastFindScrollTop.current) readerMoved();
+    };
+    const readerPressed = (event: KeyboardEvent) => {
+      if (!port.contains(event.target as Node) && event.target !== port) return;
+      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " "].includes(event.key)) readerMoved();
+    };
     port.addEventListener("wheel", readerMoved, { passive: true });
     port.addEventListener("touchmove", readerMoved, { passive: true });
+    port.addEventListener("pointerdown", readerMoved, { passive: true });
+    port.addEventListener("scroll", readerScrolled, { passive: true });
+    port.addEventListener("keydown", readerPressed);
     return () => {
       observer.disconnect();
       port.removeEventListener("wheel", readerMoved);
       port.removeEventListener("touchmove", readerMoved);
+      port.removeEventListener("pointerdown", readerMoved);
+      port.removeEventListener("scroll", readerScrolled);
+      port.removeEventListener("keydown", readerPressed);
       if (frame !== null) cancelAnimationFrame(frame);
       if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current);
       settleFrame.current = null;
@@ -415,16 +465,27 @@ export function useFindInSession({
   // bar itself for a reader who wants it.
   const ownsKeyboardRef = useRef(ownsKeyboard);
   ownsKeyboardRef.current = ownsKeyboard;
+  const keyboardDocument = listRef.current?.getScrollElement()?.ownerDocument;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasRows signals that the scroll port mounted after the render
   useEffect(() => {
     installKeybindings();
-    return keybindingsRegistry.getState().registerAction(ACTIONS.transcriptFind, (event) => {
+    const unregister = keybindingsRegistry.getState().registerAction(ACTIONS.transcriptFind, (event) => {
       if (!ownsKeyboardRef.current()) return false;
       const target = event?.target;
       if (isElement(target) && target.closest("[data-find-bar]") !== null) return false;
       open();
       return true;
     });
-  }, [open]);
+    // The shell dispatcher lives in the opener window. A Dockview popout's
+    // keydowns never reach it; give the popout the same binding registry.
+    const view = listRef.current?.getScrollElement()?.ownerDocument.defaultView;
+    if (!view || view === window) return unregister;
+    const detach = attachPopoutDispatcher(view);
+    return () => {
+      detach();
+      unregister();
+    };
+  }, [open, keyboardDocument, hasRows, listRef]);
 
   const leaveHistory = useCallback(() => {
     settle.current = null;

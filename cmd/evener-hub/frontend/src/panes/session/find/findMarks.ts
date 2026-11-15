@@ -67,6 +67,7 @@ interface ReadText {
   nodes: Text[];
   nodeOf: number[];
   offsetOf: number[];
+  endOffsetOf: number[];
 }
 
 // Whether text inside `element` runs on from the text beside it, as formatting
@@ -83,11 +84,13 @@ function runsOn(element: Element, known: Map<Element, boolean>): boolean {
 }
 
 function readText(element: HTMLElement): ReadText {
-  const read: ReadText = { text: "", nodes: [], nodeOf: [], offsetOf: [] };
-  const put = (unit: string, node: number, offset: number) => {
+  const read: ReadText = { text: "", nodes: [], nodeOf: [], offsetOf: [], endOffsetOf: [] };
+  let original = "";
+  const put = (unit: string, node: number, offset: number, length = 1) => {
     read.text += unit;
     read.nodeOf.push(node);
     read.offsetOf.push(offset);
+    read.endOffsetOf.push(offset + length);
   };
   const known = new Map<Element, boolean>();
   // Set on entering a block or passing a line break since the last text.
@@ -117,17 +120,31 @@ function readText(element: HTMLElement): ReadText {
     ) {
       if (!runsOn(left, known)) broken = true;
     }
-    if (broken && previous !== undefined && !read.text.endsWith(" ")) put(" ", index, 0);
+    if (broken && previous !== undefined && !read.text.endsWith(" ")) {
+      put(" ", index, 0);
+      original += " ";
+    }
     broken = false;
-    for (let offset = 0; offset < value.length; offset += 1) {
-      const char = value.charAt(offset);
+    let offset = 0;
+    for (const char of value) {
       if (/\s/.test(char)) {
-        if (!read.text.endsWith(" ")) put(" ", index, offset);
-        continue;
+        if (!read.text.endsWith(" ")) {
+          put(" ", index, offset);
+          original += " ";
+        }
+      } else {
+        original += char;
+        const lowered = char.toLowerCase();
+        for (let unit = 0; unit < lowered.length; unit += 1) {
+          put(lowered.charAt(unit), index, offset, char.length);
+        }
       }
-      for (const unit of char.toLowerCase()) put(unit, index, offset);
+      offset += char.length;
     }
   }
+  // The final sigma depends on the surrounding word, including text in other
+  // nodes. Per-character lowercasing above supplies offsets, not search text.
+  read.text = original.toLowerCase();
   return read;
 }
 
@@ -145,7 +162,7 @@ function rangesIn(element: HTMLElement, needle: string, budget: number): Range[]
     if (startNode === undefined || endNode === undefined) continue;
     const range = element.ownerDocument.createRange();
     range.setStart(startNode, read.offsetOf[at] ?? 0);
-    range.setEnd(endNode, (read.offsetOf[last] ?? 0) + 1);
+    range.setEnd(endNode, read.endOffsetOf[last] ?? 0);
     ranges.push(range);
   }
   return ranges;
