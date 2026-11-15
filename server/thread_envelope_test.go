@@ -1099,20 +1099,18 @@ func TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne(t *testing.T) {
 
 	src := &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "th_1"}}
 	srv.SetThreadEnvelopeSource(src)
-	src.acceptedModelPick = "pick-a"
-	src.acceptedPickSeq = 1
+	src.setAcceptedModelPick("pick-a", 1)
 	srv.RefreshThreadEnvelope()
 
 	parked := make(chan struct{})
 	release := make(chan struct{})
-	var once sync.Once
-	src.parkOnAcceptedPick = func() {
-		once.Do(func() {
-			// This sample holds the older pick it read before parking.
-			close(parked)
-			<-release
-		})
-	}
+	src.parkNextAcceptedPick(func() {
+		// This sample holds the older pick it read before parking. The source
+		// parks only its first sample, so the newer refresh below still runs to
+		// completion instead of waiting for this one.
+		close(parked)
+		<-release
+	})
 
 	older := make(chan struct{})
 	go func() {
@@ -1122,9 +1120,7 @@ func TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne(t *testing.T) {
 	<-parked
 
 	// A newer acceptance samples and installs while the older one is parked.
-	src.parkOnAcceptedPick = nil
-	src.acceptedModelPick = "pick-b"
-	src.acceptedPickSeq = 2
+	src.setAcceptedModelPick("pick-b", 2)
 	srv.RefreshAcceptedModelPick()
 	close(release)
 	<-older

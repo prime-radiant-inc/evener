@@ -1,6 +1,8 @@
 package server
 
 import (
+	"sync"
+
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -13,27 +15,32 @@ import (
 //
 // Zero value reports the same thing a daemon with nothing to say reports.
 type stubThreadEnvelopeSource struct {
-	contextPressure   float64
-	contextMetrics    ContextMetrics
-	detailedStatus    DetailedStatus
-	queue             appwire.QueueState
-	pendingMutations  []appwire.PendingMutation
-	tasks             *appwire.TaskAggregate
-	taskCalls         int
-	metaCalls         int
-	workMillis        int64
-	usage             *appwire.EvenerUsage
-	turnStartedAt     int64
-	failedToolCalls   int
-	failuresMeasured  bool
-	askPending        bool
-	question          *appwire.PendingQuestion
-	failure           *appwire.ThreadFailure
-	escalations       []appwire.SandboxEscalationRequested
-	reasoningEffort   string
-	reasoningLevels   []string
-	supportsReason    bool
-	visionModel       string
+	contextPressure  float64
+	contextMetrics   ContextMetrics
+	detailedStatus   DetailedStatus
+	queue            appwire.QueueState
+	pendingMutations []appwire.PendingMutation
+	tasks            *appwire.TaskAggregate
+	taskCalls        int
+	metaCalls        int
+	workMillis       int64
+	usage            *appwire.EvenerUsage
+	turnStartedAt    int64
+	failedToolCalls  int
+	failuresMeasured bool
+	askPending       bool
+	question         *appwire.PendingQuestion
+	failure          *appwire.ThreadFailure
+	escalations      []appwire.SandboxEscalationRequested
+	reasoningEffort  string
+	reasoningLevels  []string
+	supportsReason   bool
+	visionModel      string
+	// acceptedPickMu guards the accepted pick a test moves while a sample of it
+	// is in flight. A race test samples, parks inside that sample, and moves
+	// the pick from another goroutine; the lock keeps that ordering the test
+	// proves rather than a data race the detector reports.
+	acceptedPickMu    sync.Mutex
 	acceptedModelPick string
 	acceptedPickSeq   uint64
 	meta              schema.SessionMeta
@@ -45,7 +52,10 @@ type stubThreadEnvelopeSource struct {
 	parkAfterMeta func()
 	// parkOnAcceptedPick runs at the start of AcceptedModelPick, holding one
 	// accepted-pick sample in flight while another samples and installs.
+	// acceptedPickParked claims it: only the first sample to arrive parks, so a
+	// second, concurrent sample still completes and can install.
 	parkOnAcceptedPick func()
+	acceptedPickParked bool
 }
 
 func (s *stubThreadEnvelopeSource) LatestExecutionTurnID() string { return "" }
@@ -115,11 +125,35 @@ func (s *stubThreadEnvelopeSource) VisionModel() string { return s.visionModel }
 func (s *stubThreadEnvelopeSource) AcceptedModelPick() (string, uint64) {
 	// Read before parking: a parked sample holds the value it observed, which is
 	// what makes it the older one when a newer refresh installs meanwhile.
+	s.acceptedPickMu.Lock()
 	id, seq := s.acceptedModelPick, s.acceptedPickSeq
-	if s.parkOnAcceptedPick != nil {
-		s.parkOnAcceptedPick()
+	park := s.parkOnAcceptedPick
+	if s.acceptedPickParked {
+		park = nil
+	}
+	s.acceptedPickParked = true
+	s.acceptedPickMu.Unlock()
+	if park != nil {
+		park()
 	}
 	return id, seq
+}
+
+// setAcceptedModelPick moves the accepted pick a test's next sample observes.
+func (s *stubThreadEnvelopeSource) setAcceptedModelPick(id string, seq uint64) {
+	s.acceptedPickMu.Lock()
+	defer s.acceptedPickMu.Unlock()
+	s.acceptedModelPick = id
+	s.acceptedPickSeq = seq
+}
+
+// parkNextAcceptedPick arms the park hook and reclaims it, so the next sample
+// to arrive parks however many samples ran before it.
+func (s *stubThreadEnvelopeSource) parkNextAcceptedPick(fn func()) {
+	s.acceptedPickMu.Lock()
+	defer s.acceptedPickMu.Unlock()
+	s.parkOnAcceptedPick = fn
+	s.acceptedPickParked = false
 }
 
 // publishEnvelope installs src as the server's envelope source and seeds every
