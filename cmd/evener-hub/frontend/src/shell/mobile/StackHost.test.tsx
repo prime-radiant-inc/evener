@@ -40,7 +40,7 @@ import {
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../workspace";
-import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
+import { StackHost, scrollOffsetsForTests, setLastPopstateWasTrustedForTests } from "./StackHost";
 import stackStyles from "./StackHost.module.css";
 
 test("ordinary mobile Back skips attention parked records", async () => {
@@ -155,6 +155,7 @@ function DocFixture({ params, paneId, focused }: PaneProps<{ ref?: string; path?
       <p data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
         doc pane: {label} (focused={String(focused)}) (paneId={paneId})
       </p>
+      <div data-testid={`doc-scroller-${label}`} />
       <button type="button" onClick={() => setClicks((c) => c + 1)}>
         clicks: {clicks}
       </button>
@@ -1730,6 +1731,13 @@ function leavingFrames(): HTMLElement[] {
   return [...stackBody().querySelectorAll<HTMLElement>("[inert]")];
 }
 
+// A doc fixture's scrollable element, by pane label.
+function paneScroller(label: string): HTMLElement {
+  const scroller = screen.getByTestId(`doc-scroller-${label}`);
+  if (!(scroller instanceof HTMLElement)) throw new Error(`no scroller in doc pane ${label}`);
+  return scroller;
+}
+
 async function showDoc(ref: string): Promise<void> {
   await act(async () => {
     workspaceStore.getState().openPane("doc", { ref });
@@ -1869,4 +1877,46 @@ test("with no slide running, as under reduced motion, a step deeper is the insta
   expect(leavingFrames()).toEqual([]);
   expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
   expect(stackBody().textContent).not.toContain("instant_a");
+});
+
+test("a slide away from a scrolled pane keeps the discarded pane's scroller out of the offsets map", async () => {
+  const slides = installSlideAnimations();
+  try {
+    workspaceStore.getState().openPane("doc", { ref: "scrolled_from" });
+    render(<StackHost />);
+    await screen.findByText(/doc pane: scrolled_from /);
+    const offsets = scrollOffsetsForTests();
+    if (!offsets) throw new Error("StackHost did not expose its scroll offsets");
+    const scroller = paneScroller("scrolled_from");
+
+    scroller.scrollTop = 48;
+    await act(async () => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(offsets.get(scroller)).toEqual([48, 0]);
+
+    await showDoc("scrolled_to");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    // Restoring the leaving frame's offsets queues scroll events from inside
+    // that frame while it is still connected - the events a browser fires
+    // during the slide. They must not put the discarded pane back in the map.
+    await act(async () => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+
+    await slides.finish();
+    expect(scroller.isConnected).toBe(false);
+    expect(offsets.has(scroller)).toBe(false);
+
+    // The shown pane's own scroller still records.
+    const arrived = paneScroller("scrolled_to");
+    arrived.scrollTop = 24;
+    await act(async () => {
+      arrived.dispatchEvent(new Event("scroll"));
+    });
+    expect(offsets.get(arrived)).toEqual([24, 0]);
+    expect(offsets.has(scroller)).toBe(false);
+  } finally {
+    slides.restore();
+  }
 });

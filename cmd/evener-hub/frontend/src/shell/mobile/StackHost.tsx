@@ -190,6 +190,19 @@ export function setLastPopstateWasTrustedForTests(value: boolean): void {
   lastPopstateWasTrusted = value;
 }
 
+// The scroll-offsets map of the mounted StackHost, for tests only: the map
+// is pure bookkeeping with no DOM footprint, so a test asserting its
+// invariant - offsets for elements inside the shown pane's slot only,
+// nothing detached - has nothing else to read. It tracks the latest mount;
+// exactly one StackHost is alive at a time (the app has one phone shell,
+// tests unmount between rows). No production code should ever call this
+// (mirrors setLastPopstateWasTrustedForTests precedent).
+let mountedScrollOffsets: ScrollOffsets | null = null;
+
+export function scrollOffsetsForTests(): ScrollOffsets | null {
+  return mountedScrollOffsets;
+}
+
 export interface StackHostProps {
   // The rail content, threaded through to MobilePanel's `rail` prop (the
   // panel's whole rail contract). AppShell — the integrator — passes
@@ -387,20 +400,27 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
 
   // Records the shown pane's scroll offsets as they change: the old pane's
   // last frame is a detached subtree, which has lost them by the time it
-  // slides.
+  // slides. Only elements inside the current pane slot are recorded - the
+  // leaving layer's restored offsets queue scroll events of its own, and
+  // those must not put a pane the stack is discarding back in the map.
+  // The map holds offsets for the shown pane only, nothing detached.
   useEffect(() => {
     const body = stackBodyRef.current;
     if (!body) return;
     const offsets = scrollOffsetsRef.current;
+    mountedScrollOffsets = offsets;
     const onScroll = (event: Event) => {
       const target = event.target;
-      if (target instanceof Element) {
+      if (target instanceof Element && paneSlotRef.current?.contains(target)) {
         pruneDetachedOffsets(offsets);
         offsets.set(target, [target.scrollTop, target.scrollLeft]);
       }
     };
     body.addEventListener("scroll", onScroll, { capture: true, passive: true });
-    return () => body.removeEventListener("scroll", onScroll, { capture: true });
+    return () => {
+      body.removeEventListener("scroll", onScroll, { capture: true });
+      if (mountedScrollOffsets === offsets) mountedScrollOffsets = null;
+    };
   }, []);
 
   // Classifies each focus change and slides it (docs/web-ui/motion.md, recipe
@@ -451,6 +471,9 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
         TRANSITION_CLASSES,
         () => {
           endTransitionRef.current = null;
+          // The leaving layer is gone, so whatever its restored scrolling
+          // left in the map is discarded with it.
+          pruneDetachedOffsets(offsets);
         },
       );
     }
