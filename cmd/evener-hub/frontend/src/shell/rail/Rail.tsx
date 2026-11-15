@@ -1,6 +1,6 @@
 import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
 import { errorText, LOCAL_HOST } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, LIVE_BAND_ORDER } from "@evener/appwire-client/state/navigation";
 import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   archivedListKey,
@@ -52,6 +52,7 @@ import {
   setFavorite,
   unpinSession,
 } from "./actions";
+import { holdLiveBands, liveBandNodes, railLiveBands } from "./liveBands";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -64,7 +65,6 @@ import {
   catalogOverflowNode,
   hostProjectNodes,
   type IsExpanded,
-  liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
@@ -567,10 +567,31 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
+  const currentLiveBands = useMemo(
+    () => railLiveBands(resources.live, resources.needsYou),
+    [resources.live, resources.needsYou],
+  );
+  // A row that changes band is unmounted and mounted again under its new
+  // fold, which would close a dialog opened from its menu and discard what
+  // the reader typed there. While a row's own dialog is open the bands hold
+  // still; closing it lets the rows settle where they belong. Only a row's
+  // dialog counts: on a phone the rail itself sits inside a modal drawer.
+  const [rowDialogs, setRowDialogs] = useState(0);
+  const onRowDialogChange = useCallback((open: boolean) => {
+    setRowDialogs((count) => Math.max(0, count + (open ? 1 : -1)));
+  }, []);
+  const dialogOpen = rowDialogs > 0;
+  const shownLiveBands = useRef(currentLiveBands);
+  const liveBands = useMemo(() => {
+    const shown = dialogOpen ? holdLiveBands(shownLiveBands.current, currentLiveBands) : currentLiveBands;
+    shownLiveBands.current = shown;
+    return shown;
+  }, [currentLiveBands, dialogOpen]);
   useRailReveal({
     revealTarget,
     onRevealConsumed,
     resources,
+    liveBands,
     archivedLists,
     expansion: expanded,
     isExpanded,
@@ -692,6 +713,7 @@ function NavigationRail({
   );
   const rowActions = useMemo<RailRowActions>(
     () => ({
+      onRowDialogChange,
       onOpenOverview: (session) => {
         workspaceStore.getState().openPane("session", { ref: session.ref });
         activitySidebarStore.getState().openFor(session.ref);
@@ -853,7 +875,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push],
+    [client, runAction, toasts.push, onRowDialogChange],
   );
   const pinSectionDialogs = usePinSectionDialogs(runAction);
   function closeDeleteDialog() {
@@ -977,12 +999,10 @@ function NavigationRail({
     seenHostFolds.current = new Set(hostFoldIds);
   }, [projectsSectionNodes, hostFoldIds, expanded, setRowExpanded]);
   const liveNodes = [
-    // Live answers "which machine" the same way in either mode: rows group
-    // under host subheaders exactly while they span more than one host
-    // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
-    ...(groupingMode !== "flat"
-      ? liveNodesGroupedByHost(sessionNodes(resources.live), displaySources, isExpanded)
-      : sessionNodes(resources.live)),
+    // Live answers "who needs me" before "which machine": its rows sit in
+    // attention bands in every grouping mode, and a row names its host only
+    // where it is not the one most of Live runs on (liveBandNodes).
+    ...liveBandNodes(liveBands, displaySources, isExpanded),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -1000,7 +1020,9 @@ function NavigationRail({
     manifestError ??
     (resourceError ? errorText(resourceError) : null) ??
     (navigationMode === "error" ? "Navigation resources are unavailable" : null);
-  const displayed = nonEmpty(resources);
+  // A row the bands are holding for its open dialog keeps the tree mounted
+  // even when it was the last thing the sections supplied.
+  const displayed = nonEmpty(resources) || LIVE_BAND_ORDER.some((band) => liveBands[band].length > 0);
   const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   const parentOwnsScroll = scrollOwner === "parent";
   return (

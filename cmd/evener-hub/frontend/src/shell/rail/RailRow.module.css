@@ -317,6 +317,43 @@
   font-size: var(--font-size-caption);
 }
 
+/* A Live row's second line: why it sits in its band, then its host where the
+ * band names it. The same quiet sentence as .quotaWait, and it truncates the
+ * same way so a row is never taller than two lines. Only the word naming a
+ * Needs-you row's attention takes a hue, matching the row's own dot. */
+.why {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.whyReason[data-hue="attention"] {
+  color: var(--attention-ink);
+}
+
+.whyReason[data-hue="danger"] {
+  color: var(--danger-ink);
+}
+
+/* A band header is a label over its rows, not a row to open: medium ink and
+ * medium weight set it apart from the session titles under it without a
+ * second heading style competing with the section's eyebrow. */
+.bandLabel {
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-medium);
+}
+
+/* A band's count sits where a row's right slot would, but it is not one: a
+ * band has no actions to swap in on hover, so the count never hides. */
+.bandCount {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+}
+
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
  * cell (the Task-7 needs-you Badge and "Not started" are the other two;
  * RailRow.tsx renders at most one of the three, and the hover-revealed

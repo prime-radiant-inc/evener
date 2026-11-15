@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { liveBands } from "../board/attention";
-import type { LiveBands } from "../board/attention";
+import { liveBands } from "@evener/appwire-client/state/navigation";
+import type { LiveBands } from "@evener/appwire-client/state/navigation";
 import { liveOrder, neighbor, nextNavigation, nextQueue, othersNeedingYou, servedFirst } from "./fleetOrder";
 import { fleetSession as row } from "./fleetTestUtils";
 

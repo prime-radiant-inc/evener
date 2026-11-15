@@ -1,7 +1,8 @@
 // Live-session navigation for the session.liveNext/session.livePrevious
 // keybinding actions: Alt+Shift+ArrowRight/Left move across the rail's LIVE
-// section in server order, wrapping at both ends. The action handlers
-// (AppShell) read selectLiveRows and call adjacentLiveSessionRef; the
+// section in the order its bands show (liveBandRefs), wrapping at both ends.
+// The action handlers (AppShell) read that order and call
+// adjacentLiveSessionRef; the
 // selection semantics live here, pure, so they are unit-testable without the
 // shell. This is needsYouCycle.ts's nextNeedsYouRef precedent made
 // bidirectional, including its "current not in the cycle list" rule: next

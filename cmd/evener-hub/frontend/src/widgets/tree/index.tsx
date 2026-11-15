@@ -177,6 +177,25 @@ export function Tree<T extends TreeNode = TreeNode>({
     pendingRefocusRef.current = effectiveCurrentId;
   }
 
+  // A focused row that moves to another branch keeps its id but not its
+  // element: React unmounts it under the old parent and mounts it under the
+  // new one, and the browser drops focus to <body>. As with the removal
+  // case above, the render body is the one moment that can still see the
+  // old element holding focus; the layout effect below hands focus to the
+  // element that replaced it.
+  const reparentedFocusRef = useRef<{ id: string; element: HTMLDivElement } | null>(null);
+  const currentRow = currentId === null ? undefined : rowRefs.current.get(currentId);
+  reparentedFocusRef.current =
+    currentId !== null && currentRow !== undefined && currentRow.ownerDocument.activeElement === currentRow
+      ? { id: currentId, element: currentRow }
+      : null;
+  useLayoutEffect(() => {
+    const before = reparentedFocusRef.current;
+    if (before === null) return;
+    const row = rowRefs.current.get(before.id);
+    if (row !== undefined && row !== before.element && !before.element.isConnected) row.focus();
+  });
+
   // Which treeitem itself holds focus, for TreeRowInfo.focused. A row that
   // lost focus without a blur event (it unmounted while focused) is cleared
   // by the check below, so a row remounted under the same id never starts

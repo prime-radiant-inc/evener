@@ -7,7 +7,7 @@ import { markers } from "../markerTestUtils";
 import { render, renderedText, unmountMountedTrees } from "../renderNative.testkit";
 import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
-import type { BoardState, ClassifiedRow } from "./attention";
+import type { BoardState, ClassifiedRow } from "@evener/appwire-client/state/navigation";
 import { BoardRow } from "./BoardRow";
 import type { RowAction } from "./rowActions";
 import { ROW_ACTION_SYMBOLS, RowMenu, type RowMenuHost, RowMenuSheet, RowPreviewCard, rowMenuHosts } from "./RowMenu";

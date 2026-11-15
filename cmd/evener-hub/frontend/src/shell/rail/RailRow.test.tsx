@@ -304,6 +304,7 @@ function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
 function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
   return {
     onOpenOverview: vi.fn(),
+    onRowDialogChange: vi.fn(),
     onRenameSession: vi.fn().mockResolvedValue(undefined),
     onShutdownSession: vi.fn().mockResolvedValue(undefined),
     onForceStopSession: vi.fn().mockResolvedValue(undefined),

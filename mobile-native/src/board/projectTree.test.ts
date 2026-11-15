@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "@evener/appwire-client";
 import type { ProjectBrowserSnapshot } from "../projectBrowser";
-import { boardState } from "./attention";
+import { boardState } from "@evener/appwire-client/state/navigation";
 import {
 	expandedProjectKeys,
 	liveCountsByHost,

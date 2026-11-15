@@ -199,7 +199,15 @@ source bindings and focus remain workspace-owned. See
 
 S02's Rail owns the sidebar boundary and session-row geometry for navigation
 context cards, and it lists projects by name and each project's sessions
-newest-created first so activity does not move rows. HoverCard's shared
+newest-created first so activity does not move rows. Its Live section is the
+exception by design: it reads as attention bands (Needs you, Working, Idle)
+from the shared
+[live attention model](../../appwire-client/typescript/state/navigation/liveAttention.ts),
+the same one the phone Board reads, and
+[the rail's band layer](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)
+is the one order its rows, Alt-arrow cycling and reveal all follow
+([attention navigation](attention-navigation.md#live-bands-on-the-rail)).
+HoverCard's shared
 floating layer owns the body portal, measurement and reveal/dismiss lifetime.
 It observes the visible card and its side-anchored row so placement follows
 sidebar resizing. Session cards float beside the rail
