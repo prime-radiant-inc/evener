@@ -479,10 +479,14 @@ printf '%s' "$root" | "$SWEEP_REAL_SHASUM" -a 256
 		t.Errorf("a bare-backed orphan cache was not swept: %v\n%s", err, bareOut)
 	}
 
-	// A worktree root split by porcelain's newline record format makes
-	// the live set untrustworthy; no cache may be judged against it.
-	newlineWorktree := filepath.Join(fixture, "registered\nodd")
+	// A newline in a registered root must not truncate its protected key,
+	// even when the truncated prefix exists as a directory.
+	newlineName := "registered" + "\n" + "odd"
+	newlineWorktree := filepath.Join(fixture, newlineName)
 	gittest.Run(t, repo, "worktree", "add", "-q", "--detach", newlineWorktree)
+	if err := os.Mkdir(filepath.Join(fixture, "registered"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	newlineWorktreeHome := filepath.Join(fixture, "worktree-newline-cache")
 	newlineWorktreeBucket := filepath.Join(newlineWorktreeHome, "evener", "golangci-lint", sweepRepoHash(commonA))
 	newlineLive := makeSweepCacheDir(t, newlineWorktreeBucket, sweepCacheHash(newlineWorktree))
@@ -493,14 +497,41 @@ printf '%s' "$root" | "$SWEEP_REAL_SHASUM" -a 256
 		}
 	}
 	worktreeOut, worktreeStatus := runSweep(t, repo, newlineWorktreeHome)
-	if worktreeStatus == 0 {
-		t.Errorf("sweeper accepted an incomplete live set from a newline-containing worktree root:\n%s", worktreeOut)
+	if worktreeStatus != 0 {
+		t.Errorf("sweeper refused a registered newline-containing worktree root: exit %d\n%s", worktreeStatus, worktreeOut)
 	}
 	if _, err := os.Stat(newlineLive); err != nil {
 		t.Errorf("sweeper deleted a registered newline-containing worktree's cache: %v\n%s", err, worktreeOut)
 	}
-	if _, err := os.Stat(newlineOrphan); err != nil {
-		t.Errorf("sweeper deleted a cache with an untrustworthy worktree list: %v\n%s", err, worktreeOut)
+	if _, err := os.Stat(newlineOrphan); !os.IsNotExist(err) {
+		t.Errorf("sweeper kept an orphan despite a complete live worktree set: %v\n%s", err, worktreeOut)
+	}
+
+	// An unavailable registered root still has a known cache key. Its
+	// absence must not block sweeping unrelated old caches in this clone.
+	unavailableRoot := filepath.Join(fixture, "unavailable-root")
+	gittest.Run(t, repo, "worktree", "add", "-q", "--detach", unavailableRoot)
+	if err := os.Rename(unavailableRoot, filepath.Join(fixture, "unavailable-root-moved")); err != nil {
+		t.Fatal(err)
+	}
+	unavailableHome := filepath.Join(fixture, "unavailable-cache")
+	unavailableBucket := filepath.Join(unavailableHome, "evener", "golangci-lint", sweepRepoHash(commonA))
+	unavailableLive := makeSweepCacheDir(t, unavailableBucket, sweepCacheHash(unavailableRoot))
+	unavailableOrphan := makeSweepCacheDir(t, unavailableBucket, sweepCacheHash(filepath.Join(fixture, "unavailable-orphan")))
+	for _, dir := range []string{unavailableLive, unavailableOrphan} {
+		if err := os.Chtimes(dir, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unavailableOut, unavailableStatus := runSweep(t, repo, unavailableHome)
+	if unavailableStatus != 0 {
+		t.Errorf("sweeper refused a registered root whose directory is unavailable: exit %d\n%s", unavailableStatus, unavailableOut)
+	}
+	if _, err := os.Stat(unavailableLive); err != nil {
+		t.Errorf("sweeper deleted an unavailable registered root's cache: %v\n%s", err, unavailableOut)
+	}
+	if _, err := os.Stat(unavailableOrphan); !os.IsNotExist(err) {
+		t.Errorf("sweeper kept an orphan because a registered root is unavailable: %v\n%s", err, unavailableOut)
 	}
 
 	// Outside a git repo the script must delete nothing and fail loudly:

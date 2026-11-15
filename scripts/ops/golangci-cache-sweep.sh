@@ -1,6 +1,6 @@
 #!/bin/sh
 # golangci-cache-sweep — reclaim per-worktree golangci-lint analysis caches
-# whose owning worktree no longer exists.
+# whose owning worktree is no longer registered.
 #
 # Why: scripts/lib/golangci-lint-cache.sh keys each checkout's golangci-lint
 # cache by a hash of its worktree root (the #290 cross-checkout poisoning
@@ -21,7 +21,7 @@
 # they are never candidates — do not delete what you cannot attribute.
 #
 # How it decides "dead": the cache key is the first 16 hex chars of sha256 over
-# the worktree root path, so the live set is `git worktree list --porcelain`
+# the worktree root path, so the live set is `git worktree list --porcelain -z`
 # from this checkout, hashed the same way. A cache dir whose key is not in the
 # live set belonged to a worktree that is gone.
 #
@@ -67,22 +67,36 @@ cache_root="${XDG_CACHE_HOME:-${HOME:?HOME must be set}/.cache}/evener/golangci-
 
 # The live key set: every registered worktree root (the main checkout
 # included), hashed exactly as scripts/lib/golangci-lint-cache.sh hashes.
-# A single-command substitution preserves git's exit status directly (POSIX sh
-# gives a pipeline its last element's status, which would mask git's failure).
-if ! worktree_lines="$(git worktree list --porcelain 2>/dev/null)"; then
+# Git 2.36 introduced -z for worktree list; earlier versions cannot safely
+# represent a root containing a newline, so they cannot supply a live set.
+git_version=$(git --version 2>/dev/null) || git_version=
+git_version=${git_version#git version }
+git_version=${git_version%% *}
+git_major=${git_version%%.*}
+git_minor=${git_version#*.}
+git_minor=${git_minor%%.*}
+case "$git_major:$git_minor" in
+	:*|*:|*[!0-9:]*)
+		echo "golangci-cache-sweep: git >= 2.36 is required for lossless worktree listing; refusing to sweep" >&2
+		exit 1
+		;;
+esac
+if [ "$git_major" -lt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -lt 36 ]; }; then
+	echo "golangci-cache-sweep: git >= 2.36 is required for lossless worktree listing; refusing to sweep" >&2
+	exit 1
+fi
+# A file keeps NUL bytes intact and lets the guarded git command retain its
+# status; a pipeline ending in xargs would otherwise mask a git failure.
+worktree_stream=$(mktemp "${TMPDIR:-/tmp}/golangci-cache-sweep.XXXXXXXX") || exit 1
+trap 'rm -f "$worktree_stream"' 0
+if ! git worktree list --porcelain -z > "$worktree_stream" 2>/dev/null; then
 	echo "golangci-cache-sweep: not inside a workable git repository; the live worktree set is unknown, refusing to sweep" >&2
 	exit 1
 fi
 # A bare common repository contributes a metadata entry but no worktree root;
 # its linked worktrees remain usable. An empty registered set cannot safely
 # classify any cache as dead.
-worktree_roots="$(printf '%s\n' "$worktree_lines" | awk '
-	/^worktree / { root = substr($0, 10); next }
-	/^bare$/ { root = ""; next }
-	/^$/ { if (root != "") print root; root = ""; next }
-	END { if (root != "") print root }
-')"
-if [ -z "$worktree_roots" ]; then
+if [ ! -s "$worktree_stream" ]; then
 	echo "golangci-cache-sweep: no registered worktree roots; the live set is unusable, refusing to sweep" >&2
 	exit 1
 fi
@@ -106,26 +120,43 @@ if ! repo_shasum="$(printf '%s' "$common_dir" | shasum -a 256)"; then
 fi
 repo_key="$(printf '%s' "$repo_shasum" | cut -c1-16)"
 sweep_root="$cache_root/$repo_key"
-# One shasum per root is inherent (content-hash tools hash files, not argv
-# strings); the cut runs once over the whole set instead of once per root.
-# The hash loop is the LAST pipeline element into a guarded substitution.
-# Each failed hash exits the loop explicitly: shell errexit behavior inside
-# a tested substitution differs, and a later success cannot repair a missing
-# live key. The registered-root guard above excludes an empty live set. Every
-# parsed root must exist: porcelain separates records by newline, so a path
-# with a newline can otherwise yield a truncated root and an incomplete set.
-if ! shasum_lines="$(printf '%s\n' "$worktree_roots" \
-	| while IFS= read -r root; do
-		if [ ! -d "$root" ]; then
-			echo "golangci-cache-sweep: a registered worktree root is missing; the live worktree set is unknown, refusing to sweep" >&2
-			exit 1
-		fi
-		printf '%s' "$root" | shasum -a 256 || exit 1
-	done)"; then
+# xargs -0 preserves every field, including a newline in a root. Its shell
+# emits only fixed-format hash and bare markers, so awk never sees a raw path.
+# shasum is the last element of each hash pipeline. A failed hash exits its
+# xargs child explicitly; the guarded substitution tests xargs' status, so no
+# later hash masks the failure.
+# The quoted body is expanded by the xargs child, not by this parent shell.
+# shellcheck disable=SC2016
+if ! field_keys="$(xargs -0 sh -c '
+	for field do
+		case "$field" in
+		"worktree "*)
+			root=${field#worktree }
+			if [ -z "$root" ]; then
+				echo "golangci-cache-sweep: empty worktree root in porcelain; refusing to sweep" >&2
+				exit 1
+			fi
+			hash=$(printf "%s" "$root" | shasum -a 256) || exit 1
+			printf "hash %.16s\n" "$hash"
+			;;
+		bare) printf "bare\n" ;;
+		"") printf "\n" ;;
+		esac
+	done
+' sh < "$worktree_stream")"; then
 	echo "golangci-cache-sweep: hashing the live worktree roots failed; the live set is incomplete, refusing to sweep" >&2
 	exit 1
 fi
-live_keys="$(printf '%s\n' "$shasum_lines" | cut -c1-16)"
+live_keys="$(printf '%s\n' "$field_keys" | awk '
+	/^hash / { root = substr($0, 6); next }
+	/^bare$/ { root = ""; next }
+	/^$/ { if (root != "") print root; root = ""; next }
+	END { if (root != "") print root }
+')"
+if [ -z "$live_keys" ]; then
+	echo "golangci-cache-sweep: no registered worktree roots; the live set is unusable, refusing to sweep" >&2
+	exit 1
+fi
 
 [ -d "$sweep_root" ] || { echo "$(date -Iseconds) golangci-cache-sweep: no cache bucket for this repository at $sweep_root; nothing to sweep"; exit 0; }
 
