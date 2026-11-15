@@ -158,17 +158,23 @@ lint-cache-clean:
 # behind forever — on a machine with a churning worktree fleet the dead dirs
 # accumulate hundreds of megabytes each. The sweeper hashes the live
 # `git worktree list` roots exactly as scripts/lib/golangci-lint-cache.sh
-# does and deletes only the orphans older than GOLANGCI_SWEEP_MIN_AGE_HOURS
-# (default 48h, so a lane disposed mid-lint or re-created at the same path is
-# never swept). Like lint-cache-clean it is a local cleanup action, not a
+# does — and only inside this repository's own cache bucket, keyed by the
+# Git common directory, so independent clones sharing a cache root never
+# sweep each other — deleting only the orphans older than
+# GOLANGCI_SWEEP_MIN_AGE_HOURS (default 48h, so a lane disposed mid-lint or
+# re-created at the same path is never swept; pre-bucketing entries with no
+# owning-clone marker are left to the operator). Like lint-cache-clean it is
+# a local cleanup action, not a
 # gate: a required lint run must never depend on the very cache it warms.
 ## Reclaim per-worktree golangci-lint caches whose owning worktree is gone.
 ## proves: Only cache dirs whose key matches no registered worktree, and
 ##   whose mtime is older than GOLANGCI_SWEEP_MIN_AGE_HOURS (default 48), are
-##   deleted; live worktrees' caches and unrecognized entries are untouched.
+##   deleted; live worktrees' caches, unrecognized entries, other clones'
+##   buckets, and pre-bucketing entries with no owning-clone marker are
+##   untouched.
 ## trigger: Local cleanup after disposing worktree lanes; safe to run
 ##   periodically (cron) on machines with a churning worktree fleet.
-## requires: git (run from any registered worktree of this repository).
+## requires: git >= 2.31 (run from any registered worktree of this repository).
 ## fails-when: Not inside a workable git repository — the live worktree set
 ##   is unknown, and the sweep refuses to run rather than treat unknown as
 ##   empty.

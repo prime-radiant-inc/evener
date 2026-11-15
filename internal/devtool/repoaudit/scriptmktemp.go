@@ -234,6 +234,15 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// bash-only guard is unreachable. Its mint is checked and empty-guarded,
 	// and cleanup refuses an empty root rather than deleting from it.
 	"install.sh": 1,
+	// The sweeper's delete is the behaviour the script exists for, so it
+	// takes the auditable variable-fed form instead of a find -exec the
+	// textual scan cannot hold. The variable it is fed comes only from the
+	// script's own candidates find — a 16-hex-named dir inside this
+	// repository's own cache bucket, past the age guard and absent from the
+	// live worktree set — so no caller or clobber can hand it a path from
+	// outside the candidate set. Deletion is what the tool's test exercises,
+	// against fixture-owned cache roots.
+	"scripts/ops/golangci-cache-sweep.sh": 1,
 }
 
 // recursiveDeleteOffenders scans paths for variable-fed recursive deletes

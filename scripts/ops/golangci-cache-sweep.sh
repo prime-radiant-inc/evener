@@ -9,6 +9,17 @@
 # the dead dirs hold hundreds of megabytes each (measured 2026-11-13: 855M
 # dead against 978M live).
 #
+# Scope: the sweeper only ever judges inside THIS repository's cache bucket —
+# <cache root>/<sha256-16 of this repository's Git common directory> — which
+# is exactly where scripts/lib/golangci-lint-cache.sh writes this clone's
+# caches. Independent clones share one cache root (the same XDG_CACHE_HOME)
+# but never a common directory, and `git worktree list` only ever names this
+# checkout's own trees, so without the bucket a sweep from one clone would
+# judge another clone's live caches dead once their mtimes passed the age
+# guard. Cache dirs written by the pre-bucketing layout sit directly under
+# the cache root with no owning-clone marker: their ownership is unknown, so
+# they are never candidates — do not delete what you cannot attribute.
+#
 # How it decides "dead": the cache key is the first 16 hex chars of sha256 over
 # the worktree root path, so the live set is `git worktree list --porcelain`
 # from this checkout, hashed the same way. A cache dir whose key is not in the
@@ -24,11 +35,11 @@
 # window. A lane re-created at the same path re-enters the live set by its
 # key, so re-created lanes are protected by the key check, not the clock.
 #
-# Safety: only 16-hex-named directories directly under the cache root are
-# candidates; anything else in the root is left alone. If `git worktree list`
-# fails, or the repository is bare (the live set is degenerate), the live set
-# is unknown or unusable and the script fails loudly without deleting
-# anything — an unknown set must never be treated as empty.
+# Safety: only 16-hex-named directories directly under this repository's
+# bucket are candidates; everything else in the cache root is left alone. If
+# `git worktree list` fails, or the repository is bare (the live set is
+# degenerate), the live set is unknown or unusable and the script fails loudly
+# without deleting anything — an unknown set must never be treated as empty.
 #
 # Usage: golangci-cache-sweep.sh [--dry-run]
 #   GOLANGCI_SWEEP_MIN_AGE_HOURS=168 golangci-cache-sweep.sh  # keep a week
@@ -59,9 +70,6 @@ cache_root="${XDG_CACHE_HOME:-${HOME:?HOME must be set}/.cache}/evener/golangci-
 # included), hashed exactly as scripts/lib/golangci-lint-cache.sh hashes.
 # A single-command substitution preserves git's exit status directly (POSIX sh
 # gives a pipeline its last element's status, which would mask git's failure).
-# A bare repository succeeds with a degenerate set — only the bare root
-# itself — which would make every other worktree's cache look dead, so a
-# `bare` line refuses the run for the same reason as a git failure.
 if ! worktree_lines="$(git worktree list --porcelain 2>/dev/null)"; then
 	echo "golangci-cache-sweep: not inside a workable git repository; the live worktree set is unknown, refusing to sweep" >&2
 	exit 1
@@ -79,6 +87,26 @@ bare'*)
 		exit 1
 		;;
 esac
+# The repository bucket, derived exactly as scripts/lib/golangci-lint-cache.sh
+# derives it: sha256-16 over the absolute Git common directory
+# (--path-format=absolute needs git >= 2.31). Every worktree of this clone
+# resolves to the same common directory and no other clone does, so the
+# bucket is this repository's alone. A resolution failure refuses the run:
+# without the bucket the sweeper cannot know which caches are this clone's
+# to judge.
+if ! common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || [ -z "$common_dir" ]; then
+	echo "golangci-cache-sweep: this repository's common directory could not be resolved; which caches are this clone's is unknown, refusing to sweep" >&2
+	exit 1
+fi
+# The hash is the LAST pipeline element into the guarded substitution; the
+# longer comment at the live-set hashing below explains why the cut stays
+# downstream of the guard.
+if ! repo_shasum="$(printf '%s' "$common_dir" | shasum -a 256)"; then
+	echo "golangci-cache-sweep: hashing the repository's common directory failed; refusing to sweep" >&2
+	exit 1
+fi
+repo_key="$(printf '%s' "$repo_shasum" | cut -c1-16)"
+sweep_root="$cache_root/$repo_key"
 # One shasum per root is inherent (content-hash tools hash files, not argv
 # strings); the cut runs once over the whole set instead of once per root.
 # The hash loop runs as the LAST pipeline element into a command
@@ -94,24 +122,25 @@ if ! shasum_lines="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' 
 fi
 live_keys="$(printf '%s\n' "$shasum_lines" | cut -c1-16)"
 
-[ -d "$cache_root" ] || { echo "$(date -Is) golangci-cache-sweep: no cache root at $cache_root; nothing to sweep"; exit 0; }
+[ -d "$sweep_root" ] || { echo "$(date -Iseconds) golangci-cache-sweep: no cache bucket for this repository at $sweep_root; nothing to sweep"; exit 0; }
 
-# Candidates: dirs under the cache root old enough to sweep. The 16-hex name
-# filter runs in the shell because GNU find's -regextype is not portable to
-# the BSD find macOS ships, and a portable candidate scan must not abort the
-# sweep on a supported platform. The -newermt age predicate stays in find:
-# both finds support it, and folding it in keeps the failure direction safe
-# (an erroring find yields no candidates instead of a fail-open guard).
-candidates="$(find "$cache_root" -mindepth 1 -maxdepth 1 -type d '!' -newermt "-${min_age_hours} hours" \
-	| while IFS= read -r dir; do
-		case $(basename "$dir") in
-			[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$dir" ;;
-		esac
-	done)"
+# Candidates: 16-hex-named dirs under this repository's bucket, old enough
+# to sweep. Both predicates stay in find — -name's bracket glob is portable
+# where GNU find's -regextype is not, and -newermt runs on the BSD find macOS
+# ships — and keeping the name filter out of the shell also keeps it
+# executable under macOS's /bin/sh (bash 3.2): a `case` inside a command
+# substitution ends the substitution at the first case pattern's `)`, a break
+# `sh -n` cannot see because it only fires when the substitution runs. A
+# find that errors fails the run now — the substitution preserves its
+# status under set -e — instead of yielding a fail-open empty candidate set.
+candidates="$(find "$sweep_root" -mindepth 1 -maxdepth 1 -type d \
+	-name '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]' \
+	'!' -newermt "-${min_age_hours} hours")"
 
-# A plain loop, not a pipeline: a piped while-loop runs in a subshell where
-# set -e cannot fail the script, so a failed delete would print "swept" and
-# exit 0. Here a failing rm fails the run.
+# The delete loop reads the candidate list through a pipe, so the loop body
+# runs in a subshell — but a failing rm still fails the run: the subshell
+# inherits set -e, exits before "swept" prints, and its status is the
+# pipeline's, which set -e propagates.
 if [ -n "$candidates" ]; then
 	printf '%s\n' "$candidates" | while IFS= read -r dir; do
 		key=$(basename "$dir")
@@ -123,19 +152,20 @@ if [ -n "$candidates" ]; then
 			echo "would sweep $key (${size_kb}K, no worktree has this cache's key and the cache has carried an mtime older than ${min_age_hours}h)"
 			continue
 		fi
-		# find -exec rm reads to the audit as a delete of the literal {}
-		# placeholder (testing.md documents it as a blind spot the textual
-		# scan cannot hold). The safety here is not the audit's: this loop
-		# body only runs for dirs that passed the live-key and age filters,
-		# and the delete cannot be handed a path from outside the candidate
-		# set.
-		find "$dir" -mindepth 0 -maxdepth 0 -exec rm -rf {} +
+		# This delete is the behaviour the script exists for, so it takes the
+		# auditable variable-fed form and sits on the count-pinned list of
+		# the recursive-delete audit (recursiveDeleteAllowedLines in
+		# internal/devtool/repoaudit) with this reason: $dir comes only from
+		# the candidates find above — a 16-hex dir inside this repository's
+		# own bucket, past the age guard and absent from the live set — so
+		# the delete cannot be handed a path from outside the candidate set.
+		rm -rf "$dir"
 		echo "swept $key (${size_kb}K, no worktree has this cache's key and the cache has carried an mtime older than ${min_age_hours}h)"
 	done
 fi
 
 if [ "$dry_run" -eq 1 ]; then
-	echo "$(date -Is) dry run complete; nothing deleted under $cache_root (min age ${min_age_hours}h)"
+	echo "$(date -Iseconds) dry run complete; nothing deleted under $sweep_root (min age ${min_age_hours}h)"
 else
-	echo "$(date -Is) swept $cache_root (caches with no live worktree and an mtime older than ${min_age_hours}h are gone; younger dead caches kept)"
+	echo "$(date -Iseconds) swept $sweep_root (this repository's dead caches older than ${min_age_hours}h are gone; younger dead caches kept; pre-bucketing entries directly under $cache_root have unknown owners and are never swept)"
 fi

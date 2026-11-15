@@ -29,6 +29,41 @@ func sweepCacheHash(root string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// sweepRepoHash reproduces the repository bucket both the helper and the
+// sweeper derive: the first 16 hex chars of sha256 over the repository's
+// absolute Git common directory. Every worktree of one clone resolves to the
+// same common directory and no other clone does, which is what keeps one
+// clone's sweeper from judging another clone's caches.
+func sweepRepoHash(commonDir string) string {
+	sum := sha256.Sum256([]byte(commonDir))
+	return hex.EncodeToString(sum[:])[:16]
+}
+
+// sweepEnv returns the environment every sweeper and helper subprocess in
+// this file runs with: gittest's hermetic environment — no ambient GIT_DIR
+// or git configuration can redirect the script's git calls — plus the
+// fixture cache root and the sweep age the fixture means.
+// GOLANGCI_SWEEP_MIN_AGE_HOURS is the documented operator knob (168 keeps a
+// week), so inheriting an exported value would change what the fixtures'
+// 72-hour-old mtimes mean and fail the suite on a machine that simply
+// followed the script's usage comment. Both keys are dropped from the base
+// rather than appended to it: a duplicated environ entry resolves by
+// whichever occurrence the platform reads first, not reliably by the last.
+func sweepEnv(cacheHome string) []string {
+	var env []string
+	for _, entry := range gittest.Env() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == "XDG_CACHE_HOME" || key == "GOLANGCI_SWEEP_MIN_AGE_HOURS" {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env,
+		"XDG_CACHE_HOME="+cacheHome,
+		"GOLANGCI_SWEEP_MIN_AGE_HOURS=48",
+	)
+}
+
 // runSweep runs the sweeper against the fixture repo and returns its combined
 // output and exit status. cwd stays in the fixture repo (that is where the
 // live worktree set must be read from) while the script itself is the one
@@ -44,7 +79,7 @@ func runSweep(t *testing.T, repo string, cacheHome string, args ...string) (stri
 	cmdArgs := append([]string{script}, args...)
 	cmd := exec.Command("sh", cmdArgs...)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+cacheHome)
+	cmd.Env = sweepEnv(cacheHome)
 	out, err := cmd.CombinedOutput()
 	status := 0
 	if err != nil {
@@ -57,11 +92,12 @@ func runSweep(t *testing.T, repo string, cacheHome string, args ...string) (stri
 	return string(out), status
 }
 
-// makeSweepCacheDir creates one cache entry under the fixture cache root and
-// returns its path.
-func makeSweepCacheDir(t *testing.T, cacheHome, name string) string {
+// makeSweepCacheDir creates one cache entry named name under parent — a
+// repository's bucket, or the bare cache root for a pre-bucketing layout
+// entry — and returns its path.
+func makeSweepCacheDir(t *testing.T, parent, name string) string {
 	t.Helper()
-	dir := filepath.Join(cacheHome, "evener", "golangci-lint", name)
+	dir := filepath.Join(parent, name)
 	if err := os.MkdirAll(filepath.Join(dir, "00"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +111,11 @@ func makeSweepCacheDir(t *testing.T, cacheHome, name string) string {
 // against a fixture: a cache dir whose worktree still exists is kept, a dead
 // one past the age guard is deleted, a dead one younger than the guard is kept
 // (the lane may have been disposed mid-lint), and a non-hex entry in the
-// cache root is never touched. --dry-run reports the dead-and-old dir without
-// deleting anything, and outside a git repo the script deletes nothing and
-// fails loudly.
+// bucket is never touched. The sweep is scoped to this repository's bucket,
+// so another clone's caches — live or dead — and pre-bucketing entries with
+// no owner marker are never candidates. --dry-run reports the dead-and-old
+// dir without deleting anything, and outside a git repo the script deletes
+// nothing and fails loudly.
 func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	t.Parallel()
 	for _, tool := range []string{"sh", "git"} {
@@ -86,7 +124,7 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 		}
 	}
 	if testing.Short() {
-		t.Skip("the fixture clones a git repo and registers a worktree")
+		t.Skip("the fixture clones git repos and registers worktrees")
 	}
 
 	fixture := testfs.CanonicalTempDir(t)
@@ -104,28 +142,56 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	extra := filepath.Join(fixture, "extra-worktree")
 	gittest.Run(t, repo, "worktree", "add", "-q", "--", extra)
 
-	// The production helper and the sweeper both hash roots exactly the way
-	// this test does. Pin the shared format on the helper side too: if
-	// scripts/lib/golangci-lint-cache.sh ever drifts (say to 12 chars), the
-	// sweeper would classify every live cache as dead, and only this
-	// assertion would notice.
+	// An independent clone sharing the same cache home: the two repositories
+	// never share a Git common directory, so a sweep from `repo` must not
+	// judge `repo-b`'s worktrees dead — the cross-clone deletion the bucket
+	// scoping exists to stop.
+	repoB := filepath.Join(fixture, "repo-b")
+	gittest.Run(t, fixture, "init", "-q", "repo-b")
+	if err := os.WriteFile(filepath.Join(repoB, "README"), []byte("fixture-b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gittest.Run(t, repoB, "add", "README")
+	gittest.Run(t, repoB, "commit", "-qm", "baseline")
+	extraB := filepath.Join(fixture, "extra-worktree-b")
+	gittest.Run(t, repoB, "worktree", "add", "-q", "--", extraB)
+
+	commonA := gittest.Run(t, repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonB := gittest.Run(t, repoB, "rev-parse", "--path-format=absolute", "--git-common-dir")
+
+	// The production helper and the sweeper both hash roots and common
+	// directories exactly the way this test does. Pin the shared format on
+	// the helper side too: if scripts/lib/golangci-lint-cache.sh ever drifts
+	// (say to 12 chars, or off the common directory), the sweeper would
+	// classify every live cache as dead or sweep outside its bucket, and
+	// only this assertion would notice.
 	selfDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperOut, err := exec.Command("bash", filepath.Join(selfDir, "scripts", "lib", "golangci-lint-cache.sh")).CombinedOutput()
+	helperCmd := exec.Command("bash", filepath.Join(selfDir, "scripts", "lib", "golangci-lint-cache.sh"))
+	helperCmd.Env = sweepEnv(filepath.Join(fixture, "cache"))
+	helperOut, err := helperCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run golangci-lint-cache.sh: %v\n%s", err, helperOut)
 	}
 	helperKey := strings.TrimSpace(string(helperOut))
 	if got := filepath.Base(helperKey); got != sweepCacheHash(selfDir) {
-		t.Errorf("scripts/lib/golangci-lint-cache.sh prints %q, whose basename %q is not the sha256-16 key %q this test and the sweeper both compute; the hash format has drifted", helperKey, got, sweepCacheHash(selfDir))
+		t.Errorf("scripts/lib/golangci-lint-cache.sh prints %q, whose basename %q is not the sha256-16 worktree key %q this test and the sweeper both compute; the worktree hash format has drifted", helperKey, got, sweepCacheHash(selfDir))
+	}
+	selfCommon := gittest.Run(t, selfDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	helperBucket := filepath.Base(filepath.Dir(helperKey))
+	if helperBucket != sweepRepoHash(selfCommon) {
+		t.Errorf("scripts/lib/golangci-lint-cache.sh prints %q, whose bucket %q is not the sha256-16 key %q over this checkout's common directory %q; the bucket hash format has drifted", helperKey, helperBucket, sweepRepoHash(selfCommon), selfCommon)
 	}
 
 	// The cache root lives under a fixture XDG_CACHE_HOME, never the user's.
 	cacheHome := filepath.Join(fixture, "cache")
-	liveMain := makeSweepCacheDir(t, cacheHome, sweepCacheHash(repo))
-	liveExtra := makeSweepCacheDir(t, cacheHome, sweepCacheHash(extra))
+	bareRoot := filepath.Join(cacheHome, "evener", "golangci-lint")
+	bucketA := filepath.Join(bareRoot, sweepRepoHash(commonA))
+	bucketB := filepath.Join(bareRoot, sweepRepoHash(commonB))
+
+	liveMain := makeSweepCacheDir(t, bucketA, sweepCacheHash(repo))
 	// A LIVE worktree's cache with an old mtime: the live-key check must
 	// protect it even when the age guard would not, because warm cache dirs
 	// carry mtimes much older than their last write (writes into existing
@@ -135,20 +201,48 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	// Any dir expected to be treated as old gets an mtime three days back:
 	// past any sane age guard.
 	stale := time.Now().Add(-72 * time.Hour)
-	liveOld := makeSweepCacheDir(t, cacheHome, sweepCacheHash(extra))
+	liveOld := makeSweepCacheDir(t, bucketA, sweepCacheHash(extra))
 	if err := os.Chtimes(liveOld, stale, stale); err != nil {
 		t.Fatal(err)
 	}
-	deadOld := makeSweepCacheDir(t, cacheHome, sweepCacheHash(filepath.Join(fixture, "long-gone")))
-	deadFresh := makeSweepCacheDir(t, cacheHome, sweepCacheHash(filepath.Join(fixture, "just-disposed")))
+	deadOld := makeSweepCacheDir(t, bucketA, sweepCacheHash(filepath.Join(fixture, "long-gone")))
+	deadFresh := makeSweepCacheDir(t, bucketA, sweepCacheHash(filepath.Join(fixture, "just-disposed")))
 	if err := os.Chtimes(deadOld, stale, stale); err != nil {
 		t.Fatal(err)
 	}
-	// A non-hex-named entry must never be swept: the cache root belongs to
-	// golangci-lint's layout, and anything unrecognized is someone else's.
-	foreign := makeSweepCacheDir(t, cacheHome, "not-a-cache-key")
-	// A hex-named but too-short entry is also not the sweeper's to judge.
-	shortKey := makeSweepCacheDir(t, cacheHome, "abc123")
+	// Entries the 16-hex name check alone must protect. Both are backdated
+	// past the age guard, so the age filter cannot be what saves them: the
+	// name check is the only thing standing between them and the delete,
+	// which is what these fixtures prove (breaking the name filter sweeps
+	// both; verified by mutation while writing this).
+	foreign := makeSweepCacheDir(t, bucketA, "not-a-cache-key")
+	shortKey := makeSweepCacheDir(t, bucketA, "abc123")
+	if err := os.Chtimes(foreign, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(shortKey, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	// Clone B's bucket: a LIVE worktree's cache old enough that an unscoped
+	// sweep would take it, and one of clone B's own dead caches. Clone A can
+	// attribute neither — an unscoped `git worktree list` never names clone
+	// B's trees — so neither is clone A's to delete; clone B's own sweep
+	// reclaims its dead.
+	cloneBOld := makeSweepCacheDir(t, bucketB, sweepCacheHash(extraB))
+	cloneBDead := makeSweepCacheDir(t, bucketB, sweepCacheHash(filepath.Join(fixture, "b-gone")))
+	if err := os.Chtimes(cloneBOld, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(cloneBDead, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	// A pre-bucketing cache dir directly under the bare root: it carries no
+	// owning-clone marker, so which clone's sweeper may judge it is unknown,
+	// and the sweeper leaves it to the operator.
+	legacy := makeSweepCacheDir(t, bareRoot, sweepCacheHash(filepath.Join(fixture, "legacy-gone")))
+	if err := os.Chtimes(legacy, stale, stale); err != nil {
+		t.Fatal(err)
+	}
 
 	out, status := runSweep(t, repo, cacheHome)
 	if status != 0 {
@@ -157,11 +251,8 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	if _, err := os.Stat(liveMain); err != nil {
 		t.Errorf("the main checkout's cache was swept; a live worktree's cache must never be deleted\n%s", out)
 	}
-	if _, err := os.Stat(liveExtra); err != nil {
-		t.Errorf("a registered worktree's cache was swept; a live worktree's cache must never be deleted\n%s", out)
-	}
 	if _, err := os.Stat(liveOld); err != nil {
-		t.Errorf("a live worktree's cache with an old mtime was swept; the live-key check must protect it independently of the age guard\n%s", out)
+		t.Errorf("a registered worktree's cache with an old mtime was swept; the live-key check must protect it independently of the age guard\n%s", out)
 	}
 	if _, err := os.Stat(deadOld); err == nil {
 		t.Errorf("the dead-and-3-days-old cache was kept; past the age guard it must be deleted\n%s", out)
@@ -180,13 +271,23 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	if _, err := os.Stat(shortKey); err != nil {
 		t.Errorf("a too-short hex entry was swept; the sweeper must judge only 16-hex cache keys\n%s", out)
 	}
-	if !strings.Contains(out, filepath.Base(deadOld)) {
-		t.Errorf("the sweep report should name the key it swept:\n%s", out)
+	if _, err := os.Stat(cloneBOld); err != nil {
+		t.Errorf("another clone's live cache was swept; a sweeper scoped to this repository's bucket must never judge another clone's worktrees dead\n%s", out)
+	}
+	if _, err := os.Stat(cloneBDead); err != nil {
+		t.Errorf("another clone's dead cache was swept; clone A cannot attribute it, so it is not clone A's to delete (clone B's own sweep reclaims it)\n%s", out)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Errorf("a pre-bucketing entry under the bare cache root was swept; its owning clone is unknown, and what cannot be attributed must be preserved\n%s", out)
+	}
+	if strings.Contains(out, filepath.Base(cloneBOld)) {
+		t.Errorf("the sweep report names another clone's cache; the report must stay inside this repository's bucket:\n%s", out)
 	}
 
 	// --dry-run names the dead-and-old dir without deleting it.
 	cacheHome2 := filepath.Join(fixture, "cache2")
-	deadOld2 := makeSweepCacheDir(t, cacheHome2, sweepCacheHash(filepath.Join(fixture, "another-gone")))
+	bucketA2 := filepath.Join(cacheHome2, "evener", "golangci-lint", sweepRepoHash(commonA))
+	deadOld2 := makeSweepCacheDir(t, bucketA2, sweepCacheHash(filepath.Join(fixture, "another-gone")))
 	if err := os.Chtimes(deadOld2, stale, stale); err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +308,27 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 		t.Errorf("the second real run kept the dead dir; it must delete it\n%s", out2)
 	}
 
+	// The bucket belongs to the clone, not the calling worktree: a run from
+	// the registered linked worktree must resolve the same bucket the main
+	// checkout does (every worktree hashes the shared common directory), so
+	// the dead-and-old cache the main checkout's run would sweep is swept
+	// from the worktree too — not silently skipped in a bucket of its own.
+	cacheHome3 := filepath.Join(fixture, "cache3")
+	bucketA3 := filepath.Join(cacheHome3, "evener", "golangci-lint", sweepRepoHash(commonA))
+	deadOld3 := makeSweepCacheDir(t, bucketA3, sweepCacheHash(filepath.Join(fixture, "third-gone")))
+	if err := os.Chtimes(deadOld3, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	out3, status3 := runSweep(t, extra, cacheHome3)
+	if status3 != 0 {
+		t.Fatalf("the sweeper failed from a registered worktree: exit %d\n%s", status3, out3)
+	}
+	if _, err := os.Stat(deadOld3); err == nil {
+		t.Errorf("the sweeper run from a registered worktree kept the dead dir; every worktree of a clone must resolve the same bucket\n%s", out3)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat deadOld3: %v", err)
+	}
+
 	// Outside a git repo the script must delete nothing and fail loudly:
 	// `git worktree list` failing means the live-root set is unknown, and an
 	// unknown set must never be treated as empty.
@@ -220,7 +342,7 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 	}
 	cmd := exec.Command("sh", filepath.Join(self, golangciCacheSweepScript))
 	cmd.Dir = farAway
-	cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+cacheHome)
+	cmd.Env = sweepEnv(cacheHome)
 	farOut, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("the sweeper succeeded outside a git repo; an unknown live-root set must be a loud failure, not a sweep\n%s", farOut)
