@@ -10,12 +10,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
+
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func httpResponse(status int, body io.Reader, etag string) *http.Response {
 	h := http.Header{}
@@ -31,7 +30,7 @@ func httpResponse(status int, body io.Reader, etag string) *http.Response {
 // failure, and a body that dies mid-read.
 func TestHTTPFetcherArms(t *testing.T) {
 	t.Parallel()
-	fetch := func(rt roundTripFunc) Fetcher {
+	fetch := func(rt transporttest.RoundTripFunc) Fetcher {
 		return HTTPFetcher(&http.Client{Transport: rt})
 	}
 
@@ -81,17 +80,13 @@ func TestHTTPFetcherArms(t *testing.T) {
 	t.Run("body read failure propagates", func(t *testing.T) {
 		t.Parallel()
 		f := fetch(func(*http.Request) (*http.Response, error) {
-			return httpResponse(http.StatusOK, errReader{}, ""), nil
+			return httpResponse(http.StatusOK, iotest.ErrReader(errors.New("short read")), ""), nil
 		})
 		if _, _, _, err := f(context.Background(), ""); err == nil {
 			t.Fatal("a body that fails mid-read must propagate the error")
 		}
 	})
 }
-
-type errReader struct{}
-
-func (errReader) Read([]byte) (int, error) { return 0, errors.New("short read") }
 
 func TestRefreshRequiresFetcherAndStateRoot(t *testing.T) {
 	t.Parallel()

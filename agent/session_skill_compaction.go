@@ -433,12 +433,17 @@ func (s *Session) capturableAutomaticCompaction() *schema.SkillCompactionOperati
 
 // commitSkillCompactionPublication completes a winning fold's compaction
 // handoff after its receipt and markers are durably committed and its events
-// flushed: the claimed operation's delivery finishes — the cycle's slot
+// flushed — or, when a staged copy write withheld the fold's markers (see
+// publishFoldTransaction), after the retract that took them back out, in
+// which case the receipt persists in metadata alone: the claimed operation's
+// delivery finishes — the cycle's slot
 // clears and its reload selection is consumed, so the cycle reopens for a
-// fresh intent — the handoff receipt's phase advances to delivered, and the
-// metadata save persists the result. A reminder receipt (no operation
+// fresh intent — the handoff receipt's phase advances to delivered, and
+// the metadata save persists the result. A reminder receipt (no operation
 // claimed) persists the handoff alone. A failed save is warned, not fatal:
-// the durable transcript receipt lets a restart reconcile the stale snapshot.
+// the durable transcript receipt lets a restart reconcile the stale snapshot
+// (the withheld case relies on the snapshot's own R19 completion instead —
+// the transcript carries nothing for it to replay).
 //
 // Losing folds never reach this: they run none of the publication's commits.
 func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {

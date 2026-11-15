@@ -16,6 +16,7 @@ import (
 // applyThinkingFormat writes something for it, so the switch can never drift
 // from the list without this failing.
 func TestApplyThinkingFormatAndRegistryVocabularyAgree(t *testing.T) {
+	t.Parallel()
 	on := true
 	effort := "high"
 	// A fully capable row: an effort control, a ladder that vouches for the

@@ -116,6 +116,7 @@ func (a *stepAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
 }
 
 func TestClient_DefaultProviderRouting(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -130,6 +131,7 @@ func TestClient_DefaultProviderRouting(t *testing.T) {
 }
 
 func TestClient_DefaultAdapterTimeout_AppliedWhenNil(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &recordReqAdapter{name: "openai"}
 	c.Register(a)
@@ -154,6 +156,7 @@ func TestClient_DefaultAdapterTimeout_AppliedWhenNil(t *testing.T) {
 }
 
 func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &recordReqAdapter{name: "openai"}
 	c.Register(a)
@@ -179,6 +182,7 @@ func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
 // id is "google" so req.Provider=="google" hits c.overrides["google"] without any
 // rewrite. The old gemini→google alias in normalizeProviderName is removed.
 func TestClient_GoogleProviderRoutes(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "google"})
 
@@ -194,6 +198,7 @@ func TestClient_GoogleProviderRoutes(t *testing.T) {
 }
 
 func TestClient_UnknownProviderError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -207,6 +212,7 @@ func TestClient_UnknownProviderError(t *testing.T) {
 }
 
 func TestClient_NoProviderConfiguredError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -220,6 +226,7 @@ func TestClient_NoProviderConfiguredError(t *testing.T) {
 }
 
 func TestClient_PlanResponsesContinuation_RoutesExplicitProvider(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &planReqAdapter{name: "openai"}
 	c.Register(a)
@@ -242,6 +249,7 @@ func TestClient_PlanResponsesContinuation_RoutesExplicitProvider(t *testing.T) {
 }
 
 func TestClient_PlanResponsesContinuation_UsesDefaultProvider(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &planReqAdapter{name: "openai"}
 	c.Register(a)
@@ -257,6 +265,7 @@ func TestClient_PlanResponsesContinuation_UsesDefaultProvider(t *testing.T) {
 }
 
 func TestClient_PlanResponsesContinuation_UnknownProvider(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -270,6 +279,7 @@ func TestClient_PlanResponsesContinuation_UnknownProvider(t *testing.T) {
 }
 
 func TestClient_PlanResponsesContinuation_UnsupportedProvider(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -284,6 +294,7 @@ func TestClient_PlanResponsesContinuation_UnsupportedProvider(t *testing.T) {
 }
 
 func TestClient_Complete_DoesNotRetryAutomatically(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	err429 := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 	a := &stepAdapter{
@@ -309,6 +320,7 @@ func TestClient_Complete_DoesNotRetryAutomatically(t *testing.T) {
 }
 
 func TestClient_MiddlewareChainOrder(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
@@ -433,6 +445,7 @@ func (s *nonClosingStream) Close() error               { return nil }
 // (Ported from the ollama rewriteStream regression after F7 folded that wrapper
 // away; the robustness now lives in the canonical wrapper.)
 func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	inner := &nonClosingStream{events: make(chan StreamEvent)}
 	ps := newProviderStampStream(inner, "ollama")
 
@@ -465,6 +478,7 @@ func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
 }
 
 func TestClient_Stream_DoesNotRetryAutomatically(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &streamAdapter{name: "openai", fail: true}
 	c.Register(a)
@@ -518,6 +532,7 @@ func (a *blockingInitAdapter) Initialize(context.Context) error {
 }
 
 func TestClient_Close_CallsClosableAdapters(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	closable := &closableFakeAdapter{name: "closable"}
 	nonClosable := &fakeAdapter{name: "nonclosable"}
@@ -533,6 +548,7 @@ func TestClient_Close_CallsClosableAdapters(t *testing.T) {
 }
 
 func TestClient_Initialize_CallsInitializableAdapters(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	initable := &initializableFakeAdapter{name: "initable"}
 	nonInitable := &fakeAdapter{name: "plain"}
@@ -548,6 +564,7 @@ func TestClient_Initialize_CallsInitializableAdapters(t *testing.T) {
 }
 
 func TestClient_Register_CallsInitialize(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	adapter := &initializableFakeAdapter{name: "test"}
 	c := NewClient()
 	c.Register(adapter)
@@ -557,6 +574,7 @@ func TestClient_Register_CallsInitialize(t *testing.T) {
 }
 
 func TestClient_Register_NonInitializable_NoPanic(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Registering a plain adapter that does not implement Initializer should not panic.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "plain"})
@@ -569,6 +587,7 @@ func TestClient_Register_NonInitializable_NoPanic(t *testing.T) {
 // neither Complete nor ProviderNames may see the adapter, whatever else is
 // running concurrently; once Initialize returns, both do.
 func TestClient_Register_DispatchCannotReachAdapterBeforeInitializeReturns(t *testing.T) {
+	t.Parallel()
 	adapter := &blockingInitAdapter{
 		name:    "blockinit",
 		started: make(chan struct{}),
@@ -609,6 +628,7 @@ func TestClient_Register_DispatchCannotReachAdapterBeforeInitializeReturns(t *te
 // the registered "ollama" adapter. Without normalization, callers that
 // forward unmodified user input would silently fail.
 func TestClient_LookupNormalizesProviderCase(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "ollama"})
 
@@ -645,6 +665,7 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 // (--fast-cheap-model, --vision-model, and their session-side twin): a single
 // Client method rather than three identical copies of this loop.
 func TestClient_HasProvider(t *testing.T) {
+	t.Parallel()
 	var nilClient *Client
 	if nilClient.HasProvider("openai") {
 		t.Error("nil client should never have a provider")
@@ -672,6 +693,7 @@ func TestClient_HasProvider(t *testing.T) {
 // unsynchronized Register racing a reader is a "concurrent map writes"
 // fatal unconditionally, not just a finding the race detector reports.
 func TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace(t *testing.T) {
+	t.Parallel()
 	c := NewClient()
 
 	const n = 64
@@ -709,6 +731,7 @@ func TestClient_ConcurrentRegisterAndSetDefaultProviderNoRace(t *testing.T) {
 // gemini→google routing alias, normalizeProviderName("gemini") returns "gemini"
 // unchanged. Routing now relies on the profile id being "google" (PRI-1880).
 func TestNormalizeProviderName_GeminiNoRewrite(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if got := normalizeProviderName("gemini"); got != "gemini" {
 		t.Errorf("normalizeProviderName(\"gemini\") = %q, want \"gemini\" (no rewrite after PRI-1880)", got)
 	}
@@ -758,6 +781,7 @@ func (a *instanceAdapter) Stream(_ context.Context, req Request) (Stream, error)
 }
 
 func TestClient_Complete_StampsInstanceNameOnResponse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	// Register adapter under instance name "work"; it hardcodes "openaicompat".
 	adapter := &instanceAdapter{typeName: "openaicompat"}
@@ -776,6 +800,7 @@ func TestClient_Complete_StampsInstanceNameOnResponse(t *testing.T) {
 }
 
 func TestClient_Complete_StampsInstanceNameOnError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	// Adapter hardcodes "openaicompat" in its error; instance name is "work".
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
@@ -799,6 +824,7 @@ func TestClient_Complete_StampsInstanceNameOnError(t *testing.T) {
 }
 
 func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Errors with empty Provider() (e.g. context.Canceled wrappers) must not
 	// be stamped — RewriteErrorProvider no-ops on them.
 	c := NewClient()
@@ -823,6 +849,7 @@ func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
 }
 
 func TestClient_Stream_StampsInstanceNameOnFinishResponse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	adapter := &instanceAdapter{typeName: "openaicompat"}
 	c.overrides["work"] = adapter
@@ -851,6 +878,7 @@ func TestClient_Stream_StampsInstanceNameOnFinishResponse(t *testing.T) {
 }
 
 func TestClient_Stream_StampsInstanceNameOnErrorEvent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
@@ -884,6 +912,7 @@ func TestClient_Stream_StampsInstanceNameOnErrorEvent(t *testing.T) {
 }
 
 func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	// ConfigurationError has Provider()=="" — must not be stamped.
 	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
@@ -917,6 +946,7 @@ func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
 }
 
 func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &streamAdapter{name: "openai"}
 	c.Register(a)
@@ -1030,6 +1060,7 @@ func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 // ReleaseSessionAPILog asks every middleware that routes session API logs to
 // release the session, and reports what they fail with.
 func TestReleaseSessionAPILogReleasesEveryMiddleware(t *testing.T) {
+	t.Parallel()
 	releaseErr := errors.New("release failed")
 	for _, tc := range []struct {
 		name string
@@ -1067,6 +1098,7 @@ func (m *sessionReleasingMiddleware) ReleaseSession(id string) error            
 // A provider operation begun without a context still gets one, owning a fresh
 // attempt group bound to the client's sink middleware.
 func TestBeginProviderOperationOwnsAGroupForANilContext(t *testing.T) {
+	t.Parallel()
 	c := NewClient()
 	sink := &sinkMiddleware{sink: &recordingAPIAttemptSink{}}
 	c.Use(sink)
@@ -1103,6 +1135,7 @@ func (m *sinkMiddleware) AppendSettlement(ctx context.Context, rec apilog.APIAtt
 // A nil client has no middleware to read: the snapshot helper is what every
 // entry point consults, so it must answer nil rather than dereference.
 func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
+	t.Parallel()
 	var c *Client
 	if got := c.middlewareSnapshot(); got != nil {
 		t.Fatalf("nil client middleware = %v, want nil", got)

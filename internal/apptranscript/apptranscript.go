@@ -679,10 +679,11 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			// SteeringSource persists who sent the steering (issue #24):
 			// "user" reaches the web UI so reload renders human-sent
 			// steering as a user message, matching the live path.
-			Source:           turn.SteeringSource,
-			SteeringKind:     turn.SteeringKind,
-			ClientMutationID: turn.ClientMutationID,
-			Observation:      answerObservation(turnID, turn),
+			Source:               turn.SteeringSource,
+			SteeringKind:         turn.SteeringKind,
+			ClientMutationID:     turn.ClientMutationID,
+			ConversationInputIDs: append([]string(nil), turn.ConversationInputIDs...),
+			Observation:          answerObservation(turnID, turn),
 		}}
 	case schema.TurnAssistant:
 		var items []appwire.ThreadItem

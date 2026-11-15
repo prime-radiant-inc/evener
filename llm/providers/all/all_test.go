@@ -12,6 +12,7 @@ import (
 )
 
 func TestEveryProtocolAndSchemeIsRegistered(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses, registry.ProtocolAnthropic, registry.ProtocolGoogle} {
 		if _, ok := llm.ProtocolFor(id); !ok {
 			t.Errorf("protocol %s not registered", id)
@@ -28,6 +29,7 @@ func TestEveryProtocolAndSchemeIsRegistered(t *testing.T) {
 // registered its exported DefaultProtocol, which is the handle a caller or
 // test sets Client and Hasher on.
 func TestRegisteredProtocolsAreThePackageSingletons(t *testing.T) {
+	t.Parallel()
 	for _, want := range []llm.Protocol{
 		chatcompletions.DefaultProtocol,
 		responses.DefaultProtocol,

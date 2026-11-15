@@ -136,7 +136,30 @@ func (s *Session) canonicalizeToolNames(names []string) []string {
 // defaultToolSummaryForAgent) already runs under a held s.mu, and s.mu is not
 // reentrant, so taking the lock here would deadlock prompt rendering.
 func (s *Session) providerVisibleToolNames(names []string) []string {
-	return providerVisibleToolNames(names, s.profile.ToolNameMap())
+	if s == nil || s.profile == nil {
+		return append([]string(nil), names...)
+	}
+	return providerVisibleToolNames(names, s.toolNameMap())
+}
+
+// currentToolNameMap reads s.currentProfile().ToolNameMap() under s.mu.
+// Tool handlers running outside prompt rendering use this to safely access the active profile.
+func (s *Session) currentToolNameMap() map[string]string {
+	if s == nil {
+		return nil
+	}
+	prof := s.currentProfile()
+	if prof == nil {
+		return nil
+	}
+	return prof.ToolNameMap()
+}
+
+func (s *Session) toolNameMap() map[string]string {
+	if s == nil || s.profile == nil {
+		return nil
+	}
+	return s.profile.ToolNameMap()
 }
 
 // providerVisibleToolName is providerVisibleToolNames for a single name, for
@@ -818,6 +841,7 @@ func (s *Session) queueDelegateDeliveryCommit(callID string, commit *delegateToo
 	}
 	s.delegateDeliveryCommits[callID] = append(s.delegateDeliveryCommits[callID], commit)
 	s.delegateDeliveryMu.Unlock()
+	commit.controller.noteDelegateDeliveryCommitQueued(commit.token)
 }
 
 func (s *Session) abortDelegateDeliveryCommits() {
@@ -852,13 +876,18 @@ func abortDelegateToolCallDeliveryCommits(commits []delegateToolCallDeliveryComm
 
 func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delegateToolCallDeliveryCommit {
 	s.delegateDeliveryMu.Lock()
-	defer s.delegateDeliveryMu.Unlock()
 	var commits []delegateToolCallDeliveryCommit
 	for _, call := range calls {
 		for _, commit := range s.delegateDeliveryCommits[call.ID] {
 			commits = append(commits, delegateToolCallDeliveryCommit{toolCallID: call.ID, commit: commit})
 		}
 		delete(s.delegateDeliveryCommits, call.ID)
+	}
+	s.delegateDeliveryMu.Unlock()
+	for _, binding := range commits {
+		if binding.commit != nil {
+			binding.commit.controller.noteDelegateDeliveryCommitTaken(binding.commit.token)
+		}
 	}
 	return commits
 }

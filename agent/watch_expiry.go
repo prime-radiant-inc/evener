@@ -33,7 +33,7 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobstore.Event, []
 		if key.Target != jobID {
 			continue
 		}
-		registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "auto_removed_terminal"))
+		registryEvents = append(registryEvents, watchClearedEvent(jm, cfg, "auto_removed_terminal", cfg.deliveries))
 		expired = append(expired, expiredJobWatch{key: key, cfg: cfg, endReason: "auto_removed_terminal"})
 	}
 

@@ -49,12 +49,15 @@ func lintTargets(t *testing.T) []string {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":             "./evener-dev tomlcheck",
-	"lint-gofmt":              "/bin/gofmt\" -l",
-	"lint-evenerfuzz":         "-tags evenerfuzz",
-	"lint-eval":               "-tags eval ",
-	"lint-internal":           "./evener-dev internalcheck",
-	"lint-golangci":           "module-lint",
+	"lint-naming":     "./evener-dev tomlcheck",
+	"lint-gofmt":      "/bin/gofmt\" -l",
+	"lint-evenerfuzz": "-tags evenerfuzz",
+	"lint-eval":       "-tags eval ",
+	"lint-internal":   "./evener-dev internalcheck",
+	// The merged sweep runs golangci-lint directly from the repo root, so
+	// the darwin cross-pass — the only GOOS=darwin invocation in any gate —
+	// is what distinguishes this recipe.
+	"lint-golangci":           "GOOS=darwin golangci-lint run",
 	"lint-generated":          "docs/appwire-protocol.md",
 	"lint-fuzz-registry":      "scripts/fuzz/fuzz-registry-check.sh",
 	"lint-package-imports":    "scripts/sdk/package-import-paths-check.sh",
@@ -65,11 +68,11 @@ var lintGateCommands = map[string]string{
 	"secret-scan":             "scripts/ops/gitleaks-scan.sh repo",
 }
 
-// makeLintDryRun runs `make -n -k lint` from the repository root and returns
-// what it printed. It is the one audit input in this file that comes from make
-// itself rather than from Makefile text: every other assertion here is a
-// textual proxy, and a proxy cannot tell whether `lint` still depends on the
-// list it reads.
+// makeTargetsDryRun runs `make -n -k <targets...>` from the repository root
+// and returns what it printed. It is the one audit input in this file that
+// comes from make itself rather than from Makefile text: every other
+// assertion here is a textual proxy, and a proxy cannot tell whether `lint`
+// still depends on the list it reads.
 //
 // -n prints recipe lines instead of running them, with one GNU make exception
 // this audit has to account for: a line referencing $(MAKE) counts as
@@ -80,14 +83,15 @@ var lintGateCommands = map[string]string{
 // whether `make lint` is wired up. Hence two deliberate choices: the callers
 // assert on the printed recipes and never on the exit status, and -k keeps
 // make going past that failure, because without it a stale doc truncates the
-// output at lint-generated and every gate after it reads as missing.
+// output at lint-generated and every gate after it reads as missing. For a
+// single .PHONY lane target, -k is inert.
 //
 // Empty output is the vacuity failure. It means make never reached the point
 // of printing a recipe, so every assertion built on the output would hold
 // against nothing; it fails loudly here instead.
-func makeLintDryRun(t *testing.T, makePath string) string {
+func makeTargetsDryRun(t *testing.T, makePath string, targets ...string) string {
 	t.Helper()
-	cmd := exec.Command(makePath, "-n", "-k", "lint")
+	cmd := exec.Command(makePath, append([]string{"-n", "-k"}, targets...)...)
 	// A parent make (this suite runs under `make test`) exports its own flags,
 	// job-server file descriptors and recursion depth. Inheriting them makes
 	// the child warn about an unavailable job server and can change what it
@@ -104,9 +108,9 @@ func makeLintDryRun(t *testing.T, makePath string) string {
 	cmd.Stderr = &stderr
 	runErr := cmd.Run()
 	if strings.TrimSpace(stdout.String()) == "" {
-		t.Fatalf("`%s -n -k lint` printed no recipe lines (%v), so this audit has no subject and "+
+		t.Fatalf("`%s -n -k %s` printed no recipe lines (%v), so this audit has no subject and "+
 			"would hold against nothing. That is a broken Makefile, not a clean one.\nstderr:\n%s",
-			makePath, runErr, stderr.String())
+			makePath, strings.Join(targets, " "), runErr, stderr.String())
 	}
 	return stdout.String()
 }
@@ -189,7 +193,7 @@ func TestMakeLintRunsEveryGateInLintTargets(t *testing.T) {
 		}
 	}
 
-	dryRun := makeLintDryRun(t, makePath)
+	dryRun := makeTargetsDryRun(t, makePath, "lint")
 	var missing []string
 	for name, fragment := range lintGateCommands {
 		if !strings.Contains(dryRun, fragment) {
@@ -244,7 +248,7 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 	if err != nil {
 		t.Skipf("make is not on PATH (%v), so nothing can ask it what `make lint` expands to", err)
 	}
-	dryRun := makeLintDryRun(t, makePath)
+	dryRun := makeTargetsDryRun(t, makePath, "lint")
 
 	var line string
 	for candidate := range strings.Lines(dryRun) {
@@ -280,6 +284,150 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 		t.Errorf("lint-generated's `git diff` does not name HEAD, so it compares the working tree "+
 			"with the INDEX and `git add` silences it over still-stale COMMITTED output (ruling "+
 			"R26). Arguments as make expands them: git diff%s", diffArgs)
+	}
+}
+
+// mergedSweepModules is the hand-maintained module list as package patterns
+// from the repository root: the root module as ./... and each sibling module
+// directory as ./<dir>/... . It is deliberately written out rather than read
+// from go.work, for the reason lintGateCommands gives about LINT_TARGETS: a
+// derived oracle could not see a module dropped from the Makefile's
+// FUZZ_GO_MODULES. Its guarantee is therefore about that list, not about
+// go.work — a module added to go.work's use list but not to GO_MODULES stays
+// invisible to this test.
+var mergedSweepModules = []string{
+	"./...", "./agent/...", "./llm/...", "./auth/...", "./envvars/...",
+	"./invariant/...", "./identifier/...", "./execsupport/...", "./fuzz/...",
+}
+
+// TestLintSweepsAreMergedPerBuildRegime asks make what each heavy lint lane
+// expands to and asserts the merged shape: one invocation per build regime
+// (host, GOOS=darwin, GOOS=windows, each build tag) covering every workspace
+// module, instead of the old one-invocation-per-module loops.
+//
+// The shape is what this pins, not the speed: golangci-lint compiles only the
+// files its GOOS selects, so the host and darwin sweeps can never be one pass —
+// each regime needs its own invocation. What CAN be merged is the module loop
+// inside a regime, because go.work resolves cross-module package patterns from
+// the root. Collapsing 9+ invocations per regime into 1 keeps the per-module
+// runner (cmd/evener-dev module-lint) and its LINT_PARALLEL knob from
+// shadowing golangci's own concurrency.
+//
+// The assertions run against `make -n` output rather than recipe text for the
+// reason makeTargetsDryRun gives: run_quiet_lint wraps recipes in `if ( … )`, so
+// a textual read of make/linting.mk sees the loop bodies, not what runs. Each
+// gate is dry-run alone (-k not needed: the wrapper prints its recipe even
+// when an earlier prerequisite would fail), and the dry run prints the recipe
+// once per lane.
+func TestLintSweepsAreMergedPerBuildRegime(t *testing.T) {
+	t.Parallel()
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skipf("make is not on PATH (%v), so nothing can ask make what the lint lanes expand to", err)
+	}
+
+	// The three lanes are .PHONY with no prerequisites at HEAD, so -n
+	// prints every recipe line without executing anything. The one -n
+	// exception is a recipe line containing $(MAKE), which make runs even
+	// under -n — makeTargetsDryRun's comment documents it; none of these
+	// lanes has one.
+	dryRunOf := func(target string) string {
+		t.Helper()
+		return makeTargetsDryRun(t, makePath, target)
+	}
+
+	// Each lane's cross-GOOS regimes are what the linux-drop regression of
+	// the first merge commit proved nobody else pins: every gate stayed green
+	// while lint-evenerfuzz lost the GOOS=linux passes that two evenerfuzz
+	// && linux sources depend on. CI runs on Linux only, where those
+	// branches never execute, so a repeat deletion ships silently without
+	// this table. The invocation counts pin one-invocation-per-regime for
+	// golangci and go vet: a dropped regime subtracts from them, and a
+	// loop re-expanded by make multiplies them. (A shell for-loop prints
+	// its body once under -n, so that shape is caught by the sweep-pattern
+	// assertion below instead.)
+	laneRegimes := map[string]struct {
+		vetInvocations   []string
+		vetRunCount      int
+		golangciRuns     []string
+		golangciRunCount int
+	}{
+		"lint-evenerfuzz": {
+			vetInvocations: []string{
+				"go vet -tags evenerfuzz",
+				"GOOS=windows go vet -tags evenerfuzz",
+				"GOOS=linux go vet -tags evenerfuzz",
+			},
+			// the host pass, the GOOS=linux pass, and the GOOS=windows pass
+			vetRunCount: 3,
+			golangciRuns: []string{
+				"golangci-lint run --allow-parallel-runners --build-tags evenerfuzz --enable-only tagliatelle",
+			},
+			// the host pass plus the GOOS=linux pass
+			golangciRunCount: 2,
+		},
+		"lint-eval": {
+			vetInvocations: []string{
+				"go vet -tags eval",
+				"GOOS=linux go vet -tags eval",
+			},
+			// the host pass plus the GOOS=linux pass
+			vetRunCount: 2,
+			golangciRuns: []string{
+				"golangci-lint run --allow-parallel-runners --build-tags eval --enable-only tagliatelle",
+			},
+			// the host pass plus the GOOS=linux pass
+			golangciRunCount: 2,
+		},
+		"lint-golangci": {
+			golangciRuns: []string{
+				"golangci-lint run --allow-parallel-runners",
+				"GOOS=darwin golangci-lint run --allow-parallel-runners",
+				"golangci-lint run --allow-parallel-runners --config .golangci-appwire.yml",
+			},
+			golangciRunCount: 3, // the host, darwin, and appwire passes
+		},
+	}
+
+	for _, lane := range []string{"lint-evenerfuzz", "lint-eval", "lint-golangci"} {
+		dryRun := dryRunOf(lane)
+		regimes := laneRegimes[lane]
+
+		for _, invocation := range append(regimes.vetInvocations, regimes.golangciRuns...) {
+			if !strings.Contains(dryRun, invocation) {
+				t.Errorf("%s lost the invocation %q; the merged lane must run every build regime it covers", lane, invocation)
+			}
+		}
+		if got := strings.Count(dryRun, "go vet -tags"); got != regimes.vetRunCount {
+			t.Errorf("%s runs %d go vet invocations, want %d: one per build regime. A higher count means a per-module loop returned; a lower one means a regime was dropped.", lane, got, regimes.vetRunCount)
+		}
+		if got := strings.Count(dryRun, "golangci-lint run"); got != regimes.golangciRunCount {
+			t.Errorf("%s runs %d golangci-lint invocations, want %d: one per build regime. A higher count means a per-module loop returned; a lower one means a regime was dropped.", lane, got, regimes.golangciRunCount)
+		}
+
+		// (a) every workspace module appears in the lane's sweep patterns.
+		for _, pattern := range mergedSweepModules {
+			if !strings.Contains(dryRun, pattern) {
+				t.Errorf("%s does not sweep %s; the merged recipe must name every go.work module in each regime's invocation", lane, pattern)
+			}
+		}
+
+		// (b) every golangci-lint invocation in the lane runs under the
+		// per-worktree cache (the #290 cross-checkout poisoning guard). The
+		// recipe exports GOLANGCI_LINT_CACHE once, shell-wide, before the
+		// first invocation, so every later invocation in the same recipe
+		// inherits it; asserting the export exists whenever any invocation
+		// does is the check that can fail.
+		exports := strings.Count(dryRun, "GOLANGCI_LINT_CACHE=")
+		invocations := strings.Count(dryRun, "golangci-lint run")
+		if exports == 0 && invocations > 0 {
+			t.Errorf("%s runs golangci-lint without exporting GOLANGCI_LINT_CACHE; the per-worktree cache is the #290 poisoning guard", lane)
+		}
+
+		// (c) the per-module runner is gone from the recipe.
+		if strings.Contains(dryRun, "module-lint") {
+			t.Errorf("%s still runs the per-module module-lint runner; the merge replaced it with direct single invocations", lane)
+		}
 	}
 }
 

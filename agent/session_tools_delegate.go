@@ -90,7 +90,10 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 			s.queueDelegateDeliveryCommit(callID, commit)
 		}
 	}
-	return marshalDelegateSendResult(outcome.result, maxChars)
+	if len(outcome.result.Tools) > 0 {
+		outcome.result.Tools = providerVisibleToolNames(outcome.result.Tools, s.currentToolNameMap())
+	}
+	return marshalDelegateSendResult(outcome.result, maxChars, s.currentToolNameMap())
 }
 
 func delegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -112,7 +115,7 @@ func delegateCreateTool(ctx context.Context, s *Session, args map[string]any, ma
 		Status:         string(result.Status),
 		Name:           result.Name,
 		AgentType:      result.AgentType,
-		Tools:          append([]string(nil), result.Tools...),
+		Tools:          providerVisibleToolNames(result.Tools, s.currentToolNameMap()),
 		Reason:         result.Reason,
 		Resumable:      result.Resumable,
 		TranscriptRef:  result.TranscriptRef,

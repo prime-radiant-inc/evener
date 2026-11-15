@@ -6,6 +6,7 @@ import (
 )
 
 func TestTiersIsTheRankedLadder(t *testing.T) {
+	t.Parallel()
 	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
 	got := Tiers()
 	if !reflect.DeepEqual(got, want) {
@@ -19,6 +20,7 @@ func TestTiersIsTheRankedLadder(t *testing.T) {
 }
 
 func TestRankOrdersKnownLevelsAndPassesUnknown(t *testing.T) {
+	t.Parallel()
 	for i, level := range Tiers() {
 		if got := Rank(level); got != i+1 {
 			t.Errorf("Rank(%q) = %d, want %d", level, got, i+1)
@@ -39,6 +41,7 @@ func TestRankOrdersKnownLevelsAndPassesUnknown(t *testing.T) {
 }
 
 func TestValidAcceptsUnsetNoneAndTiers(t *testing.T) {
+	t.Parallel()
 	for _, valid := range append([]string{"", None}, Tiers()...) {
 		if !Valid(valid) {
 			t.Errorf("Valid(%q) = false, want true", valid)

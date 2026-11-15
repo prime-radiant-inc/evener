@@ -68,7 +68,7 @@ test("a failing path validator clears the error (fail-open)", async () => {
     { validatePath },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: /Trace file/i }));
   await screen.findByRole("combobox", { name: "Path" });
   await user.keyboard("/invalid/path{Enter}");
@@ -93,7 +93,7 @@ test("a path field with empty value clears the error", async () => {
     { validatePath },
   );
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: /Trace file/i }));
   await screen.findByRole("combobox", { name: "Path" });
   await user.keyboard("/invalid/path{Enter}");
@@ -115,7 +115,7 @@ test("show resolved config shows error when resolveConfig fails", async () => {
   const resolveConfig = vi.fn().mockRejectedValue(new Error("resolve failed"));
   renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], { resolveConfig });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: "Show resolved config" }));
 
   await waitFor(() => {
@@ -128,7 +128,7 @@ test("show resolved config shows error with non-Error throw", async () => {
   const resolveConfig = vi.fn().mockRejectedValue("string error");
   renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], { resolveConfig });
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.click(screen.getByRole("button", { name: "Show resolved config" }));
 
   await waitFor(() => {
@@ -152,7 +152,7 @@ test("a radio control renders with choices", async () => {
     }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect(screen.getByText("Sandbox mode")).toBeTruthy();
   expect(screen.getByText("Off")).toBeTruthy();
   expect(screen.getByText("Seatbelt")).toBeTruthy();
@@ -178,7 +178,7 @@ test("a select control renders with choices and default option", async () => {
     }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const select = screen.getByLabelText("Access mode");
   expect(select).toBeTruthy();
 
@@ -194,7 +194,7 @@ test("env map control removes an entry", async () => {
     option({ wireField: "env", kind: "envMap", label: "Environment variables" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   // The env control renders inside a collection editor
   // Add an entry first
   const addInput = screen.getByPlaceholderText("NAME=value");
@@ -217,7 +217,7 @@ test("env map add without equals sign shows error", async () => {
     option({ wireField: "env", kind: "envMap", label: "Environment variables" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const addInput = screen.getByPlaceholderText("NAME=value");
   await user.type(addInput, "noequals{Enter}");
 
@@ -233,7 +233,7 @@ test("mcp server list renders entries with name and command", async () => {
     option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "myserver=npx -y server{Enter}");
 
@@ -252,7 +252,7 @@ test("mcp server list removes an entry", async () => {
     option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "myserver=npx -y server{Enter}");
 
@@ -271,7 +271,7 @@ test("mcp add without equals sign shows error", async () => {
     option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "noequals{Enter}");
 
@@ -285,7 +285,7 @@ test("mcp add with empty command shows error", async () => {
     option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "myserver={Enter}");
 
@@ -299,7 +299,7 @@ test("mcp add with duplicate name shows error", async () => {
     option({ wireField: "mcpServers", kind: "mcpServerList", label: "MCP servers" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const addInput = screen.getByPlaceholderText("name=command arg1 arg2");
   await user.type(addInput, "myserver=npx -y server{Enter}");
   await waitFor(() => expect(screen.getByText(/myserver: npx -y server/i)).toBeTruthy());
@@ -321,7 +321,7 @@ test("model list control removes an entry", async () => {
     option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" }),
   ]);
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   // Add a model
   await user.click(screen.getByRole("button", { name: /change model/i }));
   await user.click(await screen.findByText("Claude Sonnet 4.5"));

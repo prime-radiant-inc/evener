@@ -194,10 +194,11 @@ type StatusInfo struct {
 
 // ContextMetrics describes the estimated size of the active session context.
 type ContextMetrics struct {
-	Used      int
-	Window    int
-	Remaining int
-	Assumed   bool
+	Used                int
+	Window              int
+	Remaining           int
+	Assumed             bool
+	CompactionThreshold int
 	// WindowSource says where Window came from (see schema.ContextMetrics).
 	WindowSource string
 }

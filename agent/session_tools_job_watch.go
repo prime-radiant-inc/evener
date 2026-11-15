@@ -545,6 +545,9 @@ func marshalWatchInspectResult(res jobWatchInspectToolResult, maxChars int) (any
 func formatJobWatch(out jobWatchToolResult) string {
 	if out.TerminalCatchup {
 		parts := []string{"watch on " + out.Source, "terminal catch-up"}
+		if out.WatchID != "" {
+			parts = append(parts, "watch_id "+out.WatchID)
+		}
 		if out.Fired {
 			parts = append(parts, "fired")
 		} else {

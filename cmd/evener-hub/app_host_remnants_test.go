@@ -69,7 +69,7 @@ func newRemnantFixture(t *testing.T, declared ...hostreg.Host) (*hubHostManager,
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	hosts := newFlakyRegistry(t, hostRegistryEntries(cfg))
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts.Registry, func(string, ...any) {})
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts.Registry, silentLogger())
 	// The teardown the handlers run is swapped for one the test drives: the
 	// commit-point rule is about a teardown that fails after the commit landed,
 	// and no live host exists here to fail on its own.

@@ -743,11 +743,11 @@ test("an empty rejected drain is a notice, not a restored draft", async () => {
   expect(screen.getByText(/queue revision changed/)).toBeDefined();
 });
 
-test("mount restore leaves an ownerless legacy row to the queue strip", async () => {
+test("mount restore leaves an ownerless legacy row to the pending stack", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   // Rows written before composition owners existed carry no seat. Automatic
-  // restoration must not inject them into a fresh pane; the queue strip's
+  // restoration must not inject them into a fresh pane; the pending stack's
   // explicit Edit still reaches them.
   await seedRejectedRecovery(storage, "ref_a", "legacy text", {}, null);
   await mountComposer("ref_a", { status: { type: "idle" } });
@@ -1013,7 +1013,10 @@ test("draining an active recovery consumes its owner before the next submission"
   const committed = hold.reached;
   try {
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+      // With queue depth the composer's own Steer control routes to
+      // drain (decideSteerRoute) - the retired strip's header button is
+      // gone.
+      fireEvent.click(screen.getByTestId("composer-steer"));
       await committed;
     });
     // Recovery ownership must be consumed by the same durable write, before

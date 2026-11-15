@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -42,6 +43,7 @@ import (
 type hubPluginsController struct {
 	mgr              *plugins.Manager
 	launchConfigRoot string
+	log              *slog.Logger
 }
 
 // newHubPluginsController builds a controller rooted at root, or the default
@@ -52,6 +54,17 @@ func newHubPluginsController(root string, launchConfigRoots ...string) *hubPlugi
 		launchConfigRoot = launchConfigRoots[0]
 	}
 	return &hubPluginsController{mgr: plugins.NewManager(root), launchConfigRoot: launchConfigRoot}
+}
+
+// logger is the controller's diagnostic sink: the server's wired logger when
+// the production path sets it, otherwise a hub logger resolved per call so a
+// test that redirects os.Stderr after constructing the controller still
+// captures the line.
+func (c *hubPluginsController) logger() *slog.Logger {
+	if c.log != nil {
+		return c.log
+	}
+	return componentlog.New("hub")
 }
 
 // Preview resolves the same launch plugin inventory used by session startup.
@@ -237,7 +250,9 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 				// clone-litter text, so without this line the discarded
 				// listErr would vanish - the same server-side log the
 				// success path's failed re-list already uses.
-				fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after unregistration failed: %v\n", params.Name, listErr)
+				c.logger().Info(fmt.Sprintf(
+					"marketplace %q: reading the updated list after unregistration failed: %v",
+					params.Name, listErr))
 				data.AppliedUnavailable = true
 			} else {
 				data.Applied = applied
@@ -267,7 +282,9 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 	hubPluginsReconcileAfterAppliedRemove()
 	applied, listErr := c.listMarketplaces(ctx)
 	if listErr != nil {
-		fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after removal failed: %v\n", params.Name, listErr)
+		c.logger().Info(fmt.Sprintf(
+			"marketplace %q: reading the updated list after removal failed: %v",
+			params.Name, listErr))
 		return appwire.MarketplaceListResponse{}, appwire.WireError{
 			Code:    appwire.CodeInternalError,
 			Message: fmt.Sprintf("marketplace %q: removed, but the updated list could not be read", params.Name),

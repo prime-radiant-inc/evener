@@ -200,13 +200,10 @@ func sortedOutput(res tool.ExecResult) tool.ExecResult {
 	return res
 }
 
-// nativeGrepForm writes a grep result the way execenv's native Grep fallback
-// does, sorted: each path relative to the searched directory, no trailing
-// newline. ripgrep, which Grep uses when it is installed, prints absolute
-// paths and a trailing newline; the fallback's own output passes through
-// unchanged.
+// nativeGrepForm writes a grep result the way execenv's Grep outputs, sorted:
+// each path relative to the workspace root (#6176), no trailing newline.
 func nativeGrepForm(dir, searched string) func(tool.ExecResult) tool.ExecResult {
-	base := filepath.Join(dir, searched) + string(filepath.Separator)
+	base := dir + string(filepath.Separator)
 	return func(res tool.ExecResult) tool.ExecResult {
 		lines := strings.Split(strings.TrimSuffix(res.Output, "\n"), "\n")
 		for i, line := range lines {
@@ -340,6 +337,7 @@ var (
 	toolWireJobMs     = regexp.MustCompile(`"(running_for_ms|quiet_for_ms)":\d+`)
 	toolWireJobAt     = regexp.MustCompile(`"(started_at|last_event_at)":"[^"]+"`)
 	toolWireJobListAt = regexp.MustCompile(`started \d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
+	toolWireJobListMs = regexp.MustCompile(`\b(running_for_ms|quiet_for_ms) \d+`)
 )
 
 // withFixedJobClock records a job tool's result with the job fixed as
@@ -348,7 +346,8 @@ func withFixedJobClock(res tool.ExecResult) tool.ExecResult {
 	res = withFixedJob(res)
 	out := toolWireJobMs.ReplaceAllString(res.Output, `"$1":2000`)
 	out = toolWireJobAt.ReplaceAllString(out, `"$1":"`+wireFixtureStart.UTC().Format(time.RFC3339)+`"`)
-	res.Output = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	out = toolWireJobListAt.ReplaceAllString(out, "started "+wireFixtureStart.UTC().Format("2006-01-02 15:04"))
+	res.Output = toolWireJobListMs.ReplaceAllString(out, "$1 2000")
 	return res
 }
 

@@ -47,14 +47,40 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // copy-free preparation and below the smallest copy-bearing one, so that
 // reintroducing the dead shallow copy of s.history (1,024 turns *
 // unsafe.Sizeof(schema.Turn{}) bytes) fails here while healthy preparations
-// pass. Copy-free preparations measure 1,152,312 settled through 1,461,616
-// fresh across this file's lanes; the smallest copy-bearing preparation is
-// the settled non-race one at 1,987,896 (1,152,312 plus the copy). 1,750,000
-// sits between those, 288,384 above the largest copy-free mode and 237,896
-// below the smallest copy-bearing one, so attribution noise cannot mask the
-// copy and honest drift cannot push a healthy preparation over. The literal
-// is deliberate: do not derive it from the implementation under test.
-const maxRequestHistoryBytesPerPreparation int64 = 1_750_000
+// pass. The ceiling is PER LANE, because the race detector's instrumentation
+// adds real allocation to the same code path and moves the whole distribution
+// up: a single ceiling cannot hold a margin on both lanes at once. Measured
+// on 2026-11-14, copy-free preparations are 1,333,728 on the plain lane and
+// 1,731,040 (the plateau's maximum over repeated runs) under -race; the
+// smallest copy-bearing preparation is 2,177,504 plain and 2,193,560 under
+// -race (the copy is 1,024 * unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in
+// both). The plain ceiling is 1,750,000 as before. The race ceiling is
+// 1,980,000: 248,960 above the measured race plateau's maximum and 213,560
+// below the smallest race copy-bearing value, so attribution noise and honest
+// drift cannot mask the copy on either side of the bound.
+//
+// The race margins are smaller than the copy's own size on purpose: the gap
+// between the plateau and the copy-bearing value there is only 462,520 bytes,
+// so no ceiling can hold half a copy of clearance on both sides. The
+// regression test below therefore requires a quarter copy on each side, the
+// most either lane can offer while still catching the copy.
+//
+// Both literals are deliberate: do not derive them from the implementation
+// under test.
+const (
+	maxRequestHistoryBytesPerPreparationPlain int64 = 1_750_000
+	maxRequestHistoryBytesPerPreparationRace  int64 = 1_980_000
+)
+
+// maxRequestHistoryBytesPerPreparation is this lane's ceiling. -race is
+// detected through the package's existing raceDetectorEnabled const so the
+// two lanes cannot silently share one number again.
+func maxRequestHistoryBytesPerPreparation() int64 {
+	if raceDetectorEnabled {
+		return maxRequestHistoryBytesPerPreparationRace
+	}
+	return maxRequestHistoryBytesPerPreparationPlain
+}
 
 // requestHistoryPayload is the unique body of fixture turn i. It survives
 // expansion and request construction verbatim, so an in-order scan of the
@@ -262,11 +288,74 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 			}
 			bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s)
 			removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
-			t.Logf("attributable bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation)
-			if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation {
-				t.Fatalf("bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestHistoryBytesPerPreparation)
+			t.Logf("attributable bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation())
+			if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation() {
+				t.Fatalf("bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestHistoryBytesPerPreparation())
 			}
 		})
+	}
+}
+
+// TestPrepareModelRequestHistoryCeilingCatchesDeadCopy pins the bound's
+// teeth independently of the assertion that consumes it: a preparation that
+// also makes the dead shallow copy of s.history must measure over this
+// lane's ceiling, with real margin, while a copy-free preparation stays
+// under it. The budget test itself can only fail when the copy is
+// reintroduced into production code; this test fails if the ceiling is ever
+// moved to where the copy would slip under it, which is the exact drift that
+// made the single shared ceiling flaky on the race lane. It measures both
+// shapes back to back on one fixture, so the margin is a ratio of two
+// readings from the same process rather than a comparison against a number
+// in a comment.
+// Serial: it measures process-global TotalAlloc, like its siblings.
+func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
+	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
+	deadCopyBytes := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
+
+	measure := func(copyBearing bool) int64 {
+		t.Helper()
+		var rounds []int64
+		for range requestHistoryMeasurementRounds {
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			prepareRequestHistoryRound(t, s)
+			if copyBearing {
+				// The dead copy exactly as the removed code made it: a shallow
+				// copy of the live slice, discarded without being read.
+				s.mu.Lock()
+				dead := append([]schema.Turn(nil), s.history...)
+				s.mu.Unlock()
+				_ = dead
+			}
+			runtime.ReadMemStats(&after)
+			rounds = append(rounds, int64(after.TotalAlloc-before.TotalAlloc))
+		}
+		slices.Sort(rounds)
+		return rounds[len(rounds)/2]
+	}
+
+	free := measure(false)
+	bearing := measure(true)
+	ceiling := maxRequestHistoryBytesPerPreparation()
+	t.Logf("copy-free %d, copy-bearing %d, dead copy %d, ceiling %d, race %v", free, bearing, deadCopyBytes, ceiling, raceDetectorEnabled)
+
+	if free >= ceiling {
+		t.Fatalf("copy-free preparation measured %d at or over the ceiling %d: the ceiling does not clear a healthy preparation in this lane", free, ceiling)
+	}
+	if bearing <= ceiling {
+		t.Fatalf("copy-bearing preparation measured %d at or under the ceiling %d: reintroducing the dead copy would pass", bearing, ceiling)
+	}
+	// The margin must be a real share of the copy, not a few bytes of noise.
+	// A quarter copy on each side is the most the race lane's narrower gap
+	// allows (see the constant's comment); the plain lane clears half a copy
+	// either way, so this bound is the binding one and stays meaningful in
+	// both lanes.
+	minMargin := deadCopyBytes / 4
+	if margin := bearing - ceiling; margin < minMargin {
+		t.Fatalf("only %d bytes between the ceiling %d and the copy-bearing measurement %d, want at least %d (a quarter of the dead copy)", margin, ceiling, bearing, minMargin)
+	}
+	if margin := ceiling - free; margin < minMargin {
+		t.Fatalf("only %d bytes between the copy-free measurement %d and the ceiling %d, want at least %d (a quarter of the dead copy)", margin, free, ceiling, minMargin)
 	}
 }
 
@@ -351,9 +440,9 @@ func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.
 	cancelChurn()
 	<-churnDone
 	quietAgain := measureRequestHistoryBytesPerPreparation(t, s)
-	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn (%d ticks), %d quiet again, budget %d", quiet, churned, churnTicksInWindow, quietAgain, maxRequestHistoryBytesPerPreparation)
-	if churned >= maxRequestHistoryBytesPerPreparation {
-		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation)
+	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn (%d ticks), %d quiet again, budget %d", quiet, churned, churnTicksInWindow, quietAgain, maxRequestHistoryBytesPerPreparation())
+	if churned >= maxRequestHistoryBytesPerPreparation() {
+		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation())
 	}
 	// The band is wide because honest spreads live inside it: the churner's
 	// background arrives in coarse ticks, and the session's own

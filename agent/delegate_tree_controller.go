@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -418,6 +419,7 @@ type delegateMutationPlans struct {
 	attention             []delegateAttentionCleanupPlan
 	attentionFinalization *delegateSettlementClaim
 	shellRepairs          []delegateShellRepairPlan
+	warnings              []events.WarningData
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {

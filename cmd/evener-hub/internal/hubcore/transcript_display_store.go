@@ -45,7 +45,12 @@ type TranscriptDisplayPostApplyError struct {
 }
 
 func (e *TranscriptDisplayPostApplyError) Error() string { return e.Err.Error() }
-func (e *TranscriptDisplayPostApplyError) Unwrap() error { return e.Err }
+
+// Unwrap reports ErrWriteApplied beside the failure itself: this type is the
+// transcript-display store's name for that state, so a generic
+// errors.Is(err, ErrWriteApplied) check recognizes it too, exactly as
+// KeybindingsPostRenameError does.
+func (e *TranscriptDisplayPostApplyError) Unwrap() []error { return []error{e.Err, ErrWriteApplied} }
 
 // TranscriptDisplayStore is the hub-authoritative store for the two
 // transcript-display defaults. Desktop and Mobile revisions advance

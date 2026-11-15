@@ -775,7 +775,9 @@ function assertDuoCompactStates(result) {
     );
   }
   if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  if (focused && (focused.cardGap !== "4px" || focused.cardPaddingBlock !== "4px 4px")) {
+  // Ordinary spacing is PromptCard's own stacked inset: one --space-2 between
+  // field and controls, --space-3 above the field and --space-2 below the row.
+  if (focused && (focused.cardGap !== "8px" || focused.cardPaddingBlock !== "12px 8px")) {
     failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)
@@ -1223,7 +1225,7 @@ async function verifyIntentColumn(cdpEndpoint, url) {
   return inspectOnSettledPage(cdpEndpoint, url, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");
 }
 
-// The trailing held-steer ghost stack's column: Session renders HeldSteerStack
+// The trailing pending stack's column: Session renders the pending stack
 // as the transcript's trailing virtual-list row, outside TurnBlock's .turn
 // column, so like the top-level intent group it must read the reading measure
 // itself or it spans the full pane while every turn above stays clamped and
@@ -1435,7 +1437,7 @@ function nearlyEqual(actual, expected, tolerance = GEOMETRY_TOLERANCE) {
   return Math.abs(actual - expected) <= tolerance;
 }
 
-// The column-alignment contract the intent-group and held-steer-stack checks
+// The column-alignment contract the intent-group and pending-stack checks
 // share: the row was found, both turn edges were measured, and both of its
 // edges sit within GEOMETRY_TOLERANCE of the turn's. Positional
 // (found, left, right, turnLeft, turnRight); the per-check JSON field names

@@ -3,32 +3,31 @@
  * DockHost.tsx) via its CSS custom properties - never a chromatic literal
  * of our own (src/styles/token-contract.test.ts enforces this the same as
  * every other stylesheet under src/, plus a naming exception for this one
- * file - see that test's own comment). Scoped deliberately to the
- * surface/edge/ink token families only, per the wave-3 plan's Global
- * Constraints: no --accent, no --attention/--alive/--danger (dockview's
- * chrome stays neutral; a pane's own content carries whatever state it
- * needs via Cadence/Chip/Badge, which already own those hues).
+ * file - see that test's own comment). The chrome stays neutral: surface,
+ * edge and ink families only, with --accent in exactly one place, the sash
+ * a pointer is resizing with (the rail's own resize handle draws the same
+ * accent line). Never --attention/--alive/--danger: a pane's own content
+ * carries whatever state it needs via Cadence/Chip/Badge, which own those
+ * hues.
  *
- * Only the color-bearing custom properties dockview actually exposes are
- * set below - structural ones (tab height, border-radius, margins, the
- * multi-hue "tab group color" chips feature we don't use, and the
- * genuinely transient drag-over/active-sash colors) are left at dockview's
- * own defaults; this file restyles color, not geometry - with one
- * deliberate exception (kata 491q, bottom of file): the tab-overflow
- * popover's own default width is unbounded (it grows to fit a tab's full,
- * untruncated title), and dockview's own containment math only keeps that
- * popover inside the WHOLE workspace, never inside the single dock group
- * it belongs to - so a long enough title drags it across a sibling panel's
- * live content. There is no custom property for that; it needs a real
- * selector.
+ * Geometry is dockview's own (strip height, sash width, the floating
+ * window's box), with three deliberate exceptions that need real selectors
+ * because dockview exposes no custom property for them: the tab's pill
+ * shape, the divider between tabs, and (kata 491q, bottom of file) the
+ * tab-overflow popover's width - its default is unbounded (it grows to fit
+ * a tab's full, untruncated title), and dockview's own containment math
+ * only keeps that popover inside the WHOLE workspace, never inside the
+ * single dock group it belongs to - so a long enough title drags it across
+ * a sibling panel's live content.
  *
  * Surface ramp (design doc §1/§6): the tab strip sits on --surface-canvas,
- * the same well the rail uses, and the currently-focused group's active tab
- * "lifts" off it onto --surface-1 - the pane surface it's actually the tab
- * FOR, so the lift reads as "this is the content below" rather than a bare
- * hover step. An inactive group's active tab (still real, shown content,
- * just not the globally-focused one) stays on the strip's own canvas
- * instead, so only the one truly-focused tab lifts at a time.
+ * the same well the rail uses, and each tab is a rounded pill inset from the
+ * strip's edges, in the rail rows' language. The currently-focused group's
+ * active tab "lifts" off the strip onto the pane surface it is the tab FOR,
+ * with the card shadow, the way the rail's selected row does. An inactive
+ * group's active tab (still real, shown content, just not the globally-focused
+ * one) stays on the strip's own canvas instead, so only the one truly-focused
+ * tab lifts at a time.
  */
 
 .dockview-theme-evener {
@@ -44,7 +43,7 @@
 
   /* The active tab in the globally-focused group lifts onto --surface-1,
    * the pane surface it's actually the tab for. */
-  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-0);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-1);
   --dv-activegroup-visiblepanel-tab-color: var(--ink-hi);
 
   /* The active tab of a group that ISN'T the globally-focused one (visible
@@ -62,10 +61,10 @@
   --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-canvas);
   --dv-inactivegroup-hiddenpanel-tab-color: var(--ink-low);
 
-  /* Hairlines: between adjacent tabs, between the strip and the content
-   * below it, and the sash/splitter between groups - all --edge, matching
-   * every other border in the app ("depth = --edge borders + surface
-   * steps", design-system.md §1). */
+  /* Hairlines: the tab's focus outline, the overflow popover's frame, the
+   * line between the strip and the content below it, and the splitter
+   * between groups - all --edge, matching every other border in the app.
+   * (The divider BETWEEN tabs is dropped below: pills need none.) */
   --dv-tab-divider-color: var(--edge);
   --dv-separator-border: var(--edge);
   --dv-paneview-header-border-color: var(--edge);
@@ -81,6 +80,52 @@
    * literal - see that test's own comment on color-mix()). */
   --dv-scrollbar-background-color: color-mix(in oklab, var(--ink-hi) 25%, transparent);
   --dv-tabs-container-scrollbar-color: var(--ink-low);
+
+  /* Each tab keeps a hairline of strip around it, so it reads as a pill
+   * seated in the strip rather than a cell of it. */
+  --dv-tab-margin: var(--space-1) 0 var(--space-1) var(--space-1);
+
+  /* The splitter a pointer is over or dragging shows the accent line, after
+   * dockview's own hover delay, so a pass across it paints nothing. */
+  --dv-active-sash-color: var(--accent);
+
+  /* A floating group is an overlay: the overlay ring and blur, not
+   * dockview's own heavier pair of black shadows. */
+  --dv-floating-box-shadow: var(--shadow-overlay);
+}
+
+/* The tab pill. A resting tab washes on hover like a rail row; the lift of
+ * the focused group's active tab is the --dv-activegroup-* fill above plus
+ * the card shadow here. */
+.dockview-theme-evener .dv-tab {
+  border-radius: var(--radius-control);
+  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.dockview-theme-evener .dv-groupview > .dv-tabs-and-actions-container .dv-tab.dv-inactive-tab:hover {
+  background-color: var(--hover-1);
+}
+
+.dockview-theme-evener .dv-active-group .dv-tab.dv-active-tab {
+  box-shadow: var(--shadow-card-ringed);
+}
+
+/* dockview's focus outline is a square ::after over the tab; it follows the
+ * pill instead. */
+.dockview-theme-evener .dv-tab::after {
+  border-radius: var(--radius-control);
+}
+
+/* No divider between pills: the strip showing between them separates them. */
+.dockview-theme-evener .dv-tabs-container.dv-horizontal .dv-tab:not(:first-child)::before,
+.dockview-theme-evener .dv-tabs-container.dv-vertical .dv-tab:not(:first-child)::before {
+  background-color: transparent;
+}
+
+/* The close button's hover wash is a small rounded square, not dockview's
+ * 2px corner. */
+.dockview-theme-evener .dv-tab .dv-default-tab .dv-default-tab-action:hover {
+  border-radius: var(--radius-chip);
 }
 
 /* kata 491q: the tab-overflow popover (dockview-core's own control, shown

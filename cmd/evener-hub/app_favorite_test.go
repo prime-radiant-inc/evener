@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -248,12 +247,10 @@ func TestHubFavoriteSetReportsAPermanentNavigationFailureOnce(t *testing.T) {
 		cfg.Generation = func() (string, error) { return "", errors.New("entropy unavailable") }
 	})
 	favorites.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
-	var logs []string
+	logs := &logCapture{}
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
 		Favorite: favorites,
-		Logf: func(format string, args ...any) {
-			logs = append(logs, fmt.Sprintf(format, args...))
-		},
+		Log:      logs.logger(),
 	}, nil, navigation, nil)
 
 	_, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{Kind: "project", ID: "p1", Favorited: true})
@@ -265,7 +262,7 @@ func TestHubFavoriteSetReportsAPermanentNavigationFailureOnce(t *testing.T) {
 	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p1"}] {
 		t.Fatalf("favorite decision not persisted: %v", decisions)
 	}
-	if len(logs) != 1 {
-		t.Fatalf("logs = %q, want exactly one failure line", logs)
+	if got := logs.len(); got != 1 {
+		t.Fatalf("logs = %d records, want exactly one failure line", got)
 	}
 }

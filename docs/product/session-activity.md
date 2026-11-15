@@ -143,7 +143,7 @@ or approval under the same In-app alerts switch. First-read and offline rules st
 counts and Next navigation use the same Board attention membership.
 
 The browser's [`effectiveSessionState`](../../cmd/evener-hub/frontend/src/shell/rail/RailRow.tsx)
-and the phone's [`boardState`](../../mobile-native/src/board/attention.ts) own
+and the phone's [`boardState`](../../appwire-client/typescript/state/navigation/liveAttention.ts) own
 these projections. The browser uses the shared navigation store; the phone keeps
 its existing BoardController/NavigationPages delivery and shared decoding.
 Both reuse the [shared live tally selector](../../appwire-client/typescript/state/navigation/selectors.ts).

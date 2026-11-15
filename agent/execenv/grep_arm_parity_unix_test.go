@@ -97,6 +97,9 @@ func TestGrepNativeArmsAgreeOnOneTree(t *testing.T) {
 		{name: "files with matches", matches: true, path: ".", mode: "files_with_matches"},
 		{name: "count", matches: true, path: ".", mode: "count"},
 		{name: "glob filter", matches: true, path: ".", glob: "*.go", mode: "content"},
+		// #6201's adopted -g override must hold on both native arms: the
+		// filter names the dotfile, so it is searched.
+		{name: "glob filter selects a hidden file", matches: true, path: ".", glob: ".dotfile", mode: "files_with_matches"},
 		{name: "subdirectory", matches: true, path: "sub", mode: "content"},
 		{name: "directory with only an oversize file and a match", path: "also", mode: "content"},
 		{name: "skip predicate", path: ".", mode: "files_with_matches", skip: func(rel string) bool { return rel == "a.txt" }},
@@ -105,6 +108,10 @@ func TestGrepNativeArmsAgreeOnOneTree(t *testing.T) {
 		{name: "named file with a glob that excludes it", path: "a.txt", glob: "*.go", mode: "content"},
 		{name: "named file the skip predicate names", path: "a.txt", mode: "content", skip: func(rel string) bool { return true }},
 		{name: "named dotfile", path: ".dotfile", mode: "content"},
+		// #6201's -g override on a named dotfile: the filter names it, so
+		// both arms surface it (the sandboxed named-file path has its own
+		// dotfile default, pinned here against regressing separately).
+		{name: "named dotfile with a glob that names it", matches: true, path: ".dotfile", glob: ".dotfile", mode: "content"},
 		{name: "named gitignored file", matches: true, path: "ignored/e.txt", mode: "content"},
 		{name: "named gitignored by pattern", matches: true, path: "skip.log", mode: "content"},
 		{name: "named binary file", path: "binary.bin", mode: "content"},

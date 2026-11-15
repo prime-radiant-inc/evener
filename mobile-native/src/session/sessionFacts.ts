@@ -4,7 +4,10 @@
 import {
 	basename,
 	compactDuration,
+	effectiveContextStatus,
 	formatTokenCount,
+	hostIdOf,
+	loadedPluginNames,
 	sessionEffortLevels,
 	type ModelDescriptor,
 	type ThreadModel,
@@ -13,43 +16,11 @@ import type { MobileTimelineItem } from "../projectedRows";
 import { sameModel } from "../subagents/subagentModel";
 import { localSessionId } from "../sessionDeletionResult";
 
-/** A ref names its host first ("<host>:<session>"); "local" is the hub's own. */
-export function hostIdOf(ref: string): string {
-	const at = ref.indexOf(":");
-	return at > 0 ? ref.slice(0, at) : "local";
-}
-
 export interface WhereFacts {
 	host: string;
 	project?: string;
 	directory: string;
 	branch?: string;
-}
-
-/** A host as the Session sheet shows it (spec 8.6): its name, and whether
- * it's connected, for its dot; null when nothing says. */
-export interface SessionHost {
-	label: string;
-	online: boolean | null;
-}
-
-/** Names each host a session can run on. The hub's own machine goes by the
- * hub's name, as Hub > Hosts names it, where the manifest calls it "this
- * host", and is as connected as the hub; any other host goes by its manifest
- * label and state, or by its id while the manifest doesn't list it. While the
- * hub is away every host it lists reads offline, since the phone can't reach
- * any of them. */
-export function sessionHosts(
-	sources: readonly { id: string; label: string; online: boolean }[] | undefined,
-	hubName: string | null,
-	hubConnected: boolean,
-): (hostId: string) => SessionHost {
-	const byId = new Map((sources ?? []).map((source) => [source.id, source]));
-	return (hostId) => {
-		const source = byId.get(hostId);
-		if (hostId === "local") return { label: hubName ?? source?.label ?? hostId, online: hubConnected };
-		return { label: source?.label ?? hostId, online: source ? hubConnected && source.online : null };
-	};
 }
 
 export function whereFacts(
@@ -65,29 +36,12 @@ export function whereFacts(
 	};
 }
 
-/** Plugins are fixed when a session starts. An absent inventory is unknown, not
- * empty (model.ts, ThreadDiagnostics). */
+/** The Plugins row: how many the session loaded, and their names. Null when
+ * the inventory is unknown (loadedPluginNames). */
 export function pluginsLine(session: Pick<ThreadModel, "diagnostics">): { line: string; names: string[] } | null {
-	const plugins = session.diagnostics?.plugins;
-	if (!plugins) return null;
-	const names = plugins.map((plugin) => plugin.name).sort((a, b) => a.localeCompare(b));
+	const names = loadedPluginNames(session);
+	if (!names) return null;
 	return { line: `${names.length} ${names.length === 1 ? "plugin" : "plugins"} · chosen at start`, names };
-}
-
-// The sandbox modes as the spec names them (8.6, and 7.x's new session).
-const ACCESS_MODES: Record<string, string> = {
-	off: "Full access",
-	"workspace-write": "Workspace write",
-	"read-only": "Read-only",
-	restricted: "Restricted",
-};
-
-/** The session's sandbox mode and network setting (S15), or null when the hub
- * doesn't report them. A mode the phone doesn't know shows its raw name. */
-export function accessFacts(session: Pick<ThreadModel, "access">): { mode: string; network: string } | null {
-	const access = session.access;
-	if (!access) return null;
-	return { mode: ACCESS_MODES[access.sandbox] ?? access.sandbox, network: access.network ? "On" : "Off" };
 }
 
 export interface UsageFacts {
@@ -95,8 +49,8 @@ export interface UsageFacts {
 	split?: string;
 	cost?: string;
 	workTime?: string;
-	/** Used of the window. The hub reports no compaction threshold, so the
-	 * gauge draws no marker (ruling 36). */
+	/** Used of the active context ceiling (custom compactionThreshold when
+	 * configured, otherwise contextWindow). */
 	context?: { text: string; fraction: number };
 	failedToolCalls?: string;
 }
@@ -105,7 +59,7 @@ export function usageFacts(
 	session: Pick<
 		ThreadModel,
 		"usage" | "cost" | "workMillis" | "contextUsed" | "contextWindow" | "contextAssumed" | "failedToolCalls"
-	>,
+	> & { compactionThreshold?: number },
 ): UsageFacts {
 	const facts: UsageFacts = {};
 	const usage = session.usage;
@@ -118,14 +72,17 @@ export function usageFacts(
 	if (split.length > 0) facts.split = split.join(" · ");
 	if (session.cost) facts.cost = session.cost;
 	if (session.workMillis > 0) facts.workTime = compactDuration(session.workMillis);
-	if (session.contextWindow > 0)
+	const status = effectiveContextStatus(session);
+	if (status.ceiling > 0)
 		facts.context = {
 			// The "~" marks an ASSUMED window the way the cost row marks its
 			// derived estimate ("~$…"): the used count stays plain because it
-			// is measured; only the capacity is assumed. ContextGauge speaks
-			// this same text, so the accessible label carries the estimate too.
-			text: `${formatTokenCount(session.contextUsed)} of ${session.contextAssumed ? "~" : ""}${formatTokenCount(session.contextWindow)}`,
-			fraction: Math.min(1, Math.max(0, session.contextUsed / session.contextWindow)),
+			// is measured; only the capacity is assumed. An explicit
+			// compactionThreshold is never marked with "~".
+			text: status.hasCustomThreshold
+				? `${formatTokenCount(session.contextUsed)} of ${formatTokenCount(status.ceiling)}`
+				: `${formatTokenCount(session.contextUsed)} of ${session.contextAssumed ? "~" : ""}${formatTokenCount(status.ceiling)}`,
+			fraction: Math.min(1, Math.max(0, status.pressure)),
 		};
 	const failed = session.failedToolCalls ?? 0;
 	if (failed > 0) facts.failedToolCalls = `${failed} failed tool ${failed === 1 ? "call" : "calls"}`;

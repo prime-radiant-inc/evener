@@ -7,6 +7,7 @@ import (
 )
 
 func TestChanStream_Close_UnblocksBlockedSend(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	_, cancel := context.WithCancel(context.Background())
 	s := NewChanStream(cancel)
 
@@ -49,6 +50,7 @@ func TestChanStream_Close_UnblocksBlockedSend(t *testing.T) {
 }
 
 func TestChanStream_SendAfterClose_DoesNotPanic(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	_, cancel := context.WithCancel(context.Background())
 	s := NewChanStream(cancel)
 	s.CloseSend()
@@ -61,6 +63,7 @@ func TestChanStream_SendAfterClose_DoesNotPanic(t *testing.T) {
 // while the consumer reads Events() and triggers Close mid-stream. Confirms the
 // removed Send recover() was unnecessary — no race, no send-on-closed panic.
 func TestChanStream_NoRaceProducerVsConsumerClose(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	for range 50 {
 		_, cancel := context.WithCancel(context.Background())
 		s := NewChanStream(cancel)

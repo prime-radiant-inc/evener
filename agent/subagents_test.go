@@ -44,6 +44,50 @@ func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
 	}
 }
 
+func TestDefaultToolSummaryMatchesSpawnCeiling(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.delegationAllowance = 1
+
+	explorer, ok := s.pluginAgents["explorer"]
+	if !ok {
+		t.Fatal("session missing built-in explorer agent")
+	}
+
+	// Also check the registered delegate definition in s.reg!
+	regDef := s.reg.Get("delegate").Definition
+	regProps, _ := regDef.Parameters["properties"].(map[string]any)
+	regAgentType, _ := regProps["agent_type"].(map[string]any)
+	regDesc, _ := regAgentType["description"].(string)
+	if !strings.Contains(regDesc, "explorer:") || !strings.Contains(regDesc, "read_transcript") {
+		t.Fatalf("registered delegate tool in reg description = %q, want explorer with read_transcript", regDesc)
+	}
+
+	summary := s.defaultToolSummaryForAgent(explorer)
+	if !strings.Contains(summary, "`read_transcript`") {
+		t.Fatalf("explorer defaultToolSummary = %q, want read_transcript", summary)
+	}
+
+	// delegate tool definition enum description roster must also include read_transcript
+	delegateDef := s.delegateToolDefinition()
+	props, _ := delegateDef.Parameters["properties"].(map[string]any)
+	agentTypeProp, _ := props["agent_type"].(map[string]any)
+	desc, _ := agentTypeProp["description"].(string)
+	if !strings.Contains(desc, "explorer:") || !strings.Contains(desc, "read_transcript") {
+		t.Fatalf("delegate enum description = %q, want explorer with read_transcript", desc)
+	}
+
+	// availableAgentEntries must also include read_transcript for explorer
+	entries := s.availableAgentEntries()
+	for _, entry := range entries {
+		if entry.Name == "explorer" {
+			if !strings.Contains(entry.DefaultTools, "`read_transcript`") {
+				t.Fatalf("available_agents explorer DefaultTools = %q, want read_transcript", entry.DefaultTools)
+			}
+		}
+	}
+}
+
 func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
 	t.Parallel()
 	reg := tool.NewRegistry()

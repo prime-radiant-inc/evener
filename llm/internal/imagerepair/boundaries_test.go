@@ -13,6 +13,7 @@ import (
 
 // Every curve encoding has its own independently interpreted LittleCMS profile.
 func TestICCCurveEncodingsAgainstLittleCMS(t *testing.T) {
+	t.Parallel()
 	var refs struct {
 		Profiles map[string][]struct{ Input, Output [3]uint8 }
 	}
@@ -34,6 +35,7 @@ func TestICCCurveEncodingsAgainstLittleCMS(t *testing.T) {
 }
 
 func TestICCAdditionalSafety(t *testing.T) {
+	t.Parallel()
 	j, base := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	cases := map[string]func([]byte){
 		"v2":               func(p []byte) { p[8] = 2 },
@@ -85,6 +87,7 @@ func TestICCAdditionalSafety(t *testing.T) {
 }
 
 func TestRepairUnsupportedPixelModel(t *testing.T) {
+	t.Parallel()
 	j := fixture(t, "cmyk.jpg")
 	call(t, j, PreferColorManaged, Unchanged)
 	r := call(t, tagged(j, fixture(t, "p3.icc")), PreferColorManaged, ProfileRemoved)
@@ -94,6 +97,7 @@ func TestRepairUnsupportedPixelModel(t *testing.T) {
 }
 
 func TestRepairProgressiveAndLateMPF(t *testing.T) {
+	t.Parallel()
 	j := fixture(t, "progressive.jpg")
 	original, err := jpeg.Decode(bytes.NewReader(j))
 	if err != nil {
@@ -132,6 +136,7 @@ func padJPEG(j []byte, total int) []byte {
 	return append(out, j[2:]...)
 }
 func TestRepairExactEncodedAndICCBudgets(t *testing.T) {
+	t.Parallel()
 	j, p := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	atLimit := padJPEG(tagged(j, p), 32<<20)
 	r := call(t, atLimit, ProfileFree, ProfileRemoved)
@@ -156,6 +161,7 @@ func TestRepairExactEncodedAndICCBudgets(t *testing.T) {
 	}
 }
 func TestRepairExactPixelBudget(t *testing.T) {
+	t.Parallel()
 	im := image.NewGray(image.Rect(0, 0, 4000, 4000))
 	var buf bytes.Buffer
 	if e := jpeg.Encode(&buf, im, &jpeg.Options{Quality: 75}); e != nil {
@@ -168,6 +174,7 @@ func TestRepairExactPixelBudget(t *testing.T) {
 	}
 }
 func TestPNGOutputBudgetAndCancellation(t *testing.T) {
+	t.Parallel()
 	w := pngWriter{ctx: context.Background()}
 	chunk := make([]byte, 1<<20)
 	for i := range 64 {
@@ -191,6 +198,7 @@ func TestPNGOutputBudgetAndCancellation(t *testing.T) {
 }
 
 func TestRepairInvalidEXIFStructures(t *testing.T) {
+	t.Parallel()
 	j, p := fixture(t, "patches.jpg"), fixture(t, "p3.icc")
 	for _, mutate := range []func([]byte){func(e []byte) { copy(e[10:], "ZZ") }, func(e []byte) { binary.LittleEndian.PutUint16(e[12:], 41) }, func(e []byte) { binary.LittleEndian.PutUint16(e[18:], 65535) }, func(e []byte) { binary.LittleEndian.PutUint16(e[22:], 4) }, func(e []byte) { binary.LittleEndian.PutUint32(e[24:], 2) }} {
 		e := exif(6, binary.LittleEndian)
@@ -210,6 +218,7 @@ func TestRepairInvalidEXIFStructures(t *testing.T) {
 	comparePixels(t, a, b, 0)
 }
 func TestRepairOwnsChangedOutput(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []Mode{PreferColorManaged, ProfileFree} {
 		input := tagged(fixture(t, "patches.jpg"), fixture(t, "p3.icc"))
 		before := bytes.Clone(input)

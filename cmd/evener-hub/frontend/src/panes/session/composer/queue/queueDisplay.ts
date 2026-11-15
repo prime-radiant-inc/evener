@@ -8,6 +8,7 @@ export {
   commandMarkers,
   imagePlaceholder,
   normalizeText,
+  outboxRecordPreview,
   pendingEntryPreview,
   queueEntryPreviewText,
   skillMarkers,

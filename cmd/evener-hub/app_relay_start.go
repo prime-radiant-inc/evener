@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -498,7 +499,7 @@ func (s *relaySupervisor) giveUpOnRunningTurn(cause error) {
 		return
 	}
 	s.turnRunning = false
-	s.r.logf("relay for %s gave up on its running turn after %d failed re-dials: %v", s.relayKey, s.consecutiveFailures, cause)
+	s.r.log.Info(fmt.Sprintf("relay for %s gave up on its running turn after %d failed re-dials: %v", s.relayKey, s.consecutiveFailures, cause))
 	s.r.server.Broadcast(s.relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     s.threadID,
 		Ref:          s.subscribeParams.Ref,

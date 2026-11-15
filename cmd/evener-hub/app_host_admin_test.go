@@ -536,6 +536,8 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/instance/remove":                  true,
 		"evener/instance/setDefault":              true,
 		"evener/instance/setModelDisabled":        false,
+		"evener/instance/modelGet":                false,
+		"evener/instance/modelEdit":               false,
 		"evener/jobs/list":                        false,
 		"evener/jobs/output":                      false,
 		"evener/jobs/get":                         false,

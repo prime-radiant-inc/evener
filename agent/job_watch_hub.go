@@ -752,12 +752,13 @@ func (jm *jobManager) endHubWatch(watchID, reason string, completion *watchSendD
 		delivery.endNotice = true
 	}
 	delivery.allowAfterTerminalExpiry = true
+	deliveries := cfg.deliveries
 	jm.mu.Unlock()
 	if jm.testOnlyBeforeTerminalWatchSend != nil {
 		jm.testOnlyBeforeTerminalWatchSend()
 	}
 	delivery = jm.snapshotWatchSendFrame(delivery)
-	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason)})
+	state, _, recorded, err := jm.recordWatchSend(delivery, []jobstore.Event{watchClearedEvent(jm, cfg, reason, deliveries)})
 	committed := state.DeliveryID != ""
 	if !committed {
 		jm.mu.Lock()

@@ -17,7 +17,8 @@ packages keep whole families of behavioural checks in `check*` functions that
 only a native *program* fuzz target calls — `FuzzLaunchConfigBehaviorProgram`
 invokes 98 of them. These `Fuzz*BehaviorProgram` targets carry no `evenerfuzz`
 build tag; what excludes them from the test track is the same
-`-run '^(Test|Example)'` filter (`scripts/lib/gate-surface-lib.sh`'s
+`-run '^(Test|Example)'` filter (`scripts/lib/gate-surface-lib.sh`, generated
+from `internal/devtool/gatesurface`, and its
 `GATE_TEST_RUN`) that excludes every other `FuzzXxx` name, so the test track
 cannot see that work at all: `cmd/evener-hub/internal/appsource` reads 66.4%
 there and 83.1% under its own program target, and four modules that look

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -802,4 +803,56 @@ func TestReadEventsWithDiagnostics_RejectsSemanticallyInvalidHistoryEvenThoughSy
 	if events != nil {
 		t.Fatalf("events = %+v, want nil on a fold-validation failure", events)
 	}
+}
+
+// TestScanEventsFromLargeBufferReadsFewTimes pins the scan's read
+// granularity: one underlying read per 64 KiB, not one per bufio's 4 KiB
+// default.
+// Not parallel: overrides the scan open seam.
+func TestScanEventsFromLargeBufferReadsFewTimes(t *testing.T) {
+	origOpen := openScanEventsFile
+	var reads int
+	openScanEventsFile = func(path string) (io.ReadSeekCloser, error) {
+		file, err := origOpen(path)
+		if err != nil {
+			return nil, err
+		}
+		return &countingScanFile{ReadSeekCloser: file, reads: &reads}, nil
+	}
+	t.Cleanup(func() { openScanEventsFile = origOpen })
+
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	const eventCount = 500
+	writeDelegateJournal(t, path, eventCount)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, _, _, err := ScanEventsFrom(context.Background(), path, 0, ScanLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != eventCount {
+		t.Fatalf("decoded %d events, want %d — the scan must read the whole journal", len(events), eventCount)
+	}
+	wantReads := int((info.Size() + 64*1024 - 1) / (64 * 1024))
+	// The slack covers the EOF probe that ends every scan plus at most one
+	// fill stranded by a line boundary; a 4 KiB regression still pays
+	// dozens of reads over this bound.
+	if reads > wantReads+2 {
+		t.Fatalf("scan read the %d byte journal with %d underlying reads; a 64 KiB buffer pays about %d", info.Size(), reads, wantReads)
+	}
+}
+
+// countingScanFile counts the underlying reads a scan issues, so a test can
+// pin a buffer's read granularity without timing anything.
+type countingScanFile struct {
+	io.ReadSeekCloser
+	reads *int
+}
+
+func (c *countingScanFile) Read(p []byte) (int, error) {
+	*c.reads++
+	return c.ReadSeekCloser.Read(p)
 }

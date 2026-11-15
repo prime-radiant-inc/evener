@@ -8,7 +8,7 @@ import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-n
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
-import { taskSettledCount } from "@evener/appwire-client";
+import { accessFacts, hostIdOf, type SessionHost, taskSettledCount } from "@evener/appwire-client";
 import { markFor } from "../board/StateMark";
 import { copyText } from "../clipboard";
 import { space } from "../design/tokens";
@@ -26,14 +26,11 @@ import { confirmShutDown } from "./confirmShutDown";
 import { wrapAfterSlashes } from "./format";
 import { MODEL_ACTIONS } from "./ModelSheet";
 import {
-	accessFacts,
 	canDeleteSavedSession,
 	canOpenModelSheet,
-	hostIdOf,
 	latestForkPoint,
 	notesSummary,
 	pluginsLine,
-	type SessionHost,
 	usageFacts,
 	visionModelLabel,
 	whereFacts,

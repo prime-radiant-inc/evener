@@ -3,10 +3,12 @@ package evener_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -16,6 +18,60 @@ const timingBudgetScript = "scripts/gate/test-timing-budget.sh"
 // hugeCeilingSeconds is a JSON integer too large to convert to a float — the
 // shape issue #4629 crashed on — shared by the tests that drive it.
 var hugeCeilingSeconds = strings.Repeat("9", 400)
+
+// timingEvenerDevBin is built once for the package run when the first test
+// drives the runner. The script now asks evener-dev for its verdict, so
+// rebuilding the binary for every fixture run would dominate these tests.
+var (
+	timingBinOnce sync.Once
+	timingBinDir  string
+	errTimingBin  error
+)
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if timingBinDir != "" {
+		_ = os.RemoveAll(timingBinDir)
+	}
+	os.Exit(code)
+}
+
+func timingEvenerDevBin(t *testing.T) string {
+	t.Helper()
+	timingBinOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "evener-timing-test-")
+		if err != nil {
+			errTimingBin = err
+			return
+		}
+		timingBinDir = dir
+		bin := filepath.Join(dir, "evener-dev")
+		build := exec.Command("go", "build", "-o", bin, "./cmd/evener-dev/bin")
+		build.Env = append(os.Environ(), "GOFLAGS=", "GOENV=off")
+		if out, err := build.CombinedOutput(); err != nil {
+			errTimingBin = fmt.Errorf("building evener-dev for the timing tests: %w\n%s", err, out)
+		}
+	})
+	if errTimingBin != nil {
+		t.Fatal(errTimingBin)
+	}
+	return filepath.Join(timingBinDir, "evener-dev")
+}
+
+// timingScriptEnv is the runner's isolated environment plus the binary built
+// once for this package run.
+func timingScriptEnv(t *testing.T, tmpDir string, extra ...string) []string {
+	t.Helper()
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"LC_ALL=C",
+		"EVENER_DEV_BIN=" + timingEvenerDevBin(t),
+	}
+	if tmpDir != "" {
+		env = append(env, "TMPDIR="+tmpDir)
+	}
+	return append(env, extra...)
+}
 
 // runTimingBudgetCompare drives the runner's comparison half under the CI-strict
 // policy through the --measured fixture seam: the fixture IS the measurement the
@@ -54,7 +110,7 @@ func runTimingBudgetFixture(t *testing.T, measuredPath, budgetPath, dir string, 
 	args := append([]string{timingBudgetScript,
 		"--measured", measuredPath, "--budget", budgetPath, "--no-web"}, flags...)
 	cmd := exec.Command("bash", args...)
-	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}, extraEnv...)
+	cmd.Env = timingScriptEnv(t, tmpDir, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -139,7 +195,7 @@ func runBlessCommand(t *testing.T, budgetJSON string, args ...string) (string, s
 	cmd := exec.Command("bash", append([]string{
 		timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 	}, args...)...)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	cmd.Env = timingScriptEnv(t, tmpDir)
 	out, runErr := cmd.CombinedOutput()
 	got, readErr := os.ReadFile(budget)
 	if readErr != nil {
@@ -186,7 +242,7 @@ func blessFixtureModule(t *testing.T, burn string) (cpu, wall float64) {
 	writeAuditScriptFixture(t, budget, `{"perTestCeilingSeconds":3,"packages":{}}`)
 	cmd := exec.Command("bash", timingBudgetScript, "--budget", budget, "--no-web", "--bless",
 		"--modules", "cmd/evener-dev/testdata/shardfixture")
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN="+burn)
+	cmd.Env = append(os.Environ(), "EVENER_DEV_BIN="+timingEvenerDevBin(t), "GOWORK=off", "GOFLAGS=", "SHARD_FIXTURE_BURN="+burn)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bless over the fixture module: %v\n%s", err, out)
 	}
@@ -329,7 +385,7 @@ func TestTimingBudgetFailsWhenTheMeasuredFileIsMissing(t *testing.T) {
 	missing := filepath.Join(dir, "no-such-measured.tsv")
 	cmd := exec.Command("bash", timingBudgetScript,
 		"--measured", missing, "--budget", budget, "--no-web", "--check", "--strict")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + tmpDir}
+	cmd.Env = timingScriptEnv(t, tmpDir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("a missing measured file must fail --check, not pass silently:\n%s", out)
@@ -1143,6 +1199,49 @@ func TestCheckedInTimingBudgetAcceptsHealthyWebMeasurement(t *testing.T) {
 	out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
 	if err != nil {
 		t.Fatalf("a healthy CI web measurement must pass the strict check:\n%s", out)
+	}
+}
+
+// TestCheckedInTimingBudgetAcceptsTheQualificationPackageLoadedRunnerWall pins
+// #6277's classification of the qualification package's wall row. Its wall time
+// is real harness work, not suite fat: TestRunnerCleanupCancellationFixture
+// drives run-ui-tests.sh's cleanup against a TERM-ignoring fake xcodebuild, so
+// the cleanup's shared three-second TERM-to-KILL wait (30 x sleep 0.1) must
+// genuinely elapse — the stop budget a Mac run reaches when xcodebuild hangs —
+// and the checkout-selector test spawns about thirty real git processes. Green
+// main runs read 4.19-4.82s wall (the twelve most recent green main runs,
+// 43312955907 through 43370996859) against a wall row that was never more than
+// the 2s bless floor, so ordinary runner load — 5.13-5.81s on the runs #6277
+// cites, slowest PR #6274 job 131528736227 at 5.81s — tripped the 2.5x
+// backstop and dropped unrelated PRs from the lane. The wall row carries the
+// slowest green reading (4.82), and this test brackets it there: 5.81s passes
+// only while the row stays above 2.3s, and the 12.04s/12.06s pair around
+// 2.5x of 4.82 pins the row to within a hundredth of the classified value.
+// Deflating the row toward the floor, inflating it, or deleting it — the fail
+// half goes vacuous, because a missing row is warn-only — all red this test.
+func TestCheckedInTimingBudgetAcceptsTheQualificationPackageLoadedRunnerWall(t *testing.T) {
+	const pkg = "primeradiant.com/evener/scripts/native/ios/qualification"
+	for _, tc := range []struct {
+		name    string
+		wall    string
+		wantErr bool
+	}{
+		{"the cited loaded-runner reading passes", "5.81", false},
+		{"a wall at 2.5x of the classified row passes", "12.04", false},
+		{"a wall past 2.5x of the classified row fails", "12.06", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			measured := filepath.Join(dir, "measured.tsv")
+			writeAuditScriptFixture(t, measured, "SUM\t"+pkg+"\t"+tc.wall+"\nCPU\t"+pkg+"\t0.52\n")
+			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+			if tc.wantErr && err == nil {
+				t.Fatalf("a wall %ss past the classified row's 2.5x must fail the backstop (#6277):\n%s", tc.wall, out)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("a wall %ss reading must pass the classified row (#6277):\n%s", tc.wall, out)
+			}
+		})
 	}
 }
 

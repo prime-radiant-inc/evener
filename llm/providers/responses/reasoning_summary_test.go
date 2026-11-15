@@ -11,6 +11,7 @@ import (
 // when the configured summary is "none" — the value is not merely forwarded,
 // it suppresses the field the way an empty value does.
 func TestBuildBody_ReasoningSummaryNoneMeansNoSummary(t *testing.T) {
+	t.Parallel()
 	req := userReq("hi")
 	summaryCaps := func(value string) registry.Resolved {
 		return resolved(func(c *registry.Caps) {

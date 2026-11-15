@@ -318,7 +318,7 @@ test-race:
 ## requires: Deterministic Go analysis; no provider calls.
 ## fails-when: Any module's vet failure is nonzero.
 vet:
-	@for m in $(GO_MODULES); do (cd $$m && go vet ./...) || exit 1; done
+	@go vet $(WORKSPACE_TEST_PATTERNS)
 
 # test-timing-budget ratchets per-package test CPU time against
 # testing-budget.json (kata b6rv): fail at 1.5x the budget, warn at 1.1x, a

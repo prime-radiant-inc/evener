@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -123,7 +124,7 @@ func commitNavigationChange(ctx context.Context, cfg hubcore.WebConfig, navigati
 	}
 	mutation, err := navigation.Refresh(ctx, hint)
 	if err != nil {
-		hubLogfFor(cfg)("navigation receipt for a committed mutation failed: %v", err)
+		hubLogFor(cfg).Info(fmt.Sprintf("navigation receipt for a committed mutation failed: %v", err))
 		return appwire.NavigationMutation{}, appwire.Unavailable(err.Error())
 	}
 	return mutation, nil

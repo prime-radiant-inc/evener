@@ -15,21 +15,25 @@ import (
 	"primeradiant.com/evener/fuzz/oracle"
 )
 
-// egrep_file is one visible file the reference scan knows about: its path
-// relative to the search root and its raw bytes. The reference enumerates these
-// directly (rather than re-walking the tree) so it is an INDEPENDENT oracle for
-// grepNative's walk — if grepNative wrongly surfaced a hidden file, a skipped
-// binary, or a glob-filtered file, its output would carry a line the reference
-// never produced and the equality check would fire.
+// egrep_file is one file the reference scan knows about: its path relative to
+// the search root, its raw bytes, and whether it is dot-prefixed. The
+// reference enumerates these directly (rather than re-walking the tree) so it
+// is an INDEPENDENT oracle for grepNative's walk — if grepNative wrongly
+// surfaced a hidden file no glob selected, a skipped binary, or a
+// glob-filtered file, its output would carry a line the reference never
+// produced and the equality check would fire.
 type egrep_file struct {
 	rel     string
 	content []byte
+	hidden  bool
 }
 
 // egrep_scan re-derives grepNative's per-line matching from first principles for
-// the three output modes, over the fixed set of visible files in the fixed walk
-// order (root files lexically, then the visible subdir). It mirrors exactly the
-// production predicates — binary (NUL) skip, glob match on the base name with
+// the three output modes, over the fixed set of participating files in the
+// fixed walk order (root files lexically, then the visible subdir). It mirrors
+// exactly the production predicates — the #6201 override (a hidden file joins
+// only when the glob filter selects it; without a filter it is excluded),
+// binary (NUL) skip, glob match on the base name with
 // filepath.Match's error swallowed to "no match", raw split on '\n' with no CRLF
 // normalization, regex per line — but shares no code with grepNative.
 //
@@ -40,6 +44,9 @@ type egrep_file struct {
 func egrep_scan(files []egrep_file, re *regexp.Regexp, globFilter string) (content []string, counts map[string]int, withMatches []string) {
 	counts = map[string]int{}
 	for _, f := range files {
+		if f.hidden && globFilter == "" {
+			continue // the #6201 default: a hidden file is excluded without an explicit filter
+		}
 		if bytes.IndexByte(f.content, 0) >= 0 {
 			continue // binary skip
 		}
@@ -101,18 +108,20 @@ func egrep_effMax(maxResults int) int {
 //
 // The tree fixes a layout that exercises every walk branch: two root files with
 // distinct extensions (glob + multi-file ordering), a visible subdir file
-// (recursion + relPath joining), a hidden file and a hidden dir (both must be
-// skipped). Contents A/B/C are fuzzed; the hidden entries are constant.
+// (recursion + relPath joining), a hidden file (excluded by default, surfaced
+// when the glob filter selects it — the #6201 override), and a hidden dir
+// (always skipped). Contents A/B/C are fuzzed; the hidden entries are constant.
 //
 // Oracles:
 //   - NEVER PANIC (any panic fails the test).
 //   - REGEX-ERROR PARITY: grepNative errors iff the (flag-prefixed) pattern
 //     fails to compile; on error it yields no output.
 //   - REFERENCE EQUALITY (content mode, cap lifted): the output equals, byte for
-//     byte and in order, an independent line scan of the visible, non-binary,
-//     glob-passing files — proving matches are real regex hits AT their claimed
-//     file:line, that none are missing, and that hidden/binary/filtered files are
-//     correctly excluded.
+//     byte and in order, an independent line scan of the participating,
+//     non-binary, glob-passing files — proving matches are real regex hits AT
+//     their claimed file:line, that none are missing, and that the hidden file
+//     joins exactly when the glob selects it while binary/filtered files stay
+//     excluded.
 //   - CAP CONSISTENCY: with the fuzzed (possibly small/zero/negative) maxResults,
 //     content-mode output equals the first effMax lines of the uncapped output —
 //     the exact cross-file running-cap contract.
@@ -127,6 +136,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 	f.Add("alpha\nbeta", "gamma", "delta", "^a", uint8(0b0000_1000))      // glob bits
 	f.Add("has\x00nul\nvisible", "clean", "more", "vis", uint8(0))        // binary skip on file A
 	f.Add("", "", "", "", uint8(0))
+	f.Add("", "", "", "x", uint8(0b0000_1000))        // glob "*" surfaces the hidden file (#6201)
 	f.Add("aaa", "bbb", "ccc", "(unclosed", uint8(0)) // invalid regex
 
 	f.Fuzz(func(t *testing.T, contentA, contentB, contentC, pattern string, opts uint8) {
@@ -158,8 +168,14 @@ func FuzzEgrepGrepNative(f *testing.F) {
 				t.Fatalf("write %s: %v", abs, err)
 			}
 		}
-		// Entries that MUST be skipped: a hidden file and a hidden directory.
-		mustSkip(t, filepath.Join(root, ".hidden.txt"), []byte(pattern+"\nshadow"))
+		// The hidden file: excluded by default, and its content always matches the
+		// pattern, so a wrongly-surfaced line (glob absent) or a wrongly-missing
+		// one (glob selecting it) breaks reference equality either way.
+		hiddenFile := egrep_file{rel: ".hidden.txt", content: []byte(pattern + "\nshadow"), hidden: true}
+		if err := os.WriteFile(filepath.Join(root, hiddenFile.rel), hiddenFile.content, 0o644); err != nil {
+			t.Fatalf("write %s: %v", hiddenFile.rel, err)
+		}
+		// A hidden directory is always skipped, however the filter is spelled.
 		mustSkip(t, filepath.Join(root, ".git", "config"), []byte(pattern))
 
 		env := NewLocalExecutionEnvironment(root)
@@ -180,7 +196,8 @@ func FuzzEgrepGrepNative(f *testing.F) {
 			return // invalid regex: nothing more to check
 		}
 
-		refContent, refCounts, refFiles := egrep_scan(visible, refRe, globFilter)
+		// Walk order: the hidden root file sorts before the visible ones.
+		refContent, refCounts, refFiles := egrep_scan(append([]egrep_file{hiddenFile}, visible...), refRe, globFilter)
 
 		// Reference equality (content mode, cap lifted).
 		gotFull, err := env.grepNative(context.Background(), pattern, root, globFilter, caseInsensitive, 1<<20, "content")
@@ -220,7 +237,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		if gotCapped != "" {
 			entries, _ := searchresult.Split(gotCapped)
 			for ln := range strings.SplitSeq(entries, "\n") {
-				egrep_verifyMatchLine(t, ln, refRe, visible)
+				egrep_verifyMatchLine(t, ln, refRe, append([]egrep_file{hiddenFile}, visible...))
 			}
 		}
 
@@ -250,8 +267,9 @@ func FuzzEgrepGrepNative(f *testing.F) {
 	})
 }
 
-// mustSkip writes a file grepNative must never surface (a hidden file or a file
-// under a hidden directory), creating parents as needed.
+// mustSkip writes a file under a hidden directory — a path grepNative must
+// never surface, since hidden directories stay pruned however the filter is
+// spelled (#6201) — creating parents as needed.
 func mustSkip(t *testing.T, abs string, content []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {

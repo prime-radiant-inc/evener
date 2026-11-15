@@ -7,6 +7,7 @@ import (
 )
 
 func TestConfiguredAdapterTransportShortestHeaderTimeout(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name                          string
 		request, idle, existing, want time.Duration

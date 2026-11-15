@@ -3378,7 +3378,7 @@ func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotification
 	)
 	// Armed in the wake set before the turn; its durable entry does not exist
 	// yet, so no request of the user turn can present it.
-	root.armRootDelegateAttention(attentionID)
+	root.armRootDelegateAttentions([]string{attentionID})
 	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
 		t.Fatalf("process user turn: %v", err)
 	}
@@ -4285,15 +4285,17 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 // fixture leaves without a resident runtime (unreachable) or gives a stub
 // runtime, so a test can choose whether replay could re-plan the receipts.
 type strandedStopOptions struct {
-	updates        int
-	retryable      bool
-	inline         bool
-	ownerReachable bool
-	otherPending   bool
-	otherWaiter    bool
-	staleReceipt   bool
-	topLevel       bool
-	realRoot       bool
+	updates             int
+	retryable           bool
+	inline              bool
+	callerCommitted     bool
+	ownerReachable      bool
+	pendingInlineCommit bool
+	otherPending        bool
+	otherWaiter         bool
+	staleReceipt        bool
+	topLevel            bool
+	realRoot            bool
 }
 
 type strandedStopFixture struct {
@@ -4383,16 +4385,33 @@ func newStrandedStopFixture(t *testing.T, opts strandedStopOptions) *strandedSto
 		c.nextToken++
 		token := delegateDeliveryToken{processID: c.nextToken, deliveryID: deliveryID}
 		c.deliveries[token.processID] = &delegateDeliveryAdmission{
-			token:      token,
-			delegateID: "dlg_target",
-			ownerID:    ownerID,
-			claim:      delegateDeliveryClaimToken{processID: token.processID, deliveryID: deliveryID},
-			retryable:  opts.retryable,
-			inline:     opts.inline,
+			token:           token,
+			delegateID:      "dlg_target",
+			ownerID:         ownerID,
+			claim:           delegateDeliveryClaimToken{processID: token.processID, deliveryID: deliveryID},
+			retryable:       opts.retryable,
+			inline:          opts.inline,
+			callerCommitted: opts.callerCommitted,
 		}
 		deliveries = append(deliveries, token)
 	}
 	c.mu.Unlock()
+
+	if opts.pendingInlineCommit {
+		ownerSession := owner
+		if opts.topLevel {
+			ownerSession = fixture.root
+		}
+		if ownerSession != nil {
+			for _, token := range deliveries {
+				ownerSession.queueDelegateDeliveryCommit("test-inline-call", &delegateToolResultCommit{
+					controller: c,
+					token:      token,
+					deliveryID: token.deliveryID,
+				})
+			}
+		}
+	}
 
 	// A nested target's parent owns the stop. Leaving dlg_owner's runtime nil
 	// keeps its deliveries unreachable while its live binding still authorizes
@@ -4573,6 +4592,91 @@ func TestDelegateAttention_PrelaunchStopRetriesStrandedDeliveryAck(t *testing.T)
 	}
 }
 
+// Several retryable admissions under one owner are acknowledged as one batch:
+// each touched delegate is snapshotted once and its receiver woken once, not
+// once per receipt.
+func TestDelegateAttention_PrelaunchStopBatchesRetryAcknowledgments(t *testing.T) {
+	const receipts = 3
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: receipts, retryable: true, ownerReachable: true})
+	c := f.controller
+	c.mu.Lock()
+	plans, wakes, err := c.acknowledgeRetryableStopDeliveriesLocked(c.stop)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("acknowledge retryable stop deliveries: %v", err)
+	}
+	acknowledged := f.acknowledged(t)
+	for _, delivery := range f.deliveries {
+		if !acknowledged[delivery.deliveryID] {
+			t.Fatalf("delivery %q has no durable acknowledgment", delivery.deliveryID)
+		}
+	}
+	snapshots := make(map[string]int)
+	for _, plan := range plans.updates {
+		for _, row := range plan.rows {
+			snapshots[row.id]++
+		}
+	}
+	for id, count := range snapshots {
+		if count != 1 {
+			t.Fatalf("delegate %q snapshotted %d times, want once", id, count)
+		}
+	}
+	if len(snapshots) > 2 {
+		t.Fatalf("snapshotted %v, want only the owner and target", snapshots)
+	}
+	if len(wakes) != 1 {
+		t.Fatalf("wakes = %d, want one for the owner receiver", len(wakes))
+	}
+	if err := c.wakeDeliveryReceiver(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
+		t.Fatalf("wake grouped receiver: %v", err)
+	}
+	if got := atomic.LoadInt32(f.notifies); got != 1 {
+		t.Fatalf("owner notify count = %d, want 1 for the batch", got)
+	}
+}
+
+// The root receiver is armed once for every attention ID the batch
+// acknowledged, not once per receipt.
+func TestDelegateAttention_PrelaunchStopBatchesRootWakeIDs(t *testing.T) {
+	const receipts = 3
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: receipts, retryable: true, topLevel: true, realRoot: true})
+	for _, delivery := range f.deliveries {
+		attentionID := delegateAttentionID(delivery.deliveryID)
+		content := `<delegate-notification delegate_id="dlg_target">report</delegate-notification>`
+		if appended, err := f.root.appendDelegateNotificationDurably(attentionID, content); err != nil || !appended {
+			t.Fatalf("append root attention %q = (%t, %v), want true", attentionID, appended, err)
+		}
+	}
+	var notifies atomic.Int32
+	f.root.notifyFunc = func() { notifies.Add(1) }
+	c := f.controller
+	c.mu.Lock()
+	_, wakes, err := c.acknowledgeRetryableStopDeliveriesLocked(c.stop)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("acknowledge retryable stop deliveries: %v", err)
+	}
+	if len(wakes) != 1 {
+		t.Fatalf("wakes = %d, want one for the root receiver", len(wakes))
+	}
+	if len(wakes[0].attentionIDs) != receipts {
+		t.Fatalf("root wake carries %d attention IDs, want %d", len(wakes[0].attentionIDs), receipts)
+	}
+	if err := c.wakeDeliveryReceiver(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
+		t.Fatalf("root wake: %v", err)
+	}
+	if got := notifies.Load(); got != 1 {
+		t.Fatalf("root notify count = %d, want 1 for the batch", got)
+	}
+	f.root.attentionMu.Lock()
+	armed := len(f.root.rootAttentionWakeIDs)
+	f.root.attentionMu.Unlock()
+	if armed != receipts {
+		t.Fatalf("root armed %d attention IDs, want %d", armed, receipts)
+	}
+}
+
 // A non-retryable admission is still in flight: the stop must keep waiting for
 // its executor rather than acknowledging it itself.
 func TestDelegateAttention_PrelaunchStopWaitsForInFlightDelivery(t *testing.T) {
@@ -4602,7 +4706,7 @@ func TestDelegateAttention_PrelaunchStopWaitsForInFlightDelivery(t *testing.T) {
 // A retryable inline admission belongs to the tool reply carrying its commit;
 // the stop must leave it to that reply.
 func TestDelegateAttention_PrelaunchStopLeavesInlineDeliveryToReply(t *testing.T) {
-	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, retryable: true, inline: true})
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, retryable: true, inline: true, ownerReachable: true, pendingInlineCommit: true})
 	if err := f.drainUntilParked(t); !errors.Is(err, context.Canceled) {
 		t.Fatalf("stop with an inline delivery = %v, want the drain to keep waiting for the tool reply", err)
 	}
@@ -4618,6 +4722,149 @@ func TestDelegateAttention_PrelaunchStopLeavesInlineDeliveryToReply(t *testing.T
 	}
 	if f.acknowledged(t)[f.deliveries[0].deliveryID] {
 		t.Fatal("the stop acknowledged an inline delivery")
+	}
+}
+
+// A commit taken into a live tool round still owns its inline receipt. The
+// stop must wait for that round, not abandon the delivery as lost; when the
+// round completes, the acknowledgment lands and the stop finishes.
+func TestDelegateAttention_PrelaunchStopWaitsForTakenInlineCommit(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{
+		updates: 1, inline: true, ownerReachable: true, pendingInlineCommit: true, realRoot: true,
+	})
+	c := f.controller
+	c.mu.Lock()
+	owner := c.live["dlg_owner"].runtime
+	c.mu.Unlock()
+	if owner == nil {
+		t.Fatal("fixture owner runtime is missing")
+	}
+	commits := owner.takeDelegateDeliveryCommits([]llm.ToolCallData{{ID: "test-inline-call"}})
+	if len(commits) != 1 {
+		t.Fatalf("taken inline commits = %d, want 1", len(commits))
+	}
+	if err := f.drainUntilParked(t); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop with a taken inline commit = %v, want the drain to keep waiting", err)
+	}
+	if channelClosed(f.stop.done) {
+		t.Fatal("stop completed while its inline commit was still in the tool round")
+	}
+	if _, err := commits[0].commit.Complete(true); err != nil {
+		t.Fatalf("complete the taken inline commit: %v", err)
+	}
+	if err := f.controller.drainStop(context.Background(), f.controller.stopForResult(f.stop), nil); err != nil {
+		t.Fatalf("stop after the taken inline commit was acknowledged = %v", err)
+	}
+	if !channelClosed(f.stop.done) {
+		t.Fatal("stop did not complete after the taken inline commit was acknowledged")
+	}
+	if !f.acknowledged(t)[f.deliveries[0].deliveryID] {
+		t.Fatalf("taken inline delivery %q has no durable acknowledgment", f.deliveries[0].deliveryID)
+	}
+}
+
+// An inline receipt whose owner can no longer answer it -- the owning session
+// is gone and no tool reply remains -- cannot be completed. The stop abandons
+// it and records the lost result, so the stop can finish instead of waiting
+// forever.
+func TestDelegateAttention_PrelaunchStopAbandonsInlineReceiptWithLostCommit(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
+	f.root.events = make(chan events.SessionEvent, 4)
+	if err := f.drain(t, 2*time.Second); err != nil {
+		t.Fatalf("stop with a lost inline commit = %v, want the abandoned receipt to settle the stop", err)
+	}
+	if !channelClosed(f.stop.done) {
+		t.Fatal("stop did not complete after abandoning the inline receipt")
+	}
+	c := f.controller
+	c.mu.Lock()
+	receipts := len(c.deliveries)
+	c.mu.Unlock()
+	if receipts != 0 {
+		t.Fatalf("delivery admissions after abandoning the inline receipt = %d, want 0", receipts)
+	}
+	stored, err := delegatestore.ReadEvents(f.storePath)
+	if err != nil {
+		t.Fatalf("read delegate events: %v", err)
+	}
+	stopCompleted := false
+	for _, event := range stored {
+		if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
+			stopCompleted = true
+		}
+		if event.Kind == delegatestore.EventDelegateDeliveryAcknowledged && event.DeliveryAcknowledged != nil &&
+			event.DeliveryAcknowledged.DeliveryID == f.deliveries[0].deliveryID && !stopCompleted {
+			t.Fatalf("the inline receipt %q was acknowledged before the stop completed", f.deliveries[0].deliveryID)
+		}
+	}
+	found := false
+	for _, warning := range drainSessionWarnings(f.root) {
+		if warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == "dlg_target" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the abandoned inline receipt produced no lost-result warning")
+	}
+}
+
+// A retryable inline receipt's result is already in the caller's tool round;
+// only its store acknowledgment failed. The stop retries that acknowledgment
+// rather than reporting a lost result or replaying the pending delivery.
+func TestDelegateAttention_PrelaunchStopRetriesInlineAcknowledgment(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, retryable: true, inline: true, topLevel: true, realRoot: true})
+	f.root.events = make(chan events.SessionEvent, 4)
+	if err := f.drain(t, 2*time.Second); err != nil {
+		t.Fatalf("stop with a retryable inline delivery = %v, want the retried acknowledgment to settle the stop", err)
+	}
+	if !channelClosed(f.stop.done) {
+		t.Fatal("stop did not complete after retrying the inline acknowledgment")
+	}
+	c := f.controller
+	c.mu.Lock()
+	receipts := len(c.deliveries)
+	c.mu.Unlock()
+	if receipts != 0 {
+		t.Fatalf("delivery admissions after retrying the inline acknowledgment = %d, want 0", receipts)
+	}
+	if !f.acknowledged(t)[f.deliveries[0].deliveryID] {
+		t.Fatalf("retryable inline delivery %q has no durable acknowledgment", f.deliveries[0].deliveryID)
+	}
+	for _, warning := range drainSessionWarnings(f.root) {
+		if warning.Code == events.WarningCodeDelegateDeliveryResultLost {
+			t.Fatalf("retryable inline delivery produced a lost-result warning: %#v", warning)
+		}
+	}
+}
+
+// A caller-committed inline receipt already persisted its result in the
+// caller's tool round. Its store acknowledgment is still owed, so the stop
+// retries it like any other receipt instead of reporting a lost result.
+func TestDelegateAttention_PrelaunchStopAcknowledgesCallerCommittedInlineDelivery(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{
+		updates: 1, retryable: true, inline: true, callerCommitted: true, topLevel: true, realRoot: true,
+	})
+	f.root.events = make(chan events.SessionEvent, 4)
+	if err := f.drain(t, 2*time.Second); err != nil {
+		t.Fatalf("stop with a caller-committed inline delivery = %v, want the retried acknowledgment to settle the stop", err)
+	}
+	if !channelClosed(f.stop.done) {
+		t.Fatal("stop did not complete after retrying the caller-committed inline receipt")
+	}
+	c := f.controller
+	c.mu.Lock()
+	receipts := len(c.deliveries)
+	c.mu.Unlock()
+	if receipts != 0 {
+		t.Fatalf("delivery admissions after acknowledging the caller-committed inline receipt = %d, want 0", receipts)
+	}
+	if !f.acknowledged(t)[f.deliveries[0].deliveryID] {
+		t.Fatalf("caller-committed inline delivery %q has no durable acknowledgment", f.deliveries[0].deliveryID)
+	}
+	for _, warning := range drainSessionWarnings(f.root) {
+		if warning.Code == events.WarningCodeDelegateDeliveryResultLost {
+			t.Fatalf("caller-committed inline delivery produced a lost-result warning: %#v", warning)
+		}
 	}
 }
 
@@ -4899,17 +5146,17 @@ func TestDelegateAttention_WakeDeliveryReceiverBranches(t *testing.T) {
 	c.mu.Lock()
 	c.rootRuntime = root
 	c.mu.Unlock()
-	if err := c.wakeDeliveryReceiver(root, "delegate:missing"); err != nil {
+	if err := c.wakeDeliveryReceiver(root, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("root receiver wake: %v", err)
 	}
-	if err := c.wakeDeliveryReceiver(coldDelegateDeliveryReceiver{}, "delegate:missing"); err != nil {
+	if err := c.wakeDeliveryReceiver(coldDelegateDeliveryReceiver{}, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("cold receiver wake: %v", err)
 	}
 	if got := notified.Load(); got != 1 {
 		t.Fatalf("root wake count = %d, want 1 from the cold receiver", got)
 	}
 	var typedNil *Session
-	if err := c.wakeDeliveryReceiver(typedNil, "delegate:missing"); err != nil {
+	if err := c.wakeDeliveryReceiver(typedNil, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("typed-nil root wake: %v", err)
 	}
 }

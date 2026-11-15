@@ -76,6 +76,7 @@ func sharedReferences(path string, a, b reflect.Value) []string {
 }
 
 func TestCapsCloneKeepsEveryFieldAndSharesNothing(t *testing.T) {
+	t.Parallel()
 	var caps Caps
 	fillEveryField(reflect.ValueOf(&caps).Elem())
 	clone := cloneCaps(caps)
@@ -88,6 +89,7 @@ func TestCapsCloneKeepsEveryFieldAndSharesNothing(t *testing.T) {
 }
 
 func TestCapsMergeKeepsEveryField(t *testing.T) {
+	t.Parallel()
 	var src, dst Caps
 	fillEveryField(reflect.ValueOf(&src).Elem())
 	mergeCaps(&dst, src, "test", nil)
@@ -97,6 +99,7 @@ func TestCapsMergeKeepsEveryField(t *testing.T) {
 }
 
 func TestTransportCloneKeepsEveryField(t *testing.T) {
+	t.Parallel()
 	var transport Transport
 	fillEveryField(reflect.ValueOf(&transport).Elem())
 	clone := cloneTransport(transport)
@@ -109,6 +112,7 @@ func TestTransportCloneKeepsEveryField(t *testing.T) {
 }
 
 func TestTransportMergeKeepsEveryField(t *testing.T) {
+	t.Parallel()
 	var src, dst Transport
 	fillEveryField(reflect.ValueOf(&src).Elem())
 	mergeTransport(&dst, src)

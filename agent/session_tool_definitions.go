@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 
 func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
 	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
+	canonical = ensureRecoveryReader(canonical, s.reg)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -113,6 +115,50 @@ func (s *Session) sessionShellDefinition() llm.ToolDefinition {
 	return tool.DefShellWithDetach(detachSupportedBy(s.env))
 }
 
+// sessionReadFileDefinition returns the read_file tool definition tailored to
+// this session's active vision regime (Jesse's ruling on #6190).
+//
+// Regime 1 — Neither images nor PDFs run the side-channel (e.g. visionOff is
+// true, or AgentName == "explorer", or VisionModel == "" and the active profile
+// on the client's registry sees both "image/png" and "application/pdf" inline):
+// vision_prompt is omitted from advertised properties and description.
+//
+// Regime 2 — Images are native inline, while PDFs use the side-channel (VisionModel
+// == "" and active profile sees "image/png" inline but not "application/pdf" inline):
+// vision_prompt is kept and scoped to PDFs in description and parameter text.
+//
+// Regime 3 — Side-channel active for both images and PDFs (VisionModel != "" and
+// not off, or active profile does not see "image/png" inline): base DefReadFile().
+//
+// Callers hold s.mu or run at single-threaded init.
+func (s *Session) sessionReadFileDefinition() llm.ToolDefinition {
+	if s == nil {
+		return tool.DefReadFile()
+	}
+	if s.cfg.AgentName == "explorer" {
+		return tool.DefReadFileNativeVision()
+	}
+	visionSetting := strings.TrimSpace(s.cfg.VisionModel)
+	if isVisionDisabledSetting(visionSetting) {
+		return tool.DefReadFileNativeVision()
+	}
+	if visionSetting != "" {
+		return tool.DefReadFile()
+	}
+	if s.profile == nil || s.client == nil || s.profile.Registry() != s.client.Registry() {
+		return tool.DefReadFile()
+	}
+	seesImages := s.profile.SeesToolResultMedia("image/png")
+	seesPDFs := s.profile.SeesToolResultMedia("application/pdf")
+	if seesImages && seesPDFs {
+		return tool.DefReadFileNativeVision()
+	}
+	if seesImages && !seesPDFs {
+		return tool.DefReadFilePDFVisionOnly()
+	}
+	return tool.DefReadFile()
+}
+
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
 // canonical→provider) and adds the shared "intent" parameter to work tools.
@@ -160,6 +206,10 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 			defs[i] = tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
 		case "shell":
 			defs[i] = s.sessionShellDefinition()
+		case "read_file":
+			defs[i] = s.sessionReadFileDefinition()
+		case "memory_read":
+			defs[i] = tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read")
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
@@ -170,17 +220,28 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
+	if s == nil || s.reg == nil {
+		if s != nil {
+			s.cachedToolDefs = nil
+		}
+		return
+	}
 	s.composeHubRegistry()
 	registered := s.reg.RegisteredNames()
 
 	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
 	// keyed by canonical names. Each registered profile tool is advertised in its
 	// provider-visible wire form (provider-specific rename + intent param).
-	nameMap := s.profile.ToolNameMap() // canonical → provider, may be nil
+	var nameMap map[string]string // canonical → provider, may be nil
+	var profileDefs []llm.ToolDefinition
+	if s.profile != nil {
+		nameMap = s.profile.ToolNameMap()
+		profileDefs = s.profile.ToolDefinitions()
+	}
 
 	var defs []llm.ToolDefinition
 	included := make(map[string]bool)
-	for _, td := range s.profile.ToolDefinitions() {
+	for _, td := range profileDefs {
 		if registered[td.Name] {
 			// Manager composition already owns both the ordinary and hub branches.
 			// Keep its parameters as well as its description on provider requests.
@@ -199,10 +260,35 @@ func (s *Session) rebuildToolDefsCache() {
 						delete(props, "delegation_allowance")
 					}
 				}
+				if !s.hubEnabled && s.delegationAllowance > 0 && s.reg != nil && s.reg.Get("delegate") != nil {
+					regTool := s.reg.Get("delegate")
+					regTool.Definition = td
+					// The registry executor validates calls against regTool.Schema.
+					// Remove the static enum from regTool's parameters so tests and runtime plugins
+					// can add agents dynamically to s.pluginAgents without failing schema validation.
+					if paramsJSON, err := json.Marshal(td.Parameters); err == nil {
+						var regParams map[string]any
+						if err := json.Unmarshal(paramsJSON, &regParams); err == nil {
+							if props, ok := regParams["properties"].(map[string]any); ok {
+								if agentTypeProp, ok := props["agent_type"].(map[string]any); ok {
+									delete(agentTypeProp, "enum")
+								}
+							}
+							regTool.Definition.Parameters = regParams
+						}
+					}
+					regTool.Schema = nil
+					_ = s.reg.Register(*regTool)
+				}
 			}
-			if td.Name == "shell" {
+			switch td.Name {
+			case "shell":
 				td = s.sessionShellDefinition()
-			} else {
+			case "read_file":
+				td = s.sessionReadFileDefinition()
+			case "memory_read":
+				td = tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read")
+			default:
 				// Registration builds descriptions that name the session's result
 				// tool; the profile's copy names the default.
 				td.Description = s.reg.Get(td.Name).Definition.Description
@@ -231,11 +317,19 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
-		if td.Name == "shell" {
+		if td.Name == "update_goal" && !s.hasGoalConfigured() {
+			continue
+		}
+		switch td.Name {
+		case "shell":
 			// A profile that omits shell still gets the environment-aware
 			// schema here rather than the registry's fully capable copy
 			// (issue #4422).
 			td = s.sessionShellDefinition()
+		case "read_file":
+			td = s.sessionReadFileDefinition()
+		case "memory_read":
+			td = tool.MemoryDefinition(s.sessionReadFileDefinition(), "memory_read")
 		}
 		if s.hubEnabled && (td.Name == "job_list" || td.Name == "job_status") {
 			if mapped, ok := nameMap[td.Name]; ok {
@@ -278,4 +372,12 @@ func normalizeRegistryToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
 		}
 	}
 	return td
+}
+
+func (s *Session) hasGoalConfigured() bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.getOrCreateGoalStore().Snapshot()
+	return ok
 }

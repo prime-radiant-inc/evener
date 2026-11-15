@@ -6,7 +6,7 @@ import type { NavigationProjectSummary, SearchResponse, SearchResult } from "@ev
 import { attentionState, groupSearchResults, type GroupedSearchRow } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { reconnectDelay } from "../hubConnection";
-import type { BoardState } from "./attention";
+import type { BoardState } from "@evener/appwire-client/state/navigation";
 
 export const SEARCH_DEBOUNCE = 250;
 

@@ -581,6 +581,64 @@ func TestModelListToolReturnsBoundedEmptyTerminalPage(t *testing.T) {
 	}
 }
 
+// TestModelListFailedProviderRecoversThroughDelegateOverride pins the recovery
+// path model_list advertises for a provider whose startup enumeration failed:
+// paging keeps reporting the frozen failure, while a delegate model override
+// naming that provider is checked against its live listing at spawn, so the
+// provider's models are usable again once the problem clears.
+func TestModelListFailedProviderRecoversThroughDelegateOverride(t *testing.T) {
+	t.Parallel()
+	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.4"}}}
+	selected.name = "work"
+	recovering := &modelAvailabilityAdapter{listErr: errors.New("enumeration unavailable")}
+	recovering.name = "work2"
+	client := llm.NewClient()
+	client.Register(selected)
+	client.Register(recovering)
+	sess, err := NewSession(client, namedOpenAIInstanceProfile("work", "gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		ResolveProfile: instanceTestResolver,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.reg.Get("model_list") == nil {
+		t.Fatal("model_list is not registered for an incomplete snapshot")
+	}
+	assertFrozenFailure := func(when string) {
+		t.Helper()
+		page := executeModelListPage(t, sess, "", modelavailability.DefaultPageMaxCount, modelavailability.DefaultPageMaxBytes)
+		if got := page.Status["work2"].Kind; got != modelavailability.StatusFailure {
+			t.Fatalf("%s: model_list status for work2 = %q, want %q", when, got, modelavailability.StatusFailure)
+		}
+		if page.Complete || !slices.Equal(page.Choices, []string{"work/gpt-5.4"}) {
+			t.Fatalf("%s: model_list page = %+v, want the healthy provider's choice in an incomplete snapshot", when, page)
+		}
+	}
+	assertFrozenFailure("before recovery")
+
+	// The provider recovers after startup; the session is not restarted.
+	recovering.listErr = nil
+	recovering.models = []registry.Model{{ID: "gpt-5.2"}}
+	listingsBefore := recovering.calls.Load()
+
+	selection, err := sess.selectSubagentModel(context.Background(), "work2/gpt-5.2", "")
+	if err != nil {
+		t.Fatalf("delegate override for the recovered provider: %v", err)
+	}
+	if got := selection.profile.ID() + "/" + selection.profile.Model(); got != "work2/gpt-5.2" {
+		t.Fatalf("delegate override resolved to %q, want work2/gpt-5.2", got)
+	}
+	if recovering.calls.Load() == listingsBefore {
+		t.Fatal("delegate override did not consult the recovered provider's live listing")
+	}
+	if _, err := sess.selectSubagentModel(context.Background(), "work2/not-offered", ""); err == nil {
+		t.Fatal("delegate override accepted a model the recovered provider's live listing does not offer")
+	}
+	assertFrozenFailure("after recovery")
+}
+
 func executeModelListPage(t *testing.T, sess *Session, cursor string, maxCount, maxBytes int) modelavailability.Page {
 	t.Helper()
 	args, err := json.Marshal(map[string]any{

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log/slog"
 	"math"
 	"reflect"
 	"slices"
@@ -96,9 +97,9 @@ type navigationServiceConfig struct {
 	NewTimer     func(time.Duration) navigationTimer
 	BuildTimeout time.Duration
 	RetryAfter   time.Duration
-	// Logf receives one line per slow or periodic build and per failed
+	// Log receives one line per slow or periodic build and per failed
 	// build, timed out or not. Nil disables them.
-	Logf func(format string, args ...any)
+	Log *slog.Logger
 	// historyEntries and historyBytes override the default delta-history
 	// retention. Production leaves both zero for the full default budget;
 	// tests set them to force eviction with small fixtures.
@@ -268,7 +269,7 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 		now:              now,
 		newTimer:         newTimer,
 		buildTimeout:     cfg.BuildTimeout,
-		statsLog:         navigationBuildStatsLog{logf: cfg.Logf, slow: cfg.statsSlow, lastLogged: now()},
+		statsLog:         navigationBuildStatsLog{log: cfg.Log, slow: cfg.statsSlow, lastLogged: now()},
 		retryAfter:       cfg.RetryAfter,
 		history:          newNavigationHistory(historyEntries, historyBytes),
 		subagentParent:   cfg.SubagentParent,

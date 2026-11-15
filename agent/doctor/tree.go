@@ -1,12 +1,12 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
-	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -56,12 +56,12 @@ func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, dep
 	}
 	visited[paths.SessionID] = true
 
-	events, err := jobstore.ReadEvents(paths.JobsPath)
+	failures, err := legacyDelegateFailuresBounded(context.Background(), paths.JobsPath)
 	if err != nil {
 		node.Note = "jobs unreadable: " + err.Error()
 		return node
 	}
-	node.Failures = legacyDelegateFailures(events)
+	node.Failures = failures
 	_, stable, diagnostics, err := delegates.get(paths)
 	if err != nil {
 		node.Note = "delegates unreadable: " + err.Error()

@@ -16,6 +16,7 @@ import (
 // into apilog.Usage. They must remain separate fields -- neither folded into
 // the other, into cache reads, nor into uncached input.
 func TestBuildAPIAttemptRecordPreservesDisjointCacheWriteTiers(t *testing.T) {
+	t.Parallel()
 	fiveMinute, oneHour := 44, 17
 	startedAt := time.Unix(30, 0).UTC()
 	record := buildAPIAttemptRecord("ag_cache_write_tiers", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{

@@ -2,6 +2,7 @@ import { forwardRef, type HTMLAttributes, type ReactNode, type Ref } from "react
 import { isAriaRefusal, refuseClick } from "../button";
 import { Chevron } from "../chevron";
 import { requireClass } from "../internal/requireClass";
+import selectableStyles from "../internal/selectableRow.module.css";
 import styles from "./listrow.module.css";
 
 /** collection is design-system.md §10's collection row: a framed surface row
@@ -52,7 +53,9 @@ export type ListRowProps = InteractiveListRowProps | ReadOnlyListRowProps;
 const CLASS = {
   row: requireClass(styles.row, "listrow.module.css", "row"),
   withLeading: requireClass(styles.withLeading, "listrow.module.css", "withLeading"),
-  interactive: requireClass(styles.interactive, "listrow.module.css", "interactive"),
+  // The row's button is where aria-current lands, so it is the element the
+  // shared selectable-row recipe lifts when the row is the current one.
+  interactive: `${requireClass(styles.interactive, "listrow.module.css", "interactive")} ${requireClass(selectableStyles.selectableRow, "selectableRow.module.css", "selectableRow")}`,
   leading: requireClass(styles.leading, "listrow.module.css", "leading"),
   heading: requireClass(styles.heading, "listrow.module.css", "heading"),
   label: requireClass(styles.label, "listrow.module.css", "label"),
@@ -79,6 +82,10 @@ const VARIANT_CLASS: Record<ListRowVariant, string> = {
  * chevron. Without `onSelect` the row is a passive <div> that may carry one
  * trailing `action`. Wrapping rows in <ul>/<li> and spacing them is the
  * caller's layout.
+ *
+ * An interactive row that carries `aria-current` is the selected one - "you
+ * are here" in a navigation list - and lifts into the raised pill the shared
+ * selectable-row recipe draws; its hover wash stays off while it is current.
  *
  * Forwards its ref to the row's focusable control when it has one - the
  * whole-row button, or the split row's main button - because that is what a

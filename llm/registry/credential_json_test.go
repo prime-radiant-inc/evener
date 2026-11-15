@@ -14,6 +14,7 @@ import (
 )
 
 func TestCheckCredentialJSON(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		raw  string
@@ -197,6 +198,7 @@ func TestCheckCredentialJSON(t *testing.T) {
 }
 
 func TestCredentialJSONType(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		raw  string
@@ -223,6 +225,7 @@ func TestCredentialJSONType(t *testing.T) {
 // anything in those fields, so the message shows enough of the value to
 // identify it and no more.
 func TestCheckCredentialJSONBoundsWhatItEchoes(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("S", 400)
 	for _, tt := range []struct {
 		name, raw string
@@ -262,6 +265,7 @@ func TestCheckCredentialJSONBoundsWhatItEchoes(t *testing.T) {
 // may carry control characters raw, C1 among them, which a terminal reads as
 // commands. None survives into the message.
 func TestCheckCredentialJSONEchoesNothingATerminalWouldObey(t *testing.T) {
+	t.Parallel()
 	// U+009B is CSI: a terminal treats it as the start of a control sequence.
 	// Raw in a JSON string it is legal, since JSON only requires escaping
 	// below U+0020.

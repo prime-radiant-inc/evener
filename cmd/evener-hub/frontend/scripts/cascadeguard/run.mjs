@@ -522,9 +522,19 @@ async function nativePositioningInterruption(input) {
       const target = await wait(`(() => {
         const port = ${sourcePortExpr}, bounds = port?.getBoundingClientRect();
         if (!bounds || bounds.width <= 0 || bounds.height <= 0) return null;
-        const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
-        const hit = document.elementFromPoint(x, y);
-        if (!port.contains(hit) || hit.closest('button, summary, input, textarea, select, [contenteditable]')) return null;
+        // The port's centre is the first choice, but transcript content
+        // that activates on click (an attachment thumbnail, a tool row) can
+        // sit there, so the click falls back to the nearest point of a
+        // coarse grid that lands on inert transcript content.
+        const fractions = [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8];
+        const inert = (px, py) => {
+          const hit = document.elementFromPoint(px, py);
+          return port.contains(hit) && !hit.closest('button, summary, a, input, textarea, select, [contenteditable]');
+        };
+        const candidate = fractions.flatMap(fy => fractions.map(fx => [bounds.x + bounds.width * fx, bounds.y + bounds.height * fy]))
+          .find(([px, py]) => inert(px, py));
+        if (!candidate) return null;
+        const [x, y] = candidate;
         window.__cascadeNativeKeys ??= [];
         document.addEventListener('keydown', event => window.__cascadeNativeKeys.push({
           trusted:event.isTrusted, intended:port.contains(event.target), key:event.key, shift:event.shiftKey,
@@ -1080,7 +1090,13 @@ async function sourceMutationJourney() {
   assert.equal((await driver.composerState(ref)).text, "CASCADE_UNSENT_AFTER_QUEUE");
   for (const mutation of [held, queued.params]) {
     const requests = sent(after).filter(frame => frame.params?.clientMutationId === mutation.clientMutationId);
-    assert.equal(requests.length, 1, "inspection and return never duplicate original mutation identity");
+    // A reconnect replay probes the daemon journal with the same identity and
+    // gets a replayed receipt back. Count applied requests, not journal probes.
+    const applied = requests.filter((request) => {
+      const answer = frames.find((frame) => frame.direction === "Network.webSocketFrameReceived" && frame.id === request.id);
+      return answer?.result?.receipt?.disposition !== "replayed";
+    });
+    assert.equal(applied.length, 1, "inspection and return never duplicate original mutation identity");
     assert.equal(requests[0].params.ref, ref, "original recipient is retained");
   }
   driver.milestone("queued-source-single-delivery", { clientMutationId: queued.params.clientMutationId, recipient: ref });

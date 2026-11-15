@@ -1292,7 +1292,10 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 			return nil, nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
 		}
 	}
-	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
+	p, err := provider.WithCommunicateOutputSchema(raw, outputSchema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid --output-schema: %w", err)
+	}
 	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
 	return provider.WithAllowedDecisions(p, allowedDecisions), startupListing, nil
 }
@@ -1337,7 +1340,7 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 	if raw == "" {
 		return "", nil
 	}
-	if strings.EqualFold(raw, "off") {
+	if strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "disabled") {
 		return "off", nil
 	}
 	if prov, model, ok := strings.Cut(raw, "/"); ok {

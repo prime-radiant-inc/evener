@@ -119,6 +119,7 @@ func (e hostileTimeoutError) Timeout() bool {
 func (hostileTimeoutError) Temporary() bool { return false }
 
 func TestAPIAttemptCompleteDoesNotInspectUntrustedErrorBehavior(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  func(*hostileErrorCalls) error
@@ -211,6 +212,7 @@ func (b *concurrentReadCloseBody) counts() (int, int) {
 }
 
 func TestAPIAttemptCompleteDoesNotDrainOrCloseResponseBody(t *testing.T) {
+	t.Parallel()
 	body := &observingReadCloser{reader: bytes.NewReader([]byte("observed-unconsumed"))}
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -270,6 +272,7 @@ func TestAPIAttemptCompleteDoesNotDrainOrCloseResponseBody(t *testing.T) {
 }
 
 func TestAPIAttemptCompleteDoesNotWaitForUnconsumedRequestBody(t *testing.T) {
+	t.Parallel()
 	requestBody := &observingReadCloser{reader: bytes.NewReader([]byte("unconsumed request"))}
 	var observedRequestBody interface {
 		io.Closer
@@ -344,6 +347,7 @@ func TestAPIAttemptCompleteDoesNotWaitForUnconsumedRequestBody(t *testing.T) {
 }
 
 func TestAPIAttemptQueuedCompletionFreezesResponseButKeepsRequestLateBound(t *testing.T) {
+	t.Parallel()
 	sink := &responseAssociationSink{}
 	attemptCtx := attemptContext("ag_frozen_response_observation", sink)
 	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "https://provider.test/v1", nil)
@@ -389,6 +393,7 @@ func TestAPIAttemptQueuedCompletionFreezesResponseButKeepsRequestLateBound(t *te
 }
 
 func TestAPIAttemptBodyObserversReportOnlyReturnedBytesAndEOFExactness(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		body      func() io.ReadCloser
@@ -494,6 +499,7 @@ func TestAPIAttemptBodyObserversReportOnlyReturnedBytesAndEOFExactness(t *testin
 }
 
 func TestAPIAttemptKnownContentLengthIsExactWithoutEOF(t *testing.T) {
+	t.Parallel()
 	requestBytes := []byte("known request")
 	responseBytes := []byte("known response")
 	var requestObservation bodyObservationReporter
@@ -557,6 +563,7 @@ func TestAPIAttemptKnownContentLengthIsExactWithoutEOF(t *testing.T) {
 }
 
 func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
+	t.Parallel()
 	knownZeroRequest, err := http.NewRequest(http.MethodPost, "https://provider.test/v1", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
@@ -603,6 +610,7 @@ func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
 }
 
 func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
+	t.Parallel()
 	data := []byte("known body")
 	body := newObservedBody(context.Background(), &terminalReadCloser{data: data, err: context.Canceled}, int64(len(data)))
 	buf := make([]byte, len(data))
@@ -620,6 +628,7 @@ func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
 }
 
 func TestObservedBodyKnownLengthOverrunIsInexact(t *testing.T) {
+	t.Parallel()
 	data := []byte("known body plus overrun")
 	knownLength := int64(len("known body"))
 	body := newObservedBody(context.Background(), &terminalReadCloser{data: data}, knownLength)
@@ -638,6 +647,7 @@ func TestObservedBodyKnownLengthOverrunIsInexact(t *testing.T) {
 }
 
 func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		data        []byte
@@ -666,6 +676,7 @@ func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
 }
 
 func TestObservedBodyBoundsDurableEvidenceWithoutChangingRead(t *testing.T) {
+	t.Parallel()
 	const retainedBytes = 4
 	payload := []byte("provider body")
 	body := newObservedBodyWithLimit(
@@ -718,6 +729,7 @@ func TestObservedBodyBoundsDurableEvidenceWithoutChangingRead(t *testing.T) {
 }
 
 func TestAPIAttemptConcurrentReadAndCloseSnapshotsPromptlyWithoutExtraOperations(t *testing.T) {
+	t.Parallel()
 	body := &concurrentReadCloseBody{
 		data:        []byte("read returns after snapshot"),
 		readStarted: make(chan struct{}),

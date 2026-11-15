@@ -39,6 +39,14 @@ type appendTail struct {
 	// turns is the file's turn placement state: the running execution, the
 	// open gap turn and the prelude. See Placement.
 	turns turnPlacement
+	// holdRecorded, while set, queues every recorded entry's notification in
+	// heldRecords instead of firing onRecorded for it: a transaction that may
+	// still take its own lines back out holds them so no consumer keeps state
+	// for entries no reader can find (see Writer.CaptureCommitBoundary).
+	// ReleaseCommitBoundary fires the queue in order; RetractToBoundary drops
+	// or fires it. Guarded by mu, like the notifications it defers.
+	holdRecorded bool
+	heldRecords  []Record
 	// onRecorded, when set, is called for each recorded entry; see
 	// Writer.OnRecorded.
 	onRecorded func(Record)

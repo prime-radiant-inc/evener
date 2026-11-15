@@ -159,7 +159,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		}
 		if len(l.MCPConfigs) > 0 {
 			eff.MCPConfigs = append(eff.MCPConfigs, l.MCPConfigs...)
-			m.mark("mcp_configs")
+			m.mark(MCPConfigsField)
 		}
 		if len(l.SystemPromptAppend) > 0 && l.SystemPromptAppendMode == "" {
 			eff.SystemPromptAppendMode = "file"
@@ -191,7 +191,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			for _, spec := range l.MCPs {
 				if prev, ok := mcpNames[spec.Name]; ok {
 					diags = append(diags, Diagnostic{
-						Layer: name, Field: "mcps",
+						Layer: name, Field: MCPsField,
 						Message: fmt.Sprintf("duplicate mcp name %q (previously seen at layer %q); evener launch-check will reject this", spec.Name, prev),
 					})
 				} else {
@@ -199,13 +199,13 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 				}
 				eff.MCPs = append(eff.MCPs, spec)
 			}
-			m.mark("mcps")
+			m.mark(MCPsField)
 		}
 		// Env map: last-write-wins per key, with credential blocklist.
 		for k, v := range l.Env {
 			if isCredentialEnvKey(k) {
 				diags = append(diags, Diagnostic{
-					Layer: name, Field: "env." + k,
+					Layer: name, Field: EnvField + "." + k,
 					Message: fmt.Sprintf("env key %q looks like a credential; route through credentials store", k),
 				})
 				continue
@@ -213,7 +213,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			eff.Env[k] = v
 		}
 		if len(l.Env) > 0 {
-			m.mark("env")
+			m.mark(EnvField)
 		}
 		if m.nonEmpty {
 			contributing[name] = l

@@ -47,43 +47,77 @@
   }
 }
 
-/* The sidebar owns its own chrome: a header zone stacking the wordmark/actions
- * row, the needs-you chip (only when there is one) and the secondary
- * "+ New session" button - a column so none of it steals a full-width top
- * bar's worth of the workspace's vertical space. */
+/* The sidebar owns its own chrome: a header zone stacking the brand row, the
+ * needs-you chip (only when there is one) and the secondary "+ New session"
+ * button - a column so none of it steals a full-width top bar's worth of the
+ * workspace's vertical space. No rule under it: the header and the tree share
+ * the rail's one surface, and the first section's eyebrow does the dividing. */
 .header {
   flex: none;
   display: flex;
   flex-direction: column;
-  /* Two groups: the identity block (wordmark row, plus the needs-you chip when
+  /* Two groups: the identity block (brand row, plus the needs-you chip when
    * one exists) and the New-session action, one run apart. The gap stays wider
    * than .identity's own, so the chip reads as part of the row above it. */
   gap: var(--rhythm-item);
-  padding: var(--space-4);
-  border-bottom: 1px solid var(--edge);
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  /* Lets the brand row answer the rail's own width (the narrow rule under
+   * .mark), not the window's. */
+  container: railheader / inline-size;
 }
 
-/* The wordmark row and its chip read as one identity block, so a chip hugs the
+/* The brand row and its chip read as one identity block, so a chip hugs the
  * row it belongs to instead of floating midway to the button. */
 .identity {
   display: flex;
   flex-direction: column;
-  gap: var(--rhythm-line);
+  gap: var(--rhythm-item);
 }
 
-/* One row: the wordmark leads and the three actions sit hard right, the way
- * the body's organize-by control does. The wordmark's own auto margin pushes
- * the actions over, so the row needs no spacer element, and align-items
- * centers its text against the 32px icon squares. */
+/* One row: the mark and wordmark lead and the actions sit hard right. The
+ * wordmark's own auto margin pushes the actions over, so the row needs no
+ * spacer element, and align-items centers its text against the 32px icon
+ * squares.
+ *
+ * The row runs one --space-2 past the header's right padding: a quiet icon
+ * button's glyph sits 8px inside its own square, so the outdent lands the last
+ * glyph on the same right edge the rows' trailing text keeps. That outdent,
+ * and the actions touching with no gap, are also what pay for the mark at the
+ * rail's width floor (stores/prefs.ts measures the floor against this row). */
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  margin-right: calc(-1 * var(--space-2));
+}
+
+/* The mark: the accent tile holding the two level bars. Its glyph is
+ * currentColor, so the tile's own ink colors it without a literal here. */
+.mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  height: var(--speaker-avatar-size);
+  margin-right: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Near the rail's width floor the mark draws in toward the wordmark: at the
+ * largest font-size pref the wordmark is wide enough that the full gap would
+ * push Hide sidebar past the rail's edge. The header's content box is the
+ * rail's width less its two --space-4 paddings. */
+@container railheader (max-width: 192px) {
+  .mark {
+    margin-right: var(--space-1);
+  }
 }
 
 .wordmark {
   /* The app's own name never truncates: at the 200px width floor the row's
-   * content (wordmark, three 32px actions, the gaps) fits exactly, and letting
+   * content (mark, wordmark, three 32px actions) fits exactly, and letting
    * this one item shrink turned a sub-pixel rounding difference into "even…". */
   flex: none;
   margin-right: auto;
@@ -94,6 +128,14 @@
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
+}
+
+/* Settings, Search and Hide sidebar: one cluster with no gap, so their squares
+ * tile and the row keeps its width budget. */
+.brandActions {
+  flex: none;
+  display: flex;
+  align-items: center;
 }
 
 /* Stretches the New-session Button to the rail's full width without touching
@@ -141,7 +183,7 @@
 }
 
 .section {
-  padding: var(--space-3) 0;
+  padding: var(--space-2) 0;
 }
 
 /* The organize-by switcher row: sits between the Live section and the
@@ -161,22 +203,4 @@
  * .popoverPanel is the precedent). */
 .organizePanel {
   padding: var(--space-3);
-}
-
-/* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
- * its own on its nested-children container (only aria-level on each
- * treeitem), so this reaches into its role=group element by attribute,
- * scoped to `.section` the same way `.actions`'s own [role="treeitem"]
- * selector (RailRow.module.css) already reaches into Tree's DOM. It lives
- * here, not with the row content, because `.section` is this stylesheet's
- * class: a CSS Modules selector only resolves to the same scoped name
- * inside the module that declares it. tree.module.css's own
- * `.group` is a flex column with `padding-left: var(--space-4)`, so a
- * border-left on the group box itself sits just inside a level's own
- * indentation and compounds naturally as groups nest (same padding
- * comment tree.module.css makes) - one hairline per level, applying
- * equally to a project's own session nesting and a session's subagent
- * nesting, since Tree's role=group mechanism is the same for both. */
-.section [role="group"] {
-  border-left: 1px solid var(--edge);
 }

@@ -1,7 +1,7 @@
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { View } from "react-native";
 import { useColors } from "../ui";
-import { type BoardState, stateWord } from "./attention";
+import { type BoardState, stateWord } from "@evener/appwire-client/state/navigation";
 import { PulseMeter } from "./PulseMeter";
 import { meterTone } from "./pulse";
 

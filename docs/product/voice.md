@@ -4,6 +4,11 @@ The native iOS app can bind voice to an existing live manager session. Voice is
 an additional input and presentation channel for that session. The manager keeps
 its normal tools, context, typed input and durable transcript.
 
+Voice makes that one session a persistent spoken chief of staff: the person
+asks what is happening, starts work through the manager's existing tools,
+corrects it mid-sentence and hears the result, rather than dictating one-shot
+commands.
+
 ## Owners
 
 ```mermaid
@@ -43,11 +48,35 @@ choose a target session or execute manager tools.
   `POST /api/voice/status` answers the same checks without binding, for builds
   that predate the capability.
   The scoped socket grant cannot dispatch general AppWire requests.
+- The hub owns the voice capability projection and never manufactures support.
+  The original daemon must advertise `voicePresentationContextV1` itself: a
+  cold session with no daemon running, and an unprobed list row whose probe
+  never captured the daemon's answer, report no voice support rather than
+  inferring it from resume guarantees or from what a current daemon would say.
+  `voiceArm` is the hub's own verdict either way.
+  [`TestCapabilityProjectionsMatchTheDaemonOracle`](../../cmd/evener-hub/app_capability_parity_test.go)
+  keeps observed support distinct from unknown support for omitted, false and
+  true daemon claims, beside the other capability assertions.
+- The speech provider is an OpenAI Realtime endpoint. Arm names a provider
+  instance; when it names none, [`pickOpenAIVoiceProvider`](../../cmd/evener-hub/voice_http.go)
+  uses the hub's default instance when it is OpenAI itself, else the first
+  credentialed OpenAI instance — OpenAI-protocol instances that only speak a
+  chat-compatible base, such as a Codex login, Groq, Lunaroute or OpenRouter,
+  cannot reach the Realtime endpoint and are never chosen. An unnamed model
+  defaults to `gpt-realtime-2.1` and an unnamed voice to `marin`. Provider
+  transport, interpretation and speech stay separate from session control, and
+  the provider conversation is disposable.
 - [`voiceBridge`](../../cmd/evener-hub/voice_bridge.go) accepts ordered utterance
   frames, waits for completed interpretation and uses ordinary `turn/start` or
   `turn/steer` admission. It records the immutable interpreted text, mutation
   identity and receipt in the
   [`VoiceJournal`](../../cmd/evener-hub/internal/hubcore/voice_journal.go).
+  Voice wire and journal JSON keeps AppWire camelCase field names, including its
+  persisted records, because those names are the wire contract with the device.
+  The snake_case lint regime exempts exactly the
+  [listed voice files](../developing-evener/linting.md); unrelated
+  snake_case surfaces and the upstream provider frames in `voice_realtime.go`
+  stay enforced.
 - [`VoiceRealtime`](../../cmd/evener-hub/voice_realtime.go) owns acknowledged
   provider setup, input completion, interpretation, cancellation and truncation.
   Setup cancellation is separate from an established connection's lifetime.
@@ -190,12 +219,24 @@ cleanup. Ordinary deletion works again when the blocking condition clears.
 ## Client and qualification boundaries
 
 Voice controls are native iOS controls; browser and ordinary text input retain
-their existing owners. The native module exposes Talk, Stop speaking and a local
+their existing owners. Persistent voice targets the phone, including
+listening while it is locked: the app ships the `audio` background mode
+(`mobile-native/app.config.js`), and locked-phone lifetime is a qualification
+gate, not a deferral. Browser-tab voice is not part of this scope. The native
+module exposes Talk, Stop speaking and a local
 openWakeWord detector. The shipped default is the custom **Hey Evener.**
 classifier at threshold **0.99**, not pretrained Alexa. The model is integrated,
 not physically qualified. Attached presentation evidence supports
 references such as "the second one"; model
 reference-resolution quality requires a separate live qualification.
+
+The shipped classifier comes from this repository's own
+[`tools/wake-word/`](../../mobile-native/modules/evener-voice/tools/wake-word/README.md)
+training pipeline, not from openWakeWord's pretrained set: the openWakeWord
+frontend and speech-embedding models are Apache-2.0, while openWakeWord's
+pretrained phrase classifiers are CC BY-NC-SA and personal-use only, so the
+pretrained Alexa model stays an optional preview and can never be the shipped
+default. See the [model notices](../../mobile-native/modules/evener-voice/resources/wake-word/NOTICE.md).
 
 ```mermaid
 flowchart LR

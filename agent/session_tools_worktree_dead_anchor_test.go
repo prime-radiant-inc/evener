@@ -49,10 +49,11 @@ func TestWorktreeDeadAnchor_ListEnumeratesLiveLanes(t *testing.T) {
 	t.Parallel()
 	r, dead, live := anchorGoneRepo(t)
 
-	entries, err := r.s.worktreeList(t.Context())
+	res, err := r.s.worktreeList(t.Context())
 	if err != nil {
 		t.Fatalf("worktreeList with a dead anchor = %v, want no error", err)
 	}
+	entries := res.Entries
 	if _, ok := worktreeEntryByPath(entries, live); !ok {
 		t.Fatalf("list did not report the live lane %q; entries = %+v", live, entries)
 	}
@@ -176,10 +177,11 @@ func TestWorktreeDeadAnchor_LiveAnchorListStillWorks(t *testing.T) {
 	}
 	path := res["path"].(string)
 
-	entries, err := r.s.worktreeList(t.Context())
+	listRes, err := r.s.worktreeList(t.Context())
 	if err != nil {
 		t.Fatalf("worktreeList with a live anchor = %v, want no error", err)
 	}
+	entries := listRes.Entries
 	if _, ok := worktreeEntryByPath(entries, path); !ok {
 		t.Fatalf("list did not report the created lane %q; entries = %+v", path, entries)
 	}

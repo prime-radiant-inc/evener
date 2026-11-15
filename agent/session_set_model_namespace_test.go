@@ -17,7 +17,7 @@ import (
 func TestSetModel_NamespacedModelDoesNotMintAnotherInstance(t *testing.T) {
 	oldRunCommand := valueexpr.RunCommand
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "minted", nil
 	}

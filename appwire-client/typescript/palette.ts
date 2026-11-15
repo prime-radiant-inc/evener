@@ -13,8 +13,9 @@
  * phone's vocabulary (page, canvas, surface, inset, pressed) but take the
  * shared values, so the two clients render one palette rather than two
  * transcriptions of the same idea. `NativeExtras` is the three roles only the
- * phone declares: its reading ink and its filled-action pair have no web
- * counterpart.
+ * phone declares: its reading ink, and a filled-action pair that holds one
+ * value in both themes where the web's accent/on-accent pair turns with the
+ * theme.
  *
  * Role names are the web custom properties without the leading `--`, which
  * keeps the drift check, the aliases and this source on one vocabulary.
@@ -60,6 +61,9 @@ export interface WebPalette {
   "alive-ink": string;
   "danger-ink": string;
   "accent-ink": string;
+  /** Text and glyphs on a solid accent fill (the one primary action). It
+   * clears 4.5:1 on accent in both themes. */
+  "on-accent": string;
   "tooltip-bg": string;
   "tooltip-fg": string;
   "tooltip-muted": string;
@@ -90,9 +94,9 @@ export interface NativeExtras {
   /** The phone's long-form reading ink, a step below ink-hi in dark mode to
    * cut glare. The web's reading surfaces use ink-hi. */
   "prose-ink": string;
-  /** The filled action's fill. The web's primary action is ink-on-paper, so
-   * there is no shared fill role; white on this value clears 4.5:1 in both
-   * themes. */
+  /** The phone's filled action's fill: the brand indigo at one value in both
+   * themes, where the web's accent lightens in dark and takes a dark
+   * on-accent. on-fill clears 4.5:1 on it. */
   "accent-fill": string;
   /** The symbol and label that ride on accent-fill. */
   "on-fill": string;
@@ -209,11 +213,12 @@ export const webPalettes: Record<Scheme, WebPalette> = {
     attention: "#F59E0B",
     alive: "#189A4D",
     danger: "#E3474C",
-    accent: "#0285FF",
+    accent: "#4F5BF5",
     "attention-ink": "#9C4908",
     "alive-ink": "#0F6E36",
     "danger-ink": "#BD1B21",
-    "accent-ink": "#005FBA",
+    "accent-ink": "#3A44D6",
+    "on-accent": "#FFFFFF",
     "tooltip-bg": "#25272B",
     "tooltip-fg": "#F6F7F8",
     "tooltip-muted": "#A5A8AD",
@@ -255,11 +260,12 @@ export const webPalettes: Record<Scheme, WebPalette> = {
     attention: "#F68F3C",
     alive: "#3DBB72",
     danger: "#EE5C61",
-    accent: "#3D9AFF",
+    accent: "#8A96FF",
     "attention-ink": "#F68F3C",
     "alive-ink": "#3DBB72",
     "danger-ink": "#F17478",
-    "accent-ink": "#459EFF",
+    "accent-ink": "#96A1FF",
+    "on-accent": "#111214",
     "tooltip-bg": "#111214",
     "tooltip-fg": "#F2F3F4",
     "tooltip-muted": "#A5A8AD",
@@ -286,16 +292,21 @@ export const webPalettes: Record<Scheme, WebPalette> = {
   }),
 };
 
+// The phone's primary fill holds one value in both themes: the web's light
+// accent and the ink that rides it.
+const NATIVE_ACCENT_FILL = webPalettes.light.accent;
+const NATIVE_ON_FILL = webPalettes.light["on-accent"];
+
 const NATIVE_EXTRAS: Record<Scheme, NativeExtras> = {
   light: {
     "prose-ink": "#1C1C1E",
-    "accent-fill": "#0070E0",
-    "on-fill": "#FFFFFF",
+    "accent-fill": NATIVE_ACCENT_FILL,
+    "on-fill": NATIVE_ON_FILL,
   },
   dark: {
     "prose-ink": "#E3E3E8",
-    "accent-fill": "#0070E0",
-    "on-fill": "#FFFFFF",
+    "accent-fill": NATIVE_ACCENT_FILL,
+    "on-fill": NATIVE_ON_FILL,
   },
 };
 

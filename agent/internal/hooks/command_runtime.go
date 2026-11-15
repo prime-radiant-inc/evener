@@ -115,6 +115,10 @@ func runSystemCommandHookProcess(_ context.Context, _ commandHookInvocation, cmd
 func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHookInvocation) (hookResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, invocation.Timeout)
 	defer cancel()
+	// A sandbox whose host check has not answered runs no hook (Confirm).
+	if err := invocation.SandboxWrapper.Confirm(ctx); err != nil {
+		return hookResult{}, err
+	}
 
 	cmd := exec.CommandContext(ctx, invocation.Program, invocation.Args...)
 	cmd.Stdin = bytes.NewReader(invocation.InputJSON)

@@ -258,19 +258,46 @@ func normalizeDelegateArgs(args map[string]any) (map[string]any, error) {
 			if !ok {
 				continue
 			}
-			raw, ok := fields["reasoning_effort"].(string)
-			if !ok {
-				continue
+			clean := maps.Clone(fields)
+			modified := false
+
+			// Alias description to title if title is absent or empty.
+			desc, hasDesc := clean["description"]
+			title, hasTitle := clean["title"]
+			if hasDesc {
+				if isBlankString(desc) {
+					delete(clean, "description")
+					modified = true
+				} else if !hasTitle || isBlankString(title) {
+					clean["title"] = desc
+					delete(clean, "description")
+					modified = true
+				} else {
+					delete(clean, "description")
+					modified = true
+				}
 			}
-			effort := normalizeTaskEffort(raw)
-			if !rewriteEffort(raw, effort) {
+
+			// If depends_on is supplied, strip it so additionalProperties: false doesn't fail.
+			if _, hasDeps := clean["depends_on"]; hasDeps {
+				delete(clean, "depends_on")
+				modified = true
+			}
+
+			if raw, ok := clean["reasoning_effort"].(string); ok {
+				effort := normalizeTaskEffort(raw)
+				if rewriteEffort(raw, effort) {
+					setEffort(clean, "reasoning_effort", effort)
+					modified = true
+				}
+			}
+
+			if !modified {
 				continue
 			}
 			if tasks == nil {
 				tasks = append([]any(nil), items...)
 			}
-			clean := maps.Clone(fields)
-			setEffort(clean, "reasoning_effort", effort)
 			tasks[i] = clean
 		}
 		if tasks != nil {
@@ -320,6 +347,9 @@ func delegateTaskListArg(args map[string]any) ([]taskpkg.TaskTemplate, error) {
 			return nil, fmt.Errorf("invalid_request: task_list[%d] must be an object", i)
 		}
 		title := strings.TrimSpace(stringArg(fields, "title"))
+		if title == "" {
+			title = strings.TrimSpace(stringArg(fields, "description"))
+		}
 		if title == "" {
 			return nil, fmt.Errorf("invalid_request: task_list[%d].title is required", i)
 		}

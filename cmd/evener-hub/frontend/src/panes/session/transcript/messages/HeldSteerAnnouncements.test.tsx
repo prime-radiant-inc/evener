@@ -36,7 +36,7 @@ const NOW_B = 97_000;
 // records.ts): its doc comments name "rejected" as the daemon's refusal -
 // the recoveryReason a rejected row carries is "why the daemon refused, in
 // its own words" - while the other kind, "orphaned", is the one with "no
-// daemon message to carry". QueueStrip.test.tsx's seedRecovery seeds the same
+// daemon message to carry". pending stack.test.tsx's seedRecovery seeds the same
 // kind through the same transferToRecovery write; never an invented string.
 const REJECTED_AT_ACCEPTANCE: MutationRecoveryKind = "rejected";
 
@@ -89,7 +89,7 @@ test("a hold already in flight when the pane opens announces nothing", async () 
   expect(screen.getByTestId("held-steer-announcements").textContent).toBe("");
 });
 
-test("a refused attempt moving back to QueueStrip does not announce delivery or failure", async () => {
+test("a refused attempt moving back to pending stack does not announce delivery or failure", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
   const id = await seedHeld("steer", "still locally queued", { attempted: true });
@@ -141,7 +141,7 @@ test("delivery is announced once when the transcript reflects the id", async () 
   );
   // The delivered shape: the daemon's own hydrate carries the turn item the
   // steer became, keyed by the client mutation id (reconcilePendingEntries'
-  // reflectedMutationIds rule) - the same re-hydrate HeldSteerStack.test.tsx's
+  // reflectedMutationIds rule) - the same re-hydrate PendingMessageStack.test.tsx's
   // disappearance test drives.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
@@ -190,7 +190,7 @@ test("a same-batch delivery plus a new arrival announces the delivery", async ()
   // the projection (probed: the delivery run and the arrival run come out
   // as two). One wire snapshot can: this hydrate reflects A in a turn item
   // AND carries B - another client's steer, the real wire path for a
-  // foreign held entry, the same pendingMutations shape HeldSteerStack's
+  // foreign held entry, the same pendingMutations shape the old ghost stack's
   // foreign-entry test drives - so ONE store publication reaches the effect
   // with both transitions: A departed, B arrived.
   fake.on("thread/read", () =>
@@ -276,7 +276,7 @@ test("mixed departures announce every distinct outcome in departure order", asyn
 });
 
 // seedKind names the STORAGE WRITE, not a literal recovery-kind string: the
-// same real durable writes QueueStrip.test.tsx's seedRecovery / seedCanceled /
+// same real durable writes pending stack.test.tsx's seedRecovery / seedCanceled /
 // seedBlockedUnknown perform, driven here on the seeded steer's own id - the
 // record moves where the departure's real path moves it, and the projection
 // refresh publishes it.

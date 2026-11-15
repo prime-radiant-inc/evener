@@ -9,6 +9,7 @@ import (
 )
 
 func TestGenerateObject_Success(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&scriptedAdapter{
 		name: "openai",
@@ -50,6 +51,7 @@ func TestGenerateObject_Success(t *testing.T) {
 }
 
 func TestGenerateObject_ParseFailure_RaisesNoObjectGeneratedError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&scriptedAdapter{
 		name: "openai",
@@ -78,6 +80,7 @@ func TestGenerateObject_ParseFailure_RaisesNoObjectGeneratedError(t *testing.T) 
 }
 
 func TestStreamGenerateObject_Success(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -167,6 +170,7 @@ func TestStreamGenerateObject_Success(t *testing.T) {
 }
 
 func TestStreamGenerateObject_ParseFailure_ReturnsNoObjectGeneratedError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -226,6 +230,7 @@ func TestStreamGenerateObject_ParseFailure_ReturnsNoObjectGeneratedError(t *test
 }
 
 func TestStripMarkdownCodeFence(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tests := []struct {
 		name string
 		in   string

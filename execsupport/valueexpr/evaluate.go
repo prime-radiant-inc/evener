@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,8 +57,10 @@ var commandTimeout = defaultCommandTimeout
 var drainGrace = defaultDrainGrace
 
 // Now is the clock seam; RunCommand is the executor seam, initialized to the
-// real shell invocation. Hosts' tests swap these to keep unit tests off real
-// processes; ResetForTest clears the cache and restores both.
+// real shell invocation. A run's `env` is the environment the command must
+// see: nil means the process environment. Hosts' tests swap these to keep
+// unit tests off real processes; ResetForTest clears the cache and restores
+// both.
 var (
 	Now        = time.Now
 	RunCommand = realRunCommand
@@ -93,14 +96,33 @@ func (e *CommandError) Error() string {
 	}
 }
 
-// The cache is keyed by the command text: instances and surfaces that share
-// a command share one mint. The singleflight group collapses concurrent
-// callers onto one run per command.
+// The cache is keyed by the command text AND the environment it ran under: a
+// command's output can depend on the caller's effective environment (a launch
+// layer's env overlays the hub's), so one environment's mint must never serve
+// another's. Instances and surfaces that share a command and an environment
+// share one mint; the singleflight group collapses concurrent callers onto
+// one run per key.
 var (
 	evaluateMu sync.Mutex
 	cache      = map[string]Result{}
 	mintGroup  singleflight.Group
 )
+
+// cacheKey renders one cache identity. A nil env (the process environment)
+// keys by command alone, the sharing Expand has always had; an explicit env
+// keys by a length-prefixed, sorted rendering of the entries, so no command
+// text or entry list can collide with another's.
+func cacheKey(command string, env []string) string {
+	if env == nil {
+		return "\x00" + command
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\x01%d\x00%s", len(command), command)
+	for _, kv := range slices.Sorted(slices.Values(env)) {
+		fmt.Fprintf(&b, "\x01%d\x00%s", len(kv), kv)
+	}
+	return b.String()
+}
 
 // ResetForTest clears the cache and restores the seams; nothing else may
 // touch the package's mutable state.
@@ -114,32 +136,33 @@ func ResetForTest() {
 	drainGrace = defaultDrainGrace
 }
 
-// evaluate returns the command's value, cached until it stops being fresh. A
-// failed run is returned uncached, so the next call retries.
-func evaluate(command string) (Result, error) {
+// evaluate returns the command's value under env, cached until it stops being
+// fresh. A failed run is returned uncached, so the next call retries.
+func evaluate(command string, env []string) (Result, error) {
+	key := cacheKey(command, env)
 	// Every freshness judgment reads the clock under the cache lock, never
 	// before it: a caller that waits — on the lock, or behind a flight —
 	// must not carry an earlier instant past an expiry the wait crossed.
 	evaluateMu.Lock()
-	if res, ok := cache[command]; ok && Now().Before(res.ExpiresAt) {
+	if res, ok := cache[key]; ok && Now().Before(res.ExpiresAt) {
 		evaluateMu.Unlock()
 		return res, nil
 	}
 	evaluateMu.Unlock()
 
-	res, err, _ := mintGroup.Do(command, func() (any, error) {
+	res, err, _ := mintGroup.Do(key, func() (any, error) {
 		// Re-check under the flight: a caller that queued behind a finished
 		// leader may find the leader's result already cached and fresh.
 		evaluateMu.Lock()
-		if cached, ok := cache[command]; ok && Now().Before(cached.ExpiresAt) {
+		if cached, ok := cache[key]; ok && Now().Before(cached.ExpiresAt) {
 			evaluateMu.Unlock()
 			return cached, nil
 		}
 		evaluateMu.Unlock()
-		minted, err := mint(command)
+		minted, err := mint(command, env)
 		evaluateMu.Lock()
 		if err == nil {
-			cache[command] = minted
+			cache[key] = minted
 		}
 		// Pruning rides the flight's return, success or failure: an
 		// expired entry holds a secret nobody can be served again, so it
@@ -161,8 +184,8 @@ func evaluate(command string) (Result, error) {
 	return res.(Result), nil
 }
 
-func mint(command string) (Result, error) {
-	raw, err := RunCommand(command)
+func mint(command string, env []string) (Result, error) {
+	raw, err := RunCommand(command, env)
 	if err != nil {
 		return Result{}, err
 	}
@@ -217,16 +240,21 @@ func tokenExpiry(value string) (time.Time, bool) {
 	return time.Unix(int64(claims.Exp), 0), true
 }
 
-// realRunCommand runs command through the host shell with the process
-// environment, a closed stdin (a prompting command reads EOF instead of
-// hanging), and no TTY. It returns the raw stdout; trimming the value and
-// refusing empty output is the evaluator's job, so every executor behaves
-// uniformly — with one exception: a run that printed nothing to stdout but
-// complained on stderr reports the complaint as its failure, because the
-// author debugging an empty mint needs the command's own diagnosis, not a
-// bare "no output". Extracting the exact value is the command's job, which
-// is why gateway recipes pipe through what they need.
-func realRunCommand(command string) (string, error) {
+// realRunCommand runs command through the host shell with a closed stdin (a
+// prompting command reads EOF instead of hanging) and no TTY. It returns the
+// raw stdout; trimming the value and refusing empty output is the evaluator's
+// job, so every executor behaves uniformly — with one exception: a run that
+// printed nothing to stdout but complained on stderr reports the complaint as
+// its failure, because the author debugging an empty mint needs the command's
+// own diagnosis, not a bare "no output". Extracting the exact value is the
+// command's job, which is why gateway recipes pipe through what they need.
+//
+// env is the environment the command must see: nil leaves the child with the
+// process environment (the historic behavior every process-env caller relies
+// on), while a non-nil slice — including an empty one — is the child's whole
+// environment, so a caller whose effective environment overlays the process's
+// can run the command exactly where a spawned consumer would run it.
+func realRunCommand(command string, env []string) (string, error) {
 	if !procgroup.ProcessGroupsSupported {
 		// The deadline kill reaches only the direct child on this
 		// build: a descendant would survive the timeout, so the run's
@@ -242,6 +270,9 @@ func realRunCommand(command string) (string, error) {
 		shell, flag = "cmd", "/c"
 	}
 	cmd := exec.CommandContext(ctx, shell, flag, command)
+	if env != nil {
+		cmd.Env = env
+	}
 	// The command runs in its own process group: the deadline kill must
 	// reach the whole tree, because a killed shell leaves orphaned children
 	// holding the captured pipes, and Wait blocks until they close. os/exec

@@ -204,6 +204,22 @@ describe("each tool's evidence, as the tools print it", () => {
 		]);
 	});
 
+	it("shows a delegate's status and task when description is omitted", () => {
+		expect(
+			stepEvidence({
+				label: "job_status",
+				detail: {
+					output: JSON.stringify({
+						id: "dlg_1",
+						type: "delegate",
+						status: "running",
+						task: "Research the cache hierarchy",
+					}),
+				},
+			}),
+		).toEqual([{ kind: "output", text: "running — Research the cache hierarchy", lines: 1 }]);
+	});
+
 	// The line says only the stop's status; its evidence keeps the whole
 	// footer, its codes in words.
 	it("shows a job stop's whole footer, its codes in words", () => {
@@ -398,8 +414,8 @@ describe("each tool's evidence, as the tools print it", () => {
 		const [evidence] = real("call_job_list");
 		expect(evidence?.kind === "output" && evidence.text.split("\n")).toEqual([
 			"# id  type  status  label  [started · reason · exit · bytes]",
-			"job_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · exit zero · exit 0 · 13893 bytes]",
-			"job_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · 8 bytes]",
+			"job_fixture_2  shell  completed  seq 1 3000  [started 2026-09-28 20:00 · transcript_ref job:job_fixture_2 · exit zero · exit 0 · 13893 bytes]",
+			"job_fixture_1  shell  running  printf 'started\\n'; exec tail -f /dev/null  [started 2026-09-28 20:00 · phase process_running · running_for_ms 2000 · quiet_for_ms 2000 · transcript_ref job:job_fixture_1 · 8 bytes]",
 			"",
 			"2 job(s).",
 		]);

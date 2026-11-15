@@ -141,11 +141,47 @@ func TestCountNativeExcludedCountsTheNativeWalk(t *testing.T) {
 
 	env := NewLocalExecutionEnvironment(root)
 	defer env.Cleanup()
-	got, err := env.countNativeExcluded(t.Context(), root)
+	got, err := env.countNativeExcluded(t.Context(), root, nil)
 	if err != nil {
 		t.Fatalf("countNativeExcluded: %v", err)
 	}
 	if got != 2 {
 		t.Fatalf("countNativeExcluded = %d, want 2 (build once, skip.log once)", got)
+	}
+}
+
+// A glob filter that names a gitignored file surfaces it (#6201), so it is no
+// longer a path "the default rules skipped" and must leave the exclusion
+// tally the rg arm's no-match note reports — the count honors the override
+// exactly like the search does.
+func TestCountNativeExcludedHonorsTheGlobOverride(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("build/\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"build/a.txt", "skip.log", "visible.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("nothing here\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	without, err := env.countNativeExcluded(t.Context(), root, nil)
+	if err != nil {
+		t.Fatalf("countNativeExcluded(no filter): %v", err)
+	}
+	if without != 2 {
+		t.Fatalf("countNativeExcluded(no filter) = %d, want 2 (build once, skip.log once)", without)
+	}
+	with, err := env.countNativeExcluded(t.Context(), root, []string{"skip.log"})
+	if err != nil {
+		t.Fatalf("countNativeExcluded(skip.log): %v", err)
+	}
+	if with != without-1 {
+		t.Fatalf("countNativeExcluded(skip.log) = %d, want %d: the glob-named gitignored file must leave the tally, the pruned build/ must stay in it", with, without-1)
 	}
 }

@@ -41,12 +41,12 @@ test("wraps children in a single container carrying the card class", () => {
   expect(child.parentElement?.classList.contains(styles.card)).toBe(true);
 });
 
-// Beautiful UI card anatomy: the ring lives in the shadow, not a separate
-// border - see docs/superpowers/specs/2026-08-13-webui-beautiful-ui-retheme-
-// design.md §6.
+// Card anatomy: the flat card's edge is a 1px ring in the shadow, under the
+// card lift, not a separate border - so the ring costs no box size.
 test("carries its ring via box-shadow rather than a border", () => {
   const rule = /\.card\s*\{([^}]*)\}/.exec(cardCss())?.[1] ?? "";
-  expect(rule).toContain("box-shadow: var(--shadow-card)");
+  expect(rule).toMatch(/box-shadow:\s*var\(--shadow-card-ringed\)/);
+  expect(rule).toContain("border-radius: var(--radius-pane)");
   expect(rule).not.toContain("border:");
 });
 

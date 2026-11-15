@@ -279,11 +279,16 @@ func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, to
 		t.Fatalf("Grep content fallback = %q, %v", content, err)
 	}
 	files, err := env.Grep(context.Background(), "needle", "pkg", "*.go", true, 10, "files_with_matches")
-	if err != nil || files != "main.go" {
+	if err != nil || files != filepath.FromSlash("pkg/main.go") {
 		t.Fatalf("Grep files-with-matches fallback = %q, %v", files, err)
 	}
+	// The #6201 override: the glob filter selects the hidden FILE it names,
+	// so .hidden.txt joins docs/readme.txt in the count, while the hidden
+	// DIRECTORY stays pruned - .hidden/nested.txt matches the same filter by
+	// base name yet never appears.
 	counts, err := env.Grep(context.Background(), "needle", "", "*.txt", false, 100, "count")
-	if err != nil || !strings.Contains(counts, "docs/readme.txt:1") || strings.Contains(counts, ".hidden") {
+	wantCounts := filepath.FromSlash(".hidden.txt:1\ndocs/readme.txt:1")
+	if err != nil || counts != wantCounts {
 		t.Fatalf("Grep count fallback = %q, %v", counts, err)
 	}
 	capped, err := env.Grep(context.Background(), "needle", "", "", true, 1, "")

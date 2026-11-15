@@ -100,7 +100,7 @@ build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
 
 ## Build the evener-dev dev/test infrastructure binary (agent-shards,
-## module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
+## fuzz-harvest, fuzzcov, fuzzregistry, internalcheck,
 ## tomlcheck, transcript-v2-upgrade). Not installed for
 ## end users; used by make targets and go run ./cmd/evener-dev/bin.
 # The build's wall time is printed after it: in CI it is part of the web gates'
@@ -171,7 +171,7 @@ install-system: install
 ## trigger: Required CI build job; local compile diagnostic.
 ## requires: Deterministic Go compilation; no provider calls or
 ##   frontend/browser requirements.
-## fails-when: Any module or package compilation failure is nonzero; the loop
-##   stops at the first failing module.
+## fails-when: Any package compilation failure is nonzero; go build reports
+##   every failing package in one pass.
 build-go:
-	@for m in $(GO_MODULES); do (cd $$m && go build ./...) || exit 1; done
+	@go build $(WORKSPACE_TEST_PATTERNS)

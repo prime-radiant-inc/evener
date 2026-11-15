@@ -1380,6 +1380,7 @@ describe("current transcript checkpoints", () => {
       source: "source",
       steeringKind: "interrupt",
       clientMutationId: "mutation",
+      conversationInputIds: ["client:earlier-queue"],
       version: 5,
       roundId: "round",
       completedAtEntry: 6,

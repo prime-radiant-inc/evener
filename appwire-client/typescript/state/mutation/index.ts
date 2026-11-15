@@ -34,15 +34,27 @@ export {
   commandMarkers,
   imagePlaceholder,
   normalizeText,
+  outboxRecordPreview,
   ownPendingSend,
   ownPendingTurnInput,
+  parseImagePlaceholder,
   pendingEntryPreview,
+  queueEntryAt,
   queueEntryPreviewText,
   reconcilePendingEntries,
+  recordedInputLineage,
   reflectedMutationIds,
   skillMarkers,
   truncateForDisplay,
 } from "./pendingEntries";
+export type {
+  ConsumedQueueEntry,
+  PendingMessage,
+  PendingMessageImage,
+  PendingMessageState,
+  PendingMessagesInput,
+} from "./pendingMessages";
+export { projectPendingMessages, transcriptMutationIds } from "./pendingMessages";
 export type {
   PendingTurnsDraftPort,
   PendingTurnsState,
@@ -54,6 +66,7 @@ export type {
 export {
   awaitingFirstFrameSend,
   blockedEntries,
+  blockedEntriesIncludingDisplayed,
   canceledEntries,
   createPendingTurnsStore,
   outboxEntriesByState,

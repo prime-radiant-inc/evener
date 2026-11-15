@@ -4,7 +4,7 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import type { ConversationClientLike } from "../conversation/services/conversation";
-import { hubTime } from "./attention";
+import { hubTime } from "@evener/appwire-client/state/navigation";
 import { type BoardSeen, hubSeenMarks } from "./hubSeen";
 
 /** Marks the session seen while the screen is in front, so a turn that ends

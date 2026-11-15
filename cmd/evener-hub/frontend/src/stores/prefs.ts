@@ -272,11 +272,13 @@ function writeBool(name: string, value: boolean): void {
 // aria-valuemin/aria-valuemax, and the drag arithmetic itself.
 //
 // SIDEBAR_WIDTH_MIN is measured against the rail's own header content rather
-// than picked for looks: at 200px the brand row (the `evener` wordmark and the
-// Settings/Search/Hide-sidebar icons, with no ellipsis on the wordmark) and
-// the "+ New session" button all still render on one line each inside the
-// header's 2×var(--space-4) padding, verified in a real browser at every
-// font-size pref. Narrower starts clipping the wordmark.
+// than picked for looks: at 200px the brand row (the accent mark, the `evener`
+// wordmark with no ellipsis, and the gapless Settings/Search/Hide-sidebar
+// icon cluster, which outdents one --space-2 past the header's right padding)
+// and the "+ New session" button all still render on one line each inside the
+// header's 2×var(--space-4) padding at every font-size pref; the mark's gap
+// tightens near the floor (Rail.module.css's railheader container rule).
+// Narrower pushes Hide sidebar past the rail's edge.
 // SIDEBAR_WIDTH_MAX keeps the rail a sidebar: past ~560px it starts eating
 // the workspace dockview needs rather than buying any more title text (rows
 // truncate with an ellipsis, so extra width has diminishing returns).

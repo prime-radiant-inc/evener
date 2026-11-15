@@ -39,6 +39,9 @@ func (e *LocalExecutionEnvironment) ExecArgv(ctx context.Context, name string, a
 }
 
 func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) (string, error) {
+	if e.sandboxReRootErr != nil {
+		return "", e.sandboxReRootErr
+	}
 	dir := strings.TrimSpace(workingDir)
 	if dir == "" {
 		dir = e.RootDir
@@ -69,6 +72,9 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 	dir, err := e.resolveCommandWorkingDir(workingDir)
 	if err != nil {
+		return ExecResult{ExitCode: 127}, err
+	}
+	if err := e.Wrapper.Confirm(ctx); err != nil {
 		return ExecResult{ExitCode: 127}, err
 	}
 
@@ -196,6 +202,13 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 			return nil, ctx.Err()
 		default:
 		}
+	}
+	confirmCtx := ctx
+	if confirmCtx == nil {
+		confirmCtx = context.Background()
+	}
+	if err := e.Wrapper.Confirm(confirmCtx); err != nil {
+		return nil, err
 	}
 
 	cmd := e.commands().Shell(command)

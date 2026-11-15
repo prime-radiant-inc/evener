@@ -53,6 +53,7 @@ var errApplyRefused = errors.New("authenticator refused the request")
 // URL, an authenticator that refuses the row, a preparer that refuses the
 // body, and a body that cannot be marshaled.
 func TestPrepareSurfacesEachAssemblyFailure(t *testing.T) {
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerFailingSchemes()
 	for _, tc := range []struct {
 		name    string
@@ -98,6 +99,7 @@ func TestPrepareSurfacesEachAssemblyFailure(t *testing.T) {
 // it without decoding, the shape listings rely on when they hand the body to
 // the caller directly.
 func TestDoWithoutFinishAcceptsA2xxBody(t *testing.T) {
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator; RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerTestSchemes()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"r1"}`))
@@ -128,6 +130,7 @@ func streamOf(events ...llm.StreamEvent) func(context.Context) (llm.Stream, erro
 // object still fails naming the transport, and a stream that closes without a
 // final response never passes as a completion.
 func TestCompleteViaStreamSurfacesEveryEnding(t *testing.T) {
+	t.Parallel()
 	inBand := errors.New("decoded in-band failure")
 	if _, err := CompleteViaStream(context.Background(), "inst", streamOf(llm.StreamEvent{Type: llm.StreamEventError, Err: inBand})); !errors.Is(err, inBand) {
 		t.Fatalf("err = %v, want the in-band error verbatim", err)

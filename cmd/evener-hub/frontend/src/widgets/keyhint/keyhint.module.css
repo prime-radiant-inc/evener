@@ -11,9 +11,12 @@
   min-width: 1.4em;
   height: 18px;
   padding: 0 var(--space-1);
-  border: 1px solid var(--edge-strong);
+  /* A keycap: a hairline all round with a heavier foot. The foot is a
+   * shadow, so the cap keeps its 18px box. */
+  border: 1px solid var(--edge);
   border-radius: var(--radius-chip);
-  background: var(--field);
+  background: var(--surface-1);
+  box-shadow: 0 1px 0 var(--edge-strong);
   color: var(--ink-mid);
   /* A kbd glyph is a verbatim rendering of a literal keystroke, not a
    * designer-authored chrome label - the same category Direction reserves
