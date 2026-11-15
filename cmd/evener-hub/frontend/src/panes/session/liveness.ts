@@ -4,11 +4,19 @@
 // pane back into this leaf module.
 import { createContext, useContext, useEffect, useState } from "react";
 
-// The session's one live clock. A relative timestamp that rewrites itself
-// every few seconds reads as churn, so the floor is 5s: coarse enough that
-// the reader sees a label settle, fine enough that ages still feel live.
-// Cadence's tick decay advances one step per tick, which 5s keeps prompt.
+// The session clock every relative-age display shares. A timestamp that
+// rewrites itself every few seconds reads as churn, so the floor is 5s:
+// coarse enough that the reader sees a label settle, fine enough that ages
+// still feel live. Cadence's decay is derived from each frame's wall-clock
+// age, so a slower tick only delays when a step appears, never how many
+// occur.
 export const NOW_TICK_MS = 5_000;
+
+// Work time is a different display granularity, so it owns a different
+// clock: formatWorkDuration shows whole seconds below a minute, and a 5s
+// clock would make that counter skip four values at a time ("14s", then
+// "19s"). This drives only the readouts that count seconds.
+export const WORK_TICK_MS = 1_000;
 
 // Session owns the live clock; transcript descendants only consume it. The
 // fixed default keeps standalone renders deterministic and timer-free.

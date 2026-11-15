@@ -4,7 +4,7 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
-import { NOW_TICK_MS } from "../../panes/session/liveness";
+import { WORK_TICK_MS } from "../../panes/session/liveness";
 import { CommittedSession } from "../../panes/session/testing/CommittedSession";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
@@ -378,8 +378,8 @@ test("visible About work time advances during an active turn", async () => {
   });
   act(() => threadsStore.getState().releaseThread(ref));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("14s");
-  act(() => vi.advanceTimersByTime(NOW_TICK_MS * 2));
-  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${14 + (2 * NOW_TICK_MS) / 1000}s`);
+  act(() => vi.advanceTimersByTime(WORK_TICK_MS * 2));
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain(`${14 + (2 * WORK_TICK_MS) / 1000}s`);
   expect(activitySidebarStore.getState().tab).toBe("about");
   act(() =>
     client.emitNotification({

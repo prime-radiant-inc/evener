@@ -5,7 +5,7 @@ import { useThreadModel } from "../../stores/useThreadModel";
 import { Loader, PaneScaffold } from "../../widgets";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
-import { NOW_TICK_MS, useNowTick } from "../session/liveness";
+import { useNowTick, WORK_TICK_MS } from "../session/liveness";
 import { type SessionPanelKind, type SessionPanelParams, sessionPanelTitle } from "./index";
 
 export interface SessionPanelPaneProps extends PaneProps<SessionPanelParams> {
@@ -17,7 +17,7 @@ function isSessionPanelParams(value: SessionPanelParams): value is SessionPanelP
 }
 
 function DetailsPaneBody({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
-  const now = useNowTick(NOW_TICK_MS);
+  const now = useNowTick(WORK_TICK_MS);
   const resolvedBranch = useLocalSessionBranch(sessionRef, model);
   return <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} />;
 }
