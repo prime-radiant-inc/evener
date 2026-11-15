@@ -672,7 +672,15 @@ type Session struct {
 	// transcriptRecorded is the recorded-entry hook installed on every writer
 	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
 	transcriptRecorded func(transcript.Record)
-	transcriptFrontier transcriptFrontierBinding
+	// holdTranscriptPublications, while set, stops recordTranscriptLocked
+	// from publishing each recorded entry's length: the fold publication
+	// transaction holds every publication while it may still take its own
+	// lines back out (#1158), then publishes the one settled boundary — the
+	// published-length handoff is monotone, so an intermediate length that
+	// vanished with a retract must never reach it. Guarded by attentionMu,
+	// the door every write it gates runs under.
+	holdTranscriptPublications bool
+	transcriptFrontier         transcriptFrontierBinding
 	// executionFrontierMu is a leaf: the append hook never acquires Session.mu
 	// or emits while holding it. Sampling takes mu before this leaf.
 	executionFrontierMu sync.Mutex
@@ -3005,7 +3013,7 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
-	if rec.Recorded {
+	if rec.Recorded && !s.holdTranscriptPublications {
 		s.publishTranscriptLocked(rec.Offset + rec.Length)
 	}
 	return rec, err
