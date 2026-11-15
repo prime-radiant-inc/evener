@@ -909,6 +909,34 @@ it("opens the resumed conversation when the reader has no owning session route",
 	expect(navigation.pop).not.toHaveBeenCalled();
 });
 
+it("keeps the document in its original cwd when the message session resumes elsewhere", async () => {
+	client.on("thread/read", ({ ref }) => ({
+		thread: {
+			...threadRead("idle").thread,
+			cwd: ref === "local:fix-2" ? "/work/resumed" : "/work/a",
+			evener: { ...threadRead("idle").thread.evener, ref: ref ?? "local:fix" },
+		},
+	}));
+	await mount();
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await untilRendered(() =>
+		expect(
+			client.calls.some(
+				(call) => call.method === "thread/read" && (call.params as { ref: string }).ref === "local:fix-2",
+			),
+		).toBe(true),
+	);
+	await settle();
+	expect(fetchSpy).toHaveBeenCalled();
+	expect(
+		fetchSpy.mock.calls.every(
+			([input]: unknown[]) => new URL(String(input)).searchParams.get("path") === `/work/a/${PATH}`,
+		),
+	).toBe(true);
+});
+
 it("uses the resolved message target passed by a document opener without changing its document key", async () => {
 	const { tree } = await mount(PATH, { messageSessionRef: "local:fix-2" });
 	const reads = client.calls.filter((call) => call.method === "thread/read");

@@ -267,26 +267,36 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	useEffect(() => {
 		if (!inFront || !client || activeProfile?.id !== hubId || state !== "ready") return;
 		const link = new SessionLink(client, messageRef);
+		const documentLink = messageRef === sessionRef ? link : new SessionLink(client, sessionRef);
 		let status: string | null = null;
 		const unsubscribe = link.subscribe(() => {
 			const session = link.getSnapshot();
 			const next = session?.status ?? null;
 			if (status === "active" && next !== "active") reload();
 			status = next;
+			setCanReview(Boolean(session?.capabilities.send || session?.capabilities.queue));
+		});
+		const unsubscribeDocument = documentLink.subscribe(() => {
+			const session = documentLink.getSnapshot();
 			if (session?.cwd)
 				setPublication((previous) =>
 					previous?.source === source && previous.cwd === session.cwd ? previous : { source, cwd: session.cwd },
 				);
-			setCanReview(Boolean(session?.capabilities.send || session?.capabilities.queue));
 		});
 		link.read({ follow: true }).catch(() => {
 			// Quiet: the Reader shows the document it has either way.
 		});
+		if (documentLink !== link)
+			documentLink.read({ follow: true }).catch(() => {
+				// Quiet: the document still uses the source it was opened with.
+			});
 		return () => {
 			unsubscribe();
+			unsubscribeDocument();
 			link.dispose();
+			if (documentLink !== link) documentLink.dispose();
 		};
-	}, [inFront, client, activeProfile?.id, hubId, state, messageRef, source, reload]);
+	}, [inFront, client, activeProfile?.id, hubId, state, messageRef, sessionRef, source, reload]);
 	useEffect(() => {
 		if (reference !== routeReference) navigation.setParams({ reference });
 	}, [reference, routeReference, navigation]);

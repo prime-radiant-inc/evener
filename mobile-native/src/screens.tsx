@@ -282,6 +282,8 @@ export type Routes = {
 		hubId: string;
 		ref: string;
 		title: string;
+		/** The identity held under a covering route, until this conversation returns to the top. */
+		pendingIdentity?: string;
 		openedBy?: "next";
 		slideFrom?: "left" | "right";
 		/** A subagent's run start, carried from the row that opened it, so its
@@ -748,7 +750,7 @@ function ConversationScreenView({
 	// publication here, in the mounted conversation itself, so a flush-driven
 	// resume moves the pane too. A sheet or screen above holds the move until it
 	// closes. The draft does not follow: it belongs to the session that owns it.
-	const pendingIdentity = useRef<string | null>(null);
+	const pendingIdentity = useRef<string | null>(route.params.pendingIdentity ?? null);
 	const currentIdentity = useRef(route.params.ref);
 	useEffect(() => {
 		currentIdentity.current = route.params.ref;
@@ -762,7 +764,11 @@ function ConversationScreenView({
 			// navigation state has the full params the session view reconstructed.
 			const current = navigation.getState().routes.find((entry) => entry.key === route.key);
 			const replace = navigation.replace as unknown as (name: string, params: object) => void;
-			replace(current?.name ?? "Conversation", { ...(current?.params ?? route.params), ref: to });
+			replace(current?.name ?? "Conversation", {
+				...(current?.params ?? route.params),
+				ref: to,
+				pendingIdentity: undefined,
+			});
 		},
 		[navigation, route.key, route.params],
 	);
@@ -779,9 +785,12 @@ function ConversationScreenView({
 			// and dismiss the sheet without its discard guard. Hold the move until
 			// the conversation is topmost again; later changes replace the pending one.
 			if (topmostNow.current) replaceForIdentity(change.to);
-			else pendingIdentity.current = change.to;
+			else {
+				pendingIdentity.current = change.to;
+				navigation.setParams({ pendingIdentity: change.to });
+			}
 		});
-	}, [recoveryAvailable, replaceForIdentity, route.params.hubId]);
+	}, [recoveryAvailable, replaceForIdentity, route.params.hubId, navigation]);
 	useEffect(() => {
 		if (!topmost || pendingIdentity.current === null) return;
 		const to = pendingIdentity.current;

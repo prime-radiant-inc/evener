@@ -44,9 +44,22 @@ import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
 import { archivedListStoreFor } from "./archivedLists";
+import { activeConversation } from "./navigationRoutes";
+import type { NavigationState } from "@react-navigation/native";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
+	identities: [] as ((change: { hubId: string; from: string; to: string }) => void)[],
+}));
+
+vi.mock("./nativeMutationRuntime", async (original) => ({
+	...(await original<typeof import("./nativeMutationRuntime")>()),
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+		harness.identities.push(listener);
+		return () => {
+			harness.identities = harness.identities.filter((entry) => entry !== listener);
+		};
+	},
 }));
 
 // The root stack the screen sits in: whether it is focused, and the routes.
@@ -206,6 +219,7 @@ const navigation = {
 	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
+	replace: vi.fn(),
 	setOptions: vi.fn(),
 };
 
@@ -312,10 +326,13 @@ beforeEach(({ onTestFinished }) => {
 beforeEach(() => {
 	stack.focused = true;
 	stack.state = { index: 0, routes: [session] };
+	harness.identities = [];
 	navigation.navigate.mockClear();
 	navigation.push.mockClear();
 	navigation.pop.mockClear();
 	navigation.goBack.mockReset();
+	navigation.replace.mockReset();
+	navigation.setParams.mockReset();
 	navigation.setOptions.mockClear();
 	alertRequests.length = 0;
 	listScrolls.length = 0;
@@ -357,6 +374,47 @@ function levelAction(label: string): NativeStackHeaderItemMenuAction {
 const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]>): Thread => ({
 	...thread,
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
+});
+
+it("carries a covered conversation's identity through a Duo fold and reconstruction", async () => {
+	stack.state = {
+		index: 1,
+		routes: [{ ...session, params: route.params } as typeof session, { key: "notes", name: "NotesSheet" }],
+	};
+	let foldedParams: ConversationScreenProps["route"]["params"] = route.params;
+	navigation.setParams.mockImplementation((params) => {
+		const current = stack.state.routes[0];
+		stack.state.routes[0] = { ...current, params: { ...foldedParams, ...params } } as typeof current;
+	});
+	const { tree } = mount();
+	await settle();
+	act(() => {
+		for (const listener of harness.identities) listener({ hubId: "hub-1", from: ref, to: "local:resumed" });
+	});
+	await settle();
+	const outer = {
+		index: 0,
+		routes: [{ key: "sessions", name: "Sessions", state: stack.state }],
+	} as unknown as NavigationState;
+	const active = activeConversation(outer);
+	expect(active?.ref).toBe(ref);
+	expect(active?.pendingIdentity).toBe("local:resumed");
+	if (!active) throw new Error("the Duo did not retain its conversation");
+	foldedParams = active;
+	act(() => tree.unmount());
+	stack.state = { index: 0, routes: [{ ...session, params: foldedParams } as typeof session] };
+	navigation.replace.mockImplementation((_name, params) => {
+		stack.state.routes[0] = { ...session, params } as typeof session;
+	});
+	const reconstructed = render(
+		<SessionScreen
+			route={{ ...route, params: foldedParams }}
+			navigation={navigation as unknown as ConversationScreenProps["navigation"]}
+		/>,
+	);
+	await settle();
+	expect((stack.state.routes[0] as unknown as { params: { ref: string } }).params.ref).toBe("local:resumed");
+	act(() => reconstructed.unmount());
 });
 
 // A session with shell jobs and no subagents has a Jobs list too, and the
