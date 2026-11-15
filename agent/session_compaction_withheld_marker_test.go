@@ -329,6 +329,100 @@ func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
 	}
 }
 
+func TestWithheldFoldSnapshotKeepsCoverageAfterAnotherFold(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "withhold-snapshot-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	response := func(llm.Request) llm.Response {
+		call := communicateCall("withheld-snapshot-result", "result")
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+	}
+	steps := make([]func(llm.Request) llm.Response, 8)
+	for i := range steps {
+		steps[i] = response
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	for i := range steps {
+		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("snapshot-input-%d", i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := slices.Clone(s.ConversationProvenance().AdmittedInputs)
+	if len(original) != len(steps) {
+		t.Fatalf("admitted inputs = %d, want %d", len(original), len(steps))
+	}
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &foldTailFaultFS{Fs: afero.NewOsFs()}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	s.attachTranscript(writer, nil)
+	armed := false
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			if !armed {
+				armed = true
+				fs.arm(2)
+			}
+		}
+	})
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("withheld Compact: %v", err)
+	}
+	if n := fs.syncsSinceArm(); n < 2 {
+		t.Fatalf("staged tail fault did not run: got %d syncs", n)
+	}
+	s.mu.Lock()
+	oldFrontier := s.conversation.retractedFrontierID
+	oldBase := s.conversation.frontierID
+	s.mu.Unlock()
+	if oldFrontier == "" {
+		t.Fatal("withheld fold did not retain a live coverage frontier")
+	}
+	foundOldRef := false
+	for _, turn := range currentHistory(t, s) {
+		foundOldRef = foundOldRef || turn.ConversationCoverageRef == oldFrontier
+	}
+	if !foundOldRef {
+		t.Fatal("history has no withheld fold marker referencing its live frontier")
+	}
+	var publishedSecond bool
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			if err := s.Compact(context.Background()); err != nil {
+				t.Fatalf("competing Compact: %v", err)
+			}
+			s.mu.Lock()
+			publishedSecond = s.conversation.frontierID != oldBase && s.conversation.retractedFrontierID == ""
+			s.mu.Unlock()
+		}
+	})
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	if !publishedSecond {
+		t.Fatal("second fold did not replace the withheld frontier after the history snapshot")
+	}
+	s.mu.Lock()
+	prepared := slices.Clone(s.conversation.preparedInputs)
+	s.mu.Unlock()
+	for _, id := range original {
+		if !slices.Contains(prepared, id) {
+			t.Fatalf("history snapshot lost folded input %s: prepared=%v", id, prepared)
+		}
+	}
+	if state := s.ConversationProvenance(); !state.Authoritative {
+		t.Fatalf("history snapshot made conversation coverage unknown: state=%+v", state)
+	}
+}
+
 // TestWithheldFoldReEmitsNotesContextOnTheNextRequest pins the projection side
 // of a withheld fold: the in-memory fold stands, so the NOTES_CONTEXT turn the
 // fold folded away is gone from what the model sees, and the notes projection's
