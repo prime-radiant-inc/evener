@@ -497,16 +497,19 @@ func TestRejectedQueuedPickLeavesADurableOutcome(t *testing.T) {
 	s.appendTurn(schema.TurnAssistant, doc.Message)
 
 	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "first turn done") },
+		// Picking mid-turn is what makes the pick accepted now and applied at
+		// the boundary, where the seeded history makes it unrepresentable.
+		func(llm.Request) llm.Response {
+			if err := s.SetModelWithMutationID("glm/glm-test", "cm-queued-rejected"); err != nil {
+				t.Errorf("the picker accepted the pick, so admission must succeed: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		// The queued message still runs, on the model the boundary kept.
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
 	})
 	serveSessionWithMutationStore(t, s)
 	queueOneMutation(t, s, "cm-rejected-at-boundary", "the queued message")
-
-	// The pick is accepted while the turn runs and applied at the boundary,
-	// where the seeded history makes it unrepresentable.
-	if err := s.SetModelWithMutationID("glm/glm-test", "cm-queued-rejected"); err != nil {
-		t.Fatalf("the picker accepted the pick, so admission must succeed: %v", err)
-	}
 	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}

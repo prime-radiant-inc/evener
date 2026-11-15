@@ -2,7 +2,6 @@
 
 exports[`fixture basic-turn reduces to the expected model 1`] = `
 {
-  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -166,6 +165,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "anthropic/claude-sonnet-4-5",
+  "modelPick": undefined,
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "Auth files",
   "olderCursor": undefined,
@@ -314,7 +314,6 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
 
 exports[`fixture queue-and-status reduces to the expected model 1`] = `
 {
-  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -353,6 +352,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "claude-opus-4-1",
+  "modelPick": undefined,
   "modelProvider": "anthropic",
   "name": "Refactor plan v2",
   "olderCursor": undefined,
@@ -465,7 +465,6 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
 
 exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
 {
-  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -597,6 +596,7 @@ Double-checking the math.",
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "anthropic/claude-sonnet-4-5",
+  "modelPick": undefined,
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "",
   "olderCursor": undefined,
@@ -713,7 +713,6 @@ Double-checking the math.",
 
 exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
 {
-  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -838,6 +837,7 @@ PASS
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "anthropic/claude-sonnet-4-5",
+  "modelPick": undefined,
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "",
   "olderCursor": undefined,

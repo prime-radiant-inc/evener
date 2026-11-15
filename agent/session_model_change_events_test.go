@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestSetModel_EmitsModelChangedEvent verifies that a successful SetModel
@@ -82,6 +83,38 @@ func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 			t.Fatal("EventModelChanged emitted for a failed SetModel")
 		}
 	default:
+	}
+}
+
+// TestSetModelWithMutationID_RefusedAtRestLeavesADurableOutcome pins that a
+// pick refused on the at-rest path records its rejection in snapshot state. A
+// pick is admitted as pending before it is validated, so a refusal that only
+// returned an error would leave a reconnecting client displaying a pending pick
+// the session had already refused.
+func TestSetModelWithMutationID_RefusedAtRestLeavesADurableOutcome(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withConfig(SessionConfig{
+			ResolveProfile: unknownInstanceResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	if err := sess.SetModelWithMutationID("bogus/some-model", "cm-refused-at-rest"); err == nil {
+		t.Fatal("expected error from unknown instance ref")
+	}
+
+	state, ok := sess.ModelPickState()
+	if !ok {
+		t.Fatal("no model pick recorded after a refused pick; a reconnecting client would show it pending forever")
+	}
+	if state.Outcome != appwire.ModelPickRejected {
+		t.Fatalf("outcome = %q, want %q: a refused pick must not stay pending", state.Outcome, appwire.ModelPickRejected)
+	}
+	if state.ClientMutationID != "cm-refused-at-rest" {
+		t.Fatalf("clientMutationId = %q, want %q", state.ClientMutationID, "cm-refused-at-rest")
 	}
 }
 

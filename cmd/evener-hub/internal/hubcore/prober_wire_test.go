@@ -158,7 +158,7 @@ func (s wireProbeEnvelopeSource) VisionModel() string                     { retu
 func (s wireProbeEnvelopeSource) ModelPickState() (appwire.ModelPickState, bool) {
 	return appwire.ModelPickState{}, false
 }
-func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return s.meta }
+func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta { return s.meta }
 
 // TestStatusProberReadsAppWireStatusIncludingNonAgentJobs drives a real daemon
 // AppWire server through the real typed client. The shell row proves status is

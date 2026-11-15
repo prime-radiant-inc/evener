@@ -1954,14 +1954,44 @@ func (s *Session) SetModelWithMutationID(model, clientMutationID string) error {
 	}
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, "", nil, modelSwitchFence{
+		err := s.applyModelSwitch(model, "", nil, modelSwitchFence{
 			pickSeq:          pickSeq,
 			clientMutationID: clientMutationID,
 			queueWhenBusy:    true,
 		})
+		if err != nil {
+			s.rejectModelPick(pickSeq, clientMutationID, model)
+		}
+		return err
 	}
 	s.mu.Unlock()
 	return s.queueModelSwitch(model, clientMutationID, pickSeq)
+}
+
+// rejectModelPick records that an admitted pick never became the model. A pick
+// is admitted before it is validated, so every refusal must leave a durable
+// outcome: the notice that announces it is one entry in a bounded ring, and a
+// client that reconnects after it was evicted would otherwise keep displaying
+// a pick the session refused.
+func (s *Session) rejectModelPick(seq uint64, clientMutationID, model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectModelPickLocked(seq, clientMutationID, model)
+}
+
+// rejectModelPickLocked is rejectModelPick for a caller already holding s.mu.
+// An older refusal never overwrites a newer outcome: acceptance order is what
+// the snapshot means, and it only moves forward.
+func (s *Session) rejectModelPickLocked(seq uint64, clientMutationID, model string) {
+	if seq < s.modelPickState.Sequence {
+		return
+	}
+	s.modelPickState = appwire.ModelPickState{
+		Sequence:         seq,
+		Outcome:          appwire.ModelPickRejected,
+		ClientMutationID: clientMutationID,
+		Model:            model,
+	}
 }
 
 // turnInFlightLocked reports whether an input is being processed, from its
@@ -1993,11 +2023,16 @@ func (s *Session) queueModelSwitch(model, clientMutationID string, pickSeq uint6
 		// the switch can apply directly instead of waiting for a boundary
 		// that already fired.
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
+		if err := s.applyModelSwitch(model, primedInstance, primedListing, fence); err != nil {
+			s.rejectModelPick(pickSeq, clientMutationID, model)
+			return err
+		}
+		return nil
 	}
 	nextProfile, _, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
+		s.rejectModelPick(pickSeq, clientMutationID, model)
 		return err
 	}
 	client := s.client
@@ -2005,6 +2040,7 @@ func (s *Session) queueModelSwitch(model, clientMutationID string, pickSeq uint6
 
 	_, primedInstance, primedListing, err = resolveModelSwitchTarget(client, nextProfile, s.id, *s.providerAdapterTimeout(), primedInstance, primedListing)
 	if err != nil {
+		s.rejectModelPick(pickSeq, clientMutationID, model)
 		return err
 	}
 
@@ -2015,7 +2051,11 @@ func (s *Session) queueModelSwitch(model, clientMutationID string, pickSeq uint6
 	}
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
-		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
+		if err := s.applyModelSwitch(model, primedInstance, primedListing, fence); err != nil {
+			s.rejectModelPick(pickSeq, clientMutationID, model)
+			return err
+		}
+		return nil
 	}
 	// Last pick wins: the newest choice is what the next turn should run on.
 	// The acceptance watermark guards the store: a pick a newer accepted pick
@@ -2094,14 +2134,7 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 			// rejection is evicted would otherwise keep showing a pick the
 			// session never made current.
 			s.mu.Lock()
-			if pending.seq >= s.modelPickState.Sequence {
-				s.modelPickState = appwire.ModelPickState{
-					Sequence:         pending.seq,
-					Outcome:          appwire.ModelPickRejected,
-					ClientMutationID: pending.clientMutationID,
-					Model:            pending.model,
-				}
-			}
+			s.rejectModelPickLocked(pending.seq, pending.clientMutationID, pending.model)
 			s.mu.Unlock()
 			warning := warningDataFromErrorCode(
 				events.WarningCodeModelSwitchRejected,
