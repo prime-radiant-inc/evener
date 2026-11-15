@@ -705,6 +705,7 @@ function reconcileAcceptedModelSwitchAuthority(
   current: ReadonlyMap<string, AcceptedModelSwitch>,
   source: "modelPublication" | "modelChangedNotification",
   clientMutationId?: string,
+  authorityPick?: string,
 ): ReadonlyMap<string, AcceptedModelSwitch> {
   const authority = settleModelSwitchAuthority(
     ref,
@@ -713,6 +714,19 @@ function reconcileAcceptedModelSwitchAuthority(
   );
   const accepted = current.get(ref);
   if (!accepted) return current;
+  // A snapshot names the pick the session accepted last. When that names a
+  // different pick than this client's own accepted one, another client's pick
+  // owns the model outcome: a pick repeating the model already in force
+  // commits no change and rejects nothing, so the snapshot is the only place
+  // that says so. An unnamed pick is not evidence, which keeps an older daemon
+  // and this client's own pick intact.
+  if (authorityPick !== undefined && authorityPick !== "" && authorityPick !== accepted.clientMutationId) {
+    const requests = modelSwitchRequests.get(ref);
+    if (requests) settleModelSwitchThrough(requests, accepted.sequence);
+    const next = new Map(current);
+    next.delete(ref);
+    return next;
+  }
   const identityInvalidated = authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted));
   const modelInvalidated = authorityModels.some((model) => !acceptedModelSwitchMatchesModel(accepted, model));
   // An unmatched live notification is another client's final authority, even
@@ -1717,6 +1731,8 @@ function putThreadModels(
     authorityModels,
     state.acceptedModelSwitches,
     "modelPublication",
+    undefined,
+    threadModel?.acceptedModelPick,
   );
   if (acceptedModelSwitches !== state.acceptedModelSwitches) patch.acceptedModelSwitches = acceptedModelSwitches;
   if (!threadModel && !watchedModel) return;

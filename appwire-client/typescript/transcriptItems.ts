@@ -522,6 +522,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // the modelProvider fallback for their snapshots.
     modelProvider: thread.evener.profile || thread.modelProvider,
     model: thread.modelProvider,
+    acceptedModelPick: thread.evener.acceptedModelPick || undefined,
     reasoningEffort: thread.evener.reasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
     manager: thread.evener.manager ?? false,

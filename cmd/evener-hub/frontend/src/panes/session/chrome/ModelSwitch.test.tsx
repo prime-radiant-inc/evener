@@ -524,6 +524,51 @@ test("reconnect hydration preserves a queued model selected after a live model c
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
+// The reported gap: this tab queues B mid-turn and then disconnects, so it never
+// sees the switch settle. Another client replaces the queued choice with A -
+// the model already in force - so the successful commit repeats the model this
+// tab last saw, publishes no change it can observe, and rejects nothing. The
+// reconnect snapshot is the only place that says which pick the session
+// accepted, and without reconciling it the picker keeps showing B while the
+// next turn runs on A.
+test("reconnect hydration clears a queued pick another client superseded with the model already in force", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  // The reconnect snapshot: the model and identity are the ones this tab
+  // already knew, and the only new fact is the pick the session accepted last,
+  // which names another client's request rather than this tab's queued one.
+  const baseThread = testThread("ref_a", { id: "thr_a", modelProvider: "claude-sonnet-4-5" });
+  const snapshotThread = testThread("ref_a", {
+    id: "thr_a",
+    modelProvider: "claude-sonnet-4-5",
+    evener: { ...baseThread.evener, profile: "anthropic", acceptedModelPick: "another-tab-pick" },
+  });
+  const hydratedModel = hydrateThread(
+    {
+      thread: snapshotThread,
+      requestGeneration: 1,
+      bootGeneration: "1@ref_a",
+      epoch: 1,
+      snapshot: { incarnation: "inc_a", length: 0 },
+      overlay: [],
+    },
+    "ref_a",
+    Date.now(),
+  );
+  act(() => putThreadModel("ref_a", hydratedModel));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={hydratedModel} />);
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
 test("accepted model display follows pick order when responses arrive out of order", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();

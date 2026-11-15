@@ -962,6 +962,15 @@ export interface EvenerThread {
   queue: QueueState;
   pendingMutations?: PendingMutation[];
   /**
+   * AcceptedModelPick names the newest model pick this session accepted, by
+   * the client mutation id that pick carried, whether it is still queued for a
+   * turn boundary or has committed already. A pick that repeats the model in
+   * force commits no change and rejects nothing, so a client that missed the
+   * commit's own notification has no other way to learn its own pick no longer
+   * owns the outcome. Empty when the session accepted no identified pick.
+   */
+  acceptedModelPick?: string;
+  /**
    * MutationStateAuthoritative identifies a daemon snapshot that can settle
    * uncertain sends. Saved transcript data cannot prove a mutation absent.
    */

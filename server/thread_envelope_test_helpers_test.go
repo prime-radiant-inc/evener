@@ -13,28 +13,29 @@ import (
 //
 // Zero value reports the same thing a daemon with nothing to say reports.
 type stubThreadEnvelopeSource struct {
-	contextPressure  float64
-	contextMetrics   ContextMetrics
-	detailedStatus   DetailedStatus
-	queue            appwire.QueueState
-	pendingMutations []appwire.PendingMutation
-	tasks            *appwire.TaskAggregate
-	taskCalls        int
-	metaCalls        int
-	workMillis       int64
-	usage            *appwire.EvenerUsage
-	turnStartedAt    int64
-	failedToolCalls  int
-	failuresMeasured bool
-	askPending       bool
-	question         *appwire.PendingQuestion
-	failure          *appwire.ThreadFailure
-	escalations      []appwire.SandboxEscalationRequested
-	reasoningEffort  string
-	reasoningLevels  []string
-	supportsReason   bool
-	visionModel      string
-	meta             schema.SessionMeta
+	contextPressure   float64
+	contextMetrics    ContextMetrics
+	detailedStatus    DetailedStatus
+	queue             appwire.QueueState
+	pendingMutations  []appwire.PendingMutation
+	tasks             *appwire.TaskAggregate
+	taskCalls         int
+	metaCalls         int
+	workMillis        int64
+	usage             *appwire.EvenerUsage
+	turnStartedAt     int64
+	failedToolCalls   int
+	failuresMeasured  bool
+	askPending        bool
+	question          *appwire.PendingQuestion
+	failure           *appwire.ThreadFailure
+	escalations       []appwire.SandboxEscalationRequested
+	reasoningEffort   string
+	reasoningLevels   []string
+	supportsReason    bool
+	visionModel       string
+	acceptedModelPick string
+	meta              schema.SessionMeta
 	// parkOnMeta runs at the start of SessionMeta(), the last facet
 	// refreshFacets samples. Parking there holds a fully-populated sample open.
 	parkOnMeta func()
@@ -106,6 +107,8 @@ func (s *stubThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 }
 
 func (s *stubThreadEnvelopeSource) VisionModel() string { return s.visionModel }
+
+func (s *stubThreadEnvelopeSource) AcceptedModelPick() string { return s.acceptedModelPick }
 
 // publishEnvelope installs src as the server's envelope source and seeds every
 // facet from it, which is what serve.go does at session install.

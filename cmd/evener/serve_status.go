@@ -231,6 +231,10 @@ func (l liveThreadEnvelopeSource) VisionModel() string {
 	return l.session().VisionModel()
 }
 
+func (l liveThreadEnvelopeSource) AcceptedModelPick() string {
+	return l.session().AcceptedModelPick()
+}
+
 func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	return l.session().Meta()
 }

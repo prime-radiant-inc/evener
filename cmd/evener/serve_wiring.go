@@ -136,6 +136,10 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 			p := sess.Profile()
 			return p.Model(), p.ID()
 		})
+		// A pick accepted while a turn runs queues for the boundary and emits
+		// nothing until it commits, so this reply is the only moment before then
+		// that can publish which pick the session accepted.
+		srv.RefreshAcceptedModelPick()
 		return nil
 	})
 	srv.SetNameFunc(func(name string) error { return live.session().Rename(name) })

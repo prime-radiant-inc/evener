@@ -83,6 +83,9 @@ type EnvelopeSampling interface {
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string
 	VisionModel() string
+	// AcceptedModelPick names the newest model pick the session accepted, by its
+	// client mutation id, empty when the newest accepted pick carried none.
+	AcceptedModelPick() string
 	Profile() *provider.Profile
 	Meta() schema.SessionMeta
 }

@@ -133,6 +133,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			Diagnostics:            threadDiagnostics,
 			Queue:                  queue,
 			PendingMutations:       pendingMutations,
+			AcceptedModelPick:      envelope.AcceptedModelPick,
 			Tasks:                  taskAggregate,
 			Goal:                   goalState,
 			HumanNote:              humanNote,

@@ -531,6 +531,65 @@ func TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick(t *testing.T) {
 	}
 }
 
+// TestAcceptedModelPickNamesTheNewestAcceptedPick pins the identity a snapshot
+// publishes beside the model: a queued pick names itself as soon as the session
+// accepts it, a newer pick takes the name over, and a committed pick that
+// repeats the model already in force still names itself. That last case is the
+// one a client cannot observe any other way - it changes no model and rejects
+// nothing - so the identity is what tells a client its own queued pick lost.
+func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
+	dir := t.TempDir()
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+	adapter := &fakeAdapter{
+		name:       "openai",
+		liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+	}
+	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+
+	if got := s.AcceptedModelPick(); got != "" {
+		t.Fatalf("accepted pick before any pick = %q, want empty", got)
+	}
+	// An at-rest pick commits immediately and names itself.
+	if err := s.SetModelWithMutationID("gpt-5.4", "pick-at-rest"); err != nil {
+		t.Fatalf("at-rest pick: %v", err)
+	}
+	if got := s.AcceptedModelPick(); got != "pick-at-rest" {
+		t.Fatalf("accepted pick after an at-rest commit = %q, want %q", got, "pick-at-rest")
+	}
+
+	// A mid-turn pick queues for the boundary and names itself straight away,
+	// before it commits: a client reconnecting in that window must be able to
+	// tell which pick the session accepted.
+	adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			if err := s.SetModelWithMutationID("gpt-5.2", "pick-queued"); err != nil {
+				t.Errorf("queued pick: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "turn done")
+		},
+	})
+	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := s.AcceptedModelPick(); got != "pick-queued" {
+		t.Fatalf("accepted pick after the queued pick committed = %q, want %q", got, "pick-queued")
+	}
+
+	// A pick repeating the model in force commits a switch to the same model.
+	// It changes nothing a client could compare, so its identity is the only
+	// evidence that it superseded what came before it.
+	if err := s.SetModelWithMutationID("gpt-5.2", "pick-same-model"); err != nil {
+		t.Fatalf("same-model pick: %v", err)
+	}
+	if got := s.AcceptedModelPick(); got != "pick-same-model" {
+		t.Fatalf("accepted pick after a same-model commit = %q, want %q; a superseding pick that repeats the model in force is invisible to a client without this identity", got, "pick-same-model")
+	}
+}
+
 // TestCommittedSwitchPublicationsLandInCommitOrder pins the publication lock's
 // span: a queued application that committed its swap publishes before a newer
 // at-rest pick that arrives while the older application sits between its swap

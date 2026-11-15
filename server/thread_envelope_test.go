@@ -217,6 +217,26 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 		},
 		{
+			// A committed pick names itself on the snapshot, including one that
+			// repeats the model already in force: that commit changes no model
+			// a client could compare, so the identity is the only thing the
+			// snapshot can report about it.
+			name: "accepted pick on MODEL_CHANGED",
+			move: func(e *stubThreadEnvelopeSource) {
+				e.acceptedModelPick = "another-tab-pick"
+			},
+			event: events.SessionEvent{
+				Kind: events.EventModelChanged, SessionID: "th_1",
+				Data: events.ModelChangedData{NewModel: "m1", ClientMutationID: "another-tab-pick"},
+			},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Evener.AcceptedModelPick != "another-tab-pick" {
+					t.Fatalf("acceptedModelPick = %q, want the pick the session accepted last",
+						thread.Evener.AcceptedModelPick)
+				}
+			},
+		},
+		{
 			name: "reasoning effort on REASONING_EFFORT_CHANGED",
 			move: func(e *stubThreadEnvelopeSource) { e.reasoningEffort = "minimal" },
 			event: events.SessionEvent{
@@ -932,6 +952,7 @@ func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) 
 
 func (c *countingThreadEnvelopeSource) LatestExecutionTurnID() string { c.hit(); return "" }
 func (c *countingThreadEnvelopeSource) VisionModel() string           { c.hit(); return "" }
+func (c *countingThreadEnvelopeSource) AcceptedModelPick() string     { c.hit(); return "" }
 func (c *countingThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	c.hit()
 	return 0, nil, 0

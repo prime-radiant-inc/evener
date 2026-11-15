@@ -36,6 +36,7 @@ func (s frontierWireSource) RestingFailure() *appwire.ThreadFailure             
 func (s frontierWireSource) PendingEscalations() []appwire.SandboxEscalationRequested { return nil }
 func (s frontierWireSource) ReasoningInfo() (string, []string, bool)                  { return "", nil, false }
 func (s frontierWireSource) VisionModel() string                                      { return s.s.VisionModel() }
+func (s frontierWireSource) AcceptedModelPick() string                                { return s.s.AcceptedModelPick() }
 func (s frontierWireSource) SessionMeta() schema.SessionMeta                          { return s.s.Meta() }
 
 func newFrontierWire(t *testing.T, s *agent.Session) (*server.Server, func(bool) appwire.ThreadHistoryReadResponse, func() []events.SessionEvent) {

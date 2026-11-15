@@ -358,6 +358,13 @@ export interface ThreadModel {
   manager?: boolean;
   modelProvider: string;
   model: string;
+  /** The client mutation id of the newest model pick the session accepted, from
+   * the wire's EvenerThread.acceptedModelPick. It lets a client that queued a
+   * pick learn the session stopped honoring it even when the superseding pick
+   * repeats the model already in force, which publishes no change and no
+   * rejection. Absent means the snapshot names no accepted pick, so nothing can
+   * be reconciled against it. */
+  acceptedModelPick?: string;
   reasoningEffort?: string;
   visionModel: string;
   askPending: boolean;

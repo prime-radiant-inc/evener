@@ -1310,6 +1310,7 @@ Underlying Go kind: `string` (no struct fields).
 | `contextWindowSource` | string | yes |  |
 | `queue` | [appwire.QueueState](#queuestate) |  |  |
 | `pendingMutations` | [][appwire.PendingMutation](#pendingmutation) | yes |  |
+| `acceptedModelPick` | string | yes |  |
 | `mutationStateAuthoritative` | bool | yes |  |
 | `tasks` | \*[appwire.TaskAggregate](#taskaggregate) | yes |  |
 | `goal` | \*[appwire.GoalState](#goalstate) | yes |  |

@@ -1164,6 +1164,12 @@ type Session struct {
 	// failures never advance it, so a rejected pick cannot cancel an earlier
 	// accepted one. Guarded by s.mu.
 	modelPickAccepted uint64
+	// modelPickAcceptedID is the client mutation id of the pick
+	// modelPickAccepted names, empty when that pick carried none. The issue and
+	// the identity always move together: a snapshot reports the identity of the
+	// pick that owns the model outcome, so another client can tell its own pick
+	// apart from one that superseded it without a model change. Guarded by s.mu.
+	modelPickAcceptedID string
 	// modelSwitchPublishMu serializes a switch application's commit through
 	// its publication - the profile swap, the marker record, and the
 	// EventModelChanged emit - so publications land in the order their swaps
@@ -2008,6 +2014,7 @@ func (s *Session) queueModelSwitch(model, clientMutationID string, pickSeq uint6
 			seq:              pickSeq,
 		}
 		s.modelPickAccepted = pickSeq
+		s.modelPickAcceptedID = clientMutationID
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
 		s.wakeQuotaWaitLocked()
@@ -2163,6 +2170,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		}
 		if s.modelPickAccepted < fence.pickSeq {
 			s.modelPickAccepted = fence.pickSeq
+			s.modelPickAcceptedID = fence.clientMutationID
 		}
 		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
@@ -2171,6 +2179,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// Committing accepts the pick.
 	if fence.pickSeq > s.modelPickAccepted {
 		s.modelPickAccepted = fence.pickSeq
+		s.modelPickAcceptedID = fence.clientMutationID
 	}
 	// The profile this commit actually replaces is the one the session runs
 	// right now: an earlier pick's application may have moved the session
@@ -2391,6 +2400,17 @@ func (s *Session) VisionModel() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cfg.VisionModel
+}
+
+// AcceptedModelPick returns the client mutation id of the newest model pick the
+// session accepted, empty when that pick carried none. A client uses it to tell
+// its own accepted pick apart from one another client made: a pick that repeats
+// the model already in force commits no change and rejects nothing, so only
+// this identity distinguishes the two.
+func (s *Session) AcceptedModelPick() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelPickAcceptedID
 }
 
 // buildModelSwitchMarkerText renders the persisted model-switch marker text:

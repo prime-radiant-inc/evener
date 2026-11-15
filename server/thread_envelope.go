@@ -50,7 +50,12 @@ type threadEnvelope struct {
 	Detailed               *DetailedStatus
 	Queue                  appwire.QueueState
 	PendingMutations       []appwire.PendingMutation
-	Tasks                  *appwire.TaskAggregate
+	// AcceptedModelPick is the identity of the newest model pick the session
+	// accepted. It rides facetQueue because it is model-switch bookkeeping the
+	// session keeps beside its client-mutation store, and every event that can
+	// accept a pick already re-samples that facet.
+	AcceptedModelPick string
+	Tasks             *appwire.TaskAggregate
 	// TaskStoreOwnerSessionID is projection routing state. It never enters
 	// EvenerThread or any other public AppWire shape.
 	TaskStoreOwnerSessionID string
@@ -162,6 +167,9 @@ type ThreadEnvelopeSource interface {
 	PendingEscalations() []appwire.SandboxEscalationRequested
 	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
 	VisionModel() string
+	// AcceptedModelPick names the newest model pick the session accepted, by the
+	// client mutation id that pick carried, empty when that pick carried none.
+	AcceptedModelPick() string
 	SessionMeta() schema.SessionMeta
 }
 
@@ -198,13 +206,15 @@ const (
 	// (MODEL_CHANGED) re-sample it too.
 	facetTurnFailure
 	facetFrontier
+	facetModelPick
 )
 
 // facetAll is every facet. Used for the seed at identity install, which is the
 // one moment every value changes at once because the session itself changed.
 const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 	facetGoal | facetWork | facetFailures | facetAsk | facetEscalations |
-	facetReasoning | facetVision | facetMeta | facetTurnFailure | facetFrontier
+	facetReasoning | facetVision | facetMeta | facetTurnFailure | facetFrontier |
+	facetModelPick
 
 // facetsByEvent maps a session event to the envelope facets it can have moved.
 //
@@ -298,7 +308,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 
 	// Values whose events are not direct task/goal carriers.
 	events.EventSessionNameChanged:     facetMeta,
-	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics | facetTurnFailure,
+	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics | facetTurnFailure | facetModelPick,
 	events.EventReasoningEffortChanged: facetReasoning,
 	events.EventVisionModelChanged:     facetVision,
 
@@ -347,6 +357,14 @@ func (s *Server) SetThreadEnvelopeSource(src ThreadEnvelopeSource) {
 // self-contained seed inside the first projection commit.
 func (s *Server) RefreshThreadEnvelope() {
 	s.refreshFacets(facetAll)
+}
+
+// RefreshAcceptedModelPick re-samples the identity of the newest accepted model
+// pick. A pick accepted while a turn runs queues for the turn boundary and
+// emits nothing until it commits, so the accepting request is the only moment
+// that can install the accepted identity before then.
+func (s *Server) RefreshAcceptedModelPick() {
+	s.refreshFacets(facetModelPick)
 }
 
 // refreshThreadEnvelopeForEvent samples the checkpoint/legacy facets ev can
@@ -458,6 +476,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 	if facets&facetVision != 0 {
 		next.VisionModel = src.VisionModel()
+	}
+	if facets&facetModelPick != 0 {
+		next.AcceptedModelPick = src.AcceptedModelPick()
 	}
 	if facets&(facetMeta|facetGoal) != 0 {
 		meta := src.SessionMeta()
@@ -606,6 +627,9 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 	}
 	if facets&facetVision != 0 {
 		e.VisionModel = next.VisionModel
+	}
+	if facets&facetModelPick != 0 {
+		e.AcceptedModelPick = next.AcceptedModelPick
 	}
 	if facets&facetMeta != 0 {
 		if !cwdStale {
