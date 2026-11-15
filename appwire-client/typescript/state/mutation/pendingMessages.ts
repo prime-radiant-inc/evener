@@ -795,10 +795,14 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     const fullText = queue?.texts?.[index];
     const text = fullText ?? queue?.preview?.[index] ?? "";
     const preview = queue?.preview?.[index];
-    // The placeholder grammar speaks only when no full text says otherwise, so
-    // a text-only message whose literal text is "[image]" stays text-bearing
-    // and keeps its Edit affordance (queueEntryAt applies the same rule).
-    const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
+    // The wire's per-entry imageCounts is authoritative; the preview's
+    // placeholder grammar is the old-daemon fallback, and it speaks only
+    // when no full text says otherwise, so a text-only message whose literal
+    // text is "[image]" stays text-bearing and keeps its Edit affordance
+    // (queueEntryAt applies the same rule).
+    const imageCount =
+      queue?.imageCounts?.[index] ??
+      (fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0);
     const skillNames = canonicalSkillNames(queue?.skillNames?.[index] ?? []);
     const commandNames = canonicalSkillNames(queue?.commandNames?.[index] ?? []);
     const queueMentions = queue?.mentions?.[index];

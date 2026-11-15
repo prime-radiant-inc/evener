@@ -440,6 +440,13 @@ type QueueState struct {
 	// Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
 	// and UTF-16 location. It is editing metadata, not activation authority.
 	Mentions [][]InputMention `json:"mentions,omitempty"`
+	// ImageCounts is FIFO-aligned with Preview and carries each entry's
+	// image count, so a client can refuse a text-only edit of another
+	// client's queued text+image row — the images the restore seam cannot
+	// carry would otherwise be destroyed by the edit's cancel half. Absent
+	// on old daemons; clients must treat a missing ImageCounts as
+	// "unknown", falling back to the preview's placeholder grammar.
+	ImageCounts []int `json:"imageCounts,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged

@@ -52,6 +52,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.SkillNames = make([][]string, len(snapshot.InputQueue))
 		queue.CommandNames = make([][]string, len(snapshot.InputQueue))
 		queue.Mentions = make([][]appwire.InputMention, len(snapshot.InputQueue))
+		queue.ImageCounts = make([]int, len(snapshot.InputQueue))
 	}
 	pendingByID := make(map[string]appwire.PendingMutation, len(snapshot.PendingExecutions)+len(snapshot.InputQueue))
 	for id, pending := range snapshot.PendingExecutions {
@@ -72,6 +73,7 @@ func (s *Session) ClientMutationProjection() (appwire.QueueState, []appwire.Pend
 		queue.SkillNames[i] = slices.Clone(queued.SkillNames)
 		queue.CommandNames[i] = slices.Clone(queued.CommandNames)
 		queue.Mentions[i] = slices.Clone(queued.Mentions)
+		queue.ImageCounts[i] = len(queued.Images)
 		if _, exists := pendingByID[entry.ClientMutationID]; exists {
 			continue
 		}
