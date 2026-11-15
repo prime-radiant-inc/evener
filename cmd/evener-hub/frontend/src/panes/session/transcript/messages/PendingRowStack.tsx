@@ -154,21 +154,37 @@ export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: n
 // and its reappeared row is new content again for a scrolled-away reader.
 // `visible` carries Session's §1 live gate: a suppressed surface counts no
 // arrivals.
-const NO_VISIBLE_ENTRIES: readonly PendingTurnEntry[] = [];
+const NO_VISIBLE_ROWS: readonly { id: string; displayId?: string }[] = [];
 
-export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntry[], visible: boolean): number {
+// The new-content pill's arrival edge counts the visible pending MESSAGES -
+// the same rows the stack renders from the shared projection - not this
+// client's pending entries alone. The reconcile excludes identities the
+// daemon's queue already reflects, so an entries-keyed epoch never fired
+// for a queue row another client queued (issue #6363); the projection is the
+// one set that holds every family the pane can see (own holds, the daemon's
+// queue, its executions, the durable failure rows). Rows key on their
+// display identity - `displayId ?? id` - so a row that merges from source
+// to consumer (a promotion absorbing its queue entry) is the SAME arrival,
+// never a second one. Removers never bump, and a pane's first observation
+// baselines without firing (a pane opened with work already in flight
+// scrolled to the end on mount).
+export function useHeldSteerEpoch(
+  ref: string,
+  rows: readonly { id: string; displayId?: string }[],
+  visible: boolean,
+): number {
   const [epoch, setEpoch] = useState(0);
   const prevRef = useRef<{ ref: string; ids: ReadonlySet<string> } | null>(null);
-  const visibleEntries = visible ? entries : NO_VISIBLE_ENTRIES;
-  const ids = useMemo(() => new Set(visibleEntries.map((entry) => entry.id)), [visibleEntries]);
+  const visibleRows = visible ? rows : NO_VISIBLE_ROWS;
+  const ids = useMemo(() => new Set(visibleRows.map((row) => row.displayId ?? row.id)), [visibleRows]);
   useEffect(() => {
     const prev = prevRef.current;
     prevRef.current = { ref, ids };
     if (prev?.ref !== ref) return;
-    const added = visibleEntries.some((entry) => !prev.ids.has(entry.id));
+    const added = visibleRows.some((row) => !prev.ids.has(row.displayId ?? row.id));
     if (!added) return;
     setEpoch((count) => count + 1);
-  }, [ref, ids, visibleEntries]);
+  }, [ref, ids, visibleRows]);
   return epoch;
 }
 

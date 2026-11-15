@@ -136,21 +136,28 @@ test("heldSteerEntries keeps steer/drain/promote and excludes send/queue/blocked
 // a lifetime set, so the reappeared row counts as new content again for a
 // scrolled-away reader - a lifetime set would suppress that bump forever.
 test("useHeldSteerEpoch bumps on a returning id and never on a removal", () => {
-  const held = (id: string): PendingTurnEntry => ({ ...ENTRY("submitting"), id });
+  const held = (id: string): { id: string; displayId?: string } => ({ id });
   const { result, rerender } = renderHook(
-    ({ entries, visible }: { entries: PendingTurnEntry[]; visible: boolean }) =>
-      useHeldSteerEpoch("ref_a", entries, visible),
-    { initialProps: { entries: [held("m1")], visible: true } },
+    ({ rows, visible }: { rows: { id: string; displayId?: string }[]; visible: boolean }) =>
+      useHeldSteerEpoch("ref_a", rows, visible),
+    { initialProps: { rows: [held("m1")], visible: true } },
   );
   expect(result.current).toBe(0); // the pane's first observation baselines
-  rerender({ entries: [held("m1"), held("m2")], visible: true });
+  rerender({ rows: [held("m1"), held("m2")], visible: true });
   expect(result.current).toBe(1); // an arrival bumped it exactly once
-  rerender({ entries: [held("m1")], visible: true });
+  rerender({ rows: [held("m1")], visible: true });
   expect(result.current).toBe(1); // a removal never bumps
-  rerender({ entries: [], visible: false });
+  rerender({ rows: [], visible: false });
   expect(result.current).toBe(1); // the gate suppressing the surface counts no arrivals
-  rerender({ entries: [held("m1")], visible: true });
+  rerender({ rows: [held("m1")], visible: true });
   expect(result.current).toBe(2); // a returning id bumps again
+  // A row that merges from source to consumer keeps its display identity,
+  // so the transition is the SAME arrival - the consuming mutation (a
+  // promotion absorbing its queue entry, say) is never a second bump.
+  rerender({ rows: [{ id: "m_consumer", displayId: "m1" }], visible: true });
+  expect(result.current).toBe(2); // the identity carried over; nothing added
+  rerender({ rows: [held("m1"), { id: "m_consumer", displayId: "m2" }], visible: true });
+  expect(result.current).toBe(3); // a genuinely new row still bumps
 });
 
 // --- component rendering ------------------------------------------------------
