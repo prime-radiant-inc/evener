@@ -61,6 +61,9 @@ export interface PendingMessage<A extends MutationAttachmentRef = MutationAttach
   // row with no mutation id is keyed `queue:<entryId>` so it still renders
   // exactly once.
   id: string;
+  // A queue source and the command consuming it have different wire ids.
+  // Keep the source's rendering key while actions use the current owner.
+  displayId?: string;
   ref: string;
   method: PendingMethod;
   state: PendingMessageState;
@@ -90,12 +93,11 @@ export interface PendingMessage<A extends MutationAttachmentRef = MutationAttach
   queueRevision?: number;
   recoveryKind?: MutationRecoveryKind;
   reason?: string;
-  // A refused Stop has no user composition, but it is still waiting work the
-  // user must dismiss. It renders as a row with only Dismiss.
+  // Controls carry no editable composition. Their durable state determines
+  // whether the action layer offers Retry or Dismiss.
   interrupt?: boolean;
-  // A refused queue cancellation names the control that failed, not a message
-  // the user can edit or resend.
-  controlFailure?: "cancel";
+  // These operations name controls, not messages to edit or resend.
+  controlFailure?: "cancel" | "clear";
   // The durable source this row came from, for the action layer. At most one
   // of these describes a given position in the wire family; recovery wins.
   outbox?: MutationOutboxRecord<A>;
@@ -448,6 +450,9 @@ function mergePendingRows<A extends MutationAttachmentRef>(
   existing: PendingMessage<A>,
   row: PendingMessage<A>,
 ): PendingMessage<A> {
+  // Lineage shares display identity, but only the consuming command owns its
+  // actions. A retained source recovery must not make that command editable.
+  const consumer = isSteeringRow(row) ? row : isSteeringRow(existing) ? existing : undefined;
   return {
     ...existing,
     ...(isSteeringRow(row)
@@ -469,15 +474,25 @@ function mergePendingRows<A extends MutationAttachmentRef>(
     ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),
     queueEntryIds: [...new Set([...existing.queueEntryIds, ...row.queueEntryIds])],
     fromThisClient: existing.fromThisClient || row.fromThisClient,
-    ...(row.outbox !== undefined ? { outbox: row.outbox } : {}),
-    ...(row.optimistic !== undefined ? { optimistic: row.optimistic } : {}),
-    ...(row.recovery !== undefined
+    ...(consumer
       ? {
-          recovery: row.recovery,
-          recoveryKind: row.recoveryKind,
-          ...(row.reason !== undefined ? { reason: row.reason } : {}),
+          outbox: consumer.outbox,
+          optimistic: consumer.optimistic,
+          recovery: consumer.recovery,
+          recoveryKind: consumer.recoveryKind,
+          reason: consumer.reason,
         }
-      : {}),
+      : {
+          ...(row.outbox !== undefined ? { outbox: row.outbox } : {}),
+          ...(row.optimistic !== undefined ? { optimistic: row.optimistic } : {}),
+          ...(row.recovery !== undefined
+            ? {
+                recovery: row.recovery,
+                recoveryKind: row.recoveryKind,
+                ...(row.reason !== undefined ? { reason: row.reason } : {}),
+              }
+            : {}),
+        }),
   };
 }
 
@@ -674,23 +689,41 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     rows.set(wireId, rowFromBase({ ...entry, id: wireId }, families, pendingById));
   }
 
-  // Recovery rows that never became a pending entry (refused, orphaned,
-  // interrupt refusals) are pending messages too.
+  // Recovery and blocked/canceled control rows have no transport entry, but
+  // remain visible until their durable owner settles or the user acts.
   for (const [id, family] of families) {
     const recovery = family.recovery;
-    if (!recovery) continue;
-    const cancelFailure = recovery.method === "turn/cancelQueued";
-    const rowId = cancelFailure ? `${id}:cancel-failure:${recovery.clientMutationId}` : recoveryRowId(recovery);
+    const outbox = family.outbox;
+    const record =
+      recovery ??
+      (outbox &&
+      (outbox.state === "blockedUnknown" || outbox.state === "canceled") &&
+      (outbox.method === "turn/interrupt" || outbox.method === "turn/cancelQueued" || outbox.method === "thread/clear")
+        ? outbox
+        : undefined);
+    if (!record) continue;
+    const cancelFailure = record.method === "turn/cancelQueued";
+    const clearFailure = record.method === "thread/clear";
+    let rowId = id;
+    if (recovery) {
+      rowId = cancelFailure ? `${id}:cancel-failure:${recovery.clientMutationId}` : recoveryRowId(recovery);
+    }
     if (rows.has(rowId) || (rowId === id && isDelivered(id))) continue;
-    const method = composerVerb(recovery.method);
-    const interrupt = recovery.method === "turn/interrupt";
-    if (!method && !interrupt && !cancelFailure) continue;
+    const method = composerVerb(record.method);
+    const interrupt = record.method === "turn/interrupt";
+    if (!method && !interrupt && !cancelFailure && !clearFailure) continue;
     const collected = inputContent(familyInput(family) ?? NO_INPUT);
     rows.set(rowId, {
       id: rowId,
       ref,
       method: method ?? (cancelFailure ? "queue" : "send"),
-      state: recovery.recoveryKind === "orphaned" ? "orphaned" : "refused",
+      state: recovery
+        ? recovery.recoveryKind === "orphaned"
+          ? "orphaned"
+          : "refused"
+        : outbox?.state === "canceled"
+          ? "canceled"
+          : "uncertain",
       text: collected.text,
       displayText: composeDisplayText(
         collected.text,
@@ -704,22 +737,42 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       imageCount: collected.imageCount,
       skillNames: collected.skillNames,
       commandNames: collected.commandNames,
-      ...(recovery.createdAt !== undefined ? { createdAt: recovery.createdAt } : {}),
-      ...(recovery.intentSequence !== undefined ? { intentSequence: recovery.intentSequence } : {}),
-      fromThisClient: input.isOwnMutationRecord(recovery),
+      ...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
+      ...(record.intentSequence !== undefined ? { intentSequence: record.intentSequence } : {}),
+      fromThisClient: input.isOwnMutationRecord(record),
       queueEntryIds: [],
-      recoveryKind: recovery.recoveryKind,
-      ...(interrupt || cancelFailure ? { interrupt: true } : {}),
-      ...(cancelFailure ? { controlFailure: "cancel" } : {}),
-      ...(recovery.recoveryReason !== undefined ? { reason: recovery.recoveryReason } : {}),
-      recovery,
+      ...(interrupt || cancelFailure || clearFailure ? { interrupt: true } : {}),
+      ...(cancelFailure ? { controlFailure: "cancel" } : clearFailure ? { controlFailure: "clear" } : {}),
+      ...(recovery
+        ? {
+            recovery,
+            recoveryKind: recovery.recoveryKind,
+            ...(recovery.recoveryReason !== undefined ? { reason: recovery.recoveryReason } : {}),
+          }
+        : { outbox }),
     });
   }
 
   // Queue rows: one per daemon entry, merged with the local/pending row that
   // shares its identity or its queue entry id.
   const queue = model?.queue;
-  const rowCount = queue?.preview?.length ?? queue?.texts?.length ?? queue?.ids?.length ?? queue?.depth ?? 0;
+  // Queue snapshots and carried entries link the source mutation to the
+  // consumer even before that lineage reaches the local accepted copy.
+  const sourceIdByEntryId = new Map<string, string>();
+  const linkSourceEntry = (entryId: string, mutationId: string | undefined): void => {
+    if (mutationId) sourceIdByEntryId.set(entryId, mutationId);
+    const source = mutationId ? rows.get(mutationId) : undefined;
+    if (!source || source.queueEntryIds.includes(entryId)) return;
+    rows.set(source.id, { ...source, queueEntryIds: [...source.queueEntryIds, entryId] });
+  };
+  for (const [index, entryId] of (queue?.ids ?? []).entries()) {
+    linkSourceEntry(entryId, queue?.clientMutationIds?.[index]);
+  }
+  for (const entry of input.consumedQueueEntries ?? []) {
+    linkSourceEntry(entry.entryId, entry.clientMutationId);
+  }
+  // A depth-only snapshot counts work but does not identify individual messages.
+  const rowCount = queue?.preview?.length ?? queue?.texts?.length ?? queue?.ids?.length ?? 0;
   const queueRows: PendingMessage<A>[] = [];
   const ownerByEntryId = new Map<string, PendingMessage<A>>();
   for (const row of rows.values()) {
@@ -915,5 +968,8 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
 
   // Carried rows are already deduped against every owned entry id above, so
   // there is nothing left for the lineage merge to join.
-  return [...all, ...carriedRows].sort(compareRows);
+  return [...all, ...carriedRows].sort(compareRows).map((row) => {
+    const displayId = row.queueEntryIds.map((id) => sourceIdByEntryId.get(id)).find((id) => id !== undefined);
+    return displayId ? { ...row, displayId } : row;
+  });
 }

@@ -78,6 +78,10 @@ function project(overrides: Partial<PendingMessagesInput> = {}) {
 }
 
 test("a daemon queue row and its local pending row project as one message", () => {
+  const countOnly = threadModel({ queue: { revision: 0, depth: 12 } });
+  expect(project({ model: countOnly })).toEqual([]);
+  expect(project({ outbox: [local("m1")], model: countOnly }).map((row) => row.id)).toEqual(["m1"]);
+
   const model = threadModel({
     queue: {
       depth: 1,
@@ -399,6 +403,12 @@ test("a carried row stays while its recorded owner is still only pending", () =>
     ],
   });
   expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "consumer",
+    displayId: "m9",
+    text: "queued elsewhere",
+    displayText: "queued elsewhere",
+  });
 });
 
 // An older daemon promotes without queueEntryIds, so the pending mutation
@@ -650,6 +660,38 @@ test("a promote row suppresses its queue entry", () => {
   });
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ id: "m2", method: "promote", state: "steering" });
+
+  // The queue frame can precede the write that adds its entry id to the
+  // accepted source. Its wire id still proves which message is promoted.
+  const source = accepted("m1", "turn/queue", "the message", { createdAt: 1 });
+  const withSource = project({ model, optimistic: [source] });
+  expect(withSource).toHaveLength(1);
+  expect(withSource[0]).toMatchObject({ id: "m1", method: "promote", state: "steering" });
+
+  const consumedQueueEntries = [
+    {
+      entryId: "q1",
+      clientMutationId: "m1",
+      text: "the message",
+      textComplete: true,
+      imageCount: 0,
+      skillNames: [],
+      commandNames: [],
+    },
+  ];
+  const consumed = project({
+    model: { ...model, queue: { depth: 0, revision: 4, ids: [] } },
+    optimistic: [source],
+    consumedQueueEntries,
+  });
+  expect(consumed).toHaveLength(1);
+  expect(consumed[0]).toMatchObject({ id: "m1", method: "promote", state: "steering" });
+  const settledSource = project({
+    model: { ...model, queue: { depth: 0, revision: 4, ids: [] } },
+    consumedQueueEntries,
+  });
+  expect(settledSource).toHaveLength(1);
+  expect(settledSource[0]).toMatchObject({ id: "m2", displayId: "m1", method: "promote" });
 });
 
 test("an accepted send with no daemon pending entry and no visible item stays as a delivering row", () => {
@@ -927,6 +969,10 @@ test("durable local and recovery states map to their pending states", () => {
       local("m2", "turn/start", "sending", { state: "submitting", attempted: true }),
       local("m3", "turn/start", "uncertain", { state: "blockedUnknown" }),
       local("m4", "turn/start", "canceled", { state: "canceled" }),
+      local("m7", "turn/interrupt", "", { state: "blockedUnknown" }),
+      local("m8", "turn/cancelQueued", "", { state: "blockedUnknown" }),
+      local("m9", "turn/interrupt", "", { state: "canceled" }),
+      local("m10", "turn/cancelQueued", "", { state: "canceled" }),
     ],
     recovery: [recovery("m5", "rejected"), recovery("m6", "orphaned")],
   });
@@ -937,6 +983,10 @@ test("durable local and recovery states map to their pending states", () => {
     m4: "canceled",
     m5: "refused",
     m6: "orphaned",
+    m7: "uncertain",
+    m8: "uncertain",
+    m9: "canceled",
+    m10: "canceled",
   });
 });
 
@@ -1041,16 +1091,19 @@ test("an in-flight promotion shows once in place of the queue row it expects", (
   expect(rows[0]?.queueEntryIds).toEqual(["q1"]);
 });
 
-test("a refused queue cancellation stays visible as a control failure", () => {
-  const failed = recovery("m1", "rejected", "turn/cancelQueued", "", {
+test.each([
+  { method: "turn/cancelQueued", control: "cancel", transcriptIds: new Set(["m1"]) },
+  { method: "thread/clear", control: "clear", transcriptIds: new Set<string>() },
+])("a refused $method stays visible as a control failure", ({ method, control, transcriptIds }) => {
+  const failed = recovery("m1", "rejected", method, "", {
     recoveryReason: "the queue moved",
   });
-  const rows = project({ recovery: [failed], transcriptIds: new Set(["m1"]) });
+  const rows = project({ recovery: [failed], transcriptIds });
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({
     state: "refused",
     interrupt: true,
-    controlFailure: "cancel",
+    controlFailure: control,
     reason: "the queue moved",
   });
 });

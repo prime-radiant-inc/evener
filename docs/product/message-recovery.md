@@ -20,6 +20,9 @@ Controls follow that ownership, not the preview text or connection status.
   only the local copy and leaves the daemon message queued. A refused queue
   cancellation stays visible as a dismissible control-failure row carrying the
   daemon's reason.
+- Stop, queue cancellation and Clear retain **Retry** when canceled locally or
+  delivery-uncertain. A definitive rejection replaces Retry with **Dismiss**;
+  these controls have no composition to edit.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
   "Delivery uncertain" as a subtitle. That row is the browser's own
@@ -39,8 +42,11 @@ Controls follow that ownership, not the preview text or connection status.
   lets later messages move: it ends the wire, retiring the row's remaining
   durable siblings in the same write, though an attempt already in flight may
   still land and appear in the conversation.
-- Promotion and input-empty drain commands offer Remove only. Editing a
-  content-bearing drain restores its composer input, not the daemon queue preview.
+- Local promotion and input-empty drain commands offer **Remove from queue**
+  instead of Edit. Canceled or delivery-uncertain commands also keep **Retry**.
+  Removing a local promotion leaves its original daemon queue entry intact.
+  Editing a content-bearing drain restores its composer input, not the daemon
+  queue preview.
 - Unattempted rows appear once as the transcript's pending row in the
   live-edge trailing region, never twice. In-flight and remote rows remain. A
   move back to the local queue after an explicit refusal is not announced as
@@ -48,6 +54,16 @@ Controls follow that ownership, not the preview text or connection status.
 - An independently edited recovery keeps its own row after the attempt it was
   edited from delivers. Mentions travel through the pending row, so editing
   preserves literal `/name` references instead of turning them into selections.
+
+The shared pending-message projection owns row membership and ordering. The
+browser's pending stack adds the controls for the message's current owner.
+A queue source and its promotion command share a row through their queue-entry
+lineage, even though they have different mutation IDs. The row keeps the source's
+rendering identity when the receipt settles its local copy, so the bubble stays
+mounted until the recorded message replaces it. A message consumed on another
+client follows the same rule; identical text alone never joins distinct identities.
+The consuming command owns the row's actions. A retained source recovery or
+blocked outbox copy cannot make an executing promotion or drain editable.
 
 A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
 queue's tail and settles the predecessor terminal. The predecessor keeps its
@@ -57,7 +73,7 @@ authoritative feed names; repeated requeues bound retention to that one
 evidence row beside the live successor, and the wire's settlement or removal
 retires it with the rest.
 
-QueueStrip offers that **Retry** only when the press could act:
+The pending row offers that **Retry** only when the press could act:
 `retryBlockedForTarget` (`cmd/evener-hub/frontend/src/stores/threads.ts`)
 reads the row's own target — the snapshot flags a press consults, plus the
 target's storage-blocked fence — so a fenced target keeps Retry disabled

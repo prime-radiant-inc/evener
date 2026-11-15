@@ -6,8 +6,8 @@
 // a blank composed body. The durable families' Session-level journeys are
 // pinned in Session.transcript.test.tsx and the Composer suites; this file
 // pins the component's own pure rendering rules.
-import { formatElapsed } from "@evener/appwire-client";
-import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { formatElapsed, WireError } from "@evener/appwire-client";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../../stores/connection";
@@ -204,23 +204,302 @@ test("excludes a durable family row's id from the pending entries - one renderin
 // whatever its stores hold.
 test("renders the daemon's queued rows with their actions", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      evener: {
-        ref: "ref_a",
-        mutationStateAuthoritative: true,
-        capabilities: CAPABILITIES,
-        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
-      },
-    }),
-  );
+  let snapshot = readResponse("ref_a", {
+    evener: {
+      ref: "ref_a",
+      mutationStateAuthoritative: true,
+      capabilities: CAPABILITIES,
+      queue: { revision: 0, depth: 12 },
+    },
+  });
+  fake.on("thread/read", () => snapshot);
   await threadsStore.getState().ensureThread("ref_a");
   render(<PendingRowStack ref="ref_a" />);
+  expect(screen.queryAllByTestId("user-message-item")).toHaveLength(0);
+
+  snapshot = readResponse("ref_a", {
+    evener: {
+      ref: "ref_a",
+      mutationStateAuthoritative: true,
+      capabilities: CAPABILITIES,
+      queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+    },
+  });
+  await act(async () => {
+    await threadsStore.getState().refreshThread("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
   const rows = screen.getAllByTestId("user-message-item");
   expect(rows).toHaveLength(1);
   expect(rows[0]!.textContent).toContain("parked");
   // The row carries its actions.
   expect(screen.getByRole("button", { name: "Steer now" })).toBeTruthy();
+});
+
+test.each(
+  (["turn/promoteQueuedAsSteer", "turn/drainAsSteer"] as const).flatMap((consumerMethod) =>
+    ["unedited", "edited", "blocked"].map((copyState) => ({ copyState, consumerMethod })),
+  ),
+)(
+  "a $copyState copy keeps action ownership through $consumerMethod consumption",
+  async ({ copyState, consumerMethod }) => {
+    const fake = connectFakeClient();
+    if (copyState !== "edited") await hydrate(fake, "ref_a");
+    const originalText = "original queue sentinel";
+    const editedText = "independent recovery sentinel";
+    const storage = new MutationOutboxIndexedDB();
+    const original = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: originalText }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: originalText }] },
+    });
+    await storage.markAttempted(original.clientMutationId);
+    if (copyState === "blocked") {
+      expect(await storage.markUnknown(original.clientMutationId, "blockedUnknown")).toBe(true);
+      await storage.cancelUnattempted("ref_a");
+    } else {
+      await storage.transferToRecovery(original.clientMutationId, "rejected", undefined, {
+        wireDeliveryUncertain: true,
+      });
+    }
+    if (copyState === "edited") {
+      const edited = await storage.updateRecoveryInput(
+        original.clientMutationId,
+        [{ type: "text", text: editedText }],
+        [],
+        editedText,
+        undefined,
+        undefined,
+        undefined,
+        0,
+      );
+      expect(edited?.compositionRevision).toBe(1);
+    }
+    storage.close();
+    const queue = {
+      revision: 1,
+      depth: 1,
+      ids: ["q1"],
+      clientMutationIds: [original.clientMutationId],
+      texts: [originalText],
+      preview: [originalText],
+    };
+    if (copyState !== "edited") {
+      await act(async () => {
+        fake.emitNotification({
+          method: "thread/queueChanged",
+          params: { threadId: "thr_ref_a", ref: "ref_a", queue },
+        });
+      });
+    } else
+      await hydrate(fake, "ref_a", {
+        evener: {
+          ref: "ref_a",
+          mutationStateAuthoritative: true,
+          capabilities: CAPABILITIES,
+          queue,
+          pendingMutations: [
+            {
+              clientMutationId: original.clientMutationId,
+              method: "turn/queue",
+              input: [{ type: "text", text: originalText }],
+              executionState: "accepted",
+              projectionState: "pending",
+              queueEntryIds: ["q1"],
+            },
+          ],
+        },
+      });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+    const persisted = new MutationOutboxIndexedDB();
+    if (copyState === "blocked") {
+      const blocked = (await persisted.listOutbox("ref_a")).find(
+        (record) => record.clientMutationId === original.clientMutationId,
+      );
+      expect(blocked?.state).toBe("blockedUnknown");
+    } else {
+      const recovered = (await persisted.listRecovery("ref_a")).find(
+        (record) => record.clientMutationId === original.clientMutationId,
+      );
+      expect(recovered?.compositionRevision).toBe(copyState === "edited" ? 1 : 0);
+    }
+    persisted.close();
+    render(<PendingRowStack ref="ref_a" />);
+    const rows = screen.getAllByTestId("user-message-item");
+    expect(rows).toHaveLength(copyState === "edited" ? 2 : 1);
+    const queued = rows.find((row) => row.textContent?.includes(originalText));
+    expect(queued).toBeDefined();
+    if (!queued) throw new Error("expected a queue row");
+    expect(within(queued).getByRole("button", { name: "Steer now" })).toBeTruthy();
+    expect(within(queued).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+    if (copyState === "edited") {
+      const recoveryRow = rows.find((row) => row.textContent?.includes(editedText));
+      expect(recoveryRow).toBeDefined();
+      if (!recoveryRow) throw new Error("expected an independent recovery row");
+      expect(within(recoveryRow).getByRole("button", { name: "Edit message" })).toBeTruthy();
+      expect(within(recoveryRow).queryByRole("button", { name: "Remove from queue" })).toBeNull();
+    }
+
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: {
+          ref: "ref_a",
+          mutationStateAuthoritative: true,
+          capabilities: CAPABILITIES,
+          queue: { revision: 2, depth: 0, ids: [] },
+          pendingMutations: [
+            {
+              clientMutationId: "consumer",
+              method: consumerMethod,
+              input: [{ type: "text", text: originalText }],
+              executionState: "claimed",
+              projectionState: "pending",
+              queueEntryIds: ["q1"],
+            },
+          ],
+        },
+      }),
+    );
+    await act(async () => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          queue: { revision: 2, depth: 0, ids: [] },
+          consumedClientMutationIds: [original.clientMutationId],
+        },
+      });
+      await threadsStore.getState().refreshThread("ref_a");
+    });
+    await flushPendingTurnsProjectionForTests();
+    // The source is retained until its replacement is recorded. It must not
+    // become an editable recovery on the executing consumer's bubble.
+    const retained = new MutationOutboxIndexedDB();
+    if (copyState === "blocked") {
+      expect(await retained.getOutbox(original.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+    } else {
+      expect(
+        (await retained.listRecovery("ref_a")).find((record) => record.clientMutationId === original.clientMutationId),
+      ).toMatchObject({ compositionRevision: copyState === "edited" ? 1 : 0 });
+    }
+    retained.close();
+    const consumedRows = screen.getAllByTestId("user-message-item");
+    expect(consumedRows).toHaveLength(copyState === "edited" ? 2 : 1);
+    const consuming = consumedRows.find((row) => row.textContent?.includes(originalText));
+    expect(consuming).toBe(queued);
+    if (!consuming) throw new Error("expected the executing consumer");
+    expect(consuming.getAttribute("data-provisional")).toBe("true");
+    expect(within(consuming).queryByRole("button", { name: "Edit message" })).toBeNull();
+    expect(within(consuming).queryByRole("button", { name: "Remove from queue" })).toBeNull();
+    expect(within(consuming).queryByRole("button", { name: "Retry" })).toBeNull();
+    if (copyState === "edited") {
+      const recoveryRow = consumedRows.find((row) => row.textContent?.includes(editedText));
+      if (!recoveryRow) throw new Error("expected the independent recovery to remain");
+      expect(within(recoveryRow).getByRole("button", { name: "Edit message" })).toBeTruthy();
+    }
+  },
+);
+
+test.each(
+  (["submitting", "canceled", "blockedUnknown"] as const).flatMap((state) =>
+    [false, true].map((localSource) => ({ state, localSource })),
+  ),
+)("a $state promotion keeps local recovery with local source $localSource", async ({ state, localSource }) => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  const text = "promotion recovery sentinel";
+  const storage = new MutationOutboxIndexedDB();
+  let sourceId = "foreign-source";
+  if (localSource) {
+    const source = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text }] },
+    });
+    sourceId = source.clientMutationId;
+    await storage.markAttempted(sourceId);
+    await storage.settleReceipt(sourceId, "queued", ["q1"]);
+  }
+  const promotion = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/promoteQueuedAsSteer",
+    payload: { ref: "ref_a", index: 0, expectedEntryId: "q1" },
+    attachments: [],
+    optimisticDisplay: { method: "turn/promoteQueuedAsSteer", input: [{ type: "text", text }] },
+  });
+  if (state === "blockedUnknown") {
+    await storage.markAttempted(promotion.clientMutationId);
+    expect(await storage.markUnknown(promotion.clientMutationId, state)).toBe(true);
+  }
+  if (state !== "submitting") await storage.cancelUnattempted("ref_a");
+  expect(await storage.getOutbox(promotion.clientMutationId)).toMatchObject({ state });
+  storage.close();
+  const queue = { revision: 1, depth: 1, ids: ["q1"], clientMutationIds: [sourceId], texts: [text], preview: [text] };
+  await act(async () => {
+    fake.emitNotification({ method: "thread/queueChanged", params: { threadId: "thr_ref_a", ref: "ref_a", queue } });
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+  const persisted = new MutationOutboxIndexedDB();
+  expect(await persisted.getOutbox(promotion.clientMutationId)).toMatchObject({ state });
+  persisted.close();
+  render(<PendingRowStack ref="ref_a" />);
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows).toHaveLength(state === "canceled" ? 2 : 1);
+  const localRow =
+    state === "submitting"
+      ? rows[0]
+      : rows.find((row) => within(row).queryByRole("button", { name: "Retry" }) !== null);
+  expect(localRow).toBeDefined();
+  if (!localRow) throw new Error("expected local promotion controls");
+  expect(within(localRow).queryByRole("button", { name: "Edit message" })).toBeNull();
+  fireEvent.click(within(localRow).getByRole("button", { name: "Remove from queue" }));
+  await waitFor(() => {
+    expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Steer now" })).toBeTruthy();
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
+  expect(threadsStore.getState().threads.get("ref_a")?.queue?.ids).toEqual(["q1"]);
+  expect(fake.calls.filter((call) => call.method === "turn/cancelQueued")).toEqual([]);
+  const removed = new MutationOutboxIndexedDB();
+  expect(await removed.getOutbox(promotion.clientMutationId)).toBeUndefined();
+  removed.close();
+});
+
+test("a draining row keeps all consumed input while the queue snapshot overlaps", async () => {
+  const fake = connectFakeClient();
+  const texts = ["first drain sentinel", "second drain sentinel"];
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      mutationStateAuthoritative: true,
+      capabilities: CAPABILITIES,
+      queue: { revision: 1, depth: 2, ids: ["q1", "q2"], texts, preview: texts },
+      pendingMutations: [
+        {
+          clientMutationId: "drain",
+          method: "turn/drainAsSteer",
+          input: texts.map((text) => ({ type: "text", text })),
+          executionState: "claimed",
+          projectionState: "pending",
+          queueEntryIds: ["q1", "q2"],
+        },
+      ],
+    },
+  });
+  render(<PendingRowStack ref="ref_a" />);
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows).toHaveLength(1);
+  for (const text of texts) expect(rows[0]?.textContent).toContain(text);
+  expect(screen.getByRole("button", { name: "Edit message" }).hasAttribute("disabled")).toBe(true);
 });
 
 // A retargeted recovery consumed into a resend targets the destination the
@@ -335,13 +614,15 @@ test("a queued text-and-image row refuses Edit rather than destroying its images
   expect(rows.some((row) => row.textContent?.includes("look at this"))).toBe(true);
 });
 
-// A rejected queue removal is a control that failed, not a message the
-// author might edit: the queue-position conflict the daemon reports leaves
-// nothing editable behind (the entry itself moved). The row offers Dismiss
-// with its reason - the same classification the refused Stop carries
-// (roborev round-6: it rendered Edit on an empty body instead).
-test("a rejected queue removal offers Dismiss, not an empty Edit", async () => {
+// Durable controls retain Retry until a definitive rejection. A refused
+// control has no editable composition, so its recovery action is Dismiss.
+test.each(
+  (["turn/cancelQueued", "turn/interrupt", "thread/clear"] as const).flatMap((method) =>
+    (["blockedUnknown", "canceled"] as const).map((state) => ({ method, state })),
+  ),
+)("a $state $method keeps Retry until rejection offers Dismiss", async ({ method, state }) => {
   const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
   const storage = new MutationOutboxIndexedDB();
   const queued = await storage.enqueueIntent({
     targetRef: "ref_a",
@@ -352,24 +633,59 @@ test("a rejected queue removal offers Dismiss, not an empty Edit", async () => {
   });
   await storage.markAttempted(queued.clientMutationId);
   await storage.settleReceipt(queued.clientMutationId, "queued", ["q1"]);
-  const cancel = await storage.enqueueIntent({
+  const control = await storage.enqueueIntent({
     targetRef: "ref_a",
-    method: "turn/cancelQueued",
-    payload: { ref: "ref_a", index: 0, expectedEntryId: "q1", clientMutationId: "m_c" },
+    method,
+    payload: {
+      ref: "ref_a",
+      ...(method === "turn/cancelQueued" ? { index: 0, expectedEntryId: "q1" } : {}),
+      ...(method === "thread/clear" ? { expectedInstanceId: "thr_ref_a" } : {}),
+    },
     attachments: [],
-    optimisticDisplay: { method: "turn/cancelQueued" },
+    optimisticDisplay: { method },
   });
-  await storage.markAttempted(cancel.clientMutationId);
-  await storage.transferToRecovery(cancel.clientMutationId, "rejected");
+  if (state === "blockedUnknown") {
+    await storage.markAttempted(control.clientMutationId);
+    expect(await storage.markUnknown(control.clientMutationId, state)).toBe(true);
+  } else {
+    expect(await storage.cancelUnattempted("ref_a")).toContain(control.clientMutationId);
+  }
   storage.close();
-  fake.on("thread/read", () => readResponse("ref_a"));
-  await threadsStore.getState().ensureThread("ref_a");
   await refreshPendingTurnsProjection("ref_a");
   await flushPendingTurnsProjectionForTests();
+  const persisted = new MutationOutboxIndexedDB();
+  const blocked = (await persisted.listOutbox("ref_a")).find(
+    (record) => record.clientMutationId === control.clientMutationId,
+  );
+  persisted.close();
+  expect(blocked?.state).toBe(state);
+  fake.on(method, (params) => {
+    throw new WireError("control refused", -32010, {
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "blocked",
+      cause: "journaledRejection",
+    });
+  });
   render(<PendingRowStack ref="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("button", { name: "Dismiss" })).toBeTruthy();
+  await flushPendingTurnsProjectionForTests();
+  const calls = fake.calls.filter((call) => call.method === method);
+  expect(calls).toHaveLength(1);
+  const params = calls[0]?.params;
+  expect(params).toHaveProperty("clientMutationId", expect.any(String));
+  if (state === "blockedUnknown") expect(params).toHaveProperty("clientMutationId", control.clientMutationId);
+  else expect(params).not.toHaveProperty("clientMutationId", control.clientMutationId);
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   // Dismiss for the failed control; no Edit on the empty body.
   expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull());
+  const settled = new MutationOutboxIndexedDB();
+  expect((await settled.listRecovery("ref_a")).filter((record) => record.method === method)).toEqual([]);
+  settled.close();
 });
 
 // A foreign image-only queue row arrives as texts: [""] with the daemon's
