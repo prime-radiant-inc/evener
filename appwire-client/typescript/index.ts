@@ -601,6 +601,8 @@ export { isValidActivityTimestamp, SessionActivityStore } from "./sessionActivit
 export type { AttentionClass, AttentionFacts } from "./sessionAttention";
 export { approvalWaiting, attentionNeedsYou, attentionState, normalizeWireState } from "./sessionAttention";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type { SessionHost } from "./sessionFacts";
+export { accessFacts, hostIdOf, loadedPluginNames, sessionHosts } from "./sessionFacts";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
 export { canReadSharedNotes, canWriteSharedNotes } from "./sharedNotesAvailability";

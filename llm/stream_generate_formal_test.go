@@ -11,6 +11,7 @@ import (
 // A forwarded content payload commits this high-level stream to the attempt:
 // another attempt would append to content that the caller has already observed.
 func TestStreamGenerate_RetryAfterPublishedContent(t *testing.T) {
+	t.Parallel()
 	tool := &ToolCallData{ID: "call_7", Name: "lookup", Type: "function", Arguments: []byte(`{"q":1}`)}
 	cases := []struct {
 		name    string
@@ -151,6 +152,7 @@ func formalScriptedEvents(events []StreamEvent) func(context.Context, Request) (
 // A failed later model call cannot undo a completed tool round or turn its
 // unsuccessful response into a successful final response.
 func TestStreamGenerate_PreservesCompletedStepsOnFailure(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"permanent open", "truncated stream", "cancelled second open"} {
 		t.Run(failure, func(t *testing.T) {
 			call := ToolCallData{ID: "call_17", Name: "lookup", Type: "function", Arguments: []byte(`{"key":17}`)}
@@ -293,6 +295,7 @@ func TestStreamGenerate_PreservesCompletedStepsOnFailure(t *testing.T) {
 }
 
 func TestStreamGenerate_CompletedAccountingAtToolRoundLimit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		maxRounds  int

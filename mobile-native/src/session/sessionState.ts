@@ -1,11 +1,11 @@
 // What the Session's header says: the nav bar's state line with its still
 // mark (spec 8.1), and the context chips under it. The mark reuses the
-// Board's states (src/board/attention.ts). A session you are looking at is
+// Board's states (liveAttention in @evener/appwire-client/state/navigation). A session you are looking at is
 // never unread, so one whose turn ended is Idle, with no dot.
 import { summaryTally } from "../subagents/subagentModel";
 import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client";
 import { attentionState, compactDuration, taskSettledCount } from "@evener/appwire-client";
-import { type BoardState, hubTime } from "../board/attention";
+import { type BoardState, hubTime } from "@evener/appwire-client/state/navigation";
 import { timeAgo } from "./format";
 import type { TrayLine } from "./trayLine";
 

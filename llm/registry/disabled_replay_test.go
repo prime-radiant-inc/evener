@@ -37,6 +37,7 @@ func rowsFor(base map[string]Model, state flagState) map[string]Model {
 // snapshot, overlay and config layers, with Disabled rows and top-level glob
 // extras on each tag, the two must give the same verdict.
 func TestModelDisabledAgreesWithResolveAcrossLayerShapes(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	rec, ok := r.recordFor("anthropic")
 	if !ok {
@@ -103,6 +104,7 @@ func TestModelDisabledAgreesWithResolveAcrossLayerShapes(t *testing.T) {
 // test above compares the two replays with each other; a table of fixed
 // answers catches the two drifting together.
 func TestModelDisabledPinnedVerdicts(t *testing.T) {
+	t.Parallel()
 	const codexBase = "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n"
 	cases := []struct {
 		name            string

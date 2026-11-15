@@ -21,6 +21,7 @@ func additiveModelRegistry(t *testing.T) *Registry {
 }
 
 func TestModelIDs_LiveHidesBaseCatalogAndKeepsAdditiveRows(t *testing.T) {
+	t.Parallel()
 	r := additiveModelRegistry(t)
 	r.ApplyLive("openai", []Model{{ID: "live-only"}})
 
@@ -39,6 +40,7 @@ func TestModelIDs_LiveHidesBaseCatalogAndKeepsAdditiveRows(t *testing.T) {
 }
 
 func TestModelIDs_EmptyLiveListingFallsBackToBaseCatalog(t *testing.T) {
+	t.Parallel()
 	r := additiveModelRegistry(t)
 	r.ApplyLive("openai", nil)
 

@@ -53,10 +53,10 @@ function userMessageTextProps() {
 
 it("fills your message bubble with the accent tint in both themes", () => {
 	mode.scheme = "light";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#DFEEFF" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#E1E8FF" });
 
 	mode.scheme = "dark";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#243141" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#2B3041" });
 });
 
 it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keeping the text and label", () => {

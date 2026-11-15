@@ -3,7 +3,6 @@
   border-block: 1px solid var(--edge);
   border-radius: 0;
   background: transparent;
-  box-shadow: var(--shadow-card);
 }
 
 .table {

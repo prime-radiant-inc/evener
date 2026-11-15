@@ -1,6 +1,6 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { expect, it } from "vitest";
-import type { BoardState, ClassifiedRow, LiveBands } from "./attention";
+import type { BoardState, ClassifiedRow, LiveBands } from "@evener/appwire-client/state/navigation";
 import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from "./boardItems";
 import type { ProjectTreeItem } from "./projectTree";
 

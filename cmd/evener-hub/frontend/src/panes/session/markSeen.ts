@@ -32,7 +32,7 @@ export function seenThroughWithMotion(
 }
 
 /** Marks a session seen on the hub when its pane opens, and again when the
- * page becomes visible with the pane still open, so its blue dot clears on
+ * page becomes visible with the pane still open, so its unseen dot clears on
  * every device (spec 18, S4). It marks only while the page is visible, so a
  * pane restored in a background tab marks nothing until you look at it. Each
  * open marks the row as the pane first finds it, once: a turn that ends while

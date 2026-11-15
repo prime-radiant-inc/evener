@@ -10,6 +10,7 @@ import (
 
 // TestValidateRecordKindError covers the kind validation error (line 111).
 func TestValidateRecordKindError(t *testing.T) {
+	t.Parallel()
 	r := APIAttemptRecord{Kind: "wrong"}
 	err := r.validateRecord(DecodeStrict)
 	if err == nil {
@@ -19,6 +20,7 @@ func TestValidateRecordKindError(t *testing.T) {
 
 // TestValidateRecordSchemaVersionError covers the schema version error.
 func TestValidateRecordSchemaVersionError(t *testing.T) {
+	t.Parallel()
 	r := validRecordForValidation(t)
 	r.SchemaVersion = 99
 	if err := r.validateRecord(DecodeStrict); err == nil {
@@ -29,6 +31,7 @@ func TestValidateRecordSchemaVersionError(t *testing.T) {
 // TestValidateSettlementKindError covers the settlement kind validation error
 // (line 164-165).
 func TestValidateSettlementKindError(t *testing.T) {
+	t.Parallel()
 	r := APIAttemptGroupSettlement{Kind: "wrong"}
 	if err := r.validateRecord(DecodeStrict); err == nil {
 		t.Fatal("wrong settlement kind should error")
@@ -38,6 +41,7 @@ func TestValidateSettlementKindError(t *testing.T) {
 // TestValidateSettlementSchemaVersionError covers the settlement schema
 // version error (line 166-167).
 func TestValidateSettlementSchemaVersionError(t *testing.T) {
+	t.Parallel()
 	r := APIAttemptGroupSettlement{
 		Kind:              settlementRecordKind,
 		SchemaVersion:     99,
@@ -53,6 +57,7 @@ func TestValidateSettlementSchemaVersionError(t *testing.T) {
 // TestValidateRecordNegativeStatusCode covers the negative status code path
 // (lines 193-194).
 func TestValidateRecordNegativeStatusCode(t *testing.T) {
+	t.Parallel()
 	negStatus := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{StatusCode: &negStatus}
@@ -64,6 +69,7 @@ func TestValidateRecordNegativeStatusCode(t *testing.T) {
 // TestValidateRecordNegativeTextLength covers the negative text length path
 // (lines 196-197).
 func TestValidateRecordNegativeTextLength(t *testing.T) {
+	t.Parallel()
 	negLen := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{TextLength: &negLen}
@@ -74,6 +80,7 @@ func TestValidateRecordNegativeTextLength(t *testing.T) {
 
 // TestValidateRecordNegativeToolCallCount covers the negative tool call count.
 func TestValidateRecordNegativeToolCallCount(t *testing.T) {
+	t.Parallel()
 	negCount := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{ToolCallCount: &negCount}
@@ -85,6 +92,7 @@ func TestValidateRecordNegativeToolCallCount(t *testing.T) {
 // TestValidateRecordNegativeCacheReadTokens covers the negative cache read
 // token path (lines 216-218).
 func TestValidateRecordNegativeCacheReadTokens(t *testing.T) {
+	t.Parallel()
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
@@ -99,6 +107,7 @@ func TestValidateRecordNegativeCacheReadTokens(t *testing.T) {
 // TestValidateRecordNegativeCacheWriteTokens covers the negative cache write
 // token path (lines 219-221).
 func TestValidateRecordNegativeCacheWriteTokens(t *testing.T) {
+	t.Parallel()
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
@@ -113,6 +122,7 @@ func TestValidateRecordNegativeCacheWriteTokens(t *testing.T) {
 // TestValidateRecordNegativeInputTokens covers the negative input token path
 // (lines 211-214).
 func TestValidateRecordNegativeInputTokens(t *testing.T) {
+	t.Parallel()
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
@@ -126,6 +136,7 @@ func TestValidateRecordNegativeInputTokens(t *testing.T) {
 
 // TestValidateRecordNegativeOutputTokens covers negative output tokens.
 func TestValidateRecordNegativeOutputTokens(t *testing.T) {
+	t.Parallel()
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{
@@ -140,6 +151,7 @@ func TestValidateRecordNegativeOutputTokens(t *testing.T) {
 // TestContainsForbiddenDurableStringEmpty covers the marshal error path
 // (line 310-311) with an empty string.
 func TestContainsForbiddenDurableStringEmpty(t *testing.T) {
+	t.Parallel()
 	got := containsForbiddenDurableString("", nil, nil)
 	if got {
 		t.Fatal("empty string should not contain forbidden evidence")
@@ -168,6 +180,7 @@ func validRecordForValidation(t *testing.T) APIAttemptRecord {
 
 // TestValidateRecordInvalidOutcome covers the invalid outcome path.
 func TestValidateRecordInvalidOutcome(t *testing.T) {
+	t.Parallel()
 	r := validRecordForValidation(t)
 	r.Outcome = "invalid"
 	if err := r.validateRecord(DecodeStrict); err == nil {
@@ -177,6 +190,7 @@ func TestValidateRecordInvalidOutcome(t *testing.T) {
 
 // TestUsageValidateNegativeTotalTokens covers negative total tokens.
 func TestUsageValidateNegativeTotalTokens(t *testing.T) {
+	t.Parallel()
 	negTokens := -1
 	u := Usage{TotalTokens: &negTokens}
 	if err := u.validate(); err == nil {
@@ -190,6 +204,7 @@ var _ = json.Marshal
 // TestValidateRecordNegativeCacheWrite1hTokens covers the negative 1-hour
 // cache write token path (lines 225-227).
 func TestValidateRecordNegativeCacheWrite1hTokens(t *testing.T) {
+	t.Parallel()
 	negTokens := -1
 	r := validRecordForValidation(t)
 	r.Response = &APIAttemptResponse{

@@ -38,6 +38,33 @@ func localJobTrustedRoot(stateDir string) string {
 	return stateDir
 }
 
+// validateLocalJobJournal rejects journals reached through an unsafe layout,
+// symlink, or non-regular leaf before a caller lets jobstore open the path.
+// The returned bool is false for an invalid prefix or missing journal, which
+// callers treat as not found. The Lstat-to-open residual TOCTOU window remains.
+func validateLocalJobJournal(stateDir, path string) (os.FileInfo, bool, error) {
+	if validateLayoutPrefix(stateDir) != nil {
+		return nil, false, nil //nolint:nilerr // symlinked prefix is skip-worthy, not an error
+	}
+	if err := symlinkErrorDeep(path, localJobTrustedRoot(stateDir)); err != nil {
+		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+			return nil, false, nil //nolint:nilerr // journal gone through the symlink → not found
+		}
+		return nil, false, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil //nolint:nilerr // journal gone → not found (skip-worthy)
+		}
+		return nil, false, fmt.Errorf("stat journal: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, errors.New("journal is not a regular file")
+	}
+	return info, true, nil
+}
+
 type localJobProjectDirectory interface {
 	ReadDir(n int) ([]fs.DirEntry, error)
 	Close() error
@@ -252,63 +279,14 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 }
 
 func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLocation, bool, error) {
-	// Validate the layout prefix: symlinkErrorDeep below is rooted at
-	// stateDir, so ancestors above it (evener/, evener/projects/) are not
-	// checked. For sibling stateDirs from the enumerate sweep, the prefix
-	// was already validated in locateLocalJob; for the current stateDir
-	// (first call), no prior validation exists. A symlinked prefix means
-	// the job journal is behind a symlink — treat as not-found (skip-
-	// worthy), not an error: an unrelated symlinked ancestor should not
-	// mask the honest "job not found" result.
-	if prefixErr := validateLayoutPrefix(stateDir); prefixErr != nil {
-		return localJobLocation{}, false, nil //nolint:nilerr // symlinked prefix is skip-worthy, not an error
-	}
 	path := filepath.Join(jobsDir(stateDir, ownerSessionID), "jobs.jsonl")
-	// Reject symlinked sessions/ dirs before reading the job journal — a
-	// symlinked sessions/ could point outside the state root.
-	if err := symlinkErrorDeep(path, localJobTrustedRoot(stateDir)); err != nil {
-		// If the journal file does not exist (even through the symlink),
-		// treat as not-found: the bucket is an unrelated symlinked dir
-		// with no target job, and the symlink error should not mask the
-		// honest "job not found" result. os.Stat follows symlinks but
-		// only reads metadata (not content), so this is safe for
-		// existence checking. Other stat errors (permissions, etc.)
-		// fall through and surface the symlink error.
-		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
-			return localJobLocation{}, false, nil
-		}
+	if _, valid, err := validateLocalJobJournal(stateDir, path); err != nil {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
+	} else if !valid {
+		return localJobLocation{}, false, nil //nolint:nilerr // invalid layout/missing journal → not found
 	}
-	// Lstat the journal and require a regular file before ReadEvents opens
-	// it: a FIFO or other non-regular non-symlink entry passes the symlink
-	// check but blocks os.Open indefinitely (FIFO) or returns garbage.
-	// This also narrows the residual TOCTOU window (below): a non-regular
-	// entry swapped in between this check and ReadEvents is caught here.
-	journalInfo, journalErr := os.Lstat(path)
-	if journalErr != nil {
-		// Not-found ONLY on ErrNotExist: a permission or I/O error means the
-		// journal may exist but is unreadable, which must propagate rather
-		// than be masked as "not found" — matching the retained-error
-		// discipline this PR established for sibling corruption. Other
-		// ErrNotExist-class misses (e.g. a removed journal) stay skip-worthy.
-		if errors.Is(journalErr, os.ErrNotExist) {
-			return localJobLocation{}, false, nil //nolint:nilerr // journal gone → not found (skip-worthy, not an error)
-		}
-		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: stat journal: %w", jobID, filepath.Base(stateDir), journalErr)
-	}
-	if !journalInfo.Mode().IsRegular() {
-		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: journal is not a regular file", jobID, filepath.Base(stateDir))
-	}
-	// jobstore.ReadEvents opens the journal internally (afero.NewOsFs), so
-	// there is a residual TOCTOU window between the checks above and the
-	// internal open: a symlink or non-regular entry swapped in between
-	// the Lstat and the open would be followed. Changing jobstore's API
-	// to accept an fd is disproportionate (it touches the internal
-	// package and every caller). The window is narrow — symlinkErrorDeep
-	// pre-checks every component, validateLayoutPrefix (round 10)
-	// validates the bucket dir, and the Lstat regular check (round 11)
-	// rejects non-regular entries — so the residual risk is an in-window
-	// swap from regular to non-regular, not a missing check.
+	// validateLocalJobJournal's Lstat narrows the residual TOCTOU window
+	// before ReadEvents internally opens the file; do not widen it.
 	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)

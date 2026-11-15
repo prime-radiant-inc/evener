@@ -16,6 +16,7 @@ import (
 // The fatal-stream wrapper forwards its cause everywhere a caller looks:
 // rendering, unwrapping, and type detection through an outer wrap.
 func TestFatalStreamErrorForwardsItsCause(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("in-band failure")
 	fatal := &FatalStreamError{Err: cause}
 	if fatal.Error() != cause.Error() {
@@ -34,6 +35,7 @@ func TestFatalStreamErrorForwardsItsCause(t *testing.T) {
 // happened) and a response the round tripper never tracked both decline
 // rather than fabricate a capture.
 func TestClaimResponseDeclinesWithoutAnAssociation(t *testing.T) {
+	t.Parallel()
 	rt := &apiAttemptRoundTripper{}
 	if got := rt.claimResponse(nil); got != nil {
 		t.Fatalf("claimResponse(nil) = %v, want nil", got)
@@ -47,6 +49,7 @@ func TestClaimResponseDeclinesWithoutAnAssociation(t *testing.T) {
 // gets nothing, so a concurrent or repeated claim cannot complete the same
 // attempt twice.
 func TestResponseBodyClaimIsOnceOnly(t *testing.T) {
+	t.Parallel()
 	capture := &APIAttemptCapture{}
 	body := &apiAttemptResponseBody{attempt: capture}
 	resp := &http.Response{}
@@ -62,6 +65,7 @@ func TestResponseBodyClaimIsOnceOnly(t *testing.T) {
 // A redirect hook that reports no candidate merges nothing: the nil guard is
 // the whole contract, and the accumulated material must stay untouched.
 func TestMergeRedirectCandidateMaterialIgnoresANilCandidate(t *testing.T) {
+	t.Parallel()
 	rt := &apiAttemptRoundTripper{}
 	rt.mergeRedirectCandidateMaterial(nil)
 	if !reflect.DeepEqual(rt.credentialMaterial, llm.APILogCredentialMaterial{}) {
@@ -72,6 +76,7 @@ func TestMergeRedirectCandidateMaterialIgnoresANilCandidate(t *testing.T) {
 // A pending completion with no attempt behind it is the zero value redirects
 // can produce for an inert exchange; completing it is a no-op, never a panic.
 func TestPendingCompletionIsSafeOnItsZeroValue(t *testing.T) {
+	t.Parallel()
 	var pending *pendingAPIAttemptCompletion
 	pending.complete()
 }
@@ -80,6 +85,7 @@ func TestPendingCompletionIsSafeOnItsZeroValue(t *testing.T) {
 // of the returned capture does, so a caller that merely closes the body can
 // neither fabricate a record nor block the owner's later one.
 func TestDoWithAPIAttemptsCloseAloneDoesNotCompleteTheAttempt(t *testing.T) {
+	t.Parallel()
 	const responseBytes = "response bytes the caller never read"
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
 		if request.Body != nil {

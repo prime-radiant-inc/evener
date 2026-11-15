@@ -7,6 +7,7 @@ import (
 )
 
 func TestProviderUnhealthyError_ErrorAndUnwrap(t *testing.T) {
+	t.Parallel()
 	last := errors.New("boom")
 	e := &ProviderUnhealthyError{Shape: "stall", Attempts: 4, Elapsed: 12 * time.Second, LastErr: last}
 	want := "provider unhealthy after 4 stream failures (12s): boom"

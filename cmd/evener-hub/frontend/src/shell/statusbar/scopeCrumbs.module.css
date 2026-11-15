@@ -1,7 +1,7 @@
 .crumbs {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   overflow: hidden;
   flex: 1;
@@ -12,7 +12,7 @@
 .crumbWrap {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   font-size: var(--font-size-caption);
   white-space: nowrap;
@@ -53,7 +53,7 @@
 
 .hierarchy .crumbCurrent {
   font-size: var(--font-size-ui);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   white-space: normal;
   overflow-wrap: anywhere;
   display: -webkit-box;

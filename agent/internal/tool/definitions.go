@@ -373,7 +373,7 @@ func DefDelegateWithResultTool(agentTypes []string, sandboxSchema DelegateSandbo
 				},
 				"result_schema": map[string]any{
 					"type":                 "object",
-					"description":          "JSON-Schema-like object for structured delegate results. Evener validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
+					"description":          "JSON Schema object (draft 2020-12) for structured delegate results: every property value must itself be a schema object, never a bare type name. Evener validates it for initial and resumed turns, surfaces structured_result when valid, and reports structured_result_reason when invalid.",
 					"additionalProperties": true,
 				},
 			},
@@ -464,10 +464,14 @@ func DefDelegateSendNamed(resultTool string) llm.ToolDefinition {
 
 // DefModelList exposes a bounded read-only view of a startup-frozen model
 // snapshot. Cursor values are opaque and snapshot-authenticated by the agent.
+// Paging never re-enumerates a provider, so the description names the
+// recovery paths for one whose startup enumeration failed: a delegate model
+// override is checked against that provider's live listing at spawn
+// (selectSubagentModel), and a resumed session captures a new snapshot.
 func DefModelList() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "model_list",
-		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned in next for the next page. Pages are bounded by both max_count and max_bytes and are never truncated. Paging never re-enumerates providers: one whose status kind is failure or timeout keeps that status for this session. To use one of its models once the problem clears, pass provider/model as the delegate model override; the spawn lists that provider again and names its current models if the requested one is not offered. A resumed session captures a new snapshot.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -657,14 +661,14 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search. Files larger than the read cap are left out of directory searches; name one directly as the path to search it.",
+		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles and gitignored paths are excluded from the search by default; a `glob_filter` that names such a FILE overrides that exclusion for it (matching ripgrep's -g), while hidden or gitignored directories stay pruned either way. Files larger than the read cap are left out of directory searches; name one directly as the path to search it.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"pattern":          map[string]any{"type": "string", "description": "Regex pattern to match in file contents."},
 				"path":             map[string]any{"type": "string", "description": "File or directory to search; blank searches from the working root."},
-				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter for searched files, e.g. *.go; dotfiles and gitignored paths are always excluded."},
+				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter for searched files, e.g. *.go. Naming a dotfile or gitignored file here surfaces it (ripgrep -g override); without a filter those are excluded."},
 				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
 				"max_results": map[string]any{
 					"type":        "integer",

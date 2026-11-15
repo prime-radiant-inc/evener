@@ -352,6 +352,7 @@ func FuzzStreamVsNonStreamDifferential(f *testing.F) {
 // streaming and non-streaming paths. It documents the oracle's intent and
 // guards the encoders/drivers independently of the fuzz engine.
 func TestStreamVsNonStreamSanity(t *testing.T) {
+	t.Parallel()
 	ps, cleanup := jsonProviders()
 	defer cleanup()
 

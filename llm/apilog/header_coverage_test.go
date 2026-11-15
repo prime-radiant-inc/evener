@@ -6,6 +6,7 @@ import (
 
 // TestDecodeHeaderValueInvalidUTF8 covers the invalid UTF-8 path (line 37-38).
 func TestDecodeHeaderValueInvalidUTF8(t *testing.T) {
+	t.Parallel()
 	v := EncodedHeaderValue{
 		Encoding:  BodyUTF8,
 		Data:      "\xff\xfe",
@@ -19,6 +20,7 @@ func TestDecodeHeaderValueInvalidUTF8(t *testing.T) {
 // TestDecodeHeaderValueBase64Error covers the base64 decode error path
 // (lines 44-45).
 func TestDecodeHeaderValueBase64Error(t *testing.T) {
+	t.Parallel()
 	v := EncodedHeaderValue{
 		Encoding:  BodyBase64,
 		Data:      "not-valid-base64!!!",
@@ -32,6 +34,7 @@ func TestDecodeHeaderValueBase64Error(t *testing.T) {
 // TestDecodeHeaderValueUnknownEncoding covers the unknown encoding path
 // (line 47).
 func TestDecodeHeaderValueUnknownEncoding(t *testing.T) {
+	t.Parallel()
 	v := EncodedHeaderValue{
 		Encoding:  "unknown",
 		Data:      "",
@@ -45,6 +48,7 @@ func TestDecodeHeaderValueUnknownEncoding(t *testing.T) {
 // TestEncodedHeaderUnmarshalJSONNil covers the nil encoded map path
 // (lines 89-92).
 func TestEncodedHeaderUnmarshalJSONNil(t *testing.T) {
+	t.Parallel()
 	var h EncodedHeader
 	if err := h.UnmarshalJSON([]byte("null")); err != nil {
 		t.Fatalf("UnmarshalJSON(null): %v", err)
@@ -57,6 +61,7 @@ func TestEncodedHeaderUnmarshalJSONNil(t *testing.T) {
 // TestEncodedHeaderUnmarshalJSONDecodeError covers the decode error path
 // (lines 98-100).
 func TestEncodedHeaderUnmarshalJSONDecodeError(t *testing.T) {
+	t.Parallel()
 	var h EncodedHeader
 	// A valid JSON map with an invalid header value (wrong encoding).
 	data := []byte(`{"X-Bad":[{"encoding":"bogus","data":"","byte_count":0}]}`)

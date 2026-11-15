@@ -51,13 +51,20 @@ function withExpanded(nodes: SessionNode[], id: string, expanded: boolean): Sess
 function TreeDemo() {
   const [nodes, setNodes] = useState(INITIAL_NODES);
   const [lastActivated, setLastActivated] = useState<string | null>(null);
+  // One leaf starts selected so the selected-row lift shows at rest; activating
+  // another leaf moves it. Groups are not selectable.
+  const [selectedId, setSelectedId] = useState("session-1");
 
   return (
     <div>
       <Tree
         nodes={nodes}
         onToggle={(node) => setNodes((prev) => withExpanded(prev, node.id, node.expanded !== true))}
-        onActivate={(node) => setLastActivated(node.label)}
+        onActivate={(node) => {
+          setLastActivated(node.label);
+          if (!node.children) setSelectedId(node.id);
+        }}
+        isSelected={(node) => (node.children ? undefined : node.id === selectedId)}
         renderRow={(node, info) => (
           <span className={styles.row}>
             {info.hasChildren && (

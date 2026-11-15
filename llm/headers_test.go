@@ -6,6 +6,7 @@ import (
 )
 
 func TestMergeHeaders(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if got := MergeHeaders(nil, nil); got != nil {
 		t.Errorf("MergeHeaders(nil,nil) = %v, want nil", got)
 	}
@@ -27,6 +28,7 @@ func TestMergeHeaders(t *testing.T) {
 // on nondeterministic map iteration order. Keys must canonicalize to one
 // entry with the override's value.
 func TestMergeHeaders_CaseInsensitiveCollision(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	got := MergeHeaders(
 		map[string]string{"User-Agent": "base-value"},
 		map[string]string{"user-agent": "override-value"},

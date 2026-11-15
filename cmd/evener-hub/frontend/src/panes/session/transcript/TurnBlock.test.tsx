@@ -296,9 +296,57 @@ test("showSeenDivider defaults to false: no divider marker rendered", () => {
   expect(screen.queryByTestId("seen-divider")).toBeNull();
 });
 
-test("showSeenDivider renders the divider marker above this turn's content", () => {
+test("showSeenDivider renders one divider marker inside the turn block", () => {
   render(<TurnBlock turn={turn([], { id: "turn_42" })} showSeenDivider />);
-  expect(screen.getByTestId("seen-divider")).toBeTruthy();
+  const dividers = screen.getAllByTestId("seen-divider");
+  expect(dividers).toHaveLength(1);
+  expect(screen.getByTestId("turn-block").contains(dividers[0] ?? null)).toBe(true);
+});
+
+function anchored(container: HTMLElement, id: string): Element {
+  const found = container.querySelector(`[data-view-anchor-id="${id}"]`);
+  if (!found) throw new Error(`no rendered entry ${id}`);
+  return found;
+}
+
+function follows(a: Element, b: Element): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+test("the seen divider follows the turn's leading user messages and precedes its first reply", () => {
+  const items = [
+    item({ id: "u1", type: "userMessage", text: "ask" }),
+    item({ id: "u2", type: "userMessage", text: "ask more" }),
+    item({ id: "a1", type: "agentMessage", text: "reply" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(follows(anchored(container, "u1"), divider)).toBe(true);
+  expect(follows(anchored(container, "u2"), divider)).toBe(true);
+  expect(follows(divider, anchored(container, "a1"))).toBe(true);
+});
+
+test("the seen divider comes first in a turn that has no user message", () => {
+  const items = [
+    item({ id: "a1", type: "agentMessage", text: "reply" }),
+    item({ id: "a2", type: "agentMessage", text: "more" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(follows(divider, anchored(container, "a1"))).toBe(true);
+  expect(follows(divider, anchored(container, "a2"))).toBe(true);
+});
+
+test("the seen divider follows every entry of a turn that only has user messages", () => {
+  const items = [
+    item({ id: "u1", type: "userMessage", text: "ask" }),
+    item({ id: "u2", type: "userMessage", text: "ask more" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(screen.getAllByTestId("seen-divider")).toHaveLength(1);
+  expect(follows(anchored(container, "u1"), divider)).toBe(true);
+  expect(follows(anchored(container, "u2"), divider)).toBe(true);
 });
 
 test("renders items in order via the item-renderer registry", () => {
@@ -925,6 +973,43 @@ test("a lone commandExecution renders inside a run-content wrapper", () => {
   const items = [item({ id: "t", type: "commandExecution", toolName: "tb-tool-solo", output: "out" })];
   render(<TurnBlock turn={turn(items)} />);
   expectInsideRunContent(screen.getByTestId("tool-call-item"));
+});
+
+// A run of adjacent tool rows is one card: each row's wrapper says whether it
+// opens, continues or closes the card, and a row that is not a tool row ends
+// the run, so the stylesheet can round only the card's outer corners.
+function toolCardPositionsOf(container: HTMLElement): (string | null)[] {
+  return Array.from(container.querySelectorAll('[data-testid="run-content"]')).map((wrapper) =>
+    wrapper.getAttribute("data-tool-card"),
+  );
+}
+
+test("adjacent tool rows share one card; a row between them splits it into two", () => {
+  const items = [
+    item({ id: "a", type: "commandExecution", toolName: "tb-card-a", output: "one" }),
+    item({ id: "b", type: "commandExecution", toolName: "tb-card-b", output: "two" }),
+    item({ id: "c", type: "commandExecution", toolName: "tb-card-c", output: "three" }),
+    item({ id: "note", type: "someFutureWireType", text: "between" }),
+    item({ id: "d", type: "commandExecution", toolName: "tb-card-d", output: "four" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} />);
+  expect(toolCardPositionsOf(container)).toEqual(["first", "middle", "last", null, "only"]);
+});
+
+test("a tool call whose row is suppressed neither joins a card nor splits the one around it", () => {
+  const items = [
+    item({ id: "a", type: "commandExecution", toolName: "tb-card-a", output: "one" }),
+    item({
+      id: "view",
+      type: "commandExecution",
+      toolName: "task_list",
+      argumentsJSON: JSON.stringify({ action: "view" }),
+    }),
+    item({ id: "b", type: "commandExecution", toolName: "tb-card-b", output: "two" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} />);
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(2);
+  expect(toolCardPositionsOf(container)).toEqual(["first", null, "last"]);
 });
 
 test("an unknown future item type defaults to run content", () => {

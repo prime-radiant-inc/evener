@@ -32,7 +32,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-3) var(--space-2);
+  padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-2) var(--space-2);
   background: var(--surface-1);
   border-bottom: 1px solid var(--edge);
 }
@@ -61,6 +61,9 @@
    * the trailing edge regardless of whether the back button is present. */
   display: flex;
   align-items: center;
+  /* One tap target wide even when empty, matching the trailing drawer trigger,
+   * so the title centers on the bar and not on whatever space is left. */
+  min-width: var(--tap-min);
 }
 
 .stackBody {

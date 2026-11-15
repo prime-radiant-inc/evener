@@ -36,9 +36,8 @@ function geometryVar(css: string, name: string): number {
 }
 
 // The load-bearing property: each speaker draws a different glyph, so the
-// tile actually answers "whose turn is this". The glyphs are the toolicon
-// kind paths, so distinctness here also guards against the two speakers
-// silently falling back to one kind.
+// tile actually answers "whose turn is this". Distinctness here also guards
+// against the two speakers silently falling back to one drawing.
 test("user and agent render distinct glyph paths", () => {
   const user = render(<SpeakerAvatar speaker="user" />)
     .container.querySelector("path")
@@ -52,9 +51,9 @@ test("user and agent render distinct glyph paths", () => {
   expect(user).not.toBe(agent);
 });
 
-// Square by construction, the same guarantee widgets/chevron makes: the tile
-// sits in a flex header row, and a non-square painted box is what once let a
-// transcript glyph escape its row (see chevron's own header).
+// Equal sides by construction, the same guarantee widgets/chevron makes: the
+// tile sits in a flex header row, and a non-square painted box is what once
+// let a transcript glyph escape its row (see chevron's own header).
 test("the tile is square at the default size", () => {
   const { container } = render(<SpeakerAvatar speaker="user" />);
   const tile = tileOf(container);
@@ -99,7 +98,8 @@ test("the tile is decorative: aria-hidden and no title", () => {
 // Declaration-level token contract: the tile's edge, fill, glyph ink and
 // corner radius are the design tokens, never literals - in the light theme
 // the --edge border is what separates the tile from the page (see the
-// widget's header), so a literal background would silently drop that.
+// widget's header), so a literal background would silently drop that. The
+// pill radius on equal sides is what makes the tile a circle.
 test("the tile uses the edge/surface/ink/radius tokens, not literals", () => {
   const rule = /\.tile\s*\{([^}]*)\}/.exec(tileCss());
   expect(rule).not.toBeNull();
@@ -107,7 +107,26 @@ test("the tile uses the edge/surface/ink/radius tokens, not literals", () => {
   expect(declarations).toMatch(/border:\s*1px solid var\(--edge\)/);
   expect(declarations).toMatch(/background:\s*var\(--surface-2\)/);
   expect(declarations).toMatch(/color:\s*var\(--ink-mid\)/);
-  expect(declarations).toMatch(/border-radius:\s*var\(--radius-control\)/);
+  expect(declarations).toMatch(/border-radius:\s*var\(--radius-pill\)/);
+});
+
+// The agent's mark rides the brand accent: its bars are drawn in the
+// on-accent role on an accent tile, the pair the token contract holds to
+// 4.5:1 in both themes.
+test("the agent tile wears the accent: accent fill, on-accent glyph", () => {
+  const rule = /\.agent\s*\{([^}]*)\}/.exec(tileCss());
+  expect(rule).not.toBeNull();
+  const declarations = rule![1]!;
+  expect(declarations).toMatch(/background:\s*var\(--accent\)/);
+  expect(declarations).toMatch(/color:\s*var\(--on-accent\)/);
+});
+
+test("only the agent's tile carries the accent treatment", () => {
+  const user = tileOf(render(<SpeakerAvatar speaker="user" />).container).className;
+  cleanup();
+  const agent = tileOf(render(<SpeakerAvatar speaker="agent" />).container).className;
+  expect(agent).not.toBe(user);
+  expect(agent.startsWith(user)).toBe(true);
 });
 
 // The drift pin. The transcript's gutter geometry is single-sourced on .turn

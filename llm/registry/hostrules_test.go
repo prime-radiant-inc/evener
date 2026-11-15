@@ -6,6 +6,7 @@ import (
 )
 
 func TestResolveOllamaHost(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ baseURL, host, want string }{
 		{"", "localhost", "http://localhost:11434/v1"},
 		{"", "::1", "http://[::1]:11434/v1"},
@@ -43,6 +44,7 @@ func TestResolveOllamaHost(t *testing.T) {
 }
 
 func TestVertexHost(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"global":       "https://aiplatform.googleapis.com",
 		"us":           "https://aiplatform.us.rep.googleapis.com",

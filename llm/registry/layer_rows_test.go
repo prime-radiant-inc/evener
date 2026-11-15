@@ -39,6 +39,7 @@ func foldFixtureProvider() Provider {
 }
 
 func TestFold_SharesCapabilityRows(t *testing.T) {
+	t.Parallel()
 	fixture := foldFixtureProvider()
 	cases := []struct {
 		name string
@@ -109,6 +110,7 @@ func TestFold_SharesCapabilityRows(t *testing.T) {
 }
 
 func TestFold_SharedRowsSurviveInheritance(t *testing.T) {
+	t.Parallel()
 	src := foldFixtureProvider()
 	before := foldFixtureProvider()
 
@@ -178,6 +180,7 @@ func TestFold_SharedRowsSurviveInheritance(t *testing.T) {
 }
 
 func TestLoad_SharedRowsPreserveResolution(t *testing.T) {
+	t.Parallel()
 	check := func(t *testing.T, r *Registry) {
 		t.Helper()
 		res := mustResolve(t, r, "openai/gpt-5.6")
@@ -206,6 +209,7 @@ func TestLoad_SharedRowsPreserveResolution(t *testing.T) {
 }
 
 func TestLoad_RowWithAbsentTransportPresetFails(t *testing.T) {
+	t.Parallel()
 	r, err := Load(
 		WithSnapshot(fixtureBytes(t)),
 		WithOverlay(overlayWith("[providers.openai.models.\"absent-preset\"]\ntransport = \"does-not-exist\"\n")),

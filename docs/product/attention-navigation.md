@@ -38,6 +38,66 @@ it has no human-attention value — and a delegate whose delivered input is not
 yet consumed reads as running work, not attention
 ([`delegateDotState`](../../appwire-client/typescript/delegateDetails.ts)).
 
+## Live bands on the rail
+
+The rail's Live section answers "who needs me" before anything else. It reads
+as three bands, each a fold that starts open and remembers being closed:
+Needs you, Working, Idle. The phone Board shows the same bands from the same
+shared model
+([`liveBands`](../../appwire-client/typescript/state/navigation/liveAttention.ts)),
+so the two clients agree on which band a session is in and on each band's
+order:
+
+- **Needs you** is failed first, then a pending question or approval, then a
+  warning or restart, oldest first within each. This is the hub's own
+  needs-you order, so the band reads in the order Next needs you walks it.
+  The band also shows needs-you sessions that Live's loaded pages have not
+  reached, so a session that needs a person is never behind "+N older", and
+  it shows every row of the hub's tier, including one the rail files as
+  archived by age: the tier never decays, and the header's count and Next
+  needs you walk the same rows. The two sections are read separately; while the
+  needs-you section lists a session, its copy is the one the rail shows.
+- **Working** keeps the hub's Live order.
+- **Idle** is newest finished turn first.
+
+The rail differs from the Board in two deliberate places
+([`railLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)).
+A session the rail shows as working because a background job still runs — a
+resting one, or one whose warning blocks nothing — sits in Working, after the
+sessions mid-turn, so its band agrees with its indicator. And a
+row the hub lists in Live that the shared model places in no band (its host
+is offline, or it has not loaded) rests at the end of Idle instead of leaving
+Live, with its host and "offline" named on the row.
+
+Live is grouped by attention in every Organize-by mode; hosts group the
+Hosts/Projects section below it. A Live row names its host only when Live
+spans hosts and the row is away from this hub, or its host is offline.
+
+A Live row says why it is in its band only where the band's name and the
+row's indicator have not already said it: the kind of attention on a
+Needs-you row, and what a working row is waiting on or running. The words
+come from the shared
+[`whyLine`](../../appwire-client/typescript/state/navigation/liveAttention.ts);
+the rail prints its state word and leaves the sentence that only says to
+open the session to the phone.
+
+The order on screen is the order the keyboard walks: the live-session chords
+(Alt+Shift+Arrow) follow the bands top to bottom
+([`liveBandRefs`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts)),
+and revealing a session opens the band that holds it. Rows do not animate
+when a session changes band.
+
+A row that changes band is a new row under its new fold. Two things keep
+that from costing the reader anything: while a dialog opened from a row's
+own menu is open (a rename in progress, a confirmation), the bands hold every
+row where it was, with its fresh facts (or as it last was, if the sections
+stop supplying it), and settle when the dialog closes
+([`holdLiveBands`](../../cmd/evener-hub/frontend/src/shell/rail/liveBands.ts));
+and a row that had keyboard focus keeps it across the move. A Live row is
+one row whichever section or page supplied it, so Live's own page arriving
+after the needs-you section does not replace a row the reader is using
+([`Tree`](../../cmd/evener-hub/frontend/src/widgets/tree/index.tsx)).
+
 ## The floating control
 
 The Next-needs-you control floats above the composer at every web width —
@@ -208,15 +268,46 @@ separate server-side contract.
 
 ## Opening position
 
-The phone's Display page owns the one open-at-unread-replies preference
+A session opens at the live end, with one exception: a finished reply the
+reader has not seen opens at that reply's start, so they read it downward
+instead of scrolling back from its end to find where it began. Both clients
+make that exception, each with its own memory of what was seen.
+
+The web remembers, per session and per browser, the latest finished turn at
+the moment the reader left the pane
+([`useSeenDivider`](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useSeenDivider.ts));
+a turn still running then has not been read to its end, so the reply it goes
+on to finish is unseen. The first turn after that mark carries the "New since
+your last visit" divider, placed after the messages that opened the turn and
+before its reply. When that turn has finished, the pane opens there: at the
+top of the turn when the reader's message is short enough to keep the divider
+in the upper part of the viewport, and at the divider itself when it is not,
+so a long pasted prompt never pushes the reply out of view. The jump pill
+offers the live end from there. A reply short enough to share the viewport
+with the end is simply the live end.
+
+The live end keeps the opening in every other case
+([`unseenOpeningTurnId`](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useSeenDivider.ts)):
+nothing unseen, an unseen turn that is still running (the reader follows it
+live, and the divider still marks where it began), a pending question or
+approval (the live end is where the dock is), and a mark that is not among the
+loaded turns. A reader with a retained reading position up the transcript - a
+hidden tab, a parked attention hop - returns to that position, not to the
+unseen reply. The landing is the opening's alone: a transcript that reloads
+under an open pane does not send the reader back, and the reader's own scroll
+cancels a landing still in flight
+([`useTranscriptScroll`](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)).
+There is no setting for this on the web: the live end is one click on the
+pill away, and a preference would only choose between two places that are
+both already reachable.
+
+The mark is local to the browser, so it is independent of the hub's
+cross-device seen state: opening still marks the session seen through the
+rules in [session activity](session-activity.md), and a reply already read on
+another device still opens at its start here.
+
+The phone's Display page owns an open-at-unread-replies preference
 ([`openAtUnreadReplies`](../../mobile-native/src/display/displayPreferences.ts)),
 on by default: with it, a reply that finished since the reader last reached
 the end opens at that reply's start, past the reader's own message, its time
-marker and its attachments; a pending question or approval still wins, because
-the live end is where the dock is. The web has no such preference: a session
-pane opens at the live end or at its retained reading position, and opening
-marks the session seen through the rules in
-[session activity](session-activity.md). Its transcript shows a passive
-"New since your last visit" divider at the first unseen turn
-([`useSeenDivider`](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useSeenDivider.ts))
-instead of repositioning the reader.
+marker and its attachments; a pending question or approval still wins.

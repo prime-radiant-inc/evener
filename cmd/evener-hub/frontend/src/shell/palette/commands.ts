@@ -141,7 +141,7 @@ export interface Command {
   // only mint intent that parks until the explicit Resume action clears the
   // fence. The composer's Enter/submit interception reads this at the press
   // (Composer.tsx's handleBuiltinSubmit) and refuses with a reason naming the
-  // Resume path, exactly as the Send/Steer buttons and the pending stack already
+  // Resume path, exactly as the Send/Steer buttons and the pending rows already
   // refuse their own fenced verbs. The set is the durable turn mutations
   // (/steer, /queue, /drain-as-steer) plus /clear's durable thread/clear.
   // /interrupt is deliberately NOT marked: Stop is how the fenced window ends

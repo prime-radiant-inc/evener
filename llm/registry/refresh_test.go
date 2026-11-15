@@ -48,6 +48,7 @@ func subsetFixture(t *testing.T, n int) []byte {
 // An overlay stanza for a provider that vanished upstream must not fail the
 // load: the record has no protocol, is hidden, and its fields go unchecked.
 func TestLoad_OverlayProviderMissingUpstreamIsHidden(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith("[providers.vanished]\nfields = { store = true }\nbase_url = \"https://x/v1\"\n")))
 	p, ok := r.Provider("vanished")
 	if !ok || !p.Hidden {
@@ -79,6 +80,7 @@ func (f *fakeFetch) fetcher() Fetcher {
 }
 
 func TestRefresh_WritesCacheAndRoundTripsEtag(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	f := &fakeFetch{body: subsetFixture(t, 1), etag: `W/"v1"`}
@@ -109,6 +111,7 @@ func TestRefresh_WritesCacheAndRoundTripsEtag(t *testing.T) {
 }
 
 func TestRefresh_SanityFloorsAndFailuresKeepCache(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	good := &fakeFetch{body: fixtureBytes(t), etag: "a"}
 	if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: good.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {
@@ -132,6 +135,7 @@ func TestRefresh_SanityFloorsAndFailuresKeepCache(t *testing.T) {
 }
 
 func TestRefresh_RequiresStateRoot(t *testing.T) {
+	t.Parallel()
 	f := &fakeFetch{body: fixtureBytes(t), etag: "a"}
 	_, err := Refresh(context.Background(), RefreshOptions{Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)})
 	if err == nil {
@@ -143,6 +147,7 @@ func TestRefresh_RequiresStateRoot(t *testing.T) {
 }
 
 func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	data := fixtureBytes(t)
 	r, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(state))
@@ -184,6 +189,7 @@ func TestLoad_PrefersNewerCacheAndOfflineDefault(t *testing.T) {
 }
 
 func TestLoad_NewerCacheWinsBeforeCustomSnapshotValidation(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	f := &fakeFetch{body: subsetFixture(t, 1), etag: "newer"}
 	if _, err := Refresh(context.Background(), RefreshOptions{
@@ -210,6 +216,7 @@ func TestLoad_NewerCacheWinsBeforeCustomSnapshotValidation(t *testing.T) {
 }
 
 func TestLoad_WithoutCacheIgnoresANewerCache(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	f := &fakeFetch{body: subsetFixture(t, 1), etag: "n"}
 	if _, err := Refresh(context.Background(), RefreshOptions{StateRoot: state, Fetcher: f.fetcher(), Force: true, Baseline: fixtureBytes(t)}); err != nil {
@@ -240,6 +247,7 @@ func TestLoad_WithoutCacheIgnoresANewerCache(t *testing.T) {
 }
 
 func TestLoad_CorruptCacheFallsBackToSnapshot(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	jsonPath, metaPath := cachePaths(state)
 	_ = os.MkdirAll(filepath.Dir(jsonPath), 0o700)

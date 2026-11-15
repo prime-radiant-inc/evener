@@ -196,6 +196,15 @@ func (s *Session) bumpHistoryRevisionLocked() {
 // append for the rest of the session, so a caller that retries a fold against
 // it burns another summarizer call to lose the same way, and a caller that
 // reports the loss must not call it a race the operator can win.
+//
+// A third, distinct outcome keeps ok=true: a staged retained- or rewrite-tail
+// copy write that fails mid-commit withholds the fold's compaction markers —
+// the transaction takes its own transcript lines back out, so the file holds
+// no marker that would discard originals whose replacements never landed
+// (#1158). The fold still published in memory, its live effects still flush,
+// and the next resume replays the transcript from before the compaction; the
+// marker-dependent flush effects (compaction-turn events, naming, the
+// reminder steering, PostCompact) stay with the anchor that never landed.
 // The returned published slice is a defensive copy taken under s.mu, never
 // s.history's own backing array — callers may read it without locks.
 func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn, restoredAt []int)) (published []schema.Turn, ok bool, refusal error) {
@@ -371,18 +380,49 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// expands it into the model request — would otherwise race those
 	// mutations with torn multi-word Turn reads.
 	published = append([]schema.Turn(nil), published...)
+	// What the transaction's own records will advance in memory: the pair
+	// log's last-write slot, the latest USER_INPUT entry index, and the
+	// conversation frontier the marker's record adopts — the frontier id and
+	// the covered inputs, whose durable carrier is the marker line itself, so
+	// a withheld marker rolls them back for later records to build on (the
+	// node's own fate is the withhold branch's, below).
+	lastRecordedBeforeCommit := s.lastRecorded
+	userInputEntryBeforeCommit := s.userInputEntry
+	frontierIDBeforeCommit := s.conversation.frontierID
+	inputsBeforeCommit := slices.Clone(s.conversation.inputs)
 	s.mu.Unlock()
 	if hook := s.cfg.testOnly.beforeFoldTranscriptCommit; hook != nil {
 		hook()
 	}
+	// Where this transaction's transcript records start. A staged tail write
+	// that fails below leaves the fold half-applied on disk: the markers are
+	// what a resume anchors on to discard every entry before them, and a
+	// marker whose replacement copies did not all land would silently drop
+	// the turns it folded away (#1158). Every writer on this file sits behind
+	// the attentionMu this transaction holds, so the boundary stays valid
+	// for the whole commit and the lines written since it are exactly this
+	// transaction's own.
+	writer := s.attachedTranscript()
+	boundary := writer.CaptureCommitBoundary()
+	// The capture also holds the file's recorded-entry notifications, and this
+	// flag holds the session's per-record published-length handoffs, for the
+	// whole commit: nothing the transaction records reaches a consumer until
+	// the commit's fate is settled, so no consumer keeps state for entries a
+	// retract may take out.
+	s.holdTranscriptPublications = true
 	var mergedTailWriteErrs []error
 	// The staged writer invokes this only after a marker lands and before
 	// new steering. Together the phases match the published history:
 	// marker, retained snapshot, staged steering, concurrent append pairs.
+	// The first failed copy ends the tail: every line this transaction wrote
+	// is about to be taken back out with the markers, so writing the rest
+	// only adds lines the retract must remove.
 	commit.replayRetainedLocked = func() {
 		for _, turn := range retainedTail {
 			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, transcript.PlaceVerbatim); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+				commit.stagedTailWriteFailed = true
+				return
 			}
 		}
 	}
@@ -394,8 +434,10 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// gated only on s.strategy != nil), and a fold that landed no marker moved
 	// no anchor, so the pairs' own entries are already on the surviving side
 	// and a copy of them is a pure duplicate: written anyway, an earlier
-	// fold's marker would make the anchored read return the pair twice.
-	if markerLanded {
+	// fold's marker would make the anchored read return the pair twice. A
+	// staged write that already failed means the markers are coming back out,
+	// so there is no anchor to carry past either.
+	if markerLanded && !commit.stagedTailWriteFailed {
 		for _, turn := range rewriteTail {
 			place := transcript.PlaceSession
 			if turn.OriginalOrdinal != nil {
@@ -405,12 +447,75 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 			}
 			if _, err := s.recordTranscriptLocked(turn, transcript.DoorDurable, place); err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+				commit.stagedTailWriteFailed = true
+				break
 			}
 		}
 	}
+	// The withhold: a staged tail write failed, so the transcript commit is
+	// half-applied. Take this transaction's own lines back out — markers,
+	// the copies that landed, the steering — so no marker stands to discard
+	// originals whose replacements are missing, and the fold either completes
+	// fully or leaves the transcript as it was. The in-memory fold still
+	// stands: it won publication, its live effects are real, and the next
+	// resume replays the transcript from before the compaction rather than
+	// losing the folded turns — keep the original readable.
+	if len(mergedTailWriteErrs) > 0 {
+		removed, retractErr := writer.RetractToBoundary(boundary)
+		if removed {
+			commit.markerWithheld = true
+			s.mu.Lock()
+			// The transaction's records are gone, so the bookkeeping they
+			// advanced must not remember appends no reader can find: the pair
+			// log's last write, the USER_INPUT entry index, and the note the
+			// handoff turn was spending — its steering never landed, so the
+			// note must stay durably pending for the next cycle, behind the
+			// generation guard against a newer note.
+			s.lastRecorded = lastRecordedBeforeCommit
+			s.userInputEntry = userInputEntryBeforeCommit
+			// The conversation frontier the marker's record adopted is the one
+			// piece that must partly stay. The frontier ID and the covered
+			// inputs go back to their pre-commit values, so no later record
+			// chains onto a node whose durable carrier — the marker line — is
+			// gone: a reply or fold that named it would go unknown on resume,
+			// which replays the pre-compaction transcript where the node never
+			// existed. The node itself stays in the chain, marked retracted:
+			// the in-memory fold still stands, and its live marker references
+			// the node for the folded inputs' coverage. The next node a record
+			// actually carries replaces it there and inherits those
+			// references (replaceRetractedFrontierLocked).
+			s.conversation.frontierID = frontierIDBeforeCommit
+			s.conversation.inputs = inputsBeforeCommit
+			s.conversation.retractedFrontierID = commit.retractedFrontierID
+			if commit.restoreNoteLocked != nil {
+				commit.restoreNoteLocked()
+			}
+			s.mu.Unlock()
+		}
+		if retractErr != nil {
+			mergedTailWriteErrs = append(mergedTailWriteErrs, retractErr)
+		}
+	} else {
+		// The commit stands: the held recorded-entry notifications fire, in
+		// the order their entries were written.
+		writer.ReleaseCommitBoundary()
+	}
+	// Every path ends the publication hold here and publishes the one settled
+	// boundary: the published-length handoff is monotone, so a fold that
+	// stands publishes its full commit, a withheld one publishes a length the
+	// consumer's high-water mark already covers (and never published the
+	// vanished intermediate lengths at all), and a failed retract publishes
+	// the lines that are still standing.
+	s.holdTranscriptPublications = false
+	s.publishTranscriptLocked(writer.RecordedLength())
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	if commit.markerWithheld {
+		s.emit(events.WarningData{Message: "a staged transcript write failed, so this compaction's marker was withheld: the compaction stands in memory, and a restart replays this session's transcript from before it"})
+	} else if len(mergedTailWriteErrs) > 0 {
+		s.emit(events.WarningData{Message: "a staged transcript write failed and the fold's compaction marker could not be taken back out: a restart replays this session's transcript from the compaction and may lose the folded turns"})
 	}
 	// The fold's buffered marker/steering writes and its durable merged-tail
 	// copies each queue a diagnostic when a whole line landed but did not sync;
@@ -709,6 +814,37 @@ type foldCommit struct {
 	stagedCompactionCount          func() int
 	claimCompactionLocked          func()
 	receipt                        *schema.SkillCompactionReceipt
+	// stagedTailWriteFailed records that a staged retained- or rewrite-tail
+	// copy could not be written during the transcript commit: the markers
+	// that already landed must be taken back out (see publishFoldTransaction),
+	// and the commit writes no further records for this fold — no steering,
+	// no rewrite copies. Set and read only under the publication
+	// transaction's attentionMu, in the committing goroutine.
+	stagedTailWriteFailed bool
+	// markerWithheld records that the publisher took this fold's transcript
+	// commit back out: no marker, copy or steering line of this fold's is in
+	// the file, and the next resume replays the transcript from before the
+	// compaction. The in-memory fold still stands, so flush keeps the effects
+	// that describe the live session and skips the ones that announce the
+	// durable anchor the transcript never received.
+	markerWithheld bool
+	// restoreNoteLocked, when a fold captured a pinned note for handoff, puts
+	// the claimed note back when the transcript commit is withheld: the
+	// handoff steering never landed, so the note must survive the restart the
+	// next resume replays to. Generation-guarded, like the claim it reverses;
+	// runs under s.mu inside the withhold branch. See restorePinnedNoteLocked.
+	restoreNoteLocked func()
+	// retractedFrontierID names the conversation frontier node this fold
+	// minted when the transcript commit is withheld: the marker line was
+	// that node's durable carrier, so the node stays in the chain as a
+	// live-only head (the in-memory fold's marker still references it for
+	// coverage) while the frontier ID and covered inputs go back to their
+	// pre-commit values. The next node a record actually carries replaces it
+	// (see replaceRetractedFrontierLocked). Empty when the fold minted no
+	// node, which is also when the withhold changes no conversation state.
+	// Written by prepareConversationLocked before the commit, read under s.mu
+	// inside the withhold branch.
+	retractedFrontierID string
 }
 
 // foldPublicationID renders the winning publication's identity from the
@@ -753,21 +889,32 @@ func environmentTurnsRemoved(previous map[string]int, published []schema.Turn) b
 // pinned-note claim from stageCompactionEffects down to runPreCompactHook.
 type noteClaimRegistrarKey struct{}
 
-func withNoteClaimRegistrar(ctx context.Context, register func(claimLocked func())) context.Context {
+// pinnedNoteClaim pairs what a fold captured for a note handoff: the claim
+// consumes the captured note when the fold wins publication, and the restore
+// puts it back when the fold's transcript commit is withheld — the handoff
+// turn the claim was spending never landed, so the note must stay durably
+// pending for the next cycle. Both are generation-checked; both run under
+// s.mu.
+type pinnedNoteClaim struct {
+	claim   func()
+	restore func()
+}
+
+func withNoteClaimRegistrar(ctx context.Context, register func(pinnedNoteClaim)) context.Context {
 	return context.WithValue(ctx, noteClaimRegistrarKey{}, register)
 }
 
-// registerNoteClaim hands the fold's generation-checked note claim to the
+// registerNoteClaim hands the fold's note claim (with its restore) to the
 // enclosing fold staging for its publication transaction. It reports false
 // when no registrar is installed — a direct runPreCompactHook caller outside
 // any publication transaction — in which case the claim belongs with the
 // caller's own deferred commit.
-func registerNoteClaim(ctx context.Context, claimLocked func()) bool {
-	register, ok := ctx.Value(noteClaimRegistrarKey{}).(func(func()))
+func registerNoteClaim(ctx context.Context, claim pinnedNoteClaim) bool {
+	register, ok := ctx.Value(noteClaimRegistrarKey{}).(func(pinnedNoteClaim))
 	if !ok {
 		return false
 	}
-	register(claimLocked)
+	register(claim)
 	return true
 }
 
@@ -797,10 +944,11 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	ctx = contextmgr.WithCompactionMeta(ctx, s.buildCompactionMeta())
 
 	// The publication transaction claims the pinned note (if the hook below
-	// captures one) atomically with the publish; the fold registers its
-	// generation-checked claim here as it runs.
-	var noteClaimLocked func()
-	ctx = withNoteClaimRegistrar(ctx, func(claimLocked func()) { noteClaimLocked = claimLocked })
+	// captures one) atomically with the publish, and restores it when the
+	// commit is withheld; the fold registers its generation-checked pair here
+	// as it runs.
+	var noteClaim pinnedNoteClaim
+	ctx = withNoteClaimRegistrar(ctx, func(claim pinnedNoteClaim) { noteClaim = claim })
 
 	// pendingCompactionTurns records checkpoint/summary turns the fold
 	// produced; handleCompactionTurn's own side effects (transcript write,
@@ -924,6 +1072,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		conversationRef = s.conversation.frontierID
 		if conversationNode != nil {
 			conversationRef = conversationNode.ID
+			commit.retractedFrontierID = conversationNode.ID
 		}
 		last := len(pendingCompactionTurns) - 1
 		pendingCompactionTurns[last].ConversationFrontier = conversationNode
@@ -969,7 +1118,13 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if markerLanded && commit.replayRetainedLocked != nil {
 			commit.replayRetainedLocked()
 		}
-		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
+		// The fold's steering goes with the anchor. A staged tail write that
+		// failed means the markers this fold landed are coming back out, so
+		// steering that describes them would be stale guidance the moment it
+		// landed — and duplicate guidance on the fold's next attempt.
+		if !commit.stagedTailWriteFailed {
+			steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
+		}
 		return markerLanded
 	}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {
@@ -999,10 +1154,18 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.emit(ccd)
 		}
 		for i, turn := range pendingCompactionTurns {
-			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
+			// A withheld marker announces nothing — no event, no session
+			// naming — but the fold-dependent effects still run inside
+			// handleCompactionTurnEffects: the in-memory fold stands.
+			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision, commit.markerWithheld)
 		}
-		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
-		if artifactProduced && !superseded {
+		if !commit.markerWithheld {
+			s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
+		}
+		if artifactProduced && !superseded && !commit.markerWithheld {
+			// The reminders point a reader at the transcript for the detail
+			// this fold compacted away; a withheld marker left no anchor
+			// there to point at.
 			s.steerCompactionTaskReminderForFold(commit.publishedRevision)
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
@@ -1036,8 +1199,10 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		// operation (the cycle slot, the receipt's phase, the metadata save),
 		// not part of the compaction the hook reports. Everything the hook
 		// describes — the summary, the markers, the history swap — is
-		// already durable when it fires.
-		if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPostCompact) && commit.actualCompaction {
+		// already durable when it fires, which a withheld marker's fold
+		// cannot claim: its markers were taken back out, so the hook stays
+		// silent and the fold reports through its warnings instead.
+		if s.hookRunner != nil && s.hookRunner.Has(plugin.HookPostCompact) && commit.actualCompaction && !commit.markerWithheld {
 			s.mu.Lock()
 			supersededNow := commit.publishedRevision < s.newestPublishedFoldRevision
 			s.mu.Unlock()
@@ -1069,8 +1234,13 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commit.stagedCompactionCount = func() int { return len(pendingCompactionEvents) }
 	commit.claimCompactionLocked = func() { s.claimCompactionLocked(commit) }
 	commit.claimNoteLocked = func() {
-		if noteClaimLocked != nil {
-			noteClaimLocked()
+		if noteClaim.claim != nil {
+			noteClaim.claim()
+		}
+	}
+	commit.restoreNoteLocked = func() {
+		if noteClaim.restore != nil {
+			noteClaim.restore()
 		}
 	}
 	commit.commitTranscriptsLocked = commitTranscriptsLocked
@@ -1247,12 +1417,19 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn,
 		// claim is generation-checked so it consumes exactly the note this
 		// fold captured, never a newer one pinned mid-fold; a fold publisher
 		// runs it inside the publication transaction itself, while a direct
-		// caller outside one commits it with the rest.
-		claimLocked := func() { s.claimPinnedNoteLocked(gen) }
-		if !registerNoteClaim(ctx, claimLocked) {
+		// caller outside one commits it with the rest. The restore is the
+		// claim's withheld-commit half: a fold whose transcript commit was
+		// taken back out never landed the handoff turn the claim was
+		// spending, so the note goes back to durably pending, behind the
+		// same generation guard.
+		claim := pinnedNoteClaim{
+			claim:   func() { s.claimPinnedNoteLocked(gen) },
+			restore: func() { s.restorePinnedNoteLocked(note, gen) },
+		}
+		if !registerNoteClaim(ctx, claim) {
 			deferred = append(deferred, func() {
 				s.mu.Lock()
-				claimLocked()
+				claim.claim()
 				s.mu.Unlock()
 			})
 		}

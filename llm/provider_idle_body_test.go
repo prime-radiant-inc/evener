@@ -14,6 +14,7 @@ import (
 )
 
 func TestProviderIdleNonStreamingBody(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
 		client := ClientWithAdapterTimeout(&http.Client{Transport: transporttest.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -50,6 +51,7 @@ func TestProviderIdleNonStreamingBody(t *testing.T) {
 }
 
 func TestProviderIdleContinuedBytesExceedOldTotalCap(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
 		at := DefaultAdapterTimeout()
@@ -76,6 +78,7 @@ func TestProviderIdleContinuedBytesExceedOldTotalCap(t *testing.T) {
 }
 
 func TestProviderIdleCancellationUnblocksRead(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		r, w := io.Pipe()
@@ -97,6 +100,7 @@ type idleCloseCounter struct {
 
 func (b *idleCloseCounter) Close() error { b.closes++; return nil }
 func TestProviderIdleStopsOnEOFAndClose(t *testing.T) {
+	t.Parallel()
 	for _, closeEarly := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			inner := &idleCloseCounter{Reader: strings.NewReader("")}
@@ -129,6 +133,7 @@ func TestProviderIdleStopsOnEOFAndClose(t *testing.T) {
 // successful byte read holds while it extends the deadline. Reset alone does
 // not revoke that callback; it must re-check the latest deadline under the lock.
 func TestProviderIdleStaleCallbackCannotExpireProgress(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		inner := &idleCloseCounter{Reader: strings.NewReader("x")}
 		b := newIdleResponseBody(context.Background(), inner, time.Minute, nil)
@@ -151,6 +156,7 @@ func TestProviderIdleStaleCallbackCannotExpireProgress(t *testing.T) {
 // be ignored: the stop revoked the idle monitor, so a late expire neither
 // closes the underlying body nor marks it expired.
 func TestProviderIdleStoppedBodyIgnoresALateExpire(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		inner := &idleCloseCounter{Reader: strings.NewReader("x")}
 		b := newIdleResponseBody(context.Background(), inner, time.Minute, nil)

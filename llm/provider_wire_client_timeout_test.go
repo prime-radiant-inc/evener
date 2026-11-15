@@ -104,6 +104,7 @@ func (s *lockedAttemptSink) snapshot() []apilog.APIAttemptRecord {
 }
 
 func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			body := &streamCloseResponseBody{
@@ -163,6 +164,7 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 }
 
 func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, streaming := range []bool{false, true} {
 			name := "complete"
@@ -224,6 +226,7 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 }
 
 func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, testCase := range []struct {
 			name        string
@@ -285,6 +288,7 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 }
 
 func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, testCase := range []struct {
 			name        string
@@ -363,6 +367,7 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 }
 
 func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -393,6 +398,7 @@ func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.
 }
 
 func TestCoreCompleteWireCaptureClassifiesAdapterConnectDeadline(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			dialStarted := make(chan struct{})

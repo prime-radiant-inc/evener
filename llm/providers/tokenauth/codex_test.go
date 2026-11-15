@@ -30,6 +30,7 @@ func codexRes(instance string) registry.Resolved {
 }
 
 func TestCodexApplySetsEveryRequestHeader(t *testing.T) {
+	t.Parallel()
 	dir := codexState(t, "openai-codex", "acct_123")
 	var gotDir, gotInstance string
 	c := &Codex{StateDir: dir, Credentials: func(_ context.Context, stateDir, instance string) (authopenai.RuntimeCredentials, error) {
@@ -62,6 +63,7 @@ func TestCodexApplySetsEveryRequestHeader(t *testing.T) {
 // login, logout, or account switch in the same process, pairing a fresh bearer
 // with a stale account header.
 func TestCodexApplyRefreshesTheAccountHeaderWhenTheRecordIdentityChanges(t *testing.T) {
+	t.Parallel()
 	dir := codexState(t, "openai-codex", "acct_1")
 	// The credentials seam resolves the bearer from the same record Apply reads
 	// its account header from, exactly as the real Service does.
@@ -104,6 +106,7 @@ func TestCodexApplyRefreshesTheAccountHeaderWhenTheRecordIdentityChanges(t *test
 // TestCodexAccountIDDropsAfterLogout pins the logout half of #2367: deleting
 // the record must clear a cached account id rather than keep sending it.
 func TestCodexAccountIDDropsAfterLogout(t *testing.T) {
+	t.Parallel()
 	dir := codexState(t, "openai-codex", "acct_1")
 	c := &Codex{StateDir: dir}
 	if id := c.accountID("openai-codex"); id != "acct_1" {
@@ -118,6 +121,7 @@ func TestCodexAccountIDDropsAfterLogout(t *testing.T) {
 }
 
 func TestCodexApplyRequiresLogin(t *testing.T) {
+	t.Parallel()
 	c := &Codex{StateDir: t.TempDir(), Credentials: func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
 		t.Fatal("credentials must not be resolved without an oauth credential source")
 		return authopenai.RuntimeCredentials{}, nil
@@ -165,6 +169,7 @@ func TestCodexApplyRequiresLogin(t *testing.T) {
 }
 
 func TestCodexPrepareRequest(t *testing.T) {
+	t.Parallel()
 	c := &Codex{}
 	res := codexRes("openai-codex")
 	res.Caps.Fields["metadata"] = true

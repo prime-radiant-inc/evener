@@ -35,6 +35,7 @@ var modelListProviderOperations = []providerOperationCase{
 var tokenCountProviderOperations = modelListProviderOperations
 
 func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	tests := []struct {
@@ -153,6 +154,7 @@ func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
 }
 
 func TestClientLocalProviderOperationsDoNotWriteCanonicalRecords(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := llm.NewAPILogger(path)
 	if err != nil {
@@ -192,6 +194,7 @@ func TestClientLocalProviderOperationsDoNotWriteCanonicalRecords(t *testing.T) {
 }
 
 func TestClientProviderOperationFailurePreservesErrorAndSettlement(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -232,6 +235,7 @@ func TestClientProviderOperationFailurePreservesErrorAndSettlement(t *testing.T)
 // the settlement. The protocol reads the whole body before decoding it, so
 // "observed" here is the entire response.
 func TestClientModelListDecodeFailurePreservesObservedResponse(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	responseBody := append([]byte("!malformed-model-list\n"), bytes.Repeat([]byte("unread-tail-"), 1024)...)
 
@@ -277,6 +281,7 @@ func TestClientModelListDecodeFailurePreservesObservedResponse(t *testing.T) {
 // the call is an error — the protocols report the gap rather than returning
 // the zero the adapters used to call exact.
 func TestClientTokenCountDecodeConditionsPreserveResultsAndForensicFailures(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	responses := []struct {
@@ -354,6 +359,7 @@ func TestClientTokenCountDecodeConditionsPreserveResultsAndForensicFailures(t *t
 }
 
 func TestClientProviderOperationCallerOwnsSettlement(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"data":[{"id":"model"}]}`)
 	}))
@@ -384,6 +390,7 @@ func TestClientProviderOperationCallerOwnsSettlement(t *testing.T) {
 }
 
 func TestClientAnthropicModelListPaginationSharesOneSettlement(t *testing.T) {
+	t.Parallel()
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requests++
@@ -417,6 +424,7 @@ func TestClientAnthropicModelListPaginationSharesOneSettlement(t *testing.T) {
 }
 
 func TestClientModelListRedirectRecordsEachHTTPAttempt(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/models") {
 			http.Redirect(w, request, "/redirected-models", http.StatusFound)

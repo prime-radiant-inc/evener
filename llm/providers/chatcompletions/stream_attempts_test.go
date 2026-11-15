@@ -52,6 +52,7 @@ const twoChatChunks = "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\
 // stream's terminal event, so a caller that reacts to FINISH always finds
 // the attempt already in the log.
 func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, chatSSE)
 	sink := &captureSink{}
 	ctx := llm.WithAPIAttemptSink(
@@ -87,6 +88,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 // reached the provider and the response headers arrived, so neither a
 // connect nor a request-deadline classification would be honest.
 func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
 		stall := make(chan struct{})
@@ -130,6 +132,7 @@ type idleAttemptRoundTripper func(*http.Request) (*http.Response, error)
 func (f idleAttemptRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestStreamDoneClosesOpenBodyWithoutIdleTimeout(t *testing.T) {
+	t.Parallel()
 	for _, capture := range []bool{false, true} {
 		name := "without_capture"
 		if capture {

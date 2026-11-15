@@ -38,6 +38,7 @@ func protoBuild(t *testing.T, req llm.Request, res registry.Resolved) map[string
 }
 
 func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
+	t.Parallel()
 	p, ok := llm.ProtocolFor(registry.ProtocolGoogle)
 	if !ok {
 		t.Fatal("google not registered")
@@ -56,6 +57,7 @@ func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
 // still gets thought parts to render. Dropping the whole object would remove
 // the summaries as well.
 func TestBuildBody_NoEffortVerdictSendsNoLevel(t *testing.T) {
+	t.Parallel()
 	unsupported := true
 	levelShape := func(c *registry.Caps) {
 		c.ThinkingShape = new("level")
@@ -78,6 +80,7 @@ func TestBuildBody_NoEffortVerdictSendsNoLevel(t *testing.T) {
 }
 
 func TestProtocolBuildBody(t *testing.T) {
+	t.Parallel()
 	req := protoReq("high")
 	req.WebSearch = true
 	req.Temperature = new(0.2)
@@ -128,6 +131,7 @@ func TestProtocolBuildBody(t *testing.T) {
 // thinkingBudget (2.5 era). The registry derives a row's ThinkingShape from
 // its catalog facts; sending a budget to a level-only model is a wire 400.
 func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
+	t.Parallel()
 	level := func(t *testing.T, body map[string]any) any {
 		t.Helper()
 		gen, _ := body["generationConfig"].(map[string]any)
@@ -227,6 +231,7 @@ func TestProtocolBuildBody_ThinkingShape(t *testing.T) {
 // 2.5-era computer-use row records reasoning with no reasoning_options, so it
 // must not spell a level the model rejects (roborev round 2).
 func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
+	t.Parallel()
 	r, err := registry.Load(registry.WithNoUserLayer(), registry.WithoutCache(), registry.WithOffline(true))
 	if err != nil {
 		t.Fatal(err)
@@ -266,6 +271,7 @@ func TestProtocolBuildBody_CatalogRowThinkingShape(t *testing.T) {
 // shape, while an enabled effort on the same row does — the guard, not the
 // absent shape, is what omits the object.
 func TestProtocolBuildBody_ThinkingOffAndEmpty(t *testing.T) {
+	t.Parallel()
 	shapes := map[string]func(*registry.Caps){
 		"level": func(c *registry.Caps) { c.ThinkingShape = new("level") },
 		"budget": func(c *registry.Caps) {
@@ -298,6 +304,7 @@ func TestProtocolBuildBody_ThinkingOffAndEmpty(t *testing.T) {
 // \"$schema\"". The sanitizer must drop those keys at every level while
 // keeping the validation keywords.
 func TestProtocolBuildBody_DropsGeminiSchemaMetaKeys(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{
 		Name: "use_browser",
@@ -336,6 +343,7 @@ func TestProtocolBuildBody_DropsGeminiSchemaMetaKeys(t *testing.T) {
 // it while still stripping a keyword of the same name at a schema position
 // (otherwise the schema loses a parameter that "required" still names).
 func TestProtocolBuildBody_KeepsPropertyNamesThatLookLikeMetaKeys(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{
 		Name: "t",
@@ -360,6 +368,7 @@ func TestProtocolBuildBody_KeepsPropertyNamesThatLookLikeMetaKeys(t *testing.T) 
 }
 
 func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{
 		Name: "read_transcript",
@@ -418,6 +427,7 @@ func TestProtocolBuildBody_NullableSchemasOnGeminiWire(t *testing.T) {
 // never nil; this test pins why that is necessary at this layer and that
 // the explicit false actually holds the tool back.
 func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.WebSearch = true
 	res := protoRes(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
@@ -434,6 +444,7 @@ func TestProtocolBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
 }
 
 func TestProtocolBuildBody_MultimodalToolResultsCap(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shot", Arguments: []byte(`{}`)}}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "shot", Content: "ok", ImageData: []byte{1, 2, 3}, ImageMediaType: "image/png"}}}},
@@ -453,6 +464,7 @@ func TestProtocolBuildBody_MultimodalToolResultsCap(t *testing.T) {
 }
 
 func TestProtocolBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWireValue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		wire int
@@ -477,6 +489,7 @@ func TestProtocolBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWire
 }
 
 func TestProtocolBuildBody_GenerationConfigProviderOptionsAreNotMutated(t *testing.T) {
+	t.Parallel()
 	options := map[string]any{"generationConfig": map[string]any{"maxOutputTokens": 1000}}
 	buildWith := func(admitted int) int {
 		req := protoReq("")
@@ -497,6 +510,7 @@ func TestProtocolBuildBody_GenerationConfigProviderOptionsAreNotMutated(t *testi
 }
 
 func TestProtocolBuildBody_RejectsMalformedGenerationConfigProviderOption(t *testing.T) {
+	t.Parallel()
 	for _, malformed := range []any{nil, "not-an-object"} {
 		req := protoReq("")
 		req.ProviderOptions = map[string]any{registry.ProtocolGoogle: map[string]any{
@@ -515,6 +529,7 @@ func TestProtocolBuildBody_RejectsMalformedGenerationConfigProviderOption(t *tes
 // TestProtocolUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5
 // rule that every error stamp is res.Instance, not a provider literal.
 func TestProtocolUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
+	t.Parallel()
 	res := protoRes(nil)
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}

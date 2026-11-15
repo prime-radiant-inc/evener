@@ -7,6 +7,7 @@ import (
 )
 
 func TestWireFieldEnabledFollowsMaxTokensField(t *testing.T) {
+	t.Parallel()
 	caps := registry.Caps{
 		Fields:         map[string]bool{registry.FieldMaxTokens: false, "unrelated": false},
 		MaxTokensField: new("max_completion_tokens"),
@@ -25,6 +26,7 @@ func TestWireFieldEnabledFollowsMaxTokensField(t *testing.T) {
 // where the finalizer would otherwise read "max_tokens enabled" and restore a
 // field the user disabled.
 func TestWireFieldEnabledMaxTokensSpellingIsAChatFact(t *testing.T) {
+	t.Parallel()
 	caps := registry.Caps{
 		Fields:         map[string]bool{registry.FieldMaxTokens: false},
 		MaxTokensField: new("max_completion_tokens"),

@@ -5,17 +5,27 @@
   container-type: inline-size;
 }
 
-/* One tight field over one control row. The seamless textarea inside carries
- * no inset of its own, so this padding is the whole thing, and the gap to the
- * control row is the smallest step that still separates them. */
+/* One field over one control row. The control row sits one --space-2 inside
+ * the card's edge on three sides: with the card's --radius-panel corner and
+ * the controls' --radius-control corner that inset keeps the two arcs
+ * concentric (16 - 8 = 8), so the primary verb never crowds the corner arc.
+ * The field takes a deeper top inset and its own inline inset (see .field),
+ * which seats the writing line one --space-4 from the card's edge. */
 .card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2) var(--space-2);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
+  border-radius: var(--radius-panel);
   background: var(--surface-1);
+  box-shadow: var(--shadow-raised);
+}
+
+/* The folded one-line row is as tall as its controls plus the same inset
+ * above and below: no deeper top inset, because no field sits above the row. */
+.card[data-folded="true"] {
+  padding-block: var(--space-2);
 }
 
 /* While the card's height interpolates, its content is laid out at the new
@@ -32,17 +42,24 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* The seamless textarea carries no inset of its own; this is its whole
+   * inline inset, on top of the card's. */
+  padding-inline: var(--space-2);
 }
 
 /* The card is the prompt surface's one visible box, so it carries the focus
  * affordance for the seamless textarea inside it (which draws no ring of its
  * own) - the same 2px accent outline every interactive control here uses.
  * The ring sits on the card's own edge and the hairline takes the accent too,
- * so the two read as one line instead of a card outline inside a focus ring. */
+ * so the two read as one line instead of a card outline inside a focus ring.
+ * The soft halo glows under that line, in front of the card's resting lift. */
 .card:focus-within {
   outline: var(--focus-ring);
   outline-offset: 0;
   border-color: var(--accent);
+  box-shadow:
+    var(--focus-halo),
+    var(--shadow-raised);
 }
 
 /* The author-level .card display:flex above outranks the UA stylesheet's
@@ -60,15 +77,6 @@
   :global([data-composer]):not([data-composer-editing]) .card:has([role="textbox"][data-empty="true"]) {
     gap: 0;
     padding-block: 0;
-  }
-}
-
-/* squircle-proto: continuous (Apple-style) corner curvature where the engine
- * supports corner-shape; border-radius stays the fallback and supplies the
- * corner area this shapes. */
-@supports (corner-shape: squircle) {
-  .card {
-    corner-shape: squircle;
   }
 }
 

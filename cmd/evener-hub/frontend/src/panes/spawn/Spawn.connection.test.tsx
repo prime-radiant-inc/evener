@@ -212,7 +212,7 @@ test("automatic connection completion adopts the connected instance's marked def
   const prompt = screen.getByRole("textbox", { name: "Prompt" });
   await act(async () => pastePngInto(prompt, "shot.png"));
   await waitFor(() => expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy());
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Access mode"), "read-only");
 
   await openTeamProvider(user);
@@ -540,7 +540,7 @@ test("automatic connection completion preserves an Advanced-options model choice
   await settled();
   await setWorkingDir(user, "/tmp/auto-advanced");
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const pickers = screen.getAllByRole("button", { name: /change model/i });
   await user.click(pickers[pickers.length - 1]!);
   const combo = await screen.findByRole("combobox", { name: "Model" });
@@ -1458,7 +1458,7 @@ test.each([
   await openTeamProvider(user);
   await saveAndCheckProvider();
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const toggle = await screen.findByRole("switch", { name: "Start as Manager" });
   expect(toggle.getAttribute("aria-checked")).toBe("false");
   if (choose) {

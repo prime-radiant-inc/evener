@@ -5,6 +5,77 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-13 the accent becomes an indigo and the primary action wears it
+
+Jesse asked for a friendlier, more distinctive UI and lifted the earlier
+limits ("nothing is sacred"). The accent moves from utility blue to an
+indigo and becomes the product's one signature hue; the neutral grounds stay
+cool.
+
+- `--accent` is `#4F5BF5` light, `#8A96FF` dark; `--accent-ink` is `#3A44D6`
+  light, `#96A1FF` dark. The `-bg`, `-edge` and selection mixes are unchanged
+  formulas over the new hue. This supersedes the `#005FBA` accent ink in the
+  2026-11-11 entry.
+- A new shared role, `on-accent` (`--on-accent`), is the text and glyph color
+  on a solid accent fill: `#FFFFFF` light, `#111214` dark. The pair clears
+  4.5:1 in both themes (5.06 and 7.04).
+- Accent's meaning grows by one: focus, selection, links and now the one
+  primary action. The filled primary `Button` (so also the composer's Send)
+  and the agent's `SpeakerAvatar` tile moved from the ink/page inverse pair
+  to accent/on-accent. This replaces the "ink on paper" primary; the rule
+  that a route shows at most one filled primary stands, and matters more now
+  that the fill is chromatic.
+- The phone's `accent-fill` moved from `#0070E0` to `#4F5BF5` in both themes
+  so its filled actions stay the same hue as its links; white `on-fill`
+  still clears 4.5:1 on it.
+
+Alternatives considered: keeping the ink primary with an indigo used only
+for focus and links (the signature would then appear almost nowhere at
+rest), and one accent value for both themes (no single indigo clears 4.5:1
+as link text on the dark surfaces and also carries white).
+
+## 2026-11-13 soft shape, quiet depth and a tactile press
+
+The same request ("clean, modern, easy to comprehend, fun to use") also
+revised the shape, elevation, motion and layout rulings. The page frame stays
+flat; the objects a reader acts on are rounded and sit one step up.
+
+- **Shape.** The radius ladder moves from 3/4/4/8px to 6/8/12/16px
+  (`--radius-chip`/`-control`/`-pane`/`-panel`), with `--radius-pill`
+  unchanged. Chips, badges and counters are pills, `Card` is a rounded
+  surface, and nested corners are concentric. PaneScaffold and tables stay
+  square. This supersedes the earlier ruling that the ladder was a ceiling and
+  8px was reserved for one floating card. The `corner-shape: squircle`
+  prototype is removed: one corner geometry in every engine.
+- **Depth.** `--shadow-card` becomes a real, faint shadow where it was `none`,
+  joined by `--shadow-raised` for the prompt card and `--focus-halo` under its
+  focus line. `--shadow-overlay` rings with `--edge` and blurs wider. Secondary
+  buttons, the selected rail row and dock tab, and the segmented-control thumb
+  lift onto `--surface-1`.
+- **Motion.** A held control scales down slightly (`--motion-duration-press`,
+  90ms) and overlays enter on `--motion-easing-pop`. Both answer a user's own
+  action and both sit behind the reduced-motion gate, so "no idle motion"
+  stands.
+- **Transcript.** A run of tool rows is one card with hairline dividers, kind
+  icons at full strength in `--field` seats and evidence as an inset band,
+  where rows were loose lines with half-strength icons. The user's message is
+  a `--surface-1` slip with a tight corner toward the avatar. Avatars are
+  round, and the agent's is the evener mark.
+- **Shell.** Rail rows and dock tabs are inset pills; the rail header leads
+  with the mark; a dragged sash shows the accent; status-bar counters are
+  pills.
+- **New session.** The form leads with the task: heading, provider notice,
+  task card, then working-directory and effective-access tiles, where the
+  directory and access summary sat above and beside the prompt. Phone setting
+  rows and the phone settings navigation are grouped rounded lists. Cold
+  starts show three keycap hints in a row instead of a two-column shortcut
+  table.
+
+Alternatives considered: rounding everything including the page frame and
+tables (the frame then competes with the objects inside it), and keeping tool
+rows unenclosed with only a rounded hover (a burst of calls still reads as
+loose lines rather than one event in the conversation).
+
 ## 2026-11-11 one palette for web and phone (#2439)
 
 The web and the iPhone app now render one palette,

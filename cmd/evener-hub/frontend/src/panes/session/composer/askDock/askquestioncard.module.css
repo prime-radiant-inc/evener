@@ -3,9 +3,13 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3);
+  /* The question is the one card inside the attention envelope: the
+   * structural surface on the envelope's wash, a control corner inside the
+   * envelope's card corner, and no edge of its own - the wash around it is
+   * its boundary. */
   border: none;
-  border-top: 1px solid var(--edge);
-  background: var(--surface-0);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
 }
 
 .head {
@@ -67,7 +71,23 @@
    * Vertical padding gives every row the same comfortable size regardless
    * of whether it carries a detail, at every pointer type; the (pointer:
    * coarse) block below grows it the rest of the way to --tap-min on touch. */
-  padding: var(--space-2) 0;
+  padding: var(--space-2);
+  /* The edge is always there, transparent at rest, so choosing an option
+   * recolours it instead of shifting the row. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+}
+
+/* The chosen option carries a rounded wash and an accent hairline, so the
+ * selection reads across the whole row and not only in the native control.
+ * --accent: ordinary selection state (design-system.md §4). */
+.optionRow:has(:checked) {
+  border-color: var(--accent-edge);
+  background: var(--accent-bg);
+}
+
+.optionRow:hover:not(:has(:checked)) {
+  background: var(--hover-1);
 }
 
 /* The option's identity is inline bold text (ask-dialog UX rework, replacing
@@ -98,6 +118,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  /* The same box an option row takes - its padding and its transparent
+   * edge - so this row's control lines up under theirs and keeps their
+   * rhythm. */
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
 }
 
 .textInput {

@@ -177,6 +177,7 @@ func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
 //
 // RED until the adapter captures arguments as RawMessage from the body.
 func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	// A JSON object string value containing a raw 0xff byte.
 	argsContent := `{"path":"` + "\xff" + `file.txt"}`
 	body := rawArgsBody(t, argsContent)
@@ -194,6 +195,7 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 // string once per tool call, not rescue the fallback and then rescue the raw
 // string again.
 func TestRawArgs_NonStream_RescuesOncePerToolCall(t *testing.T) {
+	// Not parallel: swaps the package's rescueClaudeXMLArgsHook seam.
 	calls := 0
 	rescueClaudeXMLArgsHook = func() { calls++ }
 	t.Cleanup(func() { rescueClaudeXMLArgsHook = nil })
@@ -211,6 +213,7 @@ func TestRawArgs_NonStream_RescuesOncePerToolCall(t *testing.T) {
 //
 // RED until the adapter captures arguments as RawMessage from the body.
 func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	// Non-canonical JSON: spaces after keys, keys in non-sorted order.
 	argsContent := `{ "b" : 2 , "a" : 1 }`
 	body := rawArgsBody(t, argsContent)
@@ -227,6 +230,7 @@ func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
 //
 // This pins Mandate 1: degrade, never drop.
 func TestRawArgs_NonStream_FallbackOnBadToken(t *testing.T) {
+	t.Parallel()
 	// arguments is null: the existing decode maps it to "" (string zero
 	// value), and the focused RawMessage captures "null" — rawStringContent
 	// fails (not a string token), so the decode falls back to the existing
@@ -335,6 +339,7 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 //
 // RED until the streaming adapter preserves raw argument bytes.
 func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	argsContent := `{"path":"` + "\xff" + `file.txt"}`
 	sseBody := rawArgsStreamSSE(argsContent)
 	got := decodeRawArgsStream(t, sseBody)
@@ -348,6 +353,7 @@ func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
 }
 
 func TestRawArgs_Stream_ToolCallDeltaPreservesRawBytes(t *testing.T) {
+	t.Parallel()
 	args := `{"path":"` + "\xff" + `file.txt"}`
 	srv, _ := server(t, http.StatusOK, rawArgsStreamSSE(args))
 	res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
@@ -374,6 +380,7 @@ func TestRawArgs_Stream_ToolCallDeltaPreservesRawBytes(t *testing.T) {
 //
 // RED until the streaming adapter preserves raw argument bytes.
 func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	argsContent := `{ "b" : 2 , "a" : 1 }`
 	sseBody := rawArgsStreamSSE(argsContent)
 	got := decodeRawArgsStream(t, sseBody)
@@ -386,6 +393,7 @@ func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_Stream_FallbackOnBadFragment asserts that if a streaming
 // argument fragment is malformed, the decode still completes.
 func TestRawArgs_Stream_FallbackOnBadFragment(t *testing.T) {
+	t.Parallel()
 	// arguments is null: the existing decode maps it to "" (string zero
 	// value), and the focused RawMessage captures "null" — rawStringContent
 	// fails (not a string token), so the decode falls back to the
@@ -425,6 +433,7 @@ func TestRawArgs_Stream_FallbackOnBadFragment(t *testing.T) {
 }
 
 func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[` +
@@ -438,6 +447,7 @@ func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
 }
 
 func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[" +

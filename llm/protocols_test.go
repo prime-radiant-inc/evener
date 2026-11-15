@@ -40,6 +40,7 @@ func (stubPreparer) PrepareRequest(context.Context, *http.Request, map[string]an
 func (stubPreparer) RequiresStreamingComplete() bool { return true }
 
 func TestRegisterProtocolAndLookup(t *testing.T) {
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	RegisterProtocol(stubProtocol{id: "test-proto-lookup"})
 	p, ok := ProtocolFor("test-proto-lookup")
 	if !ok || p.ID() != "test-proto-lookup" {
@@ -51,12 +52,14 @@ func TestRegisterProtocolAndLookup(t *testing.T) {
 }
 
 func TestRegisterProtocolRejectsDuplicatesAndEmptyIDs(t *testing.T) {
+	// Not parallel: RegisterProtocol adds to llm's package-wide protocols registry (no unregister, so entries persist for the process).
 	RegisterProtocol(stubProtocol{id: "test-proto-dup"})
 	assertPanics(t, "duplicate", func() { RegisterProtocol(stubProtocol{id: "test-proto-dup"}) })
 	assertPanics(t, "empty id", func() { RegisterProtocol(stubProtocol{}) })
 }
 
 func TestRegisterAuthenticatorAndPreparer(t *testing.T) {
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	RegisterAuthenticator("test-auth-plain", stubAuth{})
 	RegisterAuthenticator("test-auth-preparer", stubPreparer{})
 	if _, ok := AuthenticatorFor("test-auth-plain"); !ok {

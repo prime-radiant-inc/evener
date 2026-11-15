@@ -16,6 +16,7 @@ import (
 // while the model thinks. Two parts are sent so the part separator is
 // asserted too.
 func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
+	t.Parallel()
 	var sse strings.Builder
 	for _, ev := range []string{
 		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}`,
@@ -54,6 +55,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 // toResponsesInput sends a reasoning item back only when it has
 // encrypted_content, so the raw text never returns to this API.
 func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) {
+	t.Parallel()
 	var out []any
 	if err := json.Unmarshal([]byte(`[
 		{"id":"rs_1","type":"reasoning","content":[{"type":"reasoning_text","text":"Let me think."},{"type":"reasoning_text","text":"Then verify."}],"summary":[]},

@@ -7,8 +7,8 @@ colors:
   light-text: "#1A1D23"
   light-secondary: "#555B66"
   light-border: "#D5D9E0"
-  light-accent: "#005FBA"
-  light-accent-fill: "#0070E0"
+  light-accent: "#3A44D6"
+  light-accent-fill: "#4F5BF5"
   light-error: "#BD1B21"
   light-raised: "#FFFFFF"
   light-canvas: "#EEF0F3"
@@ -24,16 +24,16 @@ colors:
   light-alive: "#189A4D"
   light-alive-ink: "#0F6E36"
   light-danger: "#E3474C"
-  light-accent-mark: "#0285FF"
-  light-accent-bg: "#DFEEFF"
-  light-accent-edge: "#92BBF0"
+  light-accent-mark: "#4F5BF5"
+  light-accent-bg: "#E1E8FF"
+  light-accent-edge: "#9AABED"
   dark-background: "#111214"
   dark-surface: "#191C21"
   dark-text: "#F1F3F6"
   dark-secondary: "#B2B7C0"
   dark-border: "#333842"
-  dark-accent: "#459EFF"
-  dark-accent-fill: "#0070E0"
+  dark-accent: "#96A1FF"
+  dark-accent-fill: "#4F5BF5"
   dark-error: "#F17478"
   dark-raised: "#1D2025"
   dark-canvas: "#16181C"
@@ -49,9 +49,9 @@ colors:
   dark-alive: "#3DBB72"
   dark-alive-ink: "#3DBB72"
   dark-danger: "#EE5C61"
-  dark-accent-mark: "#3D9AFF"
-  dark-accent-bg: "#243141"
-  dark-accent-edge: "#3C5E89"
+  dark-accent-mark: "#8A96FF"
+  dark-accent-bg: "#2B3041"
+  dark-accent-edge: "#545C89"
 typography:
   your-message:
     fontFamily: "Source Serif 4, Georgia, serif"
@@ -211,7 +211,7 @@ The implementation follows the phone’s appearance unless Display selects Light
 - **Attention:** Amber marks a need for the person. Attention ink carries state words, offline hosts and expired sign-in; attention-bg and attention-edge tint the surfaces that need them.
 - **Alive:** Green marks real work, including the activity meter; it is not the switch tint.
 - **Danger:** Red marks failure and destructive action; danger ink is the readable text variant.
-- **Accent tint:** Blue selection and message backgrounds come from the shared OKLab mix in `@evener/appwire-client/palette`, the same computation the web’s `color-mix()` uses. Semantic backgrounds mix the hue at 15% over the shared raised surface; semantic edges mix it at 40% over the shared edge.
+- **Accent tint:** Indigo selection and message backgrounds come from the shared OKLab mix in `@evener/appwire-client/palette`, the same computation the web’s `color-mix()` uses. Semantic backgrounds mix the hue at 15% over the shared raised surface; semantic edges mix it at 40% over the shared edge.
 
 ### Named Rules
 **The Quiet Idle Rule.** Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.
@@ -280,12 +280,12 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ### State marks and the pulse meter
 - **Shape:** A 28-unit leading mark column, shared by every row.
-- **Marks:** SF Symbols through `SymbolView`, always pairing shape with color so they read without it: `xmark.octagon.fill` (Failed, danger), `questionmark.circle.fill` (Question, attention), `exclamationmark.bubble.fill` (Needs you, attention), `hand.raised.circle.fill` (Approval, attention), `exclamationmark.triangle.fill` (Warning, attention), `arrow.triangle.2.circlepath.circle.fill` (Restart needed, attention). A row with anything new since you last opened it, wherever it sits, carries a small blue dot beside its age (accent, 8pt); folded, Idle's header carries it for the rows inside.
+- **Marks:** SF Symbols through `SymbolView`, always pairing shape with color so they read without it: `xmark.octagon.fill` (Failed, danger), `questionmark.circle.fill` (Question, attention), `exclamationmark.bubble.fill` (Needs you, attention), `hand.raised.circle.fill` (Approval, attention), `exclamationmark.triangle.fill` (Warning, attention), `arrow.triangle.2.circlepath.circle.fill` (Restart needed, attention). A row with anything new since you last opened it, wherever it sits, carries a small indigo dot beside its age (accent, 8pt); folded, Idle's header carries it for the rows inside.
 - **Pulse meter:** A 22×15pt, 7-bar activity meter, shown on Working rows in the Live band and, every working session's bars summed minute by minute, as the fleet meter beside the Live summary's counts. One fixed log scale (full at 64 events per minute) so meters compare across sessions; a 1pt baseline always draws, older bars fade, and the meter grays when the connection is down. Each bar is a minute of real transcript and tool-output activity, read every 10 seconds from the hub while the Board is in front (S5, `evener/activity/read`); a read counts only while it's under 20 seconds old (two poll intervals) and the connection is up; a working row with no read yet, a hub that predates S5, a dropped connection, or a connected hub whose reads have silently stopped landing, all show a single bar in its newest minute instead - a stale read would otherwise keep ticking toward a false "stuck" as the gap runs long, whether or not the connection itself ever reported a drop. Quiet for 3 minutes reads "Quiet 4m" in the why line; past 10, "May be stuck · no updates for 12m" in amber, the meter itself goes flat and amber, and the row floats to the top of Working - unless the session is waiting on subagents, which is never quiet or stuck. Every read also carries what the session's own root turn last set out to do: the newest tool-call intent its daemon saw, one bounded line, dropped when a turn begins. That words the why line in place of the job the session is running - the intent says what the job is for - and a session waiting on subagents, quiet or stuck still says so first. The row takes a `moving` flag so a still copy of the same session elsewhere shows a plain dot instead, for the inline quiet rows outside Live.
 
 ### The Idle fold
 - **Shape:** A single 48-unit row: "Idle · 3" in ink-mid at 15px (sentence case, like the band headings), with a chevron that rotates 90° when open.
-- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows. Folded, it shows the blue dot while any session inside has something new; VoiceOver says "unread sessions inside".
+- **Behavior:** Folded by default; the fold state persists per device. Unfolding, directly or by jumping from the summary line, reveals Idle's quiet rows. Folded, it shows the indigo dot while any session inside has something new; VoiceOver says "unread sessions inside".
 
 ### Section rows
 - **Shape:** Open disclosure headers and indented rows, not cards. Project/host rows have 48-unit minimums; section disclosures and deeper branch/archive rows have 44-unit minimums. Nesting adds 16 units of indentation per level.
@@ -320,7 +320,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 ### Don't:
 - **Don't** show a Reconnect or a Refresh control anywhere on the Board, or offer pull-to-refresh: a control appears only when it can act.
 - **Don't** move or animate a row unless its underlying data moved.
-- **Don't** give a hue more than its one job: amber means a human is needed, green means working, red means failed, blue means tappable, selected or unread. Only the state word takes a hue; the reason stays in ink.
+- **Don't** give a hue more than its one job: amber means a human is needed, green means working, red means failed, indigo means tappable, selected or unread. Only the state word takes a hue; the reason stays in ink.
 - **Don't** wrap every ordinary row in a rounded card or add decorative shadows.
 
 ## The Session
@@ -342,12 +342,12 @@ The Session is one conversation, what the agent is doing now, and the place you 
 
 #### The connection bar, context chips and notes bar
 - **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A close a retry can fix shows the connection's own sentence for why it closed ("Couldn't reach the hub. Check its address, its token and your network.") in place of Reconnecting/Offline while the connection stays down, and nothing more once it returns. A live connection shows nothing.
-- **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Agents with its subagent count (`person.2`), Files with its count and a blue dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`, settled: done plus cancelled), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Agents and Tasks open live views, so they hide while disconnected; the others always show. Jobs has no chip; the menu reaches it. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
+- **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Agents with its subagent count (`person.2`), Files with its count and an indigo dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`, settled: done plus cancelled), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Agents and Tasks open live views, so they hide while disconnected; the others always show. Jobs has no chip; the menu reaches it. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
 - **Notes bar:** One 32pt line under the chips, in the same sliding row: "Your note: …" with a person glyph, else "Agent's note: …" with a sparkles glyph, else the one link's label or "3 links", 15pt in ink-hi, with a trailing "3 links" in 13pt ink-mid when a note shows beside links. It shows only when the hub offers shared notes and there is something to preview. Tapping it opens Notes & links.
 
 #### The transcript
 - **Detail levels:** Chat (just the conversation), Intent (plus one line for each action, saying what it set out to do, as the web draws it), Tools (plus every command it ran; tap one for its output), Activity (plus every command's output, open as it arrives) and Full (everything, including the agent's reasoning). The level is chosen per session in the ⋯ menu and remembered on this device; with none chosen, the session shows the hub's display setting. A toast confirms a change, since it often lands above the visible part of the transcript.
-- **Your message:** A right-aligned bubble in the accent wash (`#DDEBFC` light, `#2A343D` dark), Source Serif 17/25. A message steered into a running turn carries "Steered in mid-turn" beneath it.
+- **Your message:** A right-aligned bubble in the accent wash (`#E1E8FF` light, `#2B3041` dark), Source Serif 17/25. A message steered into a running turn carries "Steered in mid-turn" beneath it.
 - **Agent message:** Source Serif 17/26 on the page, no bubble; headings in SF Pro, code in Menlo.
 - **Time markers:** A centered 13pt marker ("Today 3:00 PM") before the first turn, before a turn that starts after ten quiet minutes, and at a new day.
 - **Runs:** Consecutive steps fold into one line behind a chevron that points right folded and turns down open: "3 steps · 1m · read 1 file, edited 1 file, ran npm test", with "(1 failed)" in danger ink. The duration shows only when every step carries its times. Expanded, each step is a line with a check or `xmark.octagon.fill`, its intent and its target in Menlo; a step with evidence opens under its line: command output in a Menlo inset (the first 40 lines, then "Show all 60 lines"), an edit as a diff, the file a write wrote, an error, and the step's images. The step in progress is the live status line's, never the transcript's; the run still growing never folds.
@@ -427,7 +427,7 @@ New session sets up and starts a session; the Hub looks after the hub and this p
 - **Row:** At least 44 units, with 16 units of horizontal and 12 units of vertical padding. A bare SF Symbol in ink-mid at 17pt leads it in a 22-unit column, never a colored tile. The label is SF Pro 17/22 in ink-hi, with an optional second line at 13/18 in ink-mid (Menlo for a path/id, danger ink for a problem). A value uses ink-mid 15/20 with tabular figures; label and value share a wrapping line, so a long value can move beneath its label. A 13pt chevron in ink-low remains separate when the row opens a page. Action labels use accent ink; destructive labels use danger ink. Picker checks occupy the leading symbol slot, with the same space reserved when unchecked. Disabled rows keep retained values opaque and use secondary ink for the label; native disabled state blocks activation.
 - **Switch row:** The label and second line stay opaque, then a switch in the accent color, never the working green. When disabled, the label uses secondary ink unless it remains a separately actionable detail opener. The native switch carries its disabled state and is the VoiceOver control; an independently actionable row label remains its own element.
 - **Editable row:** `TextFieldRow` keeps its value visible when editing is unavailable: secondary ink at full opacity, with `editable={false}`. Machine values stay in Menlo; empty placeholders retain the interface face.
-- **Segmented control:** An inset container with a 12-unit radius and 2-unit padding/gaps; each segment has 10-unit corners, a 44pt minimum height and wrapping 15/20 text. Selection is a neutral raised surface in light appearance or pressed surface in dark, with semibold primary ink, not a blue or ink-filled pill. It becomes a vertical set of checked rows when text scale exceeds 1.2 or measured width per option is below 88 units; stacked rows reserve a leading check slot. Disabled labels use secondary ink. Choosing a different segment plays the selection tick; tapping the chosen segment does nothing.
+- **Segmented control:** An inset container with a 12-unit radius and 2-unit padding/gaps; each segment has 10-unit corners, a 44pt minimum height and wrapping 15/20 text. Selection is a neutral raised surface in light appearance or pressed surface in dark, with semibold primary ink, not an accent or ink-filled pill. It becomes a vertical set of checked rows when text scale exceeds 1.2 or measured width per option is below 88 units; stacked rows reserve a leading check slot. Disabled labels use secondary ink. Choosing a different segment plays the selection tick; tapping the chosen segment does nothing.
 - **Tag:** A small capsule beside a value, 11pt semibold: amber for something a human must see ("Offline", "1 offline"), gray for version drift ("Hub runs 0.9.412", "1 on another version").
 - **Footer:** 13/18 under a group, inset 32 units, in ink-mid; in attention ink when it names something that needs a human, danger ink for a failure, and Menlo for text the hub wrote (a host's last error).
 - **Search field:** A rounded inset well (10-unit radius) drawn inside a 44pt-minimum input row; the fill is inset 4 units at top and bottom. The containing page supplies the shared 16pt horizontal inset, including Launch defaults. Text follows the 17pt interface role, with quiet placeholder ink. A nonempty field shows a separate 44×44pt-minimum clear button inside the row. It filters as typed, with no capitalization or autocorrection.

@@ -15,6 +15,7 @@ import "testing"
 // added for the same reason: they exercise branches the moved function has
 // but the old fuzz helper never isolated.
 func TestStrictifyJSONSchemaEdgeShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		in    map[string]any

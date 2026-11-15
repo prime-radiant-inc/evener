@@ -25,6 +25,7 @@ func rejectingUserReq() llm.Request {
 // the request cannot be shaped at all — each entrypoint has its own early
 // return the wire plumbing can hide behind.
 func TestEntrypointsPropagateBuildErrors(t *testing.T) {
+	t.Parallel()
 	srv := transporttest.NoHTTPServer(t)
 	res := liveRes(srv, openaiCaps)
 	p := &Protocol{Client: srv.Client()}
@@ -52,6 +53,7 @@ func TestEntrypointsPropagateBuildErrors(t *testing.T) {
 // stampResponseIDHash: a response whose Raw map is still nil gets one so the
 // id_hash can be recorded.
 func TestStampResponseIDHashOnRawlessResponse(t *testing.T) {
+	t.Parallel()
 	hasher := llm.NewContinuationHasher([]byte("fuzz-secret"))
 	want, err := hasher.HashContinuationHandle("response_id", "resp_x")
 	if err != nil {
@@ -72,6 +74,7 @@ func TestStampResponseIDHashOnRawlessResponse(t *testing.T) {
 // identifier under any of its three keys is skipped, a row with an id but no
 // reasoning levels advertises none, and the surviving rows come back sorted.
 func TestListModelsCodexRowShapes(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `{"models":[{"context_window":1000},{"slug":"gpt-b","supported_reasoning_levels":[]},{"slug":"gpt-a","supported_reasoning_levels":[{"effort":"low"}]}]}`)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err != nil {
@@ -92,6 +95,7 @@ func TestListModelsCodexRowShapes(t *testing.T) {
 // is not the models JSON shape fails the listing rather than yielding empty
 // rows silently.
 func TestListModelsDecodeFailure(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `not json at all`)
 	_, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err == nil {

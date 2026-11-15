@@ -22,6 +22,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/identifier"
 )
 
 // maxInlineBytes bounds how much text a single !`cmd` or @file substitution
@@ -176,8 +177,9 @@ func runInlineCommand(ctx context.Context, cmd string, env execenv.ExecutionEnvi
 // directory, and returns its (bounded) contents. Unlike evener's other file
 // reads (e.g. the model's Read tool), which are intentionally unsandboxed,
 // @file expansion runs synchronously during argument substitution with no
-// hook or permission visibility — so path must be lexically local
-// (filepath.IsLocal): non-local paths (absolute, or "../"-escaping) are
+// hook or permission visibility — so path must be local and its resolved
+// target must remain beneath the resolved working directory. Non-local paths
+// (absolute, or "../"-escaping) and symlinks escaping the directory are
 // refused rather than read. A binary file (containing a NUL byte) degrades to
 // a marker instead of inlining bytes that would corrupt the prompt. Any other
 // read failure (missing file, permission error, directory, ...) also degrades
@@ -187,6 +189,9 @@ func readInlineFile(path string, env execenv.ExecutionEnvironment) string {
 		return fmt.Sprintf("[refusing @%s: escapes working directory]", path)
 	}
 	full := filepath.Join(env.WorkingDirectory(), path)
+	if !identifier.PathUnder(identifier.ResolveClean(full), identifier.ResolveClean(env.WorkingDirectory())) {
+		return fmt.Sprintf("[refusing @%s: escapes working directory]", path)
+	}
 	data, err := execenv.ReadFileCapped(full)
 	if err != nil {
 		return fmt.Sprintf("[error reading %s: %v]", path, err)

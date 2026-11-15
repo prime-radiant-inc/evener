@@ -12,6 +12,7 @@ import (
 // ================== Claude 5+ response and stream shapes ==================
 
 func TestFromAnthropicResponse_RefusalStopDetails(t *testing.T) {
+	t.Parallel()
 	raw := map[string]any{
 		"id":    "msg_r1",
 		"model": "claude-fable-5",
@@ -46,6 +47,7 @@ func TestFromAnthropicResponse_RefusalStopDetails(t *testing.T) {
 }
 
 func TestFromAnthropicResponse_RefusalNullCategory(t *testing.T) {
+	t.Parallel()
 	raw := map[string]any{
 		"id":          "msg_r2",
 		"model":       "claude-sonnet-5",
@@ -67,6 +69,7 @@ func TestFromAnthropicResponse_RefusalNullCategory(t *testing.T) {
 }
 
 func TestFromAnthropicResponse_NullStopDetailsAndUnknownBlocks(t *testing.T) {
+	t.Parallel()
 	// stop_details is null for non-refusal stop reasons; fallback blocks and
 	// usage.iterations are new surfaces the parser must tolerate.
 	raw := map[string]any{
@@ -102,6 +105,7 @@ func TestFromAnthropicResponse_NullStopDetailsAndUnknownBlocks(t *testing.T) {
 }
 
 func TestStream_RefusalStopDetailsAndFallbackBlock(t *testing.T) {
+	t.Parallel()
 	sse := strings.Join([]string{
 		`event: message_start`,
 		`data: {"type":"message_start","message":{"id":"msg_r3","model":"claude-fable-5","usage":{"input_tokens":10}}}`,

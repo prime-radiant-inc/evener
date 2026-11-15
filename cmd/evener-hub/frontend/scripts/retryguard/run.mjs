@@ -227,7 +227,9 @@ async function runLegacy(driver, scenario) {
   assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT");
   if (scenario.mode === "refused") {
     await driver.waitPage(
-      `[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === "Edit message")`,
+      `[...document.querySelectorAll('button')].some((button) =>
+        button.textContent.trim() === "Edit message" ||
+        (button.getAttribute("aria-label") ?? "").trim() === "Edit message")`,
       {
         label: "refused continuation recovery",
       },

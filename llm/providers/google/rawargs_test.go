@@ -42,6 +42,7 @@ func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
 // TestRawArgs_NonStream_InvalidUTF8 asserts invalid-UTF-8 bytes in the
 // functionCall args object survive the non-streaming google decode.
 func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	argsJSON := `{"path":"` + "\xff" + `file.txt"}`
 	body := rawArgsJSON(t, argsJSON)
 	got := decodeRawArgsComplete(t, body)
@@ -57,6 +58,7 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 // TestRawArgs_NonStream_NonCanonicalJSON asserts non-canonical valid JSON
 // (spacing/key-order) in the args object survives byte-identical.
 func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	argsJSON := `{ "b" : 2 , "a" : 1 }`
 	body := rawArgsJSON(t, argsJSON)
 	got := decodeRawArgsComplete(t, body)
@@ -69,6 +71,7 @@ func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_NonStream_FallbackOnNull asserts null args fall back
 // gracefully (degrade, never drop).
 func TestRawArgs_NonStream_FallbackOnNull(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"f","args":null}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`)
 	srv, _ := protoServer(t, 200, string(body))
 	res := protoLive(srv)
@@ -125,6 +128,7 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 // TestRawArgs_Stream_InvalidUTF8 asserts invalid-UTF-8 bytes in streamed
 // tool-call arguments survive the decode byte-identical.
 func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	argsJSON := `{"path":"` + "\xff" + `file.txt"}`
 	sseBody := rawArgsGoogleSSE(argsJSON)
 	got := decodeRawArgsStream(t, sseBody)
@@ -140,6 +144,7 @@ func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
 // TestRawArgs_Stream_NonCanonicalJSON asserts non-canonical valid JSON in
 // streamed tool-call arguments survives the decode byte-identical.
 func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	argsJSON := `{ "b" : 2 , "a" : 1 }`
 	sseBody := rawArgsGoogleSSE(argsJSON)
 	got := decodeRawArgsStream(t, sseBody)
@@ -152,6 +157,7 @@ func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_Stream_FallbackOnNull asserts null args in the stream fall
 // back gracefully (degrade, never drop).
 func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
+	t.Parallel()
 	sseBody := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"f\",\"args\":null}}]}}]}\n\n" +
 		"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2,\"totalTokenCount\":7}}\n\n"
 	srv, _ := protoServer(t, 200, sseBody)
@@ -181,6 +187,7 @@ func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
 }
 
 func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	body := []byte(`{"candidates":[{"content":{"role":"model","parts":[` +
@@ -193,6 +200,7 @@ func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
 }
 
 func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	sseBody := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" +

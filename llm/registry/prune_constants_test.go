@@ -6,6 +6,7 @@ import (
 )
 
 func TestOptionalCapReadersAndEffortCapable(t *testing.T) {
+	t.Parallel()
 	if BoolValue(nil) || !BoolValue(new(true)) || BoolValue(new(false)) {
 		t.Fatal("BoolValue")
 	}
@@ -21,6 +22,7 @@ func TestOptionalCapReadersAndEffortCapable(t *testing.T) {
 }
 
 func TestApplyBodyConstantsCreatesParentsAndOverrides(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{"text": map[string]any{"format": map[string]any{"type": "text"}}, "parallel_tool_calls": true}
 	ApplyBodyConstants(body, map[string]any{
 		"reasoning.context":   "all_turns",
@@ -40,6 +42,7 @@ func TestApplyBodyConstantsCreatesParentsAndOverrides(t *testing.T) {
 }
 
 func TestApplyBodyConstantsSurvivesPrune(t *testing.T) {
+	t.Parallel()
 	// Spec §8.2: constants run after the prune, so a constant under a pruned
 	// parent still lands (the Codex rows prune nothing under reasoning, but
 	// the ordering contract must hold for any row).

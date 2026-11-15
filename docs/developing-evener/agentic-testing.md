@@ -741,20 +741,23 @@ inventing a CSS path; if you need one that isn't here, grep
 | `[data-testid="composer-stop"]` | **Stop** (interrupt). In the control row above the phone-width boundary; in the session menu's leading group at or below it |
 | `[data-testid="composer-attach"]` | the paperclip; opens the hidden `input[type=file]` |
 | `[data-testid="current-work-goal"]` | the CurrentWork goal row, present only while a goal is set; its value button `[data-testid="current-work-goal-value"]` reopens the composer with the `/goal` draft, and the goal's live status word is `[data-testid="current-work-goal-status"]` |
-| `[data-testid="pending-message-stack"]` | the transcript's trailing pending-message stack; each row is `[data-testid="pending-message-row"]` with `data-state` and `data-message-id` (`pending/PendingMessageStack.tsx`) |
+| `[data-testid="pending-row-stack"]` | the undelivered-message rows, one `<li>` per message with a provisional caption: `Sending`, `Queued for the next turn`, `Joining this turn`, `Waiting for the hub` (`transcript/messages/PendingRowStack.tsx:110-117`) |
 
 Shift+Enter is the Steer chord and reaches `handleSteerClick`
 (`Composer.tsx:685-689`) **even when the Steer button is not rendered** —
 that is the only way to attempt a steer against an idle session from the
 UI. `/` in an empty composer opens the command palette (`:673-676`).
 
-**Pending message stack** (`pending/PendingMessageStack.tsx`) renders each
-undelivered user message as the delivered user row, with the status caption in
-the timestamp slot and actions in a footer. Address the drain-everything button
-by its text `Steer queue now`; per-row actions are `Steer now`, `Edit message`,
-`Remove from queue`, `Retry`, `Dismiss` and `Copy`. The caption reads
-`Delivery uncertain` for a mutation whose fate is unknown and `Destination
-deleted` for a row whose session was deleted.
+**Pending rows** (`transcript/messages/PendingRowStack.tsx`, the trailing
+virtual-list row of the transcript) carry every undelivered message as one
+inline row. A queued row is `li[data-kind=queued]` captioned `Queued for
+the next turn` (`:595-604`) with aria-labelled actions `Steer now`,
+`Edit message`, `Remove from queue` (`:552-592`); the drain entry point is
+the composer's own `[data-testid="composer-steer"]` button (queue depth
+routes it to `turn/drainAsSteer`). Rows for mutations whose fate is unknown
+(`li[data-kind=blocked]`) read `Delivery uncertain — <text>` with a `Retry`
+button; rows whose session was deleted (`li[data-kind=orphaned]`) read
+`Destination deleted — <text>` with `Copy` (`:691-704,710-724`).
 
 **Rail** (`shell/rail/RailRow.tsx`, `Rail.tsx`): a session row is
 `[data-session-ref="local:<SID>"]` — note
@@ -844,27 +847,27 @@ again:
 
 ```javascript
 (async () => {
-  const rows = () => Array.from(
-    document.querySelectorAll('[data-testid="pending-message-stack"] li'),
+  const pendingRows = () => Array.from(
+    document.querySelectorAll('[data-testid="pending-row-stack"] li'),
     (li) => li.textContent,
   );
-  const before = rows();
+  const before = pendingRows();
   document.querySelector('[data-testid="composer-steer"]').click();
-  // Synchronous: the optimistic chip is in the DOM RIGHT NOW.
-  const sync = rows();
+  // Synchronous: the optimistic pending row is in the DOM RIGHT NOW.
+  const sync = pendingRows();
   await new Promise((r) => setTimeout(r, 2000)); // let the ack land
-  const after = rows();
+  const after = pendingRows();
   const toast = document.querySelector('[aria-label="Notifications"]')?.textContent;
   return JSON.stringify({ port: location.port, before, sync, after, toast }, null, 2);
 })()
 ```
 
-Without the no-await capture, the test can't distinguish "pending chip
-rendered and was reconciled" from "pending chip never rendered." A chip
+Without the no-await capture, the test can't distinguish "pending row
+rendered and was reconciled" from "pending row never rendered." A row
 that is still present after the settle window is the failure signal:
 reconciliation is driven by the `clientMutationId` coming back on
 `thread/queueChanged`, `evener/steering/injected`, `item/*` or `turn/*`
-(the notification handling in `stores/threads.ts`), so a stuck chip means the ack never
+(the notification handling in `stores/threads.ts`), so a stuck row means the ack never
 arrived.
 
 ### Probing without a renderer handle

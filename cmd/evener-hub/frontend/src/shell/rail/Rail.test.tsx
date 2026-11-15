@@ -469,7 +469,7 @@ describe("resource-backed Rail", () => {
           }),
         ]),
       ]);
-      const rowBody = vi.spyOn(railNodeExports, "displayState");
+      const rowBody = vi.spyOn(railNodeExports, "effectiveSessionState");
       render(<Rail />);
       const atRest = rowBody.mock.calls.length;
       // The spy was live for the initial render (the row really did render
@@ -832,6 +832,22 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     expect(screen.getByText("evener")).toBeTruthy();
     expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
+  });
+
+  test("the mark leads the wordmark as decoration, and the chip's dot adds no second status name", () => {
+    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+    render(<Rail />);
+    const brand = within(screen.getByTestId("rail-brand"));
+    const mark = brand.getByTestId("rail-mark");
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      mark.compareDocumentPosition(brand.getByTestId("rail-wordmark")) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The chip's own text already says what the dot means, so the dot must not
+    // announce the status a second time.
+    const chip = screen.getByTestId("rail-needs-you");
+    expect(chip.querySelector('[data-kind="needs-you"]')).toBeTruthy();
+    expect(within(chip).queryByRole("img")).toBeNull();
   });
 
   // The header's three icons are drawn, not typed: global.css subsets the sans
@@ -2785,15 +2801,14 @@ describe("host grouping (organize by)", () => {
     installState(hostGroupedResources(), remoteManifest());
     render(<Rail />);
     expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
-    // Live spans two hosts, so it groups under subheaders in host order -
-    // this hub first - and both stay expanded by default.
+    // Live groups by attention, never by host: the row away from this hub
+    // names its host on its own line instead.
     const live = sectionRoot("Live");
-    expect(
-      within(live)
-        .getAllByTestId("rail-row-host-group")
-        .map((row) => row.textContent),
-    ).toEqual(["this host", "devbox"]);
-    expect(within(live).getByText("Devbox live run")).toBeTruthy();
+    expect(within(live).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(live).getAllByTestId("rail-row-band").length).toBeGreaterThan(0);
+    const named = within(live).getAllByTestId("rail-row-why-host");
+    expect(named).toHaveLength(1);
+    expect(named[0]?.closest("[data-session-ref]")?.textContent).toContain("Devbox live run");
     // The default mode keeps the Projects title and its project rows; inside
     // a project a branch renders per host with loaded rows, and each starts
     // collapsed like any project branch.
@@ -2825,12 +2840,13 @@ describe("host grouping (organize by)", () => {
     ).toEqual(["this host", "devbox"]);
   });
 
-  test("a single-host Live stays flat even in host-first mode", () => {
+  test("a single-host Live names no host, even in host-first mode", () => {
     prefsStore.setState({ sidebarGrouping: "host-project" });
     installState([sectionResource("live", [summary({ ref: "local:l1", title: "Only local" })])], remoteManifest());
     render(<Rail />);
     expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
     expect(within(sectionRoot("Live")).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(sectionRoot("Live")).queryAllByTestId("rail-row-why-host")).toHaveLength(0);
     expect(within(sectionRoot("Live")).getByText("Only local")).toBeTruthy();
   });
 

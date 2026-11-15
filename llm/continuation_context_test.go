@@ -7,6 +7,7 @@ import (
 )
 
 func TestContinuationHasherContextRoundTrip(t *testing.T) {
+	t.Parallel()
 	if got := ContinuationHasherFromContext(context.Background()); got != nil {
 		t.Fatalf("a bare context carries no hasher: %v", got)
 	}
@@ -21,6 +22,7 @@ func TestContinuationHasherContextRoundTrip(t *testing.T) {
 }
 
 func TestClientContinuationHasherRequiresStateDir(t *testing.T) {
+	t.Parallel()
 	bare := NewClient()
 	if _, err := bare.ContinuationHasher(); !errors.Is(err, ErrContinuationSecretUnavailable) {
 		t.Fatalf("a client with no state directory: %v", err)

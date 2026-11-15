@@ -7,6 +7,7 @@ import (
 )
 
 func TestEncodedBodyUTF8ExactRoundTrip(t *testing.T) {
+	t.Parallel()
 	want := []byte("{\"text\":\"line\\nquote\\\"\"}")
 	encoded := EncodeBody(want)
 	if encoded.Encoding != BodyUTF8 {
@@ -40,6 +41,7 @@ func TestEncodedBodyUTF8ExactRoundTrip(t *testing.T) {
 }
 
 func TestEncodedBodyBase64ExactRoundTrip(t *testing.T) {
+	t.Parallel()
 	want := []byte{0x00, 0xff, 0x80, '\n'}
 	encoded := EncodeBody(want)
 	if encoded.Encoding != BodyBase64 {
@@ -58,6 +60,7 @@ func TestEncodedBodyBase64ExactRoundTrip(t *testing.T) {
 }
 
 func TestEncodedBodyEveryByteValueRoundTrips(t *testing.T) {
+	t.Parallel()
 	want := make([]byte, 256)
 	for i := range want {
 		want[i] = byte(i)
@@ -72,6 +75,7 @@ func TestEncodedBodyEveryByteValueRoundTrips(t *testing.T) {
 }
 
 func TestEncodedBodyRejectsInvalidEncodingOrLength(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body EncodedBody
@@ -92,6 +96,7 @@ func TestEncodedBodyRejectsInvalidEncodingOrLength(t *testing.T) {
 }
 
 func TestEncodedBodyDecodeRequiresExplicitTruthFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -124,6 +129,7 @@ func TestEncodedBodyDecodeRequiresExplicitTruthFields(t *testing.T) {
 }
 
 func TestEncodedBodyRejectsExactCredentialExcludedContent(t *testing.T) {
+	t.Parallel()
 	body := EncodeBody([]byte("credential"))
 	body.CredentialValuesExcluded = true
 	if _, err := DecodeBody(body); err == nil {
@@ -141,6 +147,7 @@ func TestEncodedBodyRejectsExactCredentialExcludedContent(t *testing.T) {
 // A body marked credential-excluded must carry nothing: content that survived
 // the exclusion is a contradiction the decode refuses.
 func TestDecodeBodyRejectsContentBehindCredentialExclusion(t *testing.T) {
+	t.Parallel()
 	if _, err := DecodeBody(EncodedBody{Data: "leftover"}); err == nil {
 		t.Fatal("a credential-excluded body with content decoded cleanly")
 	}

@@ -176,7 +176,7 @@ func TestPieces(t *testing.T) {
 func TestExpandCommand(t *testing.T) {
 	ResetForTest()
 	calls := 0
-	RunCommand = func(command string) (string, error) {
+	RunCommand = func(command string, _ []string) (string, error) {
 		calls++
 		switch command {
 		case "ok":

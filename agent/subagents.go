@@ -972,7 +972,11 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 
 	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
-		subProfile = provider.WithCommunicateOutputSchema(subProfile, schema)
+		var err error
+		subProfile, err = provider.WithCommunicateOutputSchema(subProfile, schema)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Each child gets its own client when a factory is injected (the fuzz
