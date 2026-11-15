@@ -10,6 +10,7 @@ import (
 )
 
 func TestParseConfig_DisabledRow(t *testing.T) {
+	t.Parallel()
 	l, err := ParseConfig([]byte("[providers.work.models.\"glm-5.2-nvfp4\"]\ndisabled = true\n"))
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
@@ -21,6 +22,7 @@ func TestParseConfig_DisabledRow(t *testing.T) {
 }
 
 func TestParseConfig_DisabledGlobRow(t *testing.T) {
+	t.Parallel()
 	l, err := ParseConfig([]byte("[providers.work.models.\"glm-*\"]\ndisabled = true\n[models.\"*gemini-3*\"]\ndisabled = true\n"))
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
@@ -34,6 +36,7 @@ func TestParseConfig_DisabledGlobRow(t *testing.T) {
 }
 
 func TestLoad_DisabledRowMerges(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n")
 	row := r.explicit["anthropic"].head.Models["claude-opus-4-6"]
 	if !BoolValue(row.Disabled) {
@@ -42,6 +45,7 @@ func TestLoad_DisabledRowMerges(t *testing.T) {
 }
 
 func TestResolve_DisabledRowIsBlocked(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n")
 	_, err := r.Resolve("anthropic/claude-opus-4-6")
 	if !errors.Is(err, ErrModelDisabled) {
@@ -50,6 +54,7 @@ func TestResolve_DisabledRowIsBlocked(t *testing.T) {
 }
 
 func TestResolve_DisabledGlobBlocksMatch(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n")
 	_, err := r.Resolve("anthropic/claude-opus-4-6")
 	if !errors.Is(err, ErrModelDisabled) {
@@ -58,6 +63,7 @@ func TestResolve_DisabledGlobBlocksMatch(t *testing.T) {
 }
 
 func TestResolve_DisabledGlobExactReEnable(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = false\n")
 	if _, err := r.Resolve("anthropic/claude-opus-4-6"); err != nil {
 		t.Fatalf("exact disabled=false must re-enable the row: %v", err)
@@ -65,6 +71,7 @@ func TestResolve_DisabledGlobExactReEnable(t *testing.T) {
 }
 
 func TestResolve_AliasOfDisabledTargetIsBlocked(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
 	_, err := r.Resolve("anthropic/house-model")
 	if !errors.Is(err, ErrModelDisabled) {
@@ -73,6 +80,7 @@ func TestResolve_AliasOfDisabledTargetIsBlocked(t *testing.T) {
 }
 
 func TestResolve_UserTopGlobBeatsLiveForImplicitInstance(t *testing.T) {
+	t.Parallel()
 	// Spec order is layers, then live, then user config: a user
 	// top-level glob scalar must win over the live listing's value on
 	// an implicit instance too — not just on explicit ones.
@@ -88,6 +96,7 @@ func TestResolve_UserTopGlobBeatsLiveForImplicitInstance(t *testing.T) {
 }
 
 func TestResolve_UserConfigBeatsOverlayTopGlobScalar(t *testing.T) {
+	t.Parallel()
 	// The curated overlay's *claude-opus-4-5* top glob sets a scalar;
 	// a user exact row setting its own value must win. Disabled-only
 	// tests cannot catch an ordering inversion because no overlay
@@ -103,6 +112,7 @@ func TestResolve_UserConfigBeatsOverlayTopGlobScalar(t *testing.T) {
 }
 
 func TestResolve_UserDisabledBeatsCuratedOverlayGlob(t *testing.T) {
+	t.Parallel()
 	// Standalone instance with a user exact disabled=true: layer rows
 	// replay per layer in order, so the user's verdict must stand no
 	// matter what any curated overlay glob carries. (Today no overlay
@@ -114,6 +124,7 @@ func TestResolve_UserDisabledBeatsCuratedOverlayGlob(t *testing.T) {
 }
 
 func TestResolve_UserTopGlobDisablesImplicitInstance(t *testing.T) {
+	t.Parallel()
 	// A user top-level [models."<glob>"] disabled=true applies to every
 	// provider — including an implicit instance whose record has no
 	// LayerConfig layer of its own.
@@ -127,6 +138,7 @@ func TestResolve_UserTopGlobDisablesImplicitInstance(t *testing.T) {
 }
 
 func TestResolve_CrossProviderAliasOfDisabledTargetIsBlocked(t *testing.T) {
+	t.Parallel()
 	// A cross-provider alias ("provider/id") must inherit its target's
 	// Disabled verdict from the target's instance record, not the
 	// curated-only record. The verdict's own repro:
@@ -144,6 +156,7 @@ func TestResolve_CrossProviderAliasOfDisabledTargetIsBlocked(t *testing.T) {
 }
 
 func TestResolve_CrossProviderAliasOwnFlagOverridesTarget(t *testing.T) {
+	t.Parallel()
 	// The target's verdict is the cross-provider alias's default; a flag on
 	// the alias's own row — what this instance's toggle writes — overrides
 	// it both ways, so one connection can disable or re-enable the model
@@ -189,6 +202,7 @@ func TestResolve_CrossProviderAliasOwnFlagOverridesTarget(t *testing.T) {
 }
 
 func TestResolve_CrossProviderAliasTopGlobOverridesTarget(t *testing.T) {
+	t.Parallel()
 	// A user top-level glob matching the alias id is an own flag too: it
 	// overrides the inherited verdict the way an exact row does, and the
 	// target's own connection stays served.
@@ -205,6 +219,7 @@ func TestResolve_CrossProviderAliasTopGlobOverridesTarget(t *testing.T) {
 }
 
 func TestResolve_CuratedCrossProviderAliasOwnFlagOverrides(t *testing.T) {
+	t.Parallel()
 	// The shape the sheet shows: openai-codex's curated gpt-5.6-sol aliases
 	// onto openai's row, and a toggle authors a providers.toml row for it
 	// carrying only the flag (the hub's shadow shape: no provider header,
@@ -231,6 +246,7 @@ func TestResolve_CuratedCrossProviderAliasOwnFlagOverrides(t *testing.T) {
 }
 
 func TestRecordMayDisable_AliasCycleDoesNotOverflow(t *testing.T) {
+	t.Parallel()
 	// A mutual cross-provider alias cycle loads (each target exists) but
 	// must not recurse forever when browse paths ask whether anything
 	// may be disabled: the cycle carries no Disabled flag anywhere.
@@ -254,6 +270,7 @@ func TestRecordMayDisable_AliasCycleDoesNotOverflow(t *testing.T) {
 }
 
 func TestResolve_AliasIgnoresOwnDisabledFlag(t *testing.T) {
+	t.Parallel()
 	// Lockstep: the alias follows its target. Its own Disabled never
 	// applies, so an alias-own disable with an enabled target resolves.
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\ndisabled = true\n")
@@ -263,6 +280,7 @@ func TestResolve_AliasIgnoresOwnDisabledFlag(t *testing.T) {
 }
 
 func TestAliasTarget_ResolvesSameProviderPassthroughAndDangling(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
 	got, err := r.AliasTarget("anthropic", "house-model")
 	if err != nil || got != (Ref{Instance: "anthropic", Model: "claude-opus-4-6"}) {
@@ -286,6 +304,7 @@ func TestAliasTarget_ResolvesSameProviderPassthroughAndDangling(t *testing.T) {
 }
 
 func TestAliasTarget_CanonicalizesDatedVariant(t *testing.T) {
+	t.Parallel()
 	// Toggling a dated-suffix variant must write the canonical row the
 	// variant resolves to, not author a new exact row for the variant:
 	// one logical model, one toggleable row. The custom provider below
@@ -314,6 +333,7 @@ func TestAliasTarget_CanonicalizesDatedVariant(t *testing.T) {
 }
 
 func TestAliasTarget_CrossProviderAliasWritesItsOwnRow(t *testing.T) {
+	t.Parallel()
 	// A cross-provider alias is a row of this instance, so the toggle writes
 	// the alias's own row here: the config layer cannot author the target's
 	// record, and each connection carries its own flag.
@@ -328,6 +348,7 @@ func TestAliasTarget_CrossProviderAliasWritesItsOwnRow(t *testing.T) {
 }
 
 func TestAliasTarget_CanonicalizesVariantOfAlias(t *testing.T) {
+	t.Parallel()
 	// A dated-suffix or region-prefixed spelling of an alias id strips down
 	// to the alias row itself. A same-provider alias's flag still lives on
 	// its target (lockstep: the alias's own flag replays for nothing), so
@@ -348,6 +369,7 @@ func TestAliasTarget_CanonicalizesVariantOfAlias(t *testing.T) {
 }
 
 func TestAliasTarget_ResolvesDisabledTargetForReEnable(t *testing.T) {
+	t.Parallel()
 	// Write-through must work in both directions: re-enabling through the
 	// alias resolves the target even though the target currently fails
 	// Resolve with ErrModelDisabled.
@@ -359,6 +381,7 @@ func TestAliasTarget_ResolvesDisabledTargetForReEnable(t *testing.T) {
 }
 
 func TestFindModel_SkipsDisabled(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n")
 	for _, ref := range r.FindModel("claude-opus-4-6") {
 		if ref.Instance == "anthropic" {
@@ -371,6 +394,7 @@ func TestFindModel_SkipsDisabled(t *testing.T) {
 // to resolveOn's verdict across exact, glob, and re-enable shapes: a row
 // FindModel keeps must resolve, and one it drops must fail disabled.
 func TestFindModelAgreesWithResolve(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-5\"]\ndisabled = false\n[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n")
 	// Every instance's inventory must agree with Resolve, alias rows
 	// included: a cross-provider alias only agrees when the inventory's
@@ -403,6 +427,7 @@ func TestFindModelAgreesWithResolve(t *testing.T) {
 }
 
 func TestInstanceModels_ReportsDisabledState(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-5\"]\ndisabled = false\n")
 	models, err := r.InstanceModels("anthropic")
 	if err != nil {
@@ -430,6 +455,7 @@ func TestInstanceModels_ReportsDisabledState(t *testing.T) {
 // gpt-5.6-sol/terra/luna onto openai's rows, which is the case that made these
 // names invisible in the sheet while the picker offered them.
 func TestInstanceModels_ListsCrossProviderAliasRows(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.openai-codex]\nbase = \"openai\"\napi_key = \"sk\"\n[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n[providers.openai-codex.models.\"gpt-5.6-sol\"]\nalias_of = \"openai/gpt-5.6-sol\"\n")
 	models, err := r.InstanceModels("openai-codex")
 	if err != nil {
@@ -449,6 +475,7 @@ func TestInstanceModels_ListsCrossProviderAliasRows(t *testing.T) {
 }
 
 func TestInstanceModels_EveryListedRowIsToggleable(t *testing.T) {
+	t.Parallel()
 	// The sheet renders one switch per listed row, so every id the inventory
 	// returns must name a row a toggle can write: AliasTarget answers for all
 	// of them. A cross-provider alias answers with its own row on this
@@ -471,6 +498,7 @@ func TestInstanceModels_EveryListedRowIsToggleable(t *testing.T) {
 }
 
 func TestInstanceModels_SkipsDanglingAliasRows(t *testing.T) {
+	t.Parallel()
 	// A curated dangling alias — its target is gone upstream, so load hides
 	// the row with a warning — names nothing a toggle could write: AliasTarget
 	// refuses it. Listing it would render a switch that can only fail, so the
@@ -494,6 +522,7 @@ func TestInstanceModels_SkipsDanglingAliasRows(t *testing.T) {
 }
 
 func TestInstanceModels_CrossProviderAliasMatchesTargetIDGlob(t *testing.T) {
+	t.Parallel()
 	// Globs replay against the reference and the target row id (spec §4.1
 	// order), which is what gives a provider's shaping glob to its aliases.
 	// The light browse replay has to match the same set, or the sheet reports
@@ -519,6 +548,7 @@ func TestInstanceModels_CrossProviderAliasMatchesTargetIDGlob(t *testing.T) {
 }
 
 func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n")
 	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
 	models, err := r.InstanceModels("anthropic")
@@ -545,6 +575,7 @@ func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
 }
 
 func TestInstanceModels_ListsAliasRowsWithTheirTargetsState(t *testing.T) {
+	t.Parallel()
 	// An alias row names a model the provider serves under another id, and the
 	// picker offers that name, so the inventory lists it too: the toggle path
 	// names the row to write (AliasTarget), which is what makes every listed
@@ -575,6 +606,7 @@ func TestInstanceModels_ListsAliasRowsWithTheirTargetsState(t *testing.T) {
 }
 
 func TestSnapshotLive_RoundTripsListings(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
 	snap := r.SnapshotLive()
@@ -592,6 +624,7 @@ func TestSnapshotLive_RoundTripsListings(t *testing.T) {
 }
 
 func TestMarshalConfig_RoundTripsDisabled(t *testing.T) {
+	t.Parallel()
 	l := &Layer{Tag: LayerConfig, Providers: map[string]Provider{
 		"work": {ID: "work", Base: "openai", Models: map[string]Model{
 			"m1": {ID: "m1", Disabled: new(true)},

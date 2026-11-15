@@ -150,7 +150,7 @@ test("resendReceiptSurvivesSettlement", async () => {
 	expect(await (await f.reopen()).readRecoveryResend("local:queued", ids)).toBeUndefined();
 });
 
-test("retarget migrates recovery resend receipts and their embedded target ref", async () => {
+test("retarget leaves recovery resend receipts with the retired ref", async () => {
 	const f = fixture();
 	const source = await f.storage.enqueueIntent(queuedIntent());
 	await f.storage.transferToRecovery(source.clientMutationId, "rejected");
@@ -177,22 +177,22 @@ test("retarget migrates recovery resend receipts and their embedded target ref",
 	).toEqual(expect.arrayContaining([resend.clientMutationId, waiting.clientMutationId]));
 
 	const migrated = {
-		targetRef: "local:resumed",
+		targetRef: "local:queued",
 		sourceIds: [source.clientMutationId],
 		clientMutationId: resend.clientMutationId,
 	};
-	expect(await f.storage.readRecoveryResend("local:resumed", [source.clientMutationId])).toEqual(migrated);
-	expect(await f.storage.readRecoveryResend("local:queued", [source.clientMutationId])).toBeUndefined();
+	expect(await f.storage.readRecoveryResend("local:resumed", [source.clientMutationId])).toBeUndefined();
+	expect(await f.storage.readRecoveryResend("local:queued", [source.clientMutationId])).toEqual(migrated);
 	expect(await f.storage.readRecoveryResend("local:resumed", [destinationSource.clientMutationId])).toEqual({
 		targetRef: "local:resumed",
 		sourceIds: [destinationSource.clientMutationId],
 		clientMutationId: destinationResend.clientMutationId,
 	});
 	const reopened = await f.reopen();
-	expect(await reopened.readRecoveryResend("local:resumed", [source.clientMutationId])).toEqual(migrated);
+	expect(await reopened.readRecoveryResend("local:queued", [source.clientMutationId])).toEqual(migrated);
 });
 
-test("a failed receipt migration rolls the whole retarget back", async () => {
+test("a failed outbox move rolls the retarget back and leaves the receipt in place", async () => {
 	const f = fixture();
 	const source = await f.storage.enqueueIntent(queuedIntent());
 	await f.storage.transferToRecovery(source.clientMutationId, "rejected");
@@ -203,7 +203,7 @@ test("a failed receipt migration rolls the whole retarget back", async () => {
 		sourceIds: [source.clientMutationId],
 		clientMutationId: resend.clientMutationId,
 	};
-	f.fail(/UPDATE mutation_sequence SET recovery_resends/);
+	f.fail(/UPDATE mutation_outbox/);
 	expect(() =>
 		f.storage.retarget("local:queued", {
 			ref: "local:resumed",
@@ -215,6 +215,7 @@ test("a failed receipt migration rolls the whole retarget back", async () => {
 	f.fail();
 	expect(await f.storage.readRecoveryResend("local:queued", [source.clientMutationId])).toEqual(receipt);
 	expect(await f.storage.readRecoveryResend("local:resumed", [source.clientMutationId])).toBeUndefined();
+	expect(await f.storage.listOutbox("local:resumed")).toEqual([]);
 });
 
 test("acknowledgment retires only its receipt and a failed write can be retried", async () => {

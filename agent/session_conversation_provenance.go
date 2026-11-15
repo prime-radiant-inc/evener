@@ -27,8 +27,18 @@ type conversationState struct {
 	frontierID         string
 	inputs             []string
 	frontiers          []schema.ConversationFrontier
-	revision           uint64
-	snapshot           *appwire.ConversationProvenanceState
+	// retractedFrontierID names a frontier node in frontiers whose durable
+	// carrier was retracted: a fold whose transcript commit was withheld
+	// minted the node and keeps it in the chain — the in-memory fold's live
+	// marker references it for the folded inputs' coverage — but the frontier
+	// ID and covered inputs rolled back, so no later record chains onto it.
+	// The next node a record actually carries takes its place in the chain and
+	// inherits its live references (replaceRetractedFrontierLocked). Empty on
+	// every durable rebuild: a resume replays the pre-compaction transcript,
+	// where the node never existed.
+	retractedFrontierID string
+	revision            uint64
+	snapshot            *appwire.ConversationProvenanceState
 }
 
 // restoreConversation replays canonical records, not their fold copies. The
@@ -103,8 +113,34 @@ func (s *Session) noteConversationTurnLocked(turn schema.Turn) {
 		s.conversation.inputs = slices.Compact(s.conversation.inputs)
 		s.conversation.frontiers = append(s.conversation.frontiers, *node)
 		s.conversation.frontierID = node.ID
+		s.replaceRetractedFrontierLocked(node.ID)
 	} else if frontierID != s.conversation.frontierID {
 		s.conversation.unknown = true
+	}
+}
+
+// replaceRetractedFrontierLocked settles a retracted fold's live-only frontier
+// node once a record carrying its own node lands: the incoming node extends
+// the same predecessor and IS durably carried, so it takes the retracted
+// node's place in the chain — which must stay strictly linear — and inherits
+// the live turns that referenced the retracted one, whose claimed coverage
+// resolves through the incoming node instead. Callers hold s.mu.
+func (s *Session) replaceRetractedFrontierLocked(newID string) {
+	retracted := s.conversation.retractedFrontierID
+	if retracted == "" || retracted == newID {
+		return
+	}
+	i := len(s.conversation.frontiers) - 2
+	if i < 0 || s.conversation.frontiers[i].ID != retracted ||
+		s.conversation.frontiers[i].BaseID != s.conversation.frontiers[len(s.conversation.frontiers)-1].BaseID {
+		return
+	}
+	s.conversation.frontiers = slices.Delete(s.conversation.frontiers, i, i+1)
+	s.conversation.retractedFrontierID = ""
+	for j := range s.history {
+		if s.history[j].ConversationCoverageRef == retracted {
+			s.history[j].ConversationCoverageRef = newID
+		}
 	}
 }
 
@@ -241,6 +277,10 @@ func (s *Session) bindDescendantTranscriptPublication() {
 }
 
 func (s *Session) stageConversationInputs(turns []schema.Turn) {
+	s.stageConversationInputsWithCoverage(turns, nil)
+}
+
+func (s *Session) stageConversationInputsWithCoverage(turns []schema.Turn, coverage map[string][]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	wasUnknown := s.conversation.unknown
@@ -249,18 +289,43 @@ func (s *Session) stageConversationInputs(turns []schema.Turn) {
 			s.conversation.unknown = true
 		}
 	}
-	s.conversation.preparedInputs = s.conversationInputsLocked(turns)
+	s.conversation.preparedInputs = s.conversationInputsWithCoverageLocked(turns, coverage)
 	if s.conversation.unknown && !wasUnknown {
 		s.conversation.revision++
 	}
 }
 
 func (s *Session) conversationInputsLocked(turns []schema.Turn) []string {
+	return s.conversationInputsWithCoverageLocked(turns, nil)
+}
+
+// snapshotConversationCoverageLocked pairs coverage with the copied history
+// while both are protected by s.mu. A later fold can retire a frontier ID
+// without changing what this request's copied turn presented.
+func (s *Session) snapshotConversationCoverageLocked(turns []schema.Turn) map[string][]string {
+	coverage := make(map[string][]string)
+	for _, turn := range turns {
+		id := turn.ConversationCoverageRef
+		if id == "" {
+			continue
+		}
+		if _, ok := coverage[id]; !ok {
+			coverage[id] = s.resolveConversationFrontierLocked(id)
+		}
+	}
+	return coverage
+}
+
+func (s *Session) conversationInputsWithCoverageLocked(turns []schema.Turn, coverage map[string][]string) []string {
 	var ids []string
 	for _, turn := range turns {
 		ids = append(ids, turn.ConversationInputIDs...)
 		if turn.ConversationCoverageRef != "" {
-			ids = append(ids, s.resolveConversationFrontierLocked(turn.ConversationCoverageRef)...)
+			covered, ok := coverage[turn.ConversationCoverageRef]
+			if !ok {
+				covered = s.resolveConversationFrontierLocked(turn.ConversationCoverageRef)
+			}
+			ids = append(ids, covered...)
 		}
 	}
 	slices.Sort(ids)

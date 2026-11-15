@@ -52,6 +52,7 @@ export interface LastRead {
 
 export interface ContinueReading {
 	sessionRef: string;
+	messageSessionRef?: string;
 	path: string;
 	reference: FileReference;
 	title: string;
@@ -64,6 +65,7 @@ export interface ContinueReading {
 
 export interface Leaving {
 	title: string;
+	messageSessionRef?: string;
 	/** Unbound historical callers may still record reading, never a shortcut. */
 	reference?: FileReference;
 	blocks: readonly string[];
@@ -159,8 +161,9 @@ function parseTrail(value: unknown): ContinueReading | null {
 	// reviewTitle); it is dropped rather than migrated. The row is a two-hour
 	// convenience, and this store drops any shape it doesn't recognize rather
 	// than carrying a migration for it.
-	const { sessionRef, path, title, sessionTitle, progress, leftAt, updatedAt, reference } = value;
+	const { sessionRef, messageSessionRef, path, title, sessionTitle, progress, leftAt, updatedAt, reference } = value;
 	if (!isText(sessionRef) || !isText(path) || !isText(title) || !isText(sessionTitle)) return null;
+	if (messageSessionRef !== undefined && (!isText(messageSessionRef) || !messageSessionRef)) return null;
 	if (
 		!isPlainObject(reference) ||
 		reference.path !== path ||
@@ -175,6 +178,7 @@ function parseTrail(value: unknown): ContinueReading | null {
 	const root = reference.root === "artifacts" || reference.root === "scratch" ? reference.root : undefined;
 	return {
 		sessionRef,
+		...(messageSessionRef !== undefined ? { messageSessionRef } : {}),
 		path,
 		reference: {
 			path,
@@ -248,6 +252,7 @@ export class DocumentMemory {
 		if (progress < FINISHED_PROGRESS && leaving.reference)
 			this.setTrail({
 				sessionRef: key.sessionRef,
+				...(leaving.messageSessionRef === undefined ? {} : { messageSessionRef: leaving.messageSessionRef }),
 				path: key.path,
 				reference: leaving.reference,
 				title: leaving.title,

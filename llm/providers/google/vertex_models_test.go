@@ -45,6 +45,7 @@ var vertexExpectedIDs = []string{
 }
 
 func TestVertexListModelsFiltersTheFixture(t *testing.T) {
+	t.Parallel()
 	fixture, err := os.ReadFile("testdata/vertex_publisher_models.json")
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +74,7 @@ func TestVertexListModelsFiltersTheFixture(t *testing.T) {
 }
 
 func TestVertexListModelsFollowsPagination(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.RequestURI())
@@ -100,6 +102,7 @@ func TestVertexListModelsFollowsPagination(t *testing.T) {
 // contract for the Vertex listing: a canceled context must end the in-flight
 // request promptly, not leave the fetch blocked on a silent endpoint.
 func TestVertexListModelsExitsOnCancellation(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(started)
@@ -130,6 +133,7 @@ func TestVertexListModelsExitsOnCancellation(t *testing.T) {
 // The Vertex listing honors the listing timeout like every other protocol's
 // listing: a silent endpoint ends with the provider deadline, not the caller's.
 func TestVertexListModelsHonorsTheListingTimeout(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
@@ -148,6 +152,7 @@ func TestVertexListModelsHonorsTheListingTimeout(t *testing.T) {
 }
 
 func TestVertexListModelsStopsOnARepeatedPageToken(t *testing.T) {
+	t.Parallel()
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
@@ -169,6 +174,7 @@ func TestVertexListModelsStopsOnARepeatedPageToken(t *testing.T) {
 }
 
 func TestVertexListModelsUnsupportedWhenEndpointIsDash(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, 200, `{}`)
 	res := vertexRes(srv)
 	res.Transport.ModelsEndpoint = registry.EndpointUnsupported
@@ -179,6 +185,7 @@ func TestVertexListModelsUnsupportedWhenEndpointIsDash(t *testing.T) {
 }
 
 func TestVertexTextModelFilterRules(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		id, stage string
 		want      bool
@@ -215,6 +222,7 @@ func TestVertexTextModelFilterRules(t *testing.T) {
 // Vertex way — host-relative on v1beta1 — rather than fall through to the
 // Gemini API listing.
 func TestVertexListModelsOnACustomPresetProviderWithoutHostRule(t *testing.T) {
+	t.Parallel()
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.RequestURI())
@@ -240,6 +248,7 @@ func TestVertexListModelsOnACustomPresetProviderWithoutHostRule(t *testing.T) {
 }
 
 func TestVertexTransportDiscriminator(t *testing.T) {
+	t.Parallel()
 	gemini := registry.Resolved{Transport: registry.Transport{Endpoint: "/models/{model}:generateContent"}}
 	if isVertexTransport(gemini) {
 		t.Error("the Gemini API serves models under /models/: that is not Vertex")

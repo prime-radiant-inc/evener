@@ -17,6 +17,7 @@ import (
 )
 
 func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
+	t.Parallel()
 	req, err := http.NewRequest(http.MethodPost, "https://alice:password@example.test/v1?keep=visible&api_key=secret+token&opaque=secret+token&ordered=first&ordered=second", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,7 @@ func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
 }
 
 func TestSanitizeRequestForAPILogRejectsInvalidAndOpaqueEndpoints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		endpoint string
@@ -79,6 +81,7 @@ func TestSanitizeRequestForAPILogRejectsInvalidAndOpaqueEndpoints(t *testing.T) 
 }
 
 func TestSanitizeErrorForAPILogRemovesRawAndEscapedCredentials(t *testing.T) {
+	t.Parallel()
 	secret := "alpha/beta value"
 	material := NewAPILogCredentialMaterial(nil, nil, secret)
 	text := strings.Join([]string{secret, url.QueryEscape(secret), url.PathEscape(secret)}, " | ")
@@ -94,6 +97,7 @@ func TestSanitizeErrorForAPILogRemovesRawAndEscapedCredentials(t *testing.T) {
 }
 
 func TestSanitizeErrorForAPILogRemovesCredentialValueBeforeContainedName(t *testing.T) {
+	t.Parallel()
 	const secret = "prefix/token/suffix"
 	material := NewAPILogCredentialMaterial(nil, []string{"token"}, secret)
 	got := SanitizeErrorForAPILog("provider echoed "+secret, material)
@@ -103,6 +107,7 @@ func TestSanitizeErrorForAPILogRemovesCredentialValueBeforeContainedName(t *test
 }
 
 func TestAPILogCredentialMaterialForRequestIncludesExactStructuredCredentialVariants(t *testing.T) {
+	t.Parallel()
 	const (
 		rawQuerySecret = "query%2fcredential%2fsentinel"
 		authSecret     = "authorization-payload-sentinel"
@@ -125,6 +130,7 @@ func TestAPILogCredentialMaterialForRequestIncludesExactStructuredCredentialVari
 }
 
 func TestBuildAPIAttemptRecordSanitizesPersistedError(t *testing.T) {
+	t.Parallel()
 	secret := "credential-sentinel"
 	record := buildAPIAttemptRecord("ag_test", "aa_test", 1, APIAttemptMeta{
 		StartedAt:          time.Unix(1, 0),
@@ -140,6 +146,7 @@ func TestBuildAPIAttemptRecordSanitizesPersistedError(t *testing.T) {
 }
 
 func TestBuildAPIAttemptRecordSanitizesCredentialNamesButPreservesOrdinaryNames(t *testing.T) {
+	t.Parallel()
 	const (
 		credentialHeader = "X-Private-Gateway-Sentinel"
 		credentialQuery  = "signed_secret_parameter"
@@ -186,6 +193,7 @@ func (s *credentialFailureSink) apiLogFailureObserver() func(APILogFailure) {
 }
 
 func TestAPIAttemptAppendWarningSanitizesOwnedCredentialMaterial(t *testing.T) {
+	t.Parallel()
 	const secret = "credential-warning-sentinel"
 	sink := &credentialFailureSink{err: errors.New("sync failed for " + secret)}
 	ctx := WithAPIAttemptSink(
@@ -210,6 +218,7 @@ func TestAPIAttemptAppendWarningSanitizesOwnedCredentialMaterial(t *testing.T) {
 }
 
 func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	const secret = "sync-warning-credential-sentinel"
 	syncErr := errors.New("sync failed for " + secret)
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
@@ -250,6 +259,7 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 }
 
 func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnce(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	const secret = "settlement-sync-credential-sentinel"
 	syncErr := errors.New("settlement sync failed for " + secret)
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
@@ -292,6 +302,7 @@ func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnc
 }
 
 func TestAPIAttemptAppendWarningSanitizesCredentialNamesButPreservesOrdinaryNames(t *testing.T) {
+	t.Parallel()
 	const (
 		credentialHeader = "X-Private-Warning-Sentinel"
 		credentialQuery  = "warning_secret_parameter"
@@ -333,6 +344,7 @@ func TestAPIAttemptAppendWarningSanitizesCredentialNamesButPreservesOrdinaryName
 }
 
 func TestAPILogErrorSanitizationDetachesOriginalErrorBehavior(t *testing.T) {
+	t.Parallel()
 	const secret = "raw-error-secret-sentinel"
 	cause := errors.New(secret)
 	raw := &recoverableAPILogError{text: "storage failed for " + secret, cause: cause}
@@ -374,6 +386,7 @@ func (e *recoverableAPILogError) Error() string {
 func (e *recoverableAPILogError) Unwrap() error { return e.cause }
 
 func TestAPIAttemptAppendWarningSanitizationPreservesObservedMarker(t *testing.T) {
+	t.Parallel()
 	const credentialHeader = "X-Private-Observed-Sentinel"
 	sink := &credentialFailureSink{
 		err: observedAPILogError{text: "sync failed for " + credentialHeader},
@@ -396,6 +409,7 @@ func TestAPIAttemptAppendWarningSanitizationPreservesObservedMarker(t *testing.T
 }
 
 func TestClassifyAPIAttemptOutcomeTimeoutOwnership(t *testing.T) {
+	t.Parallel()
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	callerDeadline, callerDeadlineCancel := context.WithDeadline(context.Background(), time.Unix(1, 0))
@@ -458,6 +472,7 @@ func TestClassifyAPIAttemptOutcomeTimeoutOwnership(t *testing.T) {
 }
 
 func TestClassifyAPIAttemptOutcomeNonTimeouts(t *testing.T) {
+	t.Parallel()
 	owner := APIAttemptContextOwnership{Parent: context.Background(), Attempt: context.Background()}
 	for _, tc := range []struct {
 		name         string
@@ -480,6 +495,7 @@ func TestClassifyAPIAttemptOutcomeNonTimeouts(t *testing.T) {
 }
 
 func TestClassifyAPIAttemptOutcomeDoesNotInferCallerCancellationFromSyntheticEvidence(t *testing.T) {
+	t.Parallel()
 	owner := APIAttemptContextOwnership{Parent: context.Background(), Attempt: context.Background()}
 	for _, testCase := range []struct {
 		name         string
@@ -508,6 +524,7 @@ func TestClassifyAPIAttemptOutcomeDoesNotInferCallerCancellationFromSyntheticEvi
 
 // A blank header or query name names nothing, so it is not recorded.
 func TestNewAPILogCredentialMaterialSkipsBlankNames(t *testing.T) {
+	t.Parallel()
 	blank := []string{"  ", ""}
 	if m := NewAPILogCredentialMaterial(blank, nil, "secret"); len(m.HeaderNames) != 0 {
 		t.Fatalf("HeaderNames = %v, want empty", m.HeaderNames)
@@ -518,6 +535,7 @@ func TestNewAPILogCredentialMaterialSkipsBlankNames(t *testing.T) {
 }
 
 func TestNewAPILogCredentialMaterialDuplicateValue(t *testing.T) {
+	t.Parallel()
 	m := NewAPILogCredentialMaterial(nil, nil, "secret", "secret", "other")
 	if len(m.Values) != 2 {
 		t.Fatalf("Values = %v, want 2 (secret, other)", m.Values)
@@ -525,6 +543,7 @@ func TestNewAPILogCredentialMaterialDuplicateValue(t *testing.T) {
 }
 
 func TestNewAPILogCredentialMaterialSkipsAnEmptyValue(t *testing.T) {
+	t.Parallel()
 	material := NewAPILogCredentialMaterial(nil, nil, "", "credential-secret", "")
 	want := APILogCredentialMaterial{
 		Values:      []string{"credential-secret"},
@@ -540,6 +559,7 @@ func TestNewAPILogCredentialMaterialSkipsAnEmptyValue(t *testing.T) {
 // Material built without the constructor's prepared patterns still scrubs
 // its values.
 func TestCredentialEvidencePatternsFallBackToValues(t *testing.T) {
+	t.Parallel()
 	material := APILogCredentialMaterial{Values: []string{"credential-secret"}}
 	if patterns := credentialEvidencePatterns(material); !reflect.DeepEqual(patterns, []string{"credential-secret"}) {
 		t.Fatalf("fallback credential patterns = %q, want the value", patterns)
@@ -569,6 +589,7 @@ func assertValueCredentialSanitizesExactly(t *testing.T, material APILogCredenti
 }
 
 func TestAPILogCredentialMaterialForRequestNil(t *testing.T) {
+	t.Parallel()
 	configured := NewAPILogCredentialMaterial([]string{"X-Custom"}, []string{"token"}, "secret")
 	material := APILogCredentialMaterialForRequest(nil, configured)
 	if _, ok := material.HeaderNames["X-Custom"]; !ok {
@@ -582,6 +603,7 @@ func TestAPILogCredentialMaterialForRequestNil(t *testing.T) {
 // A percent-escaped credential query name is recognized by its unescaped
 // form, and its escaped spelling is recorded too.
 func TestAPILogCredentialMaterialForRequestEscapedQueryName(t *testing.T) {
+	t.Parallel()
 	req, err := http.NewRequest(http.MethodGet, "https://provider.test/api?access%5Ftoken=secret", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -597,6 +619,7 @@ func TestAPILogCredentialMaterialForRequestEscapedQueryName(t *testing.T) {
 // Each cookie value is recorded as sent, unquoted, and percent-decoded; a
 // pair with no value contributes nothing.
 func TestStructuredCredentialHeaderValuesOfACookie(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, cookie string
 		want         []string
@@ -613,6 +636,7 @@ func TestStructuredCredentialHeaderValuesOfACookie(t *testing.T) {
 }
 
 func TestSanitizeRequestForAPILogNil(t *testing.T) {
+	t.Parallel()
 	endpoint, headers := SanitizeRequestForAPILog(nil, APILogCredentialMaterial{})
 	if endpoint != "" || headers != nil {
 		t.Fatalf("endpoint=%q headers=%v, want empty/nil", endpoint, headers)
@@ -622,6 +646,7 @@ func TestSanitizeRequestForAPILogNil(t *testing.T) {
 // A Trailer header that names only credential headers (blank entries aside)
 // is dropped rather than logged empty.
 func TestSanitizeRequestForAPILogDropsAnEmptiedTrailer(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, trailer string
 		material      APILogCredentialMaterial
@@ -645,6 +670,7 @@ func TestSanitizeRequestForAPILogDropsAnEmptiedTrailer(t *testing.T) {
 
 // A Trailer value that names no credential is kept byte for byte.
 func TestSanitizeTrailerHeaderValuesNoRemoval(t *testing.T) {
+	t.Parallel()
 	values := sanitizeTrailerHeaderValues([]string{"X-Debug,X-Info"}, APILogCredentialMaterial{})
 	if len(values) != 1 || values[0] != "X-Debug,X-Info" {
 		t.Fatalf("values = %q, want the original preserved exactly", values)
@@ -654,6 +680,7 @@ func TestSanitizeTrailerHeaderValuesNoRemoval(t *testing.T) {
 // The logged Host is the one the client sends: never a Header["Host"] entry,
 // and never a Host that is itself a credential.
 func TestSanitizeRequestForAPILogHost(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		host     string
@@ -690,6 +717,7 @@ func TestSanitizeRequestForAPILogHost(t *testing.T) {
 
 // TestUnescapeQueryComponentError: an invalid escape returns the input as is.
 func TestUnescapeQueryComponentError(t *testing.T) {
+	t.Parallel()
 	if got := unescapeQueryComponent("%zz"); got != "%zz" {
 		t.Fatalf("unescapeQueryComponent(%q) = %q, want %q", "%zz", got, "%zz")
 	}
@@ -697,12 +725,14 @@ func TestUnescapeQueryComponentError(t *testing.T) {
 
 // Names that differ only by case fold to one variant.
 func TestCaseFoldedCredentialNameVariantsDuplicate(t *testing.T) {
+	t.Parallel()
 	if got := caseFoldedCredentialNameVariants([]string{"Key", "key", "KEY"}); !reflect.DeepEqual(got, []string{"key"}) {
 		t.Fatalf("variants = %q, want exactly [key]", got)
 	}
 }
 
 func TestCredentialValueVariantsEmpty(t *testing.T) {
+	t.Parallel()
 	variants := credentialValueVariants([]string{"", "valid"})
 	if len(variants) == 0 {
 		t.Fatal("expected at least one variant for 'valid'")

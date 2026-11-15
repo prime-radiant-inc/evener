@@ -8,6 +8,7 @@ import (
 )
 
 func TestRetryAfterUsesBackoffForNonPositiveAndPreservesPositive(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	past := now.Add(-time.Second).Format(http.TimeFormat)
 	cases := []struct {

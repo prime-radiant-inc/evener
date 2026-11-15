@@ -15,12 +15,15 @@
 }
 
 .track {
+  /* The gap between options; the thumb's travel adds it per step. */
+  --segmented-gap: 2px;
+  position: relative;
   display: inline-grid;
   align-items: stretch;
   box-sizing: border-box;
   overflow: visible;
   padding: 2px;
-  gap: 2px;
+  gap: var(--segmented-gap);
   border: 1px solid var(--edge);
   border-radius: var(--radius-pill);
   /* The canvas ground, not --field: the thumb is --surface-1, which is
@@ -33,7 +36,35 @@
   inline-size: 100%;
 }
 
+/* The one raised thumb marking the chosen option (the Move recipe). It is an
+ * absolutely positioned child placed in the first option's grid cell, so it
+ * takes that cell's exact box without joining auto-placement, and it travels
+ * by whole steps of its own width plus the gap: every column is the same
+ * width (the track's columns are equal fractions), so the translation lands
+ * on the chosen option's cell at any width, font or theme without measuring.
+ * --segmented-index is the chosen option's position, set by the widget. */
+.thumb {
+  /* Both lines are named: an absolutely positioned box's auto end line is the
+   * track's padding edge, not the next grid line. */
+  grid-row: 1 / 2;
+  grid-column: 1 / 2;
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pill);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
+  pointer-events: none;
+  transform: translateX(calc(var(--segmented-direction, 1) * var(--segmented-index, 0) * (100% + var(--segmented-gap))));
+}
+
+.thumb:dir(rtl) {
+  --segmented-direction: -1;
+}
+
 .option {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -54,20 +85,15 @@
   cursor: pointer;
   transition:
     background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    color var(--motion-duration-hover) var(--motion-easing-standard),
-    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
+    color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .option:not([aria-checked="true"]):hover:not(:disabled) {
   background: var(--hover-1);
 }
 
-/* The chosen option is a raised thumb riding the sunken track. */
+/* The chosen option's text rides the thumb; the thumb paints the raise. */
 .option[aria-checked="true"] {
-  border-color: var(--edge);
-  background: var(--surface-1);
-  box-shadow: var(--shadow-card);
   color: var(--ink-hi);
   font-weight: var(--font-weight-semibold);
 }
@@ -77,7 +103,9 @@
   outline-offset: 2px;
 }
 
-.option:disabled {
+/* A refused choice dims, and so does the thumb under it. */
+.option:disabled,
+.thumb[data-disabled] {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -97,6 +125,47 @@
   block-size: 32px;
 }
 
+/* Stacked: a label over a quiet detail. The track is a pane-radius rounded
+ * rectangle and each option's radius is the track's minus its padding and
+ * border, so the thumb stays concentric with the track. The track and every
+ * option carry .stacked. */
+.track.stacked {
+  border-radius: var(--radius-pane);
+}
+
+.track.stacked > .thumb {
+  border-radius: calc(var(--radius-pane) - var(--space-half) - 1px);
+}
+
+.option.stacked {
+  flex-direction: column;
+  gap: var(--space-half);
+  block-size: auto;
+  padding-block: var(--space-1);
+  /* Five stacked options must fit a 320px phone without clipping a long
+   * fraction: the label sits at the caption size with the detail beneath it,
+   * so a column's width is set by the caption scale, not the control scale. */
+  padding-inline: 0;
+  font-size: var(--font-size-caption);
+  border-radius: calc(var(--radius-pane) - var(--space-half) - 1px);
+}
+
+.optionDetail {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  /* A count is chrome, not reading text: it follows the font-size setting
+   * down but stops at the unscaled caption size (the caption token divided by
+   * the font scale), which keeps "100/100" inside one of five equal columns
+   * on a 320px sidebar at the largest setting. */
+  font-size: min(var(--font-size-caption), calc(var(--font-size-caption) / var(--font-scale)));
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-regular);
+}
+
 @media (max-width: 899px), (any-pointer: coarse) {
   .option {
     min-block-size: var(--tap-min);
@@ -106,5 +175,13 @@
 @media (prefers-reduced-motion: reduce) {
   .option {
     transition: none;
+  }
+}
+
+/* The thumb's travel is the Move recipe: transform only, on the hover budget,
+ * and under reduced motion it is simply in place. */
+@media (prefers-reduced-motion: no-preference) {
+  .thumb {
+    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
   }
 }

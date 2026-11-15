@@ -32,6 +32,7 @@ import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import "./index";
+import { NOW_TICK_MS } from "./liveness";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
@@ -446,12 +447,12 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
-  // The pane's own `now` prop only advances on its 3s tick (Cadence itself
+  // The pane's own `now` prop only advances on its clock tick (Cadence itself
   // is pure/prop-driven - see widgets/cadence's own doc comment); advance
   // past one so the just-recorded frame is no longer "in the future"
   // relative to what's currently rendered.
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(NOW_TICK_MS);
   });
   await flushPendingTurnsProjectionForTests();
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);

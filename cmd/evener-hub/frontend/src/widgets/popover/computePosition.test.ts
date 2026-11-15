@@ -1,5 +1,12 @@
-import { expect, test } from "vitest";
-import { clampIntoViewport, computePopoverPosition, EDGE_MARGIN, resolveAxis, TRIGGER_GAP } from "./computePosition";
+import { describe, expect, test } from "vitest";
+import {
+  clampIntoViewport,
+  computePopoverPosition,
+  EDGE_MARGIN,
+  resolveAxis,
+  TRIGGER_GAP,
+  transformOriginFor,
+} from "./computePosition";
 
 // clampIntoViewport is the shift primitive resolveAxis falls back to and the
 // whole of widgets/tooltip's horizontal collision handling - see
@@ -48,4 +55,16 @@ test("a caller-supplied viewport decides the clamp, not the global window", () =
   const position = computePopoverPosition(trigger, { width: 300, height: 200 }, { width: 2000, height: 1200 });
   expect(position.left).toBe(1500);
   expect(position.top).toBe(144);
+});
+
+describe("transformOriginFor", () => {
+  const trigger = { top: 100, left: 200 };
+
+  test("a popup below the trigger, left-aligned, grows from its top-left corner", () => {
+    expect(transformOriginFor(trigger, { top: 124, left: 200 })).toBe("left top");
+  });
+
+  test("a popup flipped above and right-aligned grows from its bottom-right corner", () => {
+    expect(transformOriginFor(trigger, { top: 40, left: 150 })).toBe("right bottom");
+  });
 });

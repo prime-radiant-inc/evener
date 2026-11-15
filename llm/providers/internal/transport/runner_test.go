@@ -37,6 +37,7 @@ func drain(ctx context.Context, t *testing.T, r *StreamRunner) []llm.StreamEvent
 }
 
 func TestRun_PersistsResponseFromBodyObservation(t *testing.T) {
+	t.Parallel()
 	const responseBody = "data: finish\n\n"
 	sink := &responseAssociationSink{}
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
@@ -97,6 +98,7 @@ func TestRun_PersistsResponseFromBodyObservation(t *testing.T) {
 // without the adapter marking Finished and the context carries an error, the
 // runner emits WrapContextError(provider, ctxErr) — not the IncompleteMsg path.
 func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
+	t.Parallel()
 	// Deadline already in the past so ctx.Err() == context.DeadlineExceeded.
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
 	defer cancel()
@@ -145,6 +147,7 @@ func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
 // unfinished and the context has no error, the runner emits
 // NewStreamError(provider, IncompleteMsg, parseErr).
 func TestRun_EpilogueStreamErrorOnIncomplete(t *testing.T) {
+	t.Parallel()
 	finished := false
 	r := &StreamRunner{
 		Provider: "google",
@@ -182,6 +185,7 @@ func TestRun_EpilogueStreamErrorOnIncomplete(t *testing.T) {
 // TestRun_NoErrorWhenFinished asserts the runner emits no terminal error event
 // when the adapter marked Finished, even with a cancelled context.
 func TestRun_NoErrorWhenFinished(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // ctx.Err() == context.Canceled
 
@@ -211,6 +215,7 @@ func TestRun_NoErrorWhenFinished(t *testing.T) {
 // confirm Stream.Close() completes without deadlocking after drain: CloseSend
 // was called by drain so <-s.done returns immediately.
 func TestRun_NeverCallsCancel(t *testing.T) {
+	t.Parallel()
 	var closeCalls int
 	stream := llm.NewChanStream(func() { closeCalls++ })
 
@@ -244,6 +249,7 @@ func TestRun_NeverCallsCancel(t *testing.T) {
 // returns. Without the hook the responses adapter had to reimplement the whole
 // epilogue, and the copy drifted from this one.
 func TestRun_TerminalErrorHookReplacesTheIncompleteWrap(t *testing.T) {
+	t.Parallel()
 	sentinel := errors.New("adapter's own terminal classification")
 	finished := false
 	var sawParseErr error
@@ -281,6 +287,7 @@ func TestRun_TerminalErrorHookReplacesTheIncompleteWrap(t *testing.T) {
 // turn a caller cancellation or an in-band provider failure into something
 // else.
 func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
+	t.Parallel()
 	inband := errors.New("provider reported a rate limit in-band")
 	for _, tc := range []struct {
 		name    string
@@ -347,6 +354,7 @@ func TestRun_TerminalErrorHookIsNotConsultedOnCancelOrFatal(t *testing.T) {
 // states: the Finish event reaches the stream exactly once, the runner counts
 // the stream as complete (no terminal error) and the parse is canceled.
 func TestFinish_PublishesFinishEventOnceAndStopsParse(t *testing.T) {
+	t.Parallel()
 	for _, withAttempt := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no attempt", true: "active attempt"}[withAttempt], func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())

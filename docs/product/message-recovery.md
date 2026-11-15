@@ -20,6 +20,9 @@ Controls follow that ownership, not the preview text or connection status.
   only the local copy and leaves the daemon message queued. A refused queue
   cancellation stays visible as a dismissible control-failure row carrying the
   daemon's reason.
+- Stop, queue cancellation and Clear retain **Retry** when canceled locally or
+  delivery-uncertain. A definitive rejection replaces Retry with **Dismiss**;
+  these controls have no composition to edit.
 - A delivery-uncertain message is otherwise one local message like any other:
   **Edit message** and **Remove from queue** reach it, and its row carries
   "Delivery uncertain" as a subtitle. That row is the browser's own
@@ -39,8 +42,11 @@ Controls follow that ownership, not the preview text or connection status.
   lets later messages move: it ends the wire, retiring the row's remaining
   durable siblings in the same write, though an attempt already in flight may
   still land and appear in the conversation.
-- Promotion and input-empty drain commands offer Remove only. Editing a
-  content-bearing drain restores its composer input, not the daemon queue preview.
+- Local promotion and input-empty drain commands offer **Remove from queue**
+  instead of Edit. Canceled or delivery-uncertain commands also keep **Retry**.
+  Removing a local promotion leaves its original daemon queue entry intact.
+  Editing a content-bearing drain restores its composer input, not the daemon
+  queue preview.
 - Unattempted rows appear once as the transcript's pending row in the
   live-edge trailing region, never twice. In-flight and remote rows remain. A
   move back to the local queue after an explicit refusal is not announced as
@@ -48,6 +54,16 @@ Controls follow that ownership, not the preview text or connection status.
 - An independently edited recovery keeps its own row after the attempt it was
   edited from delivers. Mentions travel through the pending row, so editing
   preserves literal `/name` references instead of turning them into selections.
+
+The shared pending-message projection owns row membership and ordering. The
+browser's pending stack adds the controls for the message's current owner.
+A queue source and its promotion command share a row through their queue-entry
+lineage, even though they have different mutation IDs. The row keeps the source's
+rendering identity when the receipt settles its local copy, so the bubble stays
+mounted until the recorded message replaces it. A message consumed on another
+client follows the same rule; identical text alone never joins distinct identities.
+The consuming command owns the row's actions. A retained source recovery or
+blocked outbox copy cannot make an executing promotion or drain editable.
 
 A **Retry** of a canceled or delivery-uncertain row mints a fresh row at the
 queue's tail and settles the predecessor terminal. The predecessor keeps its
@@ -57,7 +73,7 @@ authoritative feed names; repeated requeues bound retention to that one
 evidence row beside the live successor, and the wire's settlement or removal
 retires it with the rest.
 
-QueueStrip offers that **Retry** only when the press could act:
+The pending row offers that **Retry** only when the press could act:
 `retryBlockedForTarget` (`cmd/evener-hub/frontend/src/stores/threads.ts`)
 reads the row's own target — the snapshot flags a press consults, plus the
 target's storage-blocked fence — so a fenced target keeps Retry disabled
@@ -196,13 +212,14 @@ its source IDs. Inserting an image reconciles mentions against the resulting
 text: a label the insertion splits loses its mention and canonical selection,
 while a label before or after the insertion keeps its shifted offset.
 
-An identity-changing resume carries the edited draft to the resumed ref before
-the replacement screen opens: its text, image bytes, skill and command
-selections, recovery source IDs, and any pending submission's capture token and
-settlement markers move together, and recovery resend receipts move with their
-sources. An already-open resumed draft adopts the transferred record
-immediately. The retired ref keeps no draft or recovery ownership. A resumed
-destination that already holds work is left untouched.
+An identity-changing resume never carries the composer draft or its recovery
+ownership to the resumed ref. Its text, image bytes, skill and command
+selections, editing recovery source IDs, `unconfirmed` composition, capture
+token, and recovery resend acknowledgements all stay with the retired session.
+The replacement screen opens on the resumed ref with no retained draft and
+cannot restore the retired composition. Only the admitted message rows the
+resume is answering move; a resumed destination that already holds work is left
+untouched.
 
 Browser and native outboxes share one receipt-settlement rule from the AppWire
 package (`retainsAcceptedCopy`, `settlementRetiresRecovery`): a `pending` receipt

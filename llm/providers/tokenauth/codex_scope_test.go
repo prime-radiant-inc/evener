@@ -14,6 +14,7 @@ import (
 )
 
 func TestCodexAuthScopeReadsTheInstanceRecord(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	record := authopenai.AuthRecord{Version: 1, Provider: "openai-codex", Source: authopenai.AuthSourceOAuth, TokenType: "Bearer", AccessToken: "tok", RefreshToken: "refresh", AccountID: "acct_1", WorkspaceID: "ws_1", ObtainedAt: time.Now(), Expiry: time.Now().Add(time.Hour)}
 	if err := authopenai.SaveAuth(stateDir, "openai-codex", record); err != nil {
@@ -34,6 +35,7 @@ func TestCodexAuthScopeReadsTheInstanceRecord(t *testing.T) {
 // lookup has always read them back off the id token, and the scope the
 // continuation hashes must agree with it.
 func TestCodexAuthScopeFallsBackToTheIDTokenClaims(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	record := authopenai.AuthRecord{Version: 1, Provider: "openai-codex", Source: authopenai.AuthSourceOAuth, TokenType: "Bearer", AccessToken: "tok", RefreshToken: "refresh", ObtainedAt: time.Now(), Expiry: time.Now().Add(time.Hour),
 		IDToken: idTokenWithClaims(t, map[string]any{"chatgpt_account_id": "acct_claims", "workspace_id": "ws_claims"})}
@@ -67,6 +69,7 @@ func idTokenWithClaims(t *testing.T, claims map[string]any) string {
 // instance's), or fetches built on scopes silently fall back to real
 // filesystem/network resolution wherever a test or caller set a mock.
 func TestCodexScopedPreservesCredentialsSeam(t *testing.T) {
+	// Not parallel: swaps the package's DefaultCodex.Credentials seam.
 	called := false
 	seam := func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
 		called = true
@@ -89,6 +92,7 @@ func TestCodexScopedPreservesCredentialsSeam(t *testing.T) {
 // scope lookup reports that instead of reading a record relative to the working
 // directory.
 func TestCodexAuthScopeWithoutStateHomeIsAnError(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("HOME", "")
 	c := &Codex{}

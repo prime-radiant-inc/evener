@@ -59,7 +59,7 @@ import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { requestFindInSession } from "../find/findRequest";
-import { NOW_TICK_MS, useNowTick } from "../liveness";
+import { NOW_TICK_MS, useNowTick, WORK_TICK_MS } from "../liveness";
 import { navigationSummaryFor } from "../threadTitle";
 import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel } from "./ActivityPanel";
@@ -187,13 +187,17 @@ export function SessionChrome({
   // "panes never ask am I mobile?" rule the header channel follows. Read
   // from the same store fields Session.tsx reads for the header copy.
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(sessionRef) ?? EMPTY_FRAME_TIMES);
-  // Session.tsx already runs one useNowTick(NOW_TICK_MS) for the header's
-  // own Cadence/LivenessLine; this is a second, independent instance for
-  // the footer's work-time clock (widgets/cadence's own doc comment: "no
-  // timers, no Date.now()" is a rule for the pure prop-driven widgets
-  // downstream, not a ban on more than one clock owner upstream - see
-  // liveness.ts's own useNowTick doc comment: "transient by design").
+  // ConversationBody already runs one useNowTick(NOW_TICK_MS) for the
+  // transcript's own Cadence; this is a second, independent instance for the
+  // footer Cadence (widgets/cadence's own doc comment: "no timers, no
+  // Date.now()" is a rule for the pure prop-driven widgets downstream, not a
+  // ban on more than one clock owner upstream - see liveness.ts's own
+  // useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
+  // The work-time readouts count whole seconds, so they need their own finer
+  // clock - a 5s tick would skip four values at a time (liveness.ts's
+  // WORK_TICK_MS says why).
+  const workNow = useNowTick(WORK_TICK_MS);
   if (!model) return null;
 
   // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
@@ -341,7 +345,7 @@ export function SessionChrome({
       >
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
-            <StatusRow sessionRef={sessionRef} model={model} now={now} align={compactRung ? "end" : undefined} />
+            <StatusRow sessionRef={sessionRef} model={model} now={workNow} align={compactRung ? "end" : undefined} />
             {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
                 "drop goal inline in the composer"): the composer row is
                 status and menu alone, and the goal objective stays visible
@@ -363,7 +367,7 @@ export function SessionChrome({
                 now={now}
               />
             </span>
-            <StatusRow sessionRef={sessionRef} model={model} now={now} />
+            <StatusRow sessionRef={sessionRef} model={model} now={workNow} />
           </div>
         )}
         <div className={CLASS.right}>

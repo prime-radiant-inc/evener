@@ -122,6 +122,7 @@ func decodeRawArgsComplete(t *testing.T, body []byte) []byte {
 // TestRawArgs_NonStream_InvalidUTF8 asserts invalid-UTF-8 bytes in
 // tool-call arguments survive the responses non-streaming decode.
 func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	argsContent := `{"path":"` + "\xff" + `file.txt"}`
 	body := rawArgsJSON(t, argsContent)
 	got := decodeRawArgsComplete(t, body)
@@ -137,6 +138,7 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 // TestRawArgs_NonStream_NonCanonicalJSON asserts non-canonical valid JSON
 // survives the decode byte-identical.
 func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	argsContent := `{ "b" : 2 , "a" : 1 }`
 	body := rawArgsJSON(t, argsContent)
 	got := decodeRawArgsComplete(t, body)
@@ -149,6 +151,7 @@ func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_NonStream_FallbackOnNull asserts null arguments fall back
 // gracefully (degrade, never drop).
 func TestRawArgs_NonStream_FallbackOnNull(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"id":"resp_1","status":"completed","model":"gpt-5.5","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"f","arguments":null}]}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -291,6 +294,7 @@ func decodeRawArgsStream(t *testing.T, sseBody string) []byte {
 }
 
 func TestRawArgs_Stream_EmptyDonePreservesAccumulatedArguments(t *testing.T) {
+	t.Parallel()
 	want := []byte(`{"path":"draft.txt"}`)
 	got := decodeRawArgsStream(t, string(rawEmptyDoneSSE(string(want))))
 	if !bytes.Equal(got, want) {
@@ -299,6 +303,7 @@ func TestRawArgs_Stream_EmptyDonePreservesAccumulatedArguments(t *testing.T) {
 }
 
 func TestRawArgs_Recorded_EmptyDonePreservesAccumulatedArguments(t *testing.T) {
+	t.Parallel()
 	want := []byte(`{"path":"draft.txt"}`)
 	resp, err := ExtractRecordedResponse(rawEmptyDoneSSE(string(want)), "gpt-5.5")
 	if err != nil {
@@ -316,6 +321,7 @@ func TestRawArgs_Recorded_EmptyDonePreservesAccumulatedArguments(t *testing.T) {
 // TestRawArgs_Stream_InvalidUTF8 asserts invalid-UTF-8 bytes in streamed
 // tool-call arguments survive the decode byte-identical.
 func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
+	t.Parallel()
 	argsContent := `{"path":"` + "\xff" + `file.txt"}`
 	sseBody := rawArgsResponsesSSE(argsContent)
 	got := decodeRawArgsStream(t, sseBody)
@@ -329,6 +335,7 @@ func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
 }
 
 func TestRawArgs_Stream_ArgumentsDonePreservesRawBytes(t *testing.T) {
+	t.Parallel()
 	want := []byte(`{"path":"` + "\xfe" + `final.txt"}`)
 	srv, _ := server(t, http.StatusOK, string(rawArgumentsDoneSSE(string(want))))
 	res := liveRes(srv, nil)
@@ -361,6 +368,7 @@ func TestRawArgs_Stream_ArgumentsDonePreservesRawBytes(t *testing.T) {
 }
 
 func TestRawArgs_Stream_MultipleArgumentsDonePreserveCallRouting(t *testing.T) {
+	t.Parallel()
 	want := [][]byte{
 		[]byte(`{"first":"` + "\xff" + `final"}`),
 		[]byte(`{"second":"` + "\xfe" + `final"}`),
@@ -399,6 +407,7 @@ func TestRawArgs_Stream_MultipleArgumentsDonePreserveCallRouting(t *testing.T) {
 }
 
 func TestRawArgs_Stream_ArgumentsFieldDeltaPreservesRawBytes(t *testing.T) {
+	t.Parallel()
 	fragments := []string{`{"path":"`, "\xfffile.txt\"}"}
 	want := append([]byte(fragments[0]), []byte(fragments[1])...)
 	srv, _ := server(t, http.StatusOK, string(rawDeltaOnlySSE("arguments", fragments...)))
@@ -442,6 +451,7 @@ func TestRawArgs_Stream_ArgumentsFieldDeltaPreservesRawBytes(t *testing.T) {
 // TestRawArgs_Stream_NonCanonicalJSON asserts non-canonical valid JSON in
 // streamed tool-call arguments survives the decode byte-identical.
 func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
+	t.Parallel()
 	argsContent := `{ "b" : 2 , "a" : 1 }`
 	sseBody := rawArgsResponsesSSE(argsContent)
 	got := decodeRawArgsStream(t, sseBody)
@@ -454,6 +464,7 @@ func TestRawArgs_Stream_NonCanonicalJSON(t *testing.T) {
 // TestRawArgs_Stream_FallbackOnNull asserts null arguments in the stream
 // fall back gracefully (degrade, never drop).
 func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
+	t.Parallel()
 	sseBody := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n" +
 		"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"f\"}}\n\n" +
 		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"f\",\"arguments\":null}}\n\n" +
@@ -485,6 +496,7 @@ func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
 }
 
 func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	body := []byte(`{"id":"resp_1","status":"completed","model":"gpt-5.5","output":[` +
@@ -497,6 +509,7 @@ func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
 }
 
 func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	t.Parallel()
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
 	firstToken := string(jsonStringToken(first))

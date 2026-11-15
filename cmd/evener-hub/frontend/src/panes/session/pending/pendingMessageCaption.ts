@@ -32,6 +32,9 @@ export function pendingMessageCaption(
       if (row.controlFailure === "cancel") {
         return row.reason ? `Couldn't remove from queue: ${row.reason}` : "Couldn't remove from queue";
       }
+      if (row.controlFailure === "clear") {
+        return row.reason ? `Couldn't clear the session: ${row.reason}` : "Couldn't clear the session";
+      }
       if (row.interrupt === true) {
         return row.reason ? `Stop didn't reach the session: ${row.reason}` : "Stop didn't reach the session";
       }

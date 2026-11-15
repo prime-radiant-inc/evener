@@ -10,6 +10,7 @@ import (
 // A catalog refresh must not be required to select Astra, and every request
 // must use the Codex Lite route while retaining tools, instructions, and images.
 func TestCodexAstraRequests(t *testing.T) {
+	// Not parallel: newHarness swaps tokenauth.DefaultCodex.Credentials, StateDir, and DefaultGCPADC.FindCredentials, package-level seams.
 	h := newHarness(t)
 	for _, effort := range []string{"", "high"} {
 		t.Run("effort="+effort, func(t *testing.T) {
@@ -53,6 +54,7 @@ func TestCodexAstraRequests(t *testing.T) {
 }
 
 func TestCodexAstraReplaysReasoningAndToolResult(t *testing.T) {
+	// Not parallel: newHarness swaps tokenauth.DefaultCodex.Credentials, StateDir, and DefaultGCPADC.FindCredentials, package-level seams.
 	h := newHarness(t)
 	req := toolsRequest("max")
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{

@@ -9,6 +9,7 @@ import (
 )
 
 func TestIdleResponseTransportNilHeader(t *testing.T) {
+	t.Parallel()
 	encoding := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		encoding <- r.Header.Get("Accept-Encoding")

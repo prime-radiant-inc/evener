@@ -7,6 +7,7 @@ import (
 )
 
 func TestAPIAttemptRequestPrunedFieldsJSON(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(APIAttemptRequest{Method: "POST", Endpoint: "https://x/v1", PrunedFields: []string{"store"}})
 	if err != nil {
 		t.Fatal(err)

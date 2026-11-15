@@ -20,6 +20,7 @@ import (
 )
 
 func TestApplyAdapterTimeout_Request(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	timeout := &AdapterTimeout{
 		Connect:    1 * time.Second,
 		Request:    5 * time.Second,
@@ -40,6 +41,7 @@ func TestApplyAdapterTimeout_Request(t *testing.T) {
 }
 
 func TestApplyAdapterTimeout_Nil(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	ctx := context.Background()
 	ctx, cancel := ApplyAdapterTimeout(ctx, nil, false)
 	defer cancel()
@@ -51,6 +53,7 @@ func TestApplyAdapterTimeout_Nil(t *testing.T) {
 }
 
 func TestApplyAdapterTimeout_Streaming(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	timeout := &AdapterTimeout{
 		Request:    5 * time.Second,
 		StreamRead: 2 * time.Second,
@@ -107,6 +110,7 @@ func (e *timeoutClassificationProbeError) Timeout() bool {
 func (*timeoutClassificationProbeError) Temporary() bool { return false }
 
 func TestAPITimeoutSourceForTransportDoesNotInspectOpaqueErrors(t *testing.T) {
+	t.Parallel()
 	providerErr := &timeoutClassificationProbeError{}
 	if got := APITimeoutSourceForTransport(context.Background(), context.Background(), providerErr); got != APITimeoutNone {
 		t.Fatalf("timeout source = %q, want no inference for an opaque transport error", got)
@@ -117,6 +121,7 @@ func TestAPITimeoutSourceForTransportDoesNotInspectOpaqueErrors(t *testing.T) {
 }
 
 func TestAPITimeoutSourceForTransportRecognizesOwnedResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release
@@ -144,6 +149,7 @@ func TestAPITimeoutSourceForTransportRecognizesOwnedResponseHeaderTimeout(t *tes
 }
 
 func TestAPITimeoutSourceForSSEDoesNotInspectOpaqueErrors(t *testing.T) {
+	t.Parallel()
 	providerErr := &timeoutClassificationProbeError{}
 	if got := APITimeoutSourceForSSE(providerErr); got != APITimeoutNone {
 		t.Fatalf("timeout source = %q, want no inference for an opaque SSE error", got)
@@ -154,6 +160,7 @@ func TestAPITimeoutSourceForSSEDoesNotInspectOpaqueErrors(t *testing.T) {
 }
 
 func TestAPITimeoutClassificationRequiresCausalTimeoutEvidence(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name      string
 		evidence  error
@@ -252,6 +259,7 @@ func (rt *adapterTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Respon
 }
 
 func TestAdapterTransport_ConfiguresDefaultTransport(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	at := &AdapterTimeout{Connect: 5 * time.Second, Request: 7 * time.Second}
 	transport := AdapterTransport(at)
 	if transport == nil {
@@ -300,6 +308,7 @@ func TestAdapterTransport_ConfiguresDefaultTransport(t *testing.T) {
 }
 
 func TestAdapterTransport_NoTransportTimeoutReturnsNil(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	for _, tc := range []struct {
 		name string
 		at   *AdapterTimeout
@@ -322,6 +331,7 @@ func TestAdapterTransport_NoTransportTimeoutReturnsNil(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	originalTransport := http.DefaultTransport.(*http.Transport).Clone()
 	originalTransport.MaxIdleConnsPerHost = 23
 	originalTransport.ResponseHeaderTimeout = 3 * time.Second
@@ -360,6 +370,7 @@ func TestClientWithAdapterTimeout_ConfiguresStandardTransport(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -398,6 +409,7 @@ func TestClientWithAdapterTimeout_WrapsDialContextWithConnectDeadline(t *testing
 }
 
 func TestClientWithAdapterTimeout_PreservesDialAuthority(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -436,6 +448,7 @@ func TestClientWithAdapterTimeout_PreservesDialAuthority(t *testing.T) {
 // is installed over it — the 2026-07-13 streaming-response-header-timeout
 // ruling).
 func TestConfiguredAdapterTransport_DialArms(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	at := &AdapterTimeout{Connect: time.Second}
 
 	preexisting := http.DefaultTransport.(*http.Transport).Clone()
@@ -463,6 +476,7 @@ func TestConfiguredAdapterTransport_DialArms(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -517,6 +531,7 @@ func TestClientWithAdapterTimeout_WrapsDialTLSContextWithConnectDeadline(t *test
 }
 
 func TestClientWithAdapterTimeout_PropagatesDialTLSContextError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	dialErr := errors.New("caller DialTLSContext result")
 	called := make(chan struct{}, 1)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -544,6 +559,7 @@ func TestClientWithAdapterTimeout_PropagatesDialTLSContextError(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_ClonesDefaultTransport(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	original := &http.Client{Timeout: 30 * time.Second}
 	client := ClientWithAdapterTimeout(original, &AdapterTimeout{Request: 7 * time.Second})
 	if client == original {
@@ -567,6 +583,7 @@ func TestClientWithAdapterTimeout_ClonesDefaultTransport(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_PreservesCallerDeadline(t *testing.T) {
+	t.Parallel()
 	requestStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -610,6 +627,7 @@ func TestClientWithAdapterTimeout_PreservesCallerDeadline(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_PreservesOpaqueTransport(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	transport := &adapterTimeoutRoundTripper{}
 	original := &http.Client{Transport: transport}
 	client := ClientWithAdapterTimeout(original, &AdapterTimeout{
@@ -638,6 +656,7 @@ func TestClientWithAdapterTimeout_PreservesOpaqueTransport(t *testing.T) {
 }
 
 func TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	original := &http.Client{Timeout: 30 * time.Second}
 	for _, tc := range []struct {
 		name string
@@ -663,6 +682,7 @@ func TestClientWithAdapterTimeout_NoTransportTimeoutReturnsOriginal(t *testing.T
 // A transport error whose cause is a net.OpError wrapping the adapter's own
 // deadline is the transport timeout, not an opaque failure.
 func TestAPITimeoutSourceForTransportUnwrapsANetOpDeadline(t *testing.T) {
+	t.Parallel()
 	opErr := &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}
 	urlErr := &url.Error{Op: "Post", URL: "https://provider.test/api", Err: opErr}
 	got := APITimeoutSourceForTransport(context.Background(), context.Background(), urlErr)
@@ -674,6 +694,7 @@ func TestAPITimeoutSourceForTransportUnwrapsANetOpDeadline(t *testing.T) {
 // After the request was written, a read failure that is not a timeout passes
 // through untouched rather than being reported as a response-header timeout.
 func TestResponseHeaderTimeoutTransportPassesANonTimeoutErrorThrough(t *testing.T) {
+	t.Parallel()
 	sentinel := &scriptedPostWriteReadError{}
 	conn := newScriptedPostWriteConn(sentinel)
 	base := http.DefaultTransport.(*http.Transport).Clone()
@@ -738,6 +759,7 @@ func (*scriptedPostWriteReadError) Error() string { return "scripted post-write 
 // CloseIdleConnections reaches the wrapped transport: a kept-alive connection
 // sitting idle in its pool is closed.
 func TestResponseHeaderTimeoutTransportCloseIdleConnections(t *testing.T) {
+	t.Parallel()
 	closed := make(chan struct{})
 	var closeOnce sync.Once
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -775,6 +797,7 @@ func TestResponseHeaderTimeoutTransportCloseIdleConnections(t *testing.T) {
 // A response-header timeout declares itself a timeout without the caller
 // unwrapping it.
 func TestDeclaredKindOfAResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
 	if got := DeclaredKind(newResponseHeaderTimeoutError("", "test timeout", nil)); got != KindTimeout {
 		t.Fatalf("DeclaredKind(responseHeaderTimeoutError) = %q, want %q", got, KindTimeout)
 	}

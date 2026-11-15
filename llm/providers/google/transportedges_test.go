@@ -20,6 +20,7 @@ const streamingRequiredScheme = "google-test-streaming-required"
 // A transport whose auth scheme requires streaming completion must serve
 // Complete from the SSE stream and still return the accumulated response.
 func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, streamingRequiredScheme, providertest.StreamingRequiredAuth{})
 	srv, _ := protoServer(t, 200, generateSSE)
 	res := protoLive(srv)
@@ -37,6 +38,7 @@ func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
 // Complete, Stream, and CountTokens before any HTTP traffic, as a
 // configuration error stamped with the instance.
 func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "named"}
@@ -67,6 +69,7 @@ func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) 
 // A models endpoint that already carries a query must append pageSize with &
 // rather than a second question mark.
 func TestListModelsEndpointWithExistingQuery(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, 200, `{"models":[]}`)
 	res := protoLive(srv)
 	res.Transport.ModelsEndpoint = "/models?key=x"
@@ -79,6 +82,7 @@ func TestListModelsEndpointWithExistingQuery(t *testing.T) {
 }
 
 func TestCountTokensUnsupportedEndpoint(t *testing.T) {
+	t.Parallel()
 	res := protoRes(nil)
 	res.Transport.CountTokensEndpoint = registry.EndpointUnsupported
 	_, err := (&Protocol{}).CountTokens(context.Background(), protoReq(""), res)
@@ -90,6 +94,7 @@ func TestCountTokensUnsupportedEndpoint(t *testing.T) {
 // A 404 whose body does not name a publisher model is not the regional-model
 // shape, so the remedy must not rewrite it: it stays the provider's own 404.
 func TestRegionalVertex404WithoutPublisherPhraseStaysProviderError(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, http.StatusNotFound, `{"error":{"code":404,"message":"Requested entity was not found."}}`)
 	res := vertexAuthorityRes(t, srv, "us-central1")
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
@@ -107,6 +112,7 @@ func TestRegionalVertex404WithoutPublisherPhraseStaysProviderError(t *testing.T)
 // constant must leave the finalizer rebuilding an empty generationConfig that
 // still receives the output budget.
 func TestTransportGenerationConfigConstantTypes(t *testing.T) {
+	t.Parallel()
 	t.Run("non-object fails", func(t *testing.T) {
 		srv, _ := protoServer(t, 200, generateJSON)
 		res := protoLive(srv)
@@ -142,6 +148,7 @@ func TestTransportGenerationConfigConstantTypes(t *testing.T) {
 // scheme and host: a base URL with neither must fail listing, and a page that
 // is not JSON must fail too.
 func TestVertexListingURLAndDecodeErrors(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, 200, `{"models":[]}`)
 	vertexRes := func() registry.Resolved {
 		res := protoLive(srv)
@@ -169,6 +176,7 @@ func TestVertexListingURLAndDecodeErrors(t *testing.T) {
 // class the gRPC status names, and keeps the provider's own 400 for any status
 // outside the remapped set.
 func TestClassifyGeminiStatusRemapArms(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		grpc string
 		want int
@@ -194,6 +202,7 @@ func TestClassifyGeminiStatusRemapArms(t *testing.T) {
 }
 
 func TestTokenCountIntValueShapes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   any
 		want int
@@ -214,6 +223,7 @@ func TestTokenCountIntValueShapes(t *testing.T) {
 // thought-signature lookups, its skip of non-object parts, and the
 // groundingMetadata web-search projection (with non-string queries filtered).
 func TestFromGeminiResponseDecoderArms(t *testing.T) {
+	t.Parallel()
 	fcRaw := func(partExtra string) map[string]any {
 		part := map[string]any{"functionCall": map[string]any{"name": "t", "args": map[string]any{}}}
 		if partExtra != "" {

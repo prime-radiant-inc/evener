@@ -39,6 +39,7 @@ func imagePartsFromItems(t *testing.T, items []any) []string {
 // normalized, and inlined as a data URI, with the media type inferred from the
 // path extension when the part claims none.
 func TestToResponsesInput_LocalPathImageBecomesDataURI(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "photo.png")
 	var encoded bytes.Buffer
@@ -78,6 +79,7 @@ func TestToResponsesInput_LocalPathImageBecomesDataURI(t *testing.T) {
 // TestToResponsesInput_LocalPathImageReadFailure surfaces the missing-file
 // error rather than sending a path the provider cannot resolve.
 func TestToResponsesInput_LocalPathImageReadFailure(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing.png")
 	_, _, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentImage, Image: &llm.ImageData{URL: missing}},
@@ -90,6 +92,7 @@ func TestToResponsesInput_LocalPathImageReadFailure(t *testing.T) {
 // TestToResponsesInput_LocalPathImageDecodeFailure rejects a local file whose
 // bytes are not a raster, whatever its extension claims.
 func TestToResponsesInput_LocalPathImageDecodeFailure(t *testing.T) {
+	t.Parallel()
 	junkPath := filepath.Join(t.TempDir(), "fake.png")
 	if err := os.WriteFile(junkPath, []byte("definitely not a raster"), 0o600); err != nil {
 		t.Fatal(err)
@@ -107,6 +110,7 @@ func TestToResponsesInput_LocalPathImageDecodeFailure(t *testing.T) {
 // NaN, which encoding/json refuses), the wrapper falls back to the quoted
 // fmt form rather than dropping the error semantics.
 func TestToResponsesInput_ToolResultErrorContentFallbackSerialize(t *testing.T) {
+	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 			ToolCallID: "call_1",
@@ -133,6 +137,7 @@ func TestToResponsesInput_ToolResultErrorContentFallbackSerialize(t *testing.T) 
 // arm of the tool-result content switch: any non-string value reaches the wire
 // as its JSON encoding.
 func TestToResponsesInput_ToolResultNonStringContentMarshals(t *testing.T) {
+	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 			ToolCallID: "call_2",

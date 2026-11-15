@@ -1,5 +1,5 @@
 import { DetailsPanelBody } from "../../panes/session/chrome/DetailsPanel";
-import { NOW_TICK_MS, useNowTick } from "../../panes/session/liveness";
+import { useNowTick, WORK_TICK_MS } from "../../panes/session/liveness";
 import { useThreadModel } from "../../stores/useThreadModel";
 import { Skeleton } from "../../widgets";
 import { useLocalSessionBranch } from "../gitLocation";
@@ -7,7 +7,7 @@ import type { ActivityScope } from "../statusbar/statusScope";
 
 export function AboutTab({ scope }: { scope: ActivityScope }) {
   const model = useThreadModel(scope.leaf.ref);
-  const now = useNowTick(NOW_TICK_MS);
+  const now = useNowTick(WORK_TICK_MS);
   const resolvedBranch = useLocalSessionBranch(scope.leaf.ref, model);
   if (!model) return <Skeleton lines={2} />;
   return <DetailsPanelBody model={model} now={now} resolvedBranch={resolvedBranch} />;

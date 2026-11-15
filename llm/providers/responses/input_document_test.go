@@ -29,6 +29,7 @@ func inputFilesFromItems(t *testing.T, items []any) []map[string]any {
 // a URL-only document: the URL rides the API's file_url field, a sibling of
 // file_data, never file_data itself (#5491).
 func TestToResponsesInput_DocumentURLUsesFileURL(t *testing.T) {
+	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{
 			URL:      "https://example.com/report.pdf",
@@ -57,6 +58,7 @@ func TestToResponsesInput_DocumentURLUsesFileURL(t *testing.T) {
 // TestToResponsesInput_DocumentBytesStillUseFileData keeps the bytes arm on
 // file_data: inline content is what that field accepts.
 func TestToResponsesInput_DocumentBytesStillUseFileData(t *testing.T) {
+	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.7 stub")}},
 	}}}, "")
@@ -82,6 +84,7 @@ func TestToResponsesInput_DocumentBytesStillUseFileData(t *testing.T) {
 // file_id on this wire), so the provider rejects the whole request. The part
 // is dropped instead.
 func TestToResponsesInput_DocumentFilenameOnlyIsDropped(t *testing.T) {
+	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf"}},
 	}}}, "")

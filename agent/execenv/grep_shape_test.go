@@ -23,6 +23,7 @@ func writeGrepShapeTree(t *testing.T) string {
 	root := t.TempDir()
 	files := map[string]string{
 		"a.go":         "package a\nfoo one\nbar\n",
+		".dotshape":    "foo hidden\n",
 		"sub/b.go":     "foo two\nfoo three\n",
 		"sub/none.txt": "nothing here\n",
 		"ctx.txt":      "before2\nbefore1\nfoo ctx\nafter1\nafter2\n",
@@ -72,6 +73,7 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 
 	cases := []struct {
 		name, path, mode, pattern string
+		glob                      string
 		context, maxResults       int
 		want                      []string
 	}{
@@ -121,13 +123,19 @@ func TestGrepEmitsOneShapeWithOrWithoutRipgrep(t *testing.T) {
 		{name: "output exactly at the cap has no note", path: "ctx/apart", pattern: "hit", context: 1, maxResults: 5, want: []string{
 			"1:hit 1", "2-x", "--", "4-z", "5:hit 2",
 		}},
+		// #6201's adopted -g override: a glob naming a dotfile surfaces it in
+		// both arms — the same file, the same row — while the default cases
+		// above keep excluding it.
+		{name: "a glob filter surfaces a dotfile it names", glob: ".dotshape", mode: "content", want: []string{
+			".dotshape:1:foo hidden",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pattern := cmp.Or(tc.pattern, "foo")
 			maxResults := cmp.Or(tc.maxResults, 100)
 			for _, arm := range arms {
-				got, err := arm.env.Grep(context.Background(), pattern, tc.path, "", false, maxResults, tc.mode, tc.context)
+				got, err := arm.env.Grep(context.Background(), pattern, tc.path, tc.glob, false, maxResults, tc.mode, tc.context)
 				if err != nil {
 					t.Fatalf("%s: Grep: %v", arm.name, err)
 				}

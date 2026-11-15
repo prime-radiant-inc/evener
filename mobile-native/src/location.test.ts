@@ -63,6 +63,87 @@ describe("last mobile location", () => {
 		});
 		expect(restoredStack(saved).routes.at(-1)).toEqual({ name: "Reader", params });
 	});
+	it("restores a covered conversation at its resumed identity after restart", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const route = routeToSave({
+			index: 2,
+			routes: [
+				{ name: "Sessions" },
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "local:old", title: "Session", pendingIdentity: "local:new" },
+				},
+				{ name: "SessionInfoSheet", params: { hubId: "studio", ref: "local:old" } },
+			],
+		});
+		if (!route) throw new Error("no saved route");
+		repository.save(locationForRoute(route, "studio"));
+		expect(restoredStack(new LocationRepository(disk).read(["studio"])).routes.at(-1)).toEqual({
+			name: "Conversation",
+			params: { hubId: "studio", ref: "local:new", title: "Session" },
+		});
+	});
+	it("restores a conversation's pending identity when Activity covers it at restart", () => {
+		const disk = storage();
+		const state = {
+			index: 2,
+			routes: [
+				{ name: "Sessions" },
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "local:old", title: "Session", pendingIdentity: "local:new" },
+				},
+				{ name: "Activity", params: { hubId: "studio", ref: "local:old", title: "Session", kind: "jobs" } },
+			],
+		};
+		const route = routeToSave(state);
+		if (!route) throw new Error("no saved route");
+		new LocationRepository(disk).save(locationForRoute(route, "studio"));
+		expect(restoredStack(new LocationRepository(disk).read(["studio"])).routes.at(-1)).toEqual({
+			name: "Conversation",
+			params: { hubId: "studio", ref: "local:new", title: "Session" },
+		});
+	});
+	it("restores the resumed message target without changing the Reader's original document", () => {
+		const disk = storage();
+		const repository = new LocationRepository(disk);
+		const reference = {
+			path: "docs/plan.md",
+			cwd: "/work/old",
+			readTarget: "/work/old/docs/plan.md",
+			provenance: "relative" as const,
+		};
+		repository.save(
+			locationForRoute(
+				{
+					name: "Reader",
+					params: {
+						hubId: "studio",
+						sessionRef: "local:old",
+						messageSessionRef: "local:new",
+						sessionTitle: "Session",
+						path: reference.path,
+						reference,
+					},
+				},
+				"studio",
+			),
+		);
+		const saved = new LocationRepository(disk).read(["studio"]);
+		expect(restoredStack(saved).routes.at(-1)).toEqual({
+			name: "Reader",
+			params: {
+				hubId: "studio",
+				sessionRef: "local:old",
+				messageSessionRef: "local:new",
+				sessionTitle: "Session",
+				path: reference.path,
+				reference,
+			},
+		});
+		expect(restoredStack(saved).routes.at(-2)?.params?.ref).toBe("local:new");
+	});
 	it("restores a saved shortcuts location, which is no longer a place, to that hub's Board", () => {
 		const disk = storage();
 		const editor = { actionId: "composer.focus", chord: "Meta+Shift+" };

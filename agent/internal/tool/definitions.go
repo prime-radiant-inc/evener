@@ -661,14 +661,14 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search. Files larger than the read cap are left out of directory searches; name one directly as the path to search it.",
+		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles and gitignored paths are excluded from the search by default; a `glob_filter` that names such a FILE overrides that exclusion for it (matching ripgrep's -g), while hidden or gitignored directories stay pruned either way. Files larger than the read cap are left out of directory searches; name one directly as the path to search it.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"pattern":          map[string]any{"type": "string", "description": "Regex pattern to match in file contents."},
 				"path":             map[string]any{"type": "string", "description": "File or directory to search; blank searches from the working root."},
-				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter for searched files, e.g. *.go; dotfiles and gitignored paths are always excluded."},
+				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter for searched files, e.g. *.go. Naming a dotfile or gitignored file here surfaces it (ripgrep -g override); without a filter those are excluded."},
 				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
 				"max_results": map[string]any{
 					"type":        "integer",

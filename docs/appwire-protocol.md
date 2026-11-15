@@ -1087,6 +1087,7 @@ Underlying Go kind: `string` (no struct fields).
 | `logicalOwnerSessionId` | string | yes |  |
 | `rootSessionId` | string |  |  |
 | `childSessionId` | string |  |  |
+| `childRef` | string | yes |  |
 | `transcriptRef` | string |  |  |
 | `parentDelegateId` | string | yes |  |
 | `type` | string |  |  |

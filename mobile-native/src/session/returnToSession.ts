@@ -23,6 +23,27 @@ export function popsToSession(state: StackState, ref: string): number | null {
 	return null;
 }
 
+/** A covered session keeps its route ref until it becomes topmost, even when
+ * its pending identity and the document's original ref differ from it. */
+export function owningSessionRef(
+	state: StackState,
+	owner: { hubId: string; documentRef: string; openedMessageRef: string; messageRef: string },
+): string {
+	for (let index = state.index - 1; index >= 0; index -= 1) {
+		const route = state.routes[index];
+		if (!route || !SESSION_ROUTES.has(route.name)) continue;
+		const params = route.params as { hubId?: unknown; ref?: unknown; pendingIdentity?: unknown } | undefined;
+		if (params?.hubId !== owner.hubId || typeof params.ref !== "string") continue;
+		if (
+			params.ref === owner.openedMessageRef ||
+			params.pendingIdentity === owner.messageRef ||
+			params.ref === owner.documentRef
+		)
+			return params.ref;
+	}
+	return owner.messageRef;
+}
+
 export function returnToSession(
 	navigation: SessionNavigation,
 	session: { hubId: string; ref: string; title: string },

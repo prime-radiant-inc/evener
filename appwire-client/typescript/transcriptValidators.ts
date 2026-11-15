@@ -448,6 +448,7 @@ function validUsage(value: unknown): boolean {
 
 function validStableDelegate(value: unknown): boolean {
   const stringFields = [
+    "childRef",
     "logicalOwnerSessionId",
     "parentDelegateId",
     "outcome",

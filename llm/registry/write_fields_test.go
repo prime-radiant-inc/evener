@@ -13,6 +13,7 @@ import (
 // Model; the written bytes decode through the schema structs without the
 // parser's vocabulary checks, which the placeholder values would fail.
 func TestMarshalConfigWritesEveryProviderAndModelField(t *testing.T) {
+	t.Parallel()
 	var provider Provider
 	fillEveryField(reflect.ValueOf(&provider).Elem())
 	var model, glob Model

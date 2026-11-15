@@ -923,6 +923,75 @@ describe("current transcript checkpoints", () => {
       },
     ],
     [
+      "delegate childRef null",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.delegates = [
+          {
+            runGeneration: 1,
+            delegateId: "dlg_schema",
+            ownerSessionId: "root",
+            rootSessionId: "root",
+            childSessionId: "child",
+            childRef: null,
+            transcriptRef: "local:child",
+            type: "delegate",
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+          },
+        ] as never;
+      },
+    ],
+    [
+      "delegate childRef number",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.delegates = [
+          {
+            runGeneration: 1,
+            delegateId: "dlg_schema",
+            ownerSessionId: "root",
+            rootSessionId: "root",
+            childSessionId: "child",
+            childRef: 7,
+            transcriptRef: "local:child",
+            type: "delegate",
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+          },
+        ] as never;
+      },
+    ],
+    [
+      "delegate childRef object",
+      (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
+        state.fields.delegates = [
+          {
+            runGeneration: 1,
+            delegateId: "dlg_schema",
+            ownerSessionId: "root",
+            rootSessionId: "root",
+            childSessionId: "child",
+            childRef: { ref: "local:child" },
+            transcriptRef: "local:child",
+            type: "delegate",
+            lifecycle: "ended",
+            phase: "ended",
+            status: "completed",
+            resumable: true,
+            needsAttention: false,
+            projectionRevision: 1,
+          },
+        ] as never;
+      },
+    ],
+    [
       "deferred turn error extra key",
       (state: NonNullable<ReturnType<typeof currentTranscriptState>>) => {
         state.history.deferredPages = [
@@ -1246,6 +1315,7 @@ describe("current transcript checkpoints", () => {
       logicalOwnerSessionId: "mid",
       rootSessionId: "root",
       childSessionId: "child",
+      childRef: "local:child",
       transcriptRef: "local:child",
       parentDelegateId: "dlg_parent",
       type: "delegate",

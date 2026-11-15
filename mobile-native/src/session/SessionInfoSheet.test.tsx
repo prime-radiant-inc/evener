@@ -125,6 +125,7 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 	const calls: string[] = [];
 	const host: SessionInfoHost = {
 		session,
+		messageRef: () => REF,
 		controls: controls as unknown as SessionControls,
 		host: (id) => ({ label: id === "local" ? "Work hub" : id, online: true }),
 		modelLabel: "Claude Sonnet 5 · High",
@@ -448,6 +449,18 @@ describe("what the sheet shows (spec 8.6)", () => {
 		act(() => mounted.pop()?.unmount());
 		provide(conversation());
 		expect(markers(sheet(), "group")).not.toContain("notes");
+	});
+
+	it("opens Notes after a covered resume with the document owner and resumed message target", () => {
+		provide(conversation({ capabilities: { ...NONE, sharedNotes: true } }), { messageRef: () => "local:resumed" });
+		const routes: { name: string; params: object }[] = [];
+		navigation.navigate.mockImplementation((name, params) => void routes.push({ name, params }));
+		const tree = sheet();
+		press(tree, "Notes & links, None");
+		expect(routes.at(-1)).toEqual({
+			name: "NotesSheet",
+			params: { hubId: HUB, ref: REF, messageSessionRef: "local:resumed" },
+		});
 	});
 
 	it("never speaks of runtimes, refreshing or reconnecting, even when the controls leave a notice", () => {

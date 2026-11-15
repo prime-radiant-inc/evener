@@ -44,14 +44,14 @@ const CSS_EASE: Record<string, Transition["ease"]> = {
   "ease-in-out": "easeInOut",
 };
 
-function parseEase(raw: string): Transition["ease"] {
+function parseEase(raw: string, fallback: Transition["ease"]): Transition["ease"] {
   const named = CSS_EASE[raw];
   if (named) return named;
   const bezier = /^cubic-bezier\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)$/.exec(raw);
   if (bezier) {
     return [Number(bezier[1]), Number(bezier[2]), Number(bezier[3]), Number(bezier[4])];
   }
-  return "easeOut";
+  return fallback;
 }
 
 // One parsed Transition per distinct token pair. Callers treat the result as
@@ -59,15 +59,35 @@ function parseEase(raw: string): Transition["ease"] {
 // tokens, so a token change re-reads (motion.test.tsx pins both halves).
 const transitionCache = new Map<string, Transition>();
 
-export function spatialTransition(): Transition {
+// The fallbacks are the values tokens.css ships, for a document without the
+// stylesheet.
+function tokenTransition(
+  durationToken: string,
+  easingToken: string,
+  fallbackSeconds: number,
+  fallbackEase: Transition["ease"],
+): Transition {
   const style = getComputedStyle(document.documentElement);
-  const rawDuration = style.getPropertyValue("--motion-duration-spatial").trim();
-  const rawEase = style.getPropertyValue("--motion-easing-standard").trim();
-  const key = `${rawDuration}|${rawEase}`;
+  const rawDuration = style.getPropertyValue(durationToken).trim();
+  const rawEase = style.getPropertyValue(easingToken).trim();
+  const key = `${durationToken}|${rawDuration}|${rawEase}`;
   const cached = transitionCache.get(key);
   if (cached) return cached;
   const ms = rawDuration.endsWith("ms") ? Number.parseFloat(rawDuration) : Number.NaN;
-  const transition: Transition = { duration: Number.isFinite(ms) ? ms / 1000 : 0.24, ease: parseEase(rawEase) };
+  const transition: Transition = {
+    duration: Number.isFinite(ms) ? ms / 1000 : fallbackSeconds,
+    ease: parseEase(rawEase, fallbackEase),
+  };
   transitionCache.set(key, transition);
   return transition;
+}
+
+export function spatialTransition(): Transition {
+  return tokenTransition("--motion-duration-spatial", "--motion-easing-standard", 0.24, "easeOut");
+}
+
+// The Slide recipe's exit: an edge-attached surface leaving on the spatial
+// exit duration and the exit easing (docs/web-ui/motion.md, recipe 4).
+export function spatialExitTransition(): Transition {
+  return tokenTransition("--motion-duration-spatial-exit", "--motion-easing-exit", 0.18, "easeIn");
 }

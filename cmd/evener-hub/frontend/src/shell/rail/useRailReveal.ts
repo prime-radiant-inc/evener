@@ -1,6 +1,7 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { isSettledGone, projectNodeExpansionKey } from "@evener/appwire-client/state/navigation";
 import { type RefObject, useCallback, useEffect, useRef } from "react";
+import { useReducedMotion } from "../../motion";
 import {
   type ArchivedList,
   archivedListKey,
@@ -51,6 +52,9 @@ export function useRailReveal({
   groupingMode,
   bodyRef,
 }: RailRevealInputs): void {
+  // The reveal is a scroll the reader asked for across a short distance, so it
+  // may glide; under reduced motion it lands at once (docs/web-ui/motion.md).
+  const scrollBehavior: ScrollBehavior = useReducedMotion() ? "instant" : "smooth";
   const revealLookupInFlight = useRef<RevealRequestGuard | null>(null);
   const revealResourceRequests = useRef(new Map<string, RevealRequestGuard>());
   const revealCompletedTarget = useRef<string | null>(null);
@@ -129,7 +133,7 @@ export function useRailReveal({
       (element) => element.dataset.sessionRef === revealTarget,
     );
     if (row && revealCompletedTarget.current !== revealTarget) {
-      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      row.scrollIntoView({ block: "center", behavior: scrollBehavior });
       consumeReveal();
       return;
     }
@@ -205,7 +209,7 @@ export function useRailReveal({
         (element) => element.dataset.sessionRef === carrierRef,
       );
       if (carrierRow && revealCompletedTarget.current !== revealTarget) {
-        carrierRow.scrollIntoView({ block: "center", behavior: "smooth" });
+        carrierRow.scrollIntoView({ block: "center", behavior: scrollBehavior });
         consumeReveal();
         return;
       }
@@ -304,5 +308,6 @@ export function useRailReveal({
     projectPlacement,
     archivedLists,
     bodyRef,
+    scrollBehavior,
   ]);
 }

@@ -869,7 +869,14 @@ func (w *Writer) commitBatchLocked(batch []Record, placed turnPlacement) {
 		w.tail.recordedLength += rec.Length
 		w.failures.Observe(rec.Turn)
 		if w.tail.onRecorded != nil {
-			w.tail.onRecorded(*rec)
+			if w.tail.holdRecorded {
+				// A captured commit boundary holds this entry's notification:
+				// the line is a record, but the transaction that wrote it may
+				// still take it back out, so no consumer may act on it yet.
+				w.tail.heldRecords = append(w.tail.heldRecords, *rec)
+			} else {
+				w.tail.onRecorded(*rec)
+			}
 		}
 	}
 }

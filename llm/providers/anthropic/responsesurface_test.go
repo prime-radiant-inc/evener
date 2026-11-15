@@ -17,6 +17,7 @@ func anthRaw(t *testing.T, rawJSON string) map[string]any {
 }
 
 func TestFromAnthropicResponseWebSearchContentBlocks(t *testing.T) {
+	t.Parallel()
 	r := fromAnthropicResponse(anthRaw(t, `{"content":[
 		{"type":"server_tool_use","id":"srvu_1","name":"web_search","input":{"query":"tokyo weather"}},
 		{"type":"web_search_tool_result","content":[{"title":"t","url":"https://e/"}]}
@@ -39,6 +40,7 @@ func TestFromAnthropicResponseWebSearchContentBlocks(t *testing.T) {
 }
 
 func TestFromAnthropicResponseSkipsNonObjectContent(t *testing.T) {
+	t.Parallel()
 	r := fromAnthropicResponse(anthRaw(t, `{"content":["nope",{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`), "m", nil)
 	if len(r.Message.Content) != 1 || r.Message.Content[0].Text != "hi" {
 		t.Fatalf("content = %#v, want only the decodable text part", r.Message.Content)
@@ -48,6 +50,7 @@ func TestFromAnthropicResponseSkipsNonObjectContent(t *testing.T) {
 // A tool_use block with a stop reason no more specific than stop must fall back
 // to the tool-calls finish; a genuine max_tokens stop must not be masked.
 func TestFromAnthropicResponseToolUseFinishFallback(t *testing.T) {
+	t.Parallel()
 	body := func(stop string) map[string]any {
 		return anthRaw(t, `{"content":[{"type":"tool_use","id":"t1","name":"shell","input":{}}],"stop_reason":"`+stop+`"}`)
 	}
@@ -60,6 +63,7 @@ func TestFromAnthropicResponseToolUseFinishFallback(t *testing.T) {
 }
 
 func TestFromAnthropicResponseStopDetails(t *testing.T) {
+	t.Parallel()
 	if r := fromAnthropicResponse(anthRaw(t, `{"stop_reason":"end_turn","stop_details":{"type":"stop","detail":"x"}}`), "m", nil); len(r.Warnings) != 0 {
 		t.Fatalf("stop_details that describe no refusal must add no warning: %+v", r.Warnings)
 	}
@@ -70,6 +74,7 @@ func TestFromAnthropicResponseStopDetails(t *testing.T) {
 }
 
 func TestParseUsageCacheCreationArms(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string

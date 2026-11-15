@@ -75,8 +75,9 @@ function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) =
  * Slide-over panel anchored to the right edge, the left edge, or the
  * bottom edge - otherwise the exact Dialog contract (see ../dialog),
  * sharing its OverlayPanel: scrim, Escape/scrim-click to close, trapped
- * and restored focus, close button. Only the panel's own geometry and
- * slide-in animation differ (sheet.module.css).
+ * and restored focus, close button. Only the panel's own geometry and its
+ * motion differ: it slides in from its edge and back out to it
+ * (sheet.module.css, the Slide recipe).
  *
  * When `expandable` is set, the Sheet additionally renders a drag handle
  * above the header and manages a "peek" | "full" geometry state, resetting
@@ -178,6 +179,7 @@ export function Sheet({
         footer={footer}
         panelClassName={composedPanelClassName}
         bodyClassName={bodyClassName}
+        motion="slide"
       >
         {children}
       </OverlayPanel>
@@ -198,6 +200,7 @@ export function Sheet({
       bodyClassName={bodyClassName ? `${EXPANDABLE_BODY_CLASS} ${bodyClassName}` : EXPANDABLE_BODY_CLASS}
       panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
       style={heightStyle}
+      motion="slide"
     >
       <div data-geometry={geometry}>{children}</div>
     </OverlayPanel>

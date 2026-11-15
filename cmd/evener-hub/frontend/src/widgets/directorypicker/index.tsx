@@ -209,6 +209,7 @@ export function DirectoryPicker({
       title="Choose directory"
       panelClassName={CLASS.panel}
       bodyClassName={CLASS.body}
+      motion="none"
       footer={
         <div className={CLASS.footer}>
           <div className={CLASS.destination}>

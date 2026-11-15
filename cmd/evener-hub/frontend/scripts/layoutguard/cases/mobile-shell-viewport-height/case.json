@@ -11,6 +11,7 @@
     "styles/global.css",
     "styles/tokens.css",
     "shell/AppShell.module.css",
+    "styles/motion.module.css",
     "shell/mobile/StackHost.module.css",
     "widgets/panescaffold/panescaffold.module.css"
   ],

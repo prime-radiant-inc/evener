@@ -7,6 +7,7 @@
     "widgets/promptcard/promptcard.module.css",
     "widgets/textarea/textarea.module.css",
     "widgets/button/button.module.css",
+    "styles/motion.module.css",
     "widgets/tooltip/tooltip.module.css",
     "panes/session/chrome/modelswitch.module.css",
     "styles/surface.module.css",

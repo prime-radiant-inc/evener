@@ -1,4 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { StackActions, StackRouter } from "@react-navigation/routers";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { DocumentMemory } from "../reader/documentMemory";
@@ -2047,6 +2048,61 @@ it("opens the complete literal reference left by a real Reader after a memory re
 		await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 		harness.readerMemory = null;
 	}
+});
+
+it("opens a remembered document under its resumed message session", async () => {
+	const id = hubId();
+	const disk = {
+		getItemSync: (key: string) => harness.kv.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			harness.kv.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			harness.kv.delete(key);
+		},
+	};
+	const reference = {
+		path: "docs/settle.md",
+		cwd: "/work/owner",
+		readTarget: "/work/owner/docs/settle.md",
+		provenance: "relative" as const,
+	};
+	new DocumentMemory(disk, id).left(
+		{ sessionRef: "local:owner", path: reference.path },
+		{
+			title: "Settle",
+			sessionTitle: "Owner",
+			messageSessionRef: "local:resumed",
+			blocks: ["first"],
+			position: { blockIndex: 0, blockHash: "first", offset: 0, progress: 0.5 },
+			reference,
+		},
+	);
+	harness.readerMemory = new DocumentMemory(disk, id);
+	connect(id, hub(fleet).client, "ready");
+	const router = StackRouter({ initialRouteName: "Sessions" });
+	const options = { routeNames: ["Sessions", "Conversation", "Reader"], routeParamList: {}, routeGetIdList: {} };
+	let state = router.getInitialState(options);
+	const board = await mount({
+		...navigation(),
+		push: (name: string, params: object) => {
+			const next = router.getStateForAction(state, StackActions.push(name, params), options);
+			if (!next) throw new Error("stack rejected document route");
+			state = router.getRehydratedState(next, options);
+		},
+	} as never);
+	act(() =>
+		board.root
+			.findByType(ContinueReadingRow)
+			.find((node) => typeof node.props.onPress === "function")
+			.props.onPress(),
+	);
+	expect(state.routes[1]).toMatchObject({ name: "Conversation", params: { ref: "local:resumed" } });
+	expect(state.routes[2]).toMatchObject({
+		name: "Reader",
+		params: { sessionRef: "local:owner", messageSessionRef: "local:resumed", reference },
+	});
+	act(() => board.unmount());
 });
 
 it("hides an old unbound Board shortcut without deleting its records or drafts", async () => {

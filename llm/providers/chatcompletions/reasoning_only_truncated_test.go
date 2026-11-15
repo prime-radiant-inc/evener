@@ -106,6 +106,7 @@ const truncatedReasoningOnlyGLM = `{
 // truncation is still legible as finish_reason "length", so a caller can tell
 // "the model was cut off" from "we dropped the reply".
 func TestTruncatedReasoningOnlyResponse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string

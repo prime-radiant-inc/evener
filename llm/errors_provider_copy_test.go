@@ -37,6 +37,7 @@ func (a *sharedErrAdapter) Stream(context.Context, Request) (Stream, error) {
 // exactly this against a scripted adapter, and restamping in place raced:
 // one Complete read the provider while the other wrote it.
 func TestRewriteErrorProviderIsSafeForConcurrentDispatch(t *testing.T) {
+	t.Parallel()
 	shared := ErrorFromHTTPStatus("scripted", 429, "slow down", nil, nil)
 	c := NewClient()
 	c.Register(&sharedErrAdapter{name: "one", err: shared})
@@ -73,6 +74,7 @@ func TestRewriteErrorProviderIsSafeForConcurrentDispatch(t *testing.T) {
 // else about the error survives — concrete type for errors.As, the Unwrap
 // chain for errors.Is, kind, retryability, hint, and retry-after.
 func TestRewriteErrorProviderCopiesInsteadOfMutating(t *testing.T) {
+	t.Parallel()
 	after := 3 * time.Second
 	orig := ErrorFromHTTPStatus("openai", 429, "rate limited", map[string]any{
 		"error": map[string]any{"code": "rate_limit_exceeded"},
@@ -130,6 +132,7 @@ func TestRewriteErrorProviderCopiesInsteadOfMutating(t *testing.T) {
 
 // The Unwrap chain survives the copy, so errors.Is still reaches the cause.
 func TestRewriteErrorProviderKeepsTheUnwrapChain(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("underlying")
 	orig := NewStreamError("openai", "stream died", cause)
 	got := RewriteErrorProvider(orig, "work-gw")
@@ -156,6 +159,7 @@ func TestRewriteErrorProviderKeepsTheUnwrapChain(t *testing.T) {
 // An error that never had a provider keeps having none: restamping would turn
 // "context canceled" into "<instance> error: context canceled".
 func TestRewriteErrorProviderLeavesBlankProviderAlone(t *testing.T) {
+	t.Parallel()
 	abort := NewAbortError("context canceled", context.Canceled)
 	//nolint:errorlint // identity is the assertion: a blank-provider error is returned untouched
 	if got := RewriteErrorProvider(abort, "work-gw"); got != abort {
@@ -178,6 +182,7 @@ func TestRewriteErrorProviderLeavesBlankProviderAlone(t *testing.T) {
 // Every error type this package attributes to a provider must be copyable,
 // or RewriteErrorProvider silently skips it and the attribution is lost.
 func TestEveryProviderAttributedErrorCopies(t *testing.T) {
+	t.Parallel()
 	after := time.Second
 	raw := map[string]any{"error": map[string]any{"code": "c"}}
 	cases := []error{}

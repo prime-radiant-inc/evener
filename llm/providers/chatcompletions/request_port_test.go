@@ -56,6 +56,7 @@ func assistantReasoningDetails(t *testing.T, req llm.Request) []map[string]any {
 
 // ported: openaicompat's TestDeveloperRole (developer role).
 func TestDeveloperRole(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{
 		Model: "m",
 		Messages: []llm.Message{
@@ -78,6 +79,7 @@ func TestDeveloperRole(t *testing.T) {
 
 // ported: openaicompat's TestRequireToolResultName (tool-result name).
 func TestRequireToolResultName(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: toolExchangeMessages()}
 	body := build(t, req, resolved(func(c *registry.Caps) { c.ToolResultName = new(true) }))
 	msgs := body["messages"].([]map[string]any)
@@ -107,6 +109,7 @@ func TestRequireToolResultName(t *testing.T) {
 
 // ported: openaicompat's TestRequireAssistantAfterToolResult (assistant-after-tool).
 func TestRequireAssistantAfterToolResult(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: toolExchangeMessages()}
 	body := build(t, req, resolved(func(c *registry.Caps) { c.AssistantAfterToolResult = new(true) }))
 	msgs := body["messages"].([]map[string]any)
@@ -133,6 +136,7 @@ func TestRequireAssistantAfterToolResult(t *testing.T) {
 
 // ported: openaicompat's TestThinkingAsText (thinking-as-text).
 func TestThinkingAsText(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "q"}}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -159,6 +163,7 @@ func TestThinkingAsText(t *testing.T) {
 // old test also checked: only the LAST user/assistant turn gets marked, and
 // every earlier turn is untouched.
 func TestAnthropicCacheControl(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{
 		Model: "m",
 		Messages: []llm.Message{
@@ -203,6 +208,7 @@ func TestAnthropicCacheControl(t *testing.T) {
 // is now unconditional at the builder (the row's Fields["stream_options"]
 // gates it later, in the prune).
 func TestStoreToolStreamAndStreamOptions(t *testing.T) {
+	t.Parallel()
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "get_weather"}}
 
@@ -237,6 +243,7 @@ func TestStoreToolStreamAndStreamOptions(t *testing.T) {
 // spelling), minus its DefaultMaxTokens sub-cases (that subject moved to
 // ShapeRequest's MaxOutputTokens fill).
 func TestMaxTokensFieldAndDefault(t *testing.T) {
+	t.Parallel()
 	req := userReq("hi")
 	mt := 4096
 	req.MaxTokens = &mt
@@ -253,6 +260,7 @@ func TestMaxTokensFieldAndDefault(t *testing.T) {
 // (encrypted-details replay): text composes with encrypted details, text
 // item first.
 func TestReplay_MixedTextAndEncryptedReasoningDetails(t *testing.T) {
+	t.Parallel()
 	encrypted := `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`
 	req := llm.Request{
 		Model: "m",
@@ -284,6 +292,7 @@ func TestReplay_MixedTextAndEncryptedReasoningDetails(t *testing.T) {
 // (encrypted-details replay): an encrypted-only turn replays into
 // reasoning_details even when nothing set useReasoningDetails.
 func TestReplay_EncryptedOnlyWithoutReasoningFlag(t *testing.T) {
+	t.Parallel()
 	encrypted := `[{"type":"reasoning.encrypted","id":"rc_1","data":"OPAQUE"}]`
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		llm.User("q"),
@@ -304,6 +313,7 @@ func TestReplay_EncryptedOnlyWithoutReasoningFlag(t *testing.T) {
 // item array) must not replay into reasoning_details, but plain thinking
 // text still replays normally.
 func TestReplay_ForeignEncryptedContentSkipped(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		llm.User("q"),
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -333,6 +343,7 @@ func TestReplay_ForeignEncryptedContentSkipped(t *testing.T) {
 // item (one item carrying text+signature+format), never as a second,
 // separate item beside it.
 func TestToChatMessages_MergesTextIntoSignatureItem(t *testing.T) {
+	t.Parallel()
 	msgs := []llm.Message{{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{{

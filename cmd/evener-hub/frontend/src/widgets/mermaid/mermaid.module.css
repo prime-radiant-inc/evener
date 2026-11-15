@@ -31,8 +31,10 @@
 /* --- Task 7: the fullscreen viewer --------------------------------------- */
 /* The panel chassis comes from dialog.module.css's shared .panel (composed in
  * DiagramViewer via requireClass); this class adds only the near-viewport
- * geometry, the same shape Dialog's own large variant uses. */
+ * geometry, the same shape Dialog's own large variant uses, and floats in and
+ * out like every dialog. */
 .viewerPanel {
+  composes: float from "../../styles/motion.module.css";
   border-radius: var(--radius-pane);
   width: calc(100vw - var(--space-8));
   height: calc(100vh - var(--space-8));

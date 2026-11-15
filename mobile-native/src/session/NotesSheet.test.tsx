@@ -33,6 +33,18 @@ const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn(), navig
 const appState = vi.hoisted(() => ({ listeners: [] as ((state: string) => void)[] }));
 const browser = vi.hoisted(() => ({ openBrowserAsync: vi.fn(async () => ({ type: "dismiss" })) }));
 const clipboard = vi.hoisted(() => ({ setStringAsync: vi.fn(async () => true) }));
+const identity = vi.hoisted(() => ({
+	listeners: [] as ((change: { hubId: string; from: string; to: string }) => void)[],
+}));
+
+vi.mock("../nativeMutationRuntime", () => ({
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+		identity.listeners.push(listener);
+		return () => {
+			identity.listeners = identity.listeners.filter((entry) => entry !== listener);
+		};
+	},
+}));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -126,9 +138,9 @@ function provide(current: Session, { removeThrows }: { removeThrows?: string } =
 	return { notes, saved, requests };
 }
 
-function sheet(focusEditor?: boolean): ReactTestRenderer {
+function sheet(focusEditor?: boolean, messageSessionRef?: string): ReactTestRenderer {
 	const props = {
-		route: { key: "notes", name: "NotesSheet", params: { hubId: HUB, ref: REF, focusEditor } },
+		route: { key: "notes", name: "NotesSheet", params: { hubId: HUB, ref: REF, focusEditor, messageSessionRef } },
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "NotesSheet">;
 	const tree = render(<NotesSheet {...props} />);
@@ -157,6 +169,7 @@ const symbols = (tree: ReactTestRenderer) =>
 const actionSheet = vi.mocked(ActionSheetIOS.showActionSheetWithOptions);
 
 beforeEach(() => {
+	identity.listeners = [];
 	navigation.goBack.mockClear();
 	navigation.navigate.mockClear();
 	browser.openBrowserAsync.mockClear();
@@ -373,6 +386,32 @@ describe("links", () => {
 		});
 		expect(symbols(tree)).toEqual(["doc.text"]);
 		expect(browser.openBrowserAsync).not.toHaveBeenCalled();
+	});
+
+	it("opens a file link from a covered session for the resolved message target", () => {
+		const plan: SessionURL = { id: "u3", url: `file://${CWD}/docs/plan.md`, label: "The plan" };
+		provide(session({ sessionUrls: [plan] }));
+		const tree = sheet();
+		act(() => {
+			for (const listener of identity.listeners) listener({ hubId: HUB, from: REF, to: "ref-notes-2" });
+		});
+		act(() => pressable(tree, `The plan, file://${CWD}/docs/plan.md`)?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith(
+			"Reader",
+			expect.objectContaining({ sessionRef: REF, messageSessionRef: "ref-notes-2" }),
+		);
+	});
+	it("opens a file link on the resumed message target when Notes opens after the identity change", () => {
+		const plan: SessionURL = { id: "u3", url: `file://${CWD}/docs/plan.md`, label: "The plan" };
+		provide(session({ sessionUrls: [plan] }));
+		const routes: { name: string; params: object }[] = [];
+		navigation.navigate.mockImplementation((name, params) => void routes.push({ name, params }));
+		const tree = sheet(false, "ref-notes-2");
+		act(() => pressable(tree, `The plan, file://${CWD}/docs/plan.md`)?.props.onPress());
+		expect(routes.at(-1)).toMatchObject({
+			name: "Reader",
+			params: { sessionRef: REF, messageSessionRef: "ref-notes-2" },
+		});
 	});
 
 	it.each([

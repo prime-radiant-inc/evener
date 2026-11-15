@@ -137,12 +137,11 @@ test("live flipping does not disturb the already-committed text content", () => 
   expect(container.textContent).toBe("ab");
 });
 
-test("the caret is CSS-only motion: a blink animation on the live class, disabled (not just paused) under prefers-reduced-motion", () => {
+test("the live class takes its caret from the shared motion recipe and declares no motion of its own", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "streamingtext.module.css"), "utf8");
-  expect(css).toContain("::after");
-  expect(css).toContain("animation:");
-  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+  expect(css).toMatch(/\.live\s*\{[^}]*composes:\s*caret from "\.\.\/\.\.\/\.\.\/styles\/motion\.module\.css"/);
+  expect(css).not.toMatch(/@keyframes|\banimation\s*:/);
 });
 
 test("the caret rides the text ink, not a semantic accent - streaming is not an attention state", () => {

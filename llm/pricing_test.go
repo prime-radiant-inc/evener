@@ -7,6 +7,7 @@ import (
 )
 
 func TestPriceFromCost_NilCost(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	p, ok := PriceFromCost(nil)
 	if ok {
 		t.Fatal("PriceFromCost(nil) reported a price")
@@ -17,6 +18,7 @@ func TestPriceFromCost_NilCost(t *testing.T) {
 }
 
 func TestPriceFromCost_BaseRatesOnly(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	p, ok := PriceFromCost(&registry.Cost{Input: 3, Output: 15})
 	if !ok {
 		t.Fatal("PriceFromCost returned false for a row with base rates")
@@ -30,6 +32,7 @@ func TestPriceFromCost_BaseRatesOnly(t *testing.T) {
 }
 
 func TestPriceFromCost_CacheRates(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	p, ok := PriceFromCost(&registry.Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75})
 	if !ok {
 		t.Fatal("PriceFromCost returned false for a row with cache rates")
@@ -44,6 +47,7 @@ func TestPriceFromCost_CacheRates(t *testing.T) {
 }
 
 func TestPriceFromCost_PricelessRowStillPrices(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// An all-zero cost is a row that says its rates are zero, not a row with
 	// no cost at all: only a nil *registry.Cost means "no price".
 	p, ok := PriceFromCost(&registry.Cost{})
@@ -56,6 +60,7 @@ func TestPriceFromCost_PricelessRowStillPrices(t *testing.T) {
 }
 
 func TestEstimateCost_BlendsCacheReadAtItsOwnRate(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	price := Price{InputPerM: 5.0, OutputPerM: 25.0, CacheReadPerM: new(0.5)}
 	got := EstimateCost(1_000_000, 1_000_000, 1_000_000, price)
 	want := 5.0 + 0.5 + 25.0 // one million tokens of each tier
@@ -65,6 +70,7 @@ func TestEstimateCost_BlendsCacheReadAtItsOwnRate(t *testing.T) {
 }
 
 func TestEstimateCost_CacheReadFallsBackToInputRateWhenRowHasNoRate(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	price := Price{InputPerM: 5.0, OutputPerM: 25.0} // no CacheReadPerM
 	got := EstimateCost(0, 1_000_000, 0, price)
 	if !approxF(got, 5.0) {

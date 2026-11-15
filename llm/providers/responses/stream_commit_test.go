@@ -29,6 +29,7 @@ func providerEventsWithType(events []llm.StreamEvent, typ string) []llm.StreamEv
 // response.refusal.delta falls through the decoder as a passthrough and must
 // carry its content classification, because the caller renders it.
 func TestResponsesStream_RefusalDeltaIsContentBearing(t *testing.T) {
+	t.Parallel()
 	events, _ := responsesEvents(t,
 		`{"type":"response.created","response":{"id":"resp_commit","status":"in_progress"}}`,
 		`{"type":"response.refusal.delta","delta":"I cannot help with that."}`,
@@ -47,6 +48,7 @@ func TestResponsesStream_RefusalDeltaIsContentBearing(t *testing.T) {
 // TestResponsesStream_ControlEventsAreNotContentBearing covers the other half
 // of the boundary: a lifecycle-only stream must keep its retry recovery.
 func TestResponsesStream_ControlEventsAreNotContentBearing(t *testing.T) {
+	t.Parallel()
 	events, _ := responsesEvents(t,
 		`{"type":"response.created","response":{"id":"resp_ctrl","status":"in_progress"}}`,
 		`{"type":"response.in_progress","response":{"id":"resp_ctrl","status":"in_progress"}}`,
@@ -63,6 +65,7 @@ func TestResponsesStream_ControlEventsAreNotContentBearing(t *testing.T) {
 // TestResponsesStream_RefusalDoneIsContentBearing pins the .done sibling: a
 // gateway that sends the refusal in one frame still commits the attempt.
 func TestResponsesStream_RefusalDoneIsContentBearing(t *testing.T) {
+	t.Parallel()
 	events, _ := responsesEvents(t,
 		`{"type":"response.refusal.delta","delta":"I cannot help with that."}`,
 		`{"type":"response.refusal.done","refusal":"I cannot help with that."}`,
@@ -81,6 +84,7 @@ func TestResponsesStream_RefusalDoneIsContentBearing(t *testing.T) {
 // adapter's explicit mark on a tool-call fragment the accumulator cannot map:
 // replaying its arguments would duplicate them.
 func TestResponsesStream_UnmappableToolCallFragmentIsContentBearing(t *testing.T) {
+	t.Parallel()
 	events, _ := responsesEvents(t,
 		`{"type":"response.function_call_arguments.delta","delta":"{\"x\":"}`,
 		`{"type":"response.completed","response":{"id":"resp_frag","status":"completed","output":[]}}`,

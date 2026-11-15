@@ -10,6 +10,7 @@ import (
 )
 
 func TestContinuationSecretLoadOrCreateCreatesPrivateFile(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	stateDir := t.TempDir()
 
 	secret, err := LoadOrCreateContinuationSecret(stateDir)
@@ -41,6 +42,7 @@ func TestContinuationSecretLoadOrCreateCreatesPrivateFile(t *testing.T) {
 }
 
 func TestContinuationSecretLoadOrCreateReusesExistingSecret(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	stateDir := t.TempDir()
 
 	first, err := LoadOrCreateContinuationSecret(stateDir)
@@ -57,6 +59,7 @@ func TestContinuationSecretLoadOrCreateReusesExistingSecret(t *testing.T) {
 }
 
 func TestContinuationSecretRequiresStateDir(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	_, err := LoadOrCreateContinuationSecret("")
 	if !errors.Is(err, ErrContinuationSecretUnavailable) {
 		t.Fatalf("error = %v, want ErrContinuationSecretUnavailable", err)
@@ -64,6 +67,7 @@ func TestContinuationSecretRequiresStateDir(t *testing.T) {
 }
 
 func TestContinuationSecretRejectsWrongPermissions(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	stateDir := t.TempDir()
 	path := ContinuationSecretPath(stateDir)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -88,6 +92,7 @@ func writeContinuationSecretForMode(t testing.TB, path string, secret []byte, mo
 }
 
 func TestContinuationHandleHashFormatAndStability(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{7}, 32))
 
 	first, err := hasher.HashContinuationHandle("response_id", " resp_123 ")
@@ -107,6 +112,7 @@ func TestContinuationHandleHashFormatAndStability(t *testing.T) {
 }
 
 func TestContinuationScopeHashUsesSeparateSubkey(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{8}, 32))
 
 	handleHash, err := hasher.HashContinuationHandle("conversation_id", "shared-value")
@@ -126,6 +132,7 @@ func TestContinuationScopeHashUsesSeparateSubkey(t *testing.T) {
 }
 
 func TestContinuationHasher_StorageScopeFingerprintFormatStabilityAndSecret(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{8}, 32))
 	scope := continuationStorageScopeForTest()
 
@@ -163,6 +170,7 @@ func TestContinuationHasher_StorageScopeFingerprintFormatStabilityAndSecret(t *t
 }
 
 func TestContinuationHasher_StorageScopeFingerprintChangesForScopeFields(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{8}, 32))
 	base := continuationStorageScopeForTest()
 	wantDifferentFrom, err := hasher.HashContinuationStorageScope(base)
@@ -204,6 +212,7 @@ func TestContinuationHasher_StorageScopeFingerprintChangesForScopeFields(t *test
 }
 
 func TestContinuationHasher_StorageScopeFingerprintRequiresHasher(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	var hasher *ContinuationHasher
 	_, err := hasher.HashContinuationStorageScope(continuationStorageScopeForTest())
 	if !errors.Is(err, ErrContinuationSecretUnavailable) {
@@ -212,6 +221,7 @@ func TestContinuationHasher_StorageScopeFingerprintRequiresHasher(t *testing.T) 
 }
 
 func TestContinuationHashDoesNotLeakRawValue(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{9}, 32))
 	raw := "resp_sensitive_handle"
 
@@ -225,6 +235,7 @@ func TestContinuationHashDoesNotLeakRawValue(t *testing.T) {
 }
 
 func TestContinuationHashRejectsUnknownKind(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	hasher := NewContinuationHasher(bytes.Repeat([]byte{10}, 32))
 
 	if _, err := hasher.HashContinuationHandle("api_key", "secret"); !errors.Is(err, ErrContinuationSecretUnavailable) {
@@ -236,6 +247,7 @@ func TestContinuationHashRejectsUnknownKind(t *testing.T) {
 }
 
 func TestContinuationHasherForStateDirUnavailableWithoutState(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	_, err := ContinuationHasherForStateDir("")
 	if !errors.Is(err, ErrContinuationSecretUnavailable) {
 		t.Fatalf("error = %v, want ErrContinuationSecretUnavailable", err)
@@ -243,6 +255,7 @@ func TestContinuationHasherForStateDirUnavailableWithoutState(t *testing.T) {
 }
 
 func TestContinuationHasherForStateDirLoadsSecret(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	stateDir := t.TempDir()
 
 	hasher, err := ContinuationHasherForStateDir(stateDir)

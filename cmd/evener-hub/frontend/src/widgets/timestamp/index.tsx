@@ -8,7 +8,7 @@
 // (protocol/displayFormat.ts) are likewise en-style by construction.
 //
 // Pure render, no internal clock — mirrors Cadence and Loader: the caller
-// owns "now" (the session's shared 3s tick via useSessionNow, or a fixed
+// owns "now" (the session's shared tick via useSessionNow, or a fixed
 // value in tests), so a component with no timer cannot fake or drift liveness
 // between renders.
 import { requireClass } from "../internal/requireClass";

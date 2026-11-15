@@ -427,10 +427,12 @@ func (s *grepStream) eof() (stop bool) {
 	return false
 }
 
-// grepFileSelected reports whether grep searches the file named name, at
-// slash path rel, once dotfile and ignore rules have let it through: a file
-// skip names (when skip is not nil) or outside the glob filters is left out.
-// The error is a malformed glob filter's.
+// grepFileSelected reports the skip and glob-filter decision for the file
+// named name, at slash path rel: a file skip names (when skip is not nil) or
+// outside the glob filters is left out. Dotfile and ignore rules are the
+// CALLER's — both walk callers consult this first so a glob filter can
+// override those defaults (#6201). The error return is vestigial — a pattern
+// filepath.Match cannot parse reads as no-match, not an error.
 func grepFileSelected(name, rel string, globFilters []string, skip func(rel string) bool) (bool, error) {
 	if skip != nil && skip(rel) {
 		return false, nil
@@ -655,8 +657,10 @@ type grepTreeWalk struct {
 	// it is past the read cap, instead of leaving it out as an oversize file.
 	namedFile      bool
 	largeNamedFile func(rel string) error
-	// countOnly stops at the ignore decision: the caller wants only how many
-	// paths the default exclusions skipped, so no file is selected or read.
+	// countOnly stops after the selection and ignore decisions: the caller
+	// wants only how many paths the default exclusions skipped (selection is
+	// still decided, so the count honors the glob-filter override, #6201), so
+	// no file is read.
 	countOnly bool
 }
 
@@ -739,19 +743,29 @@ func (w grepTreeWalk) runCounts() (excludedByIgnore, oversized int, err error) {
 			}
 			return nil
 		}
-		// Skip hidden and gitignored files
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-		if ignores.matches(rel, false) {
-			excludedByIgnore++
-			return nil
-		}
-		if w.countOnly {
-			return nil
-		}
-		if selected, selErr := grepFileSelected(d.Name(), rel, w.globFilters, w.skip); !selected {
+		// An explicit glob filter overrides the hidden-file and gitignore
+		// defaults, matching ripgrep's -g: a dot-prefixed or gitignored file
+		// the filter names is searched rather than dropped (#6201). Directories
+		// keep their default pruning either way (ripgrep never descends a
+		// hidden or gitignored directory for a -g naming something inside it),
+		// and a masked path is never filter-whitelisted — the masked check
+		// above already returned. With no filter every file is selected, so
+		// the defaults below drop hidden and gitignored files as before.
+		selected, selErr := grepFileSelected(d.Name(), rel, w.globFilters, w.skip)
+		if selErr != nil {
 			return selErr
+		}
+		if !selected || len(w.globFilters) == 0 {
+			if strings.HasPrefix(d.Name(), ".") {
+				return nil
+			}
+			if ignores.matches(rel, false) {
+				excludedByIgnore++
+				return nil
+			}
+		}
+		if w.countOnly || !selected {
+			return nil
 		}
 		data, rerr := w.read(p)
 		if rerr != nil {

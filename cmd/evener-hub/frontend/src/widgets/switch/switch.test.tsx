@@ -220,12 +220,33 @@ test("keeps the native mobile button at the touch floor without enlarging the pa
       `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.control\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
     ),
   );
-  expect(css).toMatch(/\.control\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
+  expect(css).toMatch(
+    /\.control\s*\{[^}]*--switch-track-inline-size:\s*32px;[^}]*--switch-track-block-size:\s*18px;[^}]*width:\s*var\(--switch-track-inline-size\)[^}]*height:\s*var\(--switch-track-block-size\)/,
+  );
   expect(css).toMatch(
     new RegExp(
       `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\) \\{[\\s\\S]*?\\.control\\s*\\{[^}]*width:\\s*var\\(--tap-min\\)[^}]*min-width:\\s*var\\(--tap-min\\)[^}]*height:\\s*var\\(--tap-min\\)[^}]*min-height:\\s*var\\(--tap-min\\)`,
     ),
   );
   expect(css).toMatch(/\.control:focus-visible\s*\{/);
-  expect(css).toMatch(/\.track\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
+  expect(css).toMatch(
+    /\.track\s*\{[^}]*width:\s*var\(--switch-track-inline-size\)[^}]*height:\s*var\(--switch-track-block-size\)/,
+  );
+});
+
+// The thumb crossing is the Move recipe (docs/web-ui/motion.md): transform on
+// the hover budget, gated by reduced motion, across exactly the track's inner
+// width less the thumb, both derived from the track's own size.
+test("the thumb crosses the whole track on the Move recipe's tokens", () => {
+  const css = readModuleCss(import.meta.url, "switch.module.css");
+  const thumb = /\.thumb\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(thumb).toMatch(/width:\s*calc\(var\(--switch-track-block-size\) - 2 \* var\(--switch-track-inset\)\)/);
+  expect(thumb).toMatch(/height:\s*calc\(var\(--switch-track-block-size\) - 2 \* var\(--switch-track-inset\)\)/);
+  expect(css).toMatch(
+    /\.control\[aria-checked="true"\] \.thumb\s*\{[^}]*transform:\s*translateX\(calc\(var\(--switch-track-inline-size\) - var\(--switch-track-block-size\)\)\)/,
+  );
+  expect(css).toMatch(
+    /@media \(prefers-reduced-motion: no-preference\) \{\s*\.thumb\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
+  );
+  expect(css).not.toMatch(/translateX\([1-9]/);
 });

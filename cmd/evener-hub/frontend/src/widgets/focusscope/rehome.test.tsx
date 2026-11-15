@@ -69,6 +69,24 @@ test("rehomeFocus never falls back to a root that cannot hold focus", () => {
   expect(document.activeElement).toBe(document.body);
 });
 
+test("rehomeFocus treats focus left inside an inert layer as lost", () => {
+  render(
+    <>
+      <div inert>
+        <button type="button">leaving</button>
+      </div>
+      <div data-testid="root">
+        <button type="button">target</button>
+      </div>
+    </>,
+  );
+  // A layer that turns inert while it leaves keeps the focus it held until it
+  // unmounts (jsdom does not move it; a browser moves it to <body>).
+  act(() => screen.getByRole("button", { name: "leaving", hidden: true }).focus());
+  rehomeFocus(screen.getByTestId("root"));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "target" }));
+});
+
 test("rehomeFocus without a root is a no-op", () => {
   expect(() => rehomeFocus(null)).not.toThrow();
   expect(document.activeElement).toBe(document.body);
@@ -186,6 +204,31 @@ test("useFocusRehome hands focus back when the remembered control becomes native
 
   rerender(<DisableHarness state="disabled" />);
   expect((screen.getByRole("button", { name: "row" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "fallback" }));
+});
+
+/** A surface whose row can sit inside a layer that is leaving with motion:
+ * still in the document, but inert. */
+function InertHarness({ inert }: { inert: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusRehome(ref);
+  return (
+    <div ref={ref}>
+      <div inert={inert}>
+        <button type="button">row</button>
+      </div>
+      <button type="button">fallback</button>
+    </div>
+  );
+}
+
+test("useFocusRehome hands focus back when the remembered control turns inert", () => {
+  const { rerender } = render(<InertHarness inert={false} />);
+  const row = screen.getByRole("button", { name: "row" });
+  act(() => row.focus());
+
+  rerender(<InertHarness inert />);
+  expect(row.isConnected).toBe(true);
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "fallback" }));
 });
 

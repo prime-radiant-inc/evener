@@ -93,7 +93,7 @@
   border-radius: var(--radius-control);
   overflow: hidden;
   background: var(--surface-inset);
-  transition: border-color var(--motion-duration-overlay);
+  transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .imageTile:hover {
@@ -152,7 +152,7 @@
   right: var(--space-1);
   display: flex;
   opacity: 0;
-  transition: opacity var(--motion-duration-overlay);
+  transition: opacity var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .imageTile:hover .removeSlot {

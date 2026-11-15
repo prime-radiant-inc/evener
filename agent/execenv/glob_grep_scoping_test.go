@@ -131,6 +131,126 @@ func TestGrepNative_ExcludesDotDirsAndGitignoredByDefault(t *testing.T) {
 	}
 }
 
+// TestGrepNative_GlobFilterOverridesHiddenAndGitignoredFiles pins the adopted
+// ripgrep -g override semantics (#6201): an explicit glob filter selects the
+// dot-prefixed and gitignored FILES it names, so they are searched instead of
+// dropped by the defaults. The override never un-prunes a directory — hidden
+// and gitignored directories stay excluded even when the filter matches a
+// file inside them, exactly as ripgrep behaves — and with no filter the
+// defaults hold unchanged (pinned by the test above).
+func TestGrepNative_GlobFilterOverridesHiddenAndGitignoredFiles(t *testing.T) {
+	dir := writeScopingFixture(t)
+	// A hidden file at a visited level; every file that could match gets the
+	// needle so one pattern surfaces exactly what scoping lets through.
+	for _, rel := range []string{".hidden-probe", "build.log", "node_modules/pkg/index.js", "src/main.go"} {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.WriteFile(full, []byte("needle\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := NewLocalExecutionEnvironment(dir)
+
+	// The filter names the gitignored file: it is searched, and nothing else is.
+	result, err := env.grepNative(context.Background(), "needle", dir, "build.log", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("grepNative(build.log): %v", err)
+	}
+	if !strings.Contains(result, "build.log") {
+		t.Fatalf("expected the gitignored file named by the glob filter to be searched, got: %q", result)
+	}
+	if strings.Contains(result, "main.go") {
+		t.Fatalf("expected the glob filter to select only build.log, got: %q", result)
+	}
+
+	// The filter names the hidden file: it is searched.
+	result, err = env.grepNative(context.Background(), "needle", dir, ".hidden-probe", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("grepNative(.hidden-probe): %v", err)
+	}
+	if !strings.Contains(result, ".hidden-probe") {
+		t.Fatalf("expected the hidden file named by the glob filter to be searched, got: %q", result)
+	}
+
+	// A filter matching a basename inside a pruned directory resurrects
+	// nothing: node_modules is a gitignored directory, so its file stays
+	// excluded however the filter names it.
+	result, err = env.grepNative(context.Background(), "needle", dir, "index.js", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("grepNative(index.js): %v", err)
+	}
+	if strings.Contains(result, "node_modules") {
+		t.Fatalf("expected a gitignored directory to stay pruned despite a filter naming a file inside it, got: %q", result)
+	}
+}
+
+// TestSandboxedGrepNative_GlobFilterOverridesHiddenAndGitignoredFiles mirrors
+// TestGrepNative_GlobFilterOverridesHiddenAndGitignoredFiles for the sandboxed
+// path (sandboxFS.grepNative), which shares the walk but must be pinned
+// separately: it is the code path a real sandboxed session always uses.
+func TestSandboxedGrepNative_GlobFilterOverridesHiddenAndGitignoredFiles(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	writeScopingFixtureAt(t, worktree)
+	for _, rel := range []string{".hidden-probe", "build.log", "node_modules/pkg/index.js", "src/main.go"} {
+		full := filepath.Join(worktree, filepath.FromSlash(rel))
+		if err := os.WriteFile(full, []byte("needle\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := env.Grep(context.Background(), "needle", worktree, "build.log", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("Grep(build.log): %v", err)
+	}
+	if !strings.Contains(result, "build.log") {
+		t.Fatalf("expected the gitignored file named by the glob filter to be searched, got: %q", result)
+	}
+
+	result, err = env.Grep(context.Background(), "needle", worktree, ".hidden-probe", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("Grep(.hidden-probe): %v", err)
+	}
+	if !strings.Contains(result, ".hidden-probe") {
+		t.Fatalf("expected the hidden file named by the glob filter to be searched, got: %q", result)
+	}
+
+	result, err = env.Grep(context.Background(), "needle", worktree, "index.js", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("Grep(index.js): %v", err)
+	}
+	if strings.Contains(result, "node_modules") {
+		t.Fatalf("expected a gitignored directory to stay pruned despite a filter naming a file inside it, got: %q", result)
+	}
+}
+
+// TestSandboxedGrepNative_GlobFilterNeverSurfacesAMaskedPath pins the one
+// hard constraint of the override (#6201): a positive glob never surfaces a
+// masked permission-boundary path. The masked check runs before the filter is
+// consulted, so a file in a denylisted directory stays excluded no matter what
+// the filter names, while an unmasked file the same filter names is searched.
+func TestSandboxedGrepNative_GlobFilterNeverSurfacesAMaskedPath(t *testing.T) {
+	env, home, _ := sandboxedEnvWithDenylist(t, sandbox.ModeReadOnly, filepath.Join("~", "vault"))
+	if err := os.MkdirAll(filepath.Join(home, "vault"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "vault", "needle.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "needle.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := env.Grep(context.Background(), "needle", home, "needle.txt", false, 100, "files_with_matches")
+	if err != nil {
+		t.Fatalf("Grep(needle.txt): %v", err)
+	}
+	if strings.Contains(result, "vault") {
+		t.Fatalf("expected the masked path to stay excluded despite the glob filter naming a file inside it, got: %q", result)
+	}
+	if !strings.Contains(result, "needle.txt") {
+		t.Fatalf("expected the unmasked file the filter names to be searched, got: %q", result)
+	}
+}
+
 // TestSandboxedGlob_ExcludesDotDirsAndGitignoredByDefault mirrors
 // TestGlob_ExcludesDotDirsAndGitignoredByDefault but routes through
 // sandboxFS.glob (env.Sandbox set), which duplicates rather than shares the

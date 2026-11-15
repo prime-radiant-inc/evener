@@ -35,7 +35,8 @@ const CLASS = {
  */
 export function Tooltip({ label, children }: TooltipProps) {
   const {
-    visible,
+    mounted,
+    phase,
     wrapperRef,
     triggerProps,
     setBubbleRef,
@@ -70,7 +71,8 @@ export function Tooltip({ label, children }: TooltipProps) {
       {describeChild(children, active ? describedBy : undefined)}
       <FloatingBubblePortal
         as="span"
-        show={active && visible}
+        show={active && mounted}
+        phase={phase}
         id={bubbleID}
         className={CLASS.bubble}
         style={bubbleStyle}

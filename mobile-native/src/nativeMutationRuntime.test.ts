@@ -35,6 +35,7 @@ function openDatabase(): SqliteSync {
 afterEach(() => {
 	database?.close();
 	database = undefined;
+	expoSQLite.openDatabaseSync.mockReset();
 });
 
 function request(kind: Exclude<NativeMutationRequest["kind"], "promote">): NativeMutationRequest {
@@ -716,7 +717,7 @@ test("a fenced settle leaves the session alone when the caller refuses the resum
 // it, keeping its clientMutationId (the daemon's reconciliation key) and taking
 // the resumed instance fence, or it dispatches against an instance the daemon
 // no longer serves.
-test("a resume that changes identity retargets the parked row", async () => {
+test("a resume that changes identity retargets the parked row and publishes the change", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
 	const storage = runtime.storage;
 	const client = new FakeClient("ready");
@@ -732,6 +733,13 @@ test("a resume that changes identity retargets the parked row", async () => {
 	await registerAndStart(runtime, client);
 	await runtime.submit(request("send"));
 
+	const changes: Array<{ hubId: string; from: string; to: string }> = [];
+	const order: string[] = [];
+	runtime.subscribeStorage(() => order.push("storage"));
+	runtime.subscribeIdentities((change) => {
+		order.push("identity");
+		changes.push(change);
+	});
 	await runtime.settleTarget("hub-1", "ref-1", client, { mayResumeFenced: async () => true });
 	expect(await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 	const moved = await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-2"));
@@ -740,6 +748,9 @@ test("a resume that changes identity retargets the parked row", async () => {
 	// move too - a payload still naming ref-1 would be refused however the
 	// columns read.
 	expect(moved[0]?.payload).toMatchObject({ ref: "ref-2" });
+	expect(changes).toEqual([{ hubId: "hub-1", from: "ref-1", to: "ref-2" }]);
+	// Storage notification precedes identity publication.
+	expect(order.slice(0, 2)).toEqual(["storage", "identity"]);
 	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 	await runtime.stop();
 });
@@ -1913,6 +1924,64 @@ test("a promote names its queued entry and shows the queued text", async () => {
 		clientMutationId: "mutation-1",
 	});
 	expect(queued?.optimisticDisplay).toEqual({ method: "turn/promoteQueuedAsSteer", input: display });
+});
+
+async function resumeIdentity(runtime: NativeMutationRuntime, from: string, to: string) {
+	const client = new FakeClient("ready");
+	client.on("thread/read", (params) =>
+		readResponse(String(params.ref), String(params.ref) === from ? { resumeRequired: true } : {}),
+	);
+	client.on("thread/resume", () => readResponse(to));
+	client.on("turn/start", appliedReceipt);
+	runtime.registerTarget("hub-1", from, client);
+	await runtime.start();
+	await runtime.submit({ ...request("send"), targetRef: from });
+	await runtime.settleTarget("hub-1", from, client, { mayResumeFenced: async () => true });
+	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+}
+
+test("a mounted identity subscriber follows a resume after database acquisition recovers", async () => {
+	vi.resetModules();
+	const { getNativeMutationRuntime: acquire, subscribeNativeIdentities: subscribe } = await import(
+		"./nativeMutationRuntime"
+	);
+	let unavailable = true;
+	expoSQLite.openDatabaseSync.mockImplementation(() => {
+		if (unavailable) throw new Error("mutations database unavailable");
+		return openDatabase() as never;
+	});
+	const changes: Array<{ hubId: string; from: string; to: string }> = [];
+	const unsubscribe = subscribe((change) => changes.push(change));
+	unavailable = false;
+	const runtime = acquire();
+	await resumeIdentity(runtime, "ref-1", "ref-2");
+	expect(changes).toEqual([{ hubId: "hub-1", from: "ref-1", to: "ref-2" }]);
+	unsubscribe();
+	unsubscribe();
+	await resumeIdentity(runtime, "ref-2", "ref-3");
+	expect(changes).toEqual([{ hubId: "hub-1", from: "ref-1", to: "ref-2" }]);
+	await runtime.stop();
+});
+
+test("unsubscribing while database acquisition is unavailable removes the waiting listener", async () => {
+	vi.resetModules();
+	const { getNativeMutationRuntime: acquire, subscribeNativeIdentities: subscribe } = await import(
+		"./nativeMutationRuntime"
+	);
+	let unavailable = true;
+	expoSQLite.openDatabaseSync.mockImplementation(() => {
+		if (unavailable) throw new Error("mutations database unavailable");
+		return openDatabase() as never;
+	});
+	const changes: Array<{ hubId: string; from: string; to: string }> = [];
+	const unsubscribe = subscribe((change) => changes.push(change));
+	unsubscribe();
+	unsubscribe();
+	unavailable = false;
+	const runtime = acquire();
+	await resumeIdentity(runtime, "ref-1", "ref-2");
+	expect(changes).toEqual([]);
+	await runtime.stop();
 });
 
 test("the process getter reuses one runtime and database handle across provider lifetimes", async () => {

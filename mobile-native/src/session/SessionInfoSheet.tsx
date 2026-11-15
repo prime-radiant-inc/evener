@@ -41,6 +41,8 @@ export type SessionInfoAction = "aside" | "fork" | "compact" | "pin" | "archive"
 
 export interface SessionInfoHost {
 	session: MobileConversation;
+	/** Current message target, even while the owning route is covered. */
+	messageRef(): string;
 	/** Null while the hub is away: the sheet still shows what it knows. */
 	controls: SessionControls | null;
 	/** A host's name and whether it's connected (sessionHosts). */
@@ -300,7 +302,14 @@ function SessionInfoBody({
 						label="Notes & links"
 						value={notesSummary(session)}
 						chevron
-						onPress={() => navigation.navigate("NotesSheet", { hubId, ref: sessionRef })}
+						onPress={() => {
+							const messageRef = host.messageRef();
+							navigation.navigate("NotesSheet", {
+								hubId,
+								ref: sessionRef,
+								...(messageRef !== sessionRef ? { messageSessionRef: messageRef } : {}),
+							});
+						}}
 					/>
 				</Group>
 			) : null}

@@ -722,6 +722,9 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		logicalOwnerSessionId: "root",
 		rootSessionId: "root",
 		childSessionId: "local:child-dlg_reported",
+		// The current producer carries the child ref the read row's childRef
+		// keys on (#4258), so the frame names its row identity directly.
+		childRef: "local:child-dlg_reported",
 		transcriptRef: "local:child-dlg_reported",
 		type: "delegate",
 		lifecycle: "idle",
@@ -830,6 +833,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		const unknown = {
 			delegateId: "dlg_new",
 			childSessionId: "local:child-dlg_new",
+			childRef: "local:child-dlg_new",
 			transcriptRef: "local:child-dlg_new",
 		};
 		await act(async () => {
@@ -837,7 +841,7 @@ describe("a finished subagent's outcome (audit G13)", () => {
 		});
 		expect(jobsLists(client)).toHaveLength(reads + 1);
 		await act(async () => {
-			client.emitNotification(pushedFrame(frame({ ...unknown, projectionRevision: 5 })));
+			client.emitNotification(pushedFrame(frame(unknown)));
 		});
 		expect(jobsLists(client)).toHaveLength(reads + 1);
 	});

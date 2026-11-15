@@ -8,6 +8,7 @@ import (
 )
 
 func TestRoundTripFuncReturnsTheResponseAndClosesTheRequestBody(t *testing.T) {
+	t.Parallel()
 	body := io.NopCloser(strings.NewReader("payload"))
 	closed := false
 	request, err := http.NewRequest(http.MethodPost, "https://example.invalid", body)
@@ -36,6 +37,7 @@ func TestRoundTripFuncReturnsTheResponseAndClosesTheRequestBody(t *testing.T) {
 }
 
 func TestNoHTTPServerStartsAnAddress(t *testing.T) {
+	t.Parallel()
 	// The server's failure-on-request behavior is exercised by the provider
 	// tests that call it; here the helper must at least stand one up.
 	if srv := NoHTTPServer(t); srv.URL == "" {

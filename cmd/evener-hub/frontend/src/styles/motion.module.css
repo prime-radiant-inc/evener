@@ -1,0 +1,202 @@
+/* The shared motion recipes (docs/web-ui/motion.md). Each keyframe is defined
+ * here once; a stylesheet never declares its own fade or fade-scale. A
+ * consumer `composes:` one recipe class, one per composes line, and adds
+ * nothing but its own transform-origin. motion.contract.test.ts pins the
+ * recipes and each consumer's wiring.
+ *
+ * Enter and exit. A recipe class plays its entrance whenever its element is
+ * rendered. A layer that leaves with motion is kept mounted by the presence
+ * helper (widgets/internal/usePresence.ts), which writes
+ * data-motion="closing" on every recipe element of the layer while it leaves;
+ * the recipe's exit keyframes key off that attribute, hold their end state
+ * (fill forwards) until the helper removes the layer, and make the leaving
+ * element ignore the pointer so whatever it uncovers is usable at once.
+ * Writing data-motion="open" again during the exit restarts the entrance.
+ *
+ * Reduced motion. Every animation here is declared inside a
+ * prefers-reduced-motion: no-preference gate, so a consumer cannot forget the
+ * gate: under reduce the element simply appears and disappears, and the
+ * presence helper, finding no running animation, removes a closing layer in
+ * the same frame. Composition cannot be media-gated and CSS Modules scope
+ * keyframe names to the file that declares them, which is why the gate and
+ * the keyframes both live here, next to the rules that use them.
+ *
+ * Float's scale. The fade-scale reads --motion-float-from, falling back to
+ * --motion-scale-from. A layer that fades without the scale in some context
+ * (the Menu on a phone) sets --motion-float-from: 1 there; the recipe is
+ * otherwise untouched. */
+
+/* --- Float: a layer above the page, near what opened it ------------------ */
+@media (prefers-reduced-motion: no-preference) {
+  .float {
+    animation: motionFloatIn var(--motion-duration-overlay) var(--motion-easing-pop) backwards;
+  }
+
+  .float[data-motion="closing"] {
+    animation: motionFloatOut var(--motion-duration-exit) var(--motion-easing-exit) forwards;
+  }
+}
+
+.float[data-motion="closing"] {
+  pointer-events: none;
+}
+
+@keyframes motionFloatIn {
+  from {
+    opacity: 0;
+    transform: scale(var(--motion-float-from, var(--motion-scale-from)));
+  }
+}
+
+@keyframes motionFloatOut {
+  to {
+    opacity: 0;
+    transform: scale(var(--motion-float-from, var(--motion-scale-from)));
+  }
+}
+
+/* --- Fade: a small text-only layer, or a dialog's scrim ------------------ */
+@media (prefers-reduced-motion: no-preference) {
+  .fade {
+    animation: motionFadeIn var(--motion-duration-overlay) var(--motion-easing-standard) backwards;
+  }
+
+  .fade[data-motion="closing"] {
+    animation: motionFadeOut var(--motion-duration-exit) var(--motion-easing-exit) forwards;
+  }
+}
+
+.fade[data-motion="closing"] {
+  pointer-events: none;
+}
+
+@keyframes motionFadeIn {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes motionFadeOut {
+  to {
+    opacity: 0;
+  }
+}
+
+/* --- Slide: a surface attached to an edge -------------------------------
+ * The distance is the surface's own size, so it always starts fully off the
+ * edge it lives on. */
+@media (prefers-reduced-motion: no-preference) {
+  .slideLeft {
+    animation: motionSlideLeft var(--motion-duration-spatial) var(--motion-easing-standard) backwards;
+  }
+
+  .slideLeft[data-motion="closing"] {
+    animation: motionSlideLeftOut var(--motion-duration-spatial-exit) var(--motion-easing-exit) forwards;
+  }
+
+  .slideRight {
+    animation: motionSlideRight var(--motion-duration-spatial) var(--motion-easing-standard) backwards;
+  }
+
+  .slideRight[data-motion="closing"] {
+    animation: motionSlideRightOut var(--motion-duration-spatial-exit) var(--motion-easing-exit) forwards;
+  }
+
+  .slideBottom {
+    animation: motionSlideBottom var(--motion-duration-spatial) var(--motion-easing-standard) backwards;
+  }
+
+  .slideBottom[data-motion="closing"] {
+    animation: motionSlideBottomOut var(--motion-duration-spatial-exit) var(--motion-easing-exit) forwards;
+  }
+
+  /* A sheet's scrim fades with its sheet, on the sheet's durations. */
+  .scrimSlide {
+    animation: motionFadeIn var(--motion-duration-spatial) var(--motion-easing-standard) backwards;
+  }
+
+  .scrimSlide[data-motion="closing"] {
+    animation: motionFadeOut var(--motion-duration-spatial-exit) var(--motion-easing-exit) forwards;
+  }
+}
+
+.slideLeft[data-motion="closing"],
+.slideRight[data-motion="closing"],
+.slideBottom[data-motion="closing"],
+.scrimSlide[data-motion="closing"] {
+  pointer-events: none;
+}
+
+@keyframes motionSlideLeft {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes motionSlideLeftOut {
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes motionSlideRight {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes motionSlideRightOut {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes motionSlideBottom {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes motionSlideBottomOut {
+  to {
+    transform: translateY(100%);
+  }
+}
+
+/* --- Reveal: a disclosed body fading in ----------------------------------
+ * Opacity only, entrance only: closing a disclosure is instant, so the body
+ * never carries data-motion and has no exit. */
+@media (prefers-reduced-motion: no-preference) {
+  .bodyReveal {
+    animation: motionFadeIn var(--motion-duration-overlay) var(--motion-easing-standard) backwards;
+  }
+}
+
+/* --- Streaming caret: the one reserved "more text is coming" blink --------
+ * A bar at the end of text that is still streaming, in the ink currentColor
+ * (streaming is not an attention state). Under reduce the bar stays, still:
+ * only the blink sits inside the gate. .caret seats it as the host's own
+ * ::after; .caretLast seats it after the last block of a markdown root, for a
+ * host whose text lives in rendered children. The keyframes exist once. */
+.caret::after,
+.caretLast > div > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: var(--space-1);
+  background: currentColor;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .caret::after,
+  .caretLast > div > :last-child::after {
+    animation: streamingCaretBlink 1s step-end infinite;
+  }
+}
+
+@keyframes streamingCaretBlink {
+  50% {
+    opacity: 0;
+  }
+}

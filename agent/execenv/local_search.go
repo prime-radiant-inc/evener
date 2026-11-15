@@ -460,7 +460,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// ripgrep's ignore rules differ (it honors .ignore and global
 		// excludes, and needs a git repository for .gitignore), so a count
 		// from rg's listings would not read the same as the fallback's.
-		ignored, ierr := e.countNativeExcluded(ctx, dir)
+		ignored, ierr := e.countNativeExcluded(ctx, dir, globFilters)
 		if ierr != nil {
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return "", cancelErr
@@ -550,7 +550,12 @@ func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir
 // skip beneath dir, using the same walk and ignore engine as the native grep
 // arm so an empty rg-arm result carries the fallback's note and count exactly.
 // The walk stops at the ignore decision, so it never opens a file.
-func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir string) (int, error) {
+// The optional globFilters make the count honest under the -g override
+// (#6201): a dotfile or gitignored path the filter names is surfaced by both
+// arms, so it is no longer a path "the default rules skipped" and must not be
+// disclosed as one. With no filter the count is the pure default-exclusion
+// tally, as before.
+func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir string, globFilters []string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -571,12 +576,13 @@ func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir
 		rootPseudo: grepRootIsPseudo(dir),
 	}
 	walk := grepTreeWalk{
-		ctx:       ctx,
-		countOnly: true,
-		root:      dir,
-		ignoreFS:  fsys,
-		budget:    budget,
-		walk:      func(fn fs.WalkDirFunc) error { return grepWalk(fsys, ".", fn) },
+		ctx:         ctx,
+		countOnly:   true,
+		root:        dir,
+		globFilters: globFilters,
+		ignoreFS:    fsys,
+		budget:      budget,
+		walk:        func(fn fs.WalkDirFunc) error { return grepWalk(fsys, ".", fn) },
 	}
 	excluded, _, err := walk.runCounts()
 	return excluded, err
