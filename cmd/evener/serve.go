@@ -1173,13 +1173,9 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 // message, so accepted work still progresses when its wake was coalesced
 // because the channel was full.
 //
-// Both probes exist for the same reason: the wake that names the work is a
-// channel send, and everything about it -- the parked goroutine of a coalesced
-// kick, the whole channel -- dies with the process. A durable receipt the
-// client already holds must not depend on a signal that only lives as long as
-// one daemon. The queued-input probe covers an accepted message or steer whose
-// only wake never arrived; without it such work waits for the next attach,
-// which is a restart away.
+// Both probes cover work whose wake never landed: a durable receipt the client
+// already holds must not depend on a signal that lives only as long as one
+// daemon. See the Redelivery section of docs/product/session-input.md.
 func processNextServeInput(
 	ctx context.Context,
 	input <-chan server.InputMessage,
