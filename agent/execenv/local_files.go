@@ -165,10 +165,14 @@ const DefaultReadLines = 2000
 
 // NumberLines presents text as ReadFile presents a text file: CRLF
 // normalized to LF, lines numbered from offsetLine (default 1), at most
-// limitLines lines (default 2000), and "" past the end. The window is
-// extracted by scanning segments rather than splitting the file, so a
-// line-heavy file at the whole-file read cap does not allocate per line for
-// every line in it (issue #4556).
+// limitLines lines (default 2000), and "" past the end. A trailing newline
+// terminates the last line rather than starting another: a file ending in
+// "\n" has exactly as many rows as newline characters, matching the line
+// count patch context works with, so a row copied from the display cannot
+// run past the end of the file (#6202). The window is extracted by scanning
+// segments rather than splitting the file, so a line-heavy file at the
+// whole-file read cap does not allocate per line for every line in it
+// (issue #4556).
 func NumberLines(text string, offsetLine, limitLines *int) string {
 	start := 1
 	if offsetLine != nil && *offsetLine > 0 {
@@ -179,6 +183,7 @@ func NumberLines(text string, offsetLine, limitLines *int) string {
 		limit = *limitLines
 	}
 	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.TrimSuffix(text, "\n")
 	// Skip to line start. Running out of newlines first means start is past
 	// the final segment.
 	for i := 1; i < start; i++ {
