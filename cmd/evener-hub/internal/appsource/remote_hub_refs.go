@@ -616,18 +616,21 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage, forwarded appw
 
 // fromRemoteDiagnostics rewrites the session-valued refs nested in a thread's
 // diagnostics tree. A delegate's TranscriptRef always names its child session,
-// and a delegate job's TranscriptRef names the same child session, so both live
+// and its ChildRef names that same session the read row's identity keys on, and
+// a delegate job's TranscriptRef names the same child session, so all three live
 // in the remote hub's "local:" namespace and must move to "<host>:" or a
-// controller client would route a child-thread read to the local source. A
-// shell job's TranscriptRef is the opaque "job:<id>" ref, preserved
-// byte-for-byte, and every bare-id field (sessionId, ownerSessionId,
-// childSessionId, rootSessionId) is an id, not a ref, so none is touched.
+// controller client would route a child-thread read to the local source — or
+// match frames and rows across owners on an id collision. A shell job's
+// TranscriptRef is the opaque "job:<id>" ref, preserved byte-for-byte, and
+// every bare-id field (sessionId, ownerSessionId, childSessionId, rootSessionId)
+// is an id, not a ref, so none is touched.
 func (s *RemoteHubSource) fromRemoteDiagnostics(diagnostics *appwire.EvenerDiagnostics) {
 	if diagnostics == nil {
 		return
 	}
 	for index := range diagnostics.Delegates {
 		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Delegates[index].TranscriptRef)
+		diagnostics.Delegates[index].ChildRef = s.fromRemoteRefOrOpaque(diagnostics.Delegates[index].ChildRef)
 	}
 	for index := range diagnostics.Jobs {
 		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Jobs[index].TranscriptRef)

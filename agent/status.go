@@ -180,7 +180,7 @@ type DelegateStatusInfo struct {
 func (d DelegateStatusInfo) AppwireInfo() appwire.EvenerDelegateInfo {
 	return appwire.EvenerDelegateInfo{
 		DelegateID: d.DelegateID, RunGeneration: d.RunGeneration, OwnerSessionID: d.OwnerSessionID, RootSessionID: d.RootSessionID,
-		ChildSessionID: d.ChildSessionID, TranscriptRef: d.TranscriptRef, ParentDelegateID: d.ParentDelegateID,
+		ChildSessionID: d.ChildSessionID, ChildRef: encodeRef("", d.ChildSessionID), TranscriptRef: d.TranscriptRef, ParentDelegateID: d.ParentDelegateID,
 		Type: d.Type, Lifecycle: d.Lifecycle, Phase: d.Phase, Status: d.Status,
 		Outcome: d.Outcome, Reason: d.Reason, Error: d.Error, Terminal: d.Terminal, Resumable: d.Resumable, NeedsAttention: d.NeedsAttention,
 		NotResumableReason: d.NotResumableReason, ProjectionRevision: d.ProjectionRevision,
@@ -602,7 +602,7 @@ func delegateStatusInfo(now time.Time, rootID string, row delegateSnapshot, boun
 func delegateUpdatedDataFromStatus(info DelegateStatusInfo) events.DelegateUpdatedData {
 	out := events.DelegateUpdatedData{
 		DelegateID: info.DelegateID, OwnerSessionID: info.OwnerSessionID, RootSessionID: info.RootSessionID,
-		ChildSessionID: info.ChildSessionID, TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
+		ChildSessionID: info.ChildSessionID, ChildRef: encodeRef("", info.ChildSessionID), TranscriptRef: info.TranscriptRef, ParentDelegateID: info.ParentDelegateID,
 		Type: info.Type, Lifecycle: info.Lifecycle, Phase: info.Phase, Status: info.Status, Outcome: info.Outcome,
 		Reason: info.Reason, Error: info.Error, Terminal: info.Terminal, Resumable: info.Resumable, NeedsAttention: info.NeedsAttention, NotResumableReason: info.NotResumableReason,
 		RunGeneration: info.RunGeneration, ProjectionRevision: info.ProjectionRevision, Task: info.Task, Description: info.Description, AgentType: info.AgentType,

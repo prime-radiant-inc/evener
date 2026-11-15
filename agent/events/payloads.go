@@ -791,6 +791,7 @@ type DelegateUpdatedData struct {
 	OwnerSessionID   string `json:"owner_session_id"`
 	RootSessionID    string `json:"root_session_id"`
 	ChildSessionID   string `json:"child_session_id"`
+	ChildRef         string `json:"child_ref,omitempty"`
 	TranscriptRef    string `json:"transcript_ref"`
 	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
 	// AncestorSessionIDs are the subagent sessions whose own threads list this

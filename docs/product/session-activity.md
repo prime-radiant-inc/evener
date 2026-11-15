@@ -479,15 +479,33 @@ session/subtree scope. Delegate field changes are instead applied from the
 pushed `evener/delegate/updated` row when the owning source advertises the
 bounded report preview and is live (`SessionActivityContext.reportPreview` and
 `availability`): the store merges the frame into loaded rows by the delegate's
-logical owner. A frame patches a row only where the loaded row set proves its
-delegate id names one child; otherwise the store reads the collection, which
-bounds those reads to one per id and then one per strictly newer revision,
-because a frame that cannot be attributed may still become addressable. It reads
-for a delegate it has not loaded, for a delegate id that names more than one
-loaded row, and for one no final row set has yet proved unique, since a page the
-collection continues past can still serve that id for another child. It reads
+logical owner. The frame carries the same child ref the read row's `childRef`
+names, so it patches exactly the loaded row that shares its delegate identity
+without a read: no row-set proof can reassign it to another child, because two
+rows under one delegate id never share a child ref. A frame from an older
+producer with no child ref can name no row, so it patches nothing but its
+heartbeat and asks for one read per delegate id per strictly newer revision:
+the first frame for an id asks once, a repeat at the same or an older revision
+asks for nothing, and a terminal frame after a running one asks again, because
+only a read can land a legacy frame's other changes. The heartbeat lands
+directly: the producer's activity publications advance `latestActivityAt`
+without touching the durable revision, so a legacy frame's advancing activity
+is taken by the one row its delegate id names when the loaded set is the whole
+collection -- latestActivityAt is the independent maximum every join takes,
+and a paged set cannot prove which child under the id a heartbeat belongs to,
+so anything short of that is left to the read. An epoch change clears the
+ladder. A
+frame whose identity no loaded row matches
+asks for one read per identity per source epoch, and its latest frame waits for
+the read that admits its row. It reads
 none of that while a fresh walk is in flight: that walk settles the frames
-it carries at its displayed boundary, so they do not restart it. A frame the
+it carries at its displayed boundary, so they do not restart it. A walk also
+freezes the membership it will serve before it starts, so a frame for a
+delegate created after that freeze names a row no page of the walk can carry:
+its identity's read is marked asked -- the same one-read-per-identity bound
+any other ask spends -- coalesced across identities, and issued once the walk
+ends; later frames for that identity during any walk defer nothing further.
+A frame the
 buffer evicts before that is recovered by one read when the walk ends. It also
 reads on observe/paging/resync/reconnect, and when an epoch change retires its
 push state; a resync and a reconnect both turn the merge off until a refreshed
@@ -501,11 +519,18 @@ alone cannot recount them. An epoch the ordering has left is retired, and so is
 an announcement another one replaces, so a
 response that still names either is late rather than news: it does not re-retire
 the ordering or force a read, and a delegates read settling while such an
-announcement stands clears it. A frame the loaded rows cannot be proved to own waits
-for the read whose row set is final, which places it on the row the id names,
-drops it when
-the id turns out to name two, and leaves it waiting while that read does not
-serve it. A source that
+announcement stands clears it. A buffered frame places on the row its
+identity names as soon as a page admits that identity, settled or not: the
+applied record protects the merge against every later page of the same read,
+so waiting for a settled read would strand a frame whose admitting page
+leaves the collection open with nothing but a user's paging to finish it.
+It keeps waiting while no loaded row carries its identity. A frame that
+matches a retained row before the first delegates
+response establishes the ordering's epoch is buffered until that response
+settles: recorded under no epoch, its merge would be first sight to the
+ordering the response establishes, and the response's older snapshot would
+overwrite it, so the settlement reconciles the buffered frame with the row the
+response served instead. A source that
 does not advertise the capability, a retained context
 whose released runtime receives invalidations but no frames, or an invalidation
 that refreshes no other observed resource (the store observes none, the

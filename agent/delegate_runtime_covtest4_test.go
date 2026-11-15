@@ -672,7 +672,7 @@ func TestCovEmitDelegateUpdate_WithRows(t *testing.T) {
 	}
 	wantData := events.DelegateUpdatedData{
 		DelegateID: "dlg_remote", OwnerSessionID: "owner-remote", RootSessionID: "root-session",
-		ChildSessionID: "child-remote", TranscriptRef: "local:child-remote", Type: "delegate",
+		ChildSessionID: "child-remote", ChildRef: "local:child-remote", TranscriptRef: "local:child-remote", Type: "delegate",
 		Lifecycle: "idle", Phase: "closed", Status: "idle", Outcome: "completed", Reason: "reported_result",
 		Terminal: true, Resumable: true, ProjectionRevision: 9, Task: "inspect remote state",
 		Description: "remote delegate", AgentType: "reviewer", ResolvedProfileID: "openai", ResolvedModel: "gpt-5", Model: "gpt-5",

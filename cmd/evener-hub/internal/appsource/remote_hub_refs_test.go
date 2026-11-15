@@ -439,9 +439,10 @@ func TestRemoteHubFromRemoteThreadNestedRefRefused(t *testing.T) {
 // Delegate refs are session refs in the remote hub's own "local:" namespace
 // (agent/delegate_tree_start.go stamps encodeRef("", childSessionID)), so an
 // untranslated one makes a client read the controller's local session — or fail —
-// instead of the remote child. Refs in other namespaces are not source-qualified
-// thread refs the controller could route, so they must survive untouched rather
-// than fail the whole response.
+// instead of the remote child. A delegate's ChildRef names the same child
+// session, so it rides the same translation. Refs in other namespaces are not
+// source-qualified thread refs the controller could route, so they must survive
+// untouched rather than fail the whole response.
 func TestRemoteHubFromRemoteThreadTranslatesNestedDiagnosticRefs(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)
 	thread, err := source.fromRemoteThread(appwire.Thread{
@@ -450,8 +451,8 @@ func TestRemoteHubFromRemoteThreadTranslatesNestedDiagnosticRefs(t *testing.T) {
 			Ref: "local:t1",
 			Diagnostics: &appwire.EvenerDiagnostics{
 				Delegates: []appwire.EvenerDelegateInfo{
-					{DelegateID: "dlg_1", TranscriptRef: "local:child"},
-					{DelegateID: "dlg_2", TranscriptRef: ""},
+					{DelegateID: "dlg_1", TranscriptRef: "local:child", ChildRef: "local:child"},
+					{DelegateID: "dlg_2", TranscriptRef: "", ChildRef: ""},
 					{DelegateID: "dlg_3", TranscriptRef: "proj:project:child"},
 				},
 				Jobs: []appwire.EvenerJobInfo{
@@ -467,8 +468,14 @@ func TestRemoteHubFromRemoteThreadTranslatesNestedDiagnosticRefs(t *testing.T) {
 	if got := diagnostics.Delegates[0].TranscriptRef; got != "host:child" {
 		t.Fatalf("delegate transcript ref = %q, want host:child", got)
 	}
+	if got := diagnostics.Delegates[0].ChildRef; got != "host:child" {
+		t.Fatalf("delegate child ref = %q, want host:child", got)
+	}
 	if got := diagnostics.Delegates[1].TranscriptRef; got != "" {
 		t.Fatalf("empty delegate transcript ref = %q, want empty", got)
+	}
+	if got := diagnostics.Delegates[1].ChildRef; got != "" {
+		t.Fatalf("empty delegate child ref = %q, want empty", got)
 	}
 	if got := diagnostics.Delegates[2].TranscriptRef; got != "proj:project:child" {
 		t.Fatalf("project-scoped delegate transcript ref = %q, want it left untouched", got)
