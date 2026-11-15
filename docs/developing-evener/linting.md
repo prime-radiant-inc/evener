@@ -192,12 +192,18 @@ suppression and phantom findings from path exclusions.
 
 Every Make-invoked golangci-lint process now gets a durable cache under
 `${XDG_CACHE_HOME:-$HOME/.cache}/evener/golangci-lint/`, keyed by the absolute
-worktree root. The cache is outside the repository, so gitleaks never scans
-it, and it is reused by later lint runs in the same worktree without being
-shared with siblings. `GOLANGCI_LINT_CACHE=/path make lint-golangci` remains an
-explicit escape hatch when a caller needs a particular cache. Reclaim only the
-current worktree's cache with `make lint-cache-clean`; this does not clean the
-user's global golangci-lint cache or sibling worktrees.
+worktree root, inside a bucket keyed by the repository's Git common
+directory: every worktree of one clone shares the bucket, no other clone
+does, and the `make lint-cache-sweep` reclaimer only ever judges inside its
+own bucket — so independent clones sharing one cache root never sweep each
+other's caches. Pre-bucketing entries directly under the cache root carry no
+owning-clone marker, so the sweeper leaves them to the operator. The cache
+is outside the repository, so gitleaks never scans it, and it is reused by
+later lint runs in the same worktree without being shared with siblings.
+`GOLANGCI_LINT_CACHE=/path make lint-golangci` remains an explicit escape
+hatch when a caller needs a particular cache. Reclaim only the current
+worktree's cache with `make lint-cache-clean`; this does not clean the user's
+global golangci-lint cache or sibling worktrees.
 
 ## Targets
 
@@ -211,6 +217,7 @@ user's global golangci-lint cache or sibling worktrees.
 | `make lint-internal` | Fail if any exported symbol in the `execsupport`, `agent` (plus its `diagnostic`/`execenv`/`mcpconfig`/`plugin`/`provider`/`schema`/`skill`/`task`/`transcript` subpackages), `llm`, or `llm/registry` libraries names a evener-internal type. | Those libraries stay externally importable — no exported symbol leaks an internal type name. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | cmd/evener-internalcheck finds an exported symbol naming an internal type. |
 | `make lint-golangci` | golangci-lint across every workspace module in one invocation per build regime, plus the second AppWire/voice camelCase pass over explicitly scoped wire files. The sweep repeats with GOOS=darwin off darwin so _darwin.go files are linted in CI. See "The AppWire and voice camelCase regimes" in docs/developing-evener/linting.md. | golangci-lint's full ruleset (struct-tag casing, formatting, exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES workspace module for the host GOOS and, off darwin, for GOOS=darwin, so a darwin-only source is linted on a Linux host (#2928); and AppWire/voice camelCase holds without exempting unrelated snake_case surfaces. | Required CI (via make lint); local pre-merge. | golangci-lint. Sweeps FUZZ_GO_MODULES, not GO_MODULES, so the fuzz module's ordinary Go is covered too. | golangci-lint fails for the host GOOS or, off darwin, under GOOS=darwin. |
 | `make lint-cache-clean` | Remove the current worktree's golangci-lint cache without touching sibling worktrees or the user's global golangci-lint cache. | The current worktree's isolated cache can be reclaimed on demand. | Local cleanup after a tool upgrade or cache diagnosis. | golangci-lint. | golangci-lint cannot clean the configured worktree cache. |
+| `make lint-cache-sweep` | Reclaim per-worktree golangci-lint caches whose owning worktree is gone. | Only cache dirs whose key matches no registered worktree, and whose mtime is older than GOLANGCI_SWEEP_MIN_AGE_HOURS (default 48), are deleted; live worktrees' caches, unrecognized entries, other clones' buckets, and pre-bucketing entries with no owning-clone marker are untouched. | Local cleanup after disposing worktree lanes; safe to run periodically (cron) on machines with a churning worktree fleet. | git >= 2.36 (run from any registered worktree of this repository). | Not inside a workable git repository — the live worktree set is unknown, and the sweep refuses to run rather than treat unknown as empty. |
 | `make lint-gofmt` | Keep every tracked Go source formatter-clean, including the tagged evenerfuzz/eval files golangci-lint's own gofmt pass never compiles. | `gofmt -l` reports nothing for any tracked .go file, tagged or not. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | Any tracked .go file is not gofmt-clean. |
 | `make lint-generated` | Fail if any committed generated output is stale: the two AppWire outputs, the six docs/developing-evener/ target tables and the configuration knob table. | docs/appwire-protocol.md, the generated TypeScript protocol types, the marked target-table regions in docs/developing-evener/'s six family docs, and docs/developing-evener/config-knobs.md all match what `make generate` produces right now. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | `make generate` exits nonzero, an expected output is no longer tracked, or regenerated output differs from what is committed. |
 | `make lint-fuzz-registry` | Wrap `make fuzz-registry-check` so a fuzz target that lands without its registry row fails the required gate instead of sitting undetected. | Every native/Rapid fuzz target in the manifest (scripts/fuzz/fuzz-targets.txt) matches AST-discovered workspace declarations. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond the Go toolchain; static AST analysis only. | A discovered fuzz target has no registry row, or a registry row has no discovered target. |
