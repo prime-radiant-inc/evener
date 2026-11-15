@@ -3,7 +3,7 @@
 // never loads react-native-gesture-handler.
 import type { SessionActivity } from "@evener/appwire-client";
 import type { ReactElement } from "react";
-import type { ClassifiedRow } from "./attention";
+import type { ClassifiedRow } from "@evener/appwire-client/state/navigation";
 import { BoardRow, type BoardRowProps } from "./BoardRow";
 import { RowMenu, type RowMenuProps } from "./RowMenu";
 import type { RowSwipes } from "./rowSwipes";

@@ -279,7 +279,7 @@ type Index struct {
 	mu         sync.Mutex
 	path, dir  string
 	lock       *os.File
-	transcript *os.File
+	transcript transcriptFile
 	build      string // the live build's directory name
 	items      table
 	turns      table
@@ -308,6 +308,15 @@ type Index struct {
 	// entry or reader. The ordinary current-boundary path releases it.
 	cutView   *Index
 	cutLength int64
+}
+
+// transcriptFile is what the index holds of the transcript file: positioned
+// reads, its identity, and a close. An interface, not *os.File, so a test can
+// hold a read to the regions it actually touches.
+type transcriptFile interface {
+	io.ReaderAt
+	Stat() (os.FileInfo, error)
+	Close() error
 }
 
 // Open returns the index for the transcript at path, kept in dir. A missing,
@@ -926,11 +935,7 @@ func (x *Index) tailSum(end int64) (string, error) {
 func (x *Index) restoreBuilder() error {
 	b := newBuilder(x)
 	b.grouper = apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}
-	for _, c := range x.meta.CommCalls {
-		b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
-	}
-	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown
-	b.lastAssistantPos = x.meta.LastAssistantPos.contributor()
+	restoreDeferredState(&b, x.meta, ^uint64(0))
 	if x.meta.Open {
 		b.turnSlot = x.meta.TurnSlot
 		// The open legacy group's items are the newest records: any
@@ -959,6 +964,22 @@ func (x *Index) restoreBuilder() error {
 	x.builder = b
 	x.builderStale = false
 	return nil
+}
+
+// restoreDeferredState rebuilds the builder's deferred-communicate and sticky
+// last-assistant state from persisted meta — the shared mapping an adopted
+// build's restoreBuilder and a cut reconstruction's derived view both need,
+// so a future persisted field cannot be restored in one place and missed in
+// the other. below is the first entry ordinal the restored state may not
+// name; ^uint64(0) keeps every persisted call.
+func restoreDeferredState(b *builder, m meta, below uint64) {
+	for _, c := range m.CommCalls {
+		if c.Ordinal < below {
+			b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
+		}
+	}
+	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = m.LastAssistantText, m.LastAssistantTurnID, m.LastAssistantKnown
+	b.lastAssistantPos = m.LastAssistantPos.contributor()
 }
 
 // restoreOpenTurns fills the open map from the summaries: every open
@@ -1463,6 +1484,8 @@ func (x *Index) closeBuild() error {
 	}
 	x.build = ""
 	x.updatesName = ""
+	// A cached cut view borrows this build's strings handle; keep none of it.
+	x.cutView, x.cutLength = nil, 0
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0

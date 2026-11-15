@@ -552,3 +552,38 @@ test("Enter on the row itself still activates it", () => {
   fireEvent.keyDown(row("a"), { key: "Enter" });
   expect(onActivate).toHaveBeenCalledTimes(1);
 });
+
+test("a focused row that moves to another branch keeps focus", () => {
+  const before: TreeNode[] = [
+    { id: "x", expanded: true, children: [{ id: "moving" }, { id: "stays" }] },
+    { id: "y", expanded: true, children: [{ id: "other" }] },
+  ];
+  const after: TreeNode[] = [
+    { id: "x", expanded: true, children: [{ id: "stays" }] },
+    { id: "y", expanded: true, children: [{ id: "other" }, { id: "moving" }] },
+  ];
+  const props = { onActivate: vi.fn(), onToggle: vi.fn(), renderRow: (node: TreeNode) => node.id };
+  const view = render(<Tree nodes={before} {...props} />);
+  act(() => row("moving").focus());
+  const original = row("moving");
+  view.rerender(<Tree nodes={after} {...props} />);
+  expect(row("moving")).not.toBe(original);
+  expect(document.activeElement).toBe(row("moving"));
+});
+
+test("a row that moves branches while focus is elsewhere does not take focus", () => {
+  const before: TreeNode[] = [
+    { id: "x", expanded: true, children: [{ id: "moving" }, { id: "stays" }] },
+    { id: "y", expanded: true, children: [{ id: "other" }] },
+  ];
+  const after: TreeNode[] = [
+    { id: "x", expanded: true, children: [{ id: "stays" }] },
+    { id: "y", expanded: true, children: [{ id: "other" }, { id: "moving" }] },
+  ];
+  const props = { onActivate: vi.fn(), onToggle: vi.fn(), renderRow: (node: TreeNode) => node.id };
+  const view = render(<Tree nodes={before} {...props} />);
+  act(() => row("moving").focus());
+  act(() => row("moving").blur());
+  view.rerender(<Tree nodes={after} {...props} />);
+  expect(document.activeElement).toBe(document.body);
+});

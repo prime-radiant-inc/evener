@@ -23,7 +23,7 @@
 // this menu can act on.
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { type ChangeEvent, useState } from "react";
+import { type ChangeEvent, useEffect, useState } from "react";
 import { Button, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
@@ -93,6 +93,9 @@ export interface SessionMenuProps {
   turnVerbs?: SessionMenuTurnVerbs;
   actions: SessionMenuActions;
   triggerTabIndex?: number; // -1 inside rail rows (roving tabindex contract)
+  /** Called with true while any of this menu's dialogs is open, and false
+   * when the last one closes or the menu unmounts with one open. */
+  onDialogOpenChange?: (open: boolean) => void;
 }
 
 const CLASS = {
@@ -118,6 +121,7 @@ export function SessionMenu({
   turnVerbs,
   actions,
   triggerTabIndex,
+  onDialogOpenChange,
 }: SessionMenuProps) {
   const [busy, setBusy] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -126,6 +130,16 @@ export function SessionMenu({
   const [forceStopOpen, setForceStopOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+
+  // A host that may tear this menu down (a list that moves its row) is told
+  // while one of the menu's dialogs is open, so it can leave the row in place
+  // until the reader is done with it.
+  const dialogOpen = renameOpen || shutdownOpen || forceStopOpen || pickerOpen || deleteOpen;
+  useEffect(() => {
+    if (!dialogOpen || !onDialogOpenChange) return;
+    onDialogOpenChange(true);
+    return () => onDialogOpenChange(false);
+  }, [dialogOpen, onDialogOpenChange]);
 
   // confirm runs a dialog-confirmed action: busy-lock the confirm button
   // against double-submit, close ONLY on success (a rejection was already

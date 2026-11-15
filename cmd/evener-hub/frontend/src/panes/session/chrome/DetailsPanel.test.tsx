@@ -1,8 +1,11 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { effectiveContextStatus, tokenUnitLabel } from "@evener/appwire-client";
+import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
@@ -69,7 +72,31 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetNavigationStoreForTests();
+  resetConnectionStoreForTests();
 });
+
+const LOCAL_SOURCE = { id: "local", label: "this host", kind: "local", online: true };
+
+// Seeds the navigation manifest the shell holds with these launch sources, on
+// a hub whose connection is (or is not) ready.
+function seedHosts(sources: { id: string; label: string; kind: string; online: boolean }[], hubReady = true) {
+  navigationStore.setState({
+    manifest: {
+      key: { kind: "manifest" },
+      data: navigationManifest({ sources }),
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: '"manifest"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "test-generation",
+    },
+  });
+  connectionStore.setState({ state: hubReady ? "ready" : "reconnecting" });
+}
 
 test.each([true, false, undefined])("Manager projection %s is read-only in session details", async (manager) => {
   await openPanel(testModel({ manager }));
@@ -443,4 +470,97 @@ test("an ended session shows work time, tokens, and cost but no context row", as
   expect(screen.getByTestId("session-details-work-time")).toBeTruthy();
   expect(screen.getByTestId("session-details-tokens")).toBeTruthy();
   expect(screen.getByTestId("session-details-cost")).toBeTruthy();
+});
+
+// A hub with one host runs every session in the same place; a host row there
+// would repeat one fixed value on every session.
+test("no host row on a hub whose only host is its own", () => {
+  seedHosts([LOCAL_SOURCE]);
+  render(<DetailsPanelBody model={testModel()} now={0} />);
+  expect(screen.queryByTestId("session-details-host")).toBeNull();
+});
+
+test("a session on a remote host names that host by its manifest label and says it is online", () => {
+  seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
+  render(<DetailsPanelBody model={testModel({ ref: "studio:abc" })} now={0} />);
+  expect(screen.getByTestId("session-details-host").textContent).toContain("Studio Mac");
+  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+});
+
+test("a session whose host has dropped reads offline", () => {
+  seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: false }]);
+  render(<DetailsPanelBody model={testModel({ ref: "studio:abc" })} now={0} />);
+  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("false");
+});
+
+test("every host reads offline while the hub itself is unreachable", () => {
+  seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }], false);
+  render(<DetailsPanelBody model={testModel({ ref: "studio:abc" })} now={0} />);
+  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("false");
+});
+
+test("a local session on a hub with other hosts gets a host row too", () => {
+  seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
+  render(<DetailsPanelBody model={testModel()} now={0} />);
+  expect(screen.getByTestId("session-details-host").textContent).toContain(LOCAL_SOURCE.label);
+  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+});
+
+test("a host the manifest does not list is named by its id, with no claim about its connection", () => {
+  seedHosts([LOCAL_SOURCE]);
+  render(<DetailsPanelBody model={testModel({ ref: "attic:abc" })} now={0} />);
+  expect(screen.getByTestId("session-details-host").textContent).toContain("attic");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
+});
+
+test("the sandbox and network a session was started with each get a row", () => {
+  render(<DetailsPanelBody model={testModel({ access: { sandbox: "workspace-write", network: false } })} now={0} />);
+  const sandbox = screen.getByTestId("session-details-sandbox").textContent;
+  const network = screen.getByTestId("session-details-network").textContent;
+  cleanup();
+  render(<DetailsPanelBody model={testModel({ access: { sandbox: "read-only", network: true } })} now={0} />);
+  expect(sandbox).toBeTruthy();
+  expect(screen.getByTestId("session-details-sandbox").textContent).not.toBe(sandbox);
+  expect(network).toBeTruthy();
+  expect(screen.getByTestId("session-details-network").textContent).not.toBe(network);
+});
+
+test("the plugins a session loaded are listed by name", () => {
+  render(
+    <DetailsPanelBody
+      model={testModel({ diagnostics: { plugins: [{ name: "superpowers" }, { name: "go" }] } })}
+      now={0}
+    />,
+  );
+  const text = screen.getByTestId("session-details-plugins").textContent ?? "";
+  expect(text).toContain("superpowers");
+  expect(text).toContain("go");
+});
+
+test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", () => {
+  render(<DetailsPanelBody model={testModel({ diagnostics: { plugins: [] } })} now={0} />);
+  expect(screen.getByTestId("session-details-plugins").textContent).toBeTruthy();
+  cleanup();
+  render(<DetailsPanelBody model={testModel({ diagnostics: {} })} now={0} />);
+  expect(screen.queryByTestId("session-details-plugins")).toBeNull();
+});
+
+// A daemon that predates access and plugin reporting sends neither; the group
+// they would sit in must not leave a bare heading.
+test("a session that reports neither access nor plugins has no launch group", () => {
+  render(<DetailsPanelBody model={testModel()} now={0} />);
+  expect(screen.getAllByRole("heading")).toHaveLength(3);
+  cleanup();
+  render(<DetailsPanelBody model={testModel({ access: { sandbox: "off", network: true } })} now={0} />);
+  expect(screen.getAllByRole("heading")).toHaveLength(4);
+});
+
+test("failed tool calls are counted in the usage group once there are any", () => {
+  render(<DetailsPanelBody model={testModel({ failedToolCalls: 3 })} now={0} />);
+  expect(screen.getByTestId("session-details-failed-tool-calls").textContent).toContain("3");
+});
+
+test.each([0, undefined])("no failed-tool-calls row when the count is %s", (failedToolCalls) => {
+  render(<DetailsPanelBody model={testModel({ failedToolCalls })} now={0} />);
+  expect(screen.queryByTestId("session-details-failed-tool-calls")).toBeNull();
 });

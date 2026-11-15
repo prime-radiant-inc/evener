@@ -13,7 +13,7 @@ import {
 	WireError,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
-import { hubTime } from "./attention";
+import { hubTime } from "@evener/appwire-client/state/navigation";
 import type { SeenMarkers } from "./boardMemory";
 import { perHub } from "./perHub";
 

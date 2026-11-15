@@ -5,7 +5,7 @@
 import { isPlainObject } from "@evener/appwire-client";
 import { readJson, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { hubTime } from "./attention";
+import { hubTime } from "@evener/appwire-client/state/navigation";
 import { boardHoldKey } from "./boardHold";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
