@@ -336,7 +336,7 @@ export function useFindInSession({
   // mounted entry into view. The reader's own scroll ends the window.
   const settle = useRef<{ key: string; until: number; jumpedAt: number } | null>(null);
   const settleFrame = useRef<number | null>(null);
-  const lastFindScrollTop = useRef<number | null>(null);
+  const lastFindGeometry = useRef<{ top: number; height: number; viewport: number } | null>(null);
   const currentKey = current?.key ?? null;
 
   const sync = useRef(() => {});
@@ -355,7 +355,7 @@ export function useFindInSession({
       if (now - pending.jumpedAt < JUMP_RETRY_MS) return;
       pending.jumpedAt = now;
       jumpToRow(hit.rowIndex);
-      lastFindScrollTop.current = port.scrollTop;
+      if (lastFindGeometry.current) lastFindGeometry.current.top = port.scrollTop;
       return;
     }
     const rect = (marked.focus ?? marked.current).getBoundingClientRect();
@@ -363,7 +363,7 @@ export function useFindInSession({
     if (target === null) return;
     const before = port.scrollTop;
     port.scrollTop = target;
-    lastFindScrollTop.current = port.scrollTop;
+    if (lastFindGeometry.current) lastFindGeometry.current.top = port.scrollTop;
     if (port.scrollTop !== before) markGesture(true, before);
   };
 
@@ -395,7 +395,10 @@ export function useFindInSession({
       until: performance.now() + SETTLE_WINDOW_MS,
       jumpedAt: Number.NEGATIVE_INFINITY,
     };
-    lastFindScrollTop.current = listRef.current?.getScrollElement()?.scrollTop ?? null;
+    const port = listRef.current?.getScrollElement();
+    lastFindGeometry.current = port
+      ? { top: port.scrollTop, height: port.scrollHeight, viewport: port.clientHeight }
+      : null;
     // Frames, not this effect, drive the scroll: the virtual list flushes its
     // own state when it moves, which React forbids inside a commit.
     const tick = () => {
@@ -429,12 +432,25 @@ export function useFindInSession({
       settle.current = null;
     };
     const readerScrolled = () => {
-      if (port.scrollTop !== lastFindScrollTop.current) readerMoved();
+      const previous = lastFindGeometry.current;
+      const next = { top: port.scrollTop, height: port.scrollHeight, viewport: port.clientHeight };
+      lastFindGeometry.current = next;
+      // The scroll owner admits a reader move only against stable geometry;
+      // VirtualList measurement/prepend compensation changes content height.
+      if (
+        previous &&
+        previous.height === next.height &&
+        previous.viewport === next.viewport &&
+        previous.top !== next.top
+      )
+        readerMoved();
     };
     const readerPressed = (event: KeyboardEvent) => {
       if (!port.contains(event.target as Node) && event.target !== port) return;
       if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " "].includes(event.key)) readerMoved();
     };
+    // Explicit input can cancel before its scroll event; an otherwise bare
+    // scroll must pass the scroll owner's stable-geometry reader check above.
     port.addEventListener("wheel", readerMoved, { passive: true });
     port.addEventListener("touchmove", readerMoved, { passive: true });
     port.addEventListener("pointerdown", readerMoved, { passive: true });

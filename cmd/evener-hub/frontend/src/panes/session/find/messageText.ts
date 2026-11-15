@@ -5,15 +5,10 @@
 // inline runs are joined with nothing, the same way Find reads the rendered
 // DOM. This module stays free of the transcript's renderers so the palette's
 // search can share it.
-import { fenceTokenTerminated, type ItemModel, isMermaidCodeToken } from "@evener/appwire-client";
+import { type ItemModel, pendingTextJoined } from "@evener/appwire-client";
 import type { Token } from "marked";
-import { markdownLexer } from "../../../widgets/markdown/lexer";
-
-// A finished Mermaid fence at the top of a reply is drawn as a diagram
-// (widgets/markdown/segments.ts), so its source is not on the page.
-function drawnAsDiagram(token: Token): boolean {
-  return isMermaidCodeToken(token) && fenceTokenTerminated(token.raw);
-}
+import { splitMarkdownSegments } from "../../../widgets/markdown/segments";
+import { closeOpenMarkdown } from "../../../widgets/markdown/streaming";
 
 // Character references ("&amp;", "&#36;") as the page shows them. The
 // browser's own parser decodes them, exactly as it does for the rendered
@@ -29,9 +24,8 @@ function decodeReferences(text: string): string {
   return decoder.value;
 }
 
-function read(tokens: readonly Token[], into: string[], top = false): void {
+function read(tokens: readonly Token[], into: string[]): void {
   for (const token of tokens) {
-    if (top && drawnAsDiagram(token)) continue;
     switch (token.type) {
       case "table":
         for (const cell of [...token.header, ...token.rows.flat()]) {
@@ -75,9 +69,14 @@ function read(tokens: readonly Token[], into: string[], top = false): void {
   }
 }
 
-function markdownAsRead(source: string): string {
+function markdownAsRead(source: string, live: boolean): string {
   const into: string[] = [];
-  read(markdownLexer.lexer(source), into, true);
+  const closed = live ? closeOpenMarkdown(source) : source;
+  // The renderer segments closed diagrams while keeping an unfinished live
+  // Mermaid fence as code: the synthetic closer is not a finished diagram.
+  for (const segment of splitMarkdownSegments(closed, live ? source : null)) {
+    if (segment.kind === "markdown") read(segment.tokens, into);
+  }
   return into.join("");
 }
 
@@ -85,7 +84,10 @@ function markdownAsRead(source: string): string {
  * search. A reply renders as Markdown, so it is read as the page reads; a
  * prompt is shown as typed. */
 export function messageAsShown(item: ItemModel): string | null {
-  if (!item.text) return null;
-  if (item.type === "agentMessage") return markdownAsRead(item.text);
+  if (item.type === "agentMessage") {
+    const live = item.status === "inProgress";
+    const source = live ? pendingTextJoined(item.pendingText ?? []) : item.text;
+    return source ? markdownAsRead(source, live) : null;
+  }
   return item.type === "userMessage" ? item.text : null;
 }

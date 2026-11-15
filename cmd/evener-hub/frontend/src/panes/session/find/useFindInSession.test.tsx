@@ -455,6 +455,28 @@ test.each(["scrollbar", "keyboard"])(
   },
 );
 
+test("measurement compensation while a match lands does not cancel Find's reveal", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle")], []);
+  await mount(client);
+  const port = screen.getByTestId("port");
+  port.getBoundingClientRect = () => ({ top: 0, bottom: 500, height: 500 }) as DOMRect;
+  openFind();
+  type("needle");
+  const entry = document.querySelector('[data-view-anchor-id="t1-item"]') as HTMLElement;
+  entry.getBoundingClientRect = () =>
+    ({ top: 2000 - port.scrollTop, bottom: 2100 - port.scrollTop, height: 100 }) as DOMRect;
+  // VirtualList measures a row above this match and compensates its offset.
+  // No pointer, wheel, touch or key event came from the reader.
+  act(() => {
+    Object.defineProperty(port, "scrollHeight", { configurable: true, value: 3000 });
+    port.scrollTop = 200;
+    fireEvent.scroll(port);
+  });
+  expect(port.scrollTop).toBe(200);
+  await waitFor(() => expect(port.scrollTop).toBeGreaterThan(1000));
+});
+
 test("Find chord opens in a popout and Escape restores focus in that same window", async () => {
   const client = connectReadyFakeClient();
   scriptHistory(client, [turn("t1", "needle")], []);
@@ -485,6 +507,47 @@ test("Find chord opens in a popout and Escape restores focus in that same window
   expect(popdoc.activeElement).toBe(field);
   if (field) fireEvent.keyDown(field, { key: "Escape" });
   expect(popdoc.activeElement).toBe(elsewhere);
+  mounted.unmount();
+  frame.remove();
+});
+
+test("typing ? in a popout Find input does not trigger the cheatsheet shortcut", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle")], []);
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popup = frame.contentWindow;
+  const popdoc = frame.contentDocument;
+  if (!popup || !popdoc) throw new Error("missing popout window");
+  await act(async () => {
+    await threadsStore.getState().ensureThread(REF);
+  });
+  const mounted = render(<Harness />, { container: popdoc.body });
+  const elsewhere = popdoc.querySelector('[data-testid="elsewhere"]') as HTMLElement;
+  const chord = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+    key: "f",
+    code: "KeyF",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => elsewhere.dispatchEvent(chord));
+  const field = popdoc.querySelector('input[type="search"]') as HTMLInputElement;
+  let toggles = 0;
+  const unregister = keybindingsRegistry.getState().registerAction(ACTIONS.cheatsheetToggle, () => {
+    toggles += 1;
+  });
+  const typed = new (popup as Window & { KeyboardEvent: typeof KeyboardEvent }).KeyboardEvent("keydown", {
+    key: "?",
+    code: "Slash",
+    shiftKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  act(() => field.dispatchEvent(typed));
+  expect(typed.defaultPrevented).toBe(false);
+  expect(toggles).toBe(0);
+  unregister();
   mounted.unmount();
   frame.remove();
 });

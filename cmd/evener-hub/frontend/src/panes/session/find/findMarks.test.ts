@@ -49,6 +49,15 @@ test("the current entry's words and the other matches are painted separately", (
   expect(registry.size).toBe(0);
 });
 
+test("the current message keeps a focus range when earlier matches exhaust the paint budget", () => {
+  const el = port({ earlier: "needle ".repeat(1500), current: `${"prefix ".repeat(50)}needle` });
+  const marked = markTranscript(el, [hit("earlier"), hit("current")], "current", "needle");
+  expect(marked.current?.getAttribute("data-view-anchor-id")).toBe("current");
+  expect(marked.focus?.toString()).toBe("needle");
+  expect(painted("evener-find-current")).toEqual(["needle"]);
+  expect(painted("evener-find")).toHaveLength(1499);
+});
+
 test("a letter whose lowercase form is longer does not shift or break the painted words", () => {
   // "İ" lowercases to two code units, so offsets in the lowercased text do
   // not address the same characters in the text on screen.

@@ -68,6 +68,20 @@ test("a reply is searched as it reads, not as its Markdown is written", () => {
   expect(keys("**stars**")).toEqual(["a", "u"]);
 });
 
+test("an in-progress reply searches auto-closed Markdown as its live row reads", () => {
+  const live = (id: string, source: string): ItemEntry => {
+    const entry = message(id, "");
+    return { ...entry, item: { ...entry.item, text: "", pendingText: [source], status: "inProgress" } };
+  };
+  const rows = [turnRow("t", [live("bold", "the answer is **bo"), live("code", "type `needle")])];
+  expect(findHits(rows, "is bo").map((hit) => hit.key)).toEqual(["bold"]);
+  expect(findHits(rows, "**bo")).toEqual([]);
+  expect(findHits(rows, "type needle").map((hit) => hit.key)).toEqual(["code"]);
+  expect(findHits(rows, "`needle")).toEqual([]);
+  // A settled reply does not get an invented closing marker.
+  expect(messageAsShown({ ...message("settled", "the answer is **bo").item })).toContain("**bo");
+});
+
 // The invariant the rest of Find leans on: a counted match is one Find can
 // land on with its words on screen. Only a message's own text is ever read,
 // so nothing folded, cut short, suppressed or behind a disclosure can count.
@@ -109,6 +123,16 @@ test("a diagram's source is not searched once the reply shows the diagram instea
   const rows = [turnRow("t", [drawn, streaming])];
   expect(findHits(rows, "flowchart TD").map((hit) => hit.key)).toEqual(["streaming"]);
   expect(findHits(rows, "the flow").map((hit) => hit.key)).toEqual(["drawn", "streaming"]);
+});
+
+test("a live Mermaid fence remains searchable until its real closing fence arrives", () => {
+  const source = "```mermaid\nflowchart TD\n  A --> B";
+  const live = (id: string, text: string): ItemEntry => {
+    const entry = message(id, "");
+    return { ...entry, item: { ...entry.item, text: "", pendingText: [text], status: "inProgress" } };
+  };
+  const rows = [turnRow("t", [live("open", source), live("closed", `${source}\n\`\`\``)])];
+  expect(findHits(rows, "flowchart TD").map((hit) => hit.key)).toEqual(["open"]);
 });
 
 test("a character reference in a reply is searched as the character it shows", () => {

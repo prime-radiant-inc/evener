@@ -215,19 +215,26 @@ export function markTranscript(
   const mine: Range[] = [];
   if (port && needle !== "") {
     const mounted = readMounted(port);
-    for (const hit of hits) {
+    const markHit = (hit: FindHit): HTMLElement | null => {
       // Hits far outside the mounted window cost nothing.
-      if (hit.rowIndex < mounted.firstRow || hit.rowIndex > mounted.lastRow) continue;
+      if (hit.rowIndex < mounted.firstRow || hit.rowIndex > mounted.lastRow) return null;
       const entry = mounted.entries.get(hit.key);
-      if (entry === undefined) continue;
+      if (entry === undefined) return null;
       const isCurrent = hit.key === currentKey;
-      if (isCurrent) current = entry;
-      if (!registry) continue;
+      if (!registry) return entry;
       // A message row also carries its speaker and time; only what the
       // message says is searched, so only that is painted and scrolled to.
       const body = entry.querySelector<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`) ?? entry;
       const found = rangesIn(body, needle, MAX_RANGES - all.length - mine.length);
       (isCurrent ? mine : all).push(...found);
+      return entry;
+    };
+    // Paint the current hit first: preceding hits must not spend its focus
+    // range when the mounted transcript reaches the painting ceiling.
+    const currentHit = hits.find((hit) => hit.key === currentKey);
+    if (currentHit) current = markHit(currentHit);
+    for (const hit of hits) {
+      if (hit !== currentHit) markHit(hit);
     }
   }
   for (const marked of scope.querySelectorAll(`[${FIND_CURRENT_ATTRIBUTE}]`)) {
