@@ -262,10 +262,16 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 		// The delegate projects its own snapshot, which can hold turns appended
-		// after historyTurns was taken, so its coverage must come from that
-		// same snapshot rather than the earlier one.
-		snapshot, coverage := s.delegateModelHistorySnapshotWithCoverage()
-		historyCoverage = coverage
+		// after historyTurns was taken, so its coverage and its in-flight
+		// boundary must come from that same snapshot rather than the earlier
+		// one: a fold landing in between leaves the earlier boundary indexing
+		// turns this snapshot no longer holds, and an in-flight turn that falls
+		// below it loses the replay exemption that keeps its thinking.
+		projection := s.delegateModelHistorySnapshotWithCoverage()
+		snapshot := projection.turns
+		historyCoverage = projection.coverage
+		scope.InFlightFrom = projection.inFlightFrom
+		inFlightFrom = projection.inFlightFrom
 		presentedBoundary = len(snapshot)
 		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
 			// An automatic attention drive projects the resident history,

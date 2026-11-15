@@ -659,7 +659,9 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	s.mu.Lock()
 	s.strategy = nil
 	s.mu.Unlock()
-	final := func(llm.Request) llm.Response { return agenttest.FinalResponse("opaque-leased-fold-commit-window-result") }
+	final := func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("opaque-leased-fold-commit-window-result")
+	}
 	steps := make([]func(llm.Request) llm.Response, 0, 4)
 	for range 4 {
 		steps = append(steps, final)
@@ -683,6 +685,7 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	inWindow := make(chan struct{})
 	releaseFold := make(chan struct{})
 	compactDone := make(chan error, 1)
+	beforeFoldTurns := 0
 	updateSessionTestConfig(s, func(cfg *testConfig) {
 		cfg.beforeFoldTranscriptCommit = func() {
 			close(inWindow)
@@ -697,6 +700,9 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 			}
 		}
 		cfg.afterModelHistorySnapshot = func() {
+			s.mu.Lock()
+			beforeFoldTurns = len(s.history)
+			s.mu.Unlock()
 			go func() { compactDone <- s.Compact(context.Background()) }()
 			<-inWindow
 		}
@@ -752,6 +758,24 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	}
 	if state := s.ConversationProvenance(); !state.Authoritative {
 		t.Fatalf("a leased request built while the fold committed made the conversation unknown: state=%+v", state)
+	}
+
+	// The boundary indexes the projection it ships with. A fold landing between
+	// the round's first capture and the leased read shrinks the history, so the
+	// earlier boundary can point past what the leased snapshot holds — or, once
+	// a retained in-flight turn survives the fold, at a turn that is not the
+	// first of the in-flight round. Either way an in-flight round loses the
+	// replay exemption that keeps its thinking on a same-protocol fallback.
+	projection := s.delegateModelHistorySnapshotWithCoverage()
+	if projection.inFlightFrom < 0 || projection.inFlightFrom > len(projection.turns) {
+		t.Fatalf("leased projection boundary %d does not index its own snapshot of %d turns", projection.inFlightFrom, len(projection.turns))
+	}
+	// The window is only exercised if the two captures disagree: the folded
+	// history is shorter than what the round captured before the fold, so a
+	// boundary borrowed from that earlier capture indexes turns this snapshot
+	// no longer holds.
+	if len(projection.turns) >= beforeFoldTurns {
+		t.Fatalf("the fold did not shrink the snapshot (%d turns, before %d): the two captures agree, so this window proves nothing about re-pairing the boundary", len(projection.turns), beforeFoldTurns)
 	}
 }
 
