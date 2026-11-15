@@ -662,14 +662,19 @@ function modelPickOrder(ref: string): number {
   return modelPickOrders.get(ref)?.order ?? 0;
 }
 
-function noteModelPickOrder(ref: string, pick: ModelPickState | undefined, model: ThreadModel): void {
+function reconcileModelPickOrderIdentity(ref: string, model: ThreadModel): string {
   const identity = `${threadInstanceID(model) ?? ""}|${model.history?.bootGeneration ?? ""}`;
   const recorded = modelPickOrders.get(ref);
   if (recorded && recorded.identity !== identity) {
     // The order namespace restarted with the identity.
-    modelPickOrders.set(ref, { identity, order: pick?.sequence ?? 0 });
-    return;
+    modelPickOrders.set(ref, { identity, order: 0 });
   }
+  return identity;
+}
+
+function noteModelPickOrder(ref: string, pick: ModelPickState | undefined, model: ThreadModel): void {
+  const identity = reconcileModelPickOrderIdentity(ref, model);
+  const recorded = modelPickOrders.get(ref);
   const order = Math.max(recorded?.order ?? 0, pick?.sequence ?? 0);
   modelPickOrders.set(ref, { identity, order });
 }
@@ -768,6 +773,7 @@ function reconcileAcceptedModelSwitchAuthority(
   authorityPick?: ModelPickState,
 ): ReadonlyMap<string, AcceptedModelSwitch> {
   const accepted = current.get(ref);
+  for (const model of authorityModels) reconcileModelPickOrderIdentity(ref, model);
   const appliedOrder = modelPickOrder(ref);
   const pickOrder = authorityPick?.sequence ?? 0;
   const requests = modelSwitchRequests.get(ref);
@@ -817,9 +823,10 @@ function reconcileAcceptedModelSwitchAuthority(
     return new Map(current).set(ref, { ...accepted, authoritySequence: pickOrder });
   }
   // A pick this page did not issue owns the model outcome only when it reached
-  // the server's acceptance publication. A rejection never became authority.
+  // the server's acceptance publication. A newer rejection did not become model
+  // authority, but its admission still superseded every older queued pick.
   if (authorityPick !== undefined) {
-    if (authorityPick.outcome === MODEL_PICK_REJECTED) return current;
+    if (authorityPick.outcome === MODEL_PICK_REJECTED && pickOrder === 0) return current;
     supersedeAllModelSwitches(ref);
     if (accepted) {
       const displayedOrder = accepted.authoritySequence > 0 ? accepted.authoritySequence : appliedOrder;
