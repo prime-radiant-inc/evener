@@ -618,3 +618,130 @@ func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 		t.Fatalf("a request built while the fold committed made the conversation unknown: state=%+v", state)
 	}
 }
+
+// TestConsecutiveWithheldFoldsKeepTheConversationCovered pins the retracted
+// frontier's lifetime across two withheld folds. The first fold mints a node
+// and keeps it in the chain as the live-only head. A later fold whose folded
+// coverage equals the durable frontier's inputs mints no replacement, and its
+// marker references the standing frontier instead — so its withhold must
+// leave the first fold's retraction in place. Clearing it would orphan the
+// first node in the chain, and the next record's node, extending the same
+// predecessor, would fork the chain — frontier resolution then rejects every
+// node and voice output goes ineligible until restart. Here two consecutive
+// withheld folds are followed by a new input, and the reply must stay
+// eligible.
+func TestConsecutiveWithheldFoldsKeepTheConversationCovered(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "double-withhold-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-double-withhold-summary\n[END SUMMARY]")}
+	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	final := func(llm.Request) llm.Response { return agenttest.FinalResponse("opaque-double-withhold-result") }
+	steps := make([]func(llm.Request) llm.Response, 0, 3)
+	for range 3 {
+		steps = append(steps, final)
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	if _, err := s.ProcessInput(context.Background(), "opaque-double-withhold-input-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("opaque-double-withhold-filler-a-%d", i)))
+		s.recordTurn(turn, turn)
+	}
+	if _, err := s.ProcessInput(context.Background(), "opaque-double-withhold-input-2", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatal(err)
+	}
+	fs := &foldTailFaultFS{Fs: afero.NewOsFs()}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.SyncInterval = time.Hour
+	s.attachTranscript(writer, nil)
+
+	// The first fold folds the first input's turn and mints the node its
+	// withheld marker leaves as the chain's live-only head.
+	fs.arm(2)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("first Compact: %v", err)
+	}
+	if n := fs.syncsSinceArm(); n < 2 {
+		t.Fatalf("only %d sync(s) since arming, want the first staged copy to land before the second failed: the fault hit the wrong write", n)
+	}
+	s.mu.Lock()
+	firstRetracted := s.conversation.retractedFrontierID
+	s.mu.Unlock()
+	if firstRetracted == "" {
+		t.Fatal("the first withheld fold minted no live coverage frontier")
+	}
+	live := currentHistory(t, s)
+	if at := indexOfTurnText(live, "opaque-double-withhold-input-1"); at >= 0 {
+		t.Fatalf("the first fold retained the turn it was to fold (at %d); the second fold would then mint a replacement and the pinned interleaving would not run", at)
+	}
+	if at := indexOfTurnText(live, "opaque-double-withhold-input-2"); at < 0 {
+		t.Fatal("the first fold folded the remaining input's turn: the retained tail must keep it so the second fold's coverage can equal the frontier's inputs")
+	}
+	for _, entry := range readPersistedTranscriptEntries(t, dir, s.ID()) {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			t.Fatal("the first withheld fold published a compaction marker whose staged retained-tail copy write failed")
+		}
+	}
+
+	// Additional recorded rounds move the remaining input's turn outside the
+	// retained tail, so the second fold's folded coverage equals the durable
+	// frontier's inputs and it mints no replacement node.
+	for i := range 6 {
+		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("opaque-double-withhold-filler-b-%d", i)))
+		s.recordTurn(turn, turn)
+	}
+	fs.arm(2)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("second Compact: %v", err)
+	}
+	if n := fs.syncsSinceArm(); n < 2 {
+		t.Fatalf("only %d sync(s) since the second arming, want the first staged copy to land before the second failed: the fault hit the wrong write", n)
+	}
+	for _, entry := range readPersistedTranscriptEntries(t, dir, s.ID()) {
+		if entry.Turn.Kind == schema.TurnCheckpoint || entry.Turn.Kind == schema.TurnSummary {
+			t.Fatal("the second withheld fold published a compaction marker whose staged retained-tail copy write failed")
+		}
+	}
+	if at := indexOfTurnText(currentHistory(t, s), "opaque-double-withhold-input-2"); at >= 0 {
+		t.Fatalf("the second fold retained the remaining input's turn (at %d); its folded coverage must instead equal the frontier's inputs to mint no replacement", at)
+	}
+	s.mu.Lock()
+	secondRetracted := s.conversation.retractedFrontierID
+	secondFrontier := s.conversation.frontierID
+	s.mu.Unlock()
+	if secondFrontier == "" {
+		t.Fatal("the second withheld fold lost the durable conversation frontier")
+	}
+	// The first fold's node must still be the chain's live-only head: the
+	// second fold minted no node to replace it, and the first fold's live
+	// marker still references it for coverage.
+	if secondRetracted != firstRetracted {
+		t.Fatalf("the second withheld fold moved the retracted frontier from %q to %q while minting no replacement node", firstRetracted, secondRetracted)
+	}
+
+	// The reply after both withheld folds is the output voice eligibility
+	// judges: its node must replace the retracted head in the chain, not fork
+	// beside it.
+	if _, err := s.ProcessInput(context.Background(), "opaque-double-withhold-input-3", nil); err != nil {
+		t.Fatal(err)
+	}
+	state := s.ConversationProvenance()
+	var output *appwire.ConversationOutputProvenance
+	for index, entry := range readPersistedTranscriptEntries(t, dir, s.ID()) {
+		if item, ok := apptranscript.CommunicateItem(entry.Turn.TurnID, index, entry.Turn); ok {
+			output = item.ConversationProvenance
+		}
+	}
+	if !appwire.ConversationOutputEligible(state, output) {
+		t.Fatalf("the reply after two consecutive withheld folds is not eligible for voice output: state=%+v output=%+v", state, output)
+	}
+}
