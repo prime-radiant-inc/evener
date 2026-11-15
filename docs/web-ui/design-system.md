@@ -1313,12 +1313,16 @@ through the ramp rather than per-field: `tokens.css`'s below-900px block sets
 `--font-size-body` to 16px, and the touch block beside `--tap-min` floors
 `--font-size-control` at 16px, so iOS Safari has nothing to auto-zoom into on
 any touch device — the iPhone Duo's 951pt inner display in landscape crosses
-the 899px boundary and still runs iOS Safari. Double-tap zoom is gone the
-same way: `global.css` spends `touch-action: manipulation` on the root, which
-keeps panning and pinch zoom. That is what let the viewport meta stop locking
-zoom (WCAG 1.4.4 resize text): `index.html` no longer carries
-`maximum-scale=1, user-scalable=no`, and `src/styles/viewport-pin.test.ts`
-fails if either comes back. An auto-growing textarea has a real content-driven
+the 899px boundary and still runs iOS Safari. Double-tap and pinch zoom are
+gone the same way (Jesse 2026-11-15): `global.css` spends
+`touch-action: pan-x pan-y` under `(any-pointer: coarse)`, so every touch
+screen pans and never zooms, matching the native app, which has no zoom on
+any display. Desktop zoom is untouched by construction: touch-action governs
+touch input only. The enlargement paths that remain on touch screens are the
+in-app font-size preference (S/M/L/XL) and the OS Magnifier. The viewport
+meta itself still never locks zoom: modern iOS ignores `maximum-scale` for
+pinch anyway, so a meta lock would add nothing the coarse query does not
+already own, and `src/styles/viewport-pin.test.ts` fails if it comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
