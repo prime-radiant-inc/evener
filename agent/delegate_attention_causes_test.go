@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
@@ -202,5 +203,82 @@ func TestAcceptedTriggerCauseReachesTheGenerationItLaunches(t *testing.T) {
 
 	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 1 {
 		t.Fatalf("the launched generation's lineage holds %d messages behind its trigger, want 1", got)
+	}
+}
+
+// A parent/delegate exchange whose parent turn settles several requests keeps
+// the runaway fuse visible: every exchange's fire still counts toward the
+// depth, so the guard that stops an endless loop trips. Each settled request
+// of a turn re-presents the update it handled, so the update's cause must
+// join the turn's lineage once — merged per request it would fill the
+// retained lineage head with copies and cap the fires the fuse can see.
+func TestParentDelegateExchangesWithRepeatedSettledRequestsKeepTheFuseVisible(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	causes := &root.delegateController.attentionCauses
+	const (
+		watchID         = "watch_loop"
+		watchGeneration = "wg_loop"
+		delegateSession = "child-session"
+	)
+	// One exchange: the parent's reply fires the delegate's watch, the
+	// delegate answers with an update whose cause carries that lineage, and
+	// the parent's next turn consumes the update through the settled
+	// requests that present it.
+	exchange := func(turn *provenance.Causal, n int) *provenance.Causal {
+		fired := provenance.WithWatch(turn, watchID, watchGeneration, jobstore.NewWatchSendDeliveryID(), delegateSession, "")
+		update := fmt.Sprintf("delegate:dlg_x/update/%d", n)
+		causes.remember(update, provenance.WithMessage(fired, delegateSession, update))
+		root.replaceActiveProvenance(nil)
+		root.resetAttentionCoverage()
+		for range 4 {
+			root.attentionMu.Lock()
+			root.attentionStagedIDs = map[string]struct{}{update: {}}
+			root.attentionMu.Unlock()
+			root.promoteStagedAttentionCoverage(llm.Request{})
+		}
+		causes.forget(update)
+		return root.activeCausalProvenance()
+	}
+	var turn *provenance.Causal
+	for i := range runawaySelfInfluenceDepth {
+		turn = exchange(turn, i)
+	}
+	depth := provenance.SelfInfluenceDepth(turn, watchID, "", func(string) bool { return true })
+	if depth < runawaySelfInfluenceDepth {
+		t.Fatalf("the parent turn's lineage exposes %d fires of the watch, want %d so the runaway guard trips", depth, runawaySelfInfluenceDepth)
+	}
+}
+
+// A cause that arrives later in the turn still joins it: merging each item's
+// cause once skips only items an earlier settled request already presented,
+// never the ones a later request presents for the first time.
+func TestLaterArrivingUpdateCauseStillJoinsTheTurn(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	causes := &root.delegateController.attentionCauses
+	const first = "delegate:dlg_x/update/1"
+	const late = "delegate:dlg_x/update/2"
+	stage := func(ids ...string) {
+		root.attentionMu.Lock()
+		staged := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			staged[id] = struct{}{}
+		}
+		root.attentionStagedIDs = staged
+		root.attentionMu.Unlock()
+	}
+	root.resetAttentionCoverage()
+	causes.remember(first, provenance.WithMessage(nil, "child-session", first))
+	stage(first)
+	root.promoteStagedAttentionCoverage(llm.Request{})
+
+	// The second update arrives mid-turn; a later request presents both.
+	causes.remember(late, provenance.WithMessage(nil, "child-session", late))
+	stage(first, late)
+	root.promoteStagedAttentionCoverage(llm.Request{})
+
+	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 2 {
+		t.Fatalf("the turn's lineage holds %d messages from the delegate, want both updates", got)
 	}
 }

@@ -332,6 +332,59 @@ func TestSendWatchBackstopNoticeRidesTheFrame(t *testing.T) {
 	}
 }
 
+// The hourly backstop counts only the deliveries inside the window: ones that
+// aged out of the hour no longer count toward the threshold, so the notice
+// waits for enough fresh deliveries.
+func TestSendWatchBackstopExpiresDeliveriesOutsideTheWindow(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	now := frozenTestTime
+	jm.now = func() time.Time { return now }
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	})
+	deliverFrame := func() string {
+		t.Helper()
+		communicateWith(jm, nil)
+		now = now.Add(10 * time.Second)
+		pending := jm.pendingWatchSendDeliveries(nil)
+		if len(pending) != 1 {
+			t.Fatalf("pending frames = %d, want 1", len(pending))
+		}
+		rendered := jm.renderWatchSendFrame(pending[0].cfg, pending[0].state)
+		if err := jm.settleWatchSendDelivered(pending[0].cfg, pending[0].state); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+		return rendered
+	}
+	// Ten deliveries that will age out of the window, then fifty that stay
+	// inside it: at most fifty count.
+	for i := range 10 {
+		if strings.Contains(deliverFrame(), llm.SystemNotificationOpenTag) {
+			t.Fatalf("frame %d carried the notice before the threshold", i+1)
+		}
+	}
+	now = now.Add(30 * time.Minute)
+	for i := range 50 {
+		if strings.Contains(deliverFrame(), llm.SystemNotificationOpenTag) {
+			t.Fatalf("frame %d carried the notice before the threshold", i+1)
+		}
+	}
+	// The first ten deliveries are now outside the hour, so the count reads
+	// only the fifty inside it and the threshold is ten deliveries away.
+	now = now.Add(40 * time.Minute)
+	for i := range 10 {
+		if strings.Contains(deliverFrame(), llm.SystemNotificationOpenTag) {
+			t.Fatalf("frame %d after the window edge carried the notice %d deliveries early", i+1, 10-i)
+		}
+	}
+	if !strings.Contains(deliverFrame(), llm.SystemNotificationOpenTag) {
+		t.Fatal("the frame past the fresh threshold does not carry the backstop notice")
+	}
+}
+
 // A send watch's runaway drop raises one diagnostic carrying the triggering
 // lineage (not a fire), and the stopped chain stays stopped: a later fire in
 // it, even after its lineage truncates, records nothing and raises nothing. A
@@ -428,5 +481,31 @@ func TestSendWatchBackstopCountsDeliveredFramesAcrossCoalescing(t *testing.T) {
 	communicateWith(jm, nil)
 	if strings.Contains(deliverPending(), llm.SystemNotificationOpenTag) {
 		t.Fatal("the next delivered frame repeated the notice within the hour")
+	}
+}
+
+// A send watch's condition markers name deliveries that can still settle.
+// While a busy receiver settles nothing, every match coalesces over the one
+// pending frame, and the superseded frames' markers must not accumulate.
+func TestSendWatchConditionMarkersNameDeliveriesThatCanStillSettle(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	})
+	// No drain: the receiver settles nothing, so each match supersedes the
+	// pending frame and no delivery ever settles.
+	for range 10 {
+		communicateWith(jm, nil)
+	}
+	cfg := onlyWatchConfigForTest(t, jm)
+	jm.mu.Lock()
+	markers := len(cfg.conditionFrames)
+	pending := len(cfg.pending)
+	jm.mu.Unlock()
+	if markers != pending {
+		t.Fatalf("condition markers = %d, want %d for the pending deliveries alone", markers, pending)
 	}
 }

@@ -846,6 +846,12 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 	}
 	persisted := record.persisted
 	cfg.pending[record.key] = &persisted
+	// The frame this one replaced can no longer settle as itself, so its
+	// condition marker goes unless a delivery claim or the settlement retry
+	// still owes it a settle.
+	if current != nil && current.DeliveryID != persisted.DeliveryID && !jm.conditionFrameCanSettleLocked(cfg, current.DeliveryID) {
+		delete(cfg.conditionFrames, current.DeliveryID)
+	}
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}

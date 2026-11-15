@@ -238,9 +238,36 @@ func (jm *jobManager) conditionFireSendLocked(d watchSendDelivery) watchSendDeli
 	if d.cfg.conditionFrames == nil {
 		d.cfg.conditionFrames = make(map[string]struct{})
 	}
+	// A marker names a delivery that can still settle. Frames superseded or
+	// dropped while the receiver stayed busy settle nothing, so their markers
+	// go before the next one lands: markers may not outgrow the live frames.
+	for id := range d.cfg.conditionFrames {
+		if !jm.conditionFrameCanSettleLocked(d.cfg, id) {
+			delete(d.cfg.conditionFrames, id)
+		}
+	}
 	d.cfg.conditionFrames[d.deliveryID] = struct{}{}
 	d.ownMessageHops = provenance.MessagesFrom(d.triggerProvenance, jm.watchReceiverSession(d.cfg))
 	return d
+}
+
+// conditionFrameCanSettleLocked reports whether deliveryID still names a frame
+// that owes a settle: one still pending, in flight under a delivery claim, or
+// handed to the settlement retry. The caller must hold jm.mu.
+func (jm *jobManager) conditionFrameCanSettleLocked(cfg *watchConfig, deliveryID string) bool {
+	for _, key := range cfg.pendingOrder {
+		if state := cfg.pending[key]; state != nil && state.DeliveryID == deliveryID {
+			return true
+		}
+	}
+	if _, delivering := jm.deliveringWatchSends[deliveryID]; delivering {
+		return true
+	}
+	if _, unsettled := jm.unsettledWatchSends[deliveryID]; unsettled {
+		return true
+	}
+	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
+	return retrying
 }
 
 // watchReceiverSession is the session cfg delivers to: its receiver, or this
@@ -312,7 +339,11 @@ func (jm *jobManager) watchSendBackstopFiresLocked(cfg *watchConfig, state jobst
 		return 0
 	}
 	now := jm.now()
-	count := len(recentWithinBackstopWindow(cfg.recentDeliveries, now)) + 1
+	// recentWithinBackstopWindow shifts the backing array in place, so the
+	// pruned slice must replace the stored one or settlement keeps counting
+	// the slots that expired.
+	cfg.recentDeliveries = recentWithinBackstopWindow(cfg.recentDeliveries, now)
+	count := len(cfg.recentDeliveries) + 1
 	if !watchBackstopDue(cfg, count, now) {
 		return 0
 	}

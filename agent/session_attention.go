@@ -1693,16 +1693,32 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	if covered == nil {
 		covered = make(map[string]struct{}, len(staged))
 	}
+	merged := s.attentionCausesMergedIDs
+	if merged == nil {
+		merged = make(map[string]struct{}, len(staged))
+	}
+	// Each item's cause joins the turn at the first settled request that
+	// presents it; a later request of the same turn re-presenting the item
+	// merges nothing.
+	var fresh []string
+	for id := range staged {
+		if _, done := merged[id]; done {
+			continue
+		}
+		merged[id] = struct{}{}
+		fresh = append(fresh, id)
+	}
 	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
+	s.attentionCausesMergedIDs = merged
 	s.attentionMu.Unlock()
 	// The model has now seen these items, so what the turn does next descends
 	// from what caused them. This is where every attention item's cause joins
-	// a turn: a trigger the accept already resolved, an item presented at turn
-	// start, and one that arrived mid-turn alike.
+	// a turn once: a trigger the accept already resolved, an item presented
+	// at turn start, and one that arrived mid-turn alike.
 	s.unionActiveProvenance(acceptedCause)
-	if s.delegateController != nil {
-		s.unionActiveProvenance(s.delegateController.attentionCauses.union(slices.Collect(maps.Keys(staged))))
+	if s.delegateController != nil && len(fresh) > 0 {
+		s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
 	}
 }
 
@@ -1713,6 +1729,7 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
+	s.attentionCausesMergedIDs = nil
 	s.attentionMu.Unlock()
 }
 
