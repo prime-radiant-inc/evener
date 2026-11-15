@@ -433,6 +433,9 @@ function LiveConversationBody({
     cancelFindOlder,
     ownsKeyboard,
     itemLoaded,
+    // A dormant conversation shows its empty-state surface instead of the
+    // transcript, so the scroll port Find marks and observes is not mounted.
+    transcriptMounted: model !== undefined && (!isDormantTranscript(model.turns) || pendingRowsVisible),
   });
   // Going to the live end also ends Find's search into older history, so a
   // match arriving later cannot pull the reader back up.

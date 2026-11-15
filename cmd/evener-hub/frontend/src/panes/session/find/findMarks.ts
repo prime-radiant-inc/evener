@@ -209,7 +209,10 @@ export function markTranscript(
 ): MarkedTranscript {
   const view = viewOf(port);
   const registry = highlightRegistry(view);
-  const scope: ParentNode = port ?? document;
+  // A conversation with no mounted transcript has nothing of its own to mark
+  // or clean: falling back to the document would take another open
+  // conversation's current mark away.
+  const scope: ParentNode | null = port;
   let current: HTMLElement | null = null;
   const all: Range[] = [];
   const mine: Range[] = [];
@@ -239,7 +242,7 @@ export function markTranscript(
       if (hit !== currentHit) markHit(hit);
     }
   }
-  for (const marked of scope.querySelectorAll(`[${FIND_CURRENT_ATTRIBUTE}]`)) {
+  for (const marked of scope?.querySelectorAll(`[${FIND_CURRENT_ATTRIBUTE}]`) ?? []) {
     if (marked !== current) marked.removeAttribute(FIND_CURRENT_ATTRIBUTE);
   }
   current?.setAttribute(FIND_CURRENT_ATTRIBUTE, "");

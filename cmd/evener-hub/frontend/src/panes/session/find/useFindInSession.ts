@@ -74,6 +74,10 @@ interface FindInSessionOptions {
   ownsKeyboard(): boolean;
   /** Whether the loaded window holds this source item, shown or not. */
   itemLoaded(itemId: string): boolean;
+  /** Whether the transcript subtree is mounted. A dormant conversation shows
+   * an empty-state surface in its place, so rows can exist with no scroll port
+   * to mark or observe; the port appears when this turns true. */
+  transcriptMounted: boolean;
 }
 
 interface FindState {
@@ -162,6 +166,7 @@ export function useFindInSession({
   cancelFindOlder,
   ownsKeyboard,
   itemLoaded,
+  transcriptMounted,
 }: FindInSessionOptions): {
   view: FindView | null;
   open(): void;
@@ -421,8 +426,10 @@ export function useFindInSession({
   // reply growing. One pass per frame at most; closing Find, or this
   // conversation unmounting, takes them away. The scroll port exists only
   // once the transcript has rows, which can be after Find opened.
-  const hasRows = rows.length > 0;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hasRows stands for the port mounting
+  // The port exists once the transcript subtree mounts, which a dormant
+  // conversation defers behind its empty-state surface. Rows alone do not say
+  // so: a dormant conversation can carry rows while showing no transcript.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: transcriptMounted stands for the port mounting
   useLayoutEffect(() => {
     if (!isOpen) return;
     const port = listRef.current?.getScrollElement();
@@ -478,7 +485,7 @@ export function useFindInSession({
       settle.current = null;
       markTranscript(port, [], null, "");
     };
-  }, [isOpen, listRef, hasRows, ownerDocument]);
+  }, [isOpen, listRef, transcriptMounted, ownerDocument]);
   // Marking is safe inside a commit; only the scroll waits for a frame.
   // biome-ignore lint/correctness/useExhaustiveDependencies: moving the port changes its highlight registry even when hits do not change
   useLayoutEffect(() => {
@@ -491,7 +498,7 @@ export function useFindInSession({
   // bar itself for a reader who wants it.
   const ownsKeyboardRef = useRef(ownsKeyboard);
   ownsKeyboardRef.current = ownsKeyboard;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hasRows signals that the scroll port mounted after the render
+  // biome-ignore lint/correctness/useExhaustiveDependencies: transcriptMounted signals that the scroll port mounted after the render
   useEffect(() => {
     installKeybindings();
     const unregister = keybindingsRegistry.getState().registerAction(ACTIONS.transcriptFind, (event) => {
@@ -510,7 +517,7 @@ export function useFindInSession({
       detach();
       unregister();
     };
-  }, [open, ownerDocument, hasRows, listRef]);
+  }, [open, ownerDocument, transcriptMounted, listRef]);
 
   const leaveHistory = useCallback(() => {
     settle.current = null;

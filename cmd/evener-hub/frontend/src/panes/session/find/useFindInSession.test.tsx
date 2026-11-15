@@ -111,6 +111,7 @@ function Harness() {
     cancelFindOlder: transcript.cancelFindOlder,
     ownsKeyboard: () => ownsKeyboard,
     itemLoaded: (itemId) => model?.turns.some((each) => each.items.some((item) => item.id === itemId)) ?? false,
+    transcriptMounted: true,
   });
   return (
     <>

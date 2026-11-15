@@ -49,6 +49,24 @@ test("the current entry's words and the other matches are painted separately", (
   expect(registry.size).toBe(0);
 });
 
+// A conversation whose transcript is not mounted has no port, and its Find
+// must clean up nothing: another open conversation's current mark is not its
+// to take away.
+test("a null port leaves another conversation's current mark alone", () => {
+  const mine = port({ a: "a needle" });
+  markTranscript(mine, [hit("a")], "a", "needle");
+  const theirs = document.createElement("div");
+  const anchor = document.createElement("div");
+  anchor.setAttribute("data-view-anchor-id", "theirs");
+  anchor.setAttribute("data-find-current", "");
+  theirs.appendChild(anchor);
+  document.body.appendChild(theirs);
+
+  const marked = markTranscript(null, [], null, "");
+  expect(marked.current).toBeNull();
+  expect(anchor.getAttribute("data-find-current")).toBe("");
+});
+
 test("the current message keeps a focus range when earlier matches exhaust the paint budget", () => {
   const el = port({ earlier: "needle ".repeat(1500), current: `${"prefix ".repeat(50)}needle` });
   const marked = markTranscript(el, [hit("earlier"), hit("current")], "current", "needle");
