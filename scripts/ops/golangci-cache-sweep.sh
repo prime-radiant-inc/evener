@@ -37,9 +37,8 @@
 #
 # Safety: only 16-hex-named directories directly under this repository's
 # bucket are candidates; everything else in the cache root is left alone. If
-# `git worktree list` fails, or the repository is bare (the live set is
-# degenerate), the live set is unknown or unusable and the script fails loudly
-# without deleting anything — an unknown set must never be treated as empty.
+# `git worktree list` fails or names no registered worktrees, the live set is
+# unknown or unusable and the script fails without deleting anything.
 #
 # Usage: golangci-cache-sweep.sh [--dry-run]
 #   GOLANGCI_SWEEP_MIN_AGE_HOURS=168 golangci-cache-sweep.sh  # keep a week
@@ -74,19 +73,19 @@ if ! worktree_lines="$(git worktree list --porcelain 2>/dev/null)"; then
 	echo "golangci-cache-sweep: not inside a workable git repository; the live worktree set is unknown, refusing to sweep" >&2
 	exit 1
 fi
-# A bare repository succeeds with a degenerate set — only the bare root
-# itself — which would make every other worktree's cache look dead, so a
-# `bare` attribute line refuses the run for the same reason as a git failure.
-# The match is anchored to the full porcelain attribute line ("bare" on its
-# own line), not the substring, so a worktree path or branch name containing
-# "bare" cannot refuse a legitimate run.
-case "$worktree_lines" in
-	*'
-bare'*)
-		echo "golangci-cache-sweep: this is a bare repository; its worktree list cannot name this machine's lanes, refusing to sweep" >&2
-		exit 1
-		;;
-esac
+# A bare common repository contributes a metadata entry but no worktree root;
+# its linked worktrees remain usable. An empty registered set cannot safely
+# classify any cache as dead.
+worktree_roots="$(printf '%s\n' "$worktree_lines" | awk '
+	/^worktree / { root = substr($0, 10); next }
+	/^bare$/ { root = ""; next }
+	/^$/ { if (root != "") print root; root = ""; next }
+	END { if (root != "") print root }
+')"
+if [ -z "$worktree_roots" ]; then
+	echo "golangci-cache-sweep: no registered worktree roots; the live set is unusable, refusing to sweep" >&2
+	exit 1
+fi
 # The repository bucket, derived exactly as scripts/lib/golangci-lint-cache.sh
 # derives it: sha256-16 over the absolute Git common directory
 # (--path-format=absolute needs git >= 2.31). Every worktree of this clone
@@ -109,14 +108,14 @@ repo_key="$(printf '%s' "$repo_shasum" | cut -c1-16)"
 sweep_root="$cache_root/$repo_key"
 # One shasum per root is inherent (content-hash tools hash files, not argv
 # strings); the cut runs once over the whole set instead of once per root.
-# The hash loop runs as the LAST pipeline element into a command
-# substitution whose status the if tests directly — a cut downstream of it
-# would mask a shasum failure the way POSIX pipelines masked git's in the
-# worktree-list guard above. Empty input (no worktree lines) would also
-# produce empty output, so the loop only succeeds when it hashed at least
-# one root.
-if ! shasum_lines="$(printf '%s\n' "$worktree_lines" | sed -n 's/^worktree //p' \
-	| while IFS= read -r root; do printf '%s' "$root" | shasum -a 256; done)"; then
+# The hash loop is the LAST pipeline element into a guarded substitution.
+# Each failed hash exits the loop explicitly: shell errexit behavior inside
+# a tested substitution differs, and a later success cannot repair a missing
+# live key. The registered-root guard above excludes an empty live set.
+if ! shasum_lines="$(printf '%s\n' "$worktree_roots" \
+	| while IFS= read -r root; do
+		printf '%s' "$root" | shasum -a 256 || exit 1
+	done)"; then
 	echo "golangci-cache-sweep: hashing the live worktree roots failed; the live set is incomplete, refusing to sweep" >&2
 	exit 1
 fi
@@ -124,44 +123,33 @@ live_keys="$(printf '%s\n' "$shasum_lines" | cut -c1-16)"
 
 [ -d "$sweep_root" ] || { echo "$(date -Iseconds) golangci-cache-sweep: no cache bucket for this repository at $sweep_root; nothing to sweep"; exit 0; }
 
-# Candidates: 16-hex-named dirs under this repository's bucket, old enough
-# to sweep. Both predicates stay in find — -name's bracket glob is portable
-# where GNU find's -regextype is not, and -newermt runs on the BSD find macOS
-# ships — and keeping the name filter out of the shell also keeps it
-# executable under macOS's /bin/sh (bash 3.2): a `case` inside a command
-# substitution ends the substitution at the first case pattern's `)`, a break
-# `sh -n` cannot see because it only fires when the substitution runs. A
-# find that errors fails the run now — the substitution preserves its
-# status under set -e — instead of yielding a fail-open empty candidate set.
-candidates="$(find "$sweep_root" -mindepth 1 -maxdepth 1 -type d \
+# Candidates remain individual argv paths from find's bucket, name, and age
+# filters through deletion. Neither newlines nor whitespace in a cache root
+# may turn a candidate into a different deletion target.
+if ! find "$sweep_root" -mindepth 1 -maxdepth 1 -type d \
 	-name '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]' \
-	'!' -newermt "-${min_age_hours} hours")"
-
-# The delete loop reads the candidate list through a pipe, so the loop body
-# runs in a subshell — but a failing rm still fails the run: the subshell
-# inherits set -e, exits before "swept" prints, and its status is the
-# pipeline's, which set -e propagates.
-if [ -n "$candidates" ]; then
-	printf '%s\n' "$candidates" | while IFS= read -r dir; do
-		key=$(basename "$dir")
-		if printf '%s\n' "$live_keys" | grep -qxF "$key"; then
-			continue
-		fi
-		size_kb=$(du -sk "$dir" | cut -f1)
-		if [ "$dry_run" -eq 1 ]; then
-			echo "would sweep $key (${size_kb}K, no worktree has this cache's key and the cache has carried an mtime older than ${min_age_hours}h)"
-			continue
-		fi
-		# This delete is the behaviour the script exists for, so it takes the
-		# auditable variable-fed form and sits on the count-pinned list of
-		# the recursive-delete audit (recursiveDeleteAllowedLines in
-		# internal/devtool/repoaudit) with this reason: $dir comes only from
-		# the candidates find above — a 16-hex dir inside this repository's
-		# own bucket, past the age guard and absent from the live set — so
-		# the delete cannot be handed a path from outside the candidate set.
-		rm -rf "$dir"
-		echo "swept $key (${size_kb}K, no worktree has this cache's key and the cache has carried an mtime older than ${min_age_hours}h)"
-	done
+	'!' -newermt "-${min_age_hours} hours" \
+	-exec sh -c '
+		set -e
+		live_keys=$1 dry_run=$2 min_age_hours=$3
+		shift 3
+		for dir do
+			key=$(basename "$dir")
+			if printf "%s\n" "$live_keys" | grep -qxF "$key"; then
+				continue
+			fi
+			size_kb=$(du -sk "$dir" | cut -f1)
+			if [ "$dry_run" -eq 1 ]; then
+				echo "would sweep $key (${size_kb}K, no worktree has this cache key and the cache has carried an mtime older than ${min_age_hours}h)"
+				continue
+			fi
+			# Every dir arrives as one find-filtered argv element, not a split list.
+			rm -rf "$dir"
+			echo "swept $key (${size_kb}K, no worktree has this cache key and the cache has carried an mtime older than ${min_age_hours}h)"
+		done
+	' sh "$live_keys" "$dry_run" "$min_age_hours" {} +; then
+	echo "golangci-cache-sweep: finding or deleting cache candidates failed" >&2
+	exit 1
 fi
 
 if [ "$dry_run" -eq 1 ]; then

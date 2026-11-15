@@ -71,15 +71,25 @@ func sweepEnv(cacheHome string) []string {
 // fixture cache root, so nothing on the real machine is at risk.
 func runSweep(t *testing.T, repo string, cacheHome string, args ...string) (string, int) {
 	t.Helper()
+	return runSweepWithEnv(t, repo, sweepEnv(cacheHome), args...)
+}
+
+func runSweepWithEnv(t *testing.T, repo string, env []string, args ...string) (string, int) {
+	t.Helper()
+	return runSweepWithShellAndEnv(t, "sh", repo, env, args...)
+}
+
+func runSweepWithShellAndEnv(t *testing.T, shell, repo string, env []string, args ...string) (string, int) {
+	t.Helper()
 	self, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	script := filepath.Join(self, golangciCacheSweepScript)
 	cmdArgs := append([]string{script}, args...)
-	cmd := exec.Command("sh", cmdArgs...)
+	cmd := exec.Command(shell, cmdArgs...)
 	cmd.Dir = repo
-	cmd.Env = sweepEnv(cacheHome)
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	status := 0
 	if err != nil {
@@ -327,6 +337,146 @@ func TestGolangciCacheSweepDeletesDeadCaches(t *testing.T) {
 		t.Errorf("the sweeper run from a registered worktree kept the dead dir; every worktree of a clone must resolve the same bucket\n%s", out3)
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat deadOld3: %v", err)
+	}
+
+	// A newline in the cache home must not turn a candidate into an
+	// unrelated directory outside the repository's cache bucket.
+	protected := filepath.Join(fixture, "protected")
+	if err := os.Mkdir(protected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(protected, "keep-me")
+	if err := os.WriteFile(sentinel, []byte("unrelated data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newlineHome := protected + "\ncache"
+	newlineBucket := filepath.Join(newlineHome, "evener", "golangci-lint", sweepRepoHash(commonA))
+	newlineDead := makeSweepCacheDir(t, newlineBucket, sweepCacheHash(filepath.Join(fixture, "newline-gone")))
+	if err := os.Chtimes(newlineDead, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	newlineOut, newlineStatus := runSweep(t, repo, newlineHome)
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("a newline in the cache home deleted unrelated data outside its bucket: %v\nexit %d\n%s", err, newlineStatus, newlineOut)
+	}
+	if newlineStatus != 0 {
+		t.Errorf("sweeper failed with a newline in the cache home: exit %d\n%s", newlineStatus, newlineOut)
+	}
+	if _, err := os.Stat(newlineDead); !os.IsNotExist(err) {
+		t.Errorf("the dead cache inside the newline-containing bucket was not swept: %v\n%s", err, newlineOut)
+	}
+
+	// A failed worktree hash must stop before an incomplete live set can
+	// sweep a registered worktree's old cache.
+	realShasum, err := exec.LookPath("shasum")
+	if err != nil {
+		t.Skipf("shasum is not on PATH: %v", err)
+	}
+	bin := filepath.Join(fixture, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := `#!/bin/sh
+root=$(cat)
+if [ "$root" = "$SWEEP_FAIL_HASH_ROOT" ]; then
+	: > "$SWEEP_HASH_FAILURE_MARKER"
+	exit 1
+fi
+if [ -f "$SWEEP_HASH_FAILURE_MARKER" ]; then
+	: > "$SWEEP_HASH_AFTER_MARKER"
+fi
+printf '%s' "$root" | "$SWEEP_REAL_SHASUM" -a 256
+`
+	if err := os.WriteFile(filepath.Join(bin, "shasum"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hashHome := filepath.Join(fixture, "hash-failure-cache")
+	hashBucket := filepath.Join(hashHome, "evener", "golangci-lint", sweepRepoHash(commonA))
+	oldMain := makeSweepCacheDir(t, hashBucket, sweepCacheHash(repo))
+	oldDead := makeSweepCacheDir(t, hashBucket, sweepCacheHash(filepath.Join(fixture, "hash-failure-gone")))
+	for _, dir := range []string{oldMain, oldDead} {
+		if err := os.Chtimes(dir, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(fixture, "failed-hash")
+	afterMarker := filepath.Join(fixture, "hash-after-failure")
+	var env []string
+	for _, entry := range sweepEnv(hashHome) {
+		if !strings.HasPrefix(entry, "PATH=") {
+			env = append(env, entry)
+		}
+	}
+	env = append(env, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "SWEEP_FAIL_HASH_ROOT="+repo, "SWEEP_REAL_SHASUM="+realShasum, "SWEEP_HASH_FAILURE_MARKER="+marker, "SWEEP_HASH_AFTER_MARKER="+afterMarker)
+	hashOut, hashStatus := runSweepWithEnv(t, repo, env)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the fixture did not run its failing intermediate hash: %v\n%s", err, hashOut)
+	}
+	if _, err := os.Stat(afterMarker); !os.IsNotExist(err) {
+		t.Errorf("the hash loop continued after a worktree hash failed: %v\nexit %d\n%s", err, hashStatus, hashOut)
+	}
+	if hashStatus == 0 {
+		t.Errorf("the sweeper accepted an incomplete live set after a failed intermediate hash:\n%s", hashOut)
+	}
+	if _, err := os.Stat(oldMain); err != nil {
+		t.Errorf("the sweeper deleted a registered worktree's old cache after its hash failed: %v\n%s", err, hashOut)
+	}
+	if _, err := os.Stat(oldDead); err != nil {
+		t.Errorf("the sweeper deleted a cache after an incomplete live set: %v\n%s", err, hashOut)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	bashOut, bashStatus := runSweepWithShellAndEnv(t, "bash", repo, env)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("bash did not run the failing worktree hash: %v\n%s", err, bashOut)
+	}
+	if bashStatus == 0 {
+		t.Errorf("bash accepted an incomplete live set after a failed intermediate hash:\n%s", bashOut)
+	}
+	if _, err := os.Stat(oldMain); err != nil {
+		t.Errorf("bash deleted a registered worktree's old cache after its hash failed: %v\n%s", err, bashOut)
+	}
+	if _, err := os.Stat(oldDead); err != nil {
+		t.Errorf("bash deleted a cache after an incomplete live set: %v\n%s", err, bashOut)
+	}
+
+	// A bare common repository has a bare metadata entry alongside its
+	// registered linked worktrees; those worktrees still form a live set.
+	bareRepo := filepath.Join(fixture, "bare.git")
+	gittest.Run(t, fixture, "clone", "-q", "--bare", repo, bareRepo)
+	bareHome := filepath.Join(fixture, "bare-cache")
+	bareBucket := filepath.Join(bareHome, "evener", "golangci-lint", sweepRepoHash(bareRepo))
+	bareDead := makeSweepCacheDir(t, bareBucket, sweepCacheHash(filepath.Join(fixture, "bare-gone")))
+	if err := os.Chtimes(bareDead, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	bareOnlyOut, bareOnlyStatus := runSweep(t, bareRepo, bareHome)
+	if bareOnlyStatus == 0 {
+		t.Errorf("an unlinked bare clone accepted an empty registered worktree set:\n%s", bareOnlyOut)
+	}
+	if _, err := os.Stat(bareDead); err != nil {
+		t.Errorf("an unlinked bare clone deleted a cache without a usable live set: %v\n%s", err, bareOnlyOut)
+	}
+	bareLinked := filepath.Join(fixture, "bare-linked")
+	gittest.Run(t, bareRepo, "worktree", "add", "-q", "--detach", bareLinked)
+	bareCommon := gittest.Run(t, bareLinked, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if bareCommon != bareRepo {
+		t.Fatalf("bare clone fixture's common directory %q differs from its bucket root %q", bareCommon, bareRepo)
+	}
+	bareLive := makeSweepCacheDir(t, bareBucket, sweepCacheHash(bareLinked))
+	if err := os.Chtimes(bareLive, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	bareOut, bareStatus := runSweep(t, bareLinked, bareHome)
+	if bareStatus != 0 {
+		t.Errorf("sweep from a bare-backed linked worktree failed: exit %d\n%s", bareStatus, bareOut)
+	}
+	if _, err := os.Stat(bareLive); err != nil {
+		t.Errorf("a bare-backed registered worktree's old cache was deleted: %v\n%s", err, bareOut)
+	}
+	if _, err := os.Stat(bareDead); !os.IsNotExist(err) {
+		t.Errorf("a bare-backed orphan cache was not swept: %v\n%s", err, bareOut)
 	}
 
 	// Outside a git repo the script must delete nothing and fail loudly:
