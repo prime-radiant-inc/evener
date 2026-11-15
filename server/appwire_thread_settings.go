@@ -69,6 +69,13 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 		// not a member of the instance's catalog, unresolvable ref). Revisit
 		// this blanket mapping if SetModel grows I/O failure modes (e.g. a live
 		// ListModels fetch failing), which would deserve a distinct code.
+		//
+		// A refusal is a durable outcome the session records before returning,
+		// and it emits no event that would refresh the facet — nothing was
+		// applied, and no turn boundary ran to publish it. So this reply is the
+		// only moment that can, and the bounded notice ring may have been
+		// evicted by the time a client reconnects.
+		s.RefreshAcceptedModelPick()
 		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams(err.Error())
 	}
 	if params.ClientMutationID == "" {

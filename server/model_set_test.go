@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -72,6 +73,43 @@ func TestHandleAppThreadModelSet_SuccessReturnsRejectionCode(t *testing.T) {
 	}
 	if gotClientMutationID != "model-pick-b" {
 		t.Fatalf("model hook client mutation id = %q, want %q", gotClientMutationID, "model-pick-b")
+	}
+}
+
+// TestHandleAppThreadModelSet_RefusalPublishesTheRecordedOutcome pins the
+// refusal half of the pick projection. A refused switch records its outcome on
+// the session and then returns an error; nothing else fires, because no switch
+// applied and no turn boundary ran to publish anything. The refusal notice is
+// one entry in a bounded ring, so a client that reconnects after it was evicted
+// keeps presenting the pick as still in flight unless this reply published it.
+func TestHandleAppThreadModelSet_RefusalPublishesTheRecordedOutcome(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	src := &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "th_1"}}
+	srv.SetThreadEnvelopeSource(src)
+	srv.RefreshThreadEnvelope()
+
+	const refused = "gpt-unrepresentable-here"
+	srv.SetModelFunc(func(string, string) error {
+		// The session records the rejection before returning the refusal, the
+		// way Session.SetModelWithMutationID does.
+		src.setModelPick(appwire.ModelPickState{Sequence: 3, Outcome: appwire.ModelPickRejected, ClientMutationID: "pick-refused", Model: refused})
+		return errors.New("cannot switch: history contains content unrepresentable by that target (audio)")
+	})
+
+	if _, err := srv.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Model:            refused,
+		ClientMutationID: "pick-refused",
+	}); err == nil {
+		t.Fatal("a refused model switch returned no error")
+	}
+
+	got := readThreadOverWire(t, srv, "local:th_1").Evener.ModelPick
+	if got == nil {
+		t.Fatal("the refusal published no model pick: once the bounded notice ring evicts the warning, a reconnecting client has no account of the rejection")
+	}
+	if got.Outcome != appwire.ModelPickRejected || got.Model != refused {
+		t.Fatalf("modelPick = %+v, want the refused pick recorded as %q", got, appwire.ModelPickRejected)
 	}
 }
 
