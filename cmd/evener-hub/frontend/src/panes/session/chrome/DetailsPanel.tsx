@@ -1,6 +1,8 @@
 // DetailsPanel: a trigger + Sheet holding a session's full accounting - who it
-// is (model, state, id), what it has spent (context, work time, tokens, cost),
-// and where it runs (cwd, project, branch, when it began and was last written).
+// is (model, state, id), what it has spent (context, work time, tokens, cost,
+// failed tool calls), what it was started with and cannot change (sandbox,
+// network, plugins), and where it runs (host, cwd, project, branch, when it
+// began and was last written).
 //
 // The status row beside it is a glanceable strip: a context METER, a clock,
 // arrows. This panel is where the same facts get room to be precise ("42%
@@ -8,9 +10,11 @@
 // strip has no room for at all, so a reader deciding whether to compact, or
 // reporting what a session cost, has the numbers instead of a shape.
 //
-// Rows are grouped (Session / Usage / Location) the way the panel this replaced
-// grouped its own (cmd/evener-hub/web_workspace.go's detailsSections on the
-// legacy renderer): a dozen flat rows do not scan.
+// Rows are grouped (Session / Usage / Set at launch / Location) the way the
+// panel this replaced grouped its own (cmd/evener-hub/web_workspace.go's
+// detailsSections on the legacy renderer): a dozen flat rows do not scan. The
+// launch group's title carries the one thing its rows share - they were chosen
+// when the session started and hold for its lifetime - so no row repeats it.
 //
 // EVERY row is omitted when its value is absent. That is the panel's central
 // rule, and the reason a session's whole usage section can vanish: the wire
@@ -21,6 +25,8 @@
 //
 // Every value comes off the live ThreadModel the status row already reads - no
 // fetch for accounting. Manager is the session's own start-time property.
+// The host row is named from the navigation manifest the shell already holds
+// (useSessionHost), and appears only on a hub that has more than one host.
 // The branch row is the one caller-supplied exception: nothing populates the
 // wire's thread.gitInfo on the hub's local read paths, so the About tab and the
 // desktop session Details pane pass a branch resolved from the session's cwd at
@@ -35,7 +41,7 @@
 // honest unknown and renders no row at all.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { formatTokenCount } from "@evener/appwire-client";
+import { accessFacts, formatTokenCount, loadedPluginNames } from "@evener/appwire-client";
 import { forwardRef, type ReactNode, useImperativeHandle, useState } from "react";
 import { Button, Meter, PropertyList, Sheet, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -49,6 +55,7 @@ import {
   modelLabel,
   totalWorkMillis,
 } from "./statusFormat";
+import { useSessionHost } from "./useSessionHost";
 
 export interface DetailsPanelProps {
   model: ThreadModel;
@@ -159,6 +166,12 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
   // else the caller's view-time resolution. Both absent renders no row, like
   // every absent fact in this panel.
   const branch = model.gitBranch || resolvedBranch;
+  // Absent and zero both render nothing: absent is "nobody counted", and a
+  // counted zero is not news (model.ts, failedToolCalls).
+  const failedToolCalls = model.failedToolCalls ?? 0;
+  const access = accessFacts(model);
+  const plugins = loadedPluginNames(model);
+  const host = useSessionHost(model.ref);
 
   return (
     <>
@@ -212,11 +225,44 @@ export function DetailsPanelBody({ model, now, resolvedBranch = "" }: DetailsPan
               tokens.scope,
             ),
           !!model.cost && detailRow("cost", "session-details-cost", model.cost),
+          failedToolCalls > 0 &&
+            detailRow("failed tool calls", "session-details-failed-tool-calls", String(failedToolCalls)),
+        ]}
+      />
+      <Section
+        title="Set at launch"
+        rows={[
+          access && detailRow("sandbox", "session-details-sandbox", access.mode),
+          access && detailRow("network", "session-details-network", access.network),
+          plugins &&
+            detailRow(
+              "plugins",
+              "session-details-plugins",
+              // An authoritative empty inventory is a fact worth a row: it
+              // answers "why is my plugin's command missing here".
+              plugins.length > 0 ? plugins.join(", ") : <span className={CLASS.dim}>None</span>,
+            ),
         ]}
       />
       <Section
         title="Location"
         rows={[
+          host &&
+            detailRow(
+              "host",
+              "session-details-host",
+              <>
+                <span>{host.label}</span>
+                {/* Stated in words in both directions: the panel is where a
+                    reader checks, so an online host says so instead of leaving
+                    it to the absence of a warning. Unknown says nothing. */}
+                {host.online !== null && (
+                  <span className={CLASS.dim} data-testid="session-details-host-state" data-online={host.online}>
+                    {host.online ? "online" : "offline"}
+                  </span>
+                )}
+              </>,
+            ),
           !!model.cwd && detailRow("working dir", "session-details-cwd", model.cwd, true),
           !!projectPath && detailRow("project", "session-details-project", projectPath, true),
           !!branch && detailRow("branch", "session-details-branch", branch, true),

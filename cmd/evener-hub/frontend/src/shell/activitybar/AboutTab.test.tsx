@@ -129,7 +129,10 @@ test("About omits unavailable accounting and empty sections", async () => {
   mountSidebar(client);
   await screen.findByText("owner");
   expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
-  expect(screen.queryByRole("heading", { name: "Location" })).toBeNull();
+  // This session runs on another host, which its ref alone establishes, so
+  // Location keeps that one row; the directory the read left out stays absent.
+  expect(screen.queryByTestId("session-details-cwd")).toBeNull();
+  expect(screen.getByTestId("session-details-host").textContent).toContain("remote");
   expect(screen.queryByTestId("session-details-context")).toBeNull();
   expect(screen.queryByTestId("session-details-cost")).toBeNull();
   expect(screen.queryByTestId("session-details-tokens")).toBeNull();
