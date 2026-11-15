@@ -49,13 +49,7 @@ func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Drop only this test's disposable index to prove a fresh journal replay.
-		key := s.stateDir + "\x00" + s.ID()
-		sessionActivityIndexes.Lock()
-		if cached := sessionActivityIndexes.entries[key]; cached != nil {
-			delete(sessionActivityIndexes.entries, key)
-			sessionActivityIndexes.order.Remove(cached.element)
-		}
-		sessionActivityIndexes.Unlock()
+		dropSessionActivityIndexCache(s.stateDir, s.ID())
 		retained, err := LoadSessionActivityDelegates(t.Context(), s.stateDir, s.ID(), params)
 		if err != nil {
 			t.Fatal(err)
@@ -175,13 +169,7 @@ func TestSessionActivityOpenGenerationOmitsPriorOutcome(t *testing.T) {
 						t.Fatalf("%s scope=%s live: %v", stage, scope, err)
 					}
 					// Remove this test's disposable index so the retained read folds the journal afresh.
-					key := s.stateDir + "\x00" + s.ID()
-					sessionActivityIndexes.Lock()
-					if cached := sessionActivityIndexes.entries[key]; cached != nil {
-						delete(sessionActivityIndexes.entries, key)
-						sessionActivityIndexes.order.Remove(cached.element)
-					}
-					sessionActivityIndexes.Unlock()
+					dropSessionActivityIndexCache(s.stateDir, s.ID())
 					retained, err := LoadSessionActivityDelegates(t.Context(), s.stateDir, s.ID(), params)
 					if err != nil {
 						t.Fatalf("%s scope=%s replay: %v", stage, scope, err)

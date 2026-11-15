@@ -228,6 +228,20 @@ func requireSessionActivityInvalidation(t *testing.T, stream <-chan events.Sessi
 	}
 }
 
+// dropSessionActivityIndexCache evicts this root's cached session-activity
+// index so a retained read must reconstruct the journals from scratch. The
+// key shape must stay in sync with the acquire sites in session_activity.go
+// and session_activity_events.go.
+func dropSessionActivityIndexCache(stateDir, rootID string) {
+	key := stateDir + "\x00" + rootID
+	sessionActivityIndexes.Lock()
+	if cached := sessionActivityIndexes.entries[key]; cached != nil {
+		delete(sessionActivityIndexes.entries, key)
+		sessionActivityIndexes.order.Remove(cached.element)
+	}
+	sessionActivityIndexes.Unlock()
+}
+
 func TestSessionActivityColdProgressAndWarmReadCost(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -783,13 +797,7 @@ func TestSessionActivityCacheLossAndCursorIdentity(t *testing.T) {
 		t.Fatalf("malformed cursor=%v", err)
 	}
 	// Discard only this fixture's disposable entry, as the bounded LRU does.
-	key := stateDir + "\x00" + id
-	sessionActivityIndexes.Lock()
-	if cached := sessionActivityIndexes.entries[key]; cached != nil {
-		delete(sessionActivityIndexes.entries, key)
-		sessionActivityIndexes.order.Remove(cached.element)
-	}
-	sessionActivityIndexes.Unlock()
+	dropSessionActivityIndexCache(stateDir, id)
 	_, err = LoadSessionActivityJobs(t.Context(), stateDir, id, params)
 	if !errors.As(err, &wire) || wire.Data == nil || wire.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorSessionActivityCursorStale {
 		t.Fatalf("cache-loss cursor=%v", err)

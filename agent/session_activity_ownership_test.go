@@ -180,13 +180,7 @@ func TestSessionActivityWatchSourceRemainsPhysicalWithParentReceiver(t *testing.
 		t.Fatal(err)
 	}
 	// A retained reader must recover source authority from the journal itself.
-	key := s.stateDir + "\x00" + s.ID()
-	sessionActivityIndexes.Lock()
-	if cached := sessionActivityIndexes.entries[key]; cached != nil {
-		delete(sessionActivityIndexes.entries, key)
-		sessionActivityIndexes.order.Remove(cached.element)
-	}
-	sessionActivityIndexes.Unlock()
+	dropSessionActivityIndexCache(s.stateDir, s.ID())
 	retained, err := LoadSessionActivityWatches(t.Context(), s.stateDir, s.ID(), params)
 	if err != nil {
 		t.Fatal(err)
