@@ -791,7 +791,7 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 		"[providers.gw.models.\"house-model\"]\n"
 
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted-token", nil }
 	r := fixtureLoad(t, nil, config)
 	res := mustResolve(t, r, "gw/house-model")
 	if res.Credential.Value != "minted-token" || res.Credential.Source != "api_key" {
@@ -807,7 +807,7 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 	}
 
 	valueexpr.ResetForTest()
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		return "", errors.New("command exited with status 1: session expired")
 	}
 	failing := fixtureLoad(t, nil, config)
@@ -842,7 +842,7 @@ func TestCredentialSourceUnderNoneAuthNamesEffectiveHeaders(t *testing.T) {
 		"[providers.gw.models.\"house-model\"]\n"
 
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { runs++; return "minted-token", nil }
 	r := fixtureLoad(t, nil, config)
 
 	pres, err := r.ResolveInstancePresence("gw")
@@ -966,7 +966,7 @@ func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
 	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		return "", errors.New("command timed out")
 	}
 	const config = "[providers.gw]\n" +
@@ -1080,7 +1080,7 @@ func TestAuthorizationCommandRunsOncePerResolution(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "", errors.New("command timed out")
 	}
@@ -1110,7 +1110,7 @@ func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "minted-token", nil
 	}
@@ -1249,7 +1249,7 @@ func TestCustomAuthHeaderCarriesTheCredential(t *testing.T) {
 			valueexpr.ResetForTest()
 			t.Cleanup(valueexpr.ResetForTest)
 			runs := 0
-			valueexpr.RunCommand = func(string) (string, error) {
+			valueexpr.RunCommand = func(string, []string) (string, error) {
 				runs++
 				return "minted-key", nil
 			}
@@ -1555,7 +1555,7 @@ func TestCredentialListingSkipsOverriddenKeyCommands(t *testing.T) {
 	t.Cleanup(valueexpr.ResetForTest)
 	flakyRuns := 0
 	stableRuns := 0
-	valueexpr.RunCommand = func(cmd string) (string, error) {
+	valueexpr.RunCommand = func(cmd string, _ []string) (string, error) {
 		if cmd == "flaky" {
 			flakyRuns++
 			return "", errors.New("command timed out")
@@ -1605,7 +1605,7 @@ func TestAliasResolutionSkipsTargetCommandCredentials(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -1672,7 +1672,7 @@ func TestAuthFingerprintRotatesMixedValues(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -2040,7 +2040,7 @@ func TestAuthNoneNeverExpandsAPIKey(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "token", nil
 	}
@@ -2101,7 +2101,7 @@ func TestMintedLettersOnlyTokenIsACredential(t *testing.T) {
 	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
-	valueexpr.RunCommand = func(string) (string, error) { return "abcdeftoken", nil }
+	valueexpr.RunCommand = func(string, []string) (string, error) { return "abcdeftoken", nil }
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +

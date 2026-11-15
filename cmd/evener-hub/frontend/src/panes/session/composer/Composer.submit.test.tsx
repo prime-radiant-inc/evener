@@ -8,7 +8,6 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { resetActivitySidebarStoreForTests } from "../../../shell/activitybar/activitySidebarStore";
-import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -29,11 +28,12 @@ import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { TurnBlock } from "../transcript/TurnBlock";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
 import {
-  ComposerWithPendingStack,
+  Composer,
   foldStatusFrame,
   installCanvasStubs,
   installNarrowComposer,
@@ -904,7 +904,7 @@ test("a phone-width draft keeps Send in the row and Stop and Steer in the sessio
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   // ...and the verbs answer from the session menu. Its items carry the
   // SessionMenu-owned labels, not the row buttons' testids (the menu has
-  // none), and "Steer" alone stays unambiguous - pending stack's longer
+  // none), and "Steer" alone stays unambiguous - QueueStrip's longer
   // "Steer queue now" does not exact-match.
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Steer" }));
@@ -1361,12 +1361,15 @@ test.each(["", "  ", "occupied draft"])(
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(textarea().textContent).toBe(text);
     view.unmount();
-    // The recovery row lives in the transcript's pending stack, so mount the
-    // production composer-plus-stack composition that owns its Edit action.
     render(
-      <ClientProvider client={view.fake}>
-        <ComposerWithPendingStack ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
-      </ClientProvider>,
+      <>
+        <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+        {/* The recovery row renders as the transcript's trailing row in
+            production (ConversationBody); mounted beside the remounted
+            composer so its Edit affordance exists, same as the shared
+            mount helper. */}
+        <PendingRowStack ref="ref_a" />
+      </>,
     );
     await flushPendingTurnsProjectionForTests();
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);

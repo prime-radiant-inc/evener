@@ -213,12 +213,22 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 		}
 	}
 	res := CountResult{SessionID: paths.SessionID, Tool: tool}
+	// Exact-first (#6241): when some call in this session resolved to the
+	// queried name literally — a distinct custom or rejected tool holding a
+	// wire alias — a query by that name counts only that tool, exactly as
+	// TranscriptHealth and metricSource.hasExactTool prefer the exact key.
+	// Only a session with no exact match falls back to alias matching.
+	exactResolved := tool != resultTool && sessionHasExactResolvedTool(doc.Entries, resolver, tool)
 	for _, e := range doc.Entries {
 		for _, part := range e.Turn.Message.Content {
 			if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
 				resolved := resolver.callName(part.ToolCall)
 				if tool == resultTool {
 					if resolved == resultTool {
+						res.Calls++
+					}
+				} else if exactResolved {
+					if resolved == tool {
 						res.Calls++
 					}
 				} else if resolved == target || (resolved == tool && resolved != resultTool) {
@@ -237,6 +247,19 @@ type sessionToolResolver struct {
 	resultTool string
 	callByID   map[string]string
 	resultByID map[string]string
+}
+
+// sessionHasExactResolvedTool reports whether any tool call in entries
+// resolved to name literally, under the same resolver Count counts with.
+func sessionHasExactResolvedTool(entries []transcript.Entry, resolver sessionToolResolver, name string) bool {
+	for _, e := range entries {
+		for _, part := range e.Turn.Message.Content {
+			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && resolver.callName(part.ToolCall) == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func newSessionToolResolver(entries []transcript.Entry, resultTool string) sessionToolResolver {

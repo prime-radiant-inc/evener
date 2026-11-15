@@ -145,28 +145,70 @@ func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
 	}
 }
 
-// TestFromChatCompletionResponse_ReplayReasoningDetailsDelta pins the
-// streaming decoder's reasoning_details accumulation through the recorded
-// replay: text items and thinking-fallback items concatenate with no
-// separator (matching the live delta stream), and the settled thinking part
-// carries the joined text.
+// TestFromChatCompletionResponse_ReplayReasoningDetailsDelta compares both
+// decoders for reasoning_details payloads. Details retain their replay field
+// contract and join text pieces with newlines, even when scalar reasoning is
+// also present.
 func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 	t.Parallel()
-	body := "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_details\":[" +
-		`{"type":"reasoning.text","text":"th"},{"type":"thinking","thinking":"tk"}]}}]}` + "\n\n" +
-		"data: [DONE]\n\n"
-	resp, err := ExtractRecordedResponse([]byte(body), "m")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name   string
+		fields map[string]any
+		want   string
+	}{
+		{
+			name: "details win over scalar reasoning and join multiple pieces",
+			fields: map[string]any{
+				"reasoning_content": "scalar reasoning",
+				"reasoning_details": []any{
+					map[string]any{"type": "reasoning.text", "text": "step one"},
+					map[string]any{"type": "thinking", "thinking": "step two"},
+				},
+			},
+			want: "step one\nstep two",
+		},
 	}
-	var thinking *llm.ThinkingData
-	for _, p := range resp.Message.Content {
-		if p.Kind == llm.ContentThinking {
-			thinking = p.Thinking
-		}
-	}
-	if thinking == nil || thinking.Text != "thtk" {
-		t.Fatalf("thinking = %+v, want the concatenated delta text %q", thinking, "thtk")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nonStream, err := fromChatCompletionResponse(chatResponseRaw(tt.fields, "stop"), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var nonStreamThinking *llm.ThinkingData
+			for _, p := range nonStream.Message.Content {
+				if p.Kind == llm.ContentThinking {
+					nonStreamThinking = p.Thinking
+				}
+			}
+
+			delta, err := json.Marshal(tt.fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := "data: {\"choices\":[{\"index\":0,\"delta\":" + string(delta) + "}]}\n\n" + "data: [DONE]\n\n"
+			stream, err := ExtractRecordedResponse([]byte(body), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var streamThinking *llm.ThinkingData
+			for _, p := range stream.Message.Content {
+				if p.Kind == llm.ContentThinking {
+					streamThinking = p.Thinking
+				}
+			}
+			if nonStreamThinking == nil || streamThinking == nil {
+				t.Fatalf("non-stream thinking = %+v, stream thinking = %+v", nonStreamThinking, streamThinking)
+			}
+			if nonStreamThinking.Text != streamThinking.Text {
+				t.Errorf("decoder reasoning differs: non-stream %q, stream %q", nonStreamThinking.Text, streamThinking.Text)
+			}
+			if nonStreamThinking.Text != tt.want {
+				t.Errorf("reasoning = %q, want %q", nonStreamThinking.Text, tt.want)
+			}
+			if nonStreamThinking.Signature != "" || streamThinking.Signature != "" {
+				t.Errorf("details replay signatures = %q and %q, want both empty", nonStreamThinking.Signature, streamThinking.Signature)
+			}
+		})
 	}
 }
 

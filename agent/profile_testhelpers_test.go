@@ -24,10 +24,20 @@ import (
 // The profile decorators are re-exported so existing tests need not qualify
 // every call.
 var (
-	NewOpenAIProfile            = provider.NewOpenAIProfile
-	WithCheapModel              = provider.WithCheapModel
-	WithCommunicateOutputSchema = provider.WithCommunicateOutputSchema
-	WithAllowedDecisions        = provider.WithAllowedDecisions
+	NewOpenAIProfile = provider.NewOpenAIProfile
+	WithCheapModel   = provider.WithCheapModel
+	// WithCommunicateOutputSchema keeps the historical one-return shape for
+	// tests that bind valid schemas; the profile API now reports an invalid
+	// schema, which no test using this alias expects, so it panics instead of
+	// silently dropping the bind.
+	WithCommunicateOutputSchema = func(p *provider.Profile, outputSchema map[string]any) *provider.Profile {
+		bound, err := provider.WithCommunicateOutputSchema(p, outputSchema)
+		if err != nil {
+			panic(err)
+		}
+		return bound
+	}
+	WithAllowedDecisions = provider.WithAllowedDecisions
 )
 
 // testRegistryInstances are the fixture instances. A name that matches a

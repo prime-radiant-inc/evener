@@ -113,7 +113,7 @@ packages and test files do not count.
 | `OPENAI_COMPATIBLE_API_KEY` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `OPENAI_COMPATIBLE_BASE_URL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `llm/registry` |
 | `XDG_CACHE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 3 more |
-| `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 10 more |
+| `XDG_CONFIG_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/internal/liveeval`, `agent/mcpconfig` and 9 more |
 | `XDG_STATE_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/doctor`, `auth/openai` and 6 more |
 | `CARGO_HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox` |
 | `DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
@@ -133,7 +133,7 @@ packages and test files do not count.
 | `TERM` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `TMPDIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `Makefile`, `agent`, `agent/execenv` and 22 more |
 | `USER` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
-| `USERPROFILE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmdutil` |
+| `USERPROFILE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `envvars/userdirs` |
 | `WAYLAND_DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 
 ## Environment variables read outside the registry

@@ -1,10 +1,63 @@
 package llm
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 )
+
+func TestValidateSchemaDocument(t *testing.T) {
+	valid := []string{
+		// The result_schema from evener issue #6298: array-of-object rows with
+		// required, enum and integer properties inside items.
+		`{"type":"object","properties":{"counts":{"type":"object"},"notes":{"type":"string"},"rows":{"type":"array","items":{"type":"object","required":["number","verdict","evidence"],"properties":{"canonical":{"type":"integer"},"evidence":{"type":"string"},"number":{"type":"integer"},"verdict":{"enum":["FIXED-ON-MAIN","DUPLICATE"],"type":"string"}}}},"surprises":{"type":"string"}}}`,
+		`true`,
+		`{"type":"null"}`,
+		`{"type":["object","null"]}`,
+		`{"properties":{"a":{"enum":[]}}}`,
+	}
+	for _, doc := range valid {
+		var v any
+		if err := json.Unmarshal([]byte(doc), &v); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateSchemaDocument(v); err != nil {
+			t.Errorf("ValidateSchemaDocument(%s): %v", doc, err)
+		}
+	}
+
+	invalid := map[string]string{
+		// The exact shape lunaroute's draft-2020-12 tool validation rejected
+		// in issue #6298: a properties value that is a bare type string.
+		"property value is a bare type string": `{"type":"object","properties":{"rows":"array"}}`,
+		// Draft-07 tuple items: an array where a single schema belongs.
+		"items is a tuple array":        `{"type":"object","properties":{"rows":{"type":"array","items":[{"type":"integer"}]}}}`,
+		"required is a bare string":     `{"type":"object","required":"rows","properties":{"rows":{"type":"array"}}}`,
+		"a bare string is not a schema": `"array"`,
+		"enum is not an array":          `{"properties":{"a":{"enum":{"x":1}}}}`,
+	}
+	for name, doc := range invalid {
+		var v any
+		if err := json.Unmarshal([]byte(doc), &v); err != nil {
+			t.Fatal(err)
+		}
+		err := ValidateSchemaDocument(v)
+		if err == nil {
+			t.Errorf("%s: ValidateSchemaDocument(%s) accepted an invalid schema", name, doc)
+		}
+	}
+
+	// A schema built with Go slices (required as []string, enum as []any) is
+	// normalized before validation.
+	if err := ValidateSchemaDocument(map[string]any{
+		"type":       "object",
+		"required":   []string{"rows"},
+		"properties": map[string]any{"rows": map[string]any{"type": "array", "enum": []any{"a", "b"}}},
+	}); err != nil {
+		t.Errorf("ValidateSchemaDocument with Go slice values: %v", err)
+	}
+}
 
 func TestValidateToolName(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.

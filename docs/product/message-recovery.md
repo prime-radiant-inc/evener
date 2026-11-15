@@ -41,11 +41,9 @@ Controls follow that ownership, not the preview text or connection status.
   still land and appear in the conversation.
 - Promotion and input-empty drain commands offer Remove only. Editing a
   content-bearing drain restores its composer input, not the daemon queue preview.
-- Every undelivered message appears once, in the pending stack at the bottom of
-  the transcript. Local unattempted rows, daemon queue rows, in-flight sends and
-  steering, and recovery rows share one identity-keyed row. A queue row is
-  suppressed once a recorded transcript item with the same identity is visible.
-  A move back to the local queue after an explicit refusal is not announced as
+- Unattempted rows appear once as the transcript's pending row in the
+  live-edge trailing region, never twice. In-flight and remote rows remain. A
+  move back to the local queue after an explicit refusal is not announced as
   delivery or failure.
 - An independently edited recovery keeps its own row after the attempt it was
   edited from delivers. Mentions travel through the pending row, so editing
@@ -143,8 +141,8 @@ not scope user selections; they keep pane identity stable and scope automatic
 restoration: a recovery row records the composer seat that last wrote it as
 its composition owner, and an empty composer at mount restores only the
 newest rejected row its own seat owns - the pane's own bounced work, one tap
-back. Every row stays reachable through the pending stack's explicit Edit, Remove and
-Retry regardless of owner, with Steer now on a row that is still queued. A pane's own send carries its seat, so the row
+back. Every row stays reachable through the pending rows' explicit Edit, Remove, and Retry
+regardless of owner. A pane's own send carries its seat, so the row
 a refusal bounces from it restores to that pane's next mount under the same
 seat. A resumed nested session carries the authoring pane's seat to its
 replacement pane, so the resumed composer can restore its own work again.
@@ -302,8 +300,9 @@ duplicate; only a reproduced identity/projection case can establish that cause.
   `panes/session/pending/PendingMessageStack.tsx`. Presentation filtering does
   not change submission routing.
 - Pane lifetime and durable recovery owner: `composer/sourceState.ts`.
-- Controls: `panes/session/pending/usePendingMessageActions.ts` and
-  `composer/Composer.tsx`.
+- Controls: `transcript/messages/PendingRowStack.tsx` (the transcript's
+  pending rows) and `composer/Composer.tsx`, joined by the restore seam
+  `composer/queueRowInsert.ts`.
 - Decisions both controls share (selection capability gate, store dispatch by
   route, changed or already-sent recovery refusals): `composer/submitProtocol.ts`.
 - End-to-end component checks: `composer/Composer.queuedMessages.test.tsx`, using

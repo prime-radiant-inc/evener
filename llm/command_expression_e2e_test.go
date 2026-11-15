@@ -23,7 +23,7 @@ func TestCommandExpressionMintsBearerEndToEnd(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
-	valueexpr.RunCommand = func(string) (string, error) {
+	valueexpr.RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "e2e-minted-token", nil
 	}
