@@ -373,26 +373,47 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 // comment). Called after the entry's items are recorded, so
 // communicateContext above still sees the state as it stood when this entry
 // was projected.
+// deferredCommCall reports whether an assistant entry's tool call announces a
+// deferred communicate call — the one predicate both recordCommState records
+// pending calls by and the cut reconstruction's suffix scan answers, so the
+// two can never disagree on what counts as one.
+func deferredCommCall(entry *schema.Turn, part llm.ContentPart) bool {
+	return part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
+		(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited)
+}
+
+// agentMessageText answers an entry's trailing agent-message text from its
+// projected items: the projected messages rather than the raw entry, because
+// legacy text parts and identity text runs segment differently, and empty
+// runs show nothing.
+func agentMessageText(items []appwire.ThreadItem) string {
+	var lastText string
+	for _, item := range items {
+		if item.Type == "agentMessage" {
+			lastText = strings.TrimSpace(item.Text)
+		}
+	}
+	return lastText
+}
+
+// recordCommState applies the entry's effects on the deferred-communicate
+// state ProjectTurn's ToolCallRegistry threads — the same effects
+// recordNames applies to tool names, kept separate because unlike names this
+// state is never reset at a legacy group boundary (see the builder doc
+// comment). Called after the entry's items are recorded, so
+// communicateContext above still sees the state as it stood when this entry
+// was projected.
 func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor, items []appwire.ThreadItem) {
 	if entry.Kind == schema.TurnAssistant {
-		var lastText string
-		// Read the actual projected messages: legacy text parts and identity
-		// text runs have different segmentation, and empty runs show nothing.
-		for _, item := range items {
-			if item.Type == "agentMessage" {
-				lastText = strings.TrimSpace(item.Text)
-			}
-		}
 		for _, part := range entry.Message.Content {
-			if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" &&
-				(entry.Format != schema.TurnFormatIdentity || entry.Authorship != nil && entry.Authorship.Inherited) {
+			if deferredCommCall(entry, part) {
 				b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
 			}
 		}
 		// Mirrors ProjectTurn: only a non-empty text updates the sticky
 		// value, and only the entry's own trailing text (never a healed
 		// communicate — main's fix defers that entirely to the result turn).
-		if lastText != "" {
+		if lastText := agentMessageText(items); lastText != "" {
 			b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, turnID, c, true
 		}
 		return
@@ -1082,33 +1103,14 @@ func (b *builder) logUpdate(kind uint32, slot uint64, offset int64) error {
 	return err
 }
 
-// stampTurn folds the entry into its turn's summary: the way
-// apptranscript.StampGroupedTurn folds a legacy group's entries, or, for a
-// new-format turn, its status from completions and reopen markers and its
-// awaiting ASSISTANT entry.
-func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, offset int64, length uint32) error {
-	r, err := b.load(slot)
-	if err != nil {
-		return err
-	}
-	version := ordinal + 1
-	// The turn's first entry creates its summary; every later one rewrites
-	// it, and logs that it did. The log record is redone even when a crashed
-	// extension already applied the entry: the truncation before this
-	// extension removed its log record, and readers take each slot once.
-	if version > r.FirstOrdinal+1 {
-		if testKillAtTurnUpdateLog != nil {
-			if err := testKillAtTurnUpdateLog(); err != nil {
-				return err
-			}
-		}
-		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
-			return err
-		}
-	}
-	if version <= r.Version {
-		return nil // already accounted before an interrupted catch-up
-	}
+// stampFold folds the entry's summary fields into the turn record: the
+// failure stamp, the legacy and execution status transitions, the awaiting
+// ASSISTANT entry, the started latch, and the usage totals. It is the shared
+// per-entry fold of stampTurn and the cut reconstruction's span fold, which
+// must stay identical for a cut view to deep-equal the replay it replaces;
+// the model reference, the failure totals and the version belong to each
+// caller's own accounting.
+func stampFold(r *turnRecord, entry *schema.Turn, ordinal uint64, offset int64, length uint32) {
 	if entry.Kind == schema.TurnFailure {
 		r.FailureOffset, r.FailureLength = offset, length
 	}
@@ -1148,6 +1150,36 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 		r.Usage[2] += int64(*usage.CacheReadTokens)
 	}
 	r.Usage[3] += int64(usage.TotalTokens)
+}
+
+// stampTurn folds the entry into its turn's summary: the way
+// apptranscript.StampGroupedTurn folds a legacy group's entries, or, for a
+// new-format turn, its status from completions and reopen markers and its
+// awaiting ASSISTANT entry.
+func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, offset int64, length uint32) error {
+	r, err := b.load(slot)
+	if err != nil {
+		return err
+	}
+	version := ordinal + 1
+	// The turn's first entry creates its summary; every later one rewrites
+	// it, and logs that it did. The log record is redone even when a crashed
+	// extension already applied the entry: the truncation before this
+	// extension removed its log record, and readers take each slot once.
+	if version > r.FirstOrdinal+1 {
+		if testKillAtTurnUpdateLog != nil {
+			if err := testKillAtTurnUpdateLog(); err != nil {
+				return err
+			}
+		}
+		if err := b.logUpdate(updatedTurn, slot, offset); err != nil {
+			return err
+		}
+	}
+	if version <= r.Version {
+		return nil // already accounted before an interrupted catch-up
+	}
+	stampFold(&r, entry, ordinal, offset, length)
 	if entry.Model != "" {
 		if r.Model, err = b.modelRef(entry.Model); err != nil {
 			return err
