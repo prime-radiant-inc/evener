@@ -84,8 +84,10 @@ type EnvelopeSampling interface {
 	ReasoningEffort() string
 	VisionModel() string
 	// AcceptedModelPick names the newest model pick the session accepted, by its
-	// client mutation id, empty when the newest accepted pick carried none.
-	AcceptedModelPick() string
+	// client mutation id, empty when the newest accepted pick carried none. seq
+	// is the acceptance order it was admitted at, which never decreases, so a
+	// reader holding an older sample can recognise it as older.
+	AcceptedModelPick() (string, uint64)
 	Profile() *provider.Profile
 	Meta() schema.SessionMeta
 }

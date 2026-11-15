@@ -2,6 +2,7 @@
 
 exports[`fixture basic-turn reduces to the expected model 1`] = `
 {
+  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -313,6 +314,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
 
 exports[`fixture queue-and-status reduces to the expected model 1`] = `
 {
+  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -463,6 +465,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
 
 exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
 {
+  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",
@@ -710,6 +713,7 @@ Double-checking the math.",
 
 exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
 {
+  "acceptedModelPick": undefined,
   "activeTurnId": undefined,
   "activeTurnStartedAt": undefined,
   "agentNote": "",

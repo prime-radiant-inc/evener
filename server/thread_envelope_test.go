@@ -950,9 +950,9 @@ func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) 
 	return "", nil, false
 }
 
-func (c *countingThreadEnvelopeSource) LatestExecutionTurnID() string { c.hit(); return "" }
-func (c *countingThreadEnvelopeSource) VisionModel() string           { c.hit(); return "" }
-func (c *countingThreadEnvelopeSource) AcceptedModelPick() string     { c.hit(); return "" }
+func (c *countingThreadEnvelopeSource) LatestExecutionTurnID() string       { c.hit(); return "" }
+func (c *countingThreadEnvelopeSource) VisionModel() string                 { c.hit(); return "" }
+func (c *countingThreadEnvelopeSource) AcceptedModelPick() (string, uint64) { c.hit(); return "", 0 }
 func (c *countingThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	c.hit()
 	return 0, nil, 0
@@ -1075,6 +1075,62 @@ func TestSampleLandingAfterAnIdentityReplacementIsDropped(t *testing.T) {
 	}
 	if len(thread.Evener.PendingEscalations) != 0 {
 		t.Fatalf("pendingEscalations = %+v on th_2, want th_1's cards dropped", thread.Evener.PendingEscalations)
+	}
+}
+
+// TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne pins the ordering the
+// accepted identity needs and no event supplies.
+//
+// refreshFacets samples OUTSIDE s.mu, deliberately: a sample can take the
+// session's mutex, so holding s.mu across it would put that I/O back on the
+// read path's lock. Two refreshes can therefore interleave, and the one that
+// sampled an older acceptance can be the one that installs last. Nothing
+// corrects that afterwards: a pick accepted while a turn runs queues for the
+// turn boundary and emits no event until it commits, so reads in between would
+// keep reporting the superseded pick and tell its client its own choice had
+// been replaced.
+//
+// The ordering here is a real happens-before: the older sample is held inside
+// its own sample call while the newer refresh samples and installs to
+// completion.
+func TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	src := &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "th_1"}}
+	srv.SetThreadEnvelopeSource(src)
+	src.acceptedModelPick = "pick-a"
+	src.acceptedPickSeq = 1
+	srv.RefreshThreadEnvelope()
+
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.parkOnAcceptedPick = func() {
+		once.Do(func() {
+			// This sample holds the older pick it read before parking.
+			close(parked)
+			<-release
+		})
+	}
+
+	older := make(chan struct{})
+	go func() {
+		defer close(older)
+		srv.RefreshAcceptedModelPick()
+	}()
+	<-parked
+
+	// A newer acceptance samples and installs while the older one is parked.
+	src.parkOnAcceptedPick = nil
+	src.acceptedModelPick = "pick-b"
+	src.acceptedPickSeq = 2
+	srv.RefreshAcceptedModelPick()
+	close(release)
+	<-older
+
+	if got := readThreadOverWire(t, srv, "local:th_1").Evener.AcceptedModelPick; got != "pick-b" {
+		t.Fatalf("acceptedModelPick = %q, want pick-b: an older sample reinstated the pick the session had already replaced", got)
 	}
 }
 

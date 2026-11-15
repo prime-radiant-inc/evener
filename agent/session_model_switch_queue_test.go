@@ -550,14 +550,14 @@ func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 
-	if got := s.AcceptedModelPick(); got != "" {
+	if got, _ := s.AcceptedModelPick(); got != "" {
 		t.Fatalf("accepted pick before any pick = %q, want empty", got)
 	}
 	// An at-rest pick commits immediately and names itself.
 	if err := s.SetModelWithMutationID("gpt-5.4", "pick-at-rest"); err != nil {
 		t.Fatalf("at-rest pick: %v", err)
 	}
-	if got := s.AcceptedModelPick(); got != "pick-at-rest" {
+	if got, _ := s.AcceptedModelPick(); got != "pick-at-rest" {
 		t.Fatalf("accepted pick after an at-rest commit = %q, want %q", got, "pick-at-rest")
 	}
 
@@ -575,7 +575,7 @@ func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	if got := s.AcceptedModelPick(); got != "pick-queued" {
+	if got, _ := s.AcceptedModelPick(); got != "pick-queued" {
 		t.Fatalf("accepted pick after the queued pick committed = %q, want %q", got, "pick-queued")
 	}
 
@@ -585,7 +585,7 @@ func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
 	if err := s.SetModelWithMutationID("gpt-5.2", "pick-same-model"); err != nil {
 		t.Fatalf("same-model pick: %v", err)
 	}
-	if got := s.AcceptedModelPick(); got != "pick-same-model" {
+	if got, _ := s.AcceptedModelPick(); got != "pick-same-model" {
 		t.Fatalf("accepted pick after a same-model commit = %q, want %q; a superseding pick that repeats the model in force is invisible to a client without this identity", got, "pick-same-model")
 	}
 }

@@ -35,6 +35,7 @@ type stubThreadEnvelopeSource struct {
 	supportsReason    bool
 	visionModel       string
 	acceptedModelPick string
+	acceptedPickSeq   uint64
 	meta              schema.SessionMeta
 	// parkOnMeta runs at the start of SessionMeta(), the last facet
 	// refreshFacets samples. Parking there holds a fully-populated sample open.
@@ -42,6 +43,9 @@ type stubThreadEnvelopeSource struct {
 	// parkAfterMeta runs after SessionMeta has copied its return value, allowing a
 	// test to hold an old goal sample in flight while a direct carrier commits.
 	parkAfterMeta func()
+	// parkOnAcceptedPick runs at the start of AcceptedModelPick, holding one
+	// accepted-pick sample in flight while another samples and installs.
+	parkOnAcceptedPick func()
 }
 
 func (s *stubThreadEnvelopeSource) LatestExecutionTurnID() string { return "" }
@@ -108,7 +112,15 @@ func (s *stubThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 
 func (s *stubThreadEnvelopeSource) VisionModel() string { return s.visionModel }
 
-func (s *stubThreadEnvelopeSource) AcceptedModelPick() string { return s.acceptedModelPick }
+func (s *stubThreadEnvelopeSource) AcceptedModelPick() (string, uint64) {
+	// Read before parking: a parked sample holds the value it observed, which is
+	// what makes it the older one when a newer refresh installs meanwhile.
+	id, seq := s.acceptedModelPick, s.acceptedPickSeq
+	if s.parkOnAcceptedPick != nil {
+		s.parkOnAcceptedPick()
+	}
+	return id, seq
+}
 
 // publishEnvelope installs src as the server's envelope source and seeds every
 // facet from it, which is what serve.go does at session install.

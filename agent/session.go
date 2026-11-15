@@ -2424,11 +2424,13 @@ func (s *Session) VisionModel() string {
 // session accepted, empty when that pick carried none. A client uses it to tell
 // its own accepted pick apart from one another client made: a pick that repeats
 // the model already in force commits no change and rejects nothing, so only
-// this identity distinguishes the two.
-func (s *Session) AcceptedModelPick() string {
+// this identity distinguishes the two. seq is the acceptance order that pick
+// was admitted at, which never decreases, so a reader can tell an older sample
+// from a newer one.
+func (s *Session) AcceptedModelPick() (string, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.modelPickAcceptedID
+	return s.modelPickAcceptedID, s.modelPickAccepted
 }
 
 // buildModelSwitchMarkerText renders the persisted model-switch marker text:

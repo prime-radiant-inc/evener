@@ -155,7 +155,7 @@ func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalatio
 }
 func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
 func (s wireProbeEnvelopeSource) VisionModel() string                     { return "" }
-func (s wireProbeEnvelopeSource) AcceptedModelPick() string               { return "" }
+func (s wireProbeEnvelopeSource) AcceptedModelPick() (string, uint64)     { return "", 0 }
 func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return s.meta }
 
 // TestStatusProberReadsAppWireStatusIncludingNonAgentJobs drives a real daemon

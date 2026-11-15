@@ -668,6 +668,51 @@ test("a deferred rejection for an older pick preserves the newer accepted pick",
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
+// Picking the model already in force creates a request acceptance cannot
+// reveal by model identity. A publication reporting that unchanged model is
+// therefore not evidence the request landed, and it must not retire a pick the
+// same snapshot names as the accepted one: that pick is still queued, and the
+// in-flight request may yet fail.
+test("an unchanged model publication does not retire the pick the snapshot names", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  const resolvers = new Map<string, () => void>();
+  fake.on(
+    "thread/model/set",
+    ({ model }) =>
+      new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+        resolvers.set(model, () => resolve(codedModelSetResponse()));
+      }),
+  );
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(resolvers.has("gpt-5.5")).toBe(true));
+  act(() => resolvers.get("gpt-5.5")?.());
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const queuedPick = threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId;
+  expect(queuedPick).toBeTruthy();
+
+  const inFlight = threadsStore.getState().setModel("ref_a", "anthropic", "claude-sonnet-4-5");
+  await waitFor(() => expect(resolvers.has("claude-sonnet-4-5")).toBe(true));
+
+  // The daemon still names the queued pick it accepted, and the running model
+  // is unchanged because the re-pick never landed.
+  const snapshot = { ...activeModel, acceptedModelPick: queuedPick };
+  act(() => putThreadModel("ref_a", snapshot));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={snapshot} />);
+
+  const retired = threadsStore.getState().acceptedModelSwitches.get("ref_a");
+  expect(retired?.clientMutationId).toBe(queuedPick);
+
+  resolvers.get("claude-sonnet-4-5")?.();
+  await act(async () => {
+    await inFlight;
+  });
+});
+
 test("a settled newer pick prevents an older response from restoring its label", async () => {
   const fake = connectReadyFakeClient();
   fake.on("model/list", () => modelListResponse());

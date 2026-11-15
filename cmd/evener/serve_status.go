@@ -238,7 +238,7 @@ func (l liveThreadEnvelopeSource) VisionModel() string {
 	return l.session().VisionModel()
 }
 
-func (l liveThreadEnvelopeSource) AcceptedModelPick() string {
+func (l liveThreadEnvelopeSource) AcceptedModelPick() (string, uint64) {
 	return l.session().AcceptedModelPick()
 }
 

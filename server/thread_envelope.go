@@ -55,7 +55,15 @@ type threadEnvelope struct {
 	// session keeps beside its client-mutation store, and every event that can
 	// accept a pick already re-samples that facet.
 	AcceptedModelPick string
-	Tasks             *appwire.TaskAggregate
+	// acceptedPickSeq is the session's acceptance sequence that
+	// AcceptedModelPick was sampled at. Sampling runs outside s.mu, so two
+	// refreshes can interleave and the older one can reach install last; a
+	// queued pick emits nothing until the turn boundary, so nothing would
+	// correct the reinstated older identity. The installed sequence therefore
+	// never moves backwards, and a sample carrying an older one is dropped
+	// field-by-field rather than reinstating a pick the session has replaced.
+	acceptedPickSeq uint64
+	Tasks           *appwire.TaskAggregate
 	// TaskStoreOwnerSessionID is projection routing state. It never enters
 	// EvenerThread or any other public AppWire shape.
 	TaskStoreOwnerSessionID string
@@ -169,7 +177,9 @@ type ThreadEnvelopeSource interface {
 	VisionModel() string
 	// AcceptedModelPick names the newest model pick the session accepted, by the
 	// client mutation id that pick carried, empty when that pick carried none.
-	AcceptedModelPick() string
+	// seq is the session's monotonically advancing acceptance order for that
+	// pick, which lets a sample that lost a race be recognised as older.
+	AcceptedModelPick() (id string, seq uint64)
 	SessionMeta() schema.SessionMeta
 }
 
@@ -478,7 +488,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		next.VisionModel = src.VisionModel()
 	}
 	if facets&facetModelPick != 0 {
-		next.AcceptedModelPick = src.AcceptedModelPick()
+		next.AcceptedModelPick, next.acceptedPickSeq = src.AcceptedModelPick()
 	}
 	if facets&(facetMeta|facetGoal) != 0 {
 		meta := src.SessionMeta()
@@ -629,7 +639,14 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.VisionModel = next.VisionModel
 	}
 	if facets&facetModelPick != 0 {
-		e.AcceptedModelPick = next.AcceptedModelPick
+		// Sampling happens outside s.mu, so a refresh that started earlier can
+		// reach this install after a later one and would otherwise reinstate
+		// the pick the session has already replaced. Acceptance order never
+		// moves backwards, so an older sample is not the installed truth.
+		if next.acceptedPickSeq >= e.acceptedPickSeq {
+			e.AcceptedModelPick = next.AcceptedModelPick
+			e.acceptedPickSeq = next.acceptedPickSeq
+		}
 	}
 	if facets&facetMeta != 0 {
 		if !cwdStale {
