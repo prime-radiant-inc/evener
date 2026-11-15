@@ -2799,9 +2799,6 @@ func TestMemoryOutputRecovery(t *testing.T) {
 					fmt.Fprintf(&want, "large.txt:%d:%s", i, line)
 				}
 			}
-			if name == "memory_read" {
-				want.WriteString(" 401\t\n")
-			}
 			if err := os.WriteFile(filepath.Join(wiki, "large.txt"), []byte(body.String()), 0o600); err != nil {
 				t.Fatal(err)
 			}

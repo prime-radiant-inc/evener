@@ -638,7 +638,7 @@
       "turnId": "turn_1",
       "toolName": "read_file",
       "callId": "call_read_file",
-      "output": "   1\tpackage agent\n   2\t\n   3\tfunc settle() {}\n   4\t\n",
+      "output": "   1\tpackage agent\n   2\t\n   3\tfunc settle() {}\n",
       "status": "completed",
       "completedAt": 1790625602000
     },
