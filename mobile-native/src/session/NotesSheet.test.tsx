@@ -138,9 +138,9 @@ function provide(current: Session, { removeThrows }: { removeThrows?: string } =
 	return { notes, saved, requests };
 }
 
-function sheet(focusEditor?: boolean): ReactTestRenderer {
+function sheet(focusEditor?: boolean, messageSessionRef?: string): ReactTestRenderer {
 	const props = {
-		route: { key: "notes", name: "NotesSheet", params: { hubId: HUB, ref: REF, focusEditor } },
+		route: { key: "notes", name: "NotesSheet", params: { hubId: HUB, ref: REF, focusEditor, messageSessionRef } },
 		navigation,
 	} as unknown as NativeStackScreenProps<Routes, "NotesSheet">;
 	const tree = render(<NotesSheet {...props} />);
@@ -400,6 +400,18 @@ describe("links", () => {
 			"Reader",
 			expect.objectContaining({ sessionRef: REF, messageSessionRef: "ref-notes-2" }),
 		);
+	});
+	it("opens a file link on the resumed message target when Notes opens after the identity change", () => {
+		const plan: SessionURL = { id: "u3", url: `file://${CWD}/docs/plan.md`, label: "The plan" };
+		provide(session({ sessionUrls: [plan] }));
+		const routes: { name: string; params: object }[] = [];
+		navigation.navigate.mockImplementation((name, params) => void routes.push({ name, params }));
+		const tree = sheet(false, "ref-notes-2");
+		act(() => pressable(tree, `The plan, file://${CWD}/docs/plan.md`)?.props.onPress());
+		expect(routes.at(-1)).toMatchObject({
+			name: "Reader",
+			params: { sessionRef: REF, messageSessionRef: "ref-notes-2" },
+		});
 	});
 
 	it.each([

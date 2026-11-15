@@ -286,7 +286,7 @@ export type Routes = {
 		runStartedAt?: string;
 	};
 	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
-	NotesSheet: { hubId: string; ref: string; focusEditor?: boolean };
+	NotesSheet: { hubId: string; ref: string; messageSessionRef?: string; focusEditor?: boolean };
 	QueueSheet: { hubId: string; ref: string };
 	SessionInfoSheet: { hubId: string; ref: string };
 	ModelSheet: { hubId: string; ref: string; setting: "model" | "vision" };
@@ -2260,6 +2260,7 @@ function ConversationScreenView({
 			conversation
 				? {
 						session: conversation,
+						messageRef: () => currentIdentity.current,
 						controls,
 						host,
 						modelLabel,

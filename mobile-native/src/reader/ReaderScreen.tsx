@@ -104,6 +104,10 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			}
 		});
 	}, [hubId, openedMessageRef]);
+	useEffect(() => {
+		if (messageRef !== openedMessageRef)
+			navigation.setParams({ messageSessionRef: messageRef === sessionRef ? undefined : messageRef });
+	}, [messageRef, openedMessageRef, sessionRef, navigation]);
 	const memory = documentMemory(hubId);
 	const { client, activeProfile, state } = useConnection();
 	const inFront = useScreenInFront(route.key);

@@ -8,7 +8,13 @@ import type { SyncStringStorage } from "./syncStringStorage";
 export interface SavedLocation {
 	hubId: string;
 	conversation?: { ref: string; title: string };
-	reader?: { sessionRef: string; path: string; reference?: FileReference; updatedAt?: string };
+	reader?: {
+		sessionRef: string;
+		messageSessionRef?: string;
+		path: string;
+		reference?: FileReference;
+		updatedAt?: string;
+	};
 	pinAssignment?: true;
 	deleteSession?: true;
 	fork?: ForkTarget;
@@ -45,6 +51,8 @@ function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
 		isPlainObject(value) &&
 		typeof value.sessionRef === "string" &&
 		value.sessionRef.length > 0 &&
+		(value.messageSessionRef === undefined ||
+			(typeof value.messageSessionRef === "string" && value.messageSessionRef.length > 0)) &&
 		typeof value.path === "string" &&
 		value.path.length > 0 &&
 		(value.reference === undefined || (fileReference(value.reference) && value.reference.path === value.path)) &&
@@ -151,6 +159,9 @@ export class LocationRepository {
 				? {
 						reader: {
 							sessionRef: value.reader.sessionRef,
+							...(value.reader.messageSessionRef === undefined
+								? {}
+								: { messageSessionRef: value.reader.messageSessionRef }),
 							path: value.reader.path,
 							...(value.reader.reference ? { reference: value.reader.reference } : {}),
 							...(value.reader.updatedAt === undefined ? {} : { updatedAt: value.reader.updatedAt }),
@@ -246,14 +257,15 @@ export function locationForRoute(
 	}
 	if (route.name === "Reader") {
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId) return null;
-		const { sessionRef, path, sessionTitle, updatedAt, reference } = route.params;
+		const { sessionRef, messageSessionRef, path, sessionTitle, updatedAt, reference } = route.params;
 		const destination = {
 			sessionRef,
+			...(typeof messageSessionRef === "string" ? { messageSessionRef } : {}),
 			path,
 			...(fileReference(reference) ? { reference } : {}),
 			...(typeof updatedAt === "string" ? { updatedAt } : {}),
 		};
-		const session = { ref: sessionRef, title: sessionTitle };
+		const session = { ref: messageSessionRef ?? sessionRef, title: sessionTitle };
 		return reader(destination) && conversation(session)
 			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
 			: null;
@@ -265,11 +277,15 @@ export function locationForRoute(
 		route.name === "PinAssignment" ||
 		route.name === "SessionDeletion"
 	) {
+		const pendingIdentity =
+			route.name === "Conversation" && isPlainObject(route.params) && typeof route.params.pendingIdentity === "string"
+				? route.params.pendingIdentity
+				: "";
 		if (!isPlainObject(route.params) || route.params.hubId !== hubId || !conversation(route.params)) return null;
 		if (route.name === "SessionDeletion" && !localSessionId(route.params.ref)) return null;
 		return {
 			hubId,
-			conversation: { ref: route.params.ref, title: route.params.title },
+			conversation: { ref: pendingIdentity || route.params.ref, title: route.params.title },
 			...(route.name === "PinAssignment" ? { pinAssignment: true as const } : {}),
 			...(route.name === "SessionDeletion" ? { deleteSession: true as const } : {}),
 		};
@@ -291,6 +307,7 @@ export function restoredStack(location: SavedLocation | null) {
 			archived?: boolean;
 			tier?: "current" | "recent" | "archived";
 			sessionRef?: string;
+			messageSessionRef?: string;
 			path?: string;
 			reference?: FileReference;
 			sessionTitle?: string;
@@ -335,6 +352,9 @@ export function restoredStack(location: SavedLocation | null) {
 			params: {
 				hubId: location.hubId,
 				sessionRef: location.reader.sessionRef,
+				...(location.reader.messageSessionRef === undefined
+					? {}
+					: { messageSessionRef: location.reader.messageSessionRef }),
 				path: location.reader.path,
 				reference: location.reader.reference,
 				sessionTitle: location.conversation.title,

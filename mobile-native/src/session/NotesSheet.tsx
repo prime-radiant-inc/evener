@@ -55,14 +55,14 @@ export const notesHosts = sheetHosts<NotesHost>();
 const NOTES_SHEET_GUTTER_PT = 20;
 
 export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes, "NotesSheet">) {
-	const { hubId, ref, focusEditor = false } = route.params;
-	const messageRef = useRef(ref);
+	const { hubId, ref, messageSessionRef, focusEditor = false } = route.params;
+	const messageRef = useRef(messageSessionRef ?? ref);
 	useEffect(() => {
-		messageRef.current = ref;
+		messageRef.current = messageSessionRef ?? ref;
 		return subscribeNativeIdentities((change) => {
 			if (change.hubId === hubId && change.from === messageRef.current) messageRef.current = change.to;
 		});
-	}, [hubId, ref]);
+	}, [hubId, ref, messageSessionRef]);
 	const toast = useToast();
 	const live = useRef<NotesHost | undefined>(undefined);
 	// Closing saves (ruling 37): Done and a swipe down both land here, and

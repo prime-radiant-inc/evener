@@ -399,6 +399,7 @@ it("carries a covered conversation's identity through a Duo fold and reconstruct
 	const active = activeConversation(outer);
 	expect(active?.ref).toBe(ref);
 	expect(active?.pendingIdentity).toBe("local:resumed");
+	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.messageRef()).toBe("local:resumed");
 	if (!active) throw new Error("the Duo did not retain its conversation");
 	foldedParams = active;
 	act(() => tree.unmount());

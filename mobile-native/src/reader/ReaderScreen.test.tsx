@@ -14,6 +14,7 @@ import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { locationForRoute, restoredStack } from "../location";
 import { markers, withTestID } from "../markerTestUtils";
 import {
 	alertRequests,
@@ -866,6 +867,20 @@ it("pops to the conversation that owns the reader after its identity changes", a
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
 	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("saves a Reader's resumed message identity while keeping its original document", async () => {
+	const { navigation, params } = await mount();
+	navigation.setParams.mockImplementation((next) => Object.assign(params, next));
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await settle();
+	const saved = locationForRoute({ name: "Reader", params }, "studio");
+	expect(restoredStack(saved).routes.at(-1)?.params).toMatchObject({
+		sessionRef: "local:fix",
+		messageSessionRef: "local:fix-2",
+	});
 });
 
 it("returns a quote to the covered Subagent route while holding it for the resumed identity", async () => {
