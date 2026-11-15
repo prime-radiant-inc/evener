@@ -22,7 +22,7 @@ import {
 	type ThreadModel,
 } from "@evener/appwire-client";
 import { runningSubagentCount } from "../subagents/subagentModel";
-import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "../board/attention";
+import { AGENT_QUIET_AFTER_MS, quietOrWorking, waitingOnSubagents } from "@evener/appwire-client/state/navigation";
 import { PULSE_BARS } from "../board/pulse";
 
 export interface TrayLine {

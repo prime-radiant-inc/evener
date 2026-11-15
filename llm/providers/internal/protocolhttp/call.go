@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -171,10 +172,37 @@ func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILog
 }
 
 func (c *Call) httpClient() *http.Client {
+	var client *http.Client
 	if c.Client != nil {
-		return c.Client
+		client = c.Client
+	} else {
+		client = DefaultClient
 	}
-	return DefaultClient
+	clientCopy := *client
+	checkRedirect := client.CheckRedirect
+	credentialHeaders := make([]string, 0, len(c.Res.CredentialHeaders)+1)
+	if c.Res.Transport.AuthHeader != "" {
+		credentialHeaders = append(credentialHeaders, c.Res.Transport.AuthHeader)
+	}
+	for name := range c.Res.CredentialHeaders {
+		credentialHeaders = append(credentialHeaders, name)
+	}
+	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if checkRedirect != nil {
+			if err := checkRedirect(req, via); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if len(via) > 0 && via[0].URL != nil && req.URL != nil && via[0].URL.Host != req.URL.Host {
+			for _, name := range credentialHeaders {
+				req.Header.Del(name)
+			}
+		}
+		return nil
+	}
+	return &clientCopy
 }
 
 func (c *Call) metaBuilder(p *Prepared) transport.APIAttemptMetaBuilder {

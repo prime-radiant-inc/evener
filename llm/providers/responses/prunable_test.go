@@ -9,6 +9,7 @@ import (
 )
 
 func TestPrunablePathsMatchRegistry(t *testing.T) {
+	t.Parallel()
 	p, ok := llm.ProtocolFor(registry.ProtocolOpenAIResponses)
 	if !ok {
 		t.Fatal("openai-responses not registered")

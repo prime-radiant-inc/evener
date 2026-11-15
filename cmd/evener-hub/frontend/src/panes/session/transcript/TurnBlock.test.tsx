@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import {
   ACTION_SUMMARY_UNAVAILABLE,
+  hydrateThread,
   makeTranscriptDisplayConfig,
   projectThread,
   type TranscriptDisplayConfigV1,
@@ -295,9 +296,57 @@ test("showSeenDivider defaults to false: no divider marker rendered", () => {
   expect(screen.queryByTestId("seen-divider")).toBeNull();
 });
 
-test("showSeenDivider renders the divider marker above this turn's content", () => {
+test("showSeenDivider renders one divider marker inside the turn block", () => {
   render(<TurnBlock turn={turn([], { id: "turn_42" })} showSeenDivider />);
-  expect(screen.getByTestId("seen-divider")).toBeTruthy();
+  const dividers = screen.getAllByTestId("seen-divider");
+  expect(dividers).toHaveLength(1);
+  expect(screen.getByTestId("turn-block").contains(dividers[0] ?? null)).toBe(true);
+});
+
+function anchored(container: HTMLElement, id: string): Element {
+  const found = container.querySelector(`[data-view-anchor-id="${id}"]`);
+  if (!found) throw new Error(`no rendered entry ${id}`);
+  return found;
+}
+
+function follows(a: Element, b: Element): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+test("the seen divider follows the turn's leading user messages and precedes its first reply", () => {
+  const items = [
+    item({ id: "u1", type: "userMessage", text: "ask" }),
+    item({ id: "u2", type: "userMessage", text: "ask more" }),
+    item({ id: "a1", type: "agentMessage", text: "reply" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(follows(anchored(container, "u1"), divider)).toBe(true);
+  expect(follows(anchored(container, "u2"), divider)).toBe(true);
+  expect(follows(divider, anchored(container, "a1"))).toBe(true);
+});
+
+test("the seen divider comes first in a turn that has no user message", () => {
+  const items = [
+    item({ id: "a1", type: "agentMessage", text: "reply" }),
+    item({ id: "a2", type: "agentMessage", text: "more" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(follows(divider, anchored(container, "a1"))).toBe(true);
+  expect(follows(divider, anchored(container, "a2"))).toBe(true);
+});
+
+test("the seen divider follows every entry of a turn that only has user messages", () => {
+  const items = [
+    item({ id: "u1", type: "userMessage", text: "ask" }),
+    item({ id: "u2", type: "userMessage", text: "ask more" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} viewAnchorIndex={0} showSeenDivider />);
+  const divider = screen.getByTestId("seen-divider");
+  expect(screen.getAllByTestId("seen-divider")).toHaveLength(1);
+  expect(follows(anchored(container, "u1"), divider)).toBe(true);
+  expect(follows(anchored(container, "u2"), divider)).toBe(true);
 });
 
 test("renders items in order via the item-renderer registry", () => {
@@ -926,6 +975,43 @@ test("a lone commandExecution renders inside a run-content wrapper", () => {
   expectInsideRunContent(screen.getByTestId("tool-call-item"));
 });
 
+// A run of adjacent tool rows is one card: each row's wrapper says whether it
+// opens, continues or closes the card, and a row that is not a tool row ends
+// the run, so the stylesheet can round only the card's outer corners.
+function toolCardPositionsOf(container: HTMLElement): (string | null)[] {
+  return Array.from(container.querySelectorAll('[data-testid="run-content"]')).map((wrapper) =>
+    wrapper.getAttribute("data-tool-card"),
+  );
+}
+
+test("adjacent tool rows share one card; a row between them splits it into two", () => {
+  const items = [
+    item({ id: "a", type: "commandExecution", toolName: "tb-card-a", output: "one" }),
+    item({ id: "b", type: "commandExecution", toolName: "tb-card-b", output: "two" }),
+    item({ id: "c", type: "commandExecution", toolName: "tb-card-c", output: "three" }),
+    item({ id: "note", type: "someFutureWireType", text: "between" }),
+    item({ id: "d", type: "commandExecution", toolName: "tb-card-d", output: "four" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} />);
+  expect(toolCardPositionsOf(container)).toEqual(["first", "middle", "last", null, "only"]);
+});
+
+test("a tool call whose row is suppressed neither joins a card nor splits the one around it", () => {
+  const items = [
+    item({ id: "a", type: "commandExecution", toolName: "tb-card-a", output: "one" }),
+    item({
+      id: "view",
+      type: "commandExecution",
+      toolName: "task_list",
+      argumentsJSON: JSON.stringify({ action: "view" }),
+    }),
+    item({ id: "b", type: "commandExecution", toolName: "tb-card-b", output: "two" }),
+  ];
+  const { container } = render(<TurnBlock turn={turn(items)} />);
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(2);
+  expect(toolCardPositionsOf(container)).toEqual(["first", null, "last"]);
+});
+
 test("an unknown future item type defaults to run content", () => {
   const items = [item({ id: "x", type: "someFutureWireType", text: "mystery" })];
   render(<TurnBlock turn={turn(items)} />);
@@ -1174,4 +1260,95 @@ test("a completed intent group closes after its trailing tool calls", () => {
   expect(screen.getByTestId("turn-done")).toBeTruthy();
   const group = document.querySelector('[data-transcript-row-id="intent-group-row"]');
   expect(group?.contains(screen.getByTestId("turn-separator"))).toBe(true);
+});
+
+// Issue #5836: an answered ask round's reply text must render in the thread.
+// The wire serves the reply as a userMessage whose observation carries the
+// answer link exactly this way (internal/apptranscript's answerObservation);
+// this drives the real wire fold (hydrateThread), projection and row
+// rendering together. The reply bubble itself already renders on main - the
+// issue's reported-blank symptom traces to a stale build - so the
+// discriminating pins here are the durable link surviving the fold (red on
+// pre-fix main) and the ask row's "— answered:" recap rendering FROM that
+// link: the recap is the visible behavior this change adds on the wire path
+// a served transcript takes.
+test("an answered round renders its reply text in the thread", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const thread = {
+    id: "thread_probe",
+    sessionId: "sess_probe",
+    source: "local",
+    status: { type: "idle" },
+    cwd: "/w",
+    turns: [
+      {
+        id: "turn_q",
+        itemsView: "full",
+        status: "completed",
+        items: [
+          {
+            id: "item_user_1",
+            type: "userMessage",
+            turnId: "turn_q",
+            text: "please unblock the Jobs rendering work",
+            status: "completed",
+          },
+          {
+            id: "item_ask",
+            type: "commandExecution",
+            turnId: "turn_q",
+            toolName: "ask_user",
+            callId: "call_ask",
+            description: "Ask",
+            argumentsJson:
+              '{"questions":[{"header":"Jobs rendering blocker","question":"What should I do about the Jobs rendering blocker?","options":[{"label":"Authorize a bounded Jobs investigation","detail":"go"}]}]}',
+            output: "questions posted",
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: "turn_a",
+        itemsView: "full",
+        status: "completed",
+        items: [
+          {
+            id: "item_reply",
+            type: "userMessage",
+            turnId: "turn_a",
+            text: '[answers]\n1. [Jobs rendering blocker] → "Authorize a bounded Jobs investigation"',
+            status: "completed",
+            startedAt: 1_700_000_000_000,
+            observation: { ref: "", turnId: "turn_a", answerToTurnIds: ["turn_q"], causalKnown: false },
+          },
+        ],
+      },
+    ],
+    evener: { ref: "local:sess_probe", queue: { revision: 0 } },
+  } as unknown as Parameters<typeof hydrateThread>[0]["thread"];
+  const model = hydrateThread({ thread }, "local:sess_probe", 0);
+  const projection = projectThread(model as ThreadModel, config);
+  render(
+    withConfig(
+      config,
+      projection.turns.map((projected) => (
+        <TurnBlock key={projected.id} turn={projected} thread={model as ThreadModel} />
+      )),
+    ),
+  );
+  const bubbles = screen.getAllByTestId("user-bubble");
+  expect(bubbles.some((bubble) => bubble.textContent?.includes("Authorize a bounded Jobs investigation"))).toBe(true);
+  // The durable link survived the fold: the reply model item names the
+  // question round it answers.
+  expect(
+    model.turns.flatMap((turn) => turn.items).find((candidate) => candidate.id === "item_reply")?.answerToTurnIds,
+  ).toEqual(["turn_q"]);
+  // And the ask row renders its recap FROM the link - the visible behavior
+  // this change adds on the served-transcript path. At chat level the summary
+  // line sits behind the row's intent trigger, so open it and read the
+  // row's own summary element.
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  expect(screen.getByTestId("tool-row-summary").textContent).toContain(
+    '— answered: "Authorize a bounded Jobs investigation"',
+  );
 });

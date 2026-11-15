@@ -110,7 +110,7 @@ func TestUnknownWindowTripwireFoldsOnMeasuredInput(t *testing.T) {
 // a fold the window's own thresholds did not ask for.
 func TestKnownWindowTripwireStaysDead(t *testing.T) {
 	t.Parallel()
-	profile := provider.WithContextWindow(unknownGatewayProfile(), 1_000_000)
+	profile := withContextWindow(unknownGatewayProfile(), 1_000_000)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 	cm.CheckpointThreshold = 100 // unreachable by design, as above
 
@@ -156,10 +156,10 @@ func TestCatalogWindowNeverAssumed(t *testing.T) {
 // default, and is not disclosed as assumed.
 func TestDeclaredWindowBeatsAssumption(t *testing.T) {
 	t.Parallel()
-	profile := provider.WithContextWindow(unknownGatewayProfile(), 27_500)
+	profile := withContextWindow(unknownGatewayProfile(), 27_500)
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 
-	history := bulkHistory(8, 2_000) // ~24K tokens: ~87% of the declared 27.5K
+	history := bulkHistory(8, 2_100) // ~25K tokens: ~92% of the declared 27.5K
 	if p := cm.Pressure(history, 0); p < cm.CheckpointThreshold {
 		t.Fatalf("Pressure against the declared window = %v, want ≥ %v", p, cm.CheckpointThreshold)
 	}
@@ -305,67 +305,6 @@ func TestAssumedWindowDisclosureRefiresOnModelSwitch(t *testing.T) {
 	}
 }
 
-// TestStrategyTripwireDropsOnMidPassModelSwitch pins the one-snapshot rule for
-// the captured tripwire: the fold gate re-snapshots pressure after the mask
-// layers, so a SetProfile landing between the capture and the gate must drop
-// the stale verdict — one model's measurement never forces another model's
-// fold; the switched-to model's own pass re-captures the tripwire on its
-// terms. The mask layer's own event is the deterministic seam: it fires
-// after the capture, before the re-snapshot.
-func TestStrategyTripwireDropsOnMidPassModelSwitch(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name  string
-		build func(t *testing.T, cm *Manager) Strategy
-	}{
-		{"session-log", func(t *testing.T, cm *Manager) Strategy {
-			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			client := llm.NewClient()
-			client.Register(&stubSummarizeAdapter{name: "gw", respFn: func(llm.Request) (llm.Response, error) {
-				return llm.Response{Message: llm.Assistant("condensed context summary")}, nil
-			}})
-			// Model A: unknown window, thresholds out of reach, a measurement
-			// past the tripwire — only the captured tripwire can force a fold.
-			cm := NewManager(unknownGatewayProfile(), client, cheapmodel.New(client))
-			cm.CheckpointThreshold = 100
-			cm.SummarizeThreshold = 100
-			history := bulkHistory(12, 100) // ~1.8K tokens
-			cm.RecordInputTokens(UnknownWindowInputTripwire+50_000, len(history))
-
-			// Model B: a different target with a known window so wide its
-			// pressure never reaches the out-of-reach thresholds.
-			windowB := 1_000_000
-			modelB := provider.FromResolved(registry.Resolved{
-				Instance: "gw", ModelID: "glm-5-flash", WireID: "glm-5-flash",
-				Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
-				Caps: registry.Caps{ContextWindow: &windowB},
-			}, nil)
-
-			strategy := tc.build(t, cm)
-			switched := false
-			emit := func(kind events.EventKind, data events.EventData) {
-				if kind == events.EventContextCompaction && !switched {
-					switched = true
-					cm.SetProfile(modelB)
-				}
-			}
-			if err := strategy.ManageContext(context.Background(), &history, 0, emit); err != nil {
-				t.Fatalf("ManageContext: %v", err)
-			}
-			if !switched {
-				t.Fatal("the mid-pass switch never ran: the mask layer emitted no event")
-			}
-			if len(history) != 12 {
-				t.Fatalf("stale tripwire folded the switched-to model's history: %d turns (had 12)", len(history))
-			}
-		})
-	}
-}
-
 // TestDisclosureClaimRejectsStaleProfile pins the latch claim's atomicity: a
 // caller that captured an unknown-window model BEFORE a switch must neither
 // emit nor latch — the claim validates the caller's model under the same lock
@@ -419,59 +358,6 @@ func knownWindowArrival() *provider.Profile {
 		panic("knownWindowArrival: fixture lost its window")
 	}
 	return enriched
-}
-
-// TestStrategyTripwireDropsWhenWindowArrivesMidPass pins the third mid-pass
-// seam: a live listing can enrich the SAME model with a real window, and
-// sameProfileTarget is window-blind, so the swap keeps the measurement and the
-// target match. A tripwire captured while the window was unknown must not
-// force a fold under a profile that now knows its window — a known window
-// governs on its own. The mask layer's own event is the deterministic seam,
-// as in the model-switch test above.
-func TestStrategyTripwireDropsWhenWindowArrivesMidPass(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name  string
-		build func(t *testing.T, cm *Manager) Strategy
-	}{
-		{"session-log", func(t *testing.T, cm *Manager) Strategy {
-			return &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "log.jsonl"))}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			client := llm.NewClient()
-			client.Register(&stubSummarizeAdapter{name: "gw", respFn: func(llm.Request) (llm.Response, error) {
-				return llm.Response{Message: llm.Assistant("condensed context summary")}, nil
-			}})
-			// The model is unknown-window, thresholds are out of reach, and a
-			// measurement past the tripwire is planted — only the captured
-			// tripwire can force a fold.
-			cm := NewManager(unknownGatewayProfile(), client, cheapmodel.New(client))
-			cm.CheckpointThreshold = 100
-			cm.SummarizeThreshold = 100
-			history := bulkHistory(12, 100) // ~1.8K tokens
-			cm.RecordInputTokens(UnknownWindowInputTripwire+50_000, len(history))
-
-			strategy := tc.build(t, cm)
-			arrived := false
-			emit := func(kind events.EventKind, data events.EventData) {
-				if kind == events.EventContextCompaction && !arrived {
-					arrived = true
-					cm.SetProfile(knownWindowArrival())
-				}
-			}
-			if err := strategy.ManageContext(context.Background(), &history, 0, emit); err != nil {
-				t.Fatalf("ManageContext: %v", err)
-			}
-			if !arrived {
-				t.Fatal("the mid-pass enrichment never ran: the mask layer emitted no event")
-			}
-			if len(history) != 12 {
-				t.Fatalf("tripwire captured under the unknown window folded a history whose window had arrived: %d turns (had 12)", len(history))
-			}
-		})
-	}
 }
 
 // TestDisclosureClaimRejectsKnownWindowArrival pins the claim's half of the

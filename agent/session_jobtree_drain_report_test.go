@@ -21,7 +21,7 @@ func inputRunning(s *Session, reply string) {
 // of the call survives a later input that reports nothing.
 func TestDrainTurnKeepsTheLatestAcceptedReport(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	inputRunning(s, "REPORT_A")
 	output := map[string]any{"message": "SUMMARY_B", "data": map[string]any{"generation": 2}}
 	process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
@@ -57,7 +57,7 @@ func TestDrainTurnWithoutAReportKeepsOtherErrors(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			s := newSession(t, withoutGitSnapshot())
+			s := newSession(t)
 			inputRunning(s, "REPORT_A")
 			process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 				inputRunning(s, "")
@@ -79,7 +79,7 @@ func TestDrainTurnWithoutAReportKeepsOtherErrors(t *testing.T) {
 // delegate never called the result tool (#3734).
 func TestDrainTurnKeepsTheNonTerminalUpdateFlag(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	inputRunning(s, "REPORT_A")
 	process := s.keepingReport(func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
 		inputRunning(s, "")

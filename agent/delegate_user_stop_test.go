@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // Stopping a subagent ends that subagent's own run and nothing else (S6,
@@ -145,8 +145,7 @@ func TestStopDelegateRunEndsTheRunAsCancelledByTheUser(t *testing.T) {
 		t.Fatalf("StopDelegateRun = %q, %v; want stopping", got, err)
 	}
 	harness.release()
-	// TRIPWIRE: an in-process scripted adapter; settling takes milliseconds.
-	waitForCondition(t, 30*time.Second, "the stopped run to settle", func() bool {
+	testwait.Until(t, "the stopped run to settle", func() bool {
 		root.delegateController.mu.Lock()
 		defer root.delegateController.mu.Unlock()
 		aggregate := root.delegateController.durable[delegateID]

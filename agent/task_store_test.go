@@ -1820,14 +1820,11 @@ func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newColdDelegateFixture(t, "")
 			if tc.failed {
-				fixture.client.Register(&fakeErrAdapter{
-					name: "openai",
-					steps: []func(llm.Request) (llm.Response, error){
-						func(llm.Request) (llm.Response, error) {
-							return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "scripted delegate failure", nil, nil)
-						},
+				fixture.client.Register(newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+					func(llm.Request) (llm.Response, error) {
+						return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "scripted delegate failure", nil, nil)
 					},
-				})
+				}))
 			} else {
 				fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 					func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "done") },

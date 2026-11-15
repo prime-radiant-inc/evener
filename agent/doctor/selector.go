@@ -40,11 +40,10 @@ func parseSelector(s string) (selector, error) {
 		return selector{sid: sid}, nil
 	}
 	if rest, ok := strings.CutPrefix(s, bucketref.ProjScheme); ok {
-		cut := strings.LastIndexByte(rest, ':')
-		if cut < 0 {
+		projectID, sid, ok := strings.CutLast(rest, ":")
+		if !ok {
 			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<project-id>:<id>)", s)
 		}
-		projectID, sid := rest[:cut], rest[cut+1:]
 		if !projectTokenOK(projectID) || identifier.ValidateSessionID(sid) != nil {
 			return selector{}, fmt.Errorf("invalid token in selector %q", s)
 		}

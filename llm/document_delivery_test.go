@@ -46,34 +46,80 @@ func TestDeliversUserMessageDocuments(t *testing.T) {
 
 func TestRowSeesToolResultMediaStaysImageOnlyForGoogle(t *testing.T) {
 	t.Parallel()
-	for _, cap := range []bool{false, true} {
+	for _, capable := range []bool{false, true} {
 		res := registry.Resolved{Protocol: registry.ProtocolGoogle, Caps: registry.Caps{
-			InputModalities: []string{"text", "image", "pdf"}, MultimodalToolResults: new(cap),
+			InputModalities: []string{"text", "image", "pdf"}, MultimodalToolResults: new(capable),
 		}}
 		if DeliversToolResultMedia(res, "application/pdf") || RowSeesToolResultMedia(res, "application/pdf") {
-			t.Fatalf("cap=%v: PDF tool results must still take the side-channel", cap)
+			t.Fatalf("cap=%v: PDF tool results must still take the side-channel", capable)
 		}
-		if got := RowSeesToolResultMedia(res, "image/png"); got != cap {
-			t.Fatalf("cap=%v: image delivery=%v", cap, got)
+		if got := RowSeesToolResultMedia(res, "image/png"); got != capable {
+			t.Fatalf("cap=%v: image delivery=%v", capable, got)
 		}
 	}
 }
 
-// TestRowSeesToolResultMediaStaysImageOnlyForAnthropic guards the side-channel:
-// an Anthropic row that declares pdf input must still not count a document
-// tool result as natively seen (DeliversToolResultMedia is image-only), so the
-// PDF is described out of band rather than skipped. Flipping this predicate
-// would silently stop document descriptions on Anthropic routes.
-func TestRowSeesToolResultMediaStaysImageOnlyForAnthropic(t *testing.T) {
+// TestRowSeesToolResultDocumentOnAnthropicPDFRows pins the #4465 flip: the
+// Anthropic builder writes a document content block inside tool_result, so a
+// PDF tool result on a row that declares pdf input is natively seen and the
+// side-channel skips it. A row without pdf input, or a protocol whose
+// tool-result shape carries no document, still takes the side-channel.
+func TestRowSeesToolResultDocumentOnAnthropicPDFRows(t *testing.T) {
 	t.Parallel()
 	res := registry.Resolved{
 		Protocol: registry.ProtocolAnthropic,
 		Caps:     registry.Caps{InputModalities: []string{"text", "image", "pdf"}},
 	}
-	if RowSeesToolResultMedia(res, "application/pdf") {
-		t.Fatal("a document tool result on an Anthropic row counted as natively seen; the side-channel must still describe it")
+	if !RowSeesToolResultMedia(res, "application/pdf") {
+		t.Fatal("a PDF tool result on an Anthropic row with pdf input must be natively seen")
 	}
 	if !RowSeesToolResultMedia(res, "image/png") {
 		t.Fatal("an image tool result on an Anthropic row must count as natively seen")
+	}
+	noPDF := registry.Resolved{
+		Protocol: registry.ProtocolAnthropic,
+		Caps:     registry.Caps{InputModalities: []string{"text", "image"}},
+	}
+	if RowSeesToolResultMedia(noPDF, "application/pdf") {
+		t.Fatal("an Anthropic row without pdf input must not count a PDF tool result as natively seen")
+	}
+	synthesized := registry.Resolved{
+		Protocol:    registry.ProtocolAnthropic,
+		Synthesized: true,
+		Caps:        registry.Caps{InputModalities: []string{"text", "image", "pdf"}},
+	}
+	if RowSeesToolResultMedia(synthesized, "application/pdf") {
+		t.Fatal("a synthesized row inherits another row's facts and cannot vouch for a tool-result document")
+	}
+	for _, protocol := range []string{registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat, registry.ProtocolGoogle} {
+		res := registry.Resolved{Protocol: protocol, Caps: registry.Caps{InputModalities: []string{"text", "image", "pdf"}}}
+		if DeliversToolResultMedia(res, "application/pdf") || RowSeesToolResultMedia(res, "application/pdf") {
+			t.Fatalf("%s: a tool-result document must still take the side-channel", protocol)
+		}
+	}
+}
+
+// TestBillsToolResultMedia_AnthropicDocumentBills keeps token estimation honest
+// with the wire shape: a PDF tool result on an Anthropic row that declares pdf
+// input rides inline and is billed, while a row without pdf input (and every
+// protocol that describes documents out of band) bills text only.
+func TestBillsToolResultMedia_AnthropicDocumentBills(t *testing.T) {
+	t.Parallel()
+	tr := &ToolResultData{ImageData: []byte("%PDF-1.4"), ImageMediaType: "application/pdf"}
+	cases := []struct {
+		name string
+		row  registry.Resolved
+		want bool
+	}{
+		{"anthropic with pdf", registry.Resolved{Protocol: registry.ProtocolAnthropic,
+			Caps: registry.Caps{InputModalities: []string{"text", "pdf"}}}, true},
+		{"anthropic without pdf", registry.Resolved{Protocol: registry.ProtocolAnthropic}, false},
+		{"unknown", registry.Resolved{}, true}, // a name-based target cannot be ruled out
+	}
+	for _, tc := range cases {
+		got := targetFromResolved(tc.row, "", "").billsToolResultMedia(tr)
+		if got != tc.want {
+			t.Errorf("billsToolResultMedia(%s, pdf) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

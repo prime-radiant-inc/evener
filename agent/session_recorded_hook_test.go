@@ -111,7 +111,7 @@ func TestRecordedHookSetBeforeAttachIsInstalledAtAttach(t *testing.T) {
 	if got := s.TranscriptRecordedLength(); got != 0 {
 		t.Fatalf("recorded length with no transcript = %d, want 0", got)
 	}
-	s.attachTranscript(writer)
+	s.attachTranscript(writer, nil)
 	t.Cleanup(func() { _ = s.closeAttachedTranscript() })
 	if err := s.writeTranscript(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)

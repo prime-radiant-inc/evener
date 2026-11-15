@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // hostRequestDispatchHub serves a real hub RPC server whose one remote host,
@@ -34,9 +35,9 @@ func hostRequestDispatchHub(t *testing.T, handle func(method string, params json
 // forwardedCallSeen waits until the remote has received method.
 func forwardedCallSeen(t *testing.T, calls func() []hostAdminCall, method string) {
 	t.Helper()
-	waitFor(t, func() bool {
+	testwait.Until(t, "the remote to receive "+method, func() bool {
 		return slices.ContainsFunc(calls(), func(call hostAdminCall) bool { return call.method == method })
-	}, "the remote never received "+method)
+	})
 }
 
 // remoteGate holds the scripted remote's answer to one method until opened,
@@ -119,9 +120,9 @@ func TestHostRequestForwardedMutationNeverTakesAReadSlot(t *testing.T) {
 			t.Fatal("the pool of admitted requests never filled")
 		}
 		done := hostRequest(client, appwire.MethodEvenerMarketplaceList)
-		waitFor(t, func() bool {
+		testwait.Until(t, "a forwarded read to reach the remote or be refused", func() bool {
 			return len(done) > 0 || heldReads() == i
-		}, "a forwarded read to reach the remote or be refused")
+		})
 		if len(done) == 0 {
 			continue
 		}

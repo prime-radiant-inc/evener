@@ -141,12 +141,23 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
-	// roundFallbackMessages is the round's untrimmed request messages (system
+	// roundFallbackMessages is the round's unprojected request messages (system
 	// plus expanded history) kept for the fallback chain, whose targets apply
-	// their own thinking-replay policy. prepareModelRequestWithError writes it
-	// and callModelWithFallback takes and clears it on the same turn goroutine;
-	// mu guards the exchange (#4563).
+	// their own thinking-replay and tool-result media policy.
+	// prepareModelRequestWithError writes it and callModelWithFallback takes and
+	// clears it on the same turn goroutine; mu guards the exchange (#4563, #4217).
 	roundFallbackMessages []llm.Message
+	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
+	// provider rejected. Request assembly omits those bytes for the rest of the
+	// session (the transcript keeps them); the rejection recovery adds the IDs
+	// and retries once. Guarded by mu.
+	rejectedToolResultDocuments map[string]struct{}
+	// pendingToolResultDocuments holds tool-call IDs a speculative document
+	// recovery stripped from the retry before the provider named a document.
+	// A successful retry promotes them to rejectedToolResultDocuments; a failed
+	// retry rolls them back, so an unrelated invalid request cannot suppress a
+	// document the provider accepted (#4465). Guarded by mu.
+	pendingToolResultDocuments map[string]struct{}
 	// httpClient issues the web_fetch HTTP GET. Nil means the production default
 	// (http.DefaultClient); tests set it on their own session to serve a fabricated
 	// response through an injected transport without touching the network.
@@ -661,6 +672,25 @@ type Session struct {
 	// transcriptRecorded is the recorded-entry hook installed on every writer
 	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
 	transcriptRecorded func(transcript.Record)
+	// holdTranscriptPublications, while set, stops recordTranscriptLocked
+	// from publishing each recorded entry's length: the fold publication
+	// transaction holds every publication while it may still take its own
+	// lines back out (#1158), then publishes the one settled boundary — the
+	// published-length handoff is monotone, so an intermediate length that
+	// vanished with a retract must never reach it. Guarded by attentionMu,
+	// the door every write it gates runs under.
+	holdTranscriptPublications bool
+	transcriptFrontier         transcriptFrontierBinding
+	// executionFrontierMu is a leaf: the append hook never acquires Session.mu
+	// or emits while holding it. Sampling takes mu before this leaf.
+	executionFrontierMu sync.Mutex
+	executionFrontier   events.ExecutionFrontier
+	frontierWake        chan struct{}
+	frontierPending     []string
+	frontierStopped     bool
+	// Armed only by constructors, never by bare Sessions or runtime writes.
+	frontierStartupPending bool
+	frontierEmitterWG      sync.WaitGroup // lifetime worker, joined at the event-stream close boundary
 	// transcriptPublished runs after adoption, outside mu and the append lock,
 	// while attentionMu still excludes the next canonical mutation.
 	transcriptPublished func(int64, *appwire.ConversationProvenanceState)
@@ -1236,6 +1266,18 @@ type Session struct {
 	// lives on stagePresentedAttentionCoverage and unionCoveredAttention.
 	// Reset at each turn start.
 	attentionCoveredIDs map[string]struct{}
+	// attentionCoverageActive marks that the session is inside a turn's model
+	// round loop, so mid-turn compactions suppress attentionCoveredIDs while
+	// idle between-turn compactions keep still-pending turns intact. Guarded by
+	// attentionMu.
+	attentionCoverageActive bool
+	// attentionFoldedCovered holds pending attention turns that a mid-turn
+	// compaction suppressed from re-injection because a settled round of this
+	// turn already presented them (attentionCoveredIDs). If any remain
+	// durably unconsumed when the turn exits, settleFoldedCoveredAttention
+	// restores them into history so the retry wake still sees their content.
+	// Guarded by attentionMu; reset with attentionCoveredIDs at turn start.
+	attentionFoldedCovered []foldedCoveredAttentionTurn
 	// attentionStagedIDs is one round's candidate coverage: the attention
 	// the round's built request presents. The round loop promotes it into
 	// attentionCoveredIDs only when the round's call settles, so a failed
@@ -2151,6 +2193,8 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// profile (contextMgr.SetProfile above) may already exceed its
 	// compaction threshold. Blocking the switch would strand users on
 	// expensive models; the marker just warns.
+	var usage ContextMetrics
+	var contextPressure float64
 	contextWarningPct := 0
 	contextWarning := false
 	contextWindowAssumed := false
@@ -2160,27 +2204,35 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		// is measured against is the unknown-window assumption, so the marker
 		// can name the assumption instead of presenting a percentage of 128K as
 		// a fact about the new model's real window (#4598 follow-up).
-		usage := s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
+		usage = s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
 		if usage.Window > 0 {
-			pressure := float64(usage.Used) / float64(usage.Window)
-			if pressure >= s.contextMgr.CheckpointThreshold {
+			contextPressure = float64(usage.Used) / float64(usage.Window)
+			if contextPressure >= s.contextMgr.CheckpointThresholdFor(nextProfile) {
 				contextWarning = true
-				contextWarningPct = int(pressure*100 + 0.5)
+				contextWarningPct = int(contextPressure*100 + 0.5)
 				contextWindowAssumed = usage.Assumed
 				assumedWindowTokens = usage.Window
 			}
 		}
 	}
-	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:           commitPrev,
-		nextProfile:          nextProfile,
-		contextWarning:       contextWarning,
-		contextWarningPct:    contextWarningPct,
-		contextWindowAssumed: contextWindowAssumed,
-		assumedWindowTokens:  assumedWindowTokens,
-		droppedFallbacks:     s.lastDroppedModelFallbacks,
-	})
+	// Snapshot the facts the marker needs and leave the lock before the
+	// history scan: the count walks every turn, and the lock is shared with
+	// turn processing.
+	markerHistory := append([]schema.Turn(nil), s.history...)
+	droppedFallbacks := append([]string(nil), s.lastDroppedModelFallbacks...)
 	s.mu.Unlock()
+	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
+		oldProfile:                commitPrev,
+		nextProfile:               nextProfile,
+		contextWarning:            contextWarning,
+		contextWarningPct:         contextWarningPct,
+		contextUsedTokens:         usage.Used,
+		compactionThresholdTokens: usage.CompactionThreshold,
+		contextWindowAssumed:      contextWindowAssumed,
+		assumedWindowTokens:       assumedWindowTokens,
+		droppedFallbacks:          droppedFallbacks,
+		orphanedToolResultMedia:   orphanedToolResultMediaCount(markerHistory, commitPrev, nextProfile),
+	})
 	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
 		hook()
 	}
@@ -2194,6 +2246,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		OldProvider: commitPrev.ID(), OldModel: commitPrev.Model(),
 		NewProvider: nextProfile.ID(), NewModel: nextProfile.Model(),
 	}
+	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
 		OldProvider:           commitPrev.ID(),
@@ -2203,6 +2256,11 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
 		SupportsReasoning:     nextProfile.SupportsReasoning(),
 		MarkerText:            markerText,
+		ContextUsed:           usage.Used,
+		ContextWindow:         usage.Window,
+		ContextPressure:       contextPressure,
+		ContextAssumed:        usage.Assumed,
+		CompactionThreshold:   usage.CompactionThreshold,
 	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
@@ -2291,6 +2349,7 @@ func (s *Session) SetVisionModel(ref string) error {
 		return nil
 	}
 	s.cfg.VisionModel = ref
+	s.rebuildToolDefsCache()
 	s.mu.Unlock()
 	s.emit(events.VisionModelChangedData{OldVisionModel: oldCanonical, NewVisionModel: ref})
 	s.maybeAutoSave()
@@ -2300,14 +2359,14 @@ func (s *Session) SetVisionModel(ref string) error {
 // canonicalVisionModelOff normalizes only the complete bare off sentinel.
 // Provider-qualified refs such as "off/model" must remain ordinary refs.
 func canonicalVisionModelOff(ref string) string {
-	if !strings.Contains(ref, "/") && strings.EqualFold(strings.TrimSpace(ref), visionModelOff) {
+	if !strings.Contains(ref, "/") && isVisionDisabledSetting(ref) {
 		return visionModelOff
 	}
 	return ref
 }
 
 func (s *Session) validateVisionModelRefLocked(ref string) error {
-	if ref == "" || strings.EqualFold(ref, visionModelOff) {
+	if ref == "" || (!strings.Contains(ref, "/") && isVisionDisabledSetting(ref)) {
 		return nil
 	}
 	prov, model, ok := strings.Cut(ref, "/")
@@ -2341,22 +2400,31 @@ func (s *Session) VisionModel() string {
 // modelSwitchMarkerParams collects the inputs to buildModelSwitchMarkerText so
 // the call site names each field rather than relying on positional order.
 type modelSwitchMarkerParams struct {
-	oldProfile        *provider.Profile
-	nextProfile       *provider.Profile
-	contextWarning    bool
-	contextWarningPct int
+	oldProfile                *provider.Profile
+	nextProfile               *provider.Profile
+	contextWarning            bool
+	contextWarningPct         int
+	contextUsedTokens         int
+	compactionThresholdTokens int
 	// contextWindowAssumed and assumedWindowTokens describe the window the
 	// warning percentage is measured against when it is the unknown-window
 	// assumption, not a size anything vouches for.
 	contextWindowAssumed bool
 	assumedWindowTokens  int
 	droppedFallbacks     []string
+	// orphanedToolResultMedia counts tool-result media payloads already in the
+	// transcript that the new target cannot see. Request assembly drops their
+	// bytes (#4217); the marker makes that drop visible instead of silent. The
+	// same count covers images and documents once a protocol carries one.
+	orphanedToolResultMedia int
 }
 
 func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", p.oldProfile.ID(), p.oldProfile.Model(), p.nextProfile.ID(), p.nextProfile.Model())}
 	if p.contextWarning {
-		if p.contextWindowAssumed {
+		if p.compactionThresholdTokens > 0 {
+			lines = append(lines, fmt.Sprintf("Warning: context usage (~%d tokens) is over %s/%s's compaction threshold (%d tokens).", p.contextUsedTokens, p.nextProfile.ID(), p.nextProfile.Model(), p.compactionThresholdTokens))
+		} else if p.contextWindowAssumed {
 			lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's assumed context window (~%d tokens), over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID(), p.assumedWindowTokens))
 		} else {
 			lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID()))
@@ -2365,7 +2433,33 @@ func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	if len(p.droppedFallbacks) > 0 {
 		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", p.nextProfile.ID(), strings.Join(p.droppedFallbacks, ", ")))
 	}
+	if p.orphanedToolResultMedia > 0 {
+		lines = append(lines, fmt.Sprintf("Warning: %s read earlier in this session cannot be seen by %s; they stay in the transcript but are omitted from requests.", pluralizedUnit(p.orphanedToolResultMedia, "tool-result media item"), p.nextProfile.ID()))
+	}
 	return strings.Join(lines, "\n")
+}
+
+// orphanedToolResultMediaCount counts the tool-result media payloads already in
+// history that from saw and to cannot: those are the attachments this switch
+// puts out of the model's view. The delivery predicates decide per media type,
+// so the count covers images and, on a protocol that carries one, documents.
+func orphanedToolResultMediaCount(history []schema.Turn, from, to *provider.Profile) int {
+	if from == nil || to == nil {
+		return 0
+	}
+	count := 0
+	for _, t := range history {
+		for _, p := range t.Message.Content {
+			if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 {
+				continue
+			}
+			mt := p.ToolResult.ImageMediaType
+			if llm.RowSeesToolResultMedia(from.Resolved(), mt) && !llm.RowSeesToolResultMedia(to.Resolved(), mt) {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // Rename sets a user-chosen session title. It records NameSource="user" so the
@@ -2929,7 +3023,7 @@ func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, pl
 	s.mu.Lock()
 	s.noteRecordedLocked(rec)
 	s.mu.Unlock()
-	if rec.Recorded {
+	if rec.Recorded && !s.holdTranscriptPublications {
 		s.publishTranscriptLocked(rec.Offset + rec.Length)
 	}
 	return rec, err
@@ -3037,15 +3131,17 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // writer: w is nil for a session with no state directory and for one whose
 // writer could not be opened, and marking those ready is what stops their turns
 // accumulating for the session's lifetime.
-func (s *Session) attachTranscript(w *transcript.Writer) {
+func (s *Session) attachTranscript(w *transcript.Writer, existing []transcript.Entry) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	s.setTranscriptLocked(w)
+	s.seedExecutionFrontier(existing)
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
+	s.registerTranscriptFrontier()
 	for _, t := range held {
 		rec, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession})
 		s.mu.Lock()

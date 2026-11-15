@@ -197,6 +197,7 @@ func buildRootInteractiveAnthropicSession(t *testing.T) *Session {
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withProfile(newAnthropicProfile("claude-test")),
 		withDir(dir),
+		withEnvironmentSnapshot(),
 		withConfig(SessionConfig{
 			MaxSubagentDepth: 2,
 			StateDir:         t.TempDir(),

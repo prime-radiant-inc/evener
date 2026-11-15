@@ -158,8 +158,9 @@ func transcriptWindowStructuredPageSize(
 	page appwire.ThreadTurnsListResponse,
 	params appwire.ThreadTurnsListParams,
 ) (int, error) {
+	versioned := appwire.HistoryTurnsResponse(page)
 	encoded, err := json.Marshal(appwire.SessionOperationResponse{
-		Turns:     &page,
+		Turns:     &versioned,
 		FollowUps: transcriptReadFollowUps(params, page),
 	})
 	if err != nil {

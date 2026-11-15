@@ -6,17 +6,16 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
-// SessionLogStrategy combines compact layers 1+2 (observation masking and
-// thinking clearing) with a session-log-based checkpoint (replacing the
-// deterministic layer 3), LLM summarization fallback (layer 4), and forked
-// summarization in AfterAction.
+// SessionLogStrategy folds history into a session-log-based checkpoint (in
+// place of the deterministic one), falls back to LLM summarization, and forks
+// a summarization in AfterAction.
 type SessionLogStrategy struct {
 	cm      *Manager
 	session Host
@@ -46,94 +45,13 @@ func (s *SessionLogStrategy) Name() string { return "session-log" }
 func (s *SessionLogStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // ManageContext applies compaction layers selectively:
-//   - Layer 1: observation masking
-//   - Layer 2: thinking clearing
-//   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
-//   - Layer 4: LLM summarization fallback
+//   - Layer 1: session-log checkpoint instead of deterministic checkpoint
+//   - Layer 2: LLM summarization fallback
 func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
-	// One profile snapshot covers the window check and every diagnostic below:
-	// a model switch landing mid-compaction would otherwise bill one layer's
-	// numbers by another model's thinking rule and image family.
-	prof, _, _ := s.cm.profileSnapshot()
-	cw, _ := effectiveWindowOf(prof)
-	if cw <= 0 {
-		return nil
-	}
-	discloseAssumedWindow(s.cm, prof, emitFn)
-
-	// Each phase reads pressure and its before/after diagnostics from ONE
-	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
-	// decide a layer by one model and describe it by another.
-	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
-
-	p, prof := estimatePressure()
-	// Captured before any layer invalidates the measurement: the tripwire
-	// (issue #4564) forces the checkpoint layer below whatever the pressure
-	// estimate says. It carries the profile it was captured under and governs
-	// only while that profile is still the gate's assumption
-	// (assumptionStillGoverns).
-	tripwire := s.cm.unknownWindowTripwireFires(prof)
-	tripwireProf := prof
-	compacted := false
-
-	// Invalidate API token measurement before running any layer so that
-	// between-layer pressure() calls use char/4 (reflects in-place mutations).
-	if p >= s.cm.ObservationMaskThreshold {
-		s.cm.resetMeasurement()
-	}
-
-	// Layer 1: Observation masking.
-	if p >= s.cm.ObservationMaskThreshold {
-		s.cm.applyLayer(ctx, emitFn, history, prof, "observation_mask", "", func(h []schema.Turn) ([]schema.Turn, error) {
-			maskObservations(h, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-			return h, nil
-		}, true)
-		compacted = true
-		p, prof = estimatePressure()
-	}
-
-	// Layer 2: Thinking clearing.
-	if p >= s.cm.ThinkingClearThreshold {
-		s.cm.applyLayer(ctx, emitFn, history, prof, "thinking_clear", "", func(h []schema.Turn) ([]schema.Turn, error) {
-			clearThinking(h, s.cm.PreserveRecentTurns)
-			return h, nil
-		}, true)
-		compacted = true
-		p, prof = estimatePressure()
-	}
-
-	// Layer 3 (replaced): Session-log checkpoint. checkpointed is what this
-	// pass's checkpoint folded, which a summary completing the same fold reads
-	// the partner's messages from.
-	var checkpointed []schema.Turn
-	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
-		s.cm.applyLayer(ctx, emitFn, history, prof, "session_log_checkpoint", schema.TurnCheckpoint, func(h []schema.Turn) ([]schema.Turn, error) {
-			var folded []schema.Turn
-			h, folded = s.sessionLogCheckpointWithMeta(h, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
-			checkpointed = folded
-			return h, nil
-		}, true)
-		compacted = true
-		p, prof = estimatePressure()
-	}
-
-	// Layer 4: LLM summarization fallback.
-	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
-		if s.cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
-			return s.cm.summarizeFold(ctx, h, s.cm.PreserveRecentTurns, "", checkpointed)
-		}, true) {
-			compacted = true
-		}
-	}
-
-	// Reset token measurement after compaction since history content changed.
-	if compacted {
-		s.cm.resetMeasurement()
-	}
-
+	s.cm.compactWithCheckpoint(ctx, history, sysPromptChars, emitFn, "session_log_checkpoint", s.sessionLogCheckpointWithMeta)
 	return nil
 }
 
@@ -171,7 +89,12 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
-	fmt.Fprintf(&b, "Original prompt: %s\n", originalPrompt)
+	// The prompt and the log are free text. Render each in its own fence so a
+	// fence opened inside either one — a prompt truncated mid-block, say —
+	// cannot stay open and make the Markdown reader skip the conversation
+	// section below (#6228).
+	b.WriteString("Original prompt:\n")
+	writeMarkdownFence(&b, originalPrompt)
 	if s.session != nil {
 		fmt.Fprintf(&b, "This session's id is %s.%s\n", s.session.ID(), s.transcriptRecoverySentence(meta))
 	}
@@ -180,9 +103,22 @@ func (s *SessionLogStrategy) sessionLogCheckpointWithMeta(history []schema.Turn,
 	b.WriteString("Session log:\n")
 	logStr := s.log.String()
 	if logStr != "" {
-		b.WriteString(logStr)
+		writeMarkdownFence(&b, logStr)
 	} else {
-		b.WriteString("(no entries)")
+		b.WriteString("(no entries)\n")
+	}
+	// The checkpoint carries the partner's messages it folds verbatim, in the
+	// shared conversation format. The session log is navigation, not authority:
+	// without this section a later compaction or summary has nothing to recover
+	// a permission or hold from once this checkpoint folds the original turns
+	// (#4181).
+	resultToolName := ""
+	if s.cm != nil {
+		resultToolName = s.cm.resultToolName()
+	}
+	if partner, _ := partnerMessagesMarkdown(history, cutoff, resultToolName, meta.hasTranscript(), 0); partner != "" {
+		b.WriteString("\n")
+		b.WriteString(partner)
 	}
 	b.WriteString("\n[END CHECKPOINT]\n")
 
@@ -208,6 +144,9 @@ func extractOriginalPrompt(history []schema.Turn) string {
 			if prompt := extractOriginalPromptLine(text, "Original task: "); prompt != "" {
 				return prompt
 			}
+			if prompt, ok := extractFencedOriginalPrompt(text); ok {
+				return prompt
+			}
 			continue
 		}
 		if strings.HasPrefix(text, summaryMarkerStart) {
@@ -225,6 +164,33 @@ func extractOriginalPromptLine(text, prefix string) string {
 	}
 	rest, _, _ = strings.Cut(rest, "\n")
 	return rest
+}
+
+// extractFencedOriginalPrompt reads the current checkpoint's prompt block:
+// "Original prompt:" followed by a fenced block. The block is written with
+// writeMarkdownFence, so its closing fence cannot be confused with text the
+// prompt holds (#6228).
+func extractFencedOriginalPrompt(text string) (string, bool) {
+	_, rest, found := strings.Cut(text, "Original prompt:\n")
+	if !found {
+		return "", false
+	}
+	lines := strings.Split(rest, "\n")
+	var fence mdfence.Tracker
+	if len(lines) < 2 || !fence.Step(lines[0]) {
+		return "", false
+	}
+	var body []string
+	for i := 1; i < len(lines); i++ {
+		if fence.Step(lines[i]) {
+			if fence.Inside() {
+				return "", false
+			}
+			return strings.Join(body, "\n"), true
+		}
+		body = append(body, lines[i])
+	}
+	return "", false
 }
 
 // AfterAction forks a summarization of the recent turns and appends the

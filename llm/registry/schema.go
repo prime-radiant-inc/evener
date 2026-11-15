@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"sort"
@@ -22,6 +23,62 @@ const (
 	LayerLive     = "live"
 	LayerConfig   = "config"
 )
+
+// Token limit bounds enforced at parse time.
+const (
+	MinCompactionThreshold = 4096
+	MaxTokenLimit          = math.MaxInt32
+)
+
+// ContextWindowSource maps a ContextWindow provenance value ("<layer>" or
+// "<layer>/<detail>") to the documented source set: "live", "overlay",
+// "config" or "snapshot". The refreshed models.dev cache is catalog data like
+// the embedded snapshot, so it reports "snapshot". A tag outside the layers
+// (or no provenance) maps to "".
+func ContextWindowSource(provenance string) string {
+	layer, _, _ := strings.Cut(provenance, "/")
+	switch layer {
+	case LayerLive, LayerOverlay, LayerConfig, LayerSnapshot:
+		return layer
+	case LayerCache:
+		return LayerSnapshot
+	}
+	return ""
+}
+
+// ProvenanceSource maps a Resolved.Provenance value ("<layer>", "<layer>/<scope>",
+// "alias", or "derived") to the normalized per-model provenance source set:
+// "catalog", "overlay", "live", "provider", "glob", "config", "alias", or
+// "derived". Both the embedded snapshot and refreshed models.dev cache map to
+// "catalog". Within the config layer, provider-level caps map to "provider",
+// glob rows map to "glob", and exact model rows map to "config". Any other
+// non-empty tag comes back verbatim.
+func ProvenanceSource(provenance string) string {
+	if provenance == "" {
+		return ""
+	}
+	layer, scope, hasScope := strings.Cut(provenance, "/")
+	switch layer {
+	case LayerSnapshot, LayerCache:
+		return "catalog"
+	case LayerOverlay:
+		return LayerOverlay
+	case LayerLive:
+		return LayerLive
+	case LayerConfig:
+		switch {
+		case !hasScope || scope == "row":
+			return LayerConfig
+		case scope == "provider":
+			return "provider"
+		case scope == "glob" || strings.HasPrefix(scope, "glob:"):
+			return "glob"
+		}
+	case provAlias, provDerived:
+		return layer
+	}
+	return provenance
+}
 
 // Host rules (spec §9.1): the only host-aware code in the system.
 const (
@@ -427,8 +484,14 @@ func validateTransport(ts transportSchema, where string) error {
 
 func validateCaps(c Caps, where string) error {
 	checkPositive := func(field string, v *int) error {
-		if v != nil && *v <= 0 {
+		if v == nil {
+			return nil
+		}
+		if *v <= 0 {
 			return fmt.Errorf("%s: %s must be a positive integer", where, field)
+		}
+		if *v > MaxTokenLimit {
+			return fmt.Errorf("%s: %s must be <= %d", where, field, MaxTokenLimit)
 		}
 		return nil
 	}
@@ -461,6 +524,9 @@ func validateCaps(c Caps, where string) error {
 		if e != nil {
 			return e
 		}
+	}
+	if c.CompactionThreshold != nil && (*c.CompactionThreshold < MinCompactionThreshold || *c.CompactionThreshold > MaxTokenLimit) {
+		return fmt.Errorf("%s: compaction_threshold must be between %d and %d", where, MinCompactionThreshold, MaxTokenLimit)
 	}
 	for _, rc := range c.ReasoningControls {
 		if !reasoningControlNames[rc] {
@@ -505,6 +571,12 @@ func ThinkingFormats() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ThinkingShapes returns every reasoning shape in the load-time vocabulary,
+// sorted.
+func ThinkingShapes() []string {
+	return sortedKeys(thinkingShapes)
 }
 
 // ValidMaxTokensField reports whether field is an output-limit spelling a

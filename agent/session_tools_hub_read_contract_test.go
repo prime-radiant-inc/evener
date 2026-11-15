@@ -39,6 +39,7 @@ func (*managerReadContractPeer) Watch(context.Context, appwire.SessionWatchReque
 func managerReadContractTransport(t *testing.T, root *Session) <-chan appwire.SessionOperationRequest {
 	t.Helper()
 	// TRIPWIRE: all requests are local and synchronous, not paced by this bound.
+	// It bounds only the setup handshake; the connection lives for the test.
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	server := appserver.NewServer(appserver.ServerConfig{})
@@ -57,7 +58,7 @@ func managerReadContractTransport(t *testing.T, root *Session) <-chan appwire.Se
 	t.Cleanup(func() { _ = client.Close() })
 	peer := &managerReadContractPeer{requests: make(chan appwire.SessionOperationRequest, 1)}
 	client.SetSessionTools(appwire.SessionBinding{Ref: "local:manager", InstanceID: "instance", HubID: "hub", BindingID: "binding"}, peer)
-	client.Start(ctx)
+	client.Start(t.Context())
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatal(err)
 	}

@@ -1293,7 +1293,7 @@ func TestSessionOperationsCompatibilityExhaustsSelectedWindowBeforeNativeHistory
 	}
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
 	var got []string
-	var final *appwire.ThreadTurnsListResponse
+	var final *appwire.ThreadHistoryTurnsListResponse
 	for range 10 {
 		response, invokeErr := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &params})
 		if invokeErr != nil {
@@ -4507,7 +4507,7 @@ func TestSessionOperationsRetiresRemoteCursorWhenControllerRetainsAgain(t *testi
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", Version: "test", SourceID: "local"})
 	operations := &sessionOperations{cfg: cfg, sources: sources, relays: newHubRelay(server, cfg, sources), server: server}
 	caller := appwire.ManagerView{Ref: "local:manager", Manager: true}
-	readWindow := func() appwire.ThreadTurnsListResponse {
+	readWindow := func() *appwire.ThreadHistoryTurnsListResponse {
 		t.Helper()
 		response, err := operations.Invoke(t.Context(), caller, appwire.SessionOperationRequest{Turns: &appwire.ThreadTurnsListParams{
 			Ref: "host-b:remote", TurnWindow: &appwire.ThreadTurnWindow{Turn: "turn-remote"},
@@ -4519,7 +4519,7 @@ func TestSessionOperationsRetiresRemoteCursorWhenControllerRetainsAgain(t *testi
 		if response.Turns == nil || len(response.Turns.Data) != 1 || len(response.Turns.Data[0].Items) != 1 {
 			t.Fatalf("remote window = %+v, want one labeled item", response.Turns)
 		}
-		return *response.Turns
+		return response.Turns
 	}
 	tokenOf := func(encoded string) string {
 		t.Helper()

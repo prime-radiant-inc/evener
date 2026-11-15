@@ -73,7 +73,7 @@ export function worktreeWords(item: WorktreeStep): StepWords {
       return base ? { ...words, after: `(from ${base})` } : words;
     }
     case "list": {
-      const found = countOf(result, "entries");
+      const found = typeof result?.total_entries === "number" ? result.total_entries : countOf(result, "entries");
       return withDetail({ verb: "Listed worktrees" }, found === undefined ? undefined : `${found} found`);
     }
     case "switch":
@@ -103,6 +103,12 @@ export function worktreeWords(item: WorktreeStep): StepWords {
       const disposed = status === "already_disposed" ? "Already disposed" : "Disposed";
       const words = id ? { verb: disposed, target: id } : { verb: `${disposed} a worktree` };
       return status === "already_disposed" ? words : withDetail(words, dirty);
+    }
+    case "unlock": {
+      // The parent-only recovery path: the delegate keeps its work and stays
+      // resumable, so the row must never read like a disposal.
+      const id = str(args, "id");
+      return id ? { verb: "Released lane for", target: id } : { verb: "Released a delegate lane" };
     }
     default:
       // A future operation this build has never heard of still says which one
@@ -144,6 +150,8 @@ export function worktreeProgress(item: Pick<WorktreeStep, "argumentsJSON">): str
       return `Adopting ${target}`;
     case "dispose":
       return `Disposing ${str(args, "id") || "a worktree"}`;
+    case "unlock":
+      return `Releasing lane for ${str(args, "id") || "a delegate"}`;
     default:
       return operation ? `Using manage worktree: ${operation}` : "Using manage worktree";
   }

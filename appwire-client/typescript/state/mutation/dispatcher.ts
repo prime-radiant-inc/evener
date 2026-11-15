@@ -25,6 +25,7 @@ import {
   type NotesHumanSetResponse,
   type ThreadClearResponse,
 } from "../../types.gen";
+import { PENDING_TURN_METHODS } from "./composerMethods";
 import { isClientReady, type MutationOutboxStorage } from "./outbox";
 import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord, type MutationRecord } from "./records";
 
@@ -37,7 +38,7 @@ import { effectiveWireId, type MutationAttachmentRef, type MutationOutboxRecord,
 // ids the first execution did) - so a receipt or refusal names the wire id,
 // and the dispatch loop must judge and settle the row by it, while every
 // storage settle stays keyed on the row's own (fresh) id.
-function wireMutationId(record: MutationOutboxRecord): string {
+function wireMutationId(record: MutationRecord): string {
   return effectiveWireId(record);
 }
 
@@ -70,6 +71,11 @@ export interface MutationStorageChangeCause {
 
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: MutationDispatchClientLookup;
+  // Reconnect replay asks the daemon about an accepted copy, not about
+  // dispatching outbox work. It keeps the connection and recovery fences but
+  // does not require the ref's dispatch arm, which a multi-ref reconnect can
+  // clear while another ref is still hydrating.
+  getReplayClient?: MutationDispatchClientLookup;
   onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   // Fired when the hub refused an attempt in band as transient
@@ -93,6 +99,7 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
 export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttachmentRef> {
   readonly #storage: MutationOutboxStorage<A>;
   readonly #getClient: MutationDispatcherOptions<A>["getClient"];
+  readonly #getReplayClient: MutationDispatchClientLookup;
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions<A>["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions<A>["onBlockedMutation"]>;
   readonly #onTransientRefusal: NonNullable<MutationDispatcherOptions<A>["onTransientRefusal"]>;
@@ -101,10 +108,13 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions<A>["onHumanNoteReconciled"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
+  readonly #acceptedCopyReplays = new Map<string, Promise<void>>();
+  readonly #acceptedCopyReplayAuthority = new Map<string, ReadonlySet<string>>();
 
   constructor(storage: MutationOutboxStorage<A>, options: MutationDispatcherOptions<A>) {
     this.#storage = storage;
     this.#getClient = options.getClient;
+    this.#getReplayClient = options.getReplayClient ?? options.getClient;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onTransientRefusal = options.onTransientRefusal ?? (() => undefined);
@@ -126,7 +136,13 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     return restored;
   }
 
-  async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {
+  async reconcileIdentities(
+    clientMutationIds: Iterable<string>,
+    options?: {
+      retainDisplayCopy?: boolean;
+      queueEntryIdsById?: ReadonlyMap<string, readonly string[]>;
+    },
+  ): Promise<void> {
     const targetRefs = new Set<string>();
     await Promise.all(
       [...new Set(clientMutationIds)].map(async (clientMutationId) => {
@@ -138,12 +154,121 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // wire carrier), so the note acknowledgement reads its answer from
         // the one home of wire-family resolution and fires only for a
         // settlement that actually proved the composition applied.
-        const record = await this.#storage.settleApplied(clientMutationId);
+        const settlementOptions = options?.queueEntryIdsById
+          ? {
+              retainDisplayCopy: options.retainDisplayCopy,
+              queueEntryIds: options.queueEntryIdsById.get(clientMutationId),
+            }
+          : options;
+        const record = await this.#storage.settleApplied(clientMutationId, settlementOptions);
         if (record?.method === "notes/human/set") this.#onHumanNoteReconciled(record);
         if (record) targetRefs.add(record.targetRef);
       }),
     );
     if (targetRefs.size > 0) this.#onStorageChange([...targetRefs]);
+  }
+
+  // A retained accepted copy is display-only after its outbox row settled. A
+  // snapshot that names neither the copy nor its transcript item can mean
+  // "delivered beyond this page" or "cancelled by another client while this
+  // one was offline". Replaying the original mutation asks the daemon's
+  // journal which one it is; only a terminal projection retires the copy.
+  async reconcileAcceptedCopies(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+    // Two boundaries (a tracked publication and a repository read) can ask for
+    // the same ref in the same step. Each replay is a journal round trip, so
+    // join the one already running instead of asking twice. A later caller
+    // whose snapshot proved more records authoritative still needs its pass,
+    // so record the wider set and let the running loop take it next.
+    const running = this.#acceptedCopyReplays.get(targetRef);
+    if (running) {
+      this.#acceptedCopyReplayAuthority.set(targetRef, authoritativeIds);
+      return running;
+    }
+    const replay = this.#reconcileAcceptedCopiesLoop(targetRef, authoritativeIds);
+    this.#acceptedCopyReplays.set(targetRef, replay);
+    try {
+      await replay;
+    } finally {
+      this.#acceptedCopyReplays.delete(targetRef);
+      this.#acceptedCopyReplayAuthority.delete(targetRef);
+    }
+  }
+
+  // An accepted copy enqueued against a session instance an authoritative
+  // read proves replaced: the replacement's fence rejects any replay of the
+  // old payload before the journal is asked, so the copy retires here instead.
+  async retireReplacedInstanceAcceptedCopies(targetRef: string, currentInstance: string): Promise<void> {
+    const accepted = await this.#storage.listOptimistic(targetRef).catch(() => undefined);
+    if (!accepted) return;
+    const obsolete = accepted
+      .filter((record) => PENDING_TURN_METHODS.includes(record.method))
+      .filter((record) => {
+        const enqueuedInstance = record.instanceId ?? record.threadId;
+        return enqueuedInstance !== undefined && enqueuedInstance !== currentInstance;
+      })
+      .map((record) => record.clientMutationId);
+    if (obsolete.length === 0) return;
+    await this.reconcileIdentities(obsolete);
+  }
+
+  async #reconcileAcceptedCopiesLoop(targetRef: string, first: ReadonlySet<string>): Promise<void> {
+    let ids = first;
+    for (;;) {
+      const failed = await this.#reconcileAcceptedCopiesNow(targetRef, ids);
+      // A pass whose journal ask failed resolved nothing for the copy it
+      // tried: report the failure to the caller (the store's replay memo)
+      // rather than resolving as though the replay had settled.
+      if (failed) throw new Error("accepted-copy replay failed");
+      const next = this.#acceptedCopyReplayAuthority.get(targetRef);
+      this.#acceptedCopyReplayAuthority.delete(targetRef);
+      // Every caller passes a freshly built set, so identity never proves
+      // equality. A pass that changes nothing has nothing left to replay - but
+      // a SHRINKING set changes the answer too: an id it drops becomes
+      // eligible for the replay the previous pass skipped it in.
+      if (!next) return;
+      const sameSize = next.size === ids.size;
+      const changed = !sameSize || [...next].some((id) => !ids.has(id));
+      if (!changed) return;
+      ids = next;
+    }
+  }
+
+  async #reconcileAcceptedCopiesNow(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<boolean> {
+    const accepted = await this.#storage.listOptimistic(targetRef).catch(() => "unavailable" as const);
+    if (accepted === "unavailable") {
+      // A storage read that failed proves nothing either way: report it as a
+      // failed pass so the caller clears its replay memo and a later read
+      // with the same identities asks the journal again once storage returns.
+      return true;
+    }
+    if (!accepted) return false;
+    let failed = false;
+    await Promise.all(
+      accepted
+        .filter(
+          (record) => !authoritativeIds.has(record.clientMutationId) && PENDING_TURN_METHODS.includes(record.method),
+        )
+        .map(async (record) => {
+          const client = this.#getReplayClient(targetRef, record.method);
+          if (!client || !isClientReady(client)) return;
+          try {
+            const method = mutationMethod(record.method);
+            const request = client.request as unknown as (
+              requestMethod: MethodName,
+              params: Record<string, unknown>,
+            ) => Promise<unknown>;
+            const result = await request.call(client, method, record.payload);
+            const receipt = mutationReceipt(result);
+            if (!receipt || receipt.clientMutationId !== wireMutationId(record)) return;
+            if (receipt.projectionState !== "removed" && receipt.projectionState !== "reflected") return;
+            await this.reconcileIdentities([record.clientMutationId]);
+          } catch {
+            // No terminal evidence: keep the display copy for the next read.
+            failed = true;
+          }
+        }),
+    );
+    return failed;
   }
 
   #dispatchTarget(targetRef: string): Promise<void> {
@@ -240,15 +365,15 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       // server replays it, and the replay's own receipt carries the same
       // consumed ids again. Settling the drain first would durably remove
       // the one record whose receipt names them, with no path left to retry.
-      // Scoped to method === "turn/drainAsSteer": the field means "consumed
-      // by THIS drain," never "consumed by whatever this receipt happens to
-      // be for" -- a well-formed array riding a different mutation's receipt
-      // must settle nothing.
-      if (method === "turn/drainAsSteer") {
+      // Scoped to the transitions that consume a queue entry: the field means
+      // "consumed by THIS transition," never "consumed by whatever this receipt
+      // happens to be for" -- a well-formed array riding a different mutation's
+      // receipt must settle nothing.
+      if (method === "turn/drainAsSteer" || method === "turn/cancelQueued" || method === "turn/promoteQueuedAsSteer") {
         const consumed = validConsumedClientMutationIds(receipt.consumedClientMutationIds);
         if (consumed.length > 0) await this.reconcileIdentities(consumed);
       }
-      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
+      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState, receipt.queueEntryIds);
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {

@@ -73,7 +73,7 @@ func drainToolCallStartEvents(sess *Session) <-chan []events.ToolCallStartData {
 func TestExecTool_RepairableMalformedArgsPreserveOriginalInEvents(t *testing.T) {
 	t.Parallel()
 	const originalArgs = `{file_path: "/x", intent: "editing"}` // bare keys -- repairable
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	s.registerTool("widget", "does a thing", map[string]any{
@@ -123,7 +123,7 @@ func TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent(t *testing.T) 
 	// Missing comma between members: {"intent":"foo" "bar":"baz"}.
 	// json.Unmarshal stores "intent" then errors at the missing separator.
 	const originalArgs = `{"intent":"foo" "bar":"baz"}`
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	s.registerTool("widget", "does a thing", map[string]any{
@@ -179,7 +179,7 @@ func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
 	large := strings.Repeat("x", 2*1024*1024+10)
 	originalArgs := []byte(`{"intent":"a","bar":"` + large + `"}`)
 
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	s.registerTool("widget", "does a thing", map[string]any{
@@ -238,7 +238,7 @@ func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) 
 		t.Fatalf("fixture is already canonical; test cannot prove non-trivial canonicalization")
 	}
 
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 
 	s.registerTool("widget", "does a thing", map[string]any{

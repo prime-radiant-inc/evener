@@ -25,6 +25,7 @@ import type {
 } from "@evener/appwire-client";
 import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
 import { FAKE_INITIALIZE_RESULT } from "@evener/appwire-client/testing/fakeSocket";
+import { replyLegacyHistoryProbe } from "@evener/appwire-client/testing/legacyHistorySocket";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -93,6 +94,7 @@ class RetirementScriptedSocket implements WebSocketLike {
     const { id, method, params } = msg;
     // Server-sent frames (initialized, not a request): no response needed.
     if (id == null) return;
+    if (replyLegacyHistoryProbe(this, msg)) return;
     if (method === "ping") {
       this.receive({ id, result: {} });
       return;

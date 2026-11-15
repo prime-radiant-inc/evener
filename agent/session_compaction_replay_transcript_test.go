@@ -206,7 +206,6 @@ func TestCompactionReplay_RealRoundMarkerLessFoldWritesNoReplayTail(t *testing.T
 		withClient(client),
 		withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "real-round-nomarker-cheap/model")),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}),
-		withoutGitSnapshot(),
 	)
 	forceRealRoundSummaryFold(t, s, 0.25, 0.3)
 

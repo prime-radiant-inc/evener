@@ -104,6 +104,8 @@ type parsedFile struct {
 	test    bool
 	imports []string
 	names   []string
+	// walks reports a call that walks a directory tree.
+	walks bool
 }
 
 // loadWorkspace reads go.work, the go.mod of each module it uses, and every
@@ -172,6 +174,9 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 		importDirs[importPath] = dir
 	}
 	for _, file := range files {
+		if readsWholeTree(file) {
+			ws.wholeTreeTesters[file.dir] = true
+		}
 		deps := &ws.packages[file.dir].build
 		if file.test {
 			deps = &ws.packages[file.dir].test
@@ -182,9 +187,6 @@ func loadWorkspace(root string, tracked []string) (*workspace, error) {
 			}
 		}
 		for _, name := range file.names {
-			if file.test && readsWholeTree(name, file.dir) {
-				ws.wholeTreeTesters[file.dir] = true
-			}
 			if dir, ok := importDirs[name]; ok {
 				deps.add(dir)
 				continue
@@ -262,8 +264,13 @@ func parseGoFile(fset *token.FileSet, root, file string) (parsedFile, error) {
 		case *ast.ImportSpec:
 			return false
 		case *ast.CallExpr:
-			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Join" {
-				parsed.names = append(parsed.names, joinedLiteralRuns(n.Args, joined)...)
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+				switch sel.Sel.Name {
+				case "Join":
+					parsed.names = append(parsed.names, joinedLiteralRuns(n.Args, joined)...)
+				case "Walk", "WalkDir":
+					parsed.walks = true
+				}
 			}
 		case *ast.BasicLit:
 			if n.Kind == token.STRING && !joined[n] {
@@ -328,18 +335,43 @@ func embedDir(pattern string) string {
 	return pattern
 }
 
-// readsWholeTree reports whether a test naming s reads the whole
-// repository: s is git's ls-files command, or a chain of ".." that climbs
-// from the test's package directory to the repository root. Production code
-// that lists files lists the user's repository, so only tests count.
-func readsWholeTree(s, pkgDir string) bool {
-	if s == "ls-files" {
-		return true
-	}
-	if pkgDir == "." || strings.Trim(strings.ReplaceAll(s, "..", ""), "/") != "" {
+// readsWholeTree reports whether a test file may read the whole repository:
+// it names the repository root and lists or walks a directory. Naming the
+// root alone says only where the paths the test names start, and those names
+// already show what it reads; a listing or walk in a file that never names
+// the root reads a temporary tree, not this repository. Production code that
+// lists files lists the user's repository, so only tests count.
+//
+// The rule is per file and does not follow what a walk starts from, so a file
+// that names the root and walks some other directory counts too, which runs
+// more lanes rather than fewer. A test that names the root in one file and
+// walks it from a helper in another is not seen. A merge group runs every
+// lane, so such a miss can bounce a pull request in the merge queue but
+// cannot reach main.
+func readsWholeTree(file parsedFile) bool {
+	if !file.test || !namesRoot(file) {
 		return false
 	}
-	return path.Join(pkgDir, s) == "."
+	return file.walks || slices.Contains(file.names, "ls-files")
+}
+
+// namesRoot reports whether a file can name the repository root: it is in
+// the root package, where go test runs at the root; it names a chain of ".."
+// that climbs from its package directory to the root; or it asks git for the
+// top level of the checkout.
+func namesRoot(file parsedFile) bool {
+	if file.dir == "." {
+		return true
+	}
+	return slices.ContainsFunc(file.names, func(s string) bool {
+		if strings.Contains(s, "--show-toplevel") {
+			return true
+		}
+		if strings.Trim(strings.ReplaceAll(s, "..", ""), "/") != "" {
+			return false
+		}
+		return path.Join(file.dir, s) == "."
+	})
 }
 
 // pathCandidates are the repository paths a string could name when a

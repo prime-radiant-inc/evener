@@ -85,7 +85,7 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 			configPath := deployTestConfigPath(t, host)
 			m := newHubHostManager(nil, manager, hubcore.WebConfig{
 				RemoteHostOpsStore: store, HubBootID: "restart-test-boot",
-			}, configPath, registry, t.Logf)
+			}, configPath, registry, testLogger(t))
 			t.Cleanup(func() { m.ShutdownHostOperations(operationsShutdownTimeout) })
 			if _, err := manager.Ensure(t.Context(), host.Name); err != nil {
 				t.Fatalf("initial attach: %v", err)
@@ -161,7 +161,7 @@ func TestHostRestartPreservesCompatibleHubWithUnusableExecutable(t *testing.T) {
 			}
 			manager := sshconn.New(registry, sshconn.Options{Runner: runner, Stderr: io.Discard, DeployDisabled: true})
 			t.Cleanup(func() { _ = manager.Close() })
-			m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostOpsStore: store, HubBootID: "restart-preservation"}, deployTestConfigPath(t, host), registry, t.Logf)
+			m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostOpsStore: store, HubBootID: "restart-preservation"}, deployTestConfigPath(t, host), registry, testLogger(t))
 			t.Cleanup(func() { m.ShutdownHostOperations(operationsShutdownTimeout) })
 			if _, err := manager.Ensure(t.Context(), host.Name); err != nil {
 				t.Fatalf("compatible Connect: %v", err)
@@ -1361,7 +1361,7 @@ func publicRecoveryHubForHost(t *testing.T, runner *restartRecoveryRunner, remot
 		},
 	})
 	t.Cleanup(func() { _ = manager.Close() })
-	m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostOpsStore: store, HubBootID: "public-recovery"}, deployTestConfigPath(t, host), registry, t.Logf)
+	m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostOpsStore: store, HubBootID: "public-recovery"}, deployTestConfigPath(t, host), registry, testLogger(t))
 	t.Cleanup(func() { m.ShutdownHostOperations(operationsShutdownTimeout) })
 	runner.observeMutation = func() {
 		release, err := manager.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderPlan})

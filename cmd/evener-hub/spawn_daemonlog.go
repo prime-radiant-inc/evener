@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/evener/execsupport/componentlog"
 )
 
 // daemonLogDirName is the directory under the hub's run dir that holds one log
@@ -132,12 +134,22 @@ func openDaemonLogReplacement(dir, canonicalPath string) (*os.File, error) {
 	return f, nil
 }
 
+// hubLogLine renders one hub-component record as a standalone line. The daemon
+// log trim notice and the hub's spawn banner are written into other logs, so
+// they keep a formatted message rather than attributes: the unquoted
+// session=/pid=/log= shape is what operators and fixtures parse.
+func hubLogLine(format string, args ...any) string {
+	var b strings.Builder
+	componentlog.NewWriter("hub", &b).Info(fmt.Sprintf(format, args...))
+	return b.String()
+}
+
 // daemonLogTrimNotice is the line a trimmed log opens with. Without it the file
 // reads as the session's complete history, and an operator counts the absence
 // of a line as evidence the daemon never wrote it. It is charged to the cap it
 // explains, so a trimmed log is at most daemonLogRetainedBytes on disk.
-var daemonLogTrimNotice = fmt.Sprintf(
-	"[hub] earlier output dropped: this log is trimmed to its most recent %d bytes at each launch\n",
+var daemonLogTrimNotice = hubLogLine(
+	"earlier output dropped: this log is trimmed to its most recent %d bytes at each launch",
 	daemonLogRetainedBytes)
 
 // writeDaemonLogSnapshot copies one bounded view of sourcePath into dst. The
@@ -334,5 +346,5 @@ func (l *daemonLog) close() {
 // It has to say where that daemon's own words went, because they no longer
 // arrive here.
 func daemonSpawnBanner(sessionID string, pid int, logPath string) string {
-	return fmt.Sprintf("[hub] daemon session=%s pid=%d log=%s\n", sessionID, pid, logPath)
+	return hubLogLine("daemon session=%s pid=%d log=%s", sessionID, pid, logPath)
 }

@@ -1426,15 +1426,16 @@ func TestNamedInstanceKeepsItsIdentity(t *testing.T) {
 }
 
 // TestNamedInstanceInheritsBaseFacts verifies a renamed instance resolves its
-// base's rows: the window comes from the ollama record, not from the name.
+// base's rows: the window comes from the base provider's record, not from the
+// name.
 func TestNamedInstanceInheritsBaseFacts(t *testing.T) {
 	t.Parallel()
-	direct := newOpenAICompatProfile("ollama", "llama3.1", 0)
-	renamed := namedInstanceProfile("work-ollama", "ollama", "llama3.1")
+	direct := baseProviderProfile("anthropic", "claude-opus-4-6")
+	renamed := namedInstanceProfile("work-claude", "anthropic", "claude-opus-4-6")
 	if direct.ContextWindowSize() == 0 || renamed.ContextWindowSize() != direct.ContextWindowSize() {
-		t.Fatalf("window = %d, want ollama's %d", renamed.ContextWindowSize(), direct.ContextWindowSize())
+		t.Fatalf("window = %d, want the base's %d", renamed.ContextWindowSize(), direct.ContextWindowSize())
 	}
-	if rebuilt := renamed.WithModel("llama3.2"); rebuilt.ID() != "work-ollama" || rebuilt.ProviderID() != "ollama" {
+	if rebuilt := renamed.WithModel("claude-opus-4-5"); rebuilt.ID() != "work-claude" || rebuilt.ProviderID() != "anthropic" {
 		t.Fatalf("after WithModel = %s/%s", rebuilt.ID(), rebuilt.ProviderID())
 	}
 }

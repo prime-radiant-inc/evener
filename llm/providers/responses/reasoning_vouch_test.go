@@ -12,6 +12,7 @@ import (
 // chat-completions side. ReasoningControls must list "effort" so the row is
 // effort-capable and the vouch gate actually runs.
 func TestReasoningObject_EmptyLadderWritesNoEffort(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	caps := registry.Caps{Reasoning: new(true), ReasoningControls: []string{"effort"}}
 	if got := reasoningObject(llm.Request{ReasoningEffort: &high}, caps); got != nil {
@@ -21,6 +22,7 @@ func TestReasoningObject_EmptyLadderWritesNoEffort(t *testing.T) {
 
 // A vouched level is clamped into the row's ladder and written by name.
 func TestReasoningObject_VouchedEffortClamps(t *testing.T) {
+	t.Parallel()
 	xhigh := "xhigh"
 	got := reasoningObject(llm.Request{ReasoningEffort: &xhigh}, registry.Caps{
 		Reasoning: new(true), ReasoningControls: []string{"effort"}, EffortValues: []string{"low", "high"},
@@ -34,6 +36,7 @@ func TestReasoningObject_VouchedEffortClamps(t *testing.T) {
 // requested level sends no effort name, but the encrypted-reasoning include
 // must survive so a gateway that returns it can replay on later turns.
 func TestBuildBody_UnvouchedEffortKeepsEncryptedReasoningInclude(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	req := userReq("hi")
 	req.ReasoningEffort = &high
@@ -60,6 +63,7 @@ func TestBuildBody_UnvouchedEffortKeepsEncryptedReasoningInclude(t *testing.T) {
 // A configured summary is a request for a summary, not an effort name, so it
 // still rides when the ladder cannot vouch for the requested level.
 func TestBuildBody_UnvouchedEffortKeepsConfiguredSummary(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	req := userReq("hi")
 	req.ReasoningEffort = &high
@@ -84,6 +88,7 @@ func TestBuildBody_UnvouchedEffortKeepsConfiguredSummary(t *testing.T) {
 // cannot accept. Gating them on effort capability would silently drop replay
 // on every subsequent turn.
 func TestBuildBody_ToggleOnlyRowKeepsReasoningPreservation(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	req := userReq("hi")
 	req.ReasoningEffort = &high

@@ -1,7 +1,7 @@
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { View } from "react-native";
 import { useColors } from "../ui";
-import { type BoardState, stateWord } from "./attention";
+import { type BoardState, stateWord } from "@evener/appwire-client/state/navigation";
 import { PulseMeter } from "./PulseMeter";
 import { meterTone } from "./pulse";
 
@@ -15,7 +15,6 @@ export const markColumnWidth = 28;
 const GLYPHS: Record<BoardState, Glyph | null> = {
 	failed: { name: "xmark.octagon.fill", tint: "danger", size: 20 },
 	question: { name: "questionmark.circle.fill", tint: "attention", size: 20 },
-	needsYou: { name: "exclamationmark.bubble.fill", tint: "attention", size: 20 },
 	approval: { name: "hand.raised.circle.fill", tint: "attention", size: 20 },
 	warning: { name: "exclamationmark.triangle.fill", tint: "attention", size: 20 },
 	restartNeeded: { name: "arrow.triangle.2.circlepath.circle.fill", tint: "attention", size: 20 },

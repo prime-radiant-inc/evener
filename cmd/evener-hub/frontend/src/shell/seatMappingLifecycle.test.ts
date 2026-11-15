@@ -7,7 +7,7 @@
 // seat record is the per-pane entry a desktop layout save writes and a
 // restore validates, which is what keeps a DESKTOP reload restoring this
 // tab's own work. Mobile-shaped route reconstruction (a rebuilt pane under a
-// fresh id, no pane entry) mints fresh: one tap in the queue strip, ruled
+// fresh id, no pane entry) mints fresh: one tap in the pending stack, ruled
 // product behavior. The one exception is the SEAT-CARRY on resume: the pane
 // a resume replaces hands its authoring seat to the resumed pane's
 // placement, and the superseded nested pane closes in the same transition,
@@ -348,7 +348,7 @@ describe("the derived seat lifecycle matrix", () => {
 
     test("a mobile-shaped route reconstruction mints a fresh seat: one tap", () => {
       // The mobile reload rebuilds the routed pane under a new id with no
-      // pane entry of its own: no auto-restore, one tap in the queue strip.
+      // pane entry of its own: no auto-restore, one tap in the pending stack.
       // Ruled product behavior.
       const first = placedSeatFor("local:a");
       const seat = first;
@@ -379,7 +379,7 @@ describe("the derived seat lifecycle matrix", () => {
       // A shared layout restores the leaf twice; the displaced cascade keeps
       // its replacement seat, but nothing maps its ancestor columns to that
       // seat anymore. Reconstructing an ancestor conversation after the
-      // reload mints fresh: its preserved rows wait in the queue strip, one
+      // reload mints fresh: its preserved rows wait in the pending stack, one
       // explicit tap away. Ruled product behavior.
       restorePanels({
         p1: {

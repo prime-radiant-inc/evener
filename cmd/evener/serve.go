@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/internal/plugins"
@@ -221,7 +223,7 @@ type serveDeps struct {
 	runContext       func(context.Context) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
-	startLivePprof   func(logf func(format string, args ...any)) (indexURL string, stop func(), err error)
+	startLivePprof   func(log *slog.Logger) (indexURL string, stop func(), err error)
 	register         func(*rvreg.Registration, string, rendezvous.Entry) error
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
@@ -485,7 +487,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
-	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation)
+	settings, err := resolveLaunchSettings(*lf.providerIdleTimeout, *lf.apiLog, *lf.openAIResponsesContinuation, *lf.compactAtPercent)
 	if err != nil {
 		return err
 	}
@@ -504,9 +506,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		defer stop()
 	}
-	_, stopPprof, pprofErr := deps.startLivePprof(func(format string, args ...any) {
-		_, _ = fmt.Fprintf(logOut, format+"\n", args...)
-	})
+	_, stopPprof, pprofErr := deps.startLivePprof(componentlog.NewWriter("serve", logOut))
 	if pprofErr != nil {
 		return pprofErr
 	}
@@ -696,6 +696,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		MCPInline:                   []string(lf.mcpServers),
 		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             *lf.contextStrategy,
+		CompactAtPercent:            *lf.compactAtPercent,
 		ExportATIFPath:              *lf.exportATIF,
 		ExportATIFProviderHandles:   *lf.exportATIFProviderHandles,
 		VisionModel:                 visionModelVal,
@@ -758,6 +759,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: settings.openAIResponsesContinuation,
 			ProviderIdleTimeout:         *lf.providerIdleTimeout,
+			CompactAtPercent:            *lf.compactAtPercent,
 			CommitProvenance:            *lf.commitProvenance,
 			AgentsDocPath:               *agentsDoc,
 			// See RestoreSessionConfig.ExportATIFPath.
@@ -1217,7 +1219,7 @@ func mapServePendingEscalations(data []events.SandboxEscalationRequestedData) []
 	for _, d := range data {
 		out = append(out, appwire.SandboxEscalationRequested{
 			EscalationID: d.EscalationID, Mode: d.Mode, Tool: d.Tool, Kind: d.Kind,
-			DeniedPath: d.DeniedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
+			DeniedPath: d.DeniedPath, RequestedPath: d.RequestedPath, Command: d.Command, OutputSoFar: d.OutputSoFar, PartiallyRan: d.PartiallyRan,
 		})
 	}
 	return out
@@ -1289,7 +1291,10 @@ func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdut
 			return nil, nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
 		}
 	}
-	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
+	p, err := provider.WithCommunicateOutputSchema(raw, outputSchema)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid --output-schema: %w", err)
+	}
 	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
 	return provider.WithAllowedDecisions(p, allowedDecisions), startupListing, nil
 }
@@ -1334,7 +1339,7 @@ func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client)
 	if raw == "" {
 		return "", nil
 	}
-	if strings.EqualFold(raw, "off") {
+	if strings.EqualFold(raw, "off") || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "disabled") {
 		return "off", nil
 	}
 	if prov, model, ok := strings.Cut(raw, "/"); ok {

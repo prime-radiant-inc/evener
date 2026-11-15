@@ -1,0 +1,24 @@
+{
+  "name": "notes-card-inset",
+  "description": "The session notes panel is attached to the header: its top edge is flush to the header's bottom border (negative top margin cancels the body's top padding so there is no gap), its top corners are square (no radius) and its top border is omitted to avoid doubling the header's border, while the bottom corners carry the panel radius and the card has a border and shadow.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/eyebrow/eyebrow.module.css",
+    "widgets/panescaffold/panescaffold.module.css",
+    "panes/session/chrome/notespanel.module.css",
+    "panes/session/chrome/topnotespanel.module.css"
+  ],
+  "viewport": {
+    "width": 1200,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "topnotespanel.module.css: .topNotesPanel { margin-top: calc(-1 * var(--space-5)) } re-added (the removed flush rule), and .topNotesPanel { border: 1px solid var(--edge-strong) } deleted",
+    "verified": "2026-11-11",
+    "expect": "fail",
+    "note": "Re-adding the negative top margin failed with 'card top is 0.0px below the clip line, not the pane's 24px padding' in both states; deleting the root border failed with 'card borders are 0/0/0/0px, expected a border on all four sides' in both states. Each was reverted and the case passed again."
+  }
+}

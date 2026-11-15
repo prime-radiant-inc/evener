@@ -190,7 +190,7 @@
   padding: var(--space-3) var(--space-4);
   background: var(--surface-inset);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pane);
   font-size: var(--font-size-body);
   color: var(--ink-hi);
   --markdown-font: var(--font-sans);

@@ -75,6 +75,7 @@ test("summary-only runtime is qualified by resolved session without adding any w
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "idle" },
+    askPending: false,
   });
   expect(client.calls.map(({ method }) => method)).toEqual(["thread/read", "evener/thread/activity/read"]);
   expect(client.calls[0]?.params).toEqual({
@@ -83,6 +84,547 @@ test("summary-only runtime is qualified by resolved session without adding any w
     subscribe: true,
     replaceSubscription: false,
   });
+});
+
+test("escalation frames clear one approval at a time from the activity runtime", async () => {
+  const client = activityClient();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_1", "esc_2"],
+  });
+
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_2"],
+  });
+
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_2" },
+  });
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: false,
+    pendingEscalationIds: [],
+  });
+});
+
+test("a status frame before the initial read keeps askPending in the activity runtime", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  client.on("thread/read", () => {
+    entered.resolve();
+    return late.promise;
+  });
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  late.resolve({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.askPending).toBe(true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+});
+
+test("a status frame askPending updates runtime before the registry listener", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === false);
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "awaiting" }, askPending: true },
+  });
+  expect(store.getSnapshot().runtime?.askPending).toBe(true);
+});
+
+test("a resolved frame before the initial response keeps the other approval in the activity runtime", async () => {
+  const client = activityClient(),
+    late = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  client.on("thread/read", () => {
+    entered.resolve();
+    return late.promise;
+  });
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  late.resolve({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  expect(store.getSnapshot().runtime).toMatchObject({
+    approvalPending: true,
+    pendingEscalationIds: ["esc_2"],
+  });
+});
+
+test("a resync keeps an approval that remains pending in the activity runtime", async () => {
+  const client = activityClient();
+  const escalation = {
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId: "esc_1",
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  };
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, pendingEscalations: [escalation] },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  expect(store.getSnapshot().runtime?.approvalPending).toBe(true);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_1"]);
+});
+
+test("a resync with no pending approvals clears the activity runtime approval", async () => {
+  const client = activityClient();
+  const escalation = {
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId: "esc_1",
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  };
+  let pending = true;
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        ...(pending ? { pendingEscalations: [escalation] } : {}),
+      },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+  }));
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  pending = false;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === false);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual([]);
+});
+
+test("a collection runtime seeds pending approvals before the summary recovers", async () => {
+  const client = activityClient();
+  const escalation = (escalationId: string) => ({
+    threadId: "wire-root",
+    ref: activityRef,
+    escalationId,
+    mode: "read-only",
+    tool: "read_file",
+    kind: "file",
+    deniedPath: "/outside",
+  });
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      evener: {
+        ...threadFixture().thread.evener,
+        pendingEscalations: [escalation("esc_1"), escalation("esc_2")],
+      },
+    },
+  }));
+  client.on("evener/thread/activity/read", () => {
+    throw new WireError("summary failed", -32014, { retryDisposition: "automatic" });
+  });
+  client.on("evener/thread/jobs/list", () => ({
+    context: { ...activityContext(), sessionId: "root-session", ref: "remote:canonical-root" },
+    scope: "session",
+    jobs: [jobFixture()],
+    page: { complete: true, issues: [] },
+  }));
+  const store = owner(client);
+  store.start();
+  store.observe("jobs");
+  await activityState(store, () => store.getSnapshot().runtime?.approvalPending === true);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_1", "esc_2"]);
+  client.emitNotification({
+    method: "evener/sandbox/escalation/resolved",
+    params: { threadId: "wire-root", ref: activityRef, escalationId: "esc_1" },
+  });
+  expect(store.getSnapshot().runtime?.approvalPending).toBe(true);
+  expect(store.getSnapshot().runtime?.pendingEscalationIds).toEqual(["esc_2"]);
+});
+
+test("a same-thread resync lets the recovery read replace a cached idle status", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.status.type === "idle");
+  client.emitNotification({
+    method: "thread/status/changed",
+    params: { ref: activityRef, threadId: "wire-root", status: { type: "idle" } },
+  });
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "root-session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  }));
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+  await store.refresh("summary");
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+});
+
+test("a resync refreshes thread metadata even when the summary read had failed", async () => {
+  const client = activityClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().summary !== null);
+  const before = callsTo(client, "thread/read");
+  client.on("evener/thread/activity/read", () => {
+    throw new WireError("old source failed", -32014, {
+      evenerErrorInfo: "actionUnavailable",
+      retryDisposition: "automatic",
+    });
+  });
+  await store.refresh("summary");
+  expect(store.getSnapshot().summaryState.error).not.toBeNull();
+  client.on("thread/read", () => ({
+    thread: {
+      ...threadFixture().thread,
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  }));
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "session" },
+  });
+  await vi.waitFor(() => expect(store.getSnapshot().runtime?.askPending).toBe(true));
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+  expect(callsTo(client, "thread/read")).toBe(before + 1);
+});
+
+test("a resync retries recovery metadata after a transient read failure", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.status.type === "idle");
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw new WireError("temporary failure", -32000, { retryDisposition: "automatic" });
+    return {
+      thread: {
+        ...threadFixture().thread,
+        id: "wire-root",
+        sessionId: "root-session",
+        status: { type: "awaiting" },
+        evener: { ...threadFixture().thread.evener, askPending: true },
+      },
+    };
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await vi.advanceTimersByTimeAsync(1000);
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(reads).toBe(2);
+});
+
+test("a resync during the initial metadata read still recovers runtime", async () => {
+  const seedClient = activityClient();
+  const seed = owner(seedClient);
+  seed.start();
+  await activityState(seed, () => seed.getSnapshot().summary !== null);
+  const retained = seed.getSnapshot();
+  seed.dispose();
+  const client = activityClient();
+  const initial = deferred<ThreadReadResponse>(),
+    entered = deferred<void>();
+  const question: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-root",
+      sessionId: "session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return initial.promise;
+    }
+    return question;
+  });
+  const store = owner(client, "session", retained);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  initial.resolve({
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "session" },
+  });
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(reads).toBe(2);
+});
+
+test("a replacement resync fences a recovery read already in flight", async () => {
+  const client = runtimeClient();
+  const store = owner(client);
+  store.start();
+  await activityState(store, () => store.getSnapshot().runtime?.status.type === "idle");
+  const recovery = deferred<ThreadReadResponse>(),
+    entered = deferred<void>(),
+    settled = deferred<void>();
+  client.on("thread/read", () => {
+    entered.resolve();
+    return recovery.promise.finally(() => settled.resolve());
+  });
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-root" },
+  });
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-replacement" },
+  });
+  expect(store.getSnapshot().runtime).toBeNull();
+  recovery.resolve({
+    thread: { ...threadFixture().thread, id: "wire-root", sessionId: "root-session" },
+  });
+  await settled.promise;
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot().runtime).toBeNull();
+});
+
+test("a replacement summary does not discard recovery metadata", async () => {
+  const seedClient = activityClient();
+  const seed = owner(seedClient);
+  seed.start();
+  await activityState(seed, () => seed.getSnapshot().summary !== null);
+  const retained = seed.getSnapshot();
+  seed.dispose();
+  const client = activityClient();
+  const first = deferred<ThreadReadResponse>(),
+    second = deferred<ThreadReadResponse>(),
+    entered = deferred<void>(),
+    recoveryEntered = deferred<void>();
+  const old: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-old",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  const fresh: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-new",
+      sessionId: "replacement-session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return first.promise;
+    }
+    if (reads === 2) {
+      recoveryEntered.resolve();
+      return second.promise;
+    }
+    return fresh;
+  });
+  client.on("evener/thread/activity/read", () => ({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "replacement-session", ref: "remote:replacement" },
+  }));
+  const store = owner(client, "session", retained);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-new" },
+  });
+  first.resolve(old);
+  await recoveryEntered.promise;
+  await activityState(store, () => store.getSnapshot().context?.sessionId === "replacement-session");
+  second.resolve(fresh);
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
+});
+
+test("a replacement summary keeps recovery after a transient metadata failure", async () => {
+  const seedClient = activityClient();
+  const seed = owner(seedClient);
+  seed.start();
+  await activityState(seed, () => seed.getSnapshot().summary !== null);
+  const retained = seed.getSnapshot();
+  seed.dispose();
+  const client = activityClient();
+  const first = deferred<ThreadReadResponse>(),
+    failed = deferred<void>(),
+    entered = deferred<void>();
+  const old: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-old",
+      sessionId: "root-session",
+      evener: { ...threadFixture().thread.evener, askPending: false },
+    },
+  };
+  const fresh: ThreadReadResponse = {
+    thread: {
+      ...threadFixture().thread,
+      id: "wire-new",
+      sessionId: "replacement-session",
+      status: { type: "awaiting" },
+      evener: { ...threadFixture().thread.evener, askPending: true },
+    },
+  };
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) {
+      entered.resolve();
+      return first.promise;
+    }
+    if (reads === 2) {
+      failed.resolve();
+      throw new WireError("temporary failure", -32000, { retryDisposition: "automatic" });
+    }
+    return fresh;
+  });
+  const replacement = deferred<SessionActivitySummary>();
+  client.on("evener/thread/activity/read", () => replacement.promise);
+  const store = owner(client, "session", retained);
+  store.start();
+  await entered.promise;
+  client.emitNotification({
+    method: "evener/thread/resync",
+    params: { ref: activityRef, threadId: "wire-new" },
+  });
+  first.resolve(old);
+  await failed.promise;
+  replacement.resolve({
+    ...summaryFixture(),
+    context: { ...activityContext(), sessionId: "replacement-session", ref: "remote:replacement" },
+  });
+  await activityState(store, () => store.getSnapshot().context?.sessionId === "replacement-session");
+  await vi.advanceTimersByTimeAsync(1000);
+  await activityState(store, () => store.getSnapshot().runtime?.askPending === true);
+  expect(store.getSnapshot().runtime?.status.type).toBe("awaiting");
 });
 
 test("replacement activity identity retires the previous runtime atomically", async () => {
@@ -128,6 +670,7 @@ test.each([activityRef, "remote:canonical-root"])(
       threadId: "wire-root",
       sessionId: "root-session",
       status: { type: "active", activeFlags: ["waitingOnTool"] },
+      askPending: false,
     });
     await store.refresh("summary");
     expect(store.getSnapshot().runtime?.status.type).toBe("active");
@@ -227,6 +770,7 @@ test("a reconnect snapshot begun before a matching status cannot overwrite the n
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(2);
   expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
@@ -256,6 +800,7 @@ test("a status before the first lean reply waits for both wire and activity iden
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(1);
 });
@@ -341,6 +886,7 @@ test("replacement status waits for its context and survives retirement of the fo
       threadId: "wire-replacement",
       sessionId: "replacement-session",
       status: { type: "active" },
+      askPending: false,
     });
     expect(callsTo(client, "thread/read")).toBe(2);
     expect(callsTo(client, "evener/thread/jobs/list")).toBe(0);
@@ -368,6 +914,7 @@ test("same-session opaque summary epoch changes retain qualified live status", a
     threadId: "wire-root",
     sessionId: "root-session",
     status: { type: "active" },
+    askPending: false,
   });
   expect(callsTo(client, "thread/read")).toBe(1);
 });

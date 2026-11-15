@@ -104,6 +104,159 @@ func TestWebChecksVerdictsCarryEachChecksWallTime(t *testing.T) {
 	}
 }
 
+// A check that never exits is a hang, not a slow gate: the gate TERMs it,
+// KILLs it after the grace, and reports the wedged check by name with its own
+// status instead of waiting forever.
+func TestWebChecksTimeOutAWedgedCheck(t *testing.T) {
+	launcher := newFakeLauncher()
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	gate.checkTimeout = 200 * time.Millisecond
+	gate.killGrace = 100 * time.Millisecond
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+
+	started := map[string]*fakeGuard{}
+	for range webChecks {
+		g := launcher.awaitStart(t)
+		started[g.name] = g
+	}
+	for name, g := range started {
+		if name != "test" {
+			g.exit <- 0
+		}
+	}
+	wedged := started["test"]
+	select {
+	case <-wedged.terminated:
+	case <-time.After(tripwire):
+		t.Fatal("the wedged check was never TERMed")
+	}
+	select {
+	case <-wedged.killed:
+	case <-time.After(tripwire):
+		t.Fatal("the wedged check was never KILLed after its grace")
+	}
+	wedged.exit <- 137
+
+	r := tg.await(t)
+	if r.status != webCheckTimedOutStatus || !r.keep {
+		t.Fatalf("result = %+v, want the timeout status and the scratch kept", r)
+	}
+}
+
+// A check can exit as soon as the timeout's TERM lands, before the gate's
+// select consumes the timeout event. The timeout must be latched at TERM, not
+// at that select, so the verdict is the timeout whether the exit or the event
+// is read first.
+func TestWebChecksTimeoutLatchedBeforeTERM(t *testing.T) {
+	launcher := newFakeLauncher()
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	gate.checkTimeout = 100 * time.Millisecond
+	gate.killGrace = 50 * time.Millisecond
+	launcher.terminateExit["test"] = 143
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+
+	started := map[string]*fakeGuard{}
+	for range webChecks {
+		g := launcher.awaitStart(t)
+		started[g.name] = g
+	}
+	for name, g := range started {
+		if name != "test" {
+			g.exit <- 0
+		}
+	}
+	r := tg.await(t)
+	if r.status != webCheckTimedOutStatus || !r.keep {
+		t.Fatalf("result = %+v, want the timeout status and the scratch kept", r)
+	}
+}
+
+// The timeout policy belongs to web-checks: make test-web is the gate that
+// wedged in #5951. The browser gate's waitOnInterrupt guards keep their own
+// contract and no timeout.
+func TestWebChecksGateOwnsTheCheckTimeout(t *testing.T) {
+	if got := newWebChecksGate().checkTimeout; got != defaultCheckTimeout {
+		t.Fatalf("web-checks checkTimeout = %s, want %s", got, defaultCheckTimeout)
+	}
+	if got := newBrowserGate(1, false).checkTimeout; got != 0 {
+		t.Fatalf("browser gate checkTimeout = %s, want none", got)
+	}
+}
+
+// An interrupt replaces the gate's select with stop's wait. A check that had
+// already timed out and ignored its TERM must still get the grace KILL there,
+// or the interrupted gate would wait for a second signal.
+func TestWebChecksInterruptAfterTimeoutStillKillsTheWedgedCheck(t *testing.T) {
+	launcher := newFakeLauncher()
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	gate.checkTimeout = 200 * time.Millisecond
+	gate.killGrace = 100 * time.Millisecond
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+
+	started := map[string]*fakeGuard{}
+	for range webChecks {
+		g := launcher.awaitStart(t)
+		started[g.name] = g
+	}
+	for name, g := range started {
+		if name != "test" {
+			g.exit <- 0
+		}
+	}
+	wedged := started["test"]
+	select {
+	case <-wedged.terminated:
+	case <-time.After(tripwire):
+		t.Fatal("the wedged check was never TERMed")
+	}
+	tg.signals <- syscall.SIGTERM
+	select {
+	case <-wedged.killed:
+	case <-time.After(tripwire):
+		t.Fatal("the interrupted gate never KILLed the timed-out check")
+	}
+	wedged.exit <- 137
+	if r := tg.await(t); r.status != signalStatus(syscall.SIGTERM) || !r.keep {
+		t.Fatalf("result = %+v, want the signal status and the scratch kept", r)
+	}
+}
+
+// A check interrupted before its deadline is still the timeout's charge: the
+// deadline timer fires during stop's wait, TERMs, and KILLs after the grace.
+func TestWebChecksInterruptBeforeDeadlineStillKillsTheWedgedCheck(t *testing.T) {
+	launcher := newFakeLauncher()
+	gate := newWebChecksGate()
+	gate.now = stoppedClock()
+	gate.checkTimeout = 200 * time.Millisecond
+	gate.killGrace = 100 * time.Millisecond
+	tg := startGate(t, gate, launcher, make(chan os.Signal, 4))
+
+	started := map[string]*fakeGuard{}
+	for range webChecks {
+		g := launcher.awaitStart(t)
+		started[g.name] = g
+	}
+	for name, g := range started {
+		if name != "test" {
+			g.exit <- 0
+		}
+	}
+	wedged := started["test"]
+	tg.signals <- syscall.SIGTERM
+	select {
+	case <-wedged.killed:
+	case <-time.After(tripwire):
+		t.Fatal("the interrupted gate never KILLed the check at its deadline")
+	}
+	wedged.exit <- 137
+	if r := tg.await(t); r.status != signalStatus(syscall.SIGTERM) || !r.keep {
+		t.Fatalf("result = %+v, want the signal status and the scratch kept", r)
+	}
+}
+
 // An interrupt TERMs every running check: none of them is exempt.
 func TestWebChecksInterruptTermsEveryCheck(t *testing.T) {
 	launcher := newFakeLauncher()

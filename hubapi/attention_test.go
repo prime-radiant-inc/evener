@@ -8,49 +8,57 @@ import (
 
 func TestAttentionRank(t *testing.T) {
 	cases := []struct {
-		in   string
-		want int
+		in            string
+		ask, approval bool
+		want          int
 	}{
-		{"errored", 5},
-		{"awaiting", 4},
-		{"active", 3},
-		{"warning", 2},
-		{"idle", 1},
-		{"ended", 0},
-		{"unknown", 0},
+		{"errored", false, false, 5},
+		{"awaiting", true, false, 4},
+		{"active", false, true, 4},
+		{"active", false, false, 3},
+		{"warning", false, false, 2},
+		// A turn that merely ended on needs_response is finished, not
+		// attention: it rests at idle's rank.
+		{"awaiting", false, false, 1},
+		{"idle", false, false, 1},
+		{"ended", false, false, 0},
+		{"unknown", false, false, 0},
 	}
 	for _, c := range cases {
-		if got := AttentionRank(c.in); got != c.want {
-			t.Errorf("AttentionRank(%q) = %d, want %d", c.in, got, c.want)
+		if got := AttentionRank(c.in, c.ask, c.approval); got != c.want {
+			t.Errorf("AttentionRank(%q, %v, %v) = %d, want %d", c.in, c.ask, c.approval, got, c.want)
 		}
 	}
 }
 
 func TestRollupRank(t *testing.T) {
 	cases := []struct {
-		in   string
-		want int
+		in            string
+		ask, approval bool
+		want          int
 	}{
-		{"errored", 5},
-		{"awaiting", 4},
-		{"warning", 3},
-		{"active", 2},
-		{"idle", 1},
-		{"ended", 0},
-		{"unknown", 0},
+		{"errored", false, false, 5},
+		{"awaiting", true, false, 4},
+		{"active", false, true, 4},
+		{"warning", false, false, 3},
+		{"active", false, false, 2},
+		{"awaiting", false, false, 1},
+		{"idle", false, false, 1},
+		{"ended", false, false, 0},
+		{"unknown", false, false, 0},
 	}
 	for _, c := range cases {
-		if got := RollupRank(c.in); got != c.want {
-			t.Errorf("RollupRank(%q) = %d, want %d", c.in, got, c.want)
+		if got := RollupRank(c.in, c.ask, c.approval); got != c.want {
+			t.Errorf("RollupRank(%q, %v, %v) = %d, want %d", c.in, c.ask, c.approval, got, c.want)
 		}
 	}
 }
 
 func TestAttentionRank_ErroredOutranksAwaiting(t *testing.T) {
-	if AttentionRank("errored") <= AttentionRank("awaiting") {
+	if AttentionRank("errored", false, false) <= AttentionRank("awaiting", true, false) {
 		t.Fatal("errored must outrank awaiting")
 	}
-	if RollupRank("errored") <= RollupRank("awaiting") {
+	if RollupRank("errored", false, false) <= RollupRank("awaiting", true, false) {
 		t.Fatal("RollupRank: errored must outrank awaiting")
 	}
 }
@@ -91,9 +99,9 @@ func TestNeedsYouBand(t *testing.T) {
 		// An approval blocks mid-turn, so its session still reports "active";
 		// it waits on a person the way a question does and shares its band.
 		{"active", false, true, 1},
-		// A turn that ended on needs_response waits on a person like a
-		// question does, and shares its band (#4093).
-		{"awaiting", false, false, 1},
+		// A turn that merely ended on needs_response is finished, not blocked:
+		// it never reaches this tier, so it has no band (#2629).
+		{"awaiting", false, false, 0},
 		{"warning", false, false, 0},
 		// A restart outranks the approval, as in AttentionState.
 		{"restartRequired", false, true, 0},

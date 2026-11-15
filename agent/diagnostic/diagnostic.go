@@ -219,11 +219,10 @@ func usageLimitFailure(message string) Info {
 // layer appends its window as the message's final clause, so the last "resets "
 // is the one Evener rendered; an earlier occurrence may be provider text.
 func resetWindowFrom(message string) string {
-	start := strings.LastIndex(message, "resets ")
-	if start < 0 {
+	_, after, ok := strings.CutLast(message, "resets ")
+	if !ok {
 		return ""
 	}
-	after := message[start+len("resets "):]
 	// The clause ends at the close of the parenthesized absolute time.
 	if end := strings.Index(after, ")"); end >= 0 {
 		return strings.TrimSpace(after[:end+1])

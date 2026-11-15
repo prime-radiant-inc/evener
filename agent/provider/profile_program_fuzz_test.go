@@ -121,10 +121,10 @@ func assertProviderProfileCopies(t *testing.T, profile *Profile) {
 
 func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string, window int) {
 	t.Helper()
-	if WithCheapModel(nil, "x") != nil || WithContextWindow(nil, window) != nil || (*Profile)(nil).WithResolved(registry.Resolved{}) != nil {
+	if WithCheapModel(nil, "x") != nil || (*Profile)(nil).WithResolved(registry.Resolved{}) != nil {
 		t.Fatal("nil profile decorators must stay nil")
 	}
-	if WithCheapModel(profile, " ") != profile || WithContextWindow(profile, 0) != profile {
+	if WithCheapModel(profile, " ") != profile {
 		t.Fatal("empty/no-op decorator did not preserve its profile")
 	}
 
@@ -139,9 +139,9 @@ func assertProviderProfileDecorators(t *testing.T, profile *Profile, next string
 	baseWindow := profile.ContextWindowSize()
 	baseEfforts := profile.ReasoningEffortLevels()
 	baseTaskListEfforts := providerProgramTaskListEfforts(profile.ToolDefinitions())
-	resized := WithContextWindow(profile, window)
+	resized := withContextWindow(profile, window)
 	if resized.ContextWindowSize() != window || profile.ContextWindowSize() != baseWindow {
-		t.Fatalf("WithContextWindow = %d (base %d)", resized.ContextWindowSize(), profile.ContextWindowSize())
+		t.Fatalf("withContextWindow = %d (base %d)", resized.ContextWindowSize(), profile.ContextWindowSize())
 	}
 
 	res := profile.Resolved()

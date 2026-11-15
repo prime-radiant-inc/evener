@@ -242,8 +242,8 @@ func TestBlocksKeepsPositionDedupAndAnyHitUnion(t *testing.T) {
 		t.Fatalf("BlocksReader: %v", err)
 	}
 	want := []Block{
-		{File: "pkg/file.go", StartLine: 10, EndLine: 20, StmtCount: 99, Covered: true},
-		{File: "pkg/file.go", StartLine: 30, EndLine: 40, StmtCount: 300, Covered: false},
+		{File: "pkg/file.go", StartLine: 10, StartCol: 1, EndLine: 20, EndCol: 2, StmtCount: 99, Covered: true},
+		{File: "pkg/file.go", StartLine: 30, StartCol: 1, EndLine: 40, EndCol: 2, StmtCount: 300, Covered: false},
 	}
 	if len(blocks) != len(want) {
 		t.Fatalf("BlocksReader returned %d blocks, want %d: %+v", len(blocks), len(want), blocks)

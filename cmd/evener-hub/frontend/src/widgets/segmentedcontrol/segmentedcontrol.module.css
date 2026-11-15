@@ -22,8 +22,10 @@
   padding: 2px;
   gap: 2px;
   border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--field);
+  border-radius: var(--radius-pill);
+  /* The canvas ground, not --field: the thumb is --surface-1, which is
+   * lighter than the canvas in both themes but darker than dark's --field. */
+  background: var(--surface-canvas);
   box-shadow: var(--shadow-inset-field);
 }
 
@@ -37,8 +39,9 @@
   justify-content: center;
   min-inline-size: 0;
   inline-size: 100%;
-  border: 0;
-  border-radius: var(--radius-control);
+  /* A transparent edge at rest so the thumb's edge costs no box size. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
   padding-block: 0;
   padding-inline: var(--space-1);
   background: transparent;
@@ -60,8 +63,11 @@
   background: var(--hover-1);
 }
 
+/* The chosen option is a raised thumb riding the sunken track. */
 .option[aria-checked="true"] {
-  background: var(--hover-2);
+  border-color: var(--edge);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-card);
   color: var(--ink-hi);
   font-weight: var(--font-weight-semibold);
 }

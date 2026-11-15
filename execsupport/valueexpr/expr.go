@@ -30,6 +30,7 @@ package valueexpr
 
 import (
 	"errors"
+	"os"
 	"strings"
 )
 
@@ -248,6 +249,26 @@ type Unresolved struct {
 // clean: the pieces are collected first, so a malformed tail fails the
 // expansion before any side effect.
 func Expand(value string, lookup func(string) (string, bool)) (string, []Unresolved, error) {
+	return ExpandIn(value, Env{Lookup: lookup})
+}
+
+// Env is the environment one expansion runs under. Lookup resolves variable
+// references (nil: os.LookupEnv); CommandEnv is the environment command
+// expressions execute in (nil: the process environment, Expand's own
+// behavior). A caller whose effective environment differs from the process's
+// — the hub probing a launch layer whose env overlays the hub's — supplies
+// both, and command results never cross environments.
+type Env struct {
+	Lookup     func(name string) (string, bool)
+	CommandEnv []string
+}
+
+// ExpandIn is Expand under an explicit environment.
+func ExpandIn(value string, env Env) (string, []Unresolved, error) {
+	lookup := env.Lookup
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
 	// Same fast path as Scan: a value with no $ expands to itself.
 	if strings.IndexByte(value, '$') < 0 {
 		return value, nil, nil
@@ -273,7 +294,7 @@ func Expand(value string, lookup func(string) (string, bool)) (string, []Unresol
 			}
 			unresolved = append(unresolved, Unresolved{Name: p.Ref.Name})
 		case PieceCommand:
-			res, err := evaluate(p.Command)
+			res, err := evaluate(p.Command, env.CommandEnv)
 			if err != nil {
 				unresolved = append(unresolved, Unresolved{Command: p.Command, Err: err})
 				continue

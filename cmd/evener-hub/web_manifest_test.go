@@ -17,7 +17,7 @@ import (
 // authorized browser can read that token.
 func TestWeb_Manifest_CarriesAuthTokenInStartURL(t *testing.T) {
 	const token = "test-token-abc123"
-	web := NewWebServer(hubcore.WebConfig{AuthToken: token, Past: hubcore.NewPastIndex("")})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{AuthToken: token, Past: hubcore.NewPastIndex("")})
 
 	// Unauthorized fetch is rejected — the token must not leak to anonymous clients.
 	anon := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
@@ -67,7 +67,7 @@ func TestWeb_Manifest_CarriesAuthTokenInStartURL(t *testing.T) {
 // With the guard disabled (empty token, e.g. tests / loopback dev), the
 // manifest still serves and just points start_url at the app root.
 func TestWeb_Manifest_NoTokenServesPlainStartURL(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	req := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)

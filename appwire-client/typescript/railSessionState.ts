@@ -5,7 +5,8 @@ import { approvalWaiting } from "./sessionAttention";
 // reads, worded for a person rather than mapped to a broad Cadence family.
 //
 // "awaiting" itself splits on askPending: "Question waiting" for a pending
-// question, "Needs you" for a turn that ended on needs_response (#4093). A plain reply rests idle and never reads awaiting.
+// question, "idle" for a turn that merely ended on needs_response (#2629). A
+// plain reply rests idle and never reads awaiting.
 // Return values are lowercase so each presentation surface can apply its own
 // casing.
 //
@@ -23,7 +24,7 @@ export function humanizeState(wireState: string, askPending: boolean, approvalPe
     case "active":
       return "working";
     case "awaiting":
-      return needsResponseRest(wireState, askPending) ? "needs you" : "question waiting";
+      return needsResponseRest(wireState, askPending) ? "idle" : "question waiting";
     case "restartRequired":
       return "restart required";
     case "warning":

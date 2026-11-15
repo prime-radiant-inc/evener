@@ -10,6 +10,7 @@ import (
 )
 
 func TestClientModelsDropsDisabledRows(t *testing.T) {
+	t.Parallel()
 	r := fixtureRegistry(t, "http://127.0.0.1:9", map[string]registry.Provider{
 		"nolist": {Base: "openai", APIKey: "k",
 			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9", ModelsEndpoint: registry.EndpointUnsupported},

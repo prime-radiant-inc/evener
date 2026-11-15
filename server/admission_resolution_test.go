@@ -21,7 +21,18 @@ func TestAdmissionChangedRootRejected(t *testing.T) {
 func TestAdmissionStableOwnerSwapSucceeds(t *testing.T) { probeAdmissionIdentitySwap(t, true, false) }
 
 func probeAdmissionIdentitySwap(t *testing.T, sameOwner, unsubscribe bool) {
+	t.Helper()
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodThreadHistoryRead} {
+		t.Run(method, func(t *testing.T) {
+			probeAdmissionIdentitySwapMethod(t, method, sameOwner, unsubscribe)
+		})
+	}
+}
+
+func probeAdmissionIdentitySwapMethod(t *testing.T, method string, sameOwner, unsubscribe bool) {
+	t.Helper()
 	srv := NewServer(ServerConfig{})
+	t.Cleanup(srv.Close)
 	oldRef, newRef := "local:stable", "local:stable"
 	params := appwire.ThreadReadParams{Ref: oldRef, Subscribe: true}
 	if !sameOwner {
@@ -38,19 +49,26 @@ func probeAdmissionIdentitySwap(t *testing.T, sameOwner, unsubscribe bool) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	// Ordered ingress has created its admission before dispatch reaches this
 	// wrapper. Everything after the barrier is the real production handler.
-	appserver.HandleTyped(srv.AppServer().Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	read := func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		close(entered)
 		select {
 		case <-release:
 		case <-ctx.Done():
 		}
 		return srv.handleAppThreadRead(ctx, p)
-	})
+	}
+	if method == appwire.MethodThreadHistoryRead {
+		appserver.HandleTyped(srv.AppServer().Router(), method, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadHistoryReadResponse, error) {
+			response, err := read(appwire.WithHistoryServingFacts(ctx), p)
+			return appwire.HistoryReadResponse(response), err
+		})
+	} else {
+		appserver.HandleTyped(srv.AppServer().Router(), method, read)
+	}
 	client := dialServerAppWire(t, srv)
 	done := make(chan error, 1)
 	go func() {
-		_, err := client.ThreadRead(ctx, params)
-		done <- err
+		done <- client.Request(ctx, method, params, nil)
 	}()
 	select {
 	case <-entered:

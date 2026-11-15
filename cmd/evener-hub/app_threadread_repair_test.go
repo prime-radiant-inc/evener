@@ -1689,7 +1689,7 @@ func TestADirectlyConstructedServerHealsAMissingSidecarOnItsOwn(t *testing.T) {
 }
 
 // TestDetachedRepairLoggingKeepsTheSinkTheRegistryWasArmedWith pins
-// hubLogfFor's rule for the repair registry's own log: the sink resolves
+// hubLogFor's rule for the repair registry's own log: the sink resolves
 // once, when the registry is armed, so a detached repair — one that can
 // outlive the startup and shutdown windows where os.Stderr is redirected —
 // never follows a later reassign of the mutable global into an unintended

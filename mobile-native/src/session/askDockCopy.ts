@@ -60,8 +60,11 @@ export interface ApprovalCard {
 	/** What it wants, in the hub's words, not the agent's. */
 	wants: string;
 	tool: string;
-	/** The literal path, or "" when the hub couldn't name one. */
+	/** Where Allow reads or writes, every symlink in its parent resolved, or ""
+	 * when the hub couldn't name one. */
 	target: string;
+	/** The path as the agent spelled it, or "" when it names the target as is. */
+	requestedAs: string;
 	scope: string;
 	partiallyRan: boolean;
 	/** What Allow grants: the one named file, or this one action when the hub
@@ -86,6 +89,7 @@ export function approvalCard(request: SandboxEscalationRequested): ApprovalCard 
 				: "Wants to write outside the workspace",
 		tool: request.tool,
 		target: named ? request.deniedPath : "",
+		requestedAs: named ? (request.requestedPath ?? "") : "",
 		scope: scopeSentence(request.mode, reads),
 		partiallyRan: request.partiallyRan === true,
 		primary: named

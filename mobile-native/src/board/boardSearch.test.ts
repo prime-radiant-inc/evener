@@ -371,8 +371,8 @@ describe("a search result's mark", () => {
 		expect(mark({ state: "active" })).toBe("working");
 	});
 
-	it("marks an awaiting session with no question Needs you, as the Board does", () => {
-		expect(mark({ state: "awaiting" })).toBe("needsYou");
+	it("leaves a finished awaiting turn idle, as the Board does", () => {
+		expect(mark({ state: "awaiting" })).toBe("idle");
 	});
 
 	it("leaves everything else unmarked, with no unread dot: a result has no seen state", () => {

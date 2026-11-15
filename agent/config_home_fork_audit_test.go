@@ -32,8 +32,8 @@ func TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot(t *testing.T) {
 	if len(findings) > 0 {
 		t.Fatalf("test(s) set HOME or XDG_CONFIG_HOME (directly or through a helper) and construct a session whose launch snapshot forks `go env` into it:\n%s\n\n"+
 			"Fix: write the gate in the literal the constructor receives — SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} "+
-			"(RestoreSessionConfig likewise) — or pass withoutGitSnapshot() to newSession. A config held in a variable is "+
-			"refused here even when it is gated, so a later write cannot re-enable the snapshot unseen.",
+			"(RestoreSessionConfig likewise) — or build it with newSession and no withEnvironmentSnapshot(). A config held in "+
+			"a variable is refused at a constructor even when it is gated, so a later write cannot re-enable the snapshot unseen.",
 			strings.Join(findings, "\n"))
 	}
 }
@@ -51,14 +51,21 @@ var sessionConstructors = map[string]int{
 	"RestoreSessionFromMetaWithConfig": 4,
 }
 
-// snapshotGateOption is the newSession fixture option that sets the gate.
-const snapshotGateOption = "withoutGitSnapshot"
+// sessionFixture is the test session builder, which gates the snapshot unless
+// the call carries snapshotOptIn.
+const (
+	sessionFixture = "newSession"
+	snapshotOptIn  = "withEnvironmentSnapshot"
+)
 
 // auditFunc is one function or method declared in the test files, with the
 // bare names of everything its body calls.
 type auditFunc struct {
 	decl  *ast.FuncDecl
 	calls map[string]bool
+	// optionsFrom is the index of the first parameter that takes a
+	// ...sessionOpt, or -1 when the function takes no session options.
+	optionsFrom int
 }
 
 // configHomeForkAuditFindings reports every function in dir's test files that
@@ -73,9 +80,13 @@ func configHomeForkAuditFindings(dir string) ([]string, error) {
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-				funcs = append(funcs, auditFunc{decl: fn, calls: calledNames(fn.Body)})
+				funcs = append(funcs, auditFunc{decl: fn, calls: calledNames(fn.Body), optionsFrom: sessionOptionsFrom(fn)})
 			}
 		}
+	}
+	optionsFrom := map[string]int{}
+	for _, f := range funcs {
+		optionsFrom[f.decl.Name.Name] = f.optionsFrom
 	}
 
 	// Three fixed points over the test files' own functions, keyed by bare
@@ -93,12 +104,12 @@ func configHomeForkAuditFindings(dir string) ([]string, error) {
 	})
 	gated := map[string]bool{}
 	closeOver(gated, funcs, func(f auditFunc, set map[string]bool) bool {
-		return reaches[f.decl.Name.Name] && allConstructionsGated(f.decl.Body, reaches, set)
+		return reaches[f.decl.Name.Name] && allConstructionsGated(f.decl, reaches, set, optionsFrom)
 	})
 
 	var findings []string
 	for _, f := range funcs {
-		if !isolates[f.decl.Name.Name] || !callsAny(f, reaches) || allConstructionsGated(f.decl.Body, reaches, gated) {
+		if !isolates[f.decl.Name.Name] || !callsAny(f, reaches) || allConstructionsGated(f.decl, reaches, gated, optionsFrom) {
 			continue
 		}
 		pos := fset.Position(f.decl.Pos())
@@ -169,13 +180,14 @@ func setsConfigHome(body *ast.BlockStmt) bool {
 	return found
 }
 
-// allConstructionsGated reports whether every call in body that reaches a
+// allConstructionsGated reports whether every call in fn that reaches a
 // constructor is gated at the call.
-func allConstructionsGated(body *ast.BlockStmt, reaches, gated map[string]bool) bool {
+func allConstructionsGated(fn *ast.FuncDecl, reaches, gated map[string]bool, optionsFrom map[string]int) bool {
+	variadic := variadicParam(fn)
 	all := true
-	ast.Inspect(body, func(n ast.Node) bool {
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if call, ok := n.(*ast.CallExpr); ok {
-			if name := calleeName(call.Fun); reaches[name] && !callGated(call, name, gated) {
+			if name := calleeName(call.Fun); reaches[name] && !callGated(call, name, gated, variadic, optionsFrom) {
 				all = false
 			}
 		}
@@ -184,11 +196,55 @@ func allConstructionsGated(body *ast.BlockStmt, reaches, gated map[string]bool) 
 	return all
 }
 
+// variadicParam names fn's own variadic parameter, or "" when it has none. A
+// spread of this parameter forwards the caller's options, which the audit
+// checks at that caller; a spread of anything else hides what it forwards.
+func variadicParam(fn *ast.FuncDecl) string {
+	if fn.Type.Params == nil {
+		return ""
+	}
+	for _, field := range fn.Type.Params.List {
+		if _, ok := field.Type.(*ast.Ellipsis); ok && len(field.Names) == 1 {
+			return field.Names[0].Name
+		}
+	}
+	return ""
+}
+
+// sessionOptionsFrom returns the index of fn's first ...sessionOpt parameter,
+// or -1 when it takes none. Arguments at or after that index can be options.
+func sessionOptionsFrom(fn *ast.FuncDecl) int {
+	if fn.Type.Params == nil {
+		return -1
+	}
+	i := 0
+	for _, field := range fn.Type.Params.List {
+		if ellipsis, ok := field.Type.(*ast.Ellipsis); ok {
+			if id, ok := ellipsis.Elt.(*ast.Ident); ok && id.Name == "sessionOpt" {
+				return i
+			}
+		}
+		if len(field.Names) == 0 {
+			i++
+		} else {
+			i += len(field.Names)
+		}
+	}
+	return -1
+}
+
 // callGated decides one constructor-reaching call. A constructor is gated only
-// by a literal in its config position; a helper by a withoutGitSnapshot() call
-// or a gated literal anywhere in its arguments, or by gating every
-// construction it reaches itself.
-func callGated(call *ast.CallExpr, name string, gated map[string]bool) bool {
+// by a literal in its config position. A helper call carrying a
+// withEnvironmentSnapshot() option is never gated; otherwise the session
+// fixture is gated, and any other helper is gated by a gated literal anywhere
+// in its arguments or by gating every construction it reaches itself.
+//
+// A spread passes a slice the scan cannot see into, so only the enclosing
+// function's own variadic parameter is trusted: its options are audited at that
+// function's call sites. Any other spread is ungated. So is an option that is
+// not a direct call — a slice or option variable, or a function literal that
+// sets o.environmentSnapshot itself.
+func callGated(call *ast.CallExpr, name string, gated map[string]bool, variadic string, optionsFrom map[string]int) bool {
 	if idx, ok := sessionConstructors[name]; ok {
 		if idx < 0 || len(call.Args) <= idx {
 			return false
@@ -196,22 +252,47 @@ func callGated(call *ast.CallExpr, name string, gated map[string]bool) bool {
 		lit, ok := call.Args[idx].(*ast.CompositeLit)
 		return ok && literalGate(lit)
 	}
-	if gated[name] {
-		return true
+	spread := -1
+	if call.Ellipsis.IsValid() {
+		spread = len(call.Args) - 1
+		id, ok := call.Args[spread].(*ast.Ident)
+		if !ok || variadic == "" || id.Name != variadic {
+			return false
+		}
 	}
-	carries := false
-	for _, arg := range call.Args {
+	optionStart := optionsFrom[name]
+	if optionStart < 0 && name == sessionFixture {
+		optionStart = 1 // newSession's options follow its *testing.T
+	}
+	optIn, gatedLiteral := false, false
+	for i, arg := range call.Args {
+		if i == spread {
+			continue
+		}
+		if _, ok := arg.(*ast.FuncLit); ok {
+			return false
+		}
+		if optionStart >= 0 && i >= optionStart {
+			if _, ok := arg.(*ast.CallExpr); !ok {
+				return false
+			}
+		}
 		ast.Inspect(arg, func(n ast.Node) bool {
 			switch e := n.(type) {
 			case *ast.CallExpr:
-				carries = carries || calleeName(e.Fun) == snapshotGateOption
+				optIn = optIn || calleeName(e.Fun) == snapshotOptIn
 			case *ast.CompositeLit:
-				carries = carries || literalGate(e)
+				gatedLiteral = gatedLiteral || literalGate(e)
+			case *ast.SelectorExpr:
+				optIn = optIn || e.Sel.Name == "environmentSnapshot"
 			}
-			return !carries
+			return !optIn
 		})
 	}
-	return carries
+	if optIn {
+		return false
+	}
+	return name == sessionFixture || gated[name] || gatedLiteral
 }
 
 // literalGate reads a SessionConfig, RestoreSessionConfig or testConfig

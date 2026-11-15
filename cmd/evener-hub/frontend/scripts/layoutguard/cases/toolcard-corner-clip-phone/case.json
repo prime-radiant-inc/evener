@@ -1,0 +1,28 @@
+{
+  "name": "toolcard-corner-clip-phone",
+  "description": "A tool card held by one element (session.module.css's .intentGroupRows) keeps both of its edge contracts on a phone. The Open control's touch target overhangs its text line by design and is taller than the row's block padding leaves room for, so the card must not clip it: a tap one pixel inside the control's top or bottom edge reaches the control. And the evidence band of the last rendered row runs to the card's lower edge without painting outside the card's rounded corner, including when a suppressed member leaves an empty wrapper after it.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "styles/surface.module.css",
+    "panes/session/session.module.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "mutation": {
+    "declaration": "session.module.css: .intentGroupRows { overflow: clip } (restored), then the last-rendered-row border-bottom-*-radius: inherit rule (deleted)",
+    "verified": "2026-11-13",
+    "expect": "fail",
+    "note": "Two mutations, one at a time, each restored before the next. Restoring overflow: clip on the card fails with the tap inside the Open control's top edge landing on main. Deleting the last-rendered-row radius rule fails with the evidence band painting its square corner outside the card's rounded corner."
+  }
+}

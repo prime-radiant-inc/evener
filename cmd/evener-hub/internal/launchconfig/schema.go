@@ -38,6 +38,24 @@ const CommitProvenanceScopeMessage = "commit_provenance is only available in the
 // merge, hub save path and resume policy.
 const CommitProvenanceField = "commit_provenance"
 
+// MCPConfigsField, MCPsField and EnvField are the launch-layer field names
+// that feed a spawned session's MCP configuration, shared by the schema, the
+// resolver's merge marks and the hub's MCP overview.
+const (
+	MCPConfigsField = "mcp_configs"
+	MCPsField       = "mcps"
+	EnvField        = "env"
+)
+
+// RepoLaunchConfigFile is the in-repo launch layer's file name, shared by the
+// resolver's diagnostics (a layer that fails to read, hash or decode
+// contributes nothing to a merged set) and the hub's MCP overview.
+const RepoLaunchConfigFile = ".evener/launch.toml"
+
+// ProjectLaunchConfigFile is the local project layer's file name, shared by
+// the trust UI and the settings probe's exclusion diagnostic.
+const ProjectLaunchConfigFile = ".evener/launch.local.toml"
+
 const (
 	LaunchPathNone       LaunchPathKind = ""
 	LaunchPathDir        LaunchPathKind = "dir"
@@ -132,6 +150,7 @@ func buildLaunchOptionSchema() []LaunchOption {
 		{Field: "reasoning_effort", WireField: "reasoningEffort", Label: "Reasoning effort", Description: "Extended thinking budget for models that support it. Higher effort increases cost and latency.", Group: LaunchGroupModel, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENERReasoningEffort.Name}, Choices: reasoningChoices(), DriverSupport: evenerOnly},
 		{Field: "fast_cheap_model", WireField: "fastCheapModel", Label: "Fast cheap model", Description: "Lightweight model for quick sub-tasks like file triage. Falls back to the primary model if unset.", Group: LaunchGroupModel, Kind: LaunchControlModelPicker, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultLabel: "primary model"},
 		{Field: "context_strategy", WireField: "contextStrategy", Label: "Context strategy", Description: "How evener manages context window pressure. compact prunes aggressively; session-log and ooda use alternative strategies.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: contextChoices(), DriverSupport: evenerOnly, BuiltinDefault: "compact"},
+		{Field: "compact_at_percent", WireField: "compactAtPercent", Label: "Compact at percent", Description: "Percent of the model's context window at which Evener compacts the conversation automatically (20 to 100). The agent is nudged to compact itself a little earlier.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultInt: &builtinInt90},
 		{Field: "provider_idle_timeout", WireField: "providerIdleTimeout", Label: "Provider idle timeout", Description: "Maximum time without incoming response bytes, including heartbeat bytes. Positive Go duration (for example 10m or 45s); no total request duration limit. Explicit resume values override persisted settings.", Group: LaunchGroupLimits, Kind: LaunchControlText, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefault: "10m"},
 		{Field: "openai_responses_continuation", WireField: "openAIResponsesContinuation", Label: "OpenAI Responses continuation", Description: "Controls whether eligible OpenAI Responses sessions may use provider-side continuation. Values are off or auto; default off preserves full-history behavior. Launch settings override " + envvars.EVENEROpenAIResponsesContinuation.Name + " and explicit resume values override persisted snapshots. Future auto enablement may allow provider-side storage/retention and affect provider-token/cost behavior.", Group: LaunchGroupLimits, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, EnvFallback: &LaunchOptionEnvFallback{Name: envvars.EVENEROpenAIResponsesContinuation.Name}, Choices: openAIResponsesContinuationChoices(), DriverSupport: evenerOnly, BuiltinDefault: "off"},
 		{Field: "max_rounds", WireField: "maxRounds", Label: "Max rounds", Description: "Hard cap on tool-call rounds per input. The current turn stops with an error if the limit is reached. A round can contain multiple tool calls.", Group: LaunchGroupLimits, Kind: LaunchControlInteger, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultInt: &builtinIntNeg1},
@@ -148,11 +167,11 @@ func buildLaunchOptionSchema() []LaunchOption {
 		{Field: "system_prompt_append_text", WireField: "systemPromptAppendText", Label: "Append text", Group: LaunchGroupSystemPrompt, Kind: LaunchControlMultiline, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "skills_dirs", WireField: "skillsDirs", Label: "Skill directories", Description: "Extra directories evener scans for skill files at spawn time, in addition to the default locations.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "plugin_dirs", WireField: "pluginDirs", Label: "Plugin directories", Description: "Extra directories evener scans for plugin executables at spawn time.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathDir, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
-		{Field: "mcp_configs", WireField: "mcpConfigs", Label: "MCP config files", Description: "JSON config files declaring MCP servers. Each file may define one or more servers.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
-		{Field: "mcps", WireField: "mcps", Label: "MCP servers", Description: "Inline MCP server definitions. Each entry specifies a name, command, and optional arguments.", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: MCPConfigsField, WireField: "mcpConfigs", Label: "MCP config files", Description: "JSON config files declaring MCP servers. Each file may define one or more servers.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: MCPsField, WireField: "mcps", Label: "MCP servers", Description: "Inline MCP server definitions. Each entry specifies a name, command, and optional arguments.", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "model_fallbacks", WireField: "modelFallbacks", Label: "Model fallbacks", Description: "Ordered list of alternative models evener tries when the primary model is unavailable or rate-limited.", Group: LaunchGroupResources, Kind: LaunchControlModelList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "enabled_plugins", WireField: "enabledPlugins", Label: "Enabled plugins", Description: "Select the installed plugins enabled for this launch. An empty selection disables all plugins.", Group: LaunchGroupResources, Kind: LaunchControlPluginSelection, Repeatable: true, PerLaunch: true, DriverSupport: evenerOnly},
-		{Field: "env", WireField: "env", Label: "Environment variables", Description: "Extra environment variables injected into the evener process. Do not store credentials here; use the Providers page instead.", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: EnvField, WireField: "env", Label: "Environment variables", Description: "Extra environment variables injected into the evener process. Do not store credentials here; use the Providers page instead.", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "sandbox", WireField: "sandbox", Label: "Sandbox", Description: "Confine the session to a sandbox mode. off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential and secret paths, give a private temp dir, and confine spawned shell commands too. Network egress is a separate toggle (Sandbox network egress). Default off.", Group: LaunchGroupSandbox, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: sandboxChoices(), DriverSupport: evenerOnly, BuiltinDefault: "off"},
 		{Field: "sandbox_net", WireField: "sandboxNet", Label: "Sandbox network egress", Description: "Allow network egress when sandboxed. Default on. Has no effect unless a sandbox mode is set.", Group: LaunchGroupSandbox, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolTrue},
 		{Field: "verbose", WireField: "verbose", Label: "Verbose event log", Description: "Emit all internal events to the debug log. Useful for diagnosing unexpected behaviour.", Group: LaunchGroupDebugLogging, Kind: LaunchControlBoolean, DefaultableLayers: allLayers, PerLaunch: true, DebugOnly: true, DriverSupport: evenerOnly, BuiltinDefaultBool: &builtinBoolFalse},
@@ -246,6 +265,7 @@ var (
 	builtinIntNeg1   = -1
 	builtinInt2      = 2
 	builtinInt50     = 50
+	builtinInt90     = 90
 	builtinInt2048   = 2048
 	builtinInt1000   = 1000
 	builtinBoolFalse = false

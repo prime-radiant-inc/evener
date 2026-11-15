@@ -1194,9 +1194,12 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   }
   if (item.kind === "needsYou") {
     const refusal = needsYouRefusal(item.choice);
+    const state = displayState(item.choice.summary);
+    const askPending = item.choice.summary.ask_pending === true;
+    const approvalPending = item.choice.summary.approval_pending === true;
     return (
       <>
-        <StatusDot state={cadenceStateFor(displayState(item.choice.summary))} />
+        <StatusDot state={cadenceStateFor(state, { askPending, approvalPending })} />
         <span className={CLASS.title}>{item.choice.summary.title}</span>
         {refusal ? <span className={CLASS.unavailable}>{refusal}</span> : <span className={CLASS.hint}>needs you</span>}
       </>
@@ -1239,6 +1242,10 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
       <StatusDot
         state={cadenceStateFor(
           displayState({ state: item.row.result.state, approval_pending: item.row.result.approvalPending }),
+          {
+            askPending: item.row.result.askPending === true,
+            approvalPending: item.row.result.approvalPending === true,
+          },
         )}
       />
       <span className={CLASS.title}>

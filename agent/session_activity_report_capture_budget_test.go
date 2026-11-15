@@ -13,7 +13,7 @@ import (
 )
 
 func TestSessionActivityReportCaptureBudgetPreservesPageContinuation(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 	const count = 200
 	at := time.Unix(100, 0).UTC()
 	message := json.RawMessage(`"` + strings.Repeat(`\ud83d\ude00`, 5000) + `"`)

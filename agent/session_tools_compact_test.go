@@ -2,16 +2,17 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 func TestCompactTool_PinsAndRequests(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	forcePressureAbove(t, s, compactPressureFloor)
 	rt := s.reg.Get("compact_context")
 	if rt == nil {
 		t.Fatal("compact tool not registered")
@@ -54,7 +55,6 @@ func TestCompactTool_ClearNote_NoForce(t *testing.T) {
 func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	forcePressureAbove(t, s, compactPressureFloor)
 	rt := s.reg.Get("compact_context")
 	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": "a"}); err != nil {
 		t.Fatalf("first compact: %v", err)
@@ -68,58 +68,93 @@ func TestCompactTool_DoubleCompact_Errors(t *testing.T) {
 	}
 }
 
-func TestCompactContextBelowPressureFloorDoesNotSchedule(t *testing.T) {
+func TestCompactTool_LowPressurePredictionReflectsFoldableHistory(t *testing.T) {
 	t.Parallel()
-	// A fresh session sits far below the floor: the call is a no-op.
-	low := newTestSession(t)
-	out, err := low.reg.Get("compact_context").Exec(context.Background(), nil, map[string]any{
-		"note_to_self":            "keep the plan",
-		"compaction_instructions": "drop logs",
-	})
+	// 1. With empty history (no foldable turns) and light pressure, it matches predictionMessage for non-foldable light context.
+	sLight := newTestSession(t)
+	if sLight.hasFoldableHistory() {
+		t.Fatal("expected empty history to report no foldable turns")
+	}
+	rtLight := sLight.reg.Get("compact_context")
+	if rtLight == nil {
+		t.Fatal("compact tool not registered")
+	}
+	resLight, err := rtLight.Exec(context.Background(), nil, map[string]any{"note_to_self": "pinned note"})
 	if err != nil {
-		t.Fatalf("below floor must not error: %v", err)
+		t.Fatalf("compact exec: %v", err)
 	}
-	if _, ok := low.takeForceRequest(); ok {
-		t.Fatal("below the pressure floor no compaction may be scheduled")
-	}
-	if got := low.pinnedNote(); got != "" {
-		t.Fatalf("a no-op must not pin a note, got %q", got)
-	}
-	state, ok := out.(tool.StateResult)
+	srLight, ok := resLight.(tool.StateResult)
 	if !ok {
-		t.Fatalf("result type = %T", out)
+		t.Fatalf("expected StateResult, got %T", resLight)
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(state.Output), &decoded); err != nil {
-		t.Fatalf("not-needed result must be structured JSON: %v", err)
-	}
-	if decoded["compacted"] != false {
-		t.Fatalf("compacted = %v, want false", decoded["compacted"])
-	}
-	if _, ok := decoded["pressure"].(float64); !ok {
-		t.Fatalf("result must carry the current pressure: %v", decoded)
+	wantLight := predictionMessage(false, sLight.contextPressure(), false)
+	if srLight.Output != wantLight {
+		t.Fatalf("srLight.Output = %q, want %q", srLight.Output, wantLight)
 	}
 
-	// At the floor the call schedules as before.
-	high := newTestSession(t)
-	forcePressureAbove(t, high, compactPressureFloor)
-	if _, err := high.reg.Get("compact_context").Exec(context.Background(), nil, map[string]any{"note_to_self": "n"}); err != nil {
-		t.Fatalf("above floor: %v", err)
+	// 2. With history larger than PreserveRecentTurns (e.g. 10 turns > 6), even at low pressure (< 0.30),
+	// it must match predictionMessage for seam compaction and differ from the light non-foldable prediction.
+	sHeavy := newTestSession(t)
+	sHeavy.mu.Lock()
+	for i := range 10 {
+		sHeavy.history = append(sHeavy.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i))))
 	}
-	if _, ok := high.takeForceRequest(); !ok {
-		t.Fatal("above the floor a compaction must be scheduled")
+	sHeavy.mu.Unlock()
+	if !sHeavy.hasFoldableHistory() {
+		t.Fatal("expected 10-turn history to report foldable turns")
+	}
+
+	rtHeavy := sHeavy.reg.Get("compact_context")
+	if rtHeavy == nil {
+		t.Fatal("compact tool not registered")
+	}
+	resHeavy, err := rtHeavy.Exec(context.Background(), nil, map[string]any{"note_to_self": "pinned note 2"})
+	if err != nil {
+		t.Fatalf("compact exec: %v", err)
+	}
+	srHeavy, ok := resHeavy.(tool.StateResult)
+	if !ok {
+		t.Fatalf("expected StateResult, got %T", resHeavy)
+	}
+	if srHeavy.Output == srLight.Output {
+		t.Fatalf("foldable history output must differ from non-foldable output: %q", srHeavy.Output)
+	}
+	wantHeavy := predictionMessage(false, 0.50, true)
+	if srHeavy.Output != wantHeavy {
+		t.Fatalf("srHeavy.Output = %q, want seam compaction prediction %q", srHeavy.Output, wantHeavy)
 	}
 }
 
-func TestCompactContextBelowFloorStillClearsNote(t *testing.T) {
+func TestCompactTool_LowPressurePredictionAtPreserveRecentBoundary(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
-	s.setPinnedNote("old")
-	rt := s.reg.Get("compact_context")
-	if _, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": ""}); err != nil {
-		t.Fatalf("clear: %v", err)
+	// Exactly 6 turns (equal to PreserveRecentTurns):
+	// During tool execution, TurnAssistant is turn 6, and TurnToolResults will be turn 7
+	// before compaction runs at the seam. hasFoldableHistory must account for it.
+	s.mu.Lock()
+	for i := range 6 {
+		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("turn %d", i))))
 	}
-	if s.pinnedNote() != "" {
-		t.Fatalf("clearing is not a compaction request and works at any pressure, got %q", s.pinnedNote())
+	s.mu.Unlock()
+
+	if !s.hasFoldableHistory() {
+		t.Fatal("expected 6-turn history to report foldable turns accounting for in-flight tool result")
+	}
+
+	rt := s.reg.Get("compact_context")
+	if rt == nil {
+		t.Fatal("compact tool not registered")
+	}
+	res, err := rt.Exec(context.Background(), nil, map[string]any{"note_to_self": "boundary note"})
+	if err != nil {
+		t.Fatalf("compact exec: %v", err)
+	}
+	sr, ok := res.(tool.StateResult)
+	if !ok {
+		t.Fatalf("expected StateResult, got %T", res)
+	}
+	want := predictionMessage(false, 0.50, true)
+	if sr.Output != want {
+		t.Fatalf("at boundary len==6, sr.Output = %q, want seam compaction prediction %q", sr.Output, want)
 	}
 }

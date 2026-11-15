@@ -42,7 +42,11 @@ import type {
   InstanceEditParams,
   InstanceEntry,
   InstanceListResponse,
+  InstanceModelDetailResponse,
+  InstanceModelEditParams,
+  InstanceModelEditResponse,
   InstanceModelEntry,
+  InstanceModelGetParams,
   InstanceSetModelDisabledParams,
   ProviderDescriptor,
 } from "../../types.gen";
@@ -163,6 +167,17 @@ export interface CredentialInstancesState {
   // setModelDisabled flips one model row's disabled flag and applies the
   // returned list, like setDefault: the sheet steers on the store's list.
   setModelDisabled(params: InstanceSetModelDisabledParams): Promise<void>;
+  // getModel reads one instance model's effective and authored configuration,
+  // provenance, and vocabulary lists. Refuses replies from a connection that
+  // was replaced while the request was in flight.
+  getModel(params: InstanceModelGetParams): Promise<InstanceModelDetailResponse>;
+  // editModel mutates one model's overrides (or creates/removes a custom model)
+  // on an instance, applies response.list through the shared mutation ordering,
+  // and returns whether the list was applied alongside the updated detail.
+  editModel(
+    params: Omit<InstanceModelEditParams, "originClientId">,
+    options?: { onSuperseded?: (response: InstanceModelEditResponse) => void },
+  ): Promise<{ applied: boolean; detail: InstanceModelDetailResponse | null }>;
   // refreshModels fetches one instance's live listing, then applies the
   // returned inventory (exact catalog rows plus cached live ids).
   refreshModels(name: string): Promise<void>;
@@ -228,11 +243,18 @@ export interface CredentialInstancesDeps {
 // MutationReconcile tells applyMutation how to place its answer among newer
 // reads: supersededFor receives the answer a newer request outran, instance
 // names the row the landed-write count belongs to, and written names the
-// model a toggle wrote.
-interface MutationReconcile {
+// model a toggle or modelEdit wrote.
+interface WrittenModel {
   instance: string;
-  supersededFor?: (response: InstanceListResponse) => void;
-  written?: { instance: string; model: string };
+  model: string;
+  remove?: boolean;
+}
+
+interface MutationReconcile<R = InstanceListResponse> {
+  instance: string;
+  supersededFor?: (response: R) => void;
+  written?: WrittenModel;
+  listOf?: (response: R) => InstanceListResponse;
 }
 
 /** An edit whose answer a newer request superseded is discarded from the
@@ -432,23 +454,30 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // keepRefreshedModels keeps, for the instances a refresh landed for during a
   // write's flight, the store's own (newer) model inventory instead of the
   // answer's older one. Every other field comes from the answer, which is
-  // authoritative for the write itself; the written model's flag, when the
-  // caller names one, is taken from the answer so the row it wrote still shows
-  // what the server recorded.
+  // authoritative for the write itself; the written model row, when the caller
+  // names one, is upserted from the answer (or removed on removeCustom) so the
+  // row it wrote still shows what the server recorded.
   function keepRefreshedModels(
     instances: InstanceEntry[],
     names: Set<string>,
-    written?: MutationReconcile["written"],
+    written?: WrittenModel,
   ): InstanceEntry[] {
     const current = store.getState().instances;
     return instances.map((entry) => {
       if (!names.has(entry.name)) return entry;
       const held = current.find((row) => row.name === entry.name);
       if (!held?.models) return entry;
-      const answered =
-        written?.instance === entry.name ? entry.models?.find((model) => model.id === written.model) : undefined;
+      if (written?.instance !== entry.name) return { ...entry, models: held.models };
+      if (written.remove) {
+        return { ...entry, models: held.models.filter((model) => model.id !== written.model) };
+      }
+      const answered = entry.models?.find((model) => model.id === written.model);
       if (!answered) return { ...entry, models: held.models };
-      return { ...entry, models: withToggledFlag(held.models, answered.id, answered.disabled) };
+      const exists = held.models.some((model) => model.id === answered.id);
+      const models = exists
+        ? held.models.map((model) => (model.id === answered.id ? { ...answered } : model))
+        : [...held.models, { ...answered }];
+      return { ...entry, models };
     });
   }
 
@@ -520,10 +549,10 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // the server applied still knows the authoritative outcome of the ONE row it
   // wrote, which is what `reconcile` (MutationReconcile) places among newer
   // reads.
-  async function applyMutation(
-    request: (origin: { originClientId: string }) => Promise<InstanceListResponse>,
-    reconcile: MutationReconcile,
-  ): Promise<boolean> {
+  async function applyMutation<R = InstanceListResponse>(
+    request: (origin: { originClientId: string }) => Promise<R>,
+    reconcile: MutationReconcile<R>,
+  ): Promise<{ applied: boolean; response: R }> {
     const version = ++requestVersion;
     const client = connection.client;
     // Refreshes already landed when this write started: the answer is newer
@@ -546,11 +575,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
         // this client never had: reconciling it would write the dead client's
         // row into the current one.
         if (sameClient) reconcile.supersededFor?.(response);
-        return false;
+        return { applied: false, response };
       }
       const refreshedDuringFlight = changedCounts(before, refreshedInstances);
       refreshedInstances.clear();
-      const applied = listState(response);
+      const list = reconcile.listOf ? reconcile.listOf(response) : (response as unknown as InstanceListResponse);
+      const applied = listState(list);
       if (refreshedDuringFlight.size > 0) {
         applied.instances = keepRefreshedModels(applied.instances, refreshedDuringFlight, reconcile.written);
       }
@@ -558,7 +588,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       // left over from a replaced one is discarded by the version guard above),
       // so the listing it answered with is this connection's.
       store.setState(landedListing(applied));
-      return true;
+      return { applied: true, response };
     } catch (err) {
       // Refused: this mutation's marker retires, so an echo that follows after
       // all - the write landed and only its reply was lost - reads as foreign
@@ -1053,7 +1083,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async create(params, reconcile) {
       const client = requireWritableClient();
-      const applied = await applyMutation(
+      const { applied } = await applyMutation(
         (origin) => client.request("evener/instance/create", { ...params, ...origin }),
         {
           instance: params.name,
@@ -1065,7 +1095,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async edit(params, reconcile) {
       const client = requireWritableClient();
-      const applied = await applyMutation(
+      const { applied } = await applyMutation(
         (origin) => client.request("evener/instance/edit", { ...params, ...origin }),
         {
           instance: params.name,
@@ -1077,7 +1107,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async remove(name, expectedEndpointFingerprint) {
       const client = requireWritableClient();
-      const applied = await applyMutation(
+      const { applied } = await applyMutation(
         (origin) =>
           client.request("evener/instance/remove", {
             name,
@@ -1091,7 +1121,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async setDefault(name) {
       const client = requireWritableClient();
-      const applied = await applyMutation(
+      const { applied } = await applyMutation(
         (origin) => client.request("evener/instance/setDefault", { name, ...origin }),
         { instance: name },
       );
@@ -1108,6 +1138,34 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
         supersededFor: (response) => reconcileToggledModel(response, params),
         written: { instance: params.name, model: params.model },
       });
+    },
+
+    async getModel(params) {
+      const client = requireClient();
+      const detail = await client.request("evener/instance/modelGet", params);
+      if (!connectionStillCurrent(client)) throw new Error(CONNECTION_REPLACED_ERROR);
+      return detail;
+    },
+
+    async editModel(params, options) {
+      const client = requireWritableClient();
+      const { applied, response } = await applyMutation(
+        (origin) => client.request("evener/instance/modelEdit", { ...params, ...origin }),
+        {
+          instance: params.name,
+          listOf: (resp) => resp.list,
+          supersededFor: options?.onSuperseded,
+          written: {
+            instance: params.name,
+            model: params.model,
+            remove: params.removeCustom === true,
+          },
+        },
+      );
+      return {
+        applied: settleMutation(applied),
+        detail: response.detail ?? null,
+      };
     },
 
     refreshModels,

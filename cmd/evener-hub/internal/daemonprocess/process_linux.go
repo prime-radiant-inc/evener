@@ -198,11 +198,11 @@ const linuxPFExiting = 0x4
 // /proc/<pid>/stat read. Fields count from the last ')', since the command
 // field may hold spaces and parentheses.
 func linuxStatFacts(raw []byte) (ticks uint64, exiting bool, err error) {
-	end := bytes.LastIndexByte(raw, ')')
-	if end < 0 {
+	_, afterComm, found := bytes.CutLast(raw, []byte(")"))
+	if !found {
 		return 0, false, errors.New("malformed process stat")
 	}
-	fields := strings.Fields(string(raw[end+1:]))
+	fields := strings.Fields(string(afterComm))
 	if len(fields) < 20 {
 		return 0, false, errors.New("incomplete process stat")
 	}

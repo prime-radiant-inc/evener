@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // captureLogfServer builds a server whose Logf appends to a mutex-guarded
@@ -102,27 +103,12 @@ func collectFrames(transport *appwire.WSTransport) <-chan appwire.Message {
 	return frames
 }
 
-// waitUntil polls cond until it holds or the test deadline passes — the
-// condition-shaped sibling of waitFor, for state without a channel to block
-// on; what names the condition being waited for.
-func waitUntil(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting until %s", what)
-}
-
 // registeredConnection returns the server's single registered connection,
 // waiting for it to appear.
 func registeredConnection(t *testing.T, server *Server) *Connection {
 	t.Helper()
 	var conn *Connection
-	waitUntil(t, "a connection registers", func() bool {
+	testwait.Until(t, "a connection to register", func() bool {
 		server.mu.RLock()
 		defer server.mu.RUnlock()
 		for _, c := range server.conns {
@@ -136,7 +122,7 @@ func registeredConnection(t *testing.T, server *Server) *Connection {
 // waitUnregistered waits until the server has no registered connections.
 func waitUnregistered(t *testing.T, server *Server) {
 	t.Helper()
-	waitUntil(t, "the connection unregisters", func() bool {
+	testwait.Until(t, "the connection to unregister", func() bool {
 		server.mu.RLock()
 		defer server.mu.RUnlock()
 		return len(server.conns) == 0
@@ -453,7 +439,7 @@ func TestServeWebSocketCloseAbandonsQueuedRequestsWithPurgeAdvisory(t *testing.T
 
 	// The queue empties before the advisory line is written; wait for the
 	// line rather than racing it.
-	waitUntil(t, "the purge advisory reaches Logf", func() bool {
+	testwait.Until(t, "the purge advisory to reach Logf", func() bool {
 		return strings.Contains(logged(), "discarded")
 	})
 	logs := logged()
@@ -491,7 +477,7 @@ func TestServeWebSocketCloseAbandonsQueuedRequestsWithPurgeAdvisory(t *testing.T
 // waitForQueueDepth polls the connection's request queue length.
 func waitForQueueDepth(t *testing.T, conn *Connection, want int) {
 	t.Helper()
-	waitUntil(t, fmt.Sprintf("request queue depth reaches %d", want), func() bool {
+	testwait.Until(t, fmt.Sprintf("the request queue depth to reach %d", want), func() bool {
 		return len(conn.requests) == want
 	})
 }

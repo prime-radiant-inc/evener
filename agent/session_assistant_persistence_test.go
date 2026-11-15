@@ -132,7 +132,7 @@ func newDelegateAttentionTestSession(t *testing.T) *Session {
 	}
 	t.Cleanup(func() { _ = writer.Close() })
 	sess := &Session{id: sessionID, stateDir: stateDir}
-	sess.attachTranscript(writer)
+	sess.attachTranscript(writer, nil)
 	return sess
 }
 

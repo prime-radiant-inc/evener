@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // These cover P3 automatic residue collection (auto-delegate-lane-disposal spec
@@ -471,10 +472,7 @@ func TestP3Timer_FiresAtDelayCollectsResidue(t *testing.T) {
 	// starts (unlike Close(), which only joins sweepWG after taking the same
 	// mutex the callback Adds under). Polling the actual side effect is the
 	// only race-free signal available from a test in this package.
-	// TRIPWIRE: the pass runs over an in-memory scripted git boundary with no
-	// real I/O, so it normally finishes in well under a second; 30s only
-	// fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "open-pass timer collects the residue lane", func() bool {
+	testwait.Until(t, "open-pass timer collects the residue lane", func() bool {
 		return !obs.lanePresent(path)
 	})
 }

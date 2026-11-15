@@ -33,8 +33,11 @@ import {
 	applyReadModel,
 	configFingerprint,
 	deriveSendQueueAvailability,
+	historyFallback,
+	historyServingFacts,
 	isStaleCursorError,
 	mergeOlderItemPage,
+	mergeSavedViewPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
 	sessionControls,
@@ -338,6 +341,10 @@ export interface ConversationState {
 	// before), rebasing olderCursor when there is one.
 	readonly trimmedAbove: boolean;
 	readonly hasEarlierItems: boolean;
+	// The saved view this fallback pages: the identity it was installed under,
+	// its own progress and its exhaustion. One record owns all three so a page
+	// cannot outlive the view it was issued for, and a new view resets them.
+	readonly savedView: SavedViewPaging | null;
 	readonly hasLaterItems: boolean;
 	readonly loadingOlder: boolean;
 	readonly status: ConversationStatus;
@@ -516,6 +523,29 @@ export function truncateItem(
  * that names its transcript position. Rows ahead of it with none (a live
  * overlay row, a notice) come back in the page, where they fold into the
  * rows already held. */
+/** One saved view's paging state. `identity` is the resolved thread, session
+ * and instance the page must still belong to; `before` is the oldest held
+ * position its next page starts from; `exhausted` means it has handed back an
+ * empty page. */
+export interface SavedViewPaging {
+	identity: string;
+	exhausted: boolean;
+}
+
+/** The saved view a freshly installed conversation opens, or null when it is
+ * not a saved fallback. Installing a view is what resets its paging state. */
+function savedViewIdentity(
+	conversation: Pick<MobileConversation, "threadId" | "imageSessionId" | "instanceId"> | null | undefined,
+): string {
+	return `${conversation?.threadId ?? ""}/${conversation?.imageSessionId ?? ""}/${conversation?.instanceId ?? ""}`;
+}
+
+function savedViewRecord(conversation: MobileConversation | null | undefined): SavedViewPaging | null {
+	const facts = conversation?.servingFacts;
+	if (facts?.servedFrom !== "saved-index" || facts.fallbackReason === undefined) return null;
+	return { identity: savedViewIdentity(conversation), exhausted: false };
+}
+
 export function trimBoundary(
 	state: Pick<ConversationState, "trimmedAbove" | "conversation">,
 ): ThreadItemPosition | undefined {
@@ -524,9 +554,34 @@ export function trimBoundary(
 
 /** The next older page as one key, for telling page attempts apart, or null
  * when nothing older is known: the cursor, the trim boundary, or both. */
+/** The oldest recorded position the phone holds, the boundary a saved-view
+ * page is requested from while that projection is paging. */
+function oldestHeldPosition(turns: readonly TurnModel[]): ThreadItemPosition | undefined {
+	let oldest: ThreadItemPosition | undefined;
+	for (const turn of turns) {
+		for (const item of turn.items) {
+			const position = item.position;
+			if (!position) continue;
+			if (!oldest || position.entry < oldest.entry || (position.entry === oldest.entry && position.item < oldest.item))
+				oldest = position;
+		}
+	}
+	return oldest;
+}
+
 export function olderPageKey(
-	state: Pick<ConversationState, "olderCursor" | "trimmedAbove" | "conversation">,
+	state: Pick<ConversationState, "olderCursor" | "trimmedAbove" | "conversation"> & {
+		savedView?: SavedViewPaging | null;
+	},
 ): string | null {
+	if (state.savedView) {
+		// The saved view advances from its own oldest held row; an empty page
+		// behind it ends the view even though the live cursor is retained.
+		if (state.savedView.exhausted || !state.conversation) return null;
+		const position = oldestHeldPosition(state.conversation.turns);
+		if (position === undefined) return null;
+		return JSON.stringify(["saved", state.savedView.identity, position.entry, position.item]);
+	}
 	const before = trimBoundary(state);
 	if (before === undefined && state.olderCursor === null) return null;
 	// JSON keeps the hub's opaque cursor from running into the boundary.
@@ -1212,9 +1267,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		// the next page names the oldest row kept.
 		const trimmedState = (trimmed: boolean): Partial<ConversationState> => {
 			if (!trimmed) return {};
-			if (!get().loadingOlder) return { trimmedAbove: true };
+			// A trim drops the rows the saved view had already paged down to,
+			// moving the boundary its next page starts from. Exhaustion belonged
+			// to the boundary that is gone; keeping it would disable scrollback
+			// against history the trim just made pageable again.
+			const savedView = get().savedView;
+			const resumedSavedView =
+				savedView === null || !savedView.exhausted ? {} : { savedView: { ...savedView, exhausted: false } };
+			if (!get().loadingOlder) return { trimmedAbove: true, ...resumedSavedView };
 			loadOlderToken += 1;
-			return { trimmedAbove: true, loadingOlder: false };
+			return { trimmedAbove: true, loadingOlder: false, ...resumedSavedView };
 		};
 		// send and queue are one submission that differs only in the availability
 		// check the caller's kind demands.
@@ -1320,6 +1382,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			olderCursor: null,
 			trimmedAbove: false,
 			hasEarlierItems: false,
+			savedView: null,
 			hasLaterItems: false,
 			loadingOlder: false,
 			status: "idle",
@@ -1544,6 +1607,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						...trimmedState(trimmed),
 						status: "open",
 						olderCursor,
+						savedView: savedViewRecord(bounded),
 						hasEarlierItems: hasEarlierItems ?? false,
 						hasLaterItems: hasLaterItems ?? false,
 						latestReadState: historySupportsCanonicalRead(bounded) ? "ready" : "unknown",
@@ -1795,7 +1859,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					const currentConvForMerge = currentSnapshot.conversation;
 					const sameInstance =
 						currentConvForMerge !== null && currentConvForMerge.instanceId === conversation.instanceId;
-					const replacesInstance = currentConvForMerge !== null && !sameInstance;
+					const sameOwner =
+						currentConvForMerge !== null &&
+						currentConvForMerge.threadId === conversation.threadId &&
+						(currentConvForMerge.imageSessionId ?? currentConvForMerge.threadId) ===
+							(conversation.imageSessionId ?? conversation.threadId);
+					const fallback = historyFallback(conversation.servingFacts);
+					// Saved child reads can carry the child ID instead of the live root
+					// daemon ID. Preserve content through that transition and recovery
+					// to the held live history, while adopting the read's fresh controls.
+					const recoversHeldHistory =
+						historyFallback(currentConvForMerge?.servingFacts) &&
+						currentConvForMerge?.history?.incarnation !== undefined &&
+						currentConvForMerge.history.incarnation === conversation.history?.incarnation;
+					const mergesHeldHistory = sameOwner && (sameInstance || fallback || recoversHeldHistory);
+					const replacesInstance = currentConvForMerge !== null && !mergesHeldHistory;
 					// The user's display config, read after the read's await: the rows
 					// below project at it (which rows exist at all is the projector's
 					// decision at that config), and every projection this publish makes
@@ -1808,10 +1886,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// layer hydrates the wire response before the merge boundary
 					// reaches this package — see its own doc comment). Its disposition
 					// (replace/merge/discard) already reads the read's own boot
-					// generation/epoch/incarnation/length, so a DIFFERENT backing
-					// instance (replacesInstance) naturally replaces on its own;
-					// merging is only meaningful against the SAME instance's held
-					// history. mergeHistory never removes an item, so the currently
+					// generation/epoch/incarnation/length. Fallback accumulation also
+					// retains that identity across daemonless control IDs.
+					// mergeHistory never removes an item, so the currently
 					// running turn's content this read's own bounded window may omit
 					// survives without a separate live-turn carve-out (the old
 					// withLiveActiveTurn).
@@ -1824,9 +1901,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// was disconnected still displays its pre-change state) and
 					// advances the snapshot length past the skipped update, so no
 					// later refresh can recover it.
-					const replaceHeldHistory = replacedHeldHistory === true;
+					// A retry served by saved fallback still cannot replace held content.
+					const replaceHeldHistory = replacedHeldHistory === true && !fallback;
 					let appliedModel: MobileConversation;
-					if (sameInstance && currentConvForMerge !== null && !replaceHeldHistory) {
+					if (mergesHeldHistory && currentConvForMerge !== null && !replaceHeldHistory) {
 						appliedModel = applyReadModel(currentConvForMerge, conversation, changes);
 					} else {
 						appliedModel = conversation;
@@ -1862,7 +1940,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// or resumeProjected reads the untouched acceptedRehydrate=null
 					// from entry as a failure and tears down a healthy subscription
 					// over a read that merely lost an identity race.
-					if (sameInstance && currentConvForMerge !== null && appliedModel === currentConvForMerge) {
+					if (currentConvForMerge !== null && appliedModel === currentConvForMerge) {
 						acceptedRehydrate = { generation: gen };
 						// The wire answered but this model declined the read by its own
 						// identity rules: a discarded read never restores canonical
@@ -1876,10 +1954,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// same way loadOlder and the live-frame path
 					// (applyThreadNotification) do.
 					let mergedTurns: TurnModel[] =
-						sameInstance && currentConvForMerge !== null && !replaceHeldHistory
+						mergesHeldHistory && currentConvForMerge !== null && !replaceHeldHistory && !fallback
 							? [...reconcileCrossTurnReissues(currentConvForMerge.turns, appliedModel.turns)]
 							: [...appliedModel.turns];
-					if (sameInstance && currentConvForMerge !== null && !replaceHeldHistory) {
+					// Fallback omissions are not authoritative over held payloads.
+					if (mergesHeldHistory && currentConvForMerge !== null && !replaceHeldHistory && !fallback) {
 						mergedTurns = stripFieldsOmittedByRead(mergedTurns, conversation.turns);
 					}
 					const merged = withSyncedHistoryTurns({ ...appliedModel, turns: mergedTurns }, mergedTurns);
@@ -1904,7 +1983,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// the discarded history, and its advancement must not pin the
 					// fresh window's own cursor.
 					const pageCursorAdvanced =
-						sameInstance && !replaceHeldHistory && currentSnapshot.olderCursor !== entryOlderCursor;
+						mergesHeldHistory && !replaceHeldHistory && currentSnapshot.olderCursor !== entryOlderCursor;
 					if (pageCursorAdvanced) mergedCursor = currentSnapshot.olderCursor;
 					acceptedRehydrate = { generation: gen };
 					adoptRead(conversation);
@@ -1930,7 +2009,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// the commit even when the bound sheds the turn its anchor row
 					// came from.
 					let seatedRehydrateItems: MobileTimelineItem[] | null = null;
-					if (sameInstance) {
+					if (mergesHeldHistory) {
 						const rehydrateModel = { ...merged, turns: mergedTurns };
 						const rehydrateSeated = transientWarnings.seat(projectTimeline(rehydrateModel, undefined, projectConfig));
 						// RoboRev panel: the keep-window is level-independent at this
@@ -1994,6 +2073,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// any trim above it; the same instance keeps its trim.
 						...(replacesInstance ? { trimmedAbove: rehydrateTrimmed } : rehydrateTrimmed ? { trimmedAbove: true } : {}),
 						olderCursor: mergedCursor,
+						savedView: savedViewRecord(committedConversation),
 						hasEarlierItems: hasEarlierItems ?? currentSnapshot.hasEarlierItems,
 						hasLaterItems: hasLaterItems ?? currentSnapshot.hasLaterItems,
 						draft: currentState.draft,
@@ -2059,8 +2139,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// before), rebasing the cursor when there is one.
 				// A hub that has stopped paging from a before position since the trim
 				// can't bring those rows back, so nothing above them is asked for.
-				const cursor = state.olderCursor;
-				const before = trimBoundary(state);
+				// While a saved fallback is being shown, the live cursor names another
+				// projection: page the saved view cursor-free from the oldest held row
+				// and keep the live continuation for recovery.
+				const savedView = state.savedView;
+				const cursor = savedView !== null ? null : state.olderCursor;
+				const before = savedView !== null ? oldestHeldPosition(state.conversation.turns) : trimBoundary(state);
 				if (before !== undefined && !pagesBefore) return { status: "ignored" };
 				if (cursor === null && before === undefined) return { status: "ignored" };
 				const gen = state.conversationGeneration;
@@ -2092,6 +2176,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// Task 2A-Ops-2: Stale loadOlder — a newer page operation owns the
 					// loadingOlder/error fields. Make no state change at all.
 					if (olderToken !== loadOlderToken) return { status: "ignored" };
+					// A page belongs to the saved view it was issued for, including
+					// the live (null) view: a read that installed a saved fallback
+					// during the await retires this completion, or its page would
+					// clear the newly installed view and adopt a cursor that view
+					// does not own.
+					if ((savedView?.identity ?? null) !== (get().savedView?.identity ?? null)) {
+						// This operation still owns the paging flag: no newer page does.
+						set({ loadingOlder: false });
+						return { status: "ignored" };
+					}
 					const currentConv = get().conversation;
 					if (currentConv !== null) {
 						// Task 17 (v6 read path): the page merges into the model through
@@ -2143,7 +2237,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// merge never renames an item's identity across turns, so a raw
 						// page item's identity is exactly the identity it merges under.
 						const pageKeys = pageContributedKeys(currentConv.turns, result.turnsPage.data);
-						const versionedMerge = mergeOlderItemPage(currentConv, result.turnsPage);
+						// A page can itself be the first saved-index answer while the
+						// live view is current (the daemon went away before it). That
+						// page installs the saved view for everything after it: its own
+						// cursor belongs to the saved projection, so the live
+						// continuation is kept instead, and later pages ask cursor-free.
+						const pageFacts = savedView === null ? historyServingFacts(result.turnsPage) : undefined;
+						const pageFallback = savedView === null && historyFallback(pageFacts);
+						const effectiveSavedView: SavedViewPaging | null =
+							savedView ?? (pageFallback ? { identity: savedViewIdentity(currentConv), exhausted: false } : null);
+						const versionedMerge =
+							effectiveSavedView !== null
+								? mergeSavedViewPage(currentConv, result.turnsPage)
+								: mergeOlderItemPage(currentConv, result.turnsPage);
 						if (versionedMerge === currentConv) {
 							// A real discard (pageDisposition's "discard" branch, or a
 							// stale-model race) returns the model UNCHANGED — the exact
@@ -2221,7 +2327,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// consumes a cap slot, so the window the retained-turn bound
 						// trims against must count it. capAndTruncate's carried filter makes the
 						// re-seat below a no-op.
-						const mergedModel = withSyncedHistoryTurns({ ...currentConv, turns: strippedPageTurns }, strippedPageTurns);
+						// The versioned merge carries the page's history metadata,
+						// including the omission fence its observed range records; a
+						// base taken from currentConv alone would drop it and let a
+						// later fallback re-add a row this page omitted.
+						const mergedModel = withSyncedHistoryTurns(
+							{ ...currentConv, history: versionedMerge.history ?? currentConv.history, turns: strippedPageTurns },
+							strippedPageTurns,
+						);
 						// The page merge projects at the user's display config, exactly
 						// as the rehydrate and frame paths do: one projector, one level.
 						const mergedInput = transientWarnings.seat(
@@ -2230,7 +2343,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// Paging never ends on a trim: a page that lands while the
 						// reader follows the live end is trimmed like any publish, and
 						// the next page names the oldest row kept (trimmedAbove).
-						const nextCursor = result.nextCursor ?? null;
+						const nextCursor = effectiveSavedView !== null ? state.olderCursor : (result.nextCursor ?? null);
 						const pageMerged = retainedRows(mergedInput);
 						const { conversation: pageConversation, trimmed: pageTrimmed } = capAndTruncate({
 							...mergedModel,
@@ -2255,14 +2368,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							conversation: withSyncedHistoryTurns(
 								{
 									...pageConversation,
+									...(pageFallback && pageFacts !== undefined ? { servingFacts: pageFacts } : {}),
 									turns: boundedTurns,
-									olderCursor: result.nextCursor,
+									olderCursor: effectiveSavedView !== null ? (state.olderCursor ?? undefined) : result.nextCursor,
 								},
 								boundedTurns,
 							),
 							olderCursor: nextCursor,
 							trimmedAbove: pageTrimmed,
 							hasEarlierItems: result.hasEarlierItems ?? get().hasEarlierItems,
+							savedView:
+								effectiveSavedView === null
+									? null
+									: { ...effectiveSavedView, exhausted: (result.turnsPage.data ?? []).length === 0 },
 							hasLaterItems: result.hasLaterItems ?? get().hasLaterItems,
 							loadingOlder: false,
 						});

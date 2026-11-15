@@ -374,7 +374,7 @@ func normalizeWatchSource(source string) (watchSource, error) {
 	case "":
 		return watchSource{}, errors.New("invalid_request: source is required")
 	case "self":
-		return watchSource{Kind: watchSourceSelfSession, Public: "self", Internal: runtimeMessageAliasCaller}, nil
+		return watchSource{Kind: watchSourceSelfSession, Public: "self", Internal: "self"}, nil
 	case "parent":
 		return watchSource{Kind: watchSourceParentSession, Public: "parent", Internal: runtimeMessageAliasCaller}, nil
 	default:
@@ -397,7 +397,7 @@ func watchPublicSource(source, target string) string {
 	if source != "" {
 		return source
 	}
-	if target == runtimeMessageAliasCaller {
+	if target == runtimeMessageAliasCaller || target == "self" {
 		return "self"
 	}
 	return target
@@ -421,6 +421,7 @@ type watchResult struct {
 	Watching           bool
 	OutputMatch        string
 	Events             []string
+	Every              int
 	EventFilter        *watchEventFilter
 	ProgressIntervalMS int
 	// TimerSeconds and OneShot describe a timer watch; a timer reports its

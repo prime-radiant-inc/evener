@@ -1,0 +1,46 @@
+name: Go dependency review recheck
+
+# A required check does not re-evaluate when a label is added or a review is
+# approved, so the acknowledgement would not clear the failed
+# go-dependency-review job. This lightweight workflow re-runs that run's failed
+# jobs on the PR head, where the job now sees the label or approval. It is not
+# a second copy of the check: the check itself stays in ci.yml.
+on:
+  pull_request:
+    types: [labeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  recheck:
+    if: |
+      (github.event_name == 'pull_request' && github.event.label.name == 'go-dependency-reviewed') ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Re-run the failed CI jobs for this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI \
+            --event pull_request --commit "$HEAD_SHA" --limit 1 \
+            --json databaseId --jq '.[0].databaseId')"
+          if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+            echo "No CI run found for $HEAD_SHA; nothing to re-run."
+            exit 0
+          fi
+          status="$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json status,conclusion --jq '[(.status // ""), (.conclusion // "")] | join(" ")')"
+          echo "CI run $run_id: $status"
+          case "$status" in
+            "completed success") echo "CI is already green; no recheck needed."; exit 0 ;;
+            completed*) ;;
+            *) echo "CI is still running; the dependency check will read the label when it runs."; exit 0 ;;
+          esac
+          gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY" --failed

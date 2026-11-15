@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 type decodedWebSocketTraceRecord struct {
@@ -204,7 +205,7 @@ func TestServeWebSocketTraceSeparatesConnections(t *testing.T) {
 	// trace.Close can race the still-running handler and silently drop it
 	// (WebSocketTrace.record discards writes once closed).
 	var records []decodedWebSocketTraceRecord
-	waitUntil(t, "both connections' open, outbound frame, and close records to land in the trace", func() bool {
+	testwait.Until(t, "both connections' open, outbound frame, and close records to land in the trace", func() bool {
 		records = readWebSocketTraceRecords(t, path)
 		byConnection, _ := groupWebSocketTraceRecordsByConnection(records)
 		if len(byConnection) != 2 {

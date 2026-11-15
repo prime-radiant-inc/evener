@@ -478,6 +478,57 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	}
 }
 
+func TestPluginAgentSummaryMatchesEffectiveToolCeiling(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	const connectedMCP = "plugin_superpowers_chrome_chrome__use_browser"
+	const disconnectedMCP = "plugin_offline_svc__missing"
+	if err := sess.reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: connectedMCP, Description: "browser", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register(%s): %v", connectedMCP, err)
+	}
+
+	parsed, err := plugin.ParseAgent([]byte(`---
+name: browser-user
+description: Browser analysis agent
+tools: Read, Grep, Glob, Skill, mcp__plugin_superpowers-chrome_chrome__use_browser, mcp__plugin_offline_svc__missing
+---
+Inspect browser content.
+`), "superpowers-chrome")
+	if err != nil {
+		t.Fatalf("ParseAgent: %v", err)
+	}
+	sess.pluginAgents["superpowers-chrome:browser-user"] = parsed
+
+	summary := sess.defaultToolSummaryForAgent(parsed)
+	for _, want := range []string{"`use_skill`", "`" + connectedMCP + "`", "`read_transcript`"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("defaultToolSummaryForAgent = %q, missing %s", summary, want)
+		}
+	}
+	for _, unwanted := range []string{"`Skill`", "`mcp__plugin_superpowers-chrome_chrome__use_browser`", "`" + disconnectedMCP + "`"} {
+		if strings.Contains(summary, unwanted) {
+			t.Errorf("defaultToolSummaryForAgent = %q, unexpectedly advertised %s", summary, unwanted)
+		}
+	}
+}
+
 func TestSpawnAgent_PluginAgentType_AllowanceGated(t *testing.T) {
 	t.Parallel()
 	coordinatorAgent := plugin.Agent{

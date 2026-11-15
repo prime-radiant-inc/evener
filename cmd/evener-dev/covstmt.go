@@ -273,8 +273,8 @@ func gapsAggregate(blocks []covstmt.Block, by string, top int, zeroOnly bool, w 
 // file, or the file path itself when it has no slash (so a top-level profile
 // path groups as its own package rather than under ".").
 func packageOf(file string) string {
-	if i := strings.LastIndex(file, "/"); i >= 0 {
-		return file[:i]
+	if dir, _, ok := strings.CutLast(file, "/"); ok {
+		return dir
 	}
 	return file
 }

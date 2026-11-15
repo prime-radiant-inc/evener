@@ -3,7 +3,7 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../conversation/services/conversation";
 import { nativeNavigationActions } from "../navigationActionRepository";
 import { NavigationActions } from "../navigationActions";
-import type { BoardState } from "./attention";
+import type { BoardState } from "@evener/appwire-client/state/navigation";
 import { pinnedItems } from "./boardItems";
 import { organizationHub, SESSION_ID } from "./organizationTestUtils";
 import {
@@ -43,7 +43,7 @@ describe("the long-press menu per state (spec 7.3)", () => {
 			["pin", "stop", "shutDown", "archive", "rename"],
 		],
 		["an idle one", row({ state: "idle" }), "idle", unarchived, ["pin", "shutDown", "archive"]],
-		["one needing your reply", row({ state: "awaiting" }), "needsYou", unarchived, ["pin", "shutDown", "archive"]],
+		["one whose turn merely finished", row({ state: "awaiting" }), "idle", unarchived, ["pin", "shutDown", "archive"]],
 		[
 			"one asking a question",
 			row({ state: "awaiting", ask_pending: true }),

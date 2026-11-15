@@ -1,6 +1,6 @@
 import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
 import { errorText, LOCAL_HOST } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
+import { keyID, LIVE_BAND_ORDER } from "@evener/appwire-client/state/navigation";
 import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   archivedListKey,
@@ -8,7 +8,6 @@ import {
   refreshArchivedList,
   useArchivedLists,
 } from "../../stores/archivedList";
-import { useConnectionStore } from "../../stores/connection";
 import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
@@ -25,6 +24,8 @@ import {
   Popover,
   RadioGroup,
   Skeleton,
+  StatusDot,
+  ToolIcon,
   Tooltip,
   Tree,
   type TreeProps,
@@ -51,6 +52,7 @@ import {
   setFavorite,
   unpinSession,
 } from "./actions";
+import { holdLiveBands, liveBandNodes, railLiveBands } from "./liveBands";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
@@ -63,7 +65,6 @@ import {
   catalogOverflowNode,
   hostProjectNodes,
   type IsExpanded,
-  liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
@@ -98,9 +99,11 @@ import { useRailReveal } from "./useRailReveal";
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
+  identity: requireClass(styles.identity, "Rail.module.css", "identity"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
+  mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
-  brandIdentity: requireClass(styles.brandIdentity, "Rail.module.css", "brandIdentity"),
+  brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
   needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -273,6 +276,16 @@ function projectsTierFor(
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
   return <Tree {...props} releaseModifierKeys={!isMobile} />;
+}
+
+// The evener mark on the rail's accent tile: the same ToolIcon glyph the
+// transcript's agent avatar wears, so the two are one mark.
+function EvenerMark() {
+  return (
+    <span className={CLASS.mark} aria-hidden="true" data-testid="rail-mark">
+      <ToolIcon kind="mark" />
+    </span>
+  );
 }
 
 function RailSection({
@@ -483,7 +496,6 @@ function NavigationRail({
   const displaySources = useNavigationStore(selectDisplaySources);
   const hostGrouping = displaySources.some((source) => source.id !== LOCAL_HOST);
   const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
-  const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
   // The session the workspace is showing, if any, marks its row as the selected
   // item. One subscription here, not one inside every section's Tree: a rail
@@ -555,10 +567,31 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
+  const currentLiveBands = useMemo(
+    () => railLiveBands(resources.live, resources.needsYou),
+    [resources.live, resources.needsYou],
+  );
+  // A row that changes band is unmounted and mounted again under its new
+  // fold, which would close a dialog opened from its menu and discard what
+  // the reader typed there. While a row's own dialog is open the bands hold
+  // still; closing it lets the rows settle where they belong. Only a row's
+  // dialog counts: on a phone the rail itself sits inside a modal drawer.
+  const [rowDialogs, setRowDialogs] = useState(0);
+  const onRowDialogChange = useCallback((open: boolean) => {
+    setRowDialogs((count) => Math.max(0, count + (open ? 1 : -1)));
+  }, []);
+  const dialogOpen = rowDialogs > 0;
+  const shownLiveBands = useRef(currentLiveBands);
+  const liveBands = useMemo(() => {
+    const shown = dialogOpen ? holdLiveBands(shownLiveBands.current, currentLiveBands) : currentLiveBands;
+    shownLiveBands.current = shown;
+    return shown;
+  }, [currentLiveBands, dialogOpen]);
   useRailReveal({
     revealTarget,
     onRevealConsumed,
     resources,
+    liveBands,
     archivedLists,
     expansion: expanded,
     isExpanded,
@@ -680,6 +713,7 @@ function NavigationRail({
   );
   const rowActions = useMemo<RailRowActions>(
     () => ({
+      onRowDialogChange,
       onOpenOverview: (session) => {
         workspaceStore.getState().openPane("session", { ref: session.ref });
         activitySidebarStore.getState().openFor(session.ref);
@@ -841,7 +875,7 @@ function NavigationRail({
         setDeleteTarget(project);
       },
     }),
-    [client, runAction, toasts.push],
+    [client, runAction, toasts.push, onRowDialogChange],
   );
   const pinSectionDialogs = usePinSectionDialogs(runAction);
   function closeDeleteDialog() {
@@ -965,12 +999,10 @@ function NavigationRail({
     seenHostFolds.current = new Set(hostFoldIds);
   }, [projectsSectionNodes, hostFoldIds, expanded, setRowExpanded]);
   const liveNodes = [
-    // Live answers "which machine" the same way in either mode: rows group
-    // under host subheaders exactly while they span more than one host
-    // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
-    ...(groupingMode !== "flat"
-      ? liveNodesGroupedByHost(sessionNodes(resources.live), displaySources, isExpanded)
-      : sessionNodes(resources.live)),
+    // Live answers "who needs me" before "which machine": its rows sit in
+    // attention bands in every grouping mode, and a row names its host only
+    // where it is not the one most of Live runs on (liveBandNodes).
+    ...liveBandNodes(liveBands, displaySources, isExpanded),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -988,7 +1020,9 @@ function NavigationRail({
     manifestError ??
     (resourceError ? errorText(resourceError) : null) ??
     (navigationMode === "error" ? "Navigation resources are unavailable" : null);
-  const displayed = nonEmpty(resources);
+  // A row the bands are holding for its open dialog keeps the tree mounted
+  // even when it was the last thing the sections supplied.
+  const displayed = nonEmpty(resources) || LIVE_BAND_ORDER.some((band) => liveBands[band].length > 0);
   const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   const parentOwnsScroll = scrollOwner === "parent";
   return (
@@ -1003,45 +1037,52 @@ function NavigationRail({
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
       <div className={CLASS.header}>
-        <span className={CLASS.wordmark}>evener</span>
-        <div data-testid="rail-brand" className={CLASS.brand}>
-          <span className={CLASS.brandIdentity}>{serverInfo?.name ?? "hub"}</span>
-          <IconButton
-            data-testid="rail-settings"
-            label="Settings"
-            icon={<GearIcon />}
-            variant="quiet"
-            size="md"
-            onClick={() => navigate("/settings")}
-          />
-          <Tooltip label="Search sessions and commands">
-            <IconButton
-              data-testid="rail-search"
-              data-search-trigger="true"
-              label="Search"
-              icon={<SearchIcon />}
-              variant="quiet"
-              size="md"
-            />
-          </Tooltip>
-          {onHide && (
-            <IconButton
-              data-rail-toggle=""
-              label="Hide sidebar"
-              icon={<SidebarIcon />}
-              variant="quiet"
-              size="md"
-              onClick={onHide}
-            />
+        <div className={CLASS.identity}>
+          <div data-testid="rail-brand" className={CLASS.brand}>
+            <EvenerMark />
+            <span data-testid="rail-wordmark" className={CLASS.wordmark}>
+              evener
+            </span>
+            <div className={CLASS.brandActions}>
+              <IconButton
+                data-testid="rail-settings"
+                label="Settings"
+                icon={<GearIcon />}
+                variant="quiet"
+                size="md"
+                onClick={() => navigate("/settings")}
+              />
+              <Tooltip label="Search sessions and commands">
+                <IconButton
+                  data-testid="rail-search"
+                  data-search-trigger="true"
+                  label="Search"
+                  icon={<SearchIcon />}
+                  variant="quiet"
+                  size="md"
+                />
+              </Tooltip>
+              {onHide && (
+                <IconButton
+                  data-rail-toggle=""
+                  label="Hide sidebar"
+                  icon={<SidebarIcon />}
+                  variant="quiet"
+                  size="md"
+                  onClick={onHide}
+                />
+              )}
+            </div>
+          </div>
+          {needsYou > 0 && (
+            <span className={CLASS.needsYou} data-testid="rail-needs-you">
+              <Chip tone="attention" kind="needs-you">
+                <StatusDot state="needs-you" decorative />
+                {needsYou} needs you
+              </Chip>
+            </span>
           )}
         </div>
-        {needsYou > 0 && (
-          <span className={CLASS.needsYou} data-testid="rail-needs-you">
-            <Chip tone="attention" kind="needs-you">
-              {needsYou} needs you
-            </Chip>
-          </span>
-        )}
         <div className={CLASS.newSession}>
           <Button variant="secondary" onClick={() => navigate("/new")}>
             + New session

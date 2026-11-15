@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -511,6 +512,98 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	if !reflect.DeepEqual(captured, want) {
 		got, _ := json.Marshal(captured)
 		t.Fatalf("captured structured = %s, want raw output preserved", got)
+	}
+}
+
+// A structured-result integer outside binary64's exact range must reach the
+// terminal capture unchanged. This goes through Registry.ExecuteCall, the real
+// decode-and-dispatch path, so a handler-only test cannot hide an argument
+// ingestion that rounds the value first.
+func TestCommunicateRegistryDispatchPreservesExactStructuredIntegers(t *testing.T) {
+	t.Parallel()
+	var captured any
+	deps := &toolDeps{
+		emit:               func(events.EventData) {},
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
+		abort:              func(context.Context) error { return nil },
+		drainSteering:      func() []steeringMessage { return nil },
+		prependSteering:    func([]steeringMessage) {},
+		resultToolName:     func() string { return "communicate" },
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+			captured = raw
+			return true
+		},
+	}
+	reg := tool.NewRegistry()
+	if err := registerCommunicateTool(reg, deps); err != nil {
+		t.Fatalf("register communicate: %v", err)
+	}
+	call := communicateCallArgs("comm-exact", map[string]any{
+		"message": "report",
+		"output": map[string]any{
+			"message":   "report",
+			"data":      map[string]any{"large_id": uint64(9007199254740993)},
+			"artifacts": []any{},
+		},
+	})
+	res := reg.ExecuteCall(context.Background(), nil, call)
+	if res.IsError {
+		t.Fatalf("execute communicate: %s", res.Output)
+	}
+	encoded, err := json.Marshal(captured)
+	if err != nil {
+		t.Fatalf("marshal captured output: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"large_id":9007199254740993`) {
+		t.Fatalf("captured output = %s, want the exact integer 9007199254740993", encoded)
+	}
+	const rounded = `"large_id":9007199254740992`
+	if strings.Contains(string(encoded), rounded) {
+		t.Fatalf("captured output = %s, rounded through float64", encoded)
+	}
+
+	// The terminal packet re-decodes the structured value for schema
+	// validation. exclusiveMinimum 9007199254740992 accepts the exact value
+	// and rejects the float64-rounded 9007199254740992, so a float64 re-decode
+	// marks a report the model got past communicate validation as invalid.
+	finish := delegateFinishFromRun(delegateTerminalRunInputs{
+		result:                  "report",
+		communicated:            true,
+		structuredResult:        captured,
+		structuredResultPresent: true,
+		descriptor: delegatestore.Descriptor{
+			ResultSchema: json.RawMessage(`{"type":"object","properties":{"data":{"type":"object","properties":{"large_id":{"type":"integer","exclusiveMinimum":9007199254740992}}}},"required":["data"]}`),
+		},
+	})
+	packet := finish.packet
+	if packet == nil {
+		t.Fatal("no terminal packet")
+	}
+	valid := packet.StructuredResultValid != nil && *packet.StructuredResultValid
+	if !valid || packet.StructuredResultReason != "" {
+		t.Fatalf("terminal packet marked the exact value invalid: valid=%v reason=%q result=%s", valid, packet.StructuredResultReason, packet.StructuredResult)
+	}
+	if !strings.Contains(string(packet.StructuredResult), `"large_id":9007199254740993`) {
+		t.Fatalf("terminal structured result = %s, want the exact integer 9007199254740993", packet.StructuredResult)
+	}
+}
+
+// A provider that double-encodes the output object reaches the same terminal
+// capture through the repair promotion, which must preserve exact integers
+// too: otherwise the guarantee depends on which JSON shape the model chose.
+func TestStringifiedCommunicateOutputPreservesExactIntegers(t *testing.T) {
+	t.Parallel()
+	decoded, err := decodeDefaultCommunicateOutputString(
+		`{"message":"report","data":{"large_id":9007199254740993},"artifacts":[]}`)
+	if err != nil {
+		t.Fatalf("decode stringified output: %v", err)
+	}
+	data, ok := decoded["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("data = %#v, want an object", decoded["data"])
+	}
+	if got, ok := data["large_id"].(json.Number); !ok || got != json.Number("9007199254740993") {
+		t.Fatalf("large_id = %#v, want json.Number 9007199254740993", data["large_id"])
 	}
 }
 

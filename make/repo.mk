@@ -9,13 +9,16 @@ tools:
 	@$(MAKE) --no-print-directory tools-gitleaks
 
 ## Install the CI-pinned golangci-lint version from .tool-versions.
+# Install through the Go module proxy and build with the go.work toolchain: the
+# release CDN 504'd, and the module's own Go version cannot lint the repo's.
 tools-golangci:
 	@set -eu; \
 	golangci=$$(awk '$$1=="golangci-lint" {print $$2}' .tool-versions); \
-	url=https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh; \
+	toolchain=$$(awk '$$1=="toolchain" {print $$2}' go.work); \
+	if [ -z "$$toolchain" ]; then echo "tools-golangci: go.work has no toolchain line" >&2; exit 1; fi; \
+	gopath=$$(go env GOPATH); \
 	attempt=0; for delay in 3 10 30 0; do attempt=$$((attempt+1)); \
-		if installer=$$(curl -sSfL --retry 5 --retry-delay 2 "$$url") && \
-			printf '%s\n' "$$installer" | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"; then exit 0; fi; \
+		if GOBIN="$$gopath/bin" GOTOOLCHAIN="$$toolchain" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$$golangci; then exit 0; fi; \
 		echo "tools-golangci: attempt $$attempt of 4 failed" >&2; \
 		if [ "$$delay" -gt 0 ]; then echo "tools-golangci: retrying in $${delay}s" >&2; sleep "$$delay"; fi; \
 	done; \
@@ -58,9 +61,10 @@ refresh-model-catalog:
 # produces the per-family target tables inside docs/developing-evener/'s marked
 # regions from the `##` annotations in these make/*.mk files;
 # internal/knobtable produces docs/developing-evener/config-knobs.md from the
-# envvars registry and the hub.toml decoder. lint-generated
-# runs this target and diffs all of those outputs, so both are gated for
-# staleness by the required lint gate.
+# envvars registry and the hub.toml decoder; internal/devtool/gatesurface
+# produces scripts/lib/gate-surface-lib.sh from the Go definition of the gate's
+# test-selection surface. lint-generated runs this target and diffs all of those
+# outputs, so both are gated for staleness by the required lint gate.
 ## Run the appwire, maketargetsdoc and knobtable `go generate` directives:
 ## the AppWire protocol reference and frontend TypeScript declarations from
 ## appwire/protocol.go, the per-family make-target tables in
@@ -70,6 +74,7 @@ generate:
 	go generate ./internal/effortts/...
 	go generate ./internal/maketargetsdoc/...
 	go generate ./internal/knobtable/...
+	go generate ./internal/devtool/gatesurface/...
 
 ## Remove the built binaries from the repo root.
 clean:

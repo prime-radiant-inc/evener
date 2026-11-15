@@ -1457,6 +1457,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.contextMetrics = ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
 		e.contextMetrics.Assumed = true
+		e.contextMetrics.WindowSource = "assumed"
 	})
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
 		e.detailedStatus = DetailedStatus{
@@ -1499,7 +1500,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	if data.Thread.Evener.ContextPressure != 0.42 {
 		t.Fatalf("context pressure=%v", data.Thread.Evener.ContextPressure)
 	}
-	if data.Thread.Evener.ContextUsed != 42000 || data.Thread.Evener.ContextWindow != 100000 || data.Thread.Evener.ContextRemaining != 58000 || !data.Thread.Evener.ContextAssumed {
+	if data.Thread.Evener.ContextUsed != 42000 || data.Thread.Evener.ContextWindow != 100000 || data.Thread.Evener.ContextRemaining != 58000 || !data.Thread.Evener.ContextAssumed || data.Thread.Evener.ContextWindowSource != "assumed" {
 		t.Fatalf("context metrics=%+v", data.Thread.Evener)
 	}
 	diag := data.Thread.Evener.Diagnostics

@@ -70,16 +70,14 @@ func ParseItemKey(key string) (turnID string, position appwire.ThreadItemPositio
 		return "", appwire.ThreadItemPosition{Entry: 0, Item: uint32(part)}, nil
 	}
 
-	partIdx := strings.LastIndex(rest, ":")
-	if partIdx < 0 {
+	turnAndOrdinal, partStr, ok := strings.CutLast(rest, ":")
+	if !ok {
 		return malformed()
 	}
-	turnAndOrdinal, partStr := rest[:partIdx], rest[partIdx+1:]
-	ordinalIdx := strings.LastIndex(turnAndOrdinal, ":")
-	if ordinalIdx < 0 {
+	turnID, ordinalStr, ok := strings.CutLast(turnAndOrdinal, ":")
+	if !ok {
 		return malformed()
 	}
-	turnID, ordinalStr := turnAndOrdinal[:ordinalIdx], turnAndOrdinal[ordinalIdx+1:]
 	if turnID == "" {
 		return malformed()
 	}

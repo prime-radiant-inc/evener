@@ -876,7 +876,7 @@ func retirementAwait(t *testing.T, ready <-chan struct{}) {
 // rest.
 //
 // 30s matches this package's standing whole-operation tripwire for in-process
-// work (stallHandshakeTimeout, awaitSignal, waitForCondition); a correct create
+// work (stallHandshakeTimeout, awaitSignal); a correct create
 // reaches and leaves the barrier in tens of milliseconds at rest, so nothing but
 // a genuine hang reaches this. The previous 10s was sized as if both waits were
 // the rendezvous they follow, and #4133's evidence shows it was not: a controlled

@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -81,95 +82,108 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	c := llm.NewClient()
+	// The window is sized from this session fixture's standing request and the
+	// first round reports that request as its usage, below the 90% checkpoint
+	// trigger. The big read alone must lift pressure over the trigger; a
+	// one-line read must not, so the tool result is what this test proves
+	// drives the compaction.
+	profile, standing, bigContent := contextWindowForRead(t, dir, "read the file")
+	for _, tc := range []struct {
+		name           string
+		content        string
+		wantCompaction bool
+	}{
+		{name: "read crosses the trigger", content: bigContent, wantCompaction: true},
+		{name: "short read stays below", content: "one line\n", wantCompaction: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := llm.NewClient()
+			readArgs, err := json.Marshal(map[string]any{"file_path": "big.txt", "limit": strings.Count(tc.content, "\n")})
+			if err != nil {
+				t.Fatalf("encode read_file arguments: %v", err)
+			}
 
-	// Create an adapter that returns a tool call first, then "ok".
-	callCount := 0
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// First round: return a read_file tool call with a big result.
-			func(req llm.Request) llm.Response {
-				callCount++
-				return llm.Response{
-					Usage: llm.Usage{InputTokens: 22_000},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c1",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-							}},
-						},
+			// Create an adapter that returns a tool call first, then "ok".
+			callCount := 0
+			c.Register(&fakeAdapter{
+				name: "openai",
+				steps: []func(req llm.Request) llm.Response{
+					// First round: return a read_file tool call with the case's result.
+					func(req llm.Request) llm.Response {
+						callCount++
+						return llm.Response{
+							Usage: llm.Usage{InputTokens: standing},
+							Message: llm.Message{
+								Role: llm.RoleAssistant,
+								Content: []llm.ContentPart{
+									{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+										ID:        "c1",
+										Name:      "read_file",
+										Arguments: readArgs,
+									}},
+								},
+							},
+						}
 					},
+					// Second round: just return text.
+					func(req llm.Request) llm.Response {
+						callCount++
+						return agenttest.FinalResponse("done")
+					},
+				},
+			})
+
+			env := execenv.NewLocalExecutionEnvironment(dir)
+			if _, err := env.WriteFile("big.txt", tc.content); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
+
+			// Collect events to verify compaction actually ran (not just that the adapter
+			// was called twice). Without this, commenting out MaybeCompact still passes.
+			eventsDone := captureSessionEvents(sess)
+
+			// Verify the session is configured with the computed window.
+			if sess.Profile().ContextWindowSize() != profile.ContextWindowSize() {
+				t.Fatalf("expected context window %d, got %d", profile.ContextWindowSize(), sess.Profile().ContextWindowSize())
+			}
+
+			ctx := context.Background()
+			_, err = sess.ProcessInput(ctx, "read the file", nil)
+			if err != nil {
+				t.Fatalf("ProcessInput: %v", err)
+			}
+
+			if callCount != 2 {
+				t.Fatalf("expected 2 LLM calls, got %d", callCount)
+			}
+
+			sess.Close()
+			evs := <-eventsDone
+
+			foundCompaction := false
+			for _, e := range evs {
+				if e.Kind == events.EventContextCompaction {
+					foundCompaction = true
 				}
-			},
-			// Second round: just return text.
-			func(req llm.Request) llm.Response {
-				callCount++
-				return agenttest.FinalResponse("done")
-			},
-		},
-	})
-
-	// Write a big file that will fill a small context window.
-	bigContent := strings.Repeat("line of content\n", 200)
-	env := execenv.NewLocalExecutionEnvironment(dir)
-	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	// Use a window large enough for the base prompt but small enough for the
-	// tool result to cross the compaction threshold.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
-
-	sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
-
-	// Collect events to verify compaction actually ran (not just that the adapter
-	// was called twice). Without this, commenting out MaybeCompact still passes.
-	var evs []events.SessionEvent
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range sess.Events() {
-			evs = append(evs, ev)
-		}
-	}()
-
-	// Verify the session is configured with the constrained window.
-	if sess.Profile().ContextWindowSize() != 27_500 {
-		t.Fatalf("expected context window 27500, got %d", sess.Profile().ContextWindowSize())
-	}
-
-	ctx := context.Background()
-	_, err := sess.ProcessInput(ctx, "read the file", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	if callCount != 2 {
-		t.Fatalf("expected 2 LLM calls, got %d", callCount)
-	}
-
-	sess.Close()
-	<-done
-
-	foundCompaction := false
-	for _, e := range evs {
-		if e.Kind == events.EventContextCompaction {
-			foundCompaction = true
-		}
-	}
-	if !foundCompaction {
-		t.Fatal("expected CONTEXT_COMPACTION event when using small context window")
+			}
+			if foundCompaction != tc.wantCompaction {
+				t.Fatalf("CONTEXT_COMPACTION emitted = %t, want %t: the read is what crosses the 90%% trigger", foundCompaction, tc.wantCompaction)
+			}
+		})
 	}
 }
 
 func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	profile, standing, bigContent := contextWindowForRead(t, dir, "read the file")
 	c := llm.NewClient()
+	readArgs, err := json.Marshal(map[string]any{"file_path": "big.txt", "limit": strings.Count(bigContent, "\n")})
+	if err != nil {
+		t.Fatalf("encode read_file arguments: %v", err)
+	}
 
 	// Return a tool call that produces big output, then "done".
 	c.Register(&fakeAdapter{
@@ -177,14 +191,14 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return llm.Response{
-					Usage: llm.Usage{InputTokens: 22_000},
+					Usage: llm.Usage{InputTokens: standing},
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
 							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 								ID:        "c1",
 								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+								Arguments: readArgs,
 							}},
 						},
 					},
@@ -196,42 +210,72 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		},
 	})
 
-	bigContent := strings.Repeat("line of content\n", 300)
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
-
 	sess := newSession(t, withClient(c), withProfile(profile), withEnv(env), withConfig(SessionConfig{}))
 
-	var evs []events.SessionEvent
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range sess.Events() {
-			evs = append(evs, ev)
-		}
-	}()
+	eventsDone := captureSessionEvents(sess)
 
 	ctx := context.Background()
-	_, err := sess.ProcessInput(ctx, "read the file", nil)
+	_, err = sess.ProcessInput(ctx, "read the file", nil)
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
-	<-done
+	evs := <-eventsDone
 
-	foundCompaction := false
+	var compaction *events.ContextCompactionData
 	for _, e := range evs {
 		if e.Kind == events.EventContextCompaction {
-			foundCompaction = true
+			data, ok := e.Data.(events.ContextCompactionData)
+			if !ok {
+				t.Fatalf("compaction event data = %T, want events.ContextCompactionData", e.Data)
+			}
+			compaction = &data
 		}
 	}
-	if !foundCompaction {
+	if compaction == nil {
 		t.Fatal("expected CONTEXT_COMPACTION event when using small context window")
 	}
+	if compaction.Layer != "checkpoint" {
+		t.Fatalf("compaction layer = %q, want checkpoint", compaction.Layer)
+	}
+	if compaction.EstTokensAfter > compaction.EstTokensBefore {
+		t.Fatalf("compaction raised estimated tokens: before %d, after %d", compaction.EstTokensBefore, compaction.EstTokensAfter)
+	}
+}
+
+// contextWindowForRead returns the fixture's profile, its measured standing
+// request, and a big.txt body whose read_file result lifts pressure from that
+// standing request to about 93% of the profile's window. The first round
+// reports the standing request as usage, so the read is the only thing that can
+// cross the 90% checkpoint trigger, while the window keeps the post-read
+// request admitted. The body is sized through the estimator's 21 output bytes
+// per numbered line (5.25 tokens), and capped under read_file's 50,000-character
+// output limit, so neither a larger host prompt nor truncation moves the band.
+// Sizing from the measured request keeps it from moving with host-dependent
+// prompt size (#6090).
+func contextWindowForRead(t *testing.T, dir, input string) (profile *provider.Profile, standing int, bigContent string) {
+	t.Helper()
+	profile = NewOpenAIProfile("gpt-5.2")
+	standing = standingRequestTokens(t, dir, profile, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}, input)
+	if standing <= 0 {
+		t.Fatalf("standingRequestTokens = %d, want a positive measurement", standing)
+	}
+	// read_file renders each line as "%4d\t" + content + newline: 21 bytes for
+	// the 16-byte fixture line, which the estimator prices at 5.25 tokens.
+	// Cap the body at 2,300 lines so the rendered result stays under the
+	// 50,000-character output limit instead of being truncated.
+	lines := standing * 38 / 100 * 4 / 21
+	if maxLines := 2_300; lines > maxLines {
+		lines = maxLines
+	}
+	toolTokens := lines * 21 / 4
+	profile = withContextWindow(profile, standing+toolTokens+standing/10)
+	return profile, standing, strings.Repeat("line of content\n", lines)
 }
 
 // TestBuildCompactionMeta_ExcludesTaskState is the agent-side half of the

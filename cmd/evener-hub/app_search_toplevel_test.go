@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // searchSubagentCase builds a past index over one project holding the given
@@ -315,7 +316,9 @@ func TestHubSearchAppliesForkSupersessionFoldedInMidQuery(t *testing.T) {
 func TestHubSearchGroupingAgreesWithTheTreeRollup(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-	chainDir, forkDir, brokenDir := t.TempDir(), t.TempDir(), t.TempDir()
+	// Project rows carry each working directory's canonical path, so the
+	// fixture dirs are canonical for the rollup lookups below.
+	chainDir, forkDir, brokenDir := testfs.CanonicalTempDir(t), testfs.CanonicalTempDir(t), testfs.CanonicalTempDir(t)
 	// Valid session ids throughout: the disk lister silently drops a
 	// hand-seeded meta whose id is not a UUIDv7 payload, so plausible-looking
 	// ids never reach the index.

@@ -39,3 +39,22 @@ test("the same chord may appear twice with different meanings", () => {
     "in an empty composer, opens the slash menu",
   ]);
 });
+
+test("the inline layout keeps the same terms and definitions as the table", () => {
+  const items = [
+    { keys: ["Mod", "K"], label: "open the palette" },
+    { keys: ["Esc"], label: "close it" },
+  ];
+  const { rerender } = render(<ShortcutList items={items} />);
+  const table = screen.getAllByRole("term").map((term) => term.querySelectorAll("kbd").length);
+  const tableList = screen.getAllByRole("term")[0]?.closest("dl");
+  expect(tableList?.getAttribute("data-layout")).toBe("table");
+  const tableClass = tableList?.className;
+  rerender(<ShortcutList items={items} layout="inline" />);
+  expect(screen.getAllByRole("term").map((term) => term.querySelectorAll("kbd").length)).toEqual(table);
+  expect(screen.getAllByRole("definition")).toHaveLength(items.length);
+  const inlineList = screen.getAllByRole("term")[0]?.closest("dl");
+  expect(inlineList?.getAttribute("data-layout")).toBe("inline");
+  // The two layouts are different boxes, not one restyled by its caller.
+  expect(inlineList?.className).not.toBe(tableClass);
+});

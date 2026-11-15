@@ -123,5 +123,48 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 	if plannedContinuation && req.Store == nil {
 		req.Store = new(true)
 	}
+	// A target receives only tool-result media its row can see; direct client
+	// callers go through this shaping too, so the estimate and the wire agree
+	// (#4217).
+	req = dropUnseenToolResultMedia(req, res)
+	return req
+}
+
+// dropUnseenToolResultMedia returns req with tool-result media bytes the
+// resolved row cannot see removed; the tool result's text stays. It returns
+// req unchanged when nothing drops and never mutates the caller's content.
+func dropUnseenToolResultMedia(req Request, res registry.Resolved) Request {
+	needs := false
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Kind == ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 &&
+				!RowSeesToolResultMedia(res, p.ToolResult.ImageMediaType) {
+				needs = true
+				break
+			}
+		}
+		if needs {
+			break
+		}
+	}
+	if !needs {
+		return req
+	}
+	messages := append([]Message(nil), req.Messages...)
+	for i := range messages {
+		content := append([]ContentPart(nil), messages[i].Content...)
+		for j := range content {
+			p := &content[j]
+			if p.Kind != ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 ||
+				RowSeesToolResultMedia(res, p.ToolResult.ImageMediaType) {
+				continue
+			}
+			tr := *p.ToolResult
+			tr.ImageData, tr.ImageMediaType = nil, ""
+			p.ToolResult = &tr
+		}
+		messages[i].Content = content
+	}
+	req.Messages = messages
 	return req
 }

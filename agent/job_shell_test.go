@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
@@ -80,9 +81,7 @@ func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
 // after the removal and before it closes done.
 func waitForShellReceiptResolved(t *testing.T, jm *jobManager, jobID string) {
 	t.Helper()
-	// TRIPWIRE: the receipt is dropped a few store appends past the removal, so
-	// this only bounds a genuine finalization hang.
-	waitForCondition(t, 30*time.Second, "job "+jobID+" to release its delegate shell receipt", func() bool {
+	testwait.Until(t, "job "+jobID+" to release its delegate shell receipt", func() bool {
 		return !shellReceiptHeld(jm, jobID)
 	})
 }
@@ -630,11 +629,9 @@ func TestDiscardDelayedShellAfterAbandonDoesNotPanic(t *testing.T) {
 
 func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
 	t.Helper()
-	// TRIPWIRE: jm.closing has no dedicated completion signal -- it is a
-	// mutex-guarded bool flipped mid-close -- so this polls the flag directly.
-	// close() sets it synchronously near the start of its own work; 30s only
-	// bounds a genuine hang.
-	waitForCondition(t, 30*time.Second, "job manager to set closing", func() bool {
+	// jm.closing has no dedicated completion signal -- it is a mutex-guarded
+	// bool flipped mid-close -- so this polls the flag directly.
+	testwait.Until(t, "job manager to set closing", func() bool {
 		jm.mu.Lock()
 		defer jm.mu.Unlock()
 		return jm.closing
@@ -867,10 +864,9 @@ func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
 
 func waitForSignalCount(t *testing.T, se *delayedExitStreamingExecutor, want int32) {
 	t.Helper()
-	// TRIPWIRE: se.signals has no dedicated completion signal, so this polls
-	// the atomic counter directly; the signals are delivered in-process with
-	// no real I/O, so 30s only bounds a genuine hang.
-	waitForCondition(t, 30*time.Second, "signal count to reach threshold", func() bool {
+	// se.signals has no dedicated completion signal, so this polls the atomic
+	// counter directly.
+	testwait.Until(t, "signal count to reach threshold", func() bool {
 		return se.signals.Load() >= want
 	})
 }

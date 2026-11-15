@@ -9,6 +9,7 @@ import (
 )
 
 func TestPrunablePathsMatchRegistry(t *testing.T) {
+	t.Parallel()
 	p, ok := llm.ProtocolFor(registry.ProtocolOpenAIChat)
 	if !ok {
 		t.Fatal("openai-chat not registered")

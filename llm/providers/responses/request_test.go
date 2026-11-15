@@ -14,6 +14,9 @@ import (
 
 func resolved(mutate func(c *registry.Caps)) registry.Resolved {
 	caps := registry.Caps{Fields: registry.Baseline(registry.ProtocolOpenAIResponses)}
+	// The Responses builder's image-wire tests model a row that accepts image
+	// input; request shaping sends tool-result media only to such a row (#4217).
+	caps.InputModalities = []string{"text", "image"}
 	if mutate != nil {
 		mutate(&caps)
 	}
@@ -66,6 +69,7 @@ func jsonOf(t *testing.T, v any) string {
 }
 
 func TestBuildBody_GroqBaselineSendsOnlyTheSpecFields(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}}}
@@ -107,6 +111,7 @@ func TestBuildBody_GroqBaselineSendsOnlyTheSpecFields(t *testing.T) {
 }
 
 func TestBuildBody_OpenAIRow(t *testing.T) {
+	t.Parallel()
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}}}
 	req.WebSearch = true
@@ -167,6 +172,7 @@ func TestBuildBody_OpenAIRow(t *testing.T) {
 // test pins the reason that fix is necessary, not optional: nil is let
 // through right here, unconditionally, by design.
 func TestBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
+	t.Parallel()
 	req := userReq("hi")
 	req.WebSearch = true
 	res := resolved(nil) // Caps.WebSearch left nil, the state a gated instance must never carry
@@ -180,6 +186,7 @@ func TestBuildBody_WebSearchNilCapsIsFailOpen(t *testing.T) {
 }
 
 func TestBuildBody_CodexLite(t *testing.T) {
+	t.Parallel()
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object"}}}
 	res := resolved(codexLiteCaps)
@@ -219,6 +226,7 @@ func TestBuildBody_CodexLite(t *testing.T) {
 // drops it there too. Both blocks call the shared rule with different arguments
 // — a part detail there, none here — so each needs its own guard.
 func TestBuildBody_ToolResultImageDetail(t *testing.T) {
+	t.Parallel()
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatal(err)
@@ -245,6 +253,7 @@ func TestBuildBody_ToolResultImageDetail(t *testing.T) {
 }
 
 func TestBuildBody_ImageDetailAndStructuredOutput(t *testing.T) {
+	t.Parallel()
 	img := llm.Request{Model: "gpt-5.5", Messages: []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "see"},
 		{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://img.example/a.png"}},
@@ -286,6 +295,7 @@ func TestBuildBody_ImageDetailAndStructuredOutput(t *testing.T) {
 }
 
 func TestBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWireValue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		wire int
@@ -312,6 +322,7 @@ func TestBuildBody_ProviderOptionMaxOutputTokensRespectsCapsAndLowerWireValue(t 
 // TestUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5 rule that
 // every error stamp is res.Instance, not a provider literal.
 func TestUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
+	t.Parallel()
 	res := resolved(openaiCaps)
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
@@ -329,6 +340,7 @@ func TestUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
 // mandatory-thinking row would otherwise still carry, which would leave
 // thinking on against the user's stated intent.
 func TestReasoningObject_ExplicitOff(t *testing.T) {
+	t.Parallel()
 	none := llm.ReasoningEffortNone
 	req := userReq("hi")
 	req.ReasoningEffort = &none

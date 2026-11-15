@@ -83,8 +83,7 @@ func parkInPreTurnWorkRunning(t *testing.T, sentinel, span string) string {
 	// Only a PLUGIN command executes its inline spans; a evener-wide command
 	// expands inert (agent/session_slash_command.go). The sentinel rides in the
 	// body so the model request proves this expansion is what ran.
-	body := fmt.Sprintf("---\ndescription: hold the session in pre-turn work\n---\n%s !`%s`\n",
-		sentinel, span)
+	body := "---\ndescription: hold the session in pre-turn work\n---\n" + sentinel + " !`" + span + "`\n"
 	if err := os.WriteFile(filepath.Join(dir, "commands", "park.md"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write park command: %v", err)
 	}

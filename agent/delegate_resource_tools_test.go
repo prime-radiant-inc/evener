@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/spf13/afero"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
@@ -19,7 +22,7 @@ import (
 
 func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	for _, tc := range []struct {
 		name      string
 		parameter string
@@ -70,9 +73,132 @@ func TestDelegateTools_CreateSendStopStatusUseDelegateID(t *testing.T) {
 	}
 }
 
+func TestDelegatePublicMetadataUsesProviderWireToolNames(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	adapter := &fakeAdapter{name: "google", steps: []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return agenttest.FinalResponse("done")
+		},
+	}}
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, newGeminiProfile("gemini-test"))
+	workspace := t.TempDir()
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	// 1. Check delegate call result
+	call := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
+		ID:   "call-delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"prompt": "inspect",
+			"agent_type": "explorer"
+		}`),
+	})
+	if call.IsError {
+		t.Fatalf("delegate call error: %s", call.Output)
+	}
+	var createRes delegateCreateResult
+	if err := json.Unmarshal(toolResultJSON(call), &createRes); err != nil {
+		t.Fatalf("unmarshal create result: %v", err)
+	}
+	if !slices.Contains(createRes.Tools, "run_shell_command") || !slices.Contains(createRes.Tools, "grep_search") {
+		t.Errorf("delegate create Tools = %v, want wire names run_shell_command and grep_search", createRes.Tools)
+	}
+	if slices.Contains(createRes.Tools, "shell") || slices.Contains(createRes.Tools, "grep") {
+		t.Errorf("delegate create Tools = %v, must not contain canonical shell or grep", createRes.Tools)
+	}
+
+	// 2. Check job_status result
+	statusCall := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
+		ID:        "call-status",
+		Name:      "job_status",
+		Arguments: json.RawMessage(`{"target": "` + createRes.DelegateID + `"}`),
+	})
+	if statusCall.IsError {
+		t.Fatalf("job_status call error: %s", statusCall.Output)
+	}
+	var statusRes delegateStatusResult
+	if err := json.Unmarshal(toolResultJSON(statusCall), &statusRes); err != nil {
+		t.Fatalf("unmarshal status result: %v", err)
+	}
+	if !slices.Contains(statusRes.Tools, "run_shell_command") || !slices.Contains(statusRes.Tools, "grep_search") {
+		t.Errorf("job_status Tools = %v, want wire names run_shell_command and grep_search", statusRes.Tools)
+	}
+	if slices.Contains(statusRes.Tools, "shell") || slices.Contains(statusRes.Tools, "grep") {
+		t.Errorf("job_status Tools = %v, must not contain canonical shell or grep", statusRes.Tools)
+	}
+
+	// 3. Check delegate_send completion result mapping (line 491)
+	metaBytes, _ := json.Marshal(delegateTerminalPacketMetadata{
+		Tools: []string{"shell", "grep", "read_file"},
+	})
+	var sendRes sendMessageResult
+	populateDelegateSendResult(&sendRes, delegatestore.TerminalPacket{
+		Metadata: metaBytes,
+	}, sess.toolNameMap())
+	if !slices.Contains(sendRes.Tools, "run_shell_command") || !slices.Contains(sendRes.Tools, "grep_search") {
+		t.Errorf("populateDelegateSendResult Tools = %v, want wire names run_shell_command and grep_search", sendRes.Tools)
+	}
+	if slices.Contains(sendRes.Tools, "shell") || slices.Contains(sendRes.Tools, "grep") {
+		t.Errorf("populateDelegateSendResult Tools = %v, must not contain canonical shell or grep", sendRes.Tools)
+	}
+
+	// 4. Check delegate_send recovery/failure result mapping (line 609)
+	failedRes := delegateFailedSendResult(delegateStartCommit{
+		descriptor: delegatestore.Descriptor{
+			ToolNameCeiling: []string{"shell", "grep", "read_file"},
+		},
+	}, delegateMutationPlans{}, nil, sess.toolNameMap())
+	if !slices.Contains(failedRes.Tools, "run_shell_command") || !slices.Contains(failedRes.Tools, "grep_search") {
+		t.Errorf("delegateFailedSendResult Tools = %v, want wire names run_shell_command and grep_search", failedRes.Tools)
+	}
+	if slices.Contains(failedRes.Tools, "shell") || slices.Contains(failedRes.Tools, "grep") {
+		t.Errorf("delegateFailedSendResult Tools = %v, must not contain canonical shell or grep", failedRes.Tools)
+	}
+
+	// 5. Check job_list result
+	listCall := sess.reg.ExecuteCall(context.Background(), sess.currentEnv(), llm.ToolCallData{
+		ID:        "call-list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if listCall.IsError {
+		t.Fatalf("job_list call error: %s", listCall.Output)
+	}
+	var listRes struct {
+		Items []jobListEntry `json:"items"`
+	}
+	if err := json.Unmarshal(toolResultJSON(listCall), &listRes); err != nil {
+		t.Fatalf("unmarshal job_list result: %v", err)
+	}
+	for _, item := range listRes.Items {
+		if item.AgentType == "explorer" {
+			if !slices.Contains(item.Tools, "run_shell_command") || !slices.Contains(item.Tools, "grep_search") {
+				t.Errorf("job_list item Tools = %v, want wire names run_shell_command and grep_search", item.Tools)
+			}
+			if slices.Contains(item.Tools, "shell") || slices.Contains(item.Tools, "grep") {
+				t.Errorf("job_list item Tools = %v, must not contain canonical shell or grep", item.Tools)
+			}
+		}
+	}
+}
+
 func TestDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	id := "dlg_status_metadata"
 	seedStableToolDelegate(t, s, id, "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	s.delegateController.mu.Lock()
@@ -121,7 +247,7 @@ func TestDelegateTools_StatusReadsMetadataWithoutPacketOrAck(t *testing.T) {
 
 func TestDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	settlingID := "dlg_public_settling"
 	seedStableToolRunningDelegate(t, s, settlingID, "", time.Unix(10, 0).UTC())
 	lease := delegateLease{delegateID: settlingID, generation: 1}
@@ -209,7 +335,7 @@ func TestDelegateTools_StatusAndListProjectPublicLifecycle(t *testing.T) {
 
 func TestDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	started := time.Unix(10, 0).UTC()
 	if err := s.jobManager.appendEvent(jobstore.Event{
 		Kind: jobstore.EventJobStarted, JobID: "job_legacy_activation", Type: jobstore.JobType(delegateResourceType),
@@ -224,7 +350,7 @@ func TestDelegateTools_StatusRejectsActivationAlias(t *testing.T) {
 
 func TestDelegateTools_StopIgnoresIncludeChildrenAndRemainsRecursive(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	c := s.delegateController
 	seedStableToolRunningDelegate(t, s, "dlg_stop_parent", "", time.Unix(10, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_stop_child", "dlg_stop_parent", time.Unix(11, 0).UTC())
@@ -284,7 +410,7 @@ func TestDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
 }
 
 func TestDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	delegateID := "dlg_live_wait"
 	seedStableToolRunningDelegate(t, s, delegateID, "", time.Unix(10, 0).UTC())
 	runtime := attachDelegateSteerRuntime(t, s.delegateController, delegateID, afero.NewMemMapFs())
@@ -309,7 +435,7 @@ func TestDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
 
 func TestDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolDelegate(t, s, "dlg_list", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolShell(t, s.jobManager, "job_shell", time.Unix(30, 0).UTC(), jobstore.StatusRunning)
 
@@ -324,7 +450,7 @@ func TestDelegateTools_ListUnifiesShellAndDelegateCandidates(t *testing.T) {
 
 func TestDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolDelegate(t, s, "dlg_direct_idle", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_direct_running", "", time.Unix(30, 0).UTC())
 	seedStableToolDelegate(t, s, "dlg_descendant", "dlg_direct_idle", time.Unix(40, 0).UTC(), time.Unix(50, 0).UTC())
@@ -368,7 +494,7 @@ func TestDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.T) {
 
 func TestDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolDelegate(t, s, "dlg_page_1", "", time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC())
 	seedStableToolDelegate(t, s, "dlg_page_2", "", time.Unix(30, 0).UTC(), time.Unix(40, 0).UTC())
 	seedStableToolShell(t, s.jobManager, "job_page_1", time.Unix(50, 0).UTC(), jobstore.StatusRunning)
@@ -385,7 +511,7 @@ func TestDelegateTools_ListPreservesOffsetLimitCountTotal(t *testing.T) {
 
 func TestDelegateTools_ListPreservesTurnSlotsAllowanceAndWatchDiagnostics(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.treeCounter = newTreeCounter(7)
 	s.driveCounter = newTreeCounter(3)
 	if !s.treeCounter.reserve(slotKindJob) || !s.driveCounter.reserve(slotKindDrive) {

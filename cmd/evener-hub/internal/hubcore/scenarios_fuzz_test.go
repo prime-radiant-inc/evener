@@ -104,7 +104,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst,
 		fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand,
 		fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded,
-		fuzzScenarioNeedsYou_AskPendingSharesTheNeedsResponseBand,
+		fuzzScenarioNeedsYou_PlainAwaitingLeavesTheNeedsResponseBand,
 		fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry,
 		fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary,
 		fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary,

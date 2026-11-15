@@ -261,23 +261,23 @@ type SessionDiscovery struct {
 }
 
 type SessionOperationResponse struct {
-	Actor     SessionActor             `json:"actor"`
-	Discover  *SessionDiscovery        `json:"discover,omitempty"`
-	Read      *ThreadReadResponse      `json:"read,omitempty"`
-	Turns     *ThreadTurnsListResponse `json:"turns,omitempty"`
-	Fetch     *SessionFetchResponse    `json:"fetch,omitempty"`
-	Activity  *SessionActivityResponse `json:"activity,omitempty"`
-	Tasks     *SessionTasksResponse    `json:"tasks,omitempty"`
-	Job       *JobsGetResponse         `json:"job,omitempty"`
-	JobOutput *JobsOutputResponse      `json:"jobOutput,omitempty"`
-	Models    *ModelListResponse       `json:"models,omitempty"`
-	Create    *ThreadStartResponse     `json:"create,omitempty"`
-	Start     *TurnStartResponse       `json:"start,omitempty"`
-	Queue     *TurnQueueResponse       `json:"queue,omitempty"`
-	Steer     *TurnSteerResponse       `json:"steer,omitempty"`
-	Control   *SessionControlResponse  `json:"control,omitempty"`
-	Stop      *SessionStopResponse     `json:"stop,omitempty"`
-	FollowUps []SessionStatusFollowUp  `json:"followUps,omitempty"`
+	Actor     SessionActor                    `json:"actor"`
+	Discover  *SessionDiscovery               `json:"discover,omitempty"`
+	Read      *ThreadHistoryReadResponse      `json:"read,omitempty"`
+	Turns     *ThreadHistoryTurnsListResponse `json:"turns,omitempty"`
+	Fetch     *SessionFetchResponse           `json:"fetch,omitempty"`
+	Activity  *SessionActivityResponse        `json:"activity,omitempty"`
+	Tasks     *SessionTasksResponse           `json:"tasks,omitempty"`
+	Job       *JobsGetResponse                `json:"job,omitempty"`
+	JobOutput *JobsOutputResponse             `json:"jobOutput,omitempty"`
+	Models    *ModelListResponse              `json:"models,omitempty"`
+	Create    *ThreadStartResponse            `json:"create,omitempty"`
+	Start     *TurnStartResponse              `json:"start,omitempty"`
+	Queue     *TurnQueueResponse              `json:"queue,omitempty"`
+	Steer     *TurnSteerResponse              `json:"steer,omitempty"`
+	Control   *SessionControlResponse         `json:"control,omitempty"`
+	Stop      *SessionStopResponse            `json:"stop,omitempty"`
+	FollowUps []SessionStatusFollowUp         `json:"followUps,omitempty"`
 }
 
 // SessionControlRequest exposes only implemented, typed Manager controls.

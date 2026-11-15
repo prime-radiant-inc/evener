@@ -37,7 +37,7 @@ func restoreSkillCompactionSession(t *testing.T, stateDir, id string) *Session {
 func TestSkillCompactionRestore_ForcedOperationReArmedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	id := s.Meta().ID
 	if _, err := s.requestSkillCompaction(context.Background(), "opaque-note", "opaque-instructions",
 		schema.SkillReloadSelection{State: "valid", Names: []string{}}); err != nil {
@@ -64,7 +64,7 @@ func TestSkillCompactionRestore_ForcedOperationReArmedBeforeDispatch(t *testing.
 func TestSkillCompactionRestore_AutomaticLatchRestoredWithoutForceFold(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	id := s.Meta().ID
 	_, capturedNoteGen := s.pinnedNoteSnapshot()
 	// Selection-only acceptance keeps the note empty, so only the restored
@@ -239,7 +239,7 @@ func TestSkillCompactionRestore_MissingLegacyMetadataResumesWithoutBackfill(t *t
 func TestSkillCompactionRestore_ReloadSelectionRoundTrip(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
 	id := s.Meta().ID
 	s.skillLifecycle.Inventory["scope:probe"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{Description: "opaque-probe"}}
 	if _, err := s.requestSkillCompaction(context.Background(), "opaque-note", "",
@@ -275,7 +275,7 @@ func TestSkillCompactionRestore_PublishedSlotWithoutReceiptStillDelivers(t *test
 	root := t.TempDir()
 	stateDir := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_window_retry")
-	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
+	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}))
 	seedNumberedSessionHistory(t, s, 12)
 	plantOrdinaryRecord(t, s, root, "opaque", true)
 

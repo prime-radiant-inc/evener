@@ -1018,7 +1018,7 @@ func navigationMergeProjectPairwiseReference(first, next hubcore.TreeProject) hu
 		lastActivity, age = next.LastActivity, next.Age
 	}
 	rollupState := first.RollupState
-	if hubapi.RollupRank(next.RollupState) > hubapi.RollupRank(rollupState) {
+	if hubapi.RollupRankWord(next.RollupState) > hubapi.RollupRankWord(rollupState) {
 		rollupState = next.RollupState
 	}
 	current := navigationMergeProjectTierPairwiseReference(first, next, "current")

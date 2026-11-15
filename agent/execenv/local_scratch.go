@@ -224,13 +224,15 @@ func (e *LocalExecutionEnvironment) SessionScratchTreeRoot() string {
 
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
 // enforcement layer additionally permits EXACTLY the one path — the M7 escalation
-// approve path re-dispatches a single denied tool call through it. The clone shares
-// this env's resolved policy, roots, and working directory unchanged; it only widens
-// root-containment for that one leaf (masking, git-protection, and symlink refusal
-// still apply). It is discarded after the one re-dispatch, so the grant cannot leak
-// to any later call. On an off / non-enforced env the grant is meaningless and the
-// env is returned unchanged. The clone never owns the session tmp, so it never
-// disposes it.
+// approve path re-dispatches a single denied tool call through it. target is the
+// location the human approved (the denial's sandbox.DeniedError.ApprovalTarget):
+// the operation lands there, and is refused if path no longer resolves to it. The
+// clone shares this env's resolved policy, roots, and working directory unchanged;
+// it only widens root-containment for that one leaf (masking, git-protection, and
+// symlink refusal still apply). It is discarded after the one re-dispatch, so the
+// grant cannot leak to any later call. On an off / non-enforced env the grant is
+// meaningless and the env is returned unchanged. The clone never owns the session
+// tmp, so it never disposes it.
 //
 // The gate stays Enforced() rather than FileToolConfined() on purpose: the only
 // policy that separates the two is the write-blocked off box, which only a DELEGATE
@@ -239,8 +241,8 @@ func (e *LocalExecutionEnvironment) SessionScratchTreeRoot() string {
 // execute — and one whose clone, sharing no owned scratch, would need its own
 // handling. If escalation ever reaches delegates, widen it THEN, with the test that
 // can finally exercise it.
-func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) ExecutionEnvironment {
-	if e.Sandbox == nil || !e.Sandbox.Enforced() || strings.TrimSpace(path) == "" {
+func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path, target string) ExecutionEnvironment {
+	if e.Sandbox == nil || !e.Sandbox.Enforced() || strings.TrimSpace(path) == "" || strings.TrimSpace(target) == "" {
 		return e
 	}
 	return &LocalExecutionEnvironment{
@@ -260,7 +262,7 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 		LoginPATHProbeError: e.LoginPATHProbeError,
 		Sandbox:             e.Sandbox,
 		Wrapper:             e.Wrapper,
-		sandboxGrant:        filepath.Clean(path),
+		sandboxGrant:        invocationGrant{path: filepath.Clean(path), target: filepath.Clean(target)},
 	}
 }
 

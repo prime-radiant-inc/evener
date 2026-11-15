@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -260,9 +261,7 @@ func TestChildReportsStatedIntentToTheController(t *testing.T) {
 	// The recorder consumes the parent's buffered event channel
 	// asynchronously, so run completion only queues the settled frame: wait
 	// for the recorder to have taken in both frames the assertions read.
-	// TRIPWIRE: the recorder's dedicated consumer drains a queued frame in
-	// microseconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the recorder to take in the published and settled frames", func() bool {
+	testwait.Until(t, "the recorder to take in the published and settled frames", func() bool {
 		published, settled = false, false
 		for _, frame := range recordedIntentFrames(f, delegateID) {
 			if frame.LatestIntent == "Reading the board's row tests." {
@@ -460,9 +459,7 @@ func TestGrandchildIntentNeverLandsOnItsParentRow(t *testing.T) {
 	waitSubagentRun(t, child)
 
 	// Settlement retires the grandchild's line through the real run finish.
-	// TRIPWIRE: the settle rides the run's own completion path in
-	// milliseconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the grandchild's row to settle with an empty line", func() bool {
+	testwait.Until(t, "the grandchild's row to settle with an empty line", func() bool {
 		return durableIntentState(t, controller, grandchildID).LatestIntent == ""
 	})
 }

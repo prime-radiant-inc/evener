@@ -210,6 +210,9 @@ func ModelDescriptorFromResolved(res registry.Resolved) appwire.ModelDescriptor 
 	if caps.MaxInputTokens != nil {
 		d.MaxInputTokens = new(*caps.MaxInputTokens)
 	}
+	if caps.CompactionThreshold != nil {
+		d.CompactionThreshold = new(*caps.CompactionThreshold)
+	}
 	if caps.MaxOutputTokens != nil {
 		d.MaxOutputTokens = new(*caps.MaxOutputTokens)
 	}

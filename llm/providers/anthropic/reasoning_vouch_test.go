@@ -11,6 +11,7 @@ import (
 // with no ladder vouches for no name, so only the adaptive body survives — the
 // level is dropped rather than forced.
 func TestApplyThinkingShape_AdaptiveEmptyLadderDropsEffortName(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	res := protoRes(func(c *registry.Caps) {
 		c.EffortValues = nil
@@ -29,6 +30,7 @@ func TestApplyThinkingShape_AdaptiveEmptyLadderDropsEffortName(t *testing.T) {
 
 // A vouched adaptive effort is still written, clamped into the ladder.
 func TestApplyThinkingShape_AdaptiveVouchedEffortClamps(t *testing.T) {
+	t.Parallel()
 	xhigh := "xhigh"
 	res := protoRes(func(c *registry.Caps) {
 		c.EffortValues = []string{"low", "high"}
@@ -46,6 +48,7 @@ func TestApplyThinkingShape_AdaptiveVouchedEffortClamps(t *testing.T) {
 // budget+effort still sizes its numeric budget from the effort, but only
 // writes the effort name when the row vouches for it.
 func TestApplyThinkingShape_BudgetPlusEffortEmptyLadderKeepsBudget(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	res := protoRes(func(c *registry.Caps) {
 		c.EffortValues = nil

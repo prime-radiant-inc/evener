@@ -13,6 +13,7 @@ import (
 // pre-flag entries) build from, so the tags cannot drift apart.
 
 func TestSystemNotificationTagSpellings(t *testing.T) {
+	t.Parallel()
 	if SystemNotificationOpenTag != "<system-notification>" {
 		t.Fatalf("SystemNotificationOpenTag = %q, want %q", SystemNotificationOpenTag, "<system-notification>")
 	}
@@ -22,6 +23,7 @@ func TestSystemNotificationTagSpellings(t *testing.T) {
 }
 
 func TestIsMachineryNotificationText(t *testing.T) {
+	t.Parallel()
 	block := SystemNotificationOpenTag + "attachment shot.png saved to /state/s1/attachments/abcdef-screenshot.png" + SystemNotificationCloseTag
 	cases := []struct {
 		name string
@@ -51,6 +53,7 @@ func TestIsMachineryNotificationText(t *testing.T) {
 // reject wholesale per the wf7e one-way door; see the comment on
 // transcript.Entry.
 func TestContentPartMachineryFlagJSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	flagged := ContentPart{
 		Kind:      ContentText,
 		Text:      SystemNotificationOpenTag + "stored at /state/attachments/shot.png" + SystemNotificationCloseTag,
@@ -85,6 +88,7 @@ func TestContentPartMachineryFlagJSONRoundTrip(t *testing.T) {
 }
 
 func TestMachineryTextAndUserMachineryConstructors(t *testing.T) {
+	t.Parallel()
 	part := MachineryText("stored at /state/attachments/shot.png")
 	if part.Kind != ContentText || part.Text != "stored at /state/attachments/shot.png" || !part.Machinery {
 		t.Fatalf("MachineryText = %+v, want a flagged text part", part)

@@ -45,7 +45,6 @@ func TestSynthesizedCallID_IsUniqueAcrossTurnsAndSurvivesRecording(t *testing.T)
 	s := newSession(t,
 		withSteps(steps...),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
-		withoutGitSnapshot(),
 	)
 	// TRIPWIRE: every answer is scripted in process with no real I/O; only a
 	// genuine hang reaches this ceiling.

@@ -43,7 +43,7 @@ func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, s
 func (s *WebServer) refreshRosterAfterDeletion(ctx context.Context) {
 	if s.cfg.Roster != nil {
 		if err := hubRosterRefresh(ctx, s.cfg.Roster); err != nil {
-			fmt.Fprintf(os.Stderr, "[hub] deletion completed with stale roster: %v\n", err)
+			hubLogFor(s.cfg).Info(fmt.Sprintf("deletion completed with stale roster: %v", err))
 		}
 	}
 }
@@ -51,7 +51,7 @@ func (s *WebServer) refreshRosterAfterDeletion(ctx context.Context) {
 func (s *WebServer) navigationAfterDeletion(ctx context.Context, hint navigationChangeHint) hubapi.NavigationMutation {
 	navigation, err := s.navigation.Refresh(ctx, hint)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[hub] deletion completed with stale navigation: %v\n", err)
+		hubLogFor(s.cfg).Info(fmt.Sprintf("deletion completed with stale navigation: %v", err))
 		return s.emptyNavigationMutation()
 	}
 	return navigation
@@ -707,7 +707,8 @@ func (s *WebServer) cleanupProjectDeletionTarget(stateDir, sessionID string) err
 	// disagreeing with the tree. Log and continue.
 	lockPath := filepath.Join(stateDir, "sessions", sessionID+".meta.json.lock")
 	if err := removeProjectSessionFile(lockPath); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "[hub] cleanupProjectDeletionTarget(%s): remove stale meta lock: %v\n", sessionID, err)
+		hubLogFor(s.cfg).Info(fmt.Sprintf(
+			"cleanupProjectDeletionTarget(%s): remove stale meta lock: %v", sessionID, err))
 	}
 	return nil
 }

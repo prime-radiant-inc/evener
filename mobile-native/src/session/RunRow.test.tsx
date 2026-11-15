@@ -20,8 +20,8 @@ type Run = Extract<TimelineRow, { kind: "run" }>;
 
 const where = { hubId: "hub-1", sessionRef: "ref-1" };
 
-const DANGER_INK = "#C51D23";
-const INK_LOW = "#62626D";
+const DANGER_INK = "#BD1B21";
+const INK_LOW = "#5C626D";
 const ATTENTION_INK = "#9C4908";
 
 // A step as projectedRows builds it: its words read from the whole step.

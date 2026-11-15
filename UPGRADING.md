@@ -132,12 +132,16 @@ archive name (`evener_<os>_<arch>.tar.gz`) and directory layout are unchanged.
 
 ### Go version
 
-The Go toolchain requirement is bumped from **1.25.x** to **1.27.0**.
-`go.work` and all `go.mod` files declare `go 1.27.0`. CI uses Go 1.27.0.
+The Go toolchain requirement is bumped from **1.25.x** to **1.27**.
+`go.work` and all `go.mod` files declare `go 1.27.0`, and `go.work` pins
+`toolchain go1.27.4`: CI's `actions/setup-go` installs that release, and a
+local `go` older than it switches to it automatically unless
+`GOTOOLCHAIN=local` is set. `golang.org/x/tools` is v0.52.0: releases before
+v0.50.0 cannot read the export data Go 1.27.4 writes.
 
 ### golangci-lint
 
-golangci-lint is bumped from **v2.12.2** to **v2.13.1** (built with Go 1.27).
+golangci-lint is bumped from **v2.12.2** to **v2.15.0** (built with Go 1.27).
 Run `make tools` to install the new version. The `govet` `inline` analyzer is
 disabled in `.golangci.yml` — it produces false positives on test helper
 functions that are deliberately not inlined.

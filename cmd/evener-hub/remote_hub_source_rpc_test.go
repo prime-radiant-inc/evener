@@ -28,7 +28,20 @@ type remoteHubCall struct {
 // host.
 func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall) {
 	t.Helper()
-	client, calls, _ := newPushableScriptedRemoteHub(t, handle)
+	// An older peer answers a versioned history probe with method-not-found, and
+	// that typed refusal is what the client's one-step legacy fallback keys on.
+	// A handler that leaves the method to its default EmptyResponse is modelling
+	// exactly that older peer, so refuse the probe instead of succeeding empty.
+	client, calls, _ := newPushableScriptedRemoteHub(t, func(method string, params json.RawMessage) any {
+		reply := handle(method, params)
+		if _, unhandled := reply.(appwire.EmptyResponse); unhandled {
+			switch method {
+			case appwire.MethodThreadHistoryRead, appwire.MethodThreadHistoryTurnsList:
+				return appwire.WireError{Code: appwire.CodeMethodNotFound, Message: "method not found"}
+			}
+		}
+		return reply
+	})
 	return client, calls
 }
 

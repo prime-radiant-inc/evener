@@ -38,6 +38,7 @@ type ConfigSnapshot struct {
 	NonInteractive              bool     `json:"non_interactive,omitempty"`               // no human available for questions/confirmation
 	TurnEndsProcess             bool     `json:"turn_ends_process,omitempty"`             // the process exits with the turn (one-shot run), so nothing reports later
 	ContextStrategy             string   `json:"context_strategy,omitempty"`              // context-management strategy
+	CompactAtPercent            int      `json:"compact_at_percent,omitempty"`            // percent of the context window at which automatic compaction triggers; zero is the default
 	ShareTasksWithChildren      bool     `json:"share_tasks_with_children,omitempty"`     // pass the task store to spawned children
 	ResultToolName              string   `json:"result_tool_name,omitempty"`              // override for the result tool name
 	EnableLoopDetection         *bool    `json:"enable_loop_detection,omitempty"`         // repeated-tool-call loop detection (nil = enabled)

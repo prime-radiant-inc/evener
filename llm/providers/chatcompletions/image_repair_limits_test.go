@@ -14,26 +14,16 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/internal/imagerepair"
+	"primeradiant.com/evener/llm/internal/transporttest"
 	"primeradiant.com/evener/llm/registry"
 )
-
-// noHTTPServer fails the test the moment any request reaches it, so a test
-// proving "the error is returned before the wire" cannot silently start doing
-// network I/O.
-func noHTTPServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("no HTTP exchange was expected: the error must short-circuit the call")
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
 
 // TestCompleteRejectsUnshapeableToolChoice pins the build error surfacing from
 // the recovery loop's own body build: a named tool choice without a name never
 // reaches the wire.
 func TestCompleteRejectsUnshapeableToolChoice(t *testing.T) {
-	srv := noHTTPServer(t)
+	t.Parallel()
+	srv := transporttest.NoHTTPServer(t)
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "named"}
@@ -47,7 +37,8 @@ func TestCompleteRejectsUnshapeableToolChoice(t *testing.T) {
 // marshal guard: a provider option the body cannot serialize fails the call
 // before any request is sent — no retry, no partial body.
 func TestImageRecoveryUnserializableBodyFailsBeforeTheWire(t *testing.T) {
-	srv := noHTTPServer(t)
+	t.Parallel()
+	srv := transporttest.NoHTTPServer(t)
 	req := userReq("hi")
 	req.ProviderOptions = map[string]any{registry.ProtocolOpenAIChat: map[string]any{"fuzz_opt": make(chan int)}}
 	if _, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), req, liveRes(srv, nil)); err == nil {
@@ -60,6 +51,7 @@ func TestImageRecoveryUnserializableBodyFailsBeforeTheWire(t *testing.T) {
 // repair disables itself and the caller gets the provider's original error
 // back — one request, no resends.
 func TestImageRecoveryUndecodableMessagesFallsBackToOriginal(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -83,6 +75,7 @@ func TestImageRecoveryUndecodableMessagesFallsBackToOriginal(t *testing.T) {
 // propagation: a claimed-JPEG image whose bytes the repair cannot decode
 // surfaces the repair failure instead of resending forever.
 func TestImageRecoveryCorruptJPEGSurfacesRepairError(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -104,6 +97,7 @@ func TestImageRecoveryCorruptJPEGSurfacesRepairError(t *testing.T) {
 // part is inserted before the repaired image and every later part of the same
 // message still rides along after it.
 func TestImageRecoveryProfileFreeKeepsTrailingPart(t *testing.T) {
+	t.Parallel()
 	profile, err := os.ReadFile("../../internal/imagerepair/testdata/p3.icc")
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +163,7 @@ func TestImageRecoveryProfileFreeKeepsTrailingPart(t *testing.T) {
 // TestProviderStatusExtractsTypedStatus pins the helper the expansion check
 // reads: a typed provider error yields its status, anything else yields none.
 func TestProviderStatusExtractsTypedStatus(t *testing.T) {
+	t.Parallel()
 	typed := llm.ErrorFromHTTPStatus("work", http.StatusRequestEntityTooLarge, "too big", nil, nil)
 	if got := providerStatus(typed); got != http.StatusRequestEntityTooLarge {
 		t.Fatalf("providerStatus(typed) = %d", got)
@@ -182,6 +177,7 @@ func TestProviderStatusExtractsTypedStatus(t *testing.T) {
 // a messages array that cannot be serialized reports "repair produced no
 // distinct usable request" instead of guessing.
 func TestRepairMessagesMarshalFailureDisablesRepair(t *testing.T) {
+	t.Parallel()
 	changed, unmanaged, managed, err := repairMessages(t.Context(), map[string]any{
 		"messages": []any{make(chan int)},
 	}, imagerepair.PreferColorManaged)
@@ -197,6 +193,7 @@ func TestRepairMessagesMarshalFailureDisablesRepair(t *testing.T) {
 // URI whose base64 exceeds the 32MiB repair limit is left alone — the repair
 // declines rather than decoding it.
 func TestRepairImageURISizeCap(t *testing.T) {
+	t.Parallel()
 	uri := "data:image/jpeg;base64," + strings.Repeat("A", base64.StdEncoding.EncodedLen(32<<20)+1)
 	result, err := repairImageURI(t.Context(), uri, imagerepair.PreferColorManaged, new(int64(32_000_000)))
 	if err != nil {

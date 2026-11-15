@@ -34,8 +34,8 @@ func (s *promoteRecordingSource) PromoteQueuedAsSteer(_ context.Context, params 
 	return appwire.TurnPromoteQueuedAsSteerResponse{}, s.err
 }
 
-func newPromoteWeb(source *promoteRecordingSource) *WebServer {
-	web := NewWebServer(hubcore.WebConfig{})
+func newPromoteWeb(t *testing.T, source *promoteRecordingSource) *WebServer {
+	web := newTestWebServerWithConfig(t, hubcore.WebConfig{})
 	registry := appsource.NewRegistry()
 	registry.Add(source)
 	web.sources = registry
@@ -53,19 +53,19 @@ func newPromoteThread() appwire.Thread {
 	}
 }
 
-func newPromoteHarness() (*WebServer, *promoteRecordingSource) {
+func newPromoteHarness(t *testing.T) (*WebServer, *promoteRecordingSource) {
 	source := &promoteRecordingSource{
 		scriptedAppSource: &scriptedAppSource{id: "remote", thread: newPromoteThread()},
 		gotIndex:          -1,
 	}
-	return newPromoteWeb(source), source
+	return newPromoteWeb(t, source), source
 }
 
 // TestHubRPCPromoteQueuedAsSteerRelays drives the appwire RPC path: the hub
 // app server must route turn/promoteQueuedAsSteer to the source owning the
 // ref, forwarding the index, and reject a negative index client-side.
 func TestHubRPCPromoteQueuedAsSteerRelays(t *testing.T) {
-	_, source := newPromoteHarness()
+	_, source := newPromoteHarness(t)
 	registry := appsource.NewRegistry()
 	registry.Add(source)
 	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, registry)

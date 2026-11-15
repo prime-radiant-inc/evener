@@ -12,6 +12,7 @@ import (
 // content and the finish reason is a plain stop (not tool_calls, and not
 // whatever an incomplete status would have said).
 func TestExtractRecordedResponse_SettlesAccumulatedTextAsStop(t *testing.T) {
+	t.Parallel()
 	body := []byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}}\n\n" +
 		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_st\",\"status\":\"completed\",\"output\":[]}}\n\n")
 	resp, err := ExtractRecordedResponse(body, "m")
@@ -30,6 +31,7 @@ func TestExtractRecordedResponse_SettlesAccumulatedTextAsStop(t *testing.T) {
 // incomplete-details mapping: max_output_tokens stays length, a named
 // content_filter is kept as-is, and any other reason becomes "other".
 func TestExtractRecordedResponse_IncompleteDetailReasons(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		reason, want string
 	}{
@@ -55,6 +57,7 @@ func TestExtractRecordedResponse_IncompleteDetailReasons(t *testing.T) {
 // output walk: the item's action.query reaches the part and the raw wire item
 // round-trips for replay.
 func TestExtractRecordedResponse_WebSearchCallItem(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"id":"r","status":"completed","output":[{"type":"web_search_call","action":{"query":"fuzz q"}}]}`)
 	resp, err := ExtractRecordedResponse(body, "m")
 	if err != nil {
@@ -78,6 +81,7 @@ func TestExtractRecordedResponse_WebSearchCallItem(t *testing.T) {
 // non-object output entries and non-object content entries are skipped without
 // failing the decode, while the well-formed entry survives.
 func TestExtractRecordedResponse_MalformedOutputEntries(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"id":"r","status":"completed","output":["bare",{"type":"message","content":["bare",{"type":"output_text","text":"ok"}]}]}`)
 	resp, err := ExtractRecordedResponse(body, "m")
 	if err != nil {
@@ -92,6 +96,7 @@ func TestExtractRecordedResponse_MalformedOutputEntries(t *testing.T) {
 // arms: non-array content and non-object or blank summary entries contribute
 // nothing, and a content array's text items become the thinking text.
 func TestExtractRecordedResponse_ReasoningSummaryShapes(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"id":"r","status":"completed","output":[` +
 		`{"type":"reasoning","content":"plain-text","summary":["str",{"text":"   "},{"text":"kept sum"}]},` +
 		`{"type":"reasoning","id":"rs_2","content":["str",{"text":""},{"text":"t1"}],"summary":"not-an-array"}]}`)

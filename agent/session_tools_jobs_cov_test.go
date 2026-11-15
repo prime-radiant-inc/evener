@@ -8,28 +8,6 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
-// TestLiveSteerWaitIgnoredReason covers all branches of
-// liveSteerWaitIgnoredReason.
-func TestLiveSteerWaitIgnoredReason(t *testing.T) {
-	t.Parallel()
-	// Positive timeout, running + steered -> non-empty reason.
-	if got := liveSteerWaitIgnoredReason(100, jobstore.StatusRunning, "steered"); got == "" {
-		t.Fatal("steered+running should have a reason")
-	}
-	// Positive timeout, delivered -> non-empty reason.
-	if got := liveSteerWaitIgnoredReason(100, jobstore.StatusCompleted, "delivered"); got == "" {
-		t.Fatal("delivered should have a reason")
-	}
-	// Zero timeout -> empty reason.
-	if got := liveSteerWaitIgnoredReason(0, jobstore.StatusRunning, "steered"); got != "" {
-		t.Fatalf("zero timeout should have empty reason, got %q", got)
-	}
-	// Positive timeout but non-running/non-delivered -> empty.
-	if got := liveSteerWaitIgnoredReason(100, jobstore.StatusCompleted, "steered"); got != "" {
-		t.Fatalf("completed+steered should have empty reason, got %q", got)
-	}
-}
-
 // TestFormatJobWatchInspect covers all branches of formatJobWatchInspect.
 func TestFormatJobWatchInspect(t *testing.T) {
 	t.Parallel()

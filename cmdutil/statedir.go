@@ -21,36 +21,8 @@ import (
 func StateRootFromLookup(goos string, lookup func(string) (string, bool)) (string, error) {
 	stateHome, _ := lookup(envvars.XDGStateHome.Name)
 	return userdirs.StateRoot(stateHome, func() (string, error) {
-		return userHomeDirFromLookup(goos, lookup), nil
+		return userdirs.HomeFromLookup(goos, lookup), nil
 	})
-}
-
-// userHomeDirFromLookup resolves the home directory from a supplied environment
-// lookup using os.UserHomeDir's rules: USERPROFILE on Windows, home on Plan 9,
-// HOME elsewhere, and the /sdcard and / constants os.UserHomeDir returns on
-// Android and iOS. It returns an empty string when os.UserHomeDir returns an
-// error.
-//
-// It deliberately has no HOMEDRIVE/HOMEPATH arm: os.UserHomeDir has none, and
-// the hub's old arm for those was the Windows drift #1012 removed.
-func userHomeDirFromLookup(goos string, lookup func(string) (string, bool)) string {
-	name := envvars.Home.Name
-	switch goos {
-	case "windows":
-		name = envvars.UserProfile.Name
-	case "plan9":
-		name = "home"
-	}
-	if home, ok := lookup(name); ok && home != "" {
-		return home
-	}
-	switch goos {
-	case "android":
-		return "/sdcard"
-	case "ios":
-		return "/"
-	}
-	return ""
 }
 
 // ResolveStateKeyDir is retained for source compatibility with callers that

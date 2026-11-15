@@ -234,9 +234,10 @@ func accumulate(pending *block, line string, lineNo int) (*block, error) {
 
 // RuleShape reports whether line could be a target/rule declaration: it
 // starts at column zero (not a recipe, comment, or continuation), and its
-// text up to the first ':' is a single bare identifier. This mirrors the
-// predicate makefiletargets_audit_test.go uses to find rule lines across
-// make/*.mk, so both readings of "what is a rule line" stay in step.
+// text up to the first ':' is a single bare identifier. The Makefile checks
+// in internal/devtool/repoaudit find rule lines across make/*.mk through
+// this predicate (ruleLineName), so both readings of "what is a rule line"
+// stay in step.
 //
 // rest is the (trimmed) text after that colon; the caller still has to rule
 // out a target-specific variable line and a directive like .PHONY before

@@ -41,7 +41,7 @@ export function useColdStartSkeleton(sessionRef: string, model: ThreadModel | nu
   // because of it - counting it held the skeleton up forever, clearable only
   // by Retry or thread teardown. The same exclusion the Composer's
   // ownPendingSend and PendingChips' isOptimistic carry; the canceled row
-  // itself stays visible where its Retry affordance lives (QueueStrip).
+  // itself stays visible where its Retry affordance lives (the pending rows).
   const hasPendingSend = pendingSends.some((entry) => entry.state !== "canceled");
   return model !== null && model !== undefined && shouldShowColdStart(model, hasPendingSend, awaitingFirstFrame);
 }

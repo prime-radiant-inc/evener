@@ -11,5 +11,5 @@
 }
 
 .sheetBody {
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--dock-clearance);
 }

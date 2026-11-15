@@ -666,11 +666,11 @@ func cpuTime(pid int) time.Duration {
 		return 0
 	}
 	s := string(raw)
-	end := strings.LastIndexByte(s, ')')
-	if end < 0 {
+	_, afterComm, ok := strings.CutLast(s, ")")
+	if !ok {
 		return 0
 	}
-	fields := strings.Fields(s[end+1:])
+	fields := strings.Fields(afterComm)
 	if len(fields) < 13 {
 		return 0
 	}

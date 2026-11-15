@@ -77,6 +77,7 @@ func layerTags(rec *record) []string {
 }
 
 func TestLoad_EmbeddedSourcesDoNotShareLiveState(t *testing.T) {
+	t.Parallel()
 	first, second := embeddedLoad(t), embeddedLoad(t)
 	first.ApplyLive("ollama", []Model{{ID: "only-on-first"}})
 	if got := second.LiveModels("ollama"); len(got) != 0 {
@@ -85,6 +86,7 @@ func TestLoad_EmbeddedSourcesDoNotShareLiveState(t *testing.T) {
 }
 
 func TestLoad_EmbeddedSourcesDoNotShareInjectedInstances(t *testing.T) {
+	t.Parallel()
 	first := embeddedLoad(t, WithInstances(map[string]Provider{
 		"only-first": {Base: "openai"},
 	}))
@@ -104,6 +106,7 @@ func TestLoad_EmbeddedSourcesDoNotShareInjectedInstances(t *testing.T) {
 }
 
 func TestProvider_ReturnsIndependentValue(t *testing.T) {
+	t.Parallel()
 	registry := embeddedLoad(t)
 	provider, ok := registry.Provider("openai")
 	if !ok {
@@ -138,6 +141,7 @@ func TestProvider_ReturnsIndependentValue(t *testing.T) {
 }
 
 func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
+	t.Parallel()
 	provider := Provider{
 		ID:                    "example",
 		InheritModels:         new(true),
@@ -212,6 +216,7 @@ func TestProvider_ClonesNestedReferenceValues(t *testing.T) {
 }
 
 func TestLoad_EmbeddedOverridesBypassParsedDefaults(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +248,7 @@ func TestLoad_EmbeddedOverridesBypassParsedDefaults(t *testing.T) {
 }
 
 func TestLoad_EmbeddedSourcesSupportConcurrentLoads(t *testing.T) {
+	t.Parallel()
 	before := embeddedParsedSources(t)
 	const workers = 8
 	stateRoot := t.TempDir()
@@ -365,6 +371,7 @@ func BenchmarkProviderCatalogViews(b *testing.B) {
 }
 
 func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	codex := r.curated["openai-codex"]
 	if codex == nil {
@@ -404,6 +411,7 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 // naming a base with inherit_models_matching; the glob narrows the rows it
 // inherits from the base, never the rows the provider brings itself.
 func TestLoad_InheritModelsMatchingKeepsTheProviderOwnUpstreamRows(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)
@@ -453,6 +461,7 @@ inherit_models_matching = ["alpha-*"]
 // The user layer takes the same key: an instance built on a curated base
 // narrows the rows it inherits and nothing else.
 func TestLoad_InheritModelsMatchingNarrowsAUserInstance(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, `
 [providers.mine]
 base = "openai"
@@ -473,6 +482,7 @@ inherit_models_matching = ["gpt-5*"]
 }
 
 func TestLoad_InheritModelsMatchingKeepsOnlyMatchingBaseRows(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)
@@ -537,6 +547,7 @@ inherit_models_matching = ["alpha-*"]
 }
 
 func TestLoad_InheritModelsMatchingValidation(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"no base": "[providers.x]\n" +
 			"inherit_models_matching = [\"alpha-*\"]\n",
@@ -569,6 +580,7 @@ func TestLoad_InheritModelsMatchingValidation(t *testing.T) {
 }
 
 func TestLoad_ExplicitInstances(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.groq]
 protocol = "openai-responses"
@@ -609,6 +621,7 @@ base = "openai-codex"
 }
 
 func TestLoad_PresetExpansion(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	va := r.curated["google-vertex-anthropic"].head.Transport
 	if va.Preset != PresetVertexAnthropic || va.Auth != AuthGCPADC || va.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || va.Body["anthropic_version"] != "vertex-2023-10-16" || va.HostRule != HostRuleVertexLocation {
@@ -625,6 +638,7 @@ func TestLoad_PresetExpansion(t *testing.T) {
 }
 
 func TestLoad_Errors(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"unknown base":              "[providers.x]\nbase = \"nope\"\n",
 		"unknown preset":            "[providers.x]\nbase = \"openai\"\ntransport = \"nope\"\n",
@@ -661,6 +675,7 @@ func TestLoad_Errors(t *testing.T) {
 }
 
 func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
+	t.Parallel()
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
 	_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithNoUserLayer(), WithStateRoot(t.TempDir()),
 		WithOverlay(overlayWith("[providers.a]\nbase = \"b\"\n[providers.b]\nbase = \"a\"\n")))
@@ -695,6 +710,7 @@ func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
 }
 
 func TestLoad_HiddenAgainstEnvironment(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	for id, want := range map[string]bool{
 		"azure": true, "amazon-bedrock": true, "google-vertex": true, "google-vertex-anthropic": true,
@@ -732,6 +748,7 @@ func TestLoad_HiddenAgainstEnvironment(t *testing.T) {
 // 6, F2). A location that is set but unusable is a problem to report, not a
 // variable to set (round 8, F2).
 func TestUnresolvedBaseURL(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name        string
 		env         map[string]string
@@ -771,6 +788,7 @@ func TestUnresolvedBaseURL(t *testing.T) {
 // names the credential's own variable (GOOGLE_APPLICATION_CREDENTIALS), which
 // no template reads and the registry never substitutes (roborev round 19).
 func TestTemplateVarsEnv(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	// A row's own base URL carries its own vars_env mapping (models.dev's
 	// per-model api templates, convertModel): the row is the only place
@@ -843,6 +861,7 @@ func TestTemplateVarsEnv(t *testing.T) {
 // placeholders and mappings are offered to the providers that have a matching
 // row and to no other.
 func TestTemplateVarsEnvTopLevelGlob(t *testing.T) {
+	t.Parallel()
 	glob := "[models.\"*llama-3.3-70b*\"]\nbase_url = \"https://{GLOB_REGION}.example.test/v1\"\nvars_env = { \"GLOB_REGION\" = \"EXAMPLE_GLOB_REGION\" }\n"
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(glob)))
 	if got := r.TemplateVarsEnv("google-vertex")["GLOB_REGION"]; got != "EXAMPLE_GLOB_REGION" {
@@ -854,6 +873,7 @@ func TestTemplateVarsEnvTopLevelGlob(t *testing.T) {
 }
 
 func TestLoad_UserVarsBeatEnvBeatCurated(t *testing.T) {
+	t.Parallel()
 	cfg := "[providers.bedrock]\nbase = \"amazon-bedrock\"\n[providers.bedrock.vars]\n\"AWS_REGION\" = \"eu-west-1\"\n[providers.mine]\nbase = \"openai\"\n"
 	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "OPENAI_BASE_URL": "https://proxy.example/v1"}, cfg)
 	url, _, _ := r.resolveBaseURL(r.explicit["bedrock"], r.explicit["bedrock"].head.Transport)
@@ -871,6 +891,7 @@ func TestLoad_UserVarsBeatEnvBeatCurated(t *testing.T) {
 }
 
 func TestLoad_UnresolvedUserVarWarnsAndStops(t *testing.T) {
+	t.Parallel()
 	cfg := "[providers.bedrock]\nbase = \"amazon-bedrock\"\n[providers.bedrock.vars]\n\"AWS_REGION\" = \"$AWS_REGION_PROD\"\n"
 	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "AWS_BEARER_TOKEN_BEDROCK": "bt"}, cfg)
 	rec := r.explicit["bedrock"]
@@ -888,6 +909,7 @@ func TestLoad_UnresolvedUserVarWarnsAndStops(t *testing.T) {
 }
 
 func TestLoad_OllamaHostRule(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"OLLAMA_HOST": "::1"}, "")
 	url, _, _ := r.resolveBaseURL(r.curated["ollama"], r.curated["ollama"].head.Transport)
 	if url != "http://[::1]:11434/v1" {
@@ -910,6 +932,7 @@ func TestLoad_OllamaHostRule(t *testing.T) {
 }
 
 func TestLoad_RowHidden(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	rows := r.curated["amazon-bedrock"].head.Models
 	if !rows["global.openai.gpt-5.6-sol"].Hidden || rows["openai.gpt-oss-120b"].Hidden || rows["anthropic.claude-opus-5"].Hidden {
@@ -936,6 +959,7 @@ func TestLoad_RowHidden(t *testing.T) {
 // but they are hidden, which is what keeps them out of `evener models list`
 // (which filters on the resolved row's Hidden).
 func TestLoad_BedrockProfileRowsHiddenButResolvable(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "AWS_BEARER_TOKEN_BEDROCK": "bt"}, "")
 
 	for _, id := range []string{"global.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5", "eu.anthropic.claude-opus-5", "jp.anthropic.claude-sonnet-5", "au.anthropic.claude-sonnet-5"} {
@@ -981,6 +1005,7 @@ func TestLoad_BedrockProfileRowsHiddenButResolvable(t *testing.T) {
 // hands every such session a reference the provider does not serve. Rows the
 // catalog lacks are left alone — those synthesize by design (spec §7.3).
 func TestLoad_CuratedDefaultsAreNotHidden(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	for _, id := range sortedKeys(r.curated) {
 		rec := r.curated[id]
@@ -1003,6 +1028,7 @@ func TestLoad_CuratedDefaultsAreNotHidden(t *testing.T) {
 }
 
 func TestLoad_UserLayerTriState(t *testing.T) {
+	t.Parallel()
 	data, _ := os.ReadFile("testdata/models.dev.sample.json")
 	dir := t.TempDir()
 	env := map[string]string{"XDG_CONFIG_HOME": dir, "EVENER_PROVIDERS_CONFIG": ""}
@@ -1042,6 +1068,7 @@ func TestLoad_UserLayerTriState(t *testing.T) {
 }
 
 func TestLoad_WithInstances(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithInstances(map[string]Provider{
 		"tiny": {Base: "openai", Protocol: ProtocolOpenAIChat, Transport: Transport{BaseURL: "http://127.0.0.1:1/v1"}},
 	}))
@@ -1055,6 +1082,7 @@ func TestLoad_WithInstances(t *testing.T) {
 // from the embedded catalog and never reads a cache or OAuth record from a
 // path relative to the working directory.
 func TestLoadWithoutStateRootOrHomeHasNoStateRoot(t *testing.T) {
+	// Not parallel: uses t.Chdir.
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)
@@ -1088,6 +1116,7 @@ func TestLoadWithoutStateRootOrHomeHasNoStateRoot(t *testing.T) {
 }
 
 func TestLoadDefaultsStateRootFromInjectedEnv(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)

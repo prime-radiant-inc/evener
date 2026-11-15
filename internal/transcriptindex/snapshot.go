@@ -23,28 +23,57 @@ func (s *Snapshot) ResolveTurnWindow(selector appwire.ThreadTurnWindow) (Resolve
 }
 func (s *Snapshot) Incarnation() (string, error)               { return s.index.Incarnation() }
 func (s *Snapshot) ChangedSince(length int64) (Changes, error) { return s.index.ChangedSince(length) }
+func (s *Snapshot) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *Changes, error) {
+	return s.index.LatestSince(limit, held)
+}
+func (s *Snapshot) DerivedTotals(from int) (*appwire.EvenerUsage, int, error) {
+	return s.index.DerivedTotals(from)
+}
 func (s *Snapshot) AnswerContinuation(ctx context.Context, ancestor, candidate string, held *appwire.SnapshotIdentity) (bool, appwire.SnapshotIdentity, error) {
 	return s.index.AnswerContinuation(ctx, ancestor, candidate, held)
+}
+
+// ExecutionFrontier reports the newest recorded execution turn at this
+// snapshot. A read answers it together with its continuation verdict so the
+// advertised serving view comes from the same view, never from a row captured
+// before the read.
+func (s *Snapshot) ExecutionFrontier() (string, error) {
+	return s.index.latestExecutionTurnID()
 }
 
 // ReadAt reads as of length even when an independently opened handle has
 // extended the sidecar past it. The shared sidecar is never rolled back and
 // its incarnation is retained. At the current boundary records are borrowed
 // under the shared lock. An older boundary reconstructs private records from
-// the transcript prefix up to the cut, including in-place summaries, contributors,
-// and pending communicates, using the same canonical builder as the sidecar.
+// the committed state: contributor surgery at the cut on the item records,
+// the turns the suffix stamped folded again over their own spans, the update
+// log kept below the cut, and the deferred communicates and pending-communicate
+// state the committed meta names. A cut that state cannot reproduce exactly
+// falls back to the full prefix replay, including in-place summaries,
+// contributors, and pending communicates, using the same canonical builder as
+// the sidecar.
 func (x *Index) ReadAt(length int64, fn func(*Snapshot) error) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	_, err := x.readWindow(func(_ *reader) (Window, error) {
-		view := &Index{readView: true, transcript: x.transcript, path: x.path,
-			meta: x.meta, items: x.items, turns: x.turns, updates: x.updates,
-			strings: x.strings, prelude: x.prelude, builder: x.builder}
-		if length >= x.meta.Length {
-			x.cutView = nil
-		} else if cached := x.cutView; cached != nil && x.cutLength == length && cached.meta.Incarnation == x.meta.Incarnation {
-			view = cached
-			view.transcript = x.transcript
+		return Window{}, x.readAtLocked(length, fn)
+	})
+	return err
+}
+
+// readAtLocked runs with both the handle and sidecar locks held.
+func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
+	view := &Index{readView: true, transcript: x.transcript, path: x.path,
+		meta: x.meta, items: x.items, turns: x.turns, updates: x.updates,
+		strings: x.strings, prelude: x.prelude, builder: x.builder}
+	if length >= x.meta.Length {
+		x.cutView = nil
+	} else if cached := x.cutView; cached != nil && x.cutLength == length && cached.meta.Incarnation == x.meta.Incarnation {
+		view = cached
+		view.transcript = x.transcript
+	} else {
+		if derived := x.reconstructAtCut(length); derived != nil {
+			view = derived
 		} else {
 			view.meta = meta{Incarnation: x.meta.Incarnation}
 			view.prelude = nil
@@ -55,11 +84,10 @@ func (x *Index) ReadAt(length int64, fn func(*Snapshot) error) error {
 			view.builder = newBuilder(view)
 			view.builder.global = map[string]string{}
 			if err := view.scan(length); err != nil {
-				return Window{}, err
+				return err
 			}
-			x.cutView, x.cutLength = view, length
 		}
-		return Window{}, fn(&Snapshot{index: view})
-	})
-	return err
+		x.cutView, x.cutLength = view, length
+	}
+	return fn(&Snapshot{index: view})
 }

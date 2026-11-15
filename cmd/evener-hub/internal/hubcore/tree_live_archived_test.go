@@ -181,7 +181,7 @@ func TestBuildTreeNeedsYouRowCarriesTheArchivedDecision(t *testing.T) {
 		return schema.SessionMeta{ID: id, CreatedAt: activity, UpdatedAt: activity, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 	}
 	entry := func(id string) LiveEntry {
-		return LiveEntry{SessionID: id, Status: "awaiting", Entry: rendezvous.Entry{SessionID: id, StartedAt: now, WorkingDir: "/w"}}
+		return LiveEntry{SessionID: id, Status: "awaiting", PendingAsk: true, Entry: rendezvous.Entry{SessionID: id, StartedAt: now, WorkingDir: "/w"}}
 	}
 	for _, tc := range []struct {
 		name      string

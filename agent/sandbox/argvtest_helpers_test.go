@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // canonicalTempDir returns a fresh t.TempDir by its canonical path: symlinks
@@ -20,11 +21,7 @@ import (
 // from the raw spelling never matches what Resolve emits.
 func canonicalTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return testfs.CanonicalTempDir(t)
 }
 
 // hasSeq reports whether args contains seq as a contiguous subsequence — the way

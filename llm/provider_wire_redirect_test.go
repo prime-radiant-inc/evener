@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 // redirectHeaders are the instance's default headers: one the redirect policy
@@ -65,6 +66,7 @@ func (s *blockingRedirectSink) snapshot() []apilog.APIAttemptRecord {
 }
 
 func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
@@ -97,7 +99,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 			client.Jar = jar
 			baseTransport := client.Transport
 			var transportCalls atomic.Int32
-			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client.Transport = transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				transportCalls.Add(1)
 				return baseTransport.RoundTrip(request)
 			})
@@ -189,6 +191,7 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 }
 
 func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
@@ -219,7 +222,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 			client.Jar = jar
 			baseTransport := client.Transport
 			var transportCalls atomic.Int32
-			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client.Transport = transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				transportCalls.Add(1)
 				return baseTransport.RoundTrip(request)
 			})
@@ -262,6 +265,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 }
 
 func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
 			t.Run(provider.name+"/"+http.StatusText(status), func(t *testing.T) {
@@ -337,6 +341,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 }
 
 func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	largeRedirectBody := bytes.Repeat([]byte("redirect-evidence-"), 512)
 	if len(largeRedirectBody) <= 2<<10 {
 		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
@@ -413,6 +418,7 @@ func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *te
 }
 
 func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	const responseBody = `{"error":{"message":"redirect response"}}`
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
@@ -463,6 +469,7 @@ func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 }
 
 func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 1)
@@ -482,7 +489,7 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 			transportErr := errors.New("final redirect transport sentinel")
 			client := server.Client()
 			baseTransport := client.Transport
-			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client.Transport = transporttest.RoundTripFunc(func(request *http.Request) (*http.Response, error) {
 				if request.URL.Path == "/redirect-target" {
 					if request.Body != nil {
 						_, _ = io.ReadAll(request.Body)
@@ -527,6 +534,7 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 }
 
 func TestCoreCompleteWireCaptureRecordsRejectedRedirectWithoutInventingHop(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)

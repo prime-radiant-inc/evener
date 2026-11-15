@@ -28,10 +28,28 @@ const capabilities = {
   sharedNotes: true,
   rename: false,
 };
-export const summaries = [
+export interface EditorialSummary {
+  ref: string;
+  title: string;
+  kind: string;
+  state: string;
+  live: boolean;
+  children: never[];
+  ask_pending?: boolean;
+  approval_pending?: boolean;
+}
+export const summaries: EditorialSummary[] = [
   { ref: PARENT, title: "Editorial fixture parent", kind: "session", state: "idle", live: true, children: [] },
   { ref: CHILD, title: "Editorial fixture child", kind: "subagent", state: "idle", live: true, children: [] },
-  { ref: QUESTION, title: "Editorial fixture question", kind: "session", state: "awaiting", live: true, children: [] },
+  {
+    ref: QUESTION,
+    title: "Editorial fixture question",
+    kind: "session",
+    state: "awaiting",
+    ask_pending: true,
+    live: true,
+    children: [],
+  },
   { ref: RESUMED, title: "Editorial fixture resumed", kind: "subagent", state: "active", live: true, children: [] },
   { ref: GRANDCHILD, title: "Editorial fixture grandchild", kind: "subagent", state: "idle", live: true, children: [] },
   {

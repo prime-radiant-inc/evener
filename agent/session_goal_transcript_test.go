@@ -29,7 +29,7 @@ func TestGoalContinuationPersistsDisplayAndModelInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess.attachTranscript(writer)
+	sess.attachTranscript(writer, nil)
 	const objective = "d27552e0-5245-49e0-819d-4d8876602c94"
 	const input = "e83bb9b1-7447-4fa2-9dba-e4cbfce61a17"
 	const turnID = "turn_goal_1"

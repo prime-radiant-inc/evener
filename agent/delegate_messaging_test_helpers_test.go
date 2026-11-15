@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -146,6 +147,7 @@ func newMessagingRootIn(t *testing.T, adapter *messagingAdapter, env execenv.Exe
 	if configure != nil {
 		configure(&cfg)
 	}
+	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -259,8 +261,7 @@ func awaitSignal(t *testing.T, ch <-chan struct{}, what string) {
 func waitForRootAttention(t *testing.T, root *Session, n int) []string {
 	t.Helper()
 	var pending []string
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, fmt.Sprintf("root to hold %d unresolved attention items", n), func() bool {
+	testwait.Until(t, fmt.Sprintf("root to hold %d unresolved attention items", n), func() bool {
 		pending = rootPendingAttention(root)
 		return len(pending) >= n
 	})

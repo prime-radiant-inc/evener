@@ -56,7 +56,7 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // call currentEnv() itself since it is invoked from both locked and unlocked
 // contexts and s.mu is not reentrant.
 // It RETURNS the diagnostic for a failed render rather than emitting it, and
-// that is a lock-safety requirement, not a style choice. Three of its four
+// that is a lock-safety requirement, not a style choice. Five of its six
 // callers run under s.mu, and emit's first act is activeCausalProvenance(),
 // which takes s.mu — so emitting from in here self-deadlocks a non-reentrant
 // mutex with no concurrency involved at all.
@@ -64,7 +64,7 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // This RELOCATES the rule, it does not retire it. What the callee can no longer
 // do, the caller now must: report only after unlocking (reportPromptRenderFailure),
 // or buffer instead, which is what initSessionState does because nothing may
-// reach the stream before SESSION_START. Each of the three locked call sites
+// reach the stream before SESSION_START. Each of the five locked call sites
 // carries its own regression test, because moving the report back inside any one
 // of those critical sections leaves the whole package green otherwise.
 //

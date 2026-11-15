@@ -39,6 +39,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activitySidebarStore } from "../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
+import stackStyles from "../shell/mobile/StackHost.module.css";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
@@ -63,7 +64,13 @@ const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
 const intentTailMode = params.get("intenttail") === "1";
-// ?heldtail=1: the trailing held-steer ghost fixture for the stack's column
+// ?panels=1&activity=about: the phone's Overview opened on About for a local
+// session, whose branch row is resolved through evener/git/head. The fixture
+// ref is local: because that lookup (and RepoLocation's locality rule) only
+// runs for local sessions.
+const panelsMode = params.get("panels") === "1";
+const aboutOverviewMode = panelsMode && params.get("activity") === "about";
+// ?heldtail=1: the trailing pending-stack fixture for its column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
@@ -317,7 +324,7 @@ const intentTailSnapshot: ThreadReadResponse = {
   },
 };
 
-// ?heldtail=1: the trailing held-steer ghost fixture. HeldSteerStack renders
+// ?heldtail=1: the trailing held-steer ghost fixture. PendingRowStack renders
 // as Session's trailing virtual-list row, so this reuses the main snapshot's
 // settled turn (a real [data-testid="turn-block"] to measure against) under a
 // ref of its own, keeping the thread active (the live gate Session's
@@ -331,6 +338,21 @@ const heldTailSnapshot: ThreadReadResponse = {
     id: "thr_overflow_held",
     sessionId: "sess_overflow_held",
     evener: { ...snapshot.thread.evener, ref: HELDTAIL_REF },
+  },
+};
+
+const ABOUT_REF = "local:overflowabout";
+const ABOUT_BRANCH = "feature/overflow-about-branch-that-must-not-widen-the-panel";
+const aboutSnapshot: ThreadReadResponse = {
+  ...snapshot,
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_about",
+    sessionId: "sess_overflow_about",
+    // About reads session facts, not the transcript; the base snapshot's
+    // 12k-character payload would only hydrate and render the hidden pane.
+    turns: [],
+    evener: { ...snapshot.thread.evener, ref: ABOUT_REF },
   },
 };
 
@@ -409,6 +431,7 @@ const FIXTURES = [
   { on: pagingMode, ref: PAGING_REF, snapshot: pagingSnapshot },
   { on: intentTailMode, ref: INTENTTAIL_REF, snapshot: intentTailSnapshot },
   { on: heldTailMode, ref: HELDTAIL_REF, snapshot: heldTailSnapshot },
+  { on: aboutOverviewMode, ref: ABOUT_REF, snapshot: aboutSnapshot },
 ];
 const activeFixture = FIXTURES.find((fixture) => fixture.on) ?? { ref: REF, snapshot };
 const { ref: activeRef, snapshot: activeSnapshot } = activeFixture;
@@ -430,6 +453,9 @@ fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListRe
   };
 });
 fake.on("thread/unsubscribe", () => ({}));
+// Only the About fixture asks: every footer-pinned page keeps its geometry
+// because no other page's session is local, and no other page has this handler.
+if (aboutOverviewMode) fake.on("evener/git/head", () => ({ head: ABOUT_BRANCH }));
 const composerRequests: { method: string; at: number; params: unknown }[] = [];
 fake.on("evener/sandbox/escalation/resolve", () => ({}));
 for (const method of ["turn/queue", "turn/interrupt"] as const) {
@@ -583,17 +609,28 @@ if (settingsMode) {
       </div>
     </ClientProvider>,
   );
-} else if (params.get("panels") === "1") {
-  workspaceStore.getState().openPane("session", { ref: REF });
-  if (params.get("activity") === "tasks") activitySidebarStore.getState().openWith("tasks");
+} else if (panelsMode) {
+  workspaceStore.getState().openPane("session", { ref: activeRef });
+  if (params.get("activity") === "tasks" || aboutOverviewMode) {
+    activitySidebarStore.getState().openWith(aboutOverviewMode ? "about" : "tasks");
+  }
   createRoot(rootEl).render(
     <ClientProvider client={fake}>
       <MotionProvider>
-        <div id="oh-pane" style={{ width, height: 900, display: "flex" }}>
+        <div id="oh-pane" style={{ width, height: 900, display: "flex", position: "relative" }}>
           <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
             <DockHost />
           </div>
-          <ActivitySidebar />
+          {/* On a phone the sidebar is a full-screen overlay (StackHost's
+              activityOverlay), not a flex sibling of the workspace. Use the
+              real class so a change to the overlay CSS is measured here. */}
+          {width < 900 ? (
+            <div className={stackStyles.activityOverlay}>
+              <ActivitySidebar mobile />
+            </div>
+          ) : (
+            <ActivitySidebar />
+          )}
         </div>
       </MotionProvider>
     </ClientProvider>,
@@ -1549,7 +1586,7 @@ interface HeldSteerColumnMeasurement {
   turnRight: number | null;
 }
 
-// The trailing held-steer ghost stack (HeldSteerStack, Session's second
+// The trailing pending-row stack (PendingRowStack, Session's second
 // trailing-row tenant) must share the content column every .turn row reads:
 // same left edge, same right edge. It renders as the transcript's trailing
 // virtual-list row without TurnBlock's .turn wrapper, so the horizontal-
@@ -1562,7 +1599,7 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("Held steer column harness pane never mounted");
   const stack = await waitFor(
-    () => pane.querySelector<HTMLElement>('[data-testid="held-steer-stack"]'),
+    () => pane.querySelector<HTMLElement>('[data-testid="pending-row-stack"]'),
     "Held steer column",
     "held steer stack",
   );
@@ -1700,6 +1737,16 @@ async function measure() {
   if (matchMedia("(max-width: 899px)").matches && !openOverlay) {
     pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.focus();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    // Focusing the editor expands the resting composer through a height
+    // transition; measuring the mid-transition box would read controls that
+    // are still moving outside the card.
+    for (
+      let frame = 0;
+      frame < 30 && pane.querySelector('[data-testid="composer-input-card"][data-animating]');
+      frame += 1
+    ) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
   }
   const status = pane.querySelector<HTMLElement>('[data-testid="status-row"]');
   const effort = pane.querySelector<HTMLElement>('[data-testid="status-row-effort"]');

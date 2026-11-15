@@ -132,6 +132,7 @@ export default defineConfig({
   // specific entries have to come first or the root entry swallows them.
   resolve: {
     alias: {
+      "@evener/appwire-client/palette": path.join(appwirePackageDir, "palette.ts"),
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
       "@evener/appwire-client/hubOrigin": path.join(appwirePackageDir, "hubOrigin.ts"),
       "@evener/appwire-client/pairing": path.join(appwirePackageDir, "pairing.ts"),

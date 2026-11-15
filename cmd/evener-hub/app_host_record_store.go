@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"slices"
@@ -251,12 +252,12 @@ type hostOpsRecordStore struct {
 	// keeps the records and no host set is written.
 	path string
 	ops  *hostops.Store
-	logf func(format string, args ...any)
+	log  *slog.Logger
 }
 
-func (s hostOpsRecordStore) log(format string, args ...any) {
-	if s.logf != nil {
-		s.logf(format, args...)
+func (s hostOpsRecordStore) logf(format string, args ...any) {
+	if s.log != nil {
+		s.log.Info(fmt.Sprintf(format, args...))
 	}
 }
 
@@ -278,7 +279,7 @@ func (s hostOpsRecordStore) load() (hostRecordDocument, bool) {
 	}
 	set, err := s.records()
 	if err != nil {
-		s.log("host records in the operation store are unreadable: %v", err)
+		s.logf("host records in the operation store are unreadable: %v", err)
 		return hostRecordDocument{}, false
 	}
 	return hostRecordDocument{Hosts: hostEntriesWithIdentity(cfg.Hosts, set), Records: set}, true
@@ -292,12 +293,12 @@ func (s hostOpsRecordStore) hosts() ([]hostreg.Host, bool) {
 	family, _, _ := s.ops.HostRecords()
 	live, err := decodeRecordMap[HostRecord]("host", family.Hosts)
 	if err != nil {
-		s.log("host records in the operation store are unreadable: %v", err)
+		s.logf("host records in the operation store are unreadable: %v", err)
 		return nil, false
 	}
 	generations, err := decodeRecordMap[HostGeneration]("generation", family.Generations)
 	if err != nil {
-		s.log("host records in the operation store are unreadable: %v", err)
+		s.logf("host records in the operation store are unreadable: %v", err)
 		return nil, false
 	}
 	return hostEntriesWithIdentity(cfg.Hosts, hostRecordSet{HostRecords: live, Generations: generations}), true
@@ -428,7 +429,7 @@ func (s hostOpsRecordStore) commitHostFileFirst(entries, known []hostreg.Host, r
 		// a boot rolls back and the next successful write replaces, are left to
 		// that. Reporting the compensation as failed would suggest the file
 		// still holds the change it no longer does.
-		s.log("the staged records were not dropped after the host file was restored: %v", err)
+		s.logf("the staged records were not dropped after the host file was restored: %v", err)
 	}
 	return nil
 }
@@ -471,7 +472,7 @@ func (s hostOpsRecordStore) restore(prior hostops.HostRecords) {
 		mirror = hostMirrorFor(set, s.ops.Boundaries())
 	}
 	if err := s.ops.CommitHostRecords(prior, mirror); err != nil && !hostops.RenameLanded(err) {
-		s.log("host records not restored after a refused host-set write: %v", err)
+		s.logf("host records not restored after a refused host-set write: %v", err)
 	}
 }
 

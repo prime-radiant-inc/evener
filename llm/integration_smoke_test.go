@@ -88,6 +88,7 @@ func liveClient(t *testing.T) *llm.Client {
 }
 
 func TestIntegration_BasicGeneration(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -120,6 +121,7 @@ func TestIntegration_BasicGeneration(t *testing.T) {
 }
 
 func TestIntegration_Streaming(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -173,6 +175,7 @@ func TestIntegration_Streaming(t *testing.T) {
 }
 
 func TestIntegration_ToolCalling(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -217,6 +220,7 @@ func TestIntegration_ToolCalling(t *testing.T) {
 }
 
 func TestIntegration_ImageInput(t *testing.T) {
+	t.Parallel()
 	skipIfNoImageProviders(t)
 	client := liveClient(t)
 
@@ -272,6 +276,7 @@ func TestIntegration_ImageInput(t *testing.T) {
 }
 
 func TestIntegration_StructuredOutput(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -319,6 +324,7 @@ func TestIntegration_StructuredOutput(t *testing.T) {
 }
 
 func TestIntegration_ErrorHandling(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -352,6 +358,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 }
 
 func TestIntegration_ImageInputURL(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -391,6 +398,7 @@ func TestIntegration_ImageInputURL(t *testing.T) {
 }
 
 func TestIntegration_StreamingWithTools(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	client := liveClient(t)
 
@@ -455,6 +463,7 @@ func TestIntegration_StreamingWithTools(t *testing.T) {
 }
 
 func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
+	t.Parallel()
 	skipIfNoProviders(t)
 	if testing.Short() {
 		t.Skip("skipping multi-turn caching test in short mode")
@@ -523,6 +532,7 @@ func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
 }
 
 func TestIntegration_ParallelToolCalls(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
@@ -581,6 +591,7 @@ func TestIntegration_ParallelToolCalls(t *testing.T) {
 }
 
 func TestIntegration_MultiStepToolLoop(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
@@ -652,6 +663,7 @@ var reasoningProviders = []providerConfig{
 }
 
 func TestIntegration_ReasoningTokens(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}

@@ -156,6 +156,7 @@ func checkCodexSixLite(window int, defaultEffort string) func(t *testing.T, res 
 }
 
 func TestGoldenResolved(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		ref   string
@@ -366,7 +367,7 @@ func TestGoldenResolved(t *testing.T) {
 			}
 		}},
 		{"local-whatever", "local/whatever", nil, func(t *testing.T, res Resolved) {
-			if ip(res.Caps.ContextWindow) != 131072 || res.Transport.Auth != AuthNone {
+			if res.Caps.ContextWindow != nil || res.Transport.Auth != AuthNone {
 				t.Errorf("%+v", res)
 			}
 		}},

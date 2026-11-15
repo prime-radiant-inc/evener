@@ -1,26 +1,35 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* Flush against the pane's top edge only: PaneScaffold's .body pads
-   * --space-5 (desktop) / --space-4 (phone, below), and this cancels exactly
-   * that. The side padding stays, which is the card's horizontal inset. */
-  margin-top: calc(-1 * var(--space-5));
-}
-
-/* Expanded, the panel is a floating layer over the transcript flow: surface-2
- * fill, pane radius, and a clear boundary with the overlay family's soft
- * shadow. The boundary is a real border, NOT --shadow-overlay's ring: the
- * ring is a spread box-shadow, which paints OUTSIDE the border box and gets
- * shaved by the pane body's scrollport at the flush top edge (that was the
- * broken-corner look); a border paints inside the box and cannot be clipped.
- * overflow: hidden tucks the header and the body's scrollbar into the
- * rounded corners; it never clips the card's own shadow. */
-.topNotesPanel[data-expanded="true"] {
+  /* Attached to the header in standalone session panes: the negative margin
+   * below cancels the body's top padding so there is no gap below the
+   * header; the top is square (no radius, no top border) and reads as a
+   * continuation of the header, whose own border-bottom is the single seam.
+   * Inside cascade columns the body is flush (bodyNoScroll) with no padding
+   * to cancel, so that margin rule lives in a session-scoped override below
+   * and stays 0 there. Only the bottom corners are rounded. The raised lift
+   * is the intentional separation from the transcript - a soft ambient
+   * rather than a hard bar. */
+  position: relative;
+  z-index: var(--z-raised);
+  border: 1px solid var(--edge);
+  border-top: none;
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  box-shadow: var(--shadow-raised);
+  /* The boundary is a real border, NOT --shadow-overlay's ring: the ring is a
+   * spread box-shadow, which paints OUTSIDE the border box and is shaved
+   * wherever a clipping ancestor cuts the card's edge - the pane body's
+   * scrollport, and a cascade column's edge, where the card sits flush. A
+   * border paints inside the box and cannot be clipped. */
   overflow: hidden;
   background: var(--surface-2);
-  border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-pane);
-  box-shadow: 0 8px 28px var(--shadow-color);
+}
+
+/* Only the padded standalone session body contributes a top inset to cancel;
+ * the cascade's flush body (bodyNoScroll + column .content) has none, so the
+ * panel must not pull above its scrollport there. */
+:global([data-pane-scaffold^="session:"]) .topNotesPanel {
+  margin-top: calc(-1 * var(--space-5));
 }
 
 .summary {
@@ -28,12 +37,14 @@
   align-items: flex-start;
   justify-content: space-between;
   width: 100%;
+  /* No edge of its own: the card root draws the boundary, so a bottom border
+   * here would double the card's own bottom edge in the collapsed state. The
+   * header/body divider belongs to the expanded header only. */
   border: none;
-  border-bottom: 1px solid var(--edge);
   text-align: left;
   min-height: 28px;
   padding: var(--space-1) var(--space-3);
-  background: var(--surface-1);
+  background: var(--surface-2);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   cursor: pointer;
@@ -142,7 +153,7 @@
 }
 
 @media (max-width: 899px) {
-  .topNotesPanel {
+  :global([data-pane-scaffold^="session:"]) .topNotesPanel {
     margin-top: calc(-1 * var(--space-4));
   }
 }

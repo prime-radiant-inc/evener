@@ -139,7 +139,7 @@ func (g *readinessContinuationGate) proxy(t *testing.T, daemon *httptest.Server,
 					return
 				}
 				ancestor, candidate := g.ids()
-				if requests && msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
+				if requests && msg.Request != nil && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadHistoryRead) {
 					var read appwire.ThreadReadParams
 					if err := json.Unmarshal(msg.Request.Params, &read); err == nil && read.AnswerContinuation != nil && read.AnswerContinuation.AncestorTurnID == ancestor && read.AnswerContinuation.CandidateTurnID == candidate {
 						pending.Store(msg.IDString(), true)

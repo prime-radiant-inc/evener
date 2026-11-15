@@ -134,10 +134,11 @@ func (s *contextFacetEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
 	s.contextCalls++
 	metrics, pressure := s.sess.ContextStatus()
 	return ContextMetrics{
-		Used:      metrics.Used,
-		Window:    metrics.Window,
-		Remaining: metrics.Remaining,
-		Assumed:   metrics.Assumed,
+		Used:         metrics.Used,
+		Window:       metrics.Window,
+		Remaining:    metrics.Remaining,
+		Assumed:      metrics.Assumed,
+		WindowSource: metrics.WindowSource,
 	}, pressure
 }
 
@@ -241,7 +242,7 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	if window <= 0 {
 		t.Fatalf("profile window = %d, want a known positive window", window)
 	}
-	expected := ContextMetrics{Used: used, Window: window, Remaining: max(window-used, 0), Assumed: false}
+	expected := ContextMetrics{Used: used, Window: window, Remaining: max(window-used, 0), Assumed: false, WindowSource: profile.ContextWindowSource()}
 	expectedPressure := float64(used) / float64(window)
 
 	// Secondary publication-preservation check (not the oracle): the session's
@@ -249,7 +250,7 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	// also the non-empty-history check: a measured baseline would report zero
 	// here, and an empty history would report zero used tokens.
 	gotMetrics, gotPressure := sess.ContextStatus()
-	if gotMetrics != (agent.ContextMetrics{Used: expected.Used, Window: expected.Window, Remaining: expected.Remaining, Assumed: expected.Assumed}) {
+	if gotMetrics != (agent.ContextMetrics{Used: expected.Used, Window: expected.Window, Remaining: expected.Remaining, Assumed: expected.Assumed, WindowSource: expected.WindowSource}) {
 		t.Fatalf("session ContextStatus metrics = %+v, want fixture-authored %+v", gotMetrics, expected)
 	}
 	if gotPressure != expectedPressure {

@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // failingTeardownManager is a seam whose RemoveHost/UpdateHost always refuses —
@@ -68,7 +69,7 @@ func newRemnantFixture(t *testing.T, declared ...hostreg.Host) (*hubHostManager,
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	hosts := newFlakyRegistry(t, hostRegistryEntries(cfg))
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts.Registry, func(string, ...any) {})
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts.Registry, silentLogger())
 	// The teardown the handlers run is swapped for one the test drives: the
 	// commit-point rule is about a teardown that fails after the commit landed,
 	// and no live host exists here to fail on its own.
@@ -1830,20 +1831,20 @@ func TestHostTeardownRetryDeadlineInterruptsAWedgedManager(t *testing.T) {
 	// completion — before the later retry: otherwise the retry races the
 	// abandoned step for the gate and can be refused busy with its "remove"
 	// hold instead of completing, which is the race this test hit in CI.
-	waitFor(t, func() bool {
+	testwait.Until(t, "the abandoned teardown to remove the host", func() bool {
 		_, live := m.cfg.hosts.Get("side")
 		return !live
-	}, "the abandoned teardown never removed the host")
+	})
 	// The registry drop runs under the host gate, so wait for the abandoned run
 	// to release that gate too before the later retry reserves it.
-	waitFor(t, func() bool {
+	testwait.Until(t, "the wedged run to release the host gate", func() bool {
 		release, gateErr := m.cfg.gate.TryAcquire("side", hostops.Holder{Kind: hostops.HolderManager, Activity: "probe"})
 		if gateErr != nil {
 			return false
 		}
 		release()
 		return true
-	}, "the gate was never released after the wedged run")
+	})
 	m.testOnlyBeforePinnedRun = nil
 	second, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
 	if err != nil {

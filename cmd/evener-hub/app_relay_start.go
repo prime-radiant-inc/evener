@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -498,7 +499,7 @@ func (s *relaySupervisor) giveUpOnRunningTurn(cause error) {
 		return
 	}
 	s.turnRunning = false
-	s.r.logf("relay for %s gave up on its running turn after %d failed re-dials: %v", s.relayKey, s.consecutiveFailures, cause)
+	s.r.log.Info(fmt.Sprintf("relay for %s gave up on its running turn after %d failed re-dials: %v", s.relayKey, s.consecutiveFailures, cause))
 	s.r.server.Broadcast(s.relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     s.threadID,
 		Ref:          s.subscribeParams.Ref,
@@ -558,23 +559,27 @@ func (s *relaySupervisor) retireIfIdle() bool {
 
 func (s *relaySupervisor) waitForRetry(delay time.Duration) bool {
 	waitCtx, cancelWait := context.WithCancel(s.relayCtx)
-	waitResult := make(chan error, 1)
+	// waitErr is written before waitDone closes, so it is readable after any
+	// receive from waitDone.
+	var waitErr error
+	waitDone := make(chan struct{})
 	go func() {
-		waitResult <- s.r.retryClock.Wait(waitCtx, delay)
+		waitErr = s.r.retryClock.Wait(waitCtx, delay)
+		close(waitDone)
 	}()
 	for {
 		select {
-		case err := <-waitResult:
+		case <-waitDone:
 			cancelWait()
-			return err != nil
+			return waitErr != nil
 		case <-s.relayCtx.Done():
 			cancelWait()
-			<-waitResult
+			<-waitDone
 			return true
 		case <-s.ticker.C:
 			if s.retireIfIdle() {
 				cancelWait()
-				<-waitResult
+				<-waitDone
 				return true
 			}
 		}

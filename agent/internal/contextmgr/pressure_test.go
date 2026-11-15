@@ -473,7 +473,7 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 	}
 
 	// Apply a 1M window override without changing the target identity.
-	bigProfile := provider.WithContextWindow(smallProfile, 1_000_000)
+	bigProfile := withContextWindow(smallProfile, 1_000_000)
 	cm.SetProfile(bigProfile)
 
 	// With 1M window: pressure ≈ 100K/1M = 0.10
@@ -550,4 +550,20 @@ func TestContextManager_UsageEstimateKeepsProfileAndMeasurementTogether(t *testi
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// thinkingHeavyHistory is the shared input for the profile-read concurrency
+// tests: a long history whose turns are replayable thinking text, so the two
+// profiles' accounting differs across any window between their reads.
+func thinkingHeavyHistory() []schema.Turn {
+	history := make([]schema.Turn, 0, 3000)
+	for range 3000 {
+		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
+			},
+		}})
+	}
+	return history
 }

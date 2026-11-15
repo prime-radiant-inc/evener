@@ -193,7 +193,7 @@ func TestRootAttentionTransientFailureKeepsThePacedRetry(t *testing.T) {
 // Working during the backoff, then deliver when the provider recovers.
 func TestRootAttentionTransientRetryAfterAPauseReadsWorking(t *testing.T) {
 	dir := t.TempDir()
-	adapter := &fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil)
 		},
@@ -201,7 +201,7 @@ func TestRootAttentionTransientRetryAfterAPauseReadsWorking(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) { return agenttest.FinalResponse("delivered"), nil },
-	}}
+	})
 	c := llm.NewClient()
 	c.Register(adapter)
 	policy := llm.RetryPolicy{MaxRetries: 0}

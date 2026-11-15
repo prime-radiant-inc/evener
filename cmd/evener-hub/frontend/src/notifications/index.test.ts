@@ -107,9 +107,6 @@ function attentionFromNodes(nodes: NavigationSessionSummary[]) {
       level: n.state === "errored" ? "error" : "needs_you",
       askPending: n.ask_pending === true,
       approvalPending: n.approval_pending === true,
-      // The hub's rule: awaiting with no question is the needs_response rest.
-      // Absent when false, as the hub's omitempty encodes it.
-      ...(n.state === "awaiting" && n.ask_pending !== true ? { needsResponse: true } : {}),
       prevLevel: "idle",
     })),
     summary: { needsYou, error, working: 0 },
@@ -502,15 +499,15 @@ describe("edge-fire", () => {
 });
 
 describe("loudScope", () => {
-  // A plain reply rests idle and never enters attention; a needs_response
-  // rest asks for a reply and is as loud as a question.
-  test("asks: a warning is silent; a needs_response rest fires", async () => {
+  // A plain reply rests idle and never enters attention; a pending question
+  // is as loud as ever.
+  test("asks: a warning is silent; a pending question fires", async () => {
     armPrefs("asks");
     await boot(attentionFromNodes([]));
     navigationStore.setState({ attention: attentionFromNodes([node("local:w", "warning")]) });
     expect(fires()).toEqual({ os: 0, sound: 0 });
     navigationStore.setState({
-      attention: attentionFromNodes([node("local:w", "warning"), node("local:a", "awaiting", false)]),
+      attention: attentionFromNodes([node("local:w", "warning"), node("local:a", "awaiting", true)]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
@@ -701,7 +698,7 @@ describe("reconnect re-baselines silently", () => {
           keyID(sectionKey("needs_you")),
           {
             key: sectionKey("needs_you"),
-            data: { sessions: [node("local:b", "awaiting")], remaining: 0 },
+            data: { sessions: [node("local:b", "awaiting", true)], remaining: 0 },
             loadedRevision: 2,
             targetRevision: 2,
             forceToken: 0,
@@ -724,7 +721,7 @@ describe("reconnect re-baselines silently", () => {
       method: "evener/attention/changed",
       params: {
         changed: [
-          { threadId: "local:c", title: "local:c", project: "", level: "needs_you", askPending: false, prevLevel: "" },
+          { threadId: "local:c", title: "local:c", project: "", level: "needs_you", askPending: true, prevLevel: "" },
         ],
         summary: { needsYou: 2, error: 0, working: 0 },
       },
@@ -735,7 +732,7 @@ describe("reconnect re-baselines silently", () => {
     // The map converged to rows truth: a new transition for the previously
     // omitted b is NOT new (already baselined), while a genuinely new d fires.
     navigationStore.setState({
-      attention: attentionFromNodes([node("local:b", "awaiting"), node("local:d", "awaiting")]),
+      attention: attentionFromNodes([node("local:b", "awaiting", true), node("local:d", "awaiting", true)]),
     });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });

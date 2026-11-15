@@ -9,7 +9,7 @@ import (
 )
 
 func TestSessionStartCarriesInstalledEnvironment(t *testing.T) {
-	sess := newSession(t, withStateDir(t.TempDir()), withoutGitSnapshot())
+	sess := newSession(t, withStateDir(t.TempDir()))
 	assertStart := func(s *Session, restored bool) {
 		t.Helper()
 		for {

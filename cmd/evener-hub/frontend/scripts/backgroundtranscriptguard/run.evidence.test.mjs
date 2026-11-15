@@ -298,6 +298,31 @@ function runEvidenceExpr(evidence) {
 }
 
 describe("review finding 8 — trace correlation must not mask invalid input", () => {
+  test("classifies both history read and page aliases while preserving legacy controls", () => {
+    const p = fixture(
+      "versioned-history.jsonl",
+      joinTraced([
+        rec({ direction: B2H, frame: { id: 7, method: "evener/thread/history/read", params: { ref: "local:t", subscribe: true } } }),
+        rec({ direction: H2B, frame: { id: 7, result: { olderCursor: "versioned-older" } } }),
+        rec({ direction: B2H, frame: { id: 8, method: "evener/thread/history/turns/list", params: { ref: "local:t", cursor: "versioned-older" } } }),
+        rec({ direction: H2B, frame: { id: 8, result: { nextCursor: "versioned-next" } } }),
+      ]),
+    );
+    expect(countTargetRequestsInWindow("local:t", 0, bytesOf(p).length, p)).toEqual({
+      reads: 1,
+      pages: 1,
+      subscribeReads: 1,
+      recoveryReads: 0,
+      plainReads: 0,
+    });
+    const paging = targetPagingEvidence("local:t", p);
+    expect(paging.readResponses).toBe(1);
+    expect(paging.subscribedRead).toBe(true);
+    expect(paging.initialOlderCursor).toBe("versioned-older");
+    expect(paging.pages).toBe(1);
+    expect(paging.lastCursor).toBe("versioned-next");
+  });
+
   test("valid control: pairing and counts on a well-formed trace", () => {
     const p = fixture(
       "valid.jsonl",

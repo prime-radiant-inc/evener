@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -94,6 +95,9 @@ func FuzzBoom(f *testing.F) {
 	crasherDir := t.TempDir()
 	crasher := filepath.Join(crasherDir, "crasher")
 	writeAuditScriptFixture(t, crasher, "go test fuzz v1\n[]byte(\"boom\")\n")
+	preexistingProbe := []byte("go test fuzz v1\n[]byte(\"harmless\")\n")
+	preexistingProbePath := filepath.Join(repo, "testdata", "fuzz", "FuzzBoom", "__bisect_probe")
+	writeAuditScriptFixture(t, preexistingProbePath, string(preexistingProbe))
 
 	// Stub registry: the one native target, module "." package "." name FuzzBoom.
 	runner := filepath.Join(t.TempDir(), "runner-stub.sh")
@@ -120,6 +124,11 @@ func FuzzBoom(f *testing.F) {
 	t.Logf("fuzz-bisect.sh output:\n%s", out)
 	if err != nil {
 		t.Fatalf("fuzz-bisect.sh: %v", err)
+	}
+	if got, err := os.ReadFile(preexistingProbePath); err != nil {
+		t.Errorf("fuzz-bisect.sh removed pre-existing corpus file: %v", err)
+	} else if !bytes.Equal(got, preexistingProbe) {
+		t.Errorf("fuzz-bisect.sh changed pre-existing corpus file: got %q, want %q", got, preexistingProbe)
 	}
 
 	if !strings.Contains(string(out), culprit) {

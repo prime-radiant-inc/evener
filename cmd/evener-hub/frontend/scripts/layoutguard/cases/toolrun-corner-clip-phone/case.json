@@ -1,0 +1,23 @@
+{
+  "name": "toolrun-corner-clip-phone",
+  "description": "A folded tool run that is a whole card (toolrungroup.module.css's .group inside surface.module.css's tool-card segment) keeps both edge contracts on a phone without clipping. A control in the open run's last row that overhangs its line to the tap floor stays reachable at its bottom edge. The closed run's summary, which spans the card, and the last row's evidence band stay inside the card's rounded lower corners, and the open run's summary keeps square lower corners above its rows. The rows are stand-ins declared in the harness, because the tool row's stylesheet shares unhashed class names with the run's.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/surface.module.css",
+    "panes/session/transcript/toolrungroup.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "mutation": {
+    "declaration": "toolrungroup.module.css: .group { overflow: clip } (restored in place of the corner rules), then the corner rules reading `inherit` instead of the segment's --tool-card-radius-* properties",
+    "verified": "2026-11-13",
+    "expect": "fail",
+    "note": "Two mutations, one at a time, each restored before the next. Restoring overflow: clip on .group fails with the tap inside the last row's control landing on the row. Reading the corners with `inherit` fails with the closed summary and the evidence band both painting square corners outside the card: a details element slots its summary and content, and `inherit` stops at the slot."
+  }
+}

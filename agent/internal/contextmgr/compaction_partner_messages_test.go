@@ -47,7 +47,7 @@ func moreTurns() []schema.Turn {
 // preserving two recent turns, with a persistent session's transcript meta.
 func partnerTestManager(reply string) *Manager {
 	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(reply)} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer, answer, answer, answer}}
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{answer, answer, answer, answer})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
@@ -179,7 +179,7 @@ func TestForceCompact_CarryReadsTheHistoryTheCheckpointFolded(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("## Progress\n" + strings.Repeat("earlier work ", 2000))}
 	}
 	empty := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{big, empty}}
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{big, empty})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 1_000_000), client, cheapmodel.New(client))
@@ -213,7 +213,7 @@ func TestForceCompact_ModelQuotedMarkupIsNotThePartnersMessage(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("## Progress\nthe old format looked like " +
 			`<user_messages>["MODEL_QUOTED_USER"]</user_messages>`)}
 	}
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{quoting, quoting}}
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{quoting, quoting})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
@@ -573,7 +573,7 @@ func TestForceCompact_MessagesLeftOutOfTheCarryReachTheSummarizer(t *testing.T) 
 // single oversized newest message is middle-trimmed to fit, with its pointer.
 func TestForceCompact_OversizedNewestMessageFitsTheCeiling(t *testing.T) {
 	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{answer})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", minSummarizingWindow), client, cheapmodel.New(client))
@@ -604,7 +604,7 @@ func TestForceCompact_OversizedNewestMessageFitsTheCeiling(t *testing.T) {
 // are where the ceiling falls below the 60,000-char cap.
 func TestForceCompact_MessageOverBothCapAndCeilingIsTrimmedOnce(t *testing.T) {
 	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{answer})
 	client := llm.NewClient()
 	client.Register(adapter)
 	const window = 54_000
@@ -1048,7 +1048,7 @@ func TestForceCompact_CutOffCheapBatchFallsBackToTheSessionModel(t *testing.T) {
 	var models []string
 	client := llm.NewClient()
 	client.Register(cutOffCheapModel(&models))
-	profile := provider.WithContextWindow(provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 100_000)
+	profile := withContextWindow(provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 100_000)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	cm.Meta = *persistentMeta
@@ -1148,7 +1148,7 @@ func TestForceCompact_NoSummaryBelowTheMinimumWindow(t *testing.T) {
 	window, maxInput := 200_000, 32_768
 	profiles := map[string]*provider.Profile{
 		"small window": testProfile("openai", "test", 32_768),
-		"small session window behind a large cheap model": provider.WithContextWindow(
+		"small session window behind a large cheap model": withContextWindow(
 			provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini"), 32_768),
 		"small input cap": provider.FromResolved(registry.Resolved{Instance: "openai", ModelID: "capped", WireID: "capped",
 			Caps: registry.Caps{ContextWindow: &window, MaxInputTokens: &maxInput}}, nil),

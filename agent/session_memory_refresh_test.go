@@ -420,7 +420,7 @@ func newStalledMemoryRefresh(t *testing.T, root string) *stalledMemoryRefresh {
 // here is a genuine hang in the boundary wait, never contention: a hang guard,
 // never a speed assertion. 30s matches this package's standing whole-operation
 // tripwire for in-process work (stallHandshakeTimeout, awaitSignal,
-// waitForCondition, retirementCreateBarrierTripwire).
+// retirementCreateBarrierTripwire).
 const stalledRefreshTripwire = 30 * time.Second
 
 // boundary runs one turn-start refresh to completion.

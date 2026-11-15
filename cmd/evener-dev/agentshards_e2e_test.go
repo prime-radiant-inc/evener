@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -394,6 +396,78 @@ func TestAgentShardsReportsPerShardWallTime(t *testing.T) {
 	}
 }
 
+// shardPhases parses a runner's TIME lines for label: each phase's wall
+// seconds, and the shard phase's per-shard seconds by shard number.
+func shardPhases(t *testing.T, label, out string) (phases map[string]float64, perShard map[int]float64) {
+	t.Helper()
+	phases, perShard = map[string]float64{}, map[int]float64{}
+	for line := range strings.SplitSeq(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "TIME" {
+			continue
+		}
+		phase, ok := strings.CutPrefix(fields[1], label+":")
+		if !ok {
+			t.Fatalf("TIME line names another label: %q", line)
+		}
+		var s float64
+		if _, err := fmt.Sscanf(fields[2], "%fs", &s); err != nil {
+			t.Fatalf("TIME line has no seconds: %q", line)
+		}
+		phases[phase] = s
+		for _, shard := range fields[3:] {
+			var i int
+			var secs float64
+			if _, err := fmt.Sscanf(shard, "%d:%fs", &i, &secs); err != nil {
+				t.Fatalf("TIME line has a malformed shard entry %q: %q", shard, line)
+			}
+			perShard[i] = secs
+		}
+	}
+	return phases, perShard
+}
+
+// TestAgentShardsReportsPhaseTimes pins the phase summary a green run prints:
+// the binary build, the test listing, the shard plan (survey or packing) and
+// the shard phase, whose line also carries each shard's wall time. A CI log
+// keeps only the gate's summary of a green run, so these lines are the record
+// of where a lane's time went.
+func TestAgentShardsReportsPhaseTimes(t *testing.T) {
+	cfg, stdout, stderr, _ := e2eConfig(t)
+	t.Setenv("SHARD_FIXTURE_SLOW", "1")
+
+	if rc := runShards(cfg); rc != 0 {
+		t.Fatalf("run rc = %d\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+	}
+	phases, perShard := shardPhases(t, "agent", stdout.String())
+	for _, phase := range []string{"build", "list", "plan", "shards"} {
+		if _, ok := phases[phase]; !ok {
+			t.Fatalf("no TIME line for the %s phase in:\n%s", phase, stdout)
+		}
+	}
+	// The survey runs the slow test once, so the plan phase holds it.
+	if phases["plan"] < 0.4 {
+		t.Fatalf("plan phase %.2fs does not hold the survey's slow test:\n%s", phases["plan"], stdout)
+	}
+	if want := passLineSeconds(t, stdout.String()); !maps.Equal(roundSeconds(perShard), roundSeconds(want)) {
+		t.Fatalf("shard phase per-shard times %v, want the PASS lines' %v:\n%s", perShard, want, stdout)
+	}
+	for i, s := range perShard {
+		if s > phases["shards"] {
+			t.Fatalf("shard %d took %.2fs, longer than the whole shard phase %.2fs:\n%s", i, s, phases["shards"], stdout)
+		}
+	}
+}
+
+// roundSeconds rounds to the hundredths both lines print.
+func roundSeconds(in map[int]float64) map[int]float64 {
+	out := make(map[int]float64, len(in))
+	for k, v := range in {
+		out[k] = math.Round(v*100) / 100
+	}
+	return out
+}
+
 func TestAgentShardsFailingShardRetainsEvidence(t *testing.T) {
 	cfg, stdout, stderr, tmp := e2eConfig(t)
 	cfg.noSurvey = true
@@ -580,10 +654,9 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 		t.Fatalf("surveyed run with the red test skipped: rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 	}
 
-	// The path that used to run the skipped test: no survey, so nothing had
-	// filtered it out before the shards were packed. The shards are given the
-	// skip themselves now, which is what makes the knob mean the same thing on
-	// a cache hit as on a cold run.
+	// No survey, so no survey filtered the skipped test out: the runner's own
+	// application of the skip is what keeps it from running, and what makes
+	// the knob mean the same thing on a cache hit as on a cold run.
 	unsurveyed, stdout2, stderr2, _ := e2eConfig(t)
 	unsurveyed.skip = "^TestFixtureBeta$"
 	unsurveyed.noSurvey = true
@@ -592,6 +665,51 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	}
 	if strings.Contains(stdout2.String(), "TestFixtureBeta") {
 		t.Fatalf("the skipped test ran anyway:\n%s", stdout2)
+	}
+}
+
+// TestAgentShardsAppliesATopLevelSkipWhilePacking pins how the skip reaches a
+// shard. Go's test binary caches one compiled pattern, so a shard given both
+// its long -test.run and a -test.skip recompiles the run pattern for every
+// test and subtest it names, under a lock every parallel test shares: under
+// -race that stretched the agent shards 2-3x. A skip with no subtest level
+// matches exactly the top-level names it drops, so the runner leaves those
+// tests out of the packing and hands the shards no -test.skip; a skip that
+// names a subtest level still has to reach the binary.
+func TestAgentShardsAppliesATopLevelSkipWhilePacking(t *testing.T) {
+	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
+	for _, tc := range []struct {
+		name, skip, wantShardSkip string
+		wantRC                    int
+	}{
+		{name: "top level", skip: "^TestFixtureBeta$", wantShardSkip: ""},
+		// Beta fails at its top level, so a subtest-level skip leaves it red:
+		// what matters is that the binary received the pattern.
+		{name: "subtest level", skip: "TestFixtureGamma/never", wantShardSkip: "TestFixtureGamma/never", wantRC: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.skip = tc.skip
+			cfg.noSurvey = true
+			dir := t.TempDir()
+			t.Setenv("SHARD_FIXTURE_SKIP_DIR", dir)
+			if rc := runShards(cfg); rc != tc.wantRC {
+				t.Fatalf("runShards = %d, want %d\nstdout:\n%s\nstderr:\n%s", rc, tc.wantRC, stdout, stderr)
+			}
+			records, err := os.ReadDir(dir)
+			if err != nil || len(records) != cfg.count {
+				t.Fatalf("recorded %d shard skips (err %v), want %d", len(records), err, cfg.count)
+			}
+			for _, record := range records {
+				data, err := os.ReadFile(filepath.Join(dir, record.Name()))
+				if err != nil {
+					t.Fatalf("reading %s: %v", record.Name(), err)
+				}
+				if string(data) != tc.wantShardSkip {
+					t.Fatalf("a shard ran under -test.skip %q, want %q", data, tc.wantShardSkip)
+				}
+			}
+		})
 	}
 }
 
@@ -746,16 +864,32 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "agent")); err != nil {
 		t.Fatalf("linking fixture: %v", err)
 	}
-	for _, tc := range []struct{ name, value string }{
-		{"AGENT_SHARD_COUNT", "banana"},
-		{"AGENT_SHARD_COUNT", "0"},
-		{"AGENT_SHARD_PARALLEL", "-3"},
-		{"AGENT_SHARD_CONCURRENCY", "banana"},
-		{"AGENT_SHARD_CONCURRENCY", "-1"},
+	noSurvey := []string{"AGENT_SHARD_NO_SURVEY=1"}
+	for _, tc := range []struct {
+		name, value string
+		// extra is the rest of the environment the refusal needs.
+		extra []string
+	}{
+		{"AGENT_SHARD_COUNT", "banana", nil},
+		{"AGENT_SHARD_COUNT", "0", nil},
+		{"AGENT_SHARD_PARALLEL", "-3", nil},
+		{"AGENT_SHARD_CONCURRENCY", "banana", nil},
+		{"AGENT_SHARD_CONCURRENCY", "-1", nil},
+		{"AGENT_SHARD_PART", "banana", noSurvey},
+		{"AGENT_SHARD_PART", "2", noSurvey},
+		{"AGENT_SHARD_PART", "0/2", noSurvey},
+		{"AGENT_SHARD_PART", "3/2", noSurvey},
+		{"AGENT_SHARD_PART", "1/0", noSurvey},
+		// More parts than shards leaves a part with nothing to run.
+		{"AGENT_SHARD_PART", "1/3", append([]string{"AGENT_SHARD_COUNT=2"}, noSurvey...)},
+		// Every part must pack the same shards, and a survey is per-runner
+		// state: two runners with different caches would pack differently,
+		// running some tests twice and others never.
+		{"AGENT_SHARD_NO_SURVEY", "", []string{"AGENT_SHARD_PART=1/2"}},
 	} {
 		cmd := exec.Command(bin, "dev", "agent-shards")
 		cmd.Dir = workRoot
-		cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir(), tc.name+"="+tc.value)
+		cmd.Env = append(append(os.Environ(), "TMPDIR="+t.TempDir(), "AGENT_SHARD_NO_SURVEY=", tc.name+"="+tc.value), tc.extra...)
 		out, err := cmd.CombinedOutput()
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
@@ -764,6 +898,56 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		if !strings.Contains(string(out), tc.name) {
 			t.Fatalf("%s=%s not named in error:\n%s", tc.name, tc.value, out)
 		}
+	}
+}
+
+// TestAgentShardsPartRunsItsShareOfTheShards pins AGENT_SHARD_PART, which
+// splits one package's shards across CI runners: every part packs the same
+// shards and runs every m-th of them, so the parts together run each test
+// exactly once. Shard numbers stay those of the whole packing, so two parts'
+// logs never share a name.
+func TestAgentShardsPartRunsItsShareOfTheShards(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := t.TempDir()
+	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "agent")); err != nil {
+		t.Fatalf("linking fixture: %v", err)
+	}
+	run := func(env ...string) string {
+		t.Helper()
+		cmd := exec.Command(bin, "dev", "agent-shards")
+		cmd.Dir = workRoot
+		cmd.Env = append(os.Environ(), append([]string{
+			"TMPDIR=" + t.TempDir(), "AGENT_SHARD_CACHE_DIR=" + t.TempDir(),
+			"GOWORK=off", "GOENV=off", "GOFLAGS=",
+			"AGENT_SHARD_COUNT=4", "AGENT_SHARD_NO_SURVEY=1", "AGENT_SHARD_PART=",
+		}, env...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("agent-shards %v: %v\n%s", env, err, out)
+		}
+		return string(out)
+	}
+
+	whole := shardedTestCount(t, run())
+	if whole == 0 {
+		t.Fatal("the whole run placed no tests")
+	}
+	parted := 0
+	for _, tc := range []struct {
+		part string
+		want []int
+	}{
+		{"1/2", []int{0, 2}},
+		{"2/2", []int{1, 3}},
+	} {
+		out := run("AGENT_SHARD_PART=" + tc.part)
+		if got := verdictShards(t, out, "PASS"); !slices.Equal(got, tc.want) {
+			t.Fatalf("part %s ran shards %v, want %v:\n%s", tc.part, got, tc.want, out)
+		}
+		parted += shardedTestCount(t, out)
+	}
+	if parted != whole {
+		t.Fatalf("the parts ran %d tests between them, the whole run %d", parted, whole)
 	}
 }
 
@@ -950,6 +1134,11 @@ func TestHubShardsBuildsTheLiveStackBinariesOnce(t *testing.T) {
 	}
 	if builds := countBuilds(data, shardrun.PrebuiltBinTarget); builds != 1 {
 		t.Fatalf("go build ./cmd/evener ran %d times, want once for the run:\n%s", builds, data)
+	}
+	// That build is a phase of its own in the run's timing summary.
+	phases, _ := shardPhases(t, "hub", string(out))
+	if _, ok := phases["live-stack"]; !ok {
+		t.Fatalf("no live-stack phase in the timing summary:\n%s", out)
 	}
 	seen, err := filepath.Glob(filepath.Join(liveDir, "seen.*"))
 	if err != nil {

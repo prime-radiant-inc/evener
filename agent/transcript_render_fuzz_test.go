@@ -481,6 +481,9 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 	f.Add([]byte{5}, `range="`)
 	f.Add([]byte{5}, "expand_turn=123")
 	f.Add([]byte{5}, "\n## Turn 123 — User\n")
+	f.Add([]byte{5}, "## Turn ")
+	f.Add([]byte{5}, "## Turn 0 — Assistant")
+	f.Add([]byte{5}, "\n## Turn 0 — \n## Turn 0 — \n## Turn 0 — \n")
 	f.Add([]byte{6}, "\n- read_transcript(transcript_ref, expand_turn=123)\n")
 
 	f.Fuzz(func(t *testing.T, program []byte, payload string) {
@@ -518,6 +521,16 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 						structure = strings.ReplaceAll(structure, part.Text, "")
 					}
 				}
+			}
+			bulkPayload := strings.Map(func(r rune) rune {
+				if r == '\n' || r == '#' {
+					return ' '
+				}
+				return r
+			}, trenderUTF8Prefix(trender_boundedPayload(payload), 48))
+			if bulkPayload != "" {
+				structure = strings.ReplaceAll(structure, "old "+bulkPayload+" ", "")
+				structure = strings.ReplaceAll(structure, "front "+bulkPayload+" ", "")
 			}
 			shown := transcriptHeadingTurns(t, structure)
 			if !slices.Equal(shown, meta.SelectedTurns) || len(shown) != meta.TurnsRendered {
@@ -771,7 +784,12 @@ func trenderScenario(program []byte) byte {
 func trender_program(program []byte, payload string) (transcript.Header, []transcript.Entry, string, renderOpts) {
 	scenario := trenderScenario(program)
 	payload = trender_boundedPayload(payload)
-	bulkPayload := trenderUTF8Prefix(payload, 48)
+	bulkPayload := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '#' {
+			return ' '
+		}
+		return r
+	}, trenderUTF8Prefix(payload, 48))
 
 	header := transcript.Header{Task: "task " + payload}
 	opt := renderOpts{meta: schema.SessionMeta{

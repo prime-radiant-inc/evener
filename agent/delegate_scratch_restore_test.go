@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -99,9 +100,8 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 
 	restoreAndCheck := func(label string, prev *subagent) *subagent {
 		t.Helper()
-		// TRIPWIRE: the 100ms grace normally fires within moments of the run
-		// finishing; 15s only bounds a genuine hang.
-		waitForCondition(t, 15*time.Second, "idle release of "+label, func() bool {
+		// The release follows the test's 100ms grace override.
+		testwait.Until(t, "idle release of "+label, func() bool {
 			tree.mu.Lock()
 			released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 			tree.mu.Unlock()
@@ -125,9 +125,7 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 			t.Fatalf("delegate_send after idle release (%s): %+v", label, send)
 		}
 		var restored *subagent
-		// TRIPWIRE: the cold restore normally appears within milliseconds of
-		// the send; 15s only bounds a genuine hang.
-		waitForCondition(t, 15*time.Second, "cold-restored record for "+label, func() bool {
+		testwait.Until(t, "cold-restored record for "+label, func() bool {
 			restored = s.subagents.get(res.ChildSessionID)
 			return restored != nil && restored != prev && restored.sess != nil
 		})

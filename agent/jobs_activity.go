@@ -197,15 +197,15 @@ type activityContinuation struct {
 }
 
 // activitySessionSnapshot is the lock-free input to the activity projection.
-// Traversal owns constructing it; projection only consumes cloned job records.
+// Traversal owns constructing it; projection only reads it, so Jobs can be a
+// fold-cache list other requests are reading too.
 type activitySessionSnapshot struct {
 	SessionID   string
 	Ref         string
 	Label       string
 	RootID      string
 	Revision    uint64
-	Jobs        []*jobstore.JobRecord
-	LiveJobs    map[string]*jobstore.JobRecord
+	Jobs        *activityJobList
 	Delegates   map[string]delegateSnapshot
 	Usage       *appwire.EvenerUsage // cumulative self-only tokens; nil = unknown
 	Diagnostics []string
@@ -683,8 +683,6 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		Label:     liveActivitySessionLabel(s),
 		RootID:    activityCurrentRootID(s.jobActivityClock, s.ID()),
 		Revision:  activityCurrentRootRevision(s.jobActivityClock),
-		Jobs:      []*jobstore.JobRecord{},
-		LiveJobs:  map[string]*jobstore.JobRecord{},
 		Delegates: map[string]delegateSnapshot{},
 	}
 	if s.delegateController != nil {
@@ -701,8 +699,7 @@ func loadLiveActivityBase(s *Session) (activityLoadedBase, error) {
 		if err != nil {
 			return activityLoadedBase{}, err
 		}
-		snapshot.Jobs = ordered
-		snapshot.LiveJobs = jm.liveJobRecords()
+		snapshot.Jobs = newActivityJobList(mergeActivityRecords(ordered, jm.liveJobRecords()))
 	}
 	children := make(map[string]*subagent)
 	if s.subagents != nil {
@@ -826,8 +823,6 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 		JobsJournalUnreadable:      base.JobsJournalUnreadable,
 		DelegatesJournalAbsent:     base.DelegatesJournalAbsent,
 		DelegatesJournalUnreadable: base.DelegatesJournalUnreadable,
-		Jobs:                       []*jobstore.JobRecord{},
-		LiveJobs:                   map[string]*jobstore.JobRecord{},
 		Delegates:                  make(map[string]delegateSnapshot, 1),
 		Diagnostics:                append([]string(nil), base.Diagnostics...),
 		DegradedJobHistory:         base.DegradedJobHistory,
@@ -963,12 +958,14 @@ func sortedActivityChildIDs(children map[string]*activitySessionSnapshot) []stri
 
 // mergeActivityRecords overlays live records on durable history without
 // mutating either input. Durable records retain their append positions. Jobs
-// visible only in the live map are inserted by (StartedAt, JobID).
+// visible only in the live map are inserted by (StartedAt, JobID). It serves
+// a live session's own jobs, read fresh from its store on every page; a
+// closed session's history is ordered once by its fold instead (see
+// historicalJobFold).
 func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobstore.JobRecord) []*jobstore.JobRecord {
 	// One index per durable job: its position in first-appearance order, with
-	// a later duplicate replacing the record in place. A history of hundreds
-	// of thousands of jobs is merged on every page a jobs list serves, so this
-	// keeps it to a single map operation per durable record.
+	// a later duplicate replacing the record in place, at a single map
+	// operation per durable record.
 	durableIndex := make(map[string]int, len(durable))
 	ordered := make([]*jobstore.JobRecord, 0, len(durable))
 	for _, rec := range durable {
@@ -1095,26 +1092,22 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	budget.visiting[cycleKey] = true
 	defer delete(budget.visiting, cycleKey)
 
-	entryIndex := 0
-	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
+	owned := snapshot.Jobs.counts(snapshot.SessionID)
 	// Reported once for the whole list, counted: one sentence per record would
 	// make Branch.Error grow with the journal, an unbounded envelope input. It
-	// is hoisted out of the loop so an early truncation return cannot make a
-	// page's error depend on how far it got.
-	if message := unsupportedActivityJobTypesError(records); message != "" {
-		appendActivityBranchError(&projected.Branch, message)
+	// is computed before the entries so an early truncation return cannot make
+	// a page's error depend on how far it got.
+	if owned.unsupported > 0 {
+		for first := range snapshot.Jobs.records(snapshot.SessionID, activityUnsupportedJob, 0) {
+			appendActivityBranchError(&projected.Branch, unsupportedActivityJobTypesError(owned.unsupported, first))
+			break
+		}
 	}
-	for _, rec := range records {
-		// Unsupported records (anything but a shell job) are counted once for
-		// the whole list by unsupportedActivityJobTypesError above, not
-		// rendered and not re-reported here.
-		if rec == nil || rec.Type != jobstore.JobShell {
-			continue
-		}
-		if entryIndex < effectiveResumeIndex {
-			entryIndex++
-			continue
-		}
+	// The session's entries are its shell jobs, then its delegates. A resume
+	// skips the shell jobs earlier pages rendered by position, without
+	// visiting them.
+	entryIndex := min(effectiveResumeIndex, owned.shell)
+	for rec := range snapshot.Jobs.records(snapshot.SessionID, activityShellJob, entryIndex) {
 		if !activityConsumeWorkUnit(budget, 1) {
 			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
 			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
@@ -1183,7 +1176,6 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		DurationMS:          appwire.ClonePointer(status.DurationMS),
 		DelegationAllowance: descriptor.DelegationAllowance,
 		ParentWatchGranted:  descriptor.ParentWatchGranted,
-		Turns:               []appwire.JobActivityJob{},
 	}
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
@@ -1283,23 +1275,6 @@ func activityUsageFromCumulative(usage *schema.CumulativeUsage) *appwire.EvenerU
 		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 		CacheReadTokens: usage.CacheReadTokens, TotalTokens: usage.TotalTokens,
 	}
-}
-
-func activityOwnedRecords(sessionID string, records []*jobstore.JobRecord) []*jobstore.JobRecord {
-	if sessionID == "" || len(records) == 0 {
-		return records
-	}
-	owned := make([]*jobstore.JobRecord, 0, len(records))
-	for _, rec := range records {
-		if rec == nil {
-			continue
-		}
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
-			continue
-		}
-		owned = append(owned, rec)
-	}
-	return owned
 }
 
 func activityConsumeWorkUnit(budget *activityBudget, units int) bool {
@@ -1423,29 +1398,13 @@ func appendActivityBranchError(branch *appwire.JobActivityBranchState, message s
 // Branch.Error grow with the journal — an unbounded envelope input, and
 // unreadable besides — while the count and the first offender are what a
 // reader needs. A single offender keeps the original per-record wording so
-// the common case reads exactly as it always did. Retired delegate rows are
-// ignored state kept in the journal, not offenders.
-func unsupportedActivityJobTypesError(records []*jobstore.JobRecord) string {
-	count := 0
-	var firstID string
-	var firstType jobstore.JobType
-	for _, rec := range records {
-		if rec == nil || rec.Type == jobstore.JobShell || string(rec.Type) == delegateResourceType {
-			continue
-		}
-		count++
-		if count == 1 {
-			firstID, firstType = rec.JobID, rec.Type
-		}
+// the common case reads as a sentence about that one record. Which records
+// count is classifyActivityJob's call.
+func unsupportedActivityJobTypesError(count int, first *jobstore.JobRecord) string {
+	if count == 1 {
+		return fmt.Sprintf("job %q has unsupported type %q", offenderID(first.JobID), offenderType(first.Type))
 	}
-	switch count {
-	case 0:
-		return ""
-	case 1:
-		return fmt.Sprintf("job %q has unsupported type %q", offenderID(firstID), offenderType(firstType))
-	default:
-		return fmt.Sprintf("%d job records have unsupported types; first is job %q type %q", count, offenderID(firstID), offenderType(firstType))
-	}
+	return fmt.Sprintf("%d job records have unsupported types; first is job %q type %q", count, offenderID(first.JobID), offenderType(first.Type))
 }
 
 // offenderID and offenderType bound the identifiers a collapsed error copies.
@@ -1485,13 +1444,7 @@ func aggregateActivity(entries []appwire.JobActivityEntry, branch appwire.JobAct
 		if entry.Delegate == nil {
 			continue
 		}
-		if entry.Delegate.Type == "delegate" {
-			addJob(appwire.JobActivityJob{Terminal: entry.Delegate.Terminal, Outcome: activityDelegateOutcome(entry.Delegate.Outcome)})
-		} else {
-			for _, turn := range entry.Delegate.Turns {
-				addJob(turn)
-			}
-		}
+		addJob(appwire.JobActivityJob{Terminal: entry.Delegate.Terminal, Outcome: activityDelegateOutcome(entry.Delegate.Outcome)})
 		if !activityBranchComplete(entry.Delegate.Branch) {
 			counts.Complete = false
 		}
@@ -1938,9 +1891,8 @@ func projectActivityJob(rec *jobstore.JobRecord, ownerRef string) appwire.JobAct
 		JobID:          rec.JobID,
 		OwnerSessionID: rec.OwnerSessionID,
 		OwnerRef:       ownerRef,
-		// jobTranscriptRef derives the canonical "job:<id>" ref for shell jobs
-		// (their records never store one) and passes through a stored ref
-		// (delegate turns point at the child session) unchanged.
+		// jobTranscriptRef derives the canonical "job:<id>" ref for shell jobs;
+		// their records never store one.
 		TranscriptRef: jobTranscriptRef(rec),
 		Type:          string(rec.Type),
 		Status:        string(rec.Status),

@@ -14,6 +14,13 @@ import (
 
 // Typed event payload structs. JSON tags match the map keys used previously.
 
+// ExecutionFrontier is one atomic recorded-execution stamp. Sequence orders
+// installs within one runtime registration, never across runtimes or on wire.
+type ExecutionFrontier struct {
+	TurnID   string `json:"turn_id,omitempty"`
+	Sequence uint64 `json:"-"`
+}
+
 // SessionStartData is the payload for an EventSessionStart event.
 type SessionStartData struct {
 	WorkingDir        string `json:"working_dir,omitempty"`
@@ -40,6 +47,7 @@ type SessionStartData struct {
 	State                   string               `json:"state,omitempty"`
 	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
 	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
+	LatestExecutionTurnID   string               `json:"latest_execution_turn_id,omitempty"`
 	// Sandbox and SandboxNet are the sandbox request the session started
 	// under, as its configuration persists it: the mode name (empty is off)
 	// and the network decision (nil is the default, on). A subagent's thread
@@ -51,6 +59,9 @@ type SessionStartData struct {
 	// metadata and never enter event JSON.
 	TaskPublicationEpoch    uint64 `json:"-"`
 	TaskPublicationRevision uint64 `json:"-"`
+	// LatestExecutionSequence is the internal half of LatestExecutionTurnID's
+	// atomic stamp, used only by the descendant install fence.
+	LatestExecutionSequence uint64 `json:"-"`
 }
 
 // CurrentWorkSeedData is the self-contained task and goal state carried at
@@ -316,18 +327,22 @@ type ToolCallRepairedData struct {
 // sandbox-exemption approval request. Its fields mirror sandbox.EscalationRequest
 // but stay in the events package (plain values) so the projector can map it to the
 // AppWire notification without importing agent/sandbox. DeniedPath carries the FULL
-// literal path for informed consent — only non-sensitive (containment) denials ever
-// escalate, so the full path is safe and necessary; a sensitive path (which never
-// escalates) degrades to "<denied>" as a defensive floor. File contents never appear.
+// location an approval reaches, every symlink in its parent directory resolved,
+// for informed consent — only non-sensitive (containment) denials ever escalate,
+// so the full path is safe and necessary; a sensitive path (which never escalates)
+// degrades to "<denied>" as a defensive floor. RequestedPath is the path as the
+// tool call spelled it, set only when it differs from DeniedPath. File contents
+// never appear.
 type SandboxEscalationRequestedData struct {
-	EscalationID string `json:"escalation_id"`
-	Mode         string `json:"mode"`
-	Tool         string `json:"tool"`
-	Kind         string `json:"kind"`
-	DeniedPath   string `json:"denied_path"`
-	Command      string `json:"command,omitempty"`
-	OutputSoFar  string `json:"output_so_far,omitempty"`
-	PartiallyRan bool   `json:"partially_ran,omitempty"`
+	EscalationID  string `json:"escalation_id"`
+	Mode          string `json:"mode"`
+	Tool          string `json:"tool"`
+	Kind          string `json:"kind"`
+	DeniedPath    string `json:"denied_path"`
+	RequestedPath string `json:"requested_path,omitempty"`
+	Command       string `json:"command,omitempty"`
+	OutputSoFar   string `json:"output_so_far,omitempty"`
+	PartiallyRan  bool   `json:"partially_ran,omitempty"`
 }
 
 // SandboxEscalationResolvedData is the payload for an
@@ -538,7 +553,12 @@ type ModelChangedData struct {
 	// → <new>", plus any warning lines) — the exact text SetModel wrote to
 	// the transcript's TurnModelSwitch turn. The live projector renders it
 	// verbatim as a systemMessage item so live and replay stay byte-identical.
-	MarkerText string `json:"marker_text,omitempty"`
+	MarkerText          string  `json:"marker_text,omitempty"`
+	ContextUsed         int     `json:"context_used,omitempty"`
+	ContextWindow       int     `json:"context_window,omitempty"`
+	ContextPressure     float64 `json:"context_pressure,omitempty"`
+	ContextAssumed      bool    `json:"context_assumed,omitempty"`
+	CompactionThreshold int     `json:"compaction_threshold,omitempty"`
 }
 
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged
@@ -648,6 +668,11 @@ const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undelivera
 // committed delegate start could not replay an owed delivery. The parcel is
 // requeued and the start continues.
 const WarningCodeDelegateStartDeliveryReplay = "delegate_start_delivery_replay"
+
+// WarningCodeDelegateDeliveryResultLost identifies the notice that a stop
+// abandoned an inline delivery receipt after proving the owning tool commit
+// was gone: the delegate's result reached no tool result and is lost.
+const WarningCodeDelegateDeliveryResultLost = "delegate_delivery_result_lost"
 
 // WarningCodeAttentionPaused identifies the notice that a permanent provider
 // failure (a dead credential, a spent quota) has paused delivering background
@@ -970,6 +995,12 @@ type RoundEndedData struct {
 
 // ExecutionStartedData is the payload for an EventExecutionStarted event.
 type ExecutionStartedData struct {
+	TurnID string `json:"turn_id"`
+}
+
+// ExecutionFirstRecordedData identifies the first entry recorded for an
+// execution. It is provenance, not a promise that this remains the frontier.
+type ExecutionFirstRecordedData struct {
 	TurnID string `json:"turn_id"`
 }
 

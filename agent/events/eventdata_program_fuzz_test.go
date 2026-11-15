@@ -103,6 +103,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{RoundStartedData{RoundID: text}, EventRoundStarted},
 		{RoundEndedData{RoundID: text}, EventRoundEnded},
 		{ExecutionStartedData{TurnID: text}, EventExecutionStarted},
+		{ExecutionFirstRecordedData{TurnID: text}, EventExecutionFirstRecorded},
 		{ExecutionEndedData{TurnID: text, Status: text}, EventExecutionEnded},
 	}
 }

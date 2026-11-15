@@ -70,6 +70,7 @@ const (
 type EvenerThread struct {
 	ConversationProvenance *ConversationProvenanceState `json:"conversationProvenance,omitempty"`
 	PendingAsk             *PendingAskState             `json:"pendingAsk,omitempty"`
+	LatestExecutionTurnID  string                       `json:"latestExecutionTurnId,omitempty"`
 	// Manager is the session's start-time Manager property, reported by the
 	// session itself. It is not a runtime setting: nothing can turn it on or
 	// off after the session starts.
@@ -98,18 +99,23 @@ type EvenerThread struct {
 	Profile   string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
-	TurnCount        int                `json:"turnCount,omitempty"`
-	ActiveTurnID     string             `json:"activeTurnId,omitempty"`
-	QuietForMS       *int64             `json:"quietForMs,omitempty"`
-	ProbeState       ThreadProbeState   `json:"probeState,omitempty"`
-	Crashed          bool               `json:"crashed,omitempty"`
-	ContextPressure  float64            `json:"contextPressure,omitempty"`
-	ContextUsed      int                `json:"contextUsed,omitempty"`
-	ContextWindow    int                `json:"contextWindow,omitempty"`
-	ContextRemaining int                `json:"contextRemaining,omitempty"`
-	ContextAssumed   bool               `json:"contextAssumed,omitempty"`
-	Capabilities     ThreadCapabilities `json:"capabilities"`
-	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
+	TurnCount           int                `json:"turnCount,omitempty"`
+	ActiveTurnID        string             `json:"activeTurnId,omitempty"`
+	QuietForMS          *int64             `json:"quietForMs,omitempty"`
+	ProbeState          ThreadProbeState   `json:"probeState,omitempty"`
+	Crashed             bool               `json:"crashed,omitempty"`
+	ContextPressure     float64            `json:"contextPressure,omitempty"`
+	ContextUsed         int                `json:"contextUsed,omitempty"`
+	ContextWindow       int                `json:"contextWindow,omitempty"`
+	ContextRemaining    int                `json:"contextRemaining,omitempty"`
+	ContextAssumed      bool               `json:"contextAssumed,omitempty"`
+	CompactionThreshold int                `json:"compactionThreshold,omitempty"`
+	Capabilities        ThreadCapabilities `json:"capabilities"`
+	Diagnostics         *EvenerDiagnostics `json:"diagnostics,omitempty"`
+
+	// ContextWindowSource says where contextWindow came from: "live",
+	// "overlay", "config", "snapshot" or "assumed".
+	ContextWindowSource string `json:"contextWindowSource,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
 	// input queue. Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which
@@ -521,10 +527,13 @@ type UrlsUpdatedParams struct {
 // SandboxEscalationRequested is the payload of a
 // evener/sandbox/escalation/requested notification (M7): a harness-raised approval
 // card for a single sandbox denial. It carries only what the human needs to decide
-// — never file contents. DeniedPath is the FULL literal path for informed consent
-// (only non-sensitive containment denials escalate, so the full path is safe; a
+// — never file contents. DeniedPath is the FULL location an approval reaches, every
+// symlink in its parent directory resolved, for informed consent (only
+// non-sensitive containment denials escalate, so the full path is safe; a
 // sensitive path, which never escalates, degrades to "<denied>" as a defensive
-// floor). Kind selects the card shape; the shell fields (Command/OutputSoFar/
+// floor). RequestedPath is the path as the tool call spelled it, present only
+// when that spelling crosses a symlink and so differs from DeniedPath. Kind
+// selects the card shape; the shell fields (Command/OutputSoFar/
 // PartiallyRan) are reserved and empty in v1 (file-tool escalation only — see the
 // M7 spec on why bwrap masking makes shell escalation unbuildable). It is never
 // appended to the model's transcript.
@@ -533,16 +542,17 @@ type SandboxEscalationRequested struct {
 	// route it by session (enqueue for a non-viewed session, answer the right one)
 	// rather than assuming the currently-viewed session — like every other
 	// thread-scoped notification.
-	ThreadID     string `json:"threadId"`
-	Ref          string `json:"ref"`
-	EscalationID string `json:"escalationId"`
-	Mode         string `json:"mode"`
-	Tool         string `json:"tool"`
-	Kind         string `json:"kind"`
-	DeniedPath   string `json:"deniedPath"`
-	Command      string `json:"command,omitempty"`
-	OutputSoFar  string `json:"outputSoFar,omitempty"`
-	PartiallyRan bool   `json:"partiallyRan,omitempty"`
+	ThreadID      string `json:"threadId"`
+	Ref           string `json:"ref"`
+	EscalationID  string `json:"escalationId"`
+	Mode          string `json:"mode"`
+	Tool          string `json:"tool"`
+	Kind          string `json:"kind"`
+	DeniedPath    string `json:"deniedPath"`
+	RequestedPath string `json:"requestedPath,omitempty"`
+	Command       string `json:"command,omitempty"`
+	OutputSoFar   string `json:"outputSoFar,omitempty"`
+	PartiallyRan  bool   `json:"partiallyRan,omitempty"`
 }
 
 // SandboxEscalationResolved is the payload of a evener/sandbox/escalation/resolved

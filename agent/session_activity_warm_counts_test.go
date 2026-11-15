@@ -72,7 +72,7 @@ func TestSessionActivityWarmCountsRecoverDeliveredDescendantWatch(t *testing.T) 
 }
 
 func TestSessionActivityWarmCountsBoundedSuffixAcrossOwners(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	stores := make(map[string]*jobstore.Store)
 	for i := range 2 {
@@ -394,7 +394,7 @@ func TestSessionActivityWarmCountsInvalidationDuringFoldRetainsDemand(t *testing
 func TestSessionActivityWarmCountsUnavailableDescendantPreservesRootJobs(t *testing.T) {
 	for _, failure := range []string{"io", "corrupt"} {
 		t.Run(failure, func(t *testing.T) {
-			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 			child, store := newSessionActivityChildJournal(t, s, "dlg_unavailable", time.Unix(100, 0).UTC())
 			writeActivityJobLogFast(t, s.stateDir, s.ID(), 1)
 			params := appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())}
@@ -446,7 +446,7 @@ func TestSessionActivityWarmCountsUnavailableDescendantPreservesRootJobs(t *test
 }
 
 func TestSessionActivityWarmCountsInvalidationIncludesInitiallyCurrentOwner(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	child, store := newSessionActivityChildJournal(t, s, "dlg_invalidation", at)
 	writeActivityJobLogFast(t, s.stateDir, s.ID(), 1)
@@ -485,7 +485,7 @@ func TestSessionActivityWarmCountsInvalidationIncludesInitiallyCurrentOwner(t *t
 
 func establishedUnavailableSummarySources(t *testing.T, count int, padding string) (*Session, []string) {
 	t.Helper()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-AGENTS.md")}))
 	owners := make([]string, 0, count)
 	for i := range count {
 		id := fmt.Sprintf("dlg_%04d_%s", i, padding)
@@ -578,7 +578,7 @@ func TestSessionActivityWarmSummaryFailedAttemptsConsumeWorkBudget(t *testing.T)
 
 func TestSessionActivityWarmSummaryRejectsUnrepresentableEnvelope(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	read, err := s.activityRead(t.Context(), appwire.SessionActivityReadParams{Ref: encodeRef("", s.ID())})
 	if err != nil {
 		t.Fatal(err)

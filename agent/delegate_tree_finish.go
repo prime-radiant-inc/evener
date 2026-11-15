@@ -254,6 +254,22 @@ func (c *delegateTreeController) setResidentRuntimeLocked(live *delegateLiveStat
 	live.runtime = runtime
 }
 
+// clearResidentRuntimeIfExactLocked clears the resident pointer only when it
+// still names runtime and no open binding owns it. A replacement runtime
+// installed after a release survives. The caller holds c.mu and bumps the
+// evidence version according to its own path.
+func (c *delegateTreeController) clearResidentRuntimeIfExactLocked(delegateID string, runtime *Session) bool {
+	if runtime == nil {
+		return false
+	}
+	live := c.live[delegateID]
+	if live == nil || live.binding != nil || live.runtime != runtime {
+		return false
+	}
+	c.setResidentRuntimeLocked(live, nil)
+	return true
+}
+
 // stillFinalizing reports whether delegateID's finished generation is still
 // finalizing on its resident runtime: the delegate isn't released, and its
 // result may not be announced yet.

@@ -137,6 +137,7 @@ func testAPIAttemptResult(finishedAt time.Time, outcome apilog.AttemptOutcomeCla
 }
 
 func TestAPIAttemptGroupAppendsAttemptsThenOneSettlement(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_group")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -199,6 +200,7 @@ func TestAPIAttemptGroupAppendsAttemptsThenOneSettlement(t *testing.T) {
 // reports the protocol that actually answered, and a call that begins no
 // attempt at all (an override serves it) reports none.
 func TestAPIAttemptGroupRecordsFinalAttemptProtocol(t *testing.T) {
+	t.Parallel()
 	// The nil-receiver read is the safe default a group handle that was never
 	// set reports: no protocol, not a panic.
 	var missing *APIAttemptGroup
@@ -228,6 +230,7 @@ func TestAPIAttemptGroupRecordsFinalAttemptProtocol(t *testing.T) {
 }
 
 func TestAPIAttemptGroupSettlementOutcomeMatchesFinalAttemptAfterOutOfOrderCompletions(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_out_of_order")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -254,6 +257,7 @@ func TestAPIAttemptGroupSettlementOutcomeMatchesFinalAttemptAfterOutOfOrderCompl
 }
 
 func TestAPIAttemptGroupSettlementWaitsForQueuedFinalOutcome(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_queued_final_outcome")
 	parent, cancel := context.WithCancel(context.Background())
@@ -289,6 +293,7 @@ func TestAPIAttemptGroupSettlementWaitsForQueuedFinalOutcome(t *testing.T) {
 }
 
 func TestAPIAttemptGroupSettlementPreservesProviderTimeoutWithLiveParent(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_provider_timeout")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -309,6 +314,7 @@ func TestAPIAttemptGroupSettlementPreservesProviderTimeoutWithLiveParent(t *test
 }
 
 func TestAPIAttemptGroupSettlementParentCancellationOverridesAttemptOutcome(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_parent_canceled")
 	parent, cancel := context.WithCancel(context.Background())
@@ -331,6 +337,7 @@ func TestAPIAttemptGroupSettlementParentCancellationOverridesAttemptOutcome(t *t
 }
 
 func TestAPIAttemptCompleteWaitsForSynchronousAppend(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	settlementCalled := make(chan struct{})
@@ -384,6 +391,7 @@ func TestAPIAttemptCompleteWaitsForSynchronousAppend(t *testing.T) {
 }
 
 func TestAPIAttemptCompleteAndSettleAreExactlyOnceUnderConcurrency(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_exactly_once")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -414,6 +422,7 @@ func TestAPIAttemptCompleteAndSettleAreExactlyOnceUnderConcurrency(t *testing.T)
 }
 
 func TestAPIAttemptGroupZeroAttemptCancellationSettlement(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_cancel_before_transport")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -433,6 +442,7 @@ func TestAPIAttemptGroupZeroAttemptCancellationSettlement(t *testing.T) {
 }
 
 func TestAPIAttemptGroupRunBudgetExhaustionSettlesAsCallerCancel(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_run_budget")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -444,6 +454,7 @@ func TestAPIAttemptGroupRunBudgetExhaustionSettlesAsCallerCancel(t *testing.T) {
 }
 
 func TestClientSessionGroupSettlesFailuresBeforeProviderMiddleware(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		req  Request
@@ -504,6 +515,7 @@ func TestClientSessionGroupSettlesFailuresBeforeProviderMiddleware(t *testing.T)
 }
 
 func TestAPIAttemptGroupNoSinkThenLateSinkRemainsInert(t *testing.T) {
+	t.Parallel()
 	group := NewAPIAttemptGroup("ag_no_sink")
 	ctx := WithAPIAttemptGroup(context.Background(), group)
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
@@ -520,6 +532,7 @@ func TestAPIAttemptGroupNoSinkThenLateSinkRemainsInert(t *testing.T) {
 }
 
 func TestAPIAttemptGroupResolvesCurrentObserverFromBoundSink(t *testing.T) {
+	t.Parallel()
 	storageErr := errors.New("append failed")
 	sink := &recordingAPIAttemptSink{failAttempt: storageErr}
 	var oldObserverCalls, currentObserverCalls int
@@ -536,6 +549,7 @@ func TestAPIAttemptGroupResolvesCurrentObserverFromBoundSink(t *testing.T) {
 }
 
 func TestAPIAttemptGroupCompetingSinkCannotReplaceBoundObserverSource(t *testing.T) {
+	t.Parallel()
 	storageErr := errors.New("append failed")
 	appendEntered := make(chan struct{})
 	releaseAppend := make(chan struct{})
@@ -594,6 +608,7 @@ func TestAPIAttemptGroupCompetingSinkCannotReplaceBoundObserverSource(t *testing
 }
 
 func TestCancellationDuringAPIAttemptAppendsBeforeSettlement(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_cancel_during_transport")
 	base, cancel := context.WithCancel(context.Background())
@@ -621,6 +636,7 @@ func TestCancellationDuringAPIAttemptAppendsBeforeSettlement(t *testing.T) {
 }
 
 func TestAPILogStorageFailurePreservesProviderResultAndMarksSettlement(t *testing.T) {
+	t.Parallel()
 	storageErr := errors.New("disk full")
 	sink := &recordingAPIAttemptSink{failAttempt: storageErr}
 	var failures []APILogFailure
@@ -668,6 +684,7 @@ func TestAPILogStorageFailurePreservesProviderResultAndMarksSettlement(t *testin
 }
 
 func TestAPIAttemptSettlementFailureObservedExactlyOnce(t *testing.T) {
+	t.Parallel()
 	storageErr := errors.New("settlement sync failed")
 	sink := &recordingAPIAttemptSink{failSettlement: storageErr}
 	var failures []APILogFailure
@@ -700,6 +717,7 @@ func TestAPIAttemptSettlementFailureObservedExactlyOnce(t *testing.T) {
 }
 
 func TestAPILoggerCanonicalCrashWindowLeavesDecodableUnsettledAttempt(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {

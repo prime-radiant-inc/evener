@@ -1223,6 +1223,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
+	var window int
 
 	// Adapter: first call returns a read_file tool call, second call returns "done".
 	// This pattern repeats for each ProcessInput.
@@ -1232,7 +1233,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 			// Round 1, input 1: read a big file.
 			func(req llm.Request) llm.Response {
 				return llm.Response{
-					Usage: llm.Usage{InputTokens: 22_000},
+					Usage: llm.Usage{InputTokens: window * 91 / 100},
 					Message: llm.Message{
 						Role: llm.RoleAssistant,
 						Content: []llm.ContentPart{
@@ -1283,10 +1284,17 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	// Use a window large enough for the base prompt but small enough for the
-	// accumulated tool results to force compaction.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
-	profile = withTestSessionNamer(c, profile)
+	// Size the window from this session's own standing request. The system
+	// prompt states host facts (temp paths, toolchain probes), so a fixed
+	// window fits on one host and not another. The window holds the standing
+	// request plus a checkpoint and two reads of big.txt (about 2.5k tokens)
+	// above the 91% usage the first round reports, which clears the 90%
+	// checkpoint trigger of whatever window results; 15k of headroom keeps the
+	// next request under the window (9% of it exceeds that growth).
+	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
+	standing := standingRequestTokens(t, dir, profile, SessionConfig{StateDir: t.TempDir()}, "read the big file")
+	window = standing + 15_000
+	profile = withContextWindow(profile, window)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir: stateDir,
@@ -1297,7 +1305,6 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	// This lifecycle test scripts exact model steps and crosses the compaction
 	// threshold; mute the default-on note elicitation so it doesn't steal a step.
 	muteNoteElicitation(sess)
-	sess.contextMgr.ObservationMaskThreshold = 1
 	sess.contextMgr.PreserveRecentTurns = 2
 
 	// Drain events in background to prevent blocking.
@@ -1418,8 +1425,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// --- Verify original tool output is preserved in transcript (not masked) ---
-	// Observation masking is ephemeral (modifies in-memory history); the transcript
-	// should contain the full original content from before masking.
+	// Compaction rewrites only the in-memory history; the transcript keeps the
+	// full original content.
 	for _, e := range entries {
 		if e.Turn.Kind == schema.TurnToolResults {
 			text := toolResultContent(e.Turn)

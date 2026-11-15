@@ -162,6 +162,11 @@ bytes travel to the vision model as a base64 document part
 - On the `openai-chat` protocol the document part is a gateway extension; a
   backend that ignores it sees no image at all, and the model honestly reports
   an empty view.
+- A PDF a **tool** returns reaches an Anthropic model natively: the request
+  builder puts a `document` block inside `tool_result` content, and the
+  describing side-channel is skipped for a row that declares pdf input
+  (`llm.DeliversToolResultMedia`). The Responses, Google and chat tool-result
+  shapes carry no document, so those routes keep the side-channel (#4465).
 - When a task needs visual PDF reading on a provider without document support,
   rasterize the pages to JPEG before reading them — that is the supported path,
   not a workaround for a defect.
@@ -362,7 +367,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `google-vertex-express` | `GOOGLE_VERTEX_API_KEY` (a Google Cloud API key, `AQ.…`; sent as `x-goog-api-key`) | `GOOGLE_VERTEX_EXPRESS_BASE_URL` (`https://aiplatform.googleapis.com/v1`) | Vertex AI in express mode: `google`'s Gemini rows on the `vertex-gemini` endpoints, no project or location; surface `google`; `default_model = gemini-3.8-flash`, `cheap_model = gemini-2.5-flash-lite`. Listing is catalog-only — API keys cannot call the publisher-model listing |
 | `amazon-bedrock` | `AWS_BEARER_TOKEN_BEDROCK` | n/a — host built from `AWS_REGION` | surface `anthropic`, family `claude`; `default_model = anthropic.claude-opus-5`, `cheap_model = anthropic.claude-haiku-4-5` (unprefixed — see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below) |
 | `azure` | `AZURE_API_KEY` | n/a — needs `AZURE_RESOURCE_NAME` | no curated `default_model` (deployment names are per-tenant) — a bare `azure` reference can't resolve without one, and a real deployment needs its own `providers.toml` row (`alias_of`; see [Cloud transports](#cloud-transports-azure-bedrock-vertex) below). With just the key and resource name set, `azure` still exists as an instance, addressable as `azure/<deployment>` |
-| `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; provider-level `context_window = 131072` |
+| `ollama` | none required; `auth = optional-bearer`, `OLLAMA_API_KEY` optional | `OLLAMA_HOST` (default `localhost`, normalized by the `ollama-host` rule) or `OLLAMA_BASE_URL` (wins when set) | no curated `default_model` — see [`ollama.md`](ollama.md) for the "never the default" rule; no curated window: a live-only model with no listed window budgets against the assumed window (see [`ollama.md`](ollama.md#context-length)) |
 
 A handful of other overlay-defined providers exist but are **not** implicit —
 they're usable only through an explicit `providers.toml` entry with
@@ -559,6 +564,7 @@ default_effort    = "high"               # what it runs at with nothing configur
 thinking_format   = "zai"
 [providers.work.models."deepseek-4.1-flash"]
 protocol          = "openai-chat"        # pin this one row to /chat/completions when the gateway's /responses rejects it
+compaction_threshold = 250000            # auto-compact history at 250K tokens while keeping the physical context_window intact
 
 [providers.local]
 base     = "openai-compatible"           # protocol-only pseudo-provider
@@ -578,8 +584,9 @@ GOOGLE_VERTEX_LOCATION = "global"
 ```
 
 `[providers.work]` above is also the pattern for a gateway that needs
-per-model overrides (a custom `context_window`/`effort_values`/`default_effort`/
-`thinking_format` on one model ID).
+per-model overrides (a custom `compaction_threshold`/`context_window`/`effort_values`/
+`default_effort`/`thinking_format` on one model ID). In the web UI, `Settings -> Providers & credentials`
+exposes these per-model overrides and custom model creation inside each connection's `InstanceSheet` (`Models -> Configure`).
 
 Key mapping: `base`, `inherit_models`, `inherit_models_matching`, `api_key`,
 `api_key_env`, `headers`, `credential_headers`, `surface`, `family`,
@@ -625,6 +632,11 @@ Load rules, enforced with errors that name the instance and key:
   non-empty, and `"off"` is rejected. `default_effort` must be one of the six
   tiers or `none` — the clamp passes an unrankable level straight through, so
   a typo that parsed would ride the request to the provider.
+- `compaction_threshold` must be in `[4096, 2147483647]`, and `context_window`,
+  `max_input_tokens`, and `max_output_tokens` must not exceed `2147483647`.
+  When a resolved `compaction_threshold` is greater than or equal to the model's
+  positive input ceiling (`min(context_window, max_input_tokens)`), resolution clears
+  it and records a warning rather than failing configuration load.
 - `$ENV`/`${ENV}`/`$$` expansion in `api_key`, `credential_headers`, and
   `vars` happens at resolve time, so one instance's missing variable never
   blocks another. An unset variable in `api_key` yields an empty
@@ -812,12 +824,21 @@ typo-guard error, not a silent no-op.
 `evener models inspect <ref>` prints the full `Resolved` record with
 provenance per field, the pruned-field list the protocol would apply, and
 the request skeleton (endpoint, auth scheme, headers with secrets masked).
-It works with no credential configured.
+It works with no credential configured. When the instance can answer, inspect
+first applies the instance's live model listing, so the record shows the window
+a session on it would budget against. `live_listing` (`applied` or
+`unavailable`) says whether that happened, and `context_window_verified` is true
+only when the live listing or `providers.toml` supplied the window; a catalog
+figure or an absent window is unverified. `provenance.ContextWindow` names the
+layer.
 
 ## Commands: `evener models` and `evener providers`
 
 - `evener models list [--provider X] [--all]` — resolved rows with protocol,
-  surface, context, output cap, cost, effort ladder, and warnings. Hidden
+  surface, context, where the context figure came from and whether it is
+  verified, output cap, cost, effort ladder, compaction threshold (`compact=<tokens>` in `NOTES`), and warnings. `--provider` naming
+  an instance applies that instance's live listing first; the unscoped list is
+  registry-only and marks every unlisted window unverified. Hidden
   providers, hidden rows, and rows without `tool_call` need `--all`.
 - `evener models inspect <ref>` — see above.
 - `evener models refresh [--force]` — fetch models.dev into the runtime

@@ -6,43 +6,22 @@ import (
 	"errors"
 	"maps"
 	"net/http"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/providertest"
 	"primeradiant.com/evener/llm/registry"
 )
 
-// streamingRequiredAuth is a stub authenticator whose transport answers every
-// request as a stream: it is what routes Complete through CompleteViaStream
-// (protocolhttp.RequiresStreamingComplete). Registered under a test-only scheme
-// so the google transport can be driven through the streaming-complete path
-// without a real Codex backend.
-type streamingRequiredAuth struct{}
-
-func (streamingRequiredAuth) Apply(context.Context, *http.Request, registry.Resolved) error {
-	return nil
-}
-func (streamingRequiredAuth) PrepareRequest(context.Context, *http.Request, map[string]any, llm.Request, registry.Resolved) error {
-	return nil
-}
-func (streamingRequiredAuth) RequiresStreamingComplete() bool { return true }
-
+// streamingRequiredScheme is the test-only auth scheme that routes Complete
+// through CompleteViaStream (protocolhttp.RequiresStreamingComplete).
 const streamingRequiredScheme = "google-test-streaming-required"
-
-var registerStreamingRequiredOnce sync.Once
-
-func registerStreamingRequiredAuth(t *testing.T) {
-	t.Helper()
-	registerStreamingRequiredOnce.Do(func() {
-		llm.RegisterAuthenticator(streamingRequiredScheme, streamingRequiredAuth{})
-	})
-}
 
 // A transport whose auth scheme requires streaming completion must serve
 // Complete from the SSE stream and still return the accumulated response.
 func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
-	registerStreamingRequiredAuth(t)
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
+	providertest.RegisterStreamingRequiredAuth(t, streamingRequiredScheme, providertest.StreamingRequiredAuth{})
 	srv, _ := protoServer(t, 200, generateSSE)
 	res := protoLive(srv)
 	res.Transport.Auth = streamingRequiredScheme
@@ -59,6 +38,7 @@ func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
 // Complete, Stream, and CountTokens before any HTTP traffic, as a
 // configuration error stamped with the instance.
 func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "named"}
@@ -89,6 +69,7 @@ func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) 
 // A models endpoint that already carries a query must append pageSize with &
 // rather than a second question mark.
 func TestListModelsEndpointWithExistingQuery(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, 200, `{"models":[]}`)
 	res := protoLive(srv)
 	res.Transport.ModelsEndpoint = "/models?key=x"
@@ -101,6 +82,7 @@ func TestListModelsEndpointWithExistingQuery(t *testing.T) {
 }
 
 func TestCountTokensUnsupportedEndpoint(t *testing.T) {
+	t.Parallel()
 	res := protoRes(nil)
 	res.Transport.CountTokensEndpoint = registry.EndpointUnsupported
 	_, err := (&Protocol{}).CountTokens(context.Background(), protoReq(""), res)
@@ -112,6 +94,7 @@ func TestCountTokensUnsupportedEndpoint(t *testing.T) {
 // A 404 whose body does not name a publisher model is not the regional-model
 // shape, so the remedy must not rewrite it: it stays the provider's own 404.
 func TestRegionalVertex404WithoutPublisherPhraseStaysProviderError(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, http.StatusNotFound, `{"error":{"code":404,"message":"Requested entity was not found."}}`)
 	res := vertexAuthorityRes(t, srv, "us-central1")
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
@@ -129,6 +112,7 @@ func TestRegionalVertex404WithoutPublisherPhraseStaysProviderError(t *testing.T)
 // constant must leave the finalizer rebuilding an empty generationConfig that
 // still receives the output budget.
 func TestTransportGenerationConfigConstantTypes(t *testing.T) {
+	t.Parallel()
 	t.Run("non-object fails", func(t *testing.T) {
 		srv, _ := protoServer(t, 200, generateJSON)
 		res := protoLive(srv)
@@ -164,6 +148,7 @@ func TestTransportGenerationConfigConstantTypes(t *testing.T) {
 // scheme and host: a base URL with neither must fail listing, and a page that
 // is not JSON must fail too.
 func TestVertexListingURLAndDecodeErrors(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, 200, `{"models":[]}`)
 	vertexRes := func() registry.Resolved {
 		res := protoLive(srv)
@@ -191,6 +176,7 @@ func TestVertexListingURLAndDecodeErrors(t *testing.T) {
 // class the gRPC status names, and keeps the provider's own 400 for any status
 // outside the remapped set.
 func TestClassifyGeminiStatusRemapArms(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		grpc string
 		want int
@@ -216,6 +202,7 @@ func TestClassifyGeminiStatusRemapArms(t *testing.T) {
 }
 
 func TestTokenCountIntValueShapes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   any
 		want int
@@ -236,6 +223,7 @@ func TestTokenCountIntValueShapes(t *testing.T) {
 // thought-signature lookups, its skip of non-object parts, and the
 // groundingMetadata web-search projection (with non-string queries filtered).
 func TestFromGeminiResponseDecoderArms(t *testing.T) {
+	t.Parallel()
 	fcRaw := func(partExtra string) map[string]any {
 		part := map[string]any{"functionCall": map[string]any{"name": "t", "args": map[string]any{}}}
 		if partExtra != "" {

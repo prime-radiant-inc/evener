@@ -175,10 +175,7 @@ func structuredCredentialHeaderValues(name, value string) []string {
 	case "Cookie":
 		var values []string
 		for pair := range strings.SplitSeq(value, ";") {
-			_, rawValue, ok := strings.Cut(pair, "=")
-			if !ok {
-				continue
-			}
+			_, rawValue, _ := strings.Cut(pair, "=")
 			rawValue = strings.TrimSpace(rawValue)
 			if rawValue == "" {
 				continue
@@ -339,10 +336,8 @@ func containsCredentialDurableStringEvidenceParts(text string, valuePatterns, se
 	if containsCredentialEvidenceParts(text, valuePatterns, secretNames) {
 		return true
 	}
-	encoded, err := json.Marshal(text)
-	if err != nil || len(encoded) < 2 {
-		return false
-	}
+	// json.Marshal of a string cannot fail and always yields at least `""`.
+	encoded, _ := json.Marshal(text)
 	return containsCredentialEvidenceParts(string(encoded[1:len(encoded)-1]), valuePatterns, secretNames)
 }
 

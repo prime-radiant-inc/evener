@@ -491,18 +491,20 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 			response.FollowUps = append(response.FollowUps, statusFollowUp(thread.Evener.Ref))
 		}
 	} else if request.Read != nil {
-		read, err := o.read(ctx, *request.Read, false)
+		read, err := o.read(appwire.WithHistoryServingFacts(ctx), *request.Read, false)
 		if err != nil {
 			return response, err
 		}
-		response.Read = &read
+		versioned := appwire.HistoryReadResponse(read)
+		response.Read = &versioned
 		response.FollowUps = []appwire.SessionStatusFollowUp{statusFollowUp(read.Thread.Evener.Ref)}
 	} else if request.Turns != nil {
-		page, err := o.turns(ctx, *request.Turns)
+		page, err := o.turns(appwire.WithHistoryServingFacts(ctx), *request.Turns)
 		if err != nil {
 			return response, err
 		}
-		response.Turns = &page
+		versioned := appwire.HistoryTurnsResponse(page)
+		response.Turns = &versioned
 		response.FollowUps = transcriptReadFollowUps(*request.Turns, page)
 	} else if request.Fetch != nil {
 		fetch, err := o.fetch(ctx, *request.Fetch)
@@ -1387,7 +1389,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 				return appwire.ThreadReadResponse{}, pastErr
 			}
 			if ok {
-				return saved, nil
+				return fallbackServingFacts(saved, "live-read-failed"), nil
 			}
 		}
 		if !recovered {
@@ -1395,6 +1397,10 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		}
 	}
 	resp := read.response
+	if appwire.HistoryServingFactsRequested(ctx) && (resp.ServingFacts == nil || resp.ServingFacts.ServedFrom == "") && source.ID() == appwire.LocalSourceID {
+		resp.ServingFacts = &appwire.HistoryServingFacts{ServedFrom: "live-daemon", AsOf: time.Now().UTC().Format(time.RFC3339Nano), InstanceID: resp.Thread.Evener.InstanceID}
+		read.response.ServingFacts = resp.ServingFacts
+	}
 	var compatibilityCandidates *transcriptItemCandidateResult
 	if remoteSavedWindowAttempt && resp.Window == nil {
 		read.finish(false)
@@ -1460,6 +1466,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			resp.Window = pastPage.Window
 			resp.LatestExecutionTurnID = pastPage.LatestExecutionTurnID
 			resp = withReadHistoryIdentity(resp, fallbackHistoryIdentity(read.response, *pastPage))
+			resp.ServingFacts = fallbackServingFacts(*pastPage, "live-read-empty").ServingFacts
 			if params.TurnWindow == nil {
 				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 			}

@@ -98,8 +98,12 @@ export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved,
     <Card tone="attention" role="group" aria-label="Sandbox approval" onKeyDown={handleKeyDown}>
       <div className={CLASS.content}>
         <div className={CLASS.label}>Sandbox approval — requested by evener, not the agent</div>
+        {/* deniedPath is where an approval lands, every symlink in its parent
+          resolved; requestedPath is the agent's own spelling, present only
+          when a symlink made the two differ. */}
         <div className={CLASS.body}>
-          The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath} [--sandbox {escalation.mode}].
+          The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath}
+          {escalation.requestedPath ? ` (requested as ${escalation.requestedPath})` : ""} [--sandbox {escalation.mode}].
           Allow this one action?
         </div>
         {/* Danger treatment comes entirely from Chip's own tone prop (already

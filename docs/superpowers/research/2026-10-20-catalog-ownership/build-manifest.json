@@ -1,0 +1,45 @@
+{
+  "product_base": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+  "before_checkout": "a16d1e78a0a49ade517f5466ff376ecb93d36dc0",
+  "after_checkout": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+  "go_version": "go version go1.27.0 linux/amd64",
+  "gomaxprocs": 2,
+  "sources": {
+    "catalog-startup.go": "14e861bab1526bc48e44ee6921d1d9c5039b54dc7e7e404693f201be7b957851",
+    "catalog-retention.go": "e2f273fc9320b5590c85eaa99ebdcea8ec4d78b95df978efc570f180fe6e893b",
+    "catalog-startup.py": "e06a7a6cfe6fff136aaf8683946743071302f3dc236095c4f0769ddf3f3539be",
+    "catalog-benchmark-cpu.py": "973edc14729367b9e7e7096d11c300949b74aedd26e964892dd9b1679f54e2be",
+    "catalog_process.py": "b866dde5273ed841cc4ec4bd1c83fca95fe37fe5538031ca6e2df5654ee4e581"
+  },
+  "benchmark_source_sha256": "fa94f4b58427725e94349a84626e4e7284d72aca25eb97a99c869a2893009e32",
+  "binaries": {
+    "startup-before": "2bd18ac317f03c0c7a369869b7b2a1a3735582441f99bcd499c53665f55fbdac",
+    "startup-after": "70bce0d75c170aca6166ad72ed26316ac3173a4ac5d7e8e581ce3b2c9df1da7b",
+    "retention-before": "c43c8b0e194f6aeda1e0a2df5780bfbd77cf5bad24e475a4b2944487fa6db509",
+    "retention-after": "3795a9b3affb6fafa9b3bb2d3a0c7ecc90832256e3e845b0a52fa0008dbe0d06",
+    "benchmark-before": "8e2fbf08a98897134f29ae32525914de27451e978fe83c869bbace77298804ef",
+    "benchmark-after": "48553ad20232c494df148c86053b5e26f50fdcbb9f81a34d4e22bbee1a137fcb"
+  },
+  "startup_vmhwm_rerun_2026_11_13": {
+    "_": "Executed-image VmHWM revalidation (#4799). The pinned before/after inputs are unchanged; the corrected probe self-reports /proc/self/status VmHWM and wait4's ru_maxrss is retained only as a diagnostic.",
+    "product_base": "f18fe2290a5c1037aab21bd3201ce20bf09c9862",
+    "candidate": "1f1b3dccdac5f4311b0f877902e4834f28d56208",
+    "candidate_source": "fetched from origin by SHA, a dangling commit of the PR-branch candidate",
+    "go_version": "go version go1.27.4 linux/amd64",
+    "gomaxprocs": 2,
+    "pairs": 3,
+    "sources": {
+      "catalog-startup.go": "fef8deb8ff383431b80d98ed47927e71685824147ad84a01b89b0d0d39a3497e",
+      "catalog-startup.py": "0c5300b1e3ed61212e879c569f81bdcdee29cf2a8a9196f9b55e3da0418c4628",
+      "catalog_process.py": "b7986b20c2f9364e072d90144fc7f132b89d1a95a3784a01bd8310cd658f7e66"
+    },
+    "binaries": {
+      "startup-before": "4c7e94770f158204e373548076dcb6b54b7b56e0ec445fd0dba73cd12d1d19a8",
+      "startup-after": "426782bd7474c02f496bfa6319d6915ff3f2532d171dde99ad817c56aea007a6"
+    },
+    "samples": [
+      "startup-pairs-vmhwm.json",
+      "startup-pairs-vmhwm-parentpad40.json"
+    ]
+  }
+}

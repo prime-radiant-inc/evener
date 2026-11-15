@@ -132,7 +132,8 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
   **`tools`** accepts string lists, comma-separated strings, single tool names,
   or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
   for accepted and rejected forms. Claude tool names are mapped to evener canonical
-  names at load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
+  names at load (`toolname.ImportClaudeToolName`, including `Skill -> use_skill` and
+  `mcp__<server>__<tool>` -> sanitized `<server>__<tool>`). `model`/`color` default to `inherit`/`blue`.
 - **Agent `model` is a provider-local preference.** Evener selects the first usable
   source in this order: an available plugin model, the delegate call's explicit
   `model`, then the parent model. Plugin metadata never switches providers.
@@ -177,10 +178,13 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
 - **Matchers** (`agent/internal/hooks/matcher.go`): empty/`*` = all; the set
   `[A-Za-z0-9_|,\- ]` = exact name or a separator list (`|` or `,`, alternatives
   trimmed); otherwise Go RE2. `Bash` does not match `BashOutput`. Matchers run
-  against the **Claude** tool name (`shell` → `Bash`). An invalid regex is skipped
+  against the **Claude** tool name (`shell` → `Bash`); MCP tools are the exception —
+  matchers see their registered `<server>__<tool>` name, with no `mcp__` prefix
+  (see [MCP tool names](mcp.md#tool-names-failures-and-teardown)). An invalid regex is skipped
   and diagnosed once at load, not per dispatch.
 - **Matcher targets by event:** tool events (`PreToolUse`, `PostToolUse`,
-  `PostToolUseFailure`) match the Claude tool name; `SessionStart` matches
+  `PostToolUseFailure`) match the Claude tool name (MCP tools: their registered
+  `<server>__<tool>` name); `SessionStart` matches
   `startup`/`resume`/`clear`/`compact`; `SubagentStart`/`SubagentStop` match the
   child agent type (the same value as the input's `agent_type`); `StopFailure`
   matches the Claude error name; `PreCompact`/`PostCompact` match `manual`/`auto`;

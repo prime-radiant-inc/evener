@@ -15,7 +15,7 @@ func TestSessionActivityUnavailableBranchPreservesHealthyResources(t *testing.T)
 	t.Parallel()
 	for _, resource := range []string{"jobs", "watches"} {
 		t.Run(resource, func(t *testing.T) {
-			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 			at := time.Unix(100, 0).UTC()
 			var ownerRefs []string
 			var badPath string
@@ -122,7 +122,7 @@ func TestSessionActivityUnavailableBranchPreservesHealthyResources(t *testing.T)
 
 func TestSessionActivityFailedScansShareInputBudget(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	for _, id := range []string{"dlg_a_unavailable", "dlg_b_unavailable", "dlg_z_healthy"} {
 		owner, store := newSessionActivityChildJournal(t, s, id, at)
@@ -162,7 +162,7 @@ func TestSessionActivityUnavailableBranchInvalidatesWarmCounts(t *testing.T) {
 	t.Parallel()
 	for _, failure := range []string{"append", "stat"} {
 		t.Run(failure, func(t *testing.T) {
-			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 			at := time.Unix(100, 0).UTC()
 			var badPath string
 			for _, id := range []string{"dlg_healthy", "dlg_unavailable"} {

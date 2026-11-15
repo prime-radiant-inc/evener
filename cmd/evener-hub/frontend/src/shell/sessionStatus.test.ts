@@ -9,7 +9,7 @@ describe("cadenceStateFor", () => {
   test.each([
     ["errored", "failed"],
     ["systemError", "failed"],
-    ["awaiting", "needs-you"],
+    ["awaiting", "idle"],
     ["active", "working"],
     ["warning", "needs-you"],
     ["restartRequired", "needs-you"],
@@ -21,5 +21,10 @@ describe("cadenceStateFor", () => {
     ["some-unknown-future-state", "idle"],
   ] as const)("maps wire state %s to Cadence state %s", (wireState, expected) => {
     expect(cadenceStateFor(wireState)).toBe(expected);
+  });
+
+  test("a pending question keeps awaiting in the needs-you family", () => {
+    expect(cadenceStateFor("awaiting", { askPending: true })).toBe("needs-you");
+    expect(cadenceStateFor("awaiting", { approvalPending: true })).toBe("needs-you");
   });
 });

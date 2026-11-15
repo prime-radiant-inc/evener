@@ -108,6 +108,7 @@ func userRequest(provider, model string) llm.Request {
 }
 
 func TestClientDispatchesByProtocolWithCredential(t *testing.T) {
+	t.Parallel()
 	srv, seen := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	resp, err := c.Complete(context.Background(), userRequest("openai", "gpt-5.5"))
@@ -134,6 +135,7 @@ func TestClientDispatchesByProtocolWithCredential(t *testing.T) {
 // same resolved record, and providerStampStream puts the instance name on the
 // terminal response.
 func TestClientStreamsThroughTheProtocol(t *testing.T) {
+	t.Parallel()
 	srv, seen := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	st, err := c.Stream(context.Background(), userRequest("work", "glm-5"))
@@ -167,6 +169,7 @@ func TestClientStreamsThroughTheProtocol(t *testing.T) {
 // retry chain reissues the request instead of failing the turn. Reading that
 // frame as an endpoint mismatch (permanent) skipped the retry entirely.
 func TestRetryStreamRetriesGatewayErrorFrame(t *testing.T) {
+	t.Parallel()
 	const errorFrame = "data: {\"error\":{\"code\":null,\"message\":\"upstream returned status 400\",\"type\":\"server_error\"}}\n\n"
 	const successFrame = "event: response.created\n" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}\n\n" +
@@ -223,6 +226,7 @@ func TestRetryStreamRetriesGatewayErrorFrame(t *testing.T) {
 }
 
 func TestClientOverrideUnderResolvableNameSeesShapedRequest(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
 		"capped": {Base: "openai", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL}, Caps: registry.Caps{MaxOutputTokens: new(123), Sampling: new(false)}},
@@ -245,6 +249,7 @@ func TestClientOverrideUnderResolvableNameSeesShapedRequest(t *testing.T) {
 }
 
 func TestClientOverrideUnderUnresolvableNamePassesThrough(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	fake := &recordingAdapter{name: "fake"}
 	c.Register(fake)
@@ -271,6 +276,7 @@ func TestClientOverrideUnderUnresolvableNamePassesThrough(t *testing.T) {
 // endpoint answers exactly, and one whose endpoint is "-" falls back to the
 // local estimate rather than failing.
 func TestClientCountInputTokensThroughTheProtocol(t *testing.T) {
+	t.Parallel()
 	srv, seen := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	got, err := c.CountInputTokens(context.Background(), userRequest("openai", "gpt-5.5"))
@@ -293,6 +299,7 @@ func TestClientCountInputTokensThroughTheProtocol(t *testing.T) {
 }
 
 func TestClientCountInputTokensRemainsAvailableWhenCompletionAdmissionRejects(t *testing.T) {
+	t.Parallel()
 	srv, seen := responsesServer(t)
 	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
 		"count-capped": {
@@ -326,6 +333,7 @@ func TestClientCountInputTokensRemainsAvailableWhenCompletionAdmissionRejects(t 
 }
 
 func TestClientUnknownInstanceNamesAvailableOnes(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	_, err := c.Complete(context.Background(), userRequest("nope", "gpt-5.5"))
@@ -336,6 +344,7 @@ func TestClientUnknownInstanceNamesAvailableOnes(t *testing.T) {
 }
 
 func TestClientEmbeddedRegistryIsHermetic(t *testing.T) {
+	// Not parallel: uses t.Setenv.
 	t.Setenv("OPENAI_API_KEY", "leak")
 	c := llm.NewClient()
 	res, err := c.Resolve("openai/gpt-5.5")
@@ -351,6 +360,7 @@ func TestClientEmbeddedRegistryIsHermetic(t *testing.T) {
 }
 
 func TestClientModelsAppliesLiveListingAndHidesToolLessRows(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"tools-ok","supported_parameters":["tools","temperature"]},{"id":"no-tools","supported_parameters":["temperature"]}]}`))
@@ -397,6 +407,7 @@ func TestClientModelsAppliesLiveListingAndHidesToolLessRows(t *testing.T) {
 }
 
 func TestClientModelsRegistryOnlyWhenUnsupported(t *testing.T) {
+	t.Parallel()
 	r := fixtureRegistry(t, "http://127.0.0.1:9", map[string]registry.Provider{
 		"nolist": {Base: "openai", APIKey: "k", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9", ModelsEndpoint: registry.EndpointUnsupported}},
 	})
@@ -411,6 +422,7 @@ func TestClientModelsRegistryOnlyWhenUnsupported(t *testing.T) {
 }
 
 func TestClientModelsOverrideLister(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	// An override's listing is its own live truth, so the §5 visibility rule
 	// applies to it exactly as it does on the registry path.
@@ -437,6 +449,7 @@ func TestClientModelsOverrideLister(t *testing.T) {
 }
 
 func TestClientModelsOverrideWithOnlyNonChatRowsIsUnusable(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	lister := &listingAdapter{models: []registry.Model{{ID: "text-embedding-3-small"}}}
 	lister.name = "fake"
@@ -462,6 +475,7 @@ func TestClientModelsOverrideWithOnlyNonChatRowsIsUnusable(t *testing.T) {
 // with every other bare client, so a listing that did not come from the
 // instance's own transport must never become a live layer there.
 func TestClientModelsOverrideListingStaysOutOfTheRegistry(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	r := fixtureRegistry(t, srv.URL, nil)
 	c := llm.NewClient(llm.WithRegistry(r))
@@ -486,6 +500,7 @@ func TestClientModelsOverrideListingStaysOutOfTheRegistry(t *testing.T) {
 // that cannot list models never falls through to a registry-only listing,
 // even when the registry knows the name.
 func TestClientModelsResolvableOverrideWithoutListerCannotList(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	c.Register(&recordingAdapter{name: "openai"})
@@ -504,6 +519,7 @@ type listingAdapter struct {
 func (a *listingAdapter) LiveModels(context.Context) ([]registry.Model, error) { return a.models, nil }
 
 func TestClientProviderNamesUnionsOverridesAndInstances(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	c.Register(&recordingAdapter{name: "fake"})
@@ -519,6 +535,7 @@ func TestClientProviderNamesUnionsOverridesAndInstances(t *testing.T) {
 }
 
 func TestClientCanServe(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	c.Register(&recordingAdapter{name: "fake"})
@@ -540,6 +557,7 @@ func TestClientCanServe(t *testing.T) {
 // never consulting registry.Caps - still produces a wire request with no
 // hosted tool, closing issue #738's crash path.
 func TestClientWebSearchGatedInstanceSendsNoHostedTool(t *testing.T) {
+	t.Parallel()
 	srv, seen := responsesServer(t)
 	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
 		"azuregw": {Base: "azure", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL}},
@@ -570,6 +588,7 @@ func TestClientWebSearchGatedInstanceSendsNoHostedTool(t *testing.T) {
 // the configuration error naming it, on the completion path and the listing
 // path alike: an unregistered protocol is a setup defect, never a wire call.
 func TestClientRejectsAnUnregisteredProtocol(t *testing.T) {
+	t.Parallel()
 	r := fixtureRegistry(t, "http://127.0.0.1:9", map[string]registry.Provider{
 		"weird": {
 			Base: "openai", APIKey: "k", Protocol: "not-a-registered-protocol",
@@ -591,6 +610,7 @@ func TestClientRejectsAnUnregisteredProtocol(t *testing.T) {
 // usable (the permissive default), one that declares Tools=false is not, and
 // a row whose static record is hidden never resurrects through the live path.
 func TestLiveListingUsableDecidesFromTheAdvertisedFacts(t *testing.T) {
+	t.Parallel()
 	r := fixtureRegistry(t, "http://127.0.0.1:9", map[string]registry.Provider{
 		"catalog": {
 			Base: "openai", APIKey: "k",

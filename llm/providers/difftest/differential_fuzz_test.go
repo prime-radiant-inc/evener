@@ -283,6 +283,7 @@ func FuzzCrossProviderDifferential(f *testing.F) {
 // decode equivalently across all four real adapters. It documents the oracle's
 // intent and guards the encoders/drivers independently of the fuzz engine.
 func TestDifferentialSanity(t *testing.T) {
+	t.Parallel()
 	ps, cleanup := providers()
 	defer cleanup()
 

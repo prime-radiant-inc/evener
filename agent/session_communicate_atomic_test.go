@@ -54,9 +54,13 @@ func newCompetingCommunicateSession(t *testing.T, custom map[string]any) *Sessio
 	t.Helper()
 	profile := provider.NewOpenAIProfile("gpt-5.2")
 	if custom != nil {
-		profile = provider.WithCommunicateOutputSchema(profile, custom)
+		bound, err := provider.WithCommunicateOutputSchema(profile, custom)
+		if err != nil {
+			t.Fatalf("bind custom communicate output schema: %v", err)
+		}
+		profile = bound
 	}
-	return newSession(t, withProfile(profile), withoutGitSnapshot())
+	return newSession(t, withProfile(profile))
 }
 
 // execCommunicateCall drives one terminal communicate call through the real

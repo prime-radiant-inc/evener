@@ -44,7 +44,7 @@ import {
   type NavigationInvalidationWaiter,
   NavigationRevalidator,
 } from "./revalidator";
-import { selectProjectSummaries } from "./selectors";
+import { selectProjectSummaries, selectSectionCanDemand } from "./selectors";
 import {
   canonicalResourceKey,
   isNavigationUnavailable,
@@ -749,8 +749,11 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
 
   async function hydrateManifestResources(manifest: NavigationManifest, epoch: number): Promise<void> {
     const jobs: Array<() => Promise<unknown>> = [];
-    if (manifest.sections.live.count > 0) jobs.push(() => store.getState().loadSection("live"));
-    if (manifest.sections.needs_you.count > 0) jobs.push(() => store.getState().loadSection("needs_you"));
+    // The shared can-demand rule (#4958) decides demand, not the manifest
+    // count, so a failed page is retried at fan-out (#5030).
+    if (selectSectionCanDemand("live", store.getState())) jobs.push(() => store.getState().loadSection("live"));
+    if (selectSectionCanDemand("needs_you", store.getState()))
+      jobs.push(() => store.getState().loadSection("needs_you"));
     if (manifest.sections.pin_sections.count > 0) jobs.push(() => store.getState().loadPinCatalog());
     jobs.push(...nonemptyCatalogs(manifest).map((catalog) => () => store.getState().loadCatalog(catalog)));
     await runBounded(jobs, epoch);

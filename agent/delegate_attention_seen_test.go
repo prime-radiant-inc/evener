@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -54,8 +55,7 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 	}
 	// The delegate does not stay marked as needing attention it consumed.
 	controller := root.delegateController
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the delegate's needs-attention mark to clear", func() bool {
+	testwait.Until(t, "the delegate's needs-attention mark to clear", func() bool {
 		controller.mu.Lock()
 		defer controller.mu.Unlock()
 		aggregate := controller.durable[fixture.delegateID]
@@ -183,8 +183,7 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 	}
 	// The finalize tail clears the mark after the run reads as quiesced.
 	controller := root.delegateController
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the delegate's needs-attention mark to clear", func() bool {
+	testwait.Until(t, "the delegate's needs-attention mark to clear", func() bool {
 		controller.mu.Lock()
 		defer controller.mu.Unlock()
 		aggregate := controller.durable[fixture.delegateID]
@@ -309,9 +308,7 @@ func TestDelegateNeedsAttentionClearRecoversFromATransientFailure(t *testing.T) 
 	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates")
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	controller := root.delegateController
-	// TRIPWIRE: the root's paced attention retry is the only actor; only a
-	// stranded flag reaches this bound.
-	waitForCondition(t, 30*time.Second, "the delegate's needs-attention mark to clear after a failed clear", func() bool {
+	testwait.Until(t, "the delegate's needs-attention mark to clear after a failed clear", func() bool {
 		controller.mu.Lock()
 		defer controller.mu.Unlock()
 		aggregate := controller.durable[fixture.delegateID]
@@ -441,8 +438,7 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	childPausedWarnings := pausedWarnings(t, sub.sess)
 
 	sendAndAcknowledge(t, root, fixture.delegateID, "run the gates and commit")
-	// TRIPWIRE: every answer is scripted in process; only a hang reaches it.
-	waitForCondition(t, 30*time.Second, "the failed generation to settle with its drive gated", func() bool {
+	testwait.Until(t, "the failed generation to settle with its drive gated", func() bool {
 		sub.mu.Lock()
 		defer sub.mu.Unlock()
 		return sub.fatalRunGated && !sub.running && !sub.finalizing && !sub.driving

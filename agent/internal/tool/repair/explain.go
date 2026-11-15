@@ -924,8 +924,8 @@ func formatPath(segs []string) string {
 // returned unchanged, so callers that only know the segment may pass it
 // directly.
 func lastKeywordSegment(location string) string {
-	if i := strings.LastIndex(location, "/"); i >= 0 {
-		return location[i+1:]
+	if _, segment, ok := strings.CutLast(location, "/"); ok {
+		return segment
 	}
 	return location
 }

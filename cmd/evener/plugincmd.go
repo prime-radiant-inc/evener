@@ -322,11 +322,11 @@ func sourceDescription(src plugins.Source) string {
 // splitPluginRef splits arg on the LAST "@" into plugin@marketplace.
 // Plugin names may contain "@", so we split on the last occurrence.
 func splitPluginRef(arg string) (plugin, marketplace string, err error) {
-	i := strings.LastIndex(arg, "@")
-	if i < 0 {
+	plugin, marketplace, ok := strings.CutLast(arg, "@")
+	if !ok {
 		return "", "", errors.New("expected <plugin>@<marketplace>")
 	}
-	return arg[:i], arg[i+1:], nil
+	return plugin, marketplace, nil
 }
 
 // renderPluginList renders a list of installed plugins as a human table or JSON.

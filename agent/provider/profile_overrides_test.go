@@ -10,15 +10,18 @@ import (
 
 func TestWithCommunicateOutputSchema(t *testing.T) {
 	t.Run("nil profile", func(t *testing.T) {
-		if got := WithCommunicateOutputSchema(nil, map[string]any{"type": "string"}); got != nil {
-			t.Errorf("got non-nil for nil profile")
+		if got, err := WithCommunicateOutputSchema(nil, map[string]any{"type": "string"}); got != nil || err != nil {
+			t.Errorf("got %v, %v for nil profile; want nil, nil", got, err)
 		}
 	})
 
 	t.Run("empty schema", func(t *testing.T) {
 		p := NewOpenAIProfile("gpt-5.5")
 		before, _ := json.Marshal(p.ToolDefinitions())
-		q := WithCommunicateOutputSchema(p, map[string]any{})
+		q, err := WithCommunicateOutputSchema(p, map[string]any{})
+		if err != nil {
+			t.Fatalf("empty schema should bind without error: %v", err)
+		}
 		after, _ := json.Marshal(q.ToolDefinitions())
 		if !reflect.DeepEqual(before, after) {
 			t.Error("profile changed with empty schema")
@@ -28,7 +31,10 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 	t.Run("valid schema", func(t *testing.T) {
 		p := NewOpenAIProfile("gpt-5.5")
 		schema := map[string]any{"type": "string", "description": "custom"}
-		q := WithCommunicateOutputSchema(p, schema)
+		q, err := WithCommunicateOutputSchema(p, schema)
+		if err != nil {
+			t.Fatalf("valid schema should bind without error: %v", err)
+		}
 		def := findToolDef(q, "communicate")
 		if def == nil {
 			t.Fatal("communicate tool missing")
@@ -56,7 +62,10 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 
 	t.Run("no communicate tool", func(t *testing.T) {
 		p := &Profile{toolDefs: []llm.ToolDefinition{{Name: "shell"}}}
-		q := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		q, err := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		if err != nil {
+			t.Fatalf("valid schema should bind without error: %v", err)
+		}
 		if len(q.toolDefs) != 1 || q.toolDefs[0].Name != "shell" {
 			t.Error("profile mutated unexpectedly")
 		}
@@ -64,7 +73,10 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 
 	t.Run("communicate no parameters", func(t *testing.T) {
 		p := &Profile{toolDefs: []llm.ToolDefinition{{Name: "communicate"}}}
-		q := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		q, err := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		if err != nil {
+			t.Fatalf("valid schema should bind without error: %v", err)
+		}
 		if q.toolDefs[0].Parameters != nil {
 			t.Error("parameters mutated unexpectedly")
 		}
@@ -72,7 +84,10 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 
 	t.Run("communicate no properties", func(t *testing.T) {
 		p := &Profile{toolDefs: []llm.ToolDefinition{{Name: "communicate", Parameters: map[string]any{"type": "object"}}}}
-		q := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		q, err := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		if err != nil {
+			t.Fatalf("valid schema should bind without error: %v", err)
+		}
 		if q.toolDefs[0].Parameters["properties"] != nil {
 			t.Error("properties mutated unexpectedly")
 		}
@@ -84,20 +99,29 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 			"properties": map[string]any{"output": map[string]any{}},
 			"bad":        make(chan int),
 		}}}}
-		q := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		q, err := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
+		if err != nil {
+			t.Fatalf("valid schema should bind without error: %v", err)
+		}
 		if q.toolDefs[0].Parameters["bad"] == nil {
 			t.Error("parameters were mutated despite marshal error")
 		}
 	})
 
-	t.Run("deep copy schema error", func(t *testing.T) {
+	t.Run("unmarshalable schema rejected", func(t *testing.T) {
 		p := &Profile{toolDefs: []llm.ToolDefinition{{Name: "communicate", Parameters: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"output": map[string]any{}},
 		}}}}
-		q := WithCommunicateOutputSchema(p, map[string]any{"bad": make(chan int)})
-		if q.toolDefs[0].Parameters["properties"] == nil {
-			t.Error("parameters were mutated despite deep copy error")
+		q, err := WithCommunicateOutputSchema(p, map[string]any{"bad": make(chan int)})
+		if err == nil {
+			t.Error("an unmarshalable schema should fail to bind")
+		}
+		if q != nil {
+			t.Error("a rejected bind should return no profile")
+		}
+		if p.toolDefs[0].Parameters["properties"] == nil {
+			t.Error("base profile mutated despite rejected bind")
 		}
 	})
 }
@@ -293,32 +317,16 @@ func TestWithCheapModel(t *testing.T) {
 	})
 }
 
-func TestWithContextWindow(t *testing.T) {
-	t.Run("nil profile", func(t *testing.T) {
-		if got := WithContextWindow(nil, 100); got != nil {
-			t.Errorf("got non-nil for nil profile")
-		}
-	})
-
-	t.Run("zero or negative", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-5.5")
-		q := WithContextWindow(p, 0)
-		if q.ContextWindowSize() != p.ContextWindowSize() {
-			t.Error("context window changed for n=0")
-		}
-		r := WithContextWindow(p, -5)
-		if r.ContextWindowSize() != p.ContextWindowSize() {
-			t.Error("context window changed for n=-5")
-		}
-	})
-
-	t.Run("valid window", func(t *testing.T) {
-		p := NewOpenAIProfile("gpt-5.5")
-		q := WithContextWindow(p, 256000)
-		if q.ContextWindowSize() != 256000 {
-			t.Errorf("ContextWindowSize = %d, want 256000", q.ContextWindowSize())
-		}
-	})
+// withContextWindow returns a copy of p whose record names an n-token window,
+// by replacing the window in its record (provenance is left as it was).
+// n <= 0 returns p unchanged.
+func withContextWindow(p *Profile, n int) *Profile {
+	if n <= 0 {
+		return p
+	}
+	res := p.Resolved()
+	res.Caps.ContextWindow = &n
+	return p.WithResolved(res)
 }
 
 func TestDeepCopyJSONMap(t *testing.T) {

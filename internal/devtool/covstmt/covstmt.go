@@ -37,15 +37,17 @@ import (
 // stmt_counts used, byte for byte.
 var blockLine = regexp.MustCompile(`^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$`)
 
-// Block is one coverage block after position dedup: the file and line span it
-// covers, its statement count, and whether ANY occurrence of its position was
+// Block is one coverage block after position dedup: the file and position span
+// it covers, its statement count, and whether ANY occurrence of its position was
 // hit. It is the per-block view of the same parse StmtCounts folds into two
 // totals; the gaps report (coverage-gaps.sh, via `evener dev covstmt --gaps`)
 // ranks these rather than inventing a second parser.
 type Block struct {
 	File      string
 	StartLine int
+	StartCol  int
 	EndLine   int
+	EndCol    int
 	StmtCount int
 	Covered   bool
 }
@@ -285,7 +287,9 @@ func BlocksReader(r io.Reader) ([]Block, error) {
 		out = append(out, Block{
 			File:      p.file,
 			StartLine: e.startLine,
+			StartCol:  e.startCol,
 			EndLine:   e.endLine,
+			EndCol:    e.endCol,
 			StmtCount: e.stmtCount,
 			Covered:   e.covered,
 		})

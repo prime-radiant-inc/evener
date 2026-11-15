@@ -7,7 +7,7 @@ import type {
 	TurnModel,
 } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
-import { whyLine } from "../board/attention";
+import { whyLine } from "@evener/appwire-client/state/navigation";
 import { runningSubagentCount } from "../subagents/subagentModel";
 import { FrameCounter, type TraySource, trayLine } from "./trayLine";
 

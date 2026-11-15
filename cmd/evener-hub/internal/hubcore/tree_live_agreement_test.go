@@ -182,7 +182,7 @@ func fuzzScenarioBuildTree_NoApprovalDetailWithoutTheFlag(t *testing.T) {
 	cards := []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"}}
 	metas := []schema.SessionMeta{{ID: "01AWAITING", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01AWAITING", Status: appwire.ThreadStatusAwaiting, PendingEscalations: cards},
+		{PID: 1, SessionID: "01AWAITING", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingEscalations: cards},
 		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalations: cards},
 	}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)

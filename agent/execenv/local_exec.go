@@ -97,8 +97,14 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	e.runningPIDs.Store(pid, cmd)
 	defer e.runningPIDs.Delete(pid)
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	// exitErr is written before done closes, so it is readable after any
+	// receive from done.
+	var exitErr error
+	done := make(chan struct{})
+	go func() {
+		exitErr = cmd.Wait()
+		close(done)
+	}()
 
 	timedOut := false
 	interrupted := false
@@ -108,14 +114,16 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 		interrupted = true
 		waitErr = ctx.Err()
 		timedOut = errors.Is(waitErr, context.DeadlineExceeded)
-	case err := <-done:
-		waitErr = err
+	case <-done:
+		waitErr = exitErr
 	case <-time.After(time.Duration(timeoutMS) * time.Millisecond):
 		interrupted = true
 		timedOut = true
 		waitErr = context.DeadlineExceeded
 	}
 
+	// waitErr already records why the command was interrupted, so exitErr from
+	// the signalled process is not consulted.
 	if interrupted {
 		cmd.Terminate()
 		select {

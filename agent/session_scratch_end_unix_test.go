@@ -206,7 +206,7 @@ func TestSelfOwnedScratchMetaRecordsNoScratchOwner(t *testing.T) {
 func TestMetaRecordsTheScratchTempDir(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
-	root := newSession(t, withoutGitSnapshot())
+	root := newSession(t)
 	if got := root.Meta().ScratchTempDir; got != os.TempDir() {
 		t.Errorf("meta ScratchTempDir = %q, want this process's temp dir %q", got, os.TempDir())
 	}
@@ -221,7 +221,7 @@ func TestMetaRecordsARelativeTempDirAsAbsolute(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("TMPDIR", "reltmp")
-	root := newSession(t, withoutGitSnapshot())
+	root := newSession(t)
 	if got, want := root.Meta().ScratchTempDir, filepath.Join(cwd, "reltmp"); got != want {
 		t.Errorf("meta ScratchTempDir = %q, want the absolute %q", got, want)
 	}
@@ -252,7 +252,7 @@ func TestMetaRecordsTheBaseItsScratchWasAllocatedIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("TMPDIR", inside)
-	root := newSession(t, withoutGitSnapshot(), withDir(ws))
+	root := newSession(t, withDir(ws))
 	scratch := mintRootScratch(t, root)
 	want := filepath.Dir(filepath.Dir(scratch))
 	if got := root.Meta().ScratchTempDir; got != want {

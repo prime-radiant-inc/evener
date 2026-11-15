@@ -16,6 +16,7 @@ type listingRoundTripper func(*http.Request) (*http.Response, error)
 func (f listingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestListModelsDefaultIdle(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
 		defer r.Close()

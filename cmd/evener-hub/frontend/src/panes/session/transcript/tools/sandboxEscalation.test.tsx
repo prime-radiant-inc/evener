@@ -85,6 +85,26 @@ test("renders the harness-prompt copy naming the tool, path, and sandbox mode", 
   expect(screen.getByText(/workspace-write/)).toBeTruthy();
 });
 
+test("names both the resolved target and the requested spelling when a symlink made them differ", () => {
+  render(
+    <SandboxEscalationCard
+      escalation={requested({ deniedPath: "/private/tmp/real/out.txt", requestedPath: "/tmp/link/out.txt" })}
+      onApprove={() => {}}
+      onDeny={() => {}}
+      resolved={false}
+    />,
+  );
+  const card = screen.getByRole("group");
+  expect(card.textContent).toContain("/private/tmp/real/out.txt");
+  expect(card.textContent).toContain("/tmp/link/out.txt");
+});
+
+test("names only the target when the request crossed no symlink", () => {
+  render(<SandboxEscalationCard escalation={requested()} onApprove={() => {}} onDeny={() => {}} resolved={false} />);
+  const card = screen.getByRole("group");
+  expect(card.textContent?.split("/etc/hosts").length).toBe(2);
+});
+
 test("approve/deny buttons call their handlers", async () => {
   const user = userEvent.setup();
   const onApprove = vi.fn();

@@ -80,6 +80,7 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 		private readonly state: {
 			readBarrier?: Promise<void>;
 			ackBarrier?: Promise<void>;
+			readStarted: () => void;
 			readCount: number;
 			resumed: boolean;
 		},
@@ -87,11 +88,24 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 	send(data: string) {
 		const request = JSON.parse(data) as { id: number; method: string };
 		this.methods.push(request.method);
+		if (request.method === "evener/thread/history/read" || request.method === "evener/thread/history/turns/list") {
+			queueMicrotask(() =>
+				this.onmessage?.({
+					data: JSON.stringify({
+						jsonrpc: "2.0",
+						id: request.id,
+						error: { code: -32601, message: "Method not found" },
+					}),
+				}),
+			);
+			return;
+		}
 		const result = async () => {
 			if (request.method === "initialize") return initialize;
 			if (request.method === "initialized" || request.method === "thread/unsubscribe") return {};
 			if (request.method === "thread/read") {
 				this.state.readCount += 1;
+				if (this.state.readCount === 2) this.state.readStarted();
 				if (this.state.readBarrier && this.state.readCount === 2) await this.state.readBarrier;
 				return {
 					thread: {
@@ -134,7 +148,8 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 
 async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promise<void>) {
 	const sockets: ExternalScriptedWebSocket[] = [];
-	const state = { readBarrier, ackBarrier, readCount: 0, resumed: false };
+	const readStarted = deferred<void>();
+	const state = { readBarrier, ackBarrier, readStarted: () => readStarted.resolve(), readCount: 0, resumed: false };
 	const client = createHubClient("https://hub.test", "", () => {
 		const socket = new ExternalScriptedWebSocket(state);
 		sockets.push(socket);
@@ -145,7 +160,7 @@ async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promis
 	const service = createConversationService(client);
 	const store = createConversationStore();
 	await store.getState().openProjected(service, "local:thread-1");
-	return { client, service, store, sockets, state };
+	return { client, service, store, sockets, state, readStarted };
 }
 
 describe("native resume recovery integration", () => {
@@ -154,7 +169,10 @@ describe("native resume recovery integration", () => {
 		async (navigateAway) => {
 			const barrier = deferred<void>();
 			const ack = deferred<void>();
-			const { client, service, store, sockets, state } = await connectedFixture(barrier.promise, ack.promise);
+			const { client, service, store, sockets, state, readStarted } = await connectedFixture(
+				barrier.promise,
+				ack.promise,
+			);
 			let controls!: SessionControls;
 			let refreshes = 0;
 			const ready = deferred<void>();
@@ -190,6 +208,7 @@ describe("native resume recovery integration", () => {
 				expect(store.getState().conversation?.resumeRequired).toBe(true);
 				const resume = controls.resume();
 				await ready.promise;
+				await readStarted.promise;
 				expect(sockets).toHaveLength(2);
 				expect(store.getState().status).toBe("opening");
 				expect(sockets[1]?.methods).toContain("thread/read");

@@ -66,6 +66,9 @@ type JobActivityJob struct {
 	LastOutputAt string `json:"lastOutputAt,omitempty"`
 }
 
+// JobActivityDelegate is one whole delegate in the activity tree. Activity
+// updates replace a whole delegate, ordered by ProjectionRevision; a delegate
+// has no independently patched turn containers.
 type JobActivityDelegate struct {
 	DelegateID         string `json:"delegateId"`
 	OwnerSessionID     string `json:"ownerSessionId,omitempty"`
@@ -119,7 +122,6 @@ type JobActivityDelegate struct {
 	DelegationAllowance int                    `json:"delegationAllowance,omitempty"`
 	ParentWatchGranted  bool                   `json:"parentWatchGranted,omitempty"`
 	Worktree            *JobActivityWorktree   `json:"worktree,omitempty"`
-	Turns               []JobActivityJob       `json:"turns"`
 	Child               *JobActivitySession    `json:"child,omitempty"`
 	Branch              JobActivityBranchState `json:"branch"`
 	// Usage is the child session's cumulative self-only token totals. Nil when

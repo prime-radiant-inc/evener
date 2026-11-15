@@ -73,17 +73,17 @@ func TestToGeminiContents_AudioRemainsUnsupported(t *testing.T) {
 
 func TestToGeminiContents_ToolDocumentsStayOffTheWire(t *testing.T) {
 	t.Parallel()
-	for _, cap := range []bool{false, true} {
+	for _, capable := range []bool{false, true} {
 		for _, mediaType := range []string{"application/pdf", " APPLICATION/PDF ", "text/plain"} {
 			result := &llm.ToolResultData{ToolCallID: "call-4463", Name: "read_file", Content: "result-4463", ImageData: []byte("%PDF-1.4"), ImageMediaType: mediaType}
-			_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: result}}}}, cap)
+			_, contents, err := toGeminiContents("gemini", []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: result}}}}, capable)
 			if err != nil {
-				t.Errorf("cap=%v media=%q: %v", cap, mediaType, err)
+				t.Errorf("cap=%v media=%q: %v", capable, mediaType, err)
 				continue
 			}
 			want := []map[string]any{{"role": "user", "parts": []map[string]any{{"functionResponse": map[string]any{"name": "read_file", "response": map[string]any{"result": "result-4463"}}}}}}
 			if !reflect.DeepEqual(contents, want) {
-				t.Errorf("cap=%v media=%q: contents=%#v, want text-only function response", cap, mediaType, contents)
+				t.Errorf("cap=%v media=%q: contents=%#v, want text-only function response", capable, mediaType, contents)
 			}
 			if string(result.ImageData) != "%PDF-1.4" || result.ImageMediaType != mediaType {
 				t.Fatal("serializing the result changed its retained document")

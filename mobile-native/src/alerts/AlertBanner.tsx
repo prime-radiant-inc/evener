@@ -6,7 +6,7 @@
 import { SymbolView } from "expo-symbols";
 import { useEffect, useMemo, useRef } from "react";
 import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from "react-native";
-import type { BoardState, WhyLine } from "../board/attention";
+import type { BoardState, WhyLine } from "@evener/appwire-client/state/navigation";
 import { StateMark } from "../board/StateMark";
 import { FLOATING_SHADOW } from "../design/underBar";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -24,7 +24,9 @@ const DRAFT_KEPT_LINE = "Your draft is kept.";
 const MARK_STATE: Record<Exclude<Alert["kind"], "notice">, BoardState> = {
 	failed: "failed",
 	question: "question",
-	needsYou: "needsYou",
+	// Legacy alert kind: no BoardState produces it since a finished turn
+	// became idle (#2629). It renders as idle rather than inventing attention.
+	needsYou: "idle",
 	approval: "approval",
 	warning: "warning",
 	restartNeeded: "restartNeeded",

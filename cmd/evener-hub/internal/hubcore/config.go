@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -82,7 +83,8 @@ type WebConfig struct {
 	// other. nil falls back to a fresh plugins.NewManager(PluginRoot); every
 	// test that never builds a server leaves this nil and gets that fallback.
 	PluginManager       *plugins.Manager
-	MCPConfigPath       string            // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	MCPConfigPath       string            // explicit session-local MCP config file the settings overview probes in addition to the discovered layers; a missing file is the empty state
+	MCPDiscoveryDir     string            // working directory whose project layer (.evener/mcp.json at its git root) the settings overview merges; empty uses the process working directory
 	Registry            *ProviderRegistry // live provider registry; the instance, auth, credential-test and model surfaces all read it
 	ProvidersConfigPath string            // path to providers.toml; the instances pane is its only writer
 	CredentialsPath     string            // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
@@ -247,9 +249,9 @@ type WebConfig struct {
 
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
-	// Logf receives the hub's operational log lines. Nil writes them to
+	// Log receives the hub's operational log lines. Nil writes them to
 	// stderr with the "[hub] " prefix.
-	Logf func(format string, args ...any)
+	Log *slog.Logger
 
 	// Sandbox seams. Each is nil in production (the real implementation runs);
 	// a fuzz/test sandbox sets them so the matching handler runs without

@@ -1048,7 +1048,7 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	}
 	t.Cleanup(func() { _ = ownerWriter.Close() })
 	ownerRuntime := &Session{id: "child-dlg_owner", stateDir: c.stateDir, delegateController: c, owningDelegateID: "dlg_owner"}
-	ownerRuntime.attachTranscript(ownerWriter)
+	ownerRuntime.attachTranscript(ownerWriter, nil)
 	c.mu.Lock()
 	c.live["dlg_owner"] = &delegateLiveState{runtime: ownerRuntime}
 	c.mu.Unlock()
@@ -1087,7 +1087,7 @@ func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(
 	}
 	t.Cleanup(func() { _ = rootWriter.Close() })
 	root := &Session{id: "root-session", stateDir: inline.stateDir, state: SessionIdle, delegateController: inline}
-	root.attachTranscript(rootWriter)
+	root.attachTranscript(rootWriter, nil)
 	inline.rootRuntime = root
 	if err := inline.store.Close(); err != nil {
 		t.Fatalf("close inline store: %v", err)

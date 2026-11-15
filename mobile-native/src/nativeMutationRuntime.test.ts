@@ -1620,8 +1620,8 @@ function refuseWrites(db: SqliteDoubleDatabase): void {
 // node:sqlite's errcode for SQLITE_READONLY; expo-sqlite has no structured code.
 const SQLITE_READONLY = 8;
 
-async function readyRuntimeWithClient(createMutationId?: () => string) {
-	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
+async function readyRuntimeWithClient(createMutationId?: () => string, port: SqliteSync = openDatabase()) {
+	const runtime = new NativeMutationRuntime(port, { createMutationId });
 	const client = new FakeClient("ready");
 	runtime.registerTarget("hub-1", "ref-1", client);
 	await runtime.start();
@@ -1757,6 +1757,38 @@ test("a drain's consumed messages left unsettled by a refused write settle on th
 	await runtime.reconcileAuthoritativeRead(reread!, readResponse("ref-1"));
 	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
 	await runtime.stop();
+});
+
+test("a drain's consumed ids a stop caught before a read survive it and settle on the reload", async () => {
+	let nextId = 0;
+	const sharedDatabase = openDatabase();
+	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`, sharedDatabase);
+	client.on("turn/queue", (params) => appliedReceipt(params));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await runtime.submit(request("queue"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	client.on("turn/drainAsSteer", (params) => {
+		const response = appliedReceipt(params) as { receipt: object };
+		return { receipt: { ...response.receipt, consumedClientMutationIds: ["mutation-1"] } } as never;
+	});
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+
+	// Storage answers again, but nothing triggers a settle before the stop -
+	// and the ids live only in memory until some trigger writes them durably
+	// - so what the stop writes is what the reload settles from.
+	database!.exec("PRAGMA query_only = OFF");
+	await runtime.stop();
+
+	const reloaded = new NativeMutationRuntime(sharedDatabase);
+	await reloaded.start();
+	expect(await reloaded.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await reloaded.stop();
 });
 
 // SQLITE_FULL rolls the transaction back itself, so the savepoint's own
@@ -1974,6 +2006,27 @@ test("a stale failed start cannot clear a newer successful start", async () => {
 	// The runtime is still started, so this stop releases the acquired timer.
 	await runtime.stop();
 	expect(cleared).toEqual([1]);
+});
+
+test("a start racing a stop keeps the outbox it acquires", async () => {
+	const { runtime, intervals, cleared } = timerRecordingRuntime();
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	// A start that begins while a stop is in flight owns the outbox it
+	// acquires: the stop may release only what the earlier start acquired,
+	// never the newer start's, or the runtime reports itself started over an
+	// outbox whose timer and listeners are gone.
+	const stopping = runtime.stop();
+	const restarting = runtime.start();
+	await stopping;
+	await restarting;
+
+	expect(intervals).toHaveLength(2);
+	expect(cleared).toEqual([1]);
+	await runtime.stop();
+	expect(cleared).toEqual([1, 2]);
 });
 
 test("a concurrent start shares a failing attempt's rejection", async () => {

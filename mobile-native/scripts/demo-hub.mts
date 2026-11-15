@@ -574,6 +574,12 @@ export async function createDemoHub(
 						result = { thread: created, turn };
 						break;
 					}
+					case "evener/thread/history/read":
+					case "evener/thread/history/turns/list":
+						// This fixture serves legacy history, without serving facts.
+						throw new WireError("Method not implemented by demonstration server", -32601, {
+							evenerErrorInfo: "methodNotFound",
+						});
 					case "thread/read":
 						if (!selected) throw new Error("Unknown demonstration session");
 						if (params.subscribe) {

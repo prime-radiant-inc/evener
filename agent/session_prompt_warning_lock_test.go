@@ -257,3 +257,33 @@ func TestSwapEnvAndRefreshReportsRenderFailureWithoutSelfDeadlock(t *testing.T) 
 	default:
 	}
 }
+
+func TestSetGoalReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
+	forceSystemPromptRenderFailure(t)
+	s := promptWarningSession(t)
+
+	awaitOrFail(t, "SetGoal with a failing prompt render", func() {
+		if _, err := s.SetGoal(context.Background(), "test goal"); err != nil {
+			t.Errorf("SetGoal: %v", err)
+		}
+	})
+
+	if !sawRenderFailureWarning(s) {
+		t.Fatal("no warning emitted: the render failure was swallowed")
+	}
+}
+
+func TestClearGoalReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
+	forceSystemPromptRenderFailure(t)
+	s := promptWarningSession(t)
+
+	awaitOrFail(t, "ClearGoal with a failing prompt render", func() {
+		if err := s.ClearGoal(); err != nil {
+			t.Errorf("ClearGoal: %v", err)
+		}
+	})
+
+	if !sawRenderFailureWarning(s) {
+		t.Fatal("no warning emitted: the render failure was swallowed")
+	}
+}

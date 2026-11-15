@@ -59,13 +59,19 @@ func (s *Session) worktreeDispose(ctx context.Context, id string, force, forceDi
 func isDelegateID(id string) bool { return strings.HasPrefix(id, "dlg_") }
 
 // disposeOwnerError maps an ownership or snapshot error to the model-facing
-// invalid_request form. A delegate this session cannot control gets the named
-// refusal rather than the generic busy path.
+// invalid_request form for dispose. A delegate this session cannot control
+// gets the named refusal rather than the generic busy path.
 func disposeOwnerError(id string, err error) error {
+	return worktreeDelegateOwnerError("dispose", id, err)
+}
+
+// worktreeDelegateOwnerError maps an ownership or snapshot error to the
+// model-facing invalid_request form for a delegate-lane operation.
+func worktreeDelegateOwnerError(op, id string, err error) error {
 	if errors.Is(err, errDelegateNotControllable) {
-		return fmt.Errorf("invalid_request: manage_worktree dispose: %s is not a direct worktree-isolated delegate of this session", id)
+		return fmt.Errorf("invalid_request: manage_worktree %s: %s is not a direct worktree-isolated delegate of this session: %w", op, id, err)
 	}
-	return fmt.Errorf("invalid_request: manage_worktree dispose: %w", err)
+	return fmt.Errorf("invalid_request: manage_worktree %s: %w", op, err)
 }
 
 // disposeDelegateLane performs explicit isolation disposal from the
@@ -137,34 +143,14 @@ func (s *Session) disposeDelegateLane(ctx context.Context, id string, force, for
 	laneDirPresent := laneWorktreePresent(lanePath)
 
 	if laneDirPresent {
-		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-			laneMain := resolveLaneMainRoot(local, lanePath)
-			if laneMain != "" && filepath.Clean(laneMain) != filepath.Clean(originalRoot) {
-				return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane at %s resolves to main root %s but its sidecar records %s; refusing on a provenance mismatch", id, lanePath, laneMain, originalRoot)
-			}
+		if laneMain, conflict := s.delegateLaneProvenanceConflict(lanePath, originalRoot); conflict {
+			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s lane at %s resolves to main root %s but its sidecar records %s; refusing on a provenance mismatch", id, lanePath, laneMain, originalRoot)
 		}
 	}
 	alreadyDisposedHalfRemoved := alreadyDisposed && !laneDirPresent
-	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has running or unfinished work; wait for it to finish", id)
-	}
-	if s.subtreeWatchesTargeting(id, state.descriptor.ChildSessionID) {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s is the target of an armed or pending watch send; clear the watch before disposing", id)
-	}
-
-	childID := state.descriptor.ChildSessionID
-	sub := s.subagents.get(childID)
-	if sub != nil && sub.sess != nil {
-		outstanding, outstandingErr := sub.sess.treeHasOutstandingWork()
-		if outstandingErr != nil {
-			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s subtree check: %w", id, outstandingErr)
-		}
-		if outstanding {
-			return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s still has outstanding work in its delegate subtree; wait for it to finish", id)
-		}
-	}
-	if shells := s.liveShellsUnderTree(lanePath); len(shells) > 0 {
-		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s has live background shell(s) rooted in its lane: %s", id, strings.Join(shells, ", "))
+	sub, liveErr := s.delegateLaneLiveWork("dispose", "disposing", id, state, lanePath, false)
+	if liveErr != nil {
+		return WorktreeDisposeResult{}, liveErr
 	}
 
 	gateArmed := false
@@ -230,6 +216,14 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		teardownChildSession(ctx, sub.sess)
 		s.subagents.removeSession(state.descriptor.ChildSessionID, sub.sess)
 	}
+	// The child record is gone, so the controller pointer must go with it:
+	// cleanup that keeps the lane (late dirty residue, a failed git call) leaves
+	// a retry able to proceed instead of refusing it as an untracked runtime.
+	runtime := state.runtime
+	if runtime == nil && sub != nil {
+		runtime = sub.sess
+	}
+	s.delegateController.detachReleasedLaneRuntime(id, runtime)
 	lane := isolationLane{delegateID: id, path: lanePath, branch: branch}
 	if branch == "" {
 		// A lane record that reaches disposal without a resolved branch (a
@@ -390,9 +384,19 @@ func disposeAlreadyDisposedGone(id, lanePath string, scErr error) WorktreeDispos
 // delegate revival's control-env dance. It fails closed when the session env is
 // not local or the control sandbox policy cannot be satisfied.
 func (s *Session) delegateDisposeControlEnv(originalRoot string) (execenv.ExecutionEnvironment, error) {
+	return s.delegateLaneControlEnv(originalRoot)
+}
+
+// delegateLaneControlEnv builds the git control env for an operation on one
+// delegate lane rooted at the sidecar's OriginalRoot (spec §P1: the main repo
+// root, resolved from the sidecar rather than by walking up from the possibly
+// gone lane), mirroring delegate revival's control-env dance. It fails closed
+// when the session env is not local or the control sandbox policy cannot be
+// satisfied.
+func (s *Session) delegateLaneControlEnv(originalRoot string) (execenv.ExecutionEnvironment, error) {
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
-		return nil, errors.New("dispose requires a local execution environment")
+		return nil, errors.New("delegate lane operations require a local execution environment")
 	}
 	controlEnv := local.WithWorkingDirectory(originalRoot)
 	if err := controlEnv.SandboxReRootError(); err != nil {
@@ -402,6 +406,67 @@ func (s *Session) delegateDisposeControlEnv(originalRoot string) (execenv.Execut
 		return nil, err
 	}
 	return controlEnv, nil
+}
+
+// delegateLaneProvenanceConflict reports whether lanePath resolves to a
+// different main root than the sidecar records. A conflict means the lane at
+// that path may belong to another checkout, so no operation may run git from
+// the recorded root against it.
+func (s *Session) delegateLaneProvenanceConflict(lanePath, originalRoot string) (string, bool) {
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return "", false
+	}
+	laneMain := resolveLaneMainRoot(local, lanePath)
+	if laneMain == "" || filepath.Clean(laneMain) == filepath.Clean(originalRoot) {
+		return "", false
+	}
+	return laneMain, true
+}
+
+// delegateLaneLiveWork clears the quiescence ladder shared by dispose and
+// unlock: the delegate may have no running or unfinished work, no armed or
+// pending watch send targeting it, no outstanding work in its delegate
+// subtree, and no live background shell rooted in its lane. It returns the
+// resident child subagent, when one is tracked, so the caller can arm the
+// dispose gate and release that exact runtime. op and action name the caller in
+// the refusal ("dispose"/"disposing", "unlock"/"unlocking"). allowSpentTeardown
+// skips the child's subtree read when its one-time teardown pass is already
+// spent: its job store is closed, so the read errors rather than observing
+// work, and a spent pass means the child is closing and cannot run. Dispose
+// keeps the strict read; unlock needs the skip so #4530's retry can proceed
+// after a release that reported failure after consuming the pass.
+func (s *Session) delegateLaneLiveWork(op, action, id string, state delegateWorktreeSnapshot, lanePath string, allowSpentTeardown bool) (*subagent, error) {
+	if state.active || state.currentRunOpen || state.pendingStopSeq != 0 {
+		return nil, fmt.Errorf("manage_worktree %s: %s still has running or unfinished work; wait for it to finish", op, id)
+	}
+	if s.subtreeWatchesTargeting(id, state.descriptor.ChildSessionID) {
+		return nil, fmt.Errorf("manage_worktree %s: %s is the target of an armed or pending watch send; clear the watch before %s", op, id, action)
+	}
+
+	childID := state.descriptor.ChildSessionID
+	sub := s.subagents.get(childID)
+	if state.runtime != nil && (sub == nil || sub.sess == nil) {
+		// The controller still names a resident runtime that is not in the
+		// subagent registry: the operation cannot verify or release it, so no
+		// lane handoff may proceed under it.
+		return nil, fmt.Errorf("manage_worktree %s: %s has a resident runtime that is not tracked in the subagent registry; refusing: %w", op, id, errWorktreeLaneRuntimeUntracked)
+	}
+	if sub != nil && sub.sess != nil {
+		if !allowSpentTeardown || !sub.sess.retirementTeardownSpent() {
+			outstanding, outstandingErr := sub.sess.treeHasOutstandingWork()
+			if outstandingErr != nil {
+				return nil, fmt.Errorf("manage_worktree %s: %s subtree check: %w", op, id, outstandingErr)
+			}
+			if outstanding {
+				return nil, fmt.Errorf("manage_worktree %s: %s still has outstanding work in its delegate subtree; wait for it to finish", op, id)
+			}
+		}
+	}
+	if shells := s.liveShellsUnderTree(lanePath); len(shells) > 0 {
+		return nil, fmt.Errorf("manage_worktree %s: %s has live background shell(s) rooted in its lane: %s", op, id, strings.Join(shells, ", "))
+	}
+	return sub, nil
 }
 
 // laneWorktreePresent reports whether the lane directory still exists as a

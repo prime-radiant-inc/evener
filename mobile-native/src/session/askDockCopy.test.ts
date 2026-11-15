@@ -89,6 +89,13 @@ describe("the approval's words (spec 8.4, ruling 12)", () => {
 		});
 	});
 
+	it("names the resolved target and the agent's spelling when a symlink made them differ", () => {
+		expect(
+			approvalCard(request({ deniedPath: "/private/tmp/real/out.txt", requestedPath: "/tmp/link/out.txt" })),
+		).toMatchObject({ target: "/private/tmp/real/out.txt", requestedAs: "/tmp/link/out.txt" });
+		expect(approvalCard(request())).toMatchObject({ requestedAs: "" });
+	});
+
 	it("names a read, and a write in a read-only session, each its own way", () => {
 		const write = approvalCard(request());
 		const read = approvalCard(request({ tool: "read_file" }));

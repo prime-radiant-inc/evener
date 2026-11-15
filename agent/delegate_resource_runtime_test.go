@@ -29,6 +29,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -410,11 +411,10 @@ func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testi
 	go func() {
 		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "generation two restore failure", 60_000)
 	}()
-	// TRIPWIRE: the generation-two send has no dedicated completion signal -- it
-	// queues behind the prior delivery under c.mu -- so this polls the
-	// aggregate directly. The queue is set synchronously under the lock well
-	// before this returns; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "post-commit failure queued behind prior delivery", func() bool {
+	// The generation-two send has no dedicated completion signal -- it queues
+	// behind the prior delivery under c.mu -- so this polls the aggregate
+	// directly.
+	testwait.Until(t, "post-commit failure queued behind prior delivery", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		aggregate := c.durable[fixture.delegateID]
@@ -691,11 +691,10 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 	go func() {
 		sendDone <- (delegateRuntime{owner: root}).send(ctx, fixture.delegateID, "failed generation two", 60_000)
 	}()
-	// TRIPWIRE: the failed-generation send has no dedicated completion signal --
-	// it queues behind the prior delivery under c.mu -- so this polls the
-	// aggregate directly. The queue is set synchronously under the lock well
-	// before this returns; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "failed generation queued behind prior delivery", func() bool {
+	// The failed-generation send has no dedicated completion signal -- it
+	// queues behind the prior delivery under c.mu -- so this polls the
+	// aggregate directly.
+	testwait.Until(t, "failed generation queued behind prior delivery", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		aggregate := c.durable[fixture.delegateID]
@@ -1646,10 +1645,7 @@ func currentDelegateStop(t *testing.T, controller *delegateTreeController) *dele
 func awaitDelegateStopAdmission(t *testing.T, controller *delegateTreeController) *delegateStopState {
 	t.Helper()
 	var stop *delegateStopState
-	// TRIPWIRE: admission is a durable fsync + local drive, measured at
-	// 5-17ms across 1200 samples with the whole module under -race on a
-	// saturated box; 5s only absorbs pathological CI stalls.
-	waitForCondition(t, 5*time.Second, "stable stop admission", func() bool {
+	testwait.Until(t, "stable stop admission", func() bool {
 		controller.mu.Lock()
 		defer controller.mu.Unlock()
 		stop = controller.stop

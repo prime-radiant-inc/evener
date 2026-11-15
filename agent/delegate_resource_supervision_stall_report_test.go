@@ -173,7 +173,7 @@ func stableSupervisionRefusalWithin(t *testing.T, sub *subagent) string {
 }
 
 // TestStableSupervisionRefusalNeverBlocksWhileASourceLockIsHeld pins the
-// predicate's reason to be non-blocking. waitForCondition calls it inline under
+// predicate's reason to be non-blocking. testwait.Until calls it inline under
 // a 30s bound, so a predicate that waits on a runtime lock production holds
 // keeps the bound from ever firing and the timeout report from #4513 from ever
 // running. Holding any single source lock must still return the predicate, and

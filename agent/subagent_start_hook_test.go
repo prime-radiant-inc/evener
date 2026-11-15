@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -183,9 +184,7 @@ func (f subagentStartFixture) waitForChildRunComplete(t *testing.T, childID stri
 func firstRequestFor(t *testing.T, adapter *agenttest.ScriptedAdapter, childID string) llm.Request {
 	t.Helper()
 	var request llm.Request
-	// TRIPWIRE: in-process scripted models and local shell hooks, so only a
-	// genuine hang reaches 30s.
-	waitForCondition(t, 30*time.Second, "the child's first provider request", func() bool {
+	testwait.Until(t, "the child's first provider request", func() bool {
 		for _, candidate := range adapter.Requests() {
 			if candidate.SessionID == childID {
 				request = candidate
@@ -295,9 +294,7 @@ func TestSubagentStart_SecondLaunchDoesNotDuplicateContext(t *testing.T) {
 	if !started {
 		t.Fatal("the second launch was steered into the first run instead of starting a new one")
 	}
-	// TRIPWIRE: in-process scripted models and local shell hooks, so only a
-	// genuine hang reaches 30s.
-	waitForCondition(t, 30*time.Second, "the second SubagentStart hook run", func() bool {
+	testwait.Until(t, "the second SubagentStart hook run", func() bool {
 		return subagentStartRunCount(t, fixture.marker) == 2
 	})
 	fixture.waitForChildRunComplete(t, created.ChildSessionID)
@@ -346,9 +343,7 @@ func TestSubagentStart_ContinueFalseStopsTheChildRun(t *testing.T) {
 	if status != SubagentCompleted || result != stopReason {
 		t.Fatalf("stopped child settled as %q/%q, want %q/%q", status, result, SubagentCompleted, stopReason)
 	}
-	// TRIPWIRE: in-process scripted models and local shell hooks, so only a
-	// genuine hang reaches 30s.
-	waitForCondition(t, 30*time.Second, "the stopped reason to reach the operator", func() bool {
+	testwait.Until(t, "the stopped reason to reach the operator", func() bool {
 		for _, warning := range warnings.snapshot() {
 			if strings.Contains(warning.Message, stopReason) {
 				return true
@@ -385,9 +380,7 @@ func TestSubagentStart_FailedHookLeavesTheChildRunning(t *testing.T) {
 	created := fixture.createDelegateThroughTheTool(t)
 
 	firstRequestFor(t, fixture.adapter, created.ChildSessionID)
-	// TRIPWIRE: in-process scripted models and local shell hooks, so only a
-	// genuine hang reaches 30s.
-	waitForCondition(t, 30*time.Second, "the failed-hook warning", func() bool {
+	testwait.Until(t, "the failed-hook warning", func() bool {
 		for _, warning := range warnings.snapshot() {
 			// The line names the event, the hook's configured identity, the exit
 			// code, and the first line of its stderr — one operator line, never
@@ -477,9 +470,7 @@ func TestSubagentStart_ReinjectsAfterTheCopyIsCompactedAway(t *testing.T) {
 	if err != nil || !started {
 		t.Fatalf("second launch = started %t, err %v; want a new run", started, err)
 	}
-	// TRIPWIRE: in-process scripted models and local shell hooks, so only a
-	// genuine hang reaches 30s.
-	waitForCondition(t, 30*time.Second, "the second SubagentStart hook run", func() bool {
+	testwait.Until(t, "the second SubagentStart hook run", func() bool {
 		return subagentStartRunCount(t, fixture.marker) == 2
 	})
 	fixture.waitForChildRunComplete(t, created.ChildSessionID)

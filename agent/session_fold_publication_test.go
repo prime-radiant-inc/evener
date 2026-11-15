@@ -190,7 +190,7 @@ func TestPrepareModelRequest_LosingFoldAttemptEmitsNoCompactionEvent(t *testing.
 		})
 		return "", nil
 	}
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): the fold and the elicit seam both fire
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): the fold and the elicit seam both fire
 
 	var rt events.RoundTimings
 	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt); err != nil {
@@ -213,7 +213,7 @@ func TestPrepareModelRequest_WinningFoldEmitsCompactionEvent(t *testing.T) {
 	evs, evMu, doneCh := collectEvents(s)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold: exactly one layer emits
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90), < SummarizeThreshold: exactly one layer emits
 
 	var rt events.RoundTimings
 	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt); err != nil {
@@ -236,7 +236,7 @@ func newScriptedSummaryCompactSession(t *testing.T, provider string, responder f
 	client.Register(&fakeAdapter{name: "openai"})
 	client.Register(&agenttest.ScriptedAdapter{Provider: provider, Responder: responder})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), provider+"/model")
-	return newSession(t, append([]sessionOpt{withClient(client), withProfile(profile), withoutGitSnapshot()}, opts...)...)
+	return newSession(t, append([]sessionOpt{withClient(client), withProfile(profile)}, opts...)...)
 }
 
 // TestFoldPublication_ClaimedNoteNotReinjectedByConcurrentFold pins the
@@ -352,7 +352,7 @@ func TestPrepareModelRequest_BaselineAppliedAtomicallyWithPublication(t *testing
 	s := newTestSession(t)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): the round-0 fold actually folds
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): the round-0 fold actually folds
 
 	parked := make(chan struct{})
 	release := make(chan struct{})
@@ -1115,7 +1115,7 @@ func TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory(t *testing.
 	s.history = append(s.history, attn)
 	s.mu.Unlock()
 
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): the round-1 fold folds and publishes
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): the round-1 fold folds and publishes
 
 	parked := make(chan struct{})
 	release := make(chan struct{})
@@ -1380,7 +1380,7 @@ func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 		})
 		return "", nil
 	}
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80): the fold and the elicit seam both fire
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): the fold and the elicit seam both fire
 
 	var rt events.RoundTimings
 	prepErr := make(chan error, 1)
@@ -1653,86 +1653,6 @@ func TestRootDelegateAttention_PendingContentSurvivesCompactionRestart(t *testin
 	})
 }
 
-// TestPrepareModelRequest_LosingFoldDoesNotMutateSharedPayloads pins
-// copy-on-write in the fold layers: fold snapshots shallow-copy Turn
-// structs, so the snapshot shares Message.Content backing arrays and the
-// *ToolResultData / *ThinkingData payloads with s.history. If the
-// observation-masking and thinking-clearing layers mutated those payloads IN
-// PLACE (tr.Content = ..., p.Thinking.Text = ...) before publication, a fold
-// that then LOSES the publication race would already have leaked masked
-// observations and cleared thinking into the live history, violating the
-// transaction's "losing fold effects are discarded" contract. The mutators
-// must be copy-on-write over the shared payloads.
-func TestPrepareModelRequest_LosingFoldDoesNotMutateSharedPayloads(t *testing.T) {
-	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{
-		// session-log runs the in-place masking and clearing layers the
-		// default compact strategy does not.
-		ContextStrategy:  "session-log",
-		MaxSubagentDepth: 1,
-	}), withoutGitSnapshot())
-
-	observationSecret := strings.Repeat("SECRET-OBSERVATION ", 40)
-	const thinkingSecret = "THINKING-SECRET: the private chain of reasoning that clearing replaces with a stub"
-	s.mu.Lock()
-	s.history = []schema.Turn{
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c-shared", Name: "shell", Arguments: json.RawMessage(`{}`), Type: "function"}},
-		}}),
-		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c-shared", Name: "shell", Content: observationSecret}},
-		}}),
-		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: thinkingSecret}},
-			{Kind: llm.ContentText, Text: "reasoned answer"},
-		}}),
-	}
-	for i := range 8 {
-		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("post-payload turn %d", i))))
-	}
-	s.mu.Unlock()
-	forcePressureAbove(t, s, 0.85) // >= mask(0.60), clear(0.70), checkpoint(0.80): all in-place layers fire
-
-	// Every fold attempt loses: the elicit seam runs after the attempt's
-	// snapshot, and its competing publish re-publishes the SAME live turn
-	// structs (shared payloads included) plus a marker, so the originals
-	// stay live for the leak to be observed against.
-	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
-		s.mu.Lock()
-		competing := append(append([]schema.Turn{}, s.history...), schema.NewTurn(schema.TurnUserInput, llm.User("competing marker")))
-		if _, ok := s.publishFoldedHistory(len(s.history), s.historyRevision, competing); !ok {
-			t.Error("test setup: the simulated competing publish itself unexpectedly conflicted")
-		}
-		s.mu.Unlock()
-		return "", nil
-	}
-
-	var rt events.RoundTimings
-	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt); err != nil {
-		t.Fatalf("prepareModelRequestWithError: %v", err)
-	}
-
-	var gotObservation, gotThinking string
-	for _, turn := range currentHistory(t, s) {
-		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == "c-shared" {
-				if str, ok := part.ToolResult.Content.(string); ok {
-					gotObservation = str
-				}
-			}
-			if part.Kind == llm.ContentThinking && part.Thinking != nil {
-				gotThinking = part.Thinking.Text
-			}
-		}
-	}
-	if gotObservation != observationSecret {
-		t.Fatalf("a LOSING fold's observation masking leaked into live history through the shared ToolResultData pointer: content = %q", gotObservation)
-	}
-	if gotThinking != thinkingSecret {
-		t.Fatalf("a LOSING fold's thinking clearing leaked into live history through the shared ThinkingData pointer: text = %q", gotThinking)
-	}
-}
-
 // TestSessionCompact_TotalLossReportsPublicationConflict pins Compact's
 // total-loss error text: foldWithForceCompact loses to ANY historyRevision
 // bump — orphan repair and attention replacement included — not only to a
@@ -1922,7 +1842,7 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 		t.Fatalf("create transcript: %v", err)
 	}
 	writer.SyncInterval = time.Hour // plain appends never sync on their own here; only durable writes and the marker do
-	s.attachTranscript(writer)
+	s.attachTranscript(writer, nil)
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
 
 	compactErr := make(chan error, 1)

@@ -277,7 +277,7 @@ type worktreeGuard struct {
 	// cannot collaterally discard an uncommitted edit.
 	removeOp func(ctx context.Context, name string, force, forceDirty, deleteBranch bool) (WorktreeRemoveResult, error)
 	// listOp runs the list operation (spec §5 list, all three steps).
-	listOp func(ctx context.Context) ([]WorktreeListEntry, error)
+	listOp func(ctx context.Context, pagination ...int) (WorktreeListResult, error)
 	// pruneOp runs the prune operation (spec §5 prune, all three sweeps).
 	// orphanedDelegateDays arms the orphan reclaim arm (#5471) when > 0.
 	pruneOp func(ctx context.Context, orphanedDelegateDays float64) (WorktreePruneResult, error)
@@ -286,6 +286,10 @@ type worktreeGuard struct {
 	// forceDirty separately overrides an uncommitted-changes refusal (orthogonal,
 	// like remove).
 	disposeOp func(ctx context.Context, id string, force, forceDirty bool) (WorktreeDisposeResult, error)
+	// unlockOp runs the unlock operation (issue #481): release a direct
+	// worktree-isolated delegate's evener:dlg: lane lock without retiring the
+	// delegate or touching its resumability, worktree, branch or work.
+	unlockOp func(ctx context.Context, id string) (WorktreeUnlockResult, error)
 	// disposeOnly reports whether this session is served the dispose-only
 	// manage_worktree surface (delegate-lane disposal spec §P1 "Availability"):
 	// a worktree-isolated coordinator that may only dispose its own delegates'
@@ -331,6 +335,13 @@ func (s *Session) serveDisposeOnlyWorktreeTool() {
 // only safe answer is to run nothing at all.
 var errWorktreeOpWhileClosing = errors.New("the session is closing; operation refused")
 
+var (
+	// ErrWorktreeInvalidLimit is returned when manage_worktree list receives a limit <= 0.
+	ErrWorktreeInvalidLimit = errors.New("limit must be greater than 0")
+	// ErrWorktreeInvalidOffset is returned when manage_worktree list receives a negative offset.
+	ErrWorktreeInvalidOffset = errors.New("offset must be non-negative")
+)
+
 // worktreeOpLabel names a manage_worktree call for a close-fence warning: the
 // operation, and the target it acts on when the arguments carry one. The
 // argument names are the schema's own (name for create/switch/remove, path for
@@ -365,7 +376,7 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 			// worktrees would be able to force-remove sibling lanes the parent
 			// created; see rootOnlyWorktreeTools).
 			if operation != "dispose" && deps.worktreeGuard.disposeOnly != nil && deps.worktreeGuard.disposeOnly() {
-				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, or pruning worktrees could disturb the sibling lanes your parent created", operation)
+				return nil, fmt.Errorf("manage_worktree %s: refused — you run inside your own isolation worktree lane, so you may only dispose your own delegates' lanes (operation=dispose); creating, switching, listing, removing, pruning, or unlocking worktrees could disturb the sibling lanes your parent created", operation)
 			}
 			// Admit the WHOLE operation on the close fence, here, at the one
 			// entry every operation passes through (worktreeGuard is wired only
@@ -523,25 +534,76 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}
 				return out, nil
 			case "list":
-				entries, err := deps.worktreeGuard.listOp(ctx)
+				limit := defaultWorktreeListLimit
+				var hasLimit bool
+				if raw, ok := args["limit"]; ok {
+					hasLimit = true
+					switch v := raw.(type) {
+					case float64:
+						if v <= 0 {
+							return nil, ErrWorktreeInvalidLimit
+						}
+						limit = int(min(v, 1<<30))
+					case int:
+						if v <= 0 {
+							return nil, ErrWorktreeInvalidLimit
+						}
+						limit = v
+					default:
+						return nil, fmt.Errorf("invalid limit type %T", raw)
+					}
+				}
+				if limit > maxWorktreeListLimit {
+					limit = maxWorktreeListLimit
+				}
+
+				offset := 0
+				var hasOffset bool
+				if raw, ok := args["offset"]; ok {
+					hasOffset = true
+					switch v := raw.(type) {
+					case float64:
+						if v < 0 {
+							return nil, ErrWorktreeInvalidOffset
+						}
+						offset = int(min(v, 1<<30))
+					case int:
+						if v < 0 {
+							return nil, ErrWorktreeInvalidOffset
+						}
+						offset = v
+					default:
+						return nil, fmt.Errorf("invalid offset type %T", raw)
+					}
+				}
+
+				res, err := deps.worktreeGuard.listOp(ctx, limit, offset)
 				if err != nil {
 					return nil, err
 				}
-				managed, unmanaged := partitionWorktreeListEntries(entries)
-				out := make([]map[string]any, len(managed))
-				for i, e := range managed {
+				out := make([]map[string]any, len(res.Entries))
+				for i, e := range res.Entries {
 					out[i] = worktreeListEntryToMap(e)
 				}
-				strays := make([]map[string]any, len(unmanaged))
-				for i, e := range unmanaged {
+				strays := make([]map[string]any, len(res.Unmanaged))
+				for i, e := range res.Unmanaged {
 					strays[i] = worktreeUnmanagedEntryToMap(e)
 				}
-				return map[string]any{
+				ret := map[string]any{
 					"status":    "listed",
 					"entries":   out,
 					"unmanaged": strays,
-					"message":   worktreeListSummary(managed, unmanaged),
-				}, nil
+					"message":   worktreeListSummaryPagedWithTotals(res.Entries, res.Unmanaged, res.Truncated, res.NextOffset, res.TotalEntries, res.TotalUnmanaged),
+				}
+				if res.Truncated || hasLimit || hasOffset || offset > 0 {
+					ret["total_entries"] = res.TotalEntries
+					ret["total_unmanaged"] = res.TotalUnmanaged
+					ret["truncated"] = res.Truncated
+					if res.Truncated {
+						ret["next_offset"] = res.NextOffset
+					}
+				}
+				return ret, nil
 			case "prune":
 				orphanedDays, _ := args["orphaned_delegate_days"].(float64)
 				if orphanedDays > 0 && orphanedDays < minOrphanedDelegateDays {
@@ -586,6 +648,19 @@ func registerWorktreeTool(reg *tool.Registry, deps *toolDeps) {
 				}
 				return map[string]any{
 					"status":  status,
+					"id":      res.DelegateID,
+					"path":    res.LanePath,
+					"branch":  res.Branch,
+					"message": res.Message,
+				}, nil
+			case "unlock":
+				id, _ := args["id"].(string)
+				res, err := deps.worktreeGuard.unlockOp(ctx, id)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"status":  "unlocked",
 					"id":      res.DelegateID,
 					"path":    res.LanePath,
 					"branch":  res.Branch,

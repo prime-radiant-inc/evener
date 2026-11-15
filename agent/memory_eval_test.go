@@ -1172,42 +1172,28 @@ func TestMemoryEvalChildBoundaries(t *testing.T) {
 	}
 }
 
-// Use a Linux-only helper program rather than importing Linux syscalls into
-// this cross-platform test package. No mount atime assumption and no product
-// hook: every watched fixture file passes an actual IN_OPEN/IN_ACCESS control.
+// memoryEvalAmbientWatcherEnv marks a re-executed test binary as the ambient
+// read watcher (memory_eval_watch_linux_test.go). The already-built test binary
+// serves as the watcher, so starting it compiles nothing.
+const memoryEvalAmbientWatcherEnv = "EVENER_MEMORY_EVAL_AMBIENT_WATCHER"
+
+// memoryEvalTrackAmbientReads starts a watcher process over paths and returns a
+// stop function that fails the test when any watched fixture file was opened or
+// accessed since the watcher reported ready. Every watched fixture file passes
+// an actual IN_OPEN/IN_ACCESS control first.
 func memoryEvalTrackAmbientReads(t *testing.T, paths []string) func() {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Skip("offline ambient-read observation requires Linux inotify")
 	}
-	root := t.TempDir()
-	path := filepath.Join(root, "watch.go")
-	source := `package main
-import ("fmt";"os";"syscall")
-func main() {
- fd,err:=syscall.InotifyInit1(syscall.IN_NONBLOCK|syscall.IN_CLOEXEC);if err!=nil {panic(err)};defer syscall.Close(fd)
- buffer:=make([]byte,65536)
- for _,path:=range os.Args[1:] {
-  if _,err:=syscall.InotifyAddWatch(fd,path,syscall.IN_OPEN|syscall.IN_ACCESS);err!=nil {panic(err)}
-  if _,err:=os.ReadFile(path);err!=nil {panic(err)}
-  n,err:=syscall.Read(fd,buffer);if err!=nil||n==0 {panic("positive inotify read control failed")}
- }
- fmt.Println("READY")
- var signal [1]byte;os.Stdin.Read(signal[:])
- n,err:=syscall.Read(fd,buffer)
- if err!=nil && err!=syscall.EAGAIN {panic(err)}
- if n>0 {fmt.Fprintln(os.Stderr,"ambient fixture file content was opened or accessed");os.Exit(1)}
-}
-`
-	memoryEvalWrite(t, path, source)
-	// TRIPWIRE: readiness and shutdown use the watcher pipe and process exit, two minutes only bounds a wedged offline build or watcher.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	if memoryEvalToolchainError != nil {
-		cancel()
-		t.Fatal(memoryEvalToolchainError)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(ctx, filepath.Join(memoryEvalToolchainRoot, "bin", "go"), append([]string{"run", path}, paths...)...)
-	cmd.Env = []string{"PATH=" + filepath.Join(memoryEvalToolchainRoot, "bin") + ":/usr/bin:/bin", "GOROOT=" + memoryEvalToolchainRoot, "GOENV=off", "HOME=" + root, "GOCACHE=" + filepath.Join(root, "cache"), "GOTOOLCHAIN=local", "GOPROXY=off", "GOWORK=off", "GOMAXPROCS=2"}
+	// TRIPWIRE: readiness and shutdown use the watcher pipe and process exit, two minutes only bounds a wedged watcher.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	cmd := exec.CommandContext(ctx, self, paths...)
+	cmd.Env = []string{memoryEvalAmbientWatcherEnv + "=1"}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

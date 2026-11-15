@@ -2,7 +2,7 @@
 // Covers generation safety, notification routing, draft preservation,
 // conflict restore, and no auto-retry.
 
-import type { ThreadItem, Turn } from "@evener/appwire-client";
+import type { ThreadItem, ThreadTurnsListResponse, Turn } from "@evener/appwire-client";
 import { sessionTokens } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { MobileConversation, MobileTimelineItem } from "../../projectedRows";
@@ -94,6 +94,106 @@ describe("ConversationStore", () => {
 
 			// The stale results should not have been applied.
 			expect(store.getState().conversation).toBeNull();
+		});
+
+		it("discards a live page when a rehydrate installs a saved view during the await", async () => {
+			const service = new FakeConversationService();
+			service.readProjectionResult = makeReadProjectionResult(
+				makeThread({ turns: [makeTurn({ id: "t0", items: [userMessageItem("u1", "live")] })] }),
+				ALL_TRUE_CAPS,
+				true,
+			);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.setState({ olderCursor: "live-cursor" });
+
+			let release = null as (() => void) | null;
+			const heldPage = new Promise<{ turnsPage: ThreadTurnsListResponse; nextCursor?: string }>((resolve) => {
+				release = () =>
+					resolve({
+						turnsPage: turnsPage([wireTurnFragment("t-old", [userMessageItem("u-old", "older")])], "page-3"),
+					});
+			});
+			service.olderItems = heldPage as never;
+			const page = store.getState().loadOlder(service);
+
+			// The page belongs to the live projection. While it is in flight a
+			// read served by the saved index installs that view and keeps the
+			// live continuation for recovery; the retired live page must not
+			// clear the view or adopt its own cursor.
+			const saved = makeReadProjectionResult(
+				makeThread({ turns: [makeTurn({ id: "t0", items: [userMessageItem("u1", "live")] })] }),
+				ALL_TRUE_CAPS,
+				true,
+			);
+			saved.conversation.servingFacts = { servedFrom: "saved-index", fallbackReason: "live-read-failed" };
+			saved.olderCursor = "live-cursor";
+			service.readProjectionResult = saved;
+			await store.getState().rehydrate(service);
+			const installed = store.getState().savedView;
+			expect(installed).not.toBeNull();
+
+			release?.();
+			await page;
+
+			expect(store.getState().savedView?.identity).toBe(installed?.identity);
+			expect(store.getState().olderCursor).toBe("live-cursor");
+			expect(store.getState().loadingOlder).toBe(false);
+		});
+
+		it("installs a saved view when the page itself falls back, then recovers live", async () => {
+			const service = new FakeConversationService();
+			service.readProjectionResult = makeReadProjectionResult(
+				makeThread({ turns: [makeTurn({ id: "t0", items: [userMessageItem("u1", "live")] })] }),
+				ALL_TRUE_CAPS,
+				true,
+			);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			store.setState({ olderCursor: "live-cursor" });
+
+			// The daemon is gone when this page is asked for: the hub answers it
+			// from the saved index and stamps the page as a fallback.
+			service.olderItems = {
+				turnsPage: {
+					...turnsPage(
+						[
+							wireTurnFragment("t-old", [
+								{ ...userMessageItem("u-old", "older"), turnId: "t-old", position: { entry: 1, item: 0 } },
+							]),
+						],
+						"saved-cursor",
+					),
+					servedFrom: "saved-index",
+					fallbackReason: "live-read-failed",
+					asOf: "2026-11-08T19:00:00Z",
+					snapshot: { incarnation: "saved-child", length: 40 },
+				} as ThreadTurnsListResponse,
+				nextCursor: "saved-cursor",
+			};
+			await store.getState().loadOlder(service);
+
+			expect(store.getState().savedView).not.toBeNull();
+			expect(store.getState().olderCursor).toBe("live-cursor");
+			expect(store.getState().conversation?.servingFacts?.servedFrom).toBe("saved-index");
+
+			// Paging now belongs to the saved view: cursor-free from the oldest
+			// held row, never the saved index's own continuation.
+			await store.getState().loadOlder(service);
+			expect(service.olderRequests.at(-1)?.cursor).toBeNull();
+
+			// A live read restores the live view without a stale saved cursor.
+			service.readProjectionResult = {
+				...makeReadProjectionResult(
+					makeThread({ turns: [makeTurn({ id: "t0", items: [userMessageItem("u1", "live")] })] }),
+					ALL_TRUE_CAPS,
+					true,
+				),
+				olderCursor: "live-cursor",
+			};
+			await store.getState().rehydrate(service);
+			expect(store.getState().savedView).toBeNull();
+			expect(store.getState().olderCursor).toBe("live-cursor");
 		});
 	});
 

@@ -104,6 +104,7 @@ var (
 		"exportATIFProviderHandles":   func(l *Layer) *string { return &l.ExportATIFProviderHandles },
 	}
 	intFields = map[string]func(*Layer) **int{
+		"compactAtPercent":           func(l *Layer) **int { return &l.CompactAtPercent },
 		"maxRounds":                  func(l *Layer) **int { return &l.MaxRounds },
 		"maxSubagentDepth":           func(l *Layer) **int { return &l.MaxSubagentDepth },
 		"maxConcurrentDelegateTurns": func(l *Layer) **int { return &l.MaxConcurrentDelegateTurns },

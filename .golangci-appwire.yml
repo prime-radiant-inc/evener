@@ -1,7 +1,8 @@
 version: "2"
 
 run:
-  concurrency: 2
+  # One process per regime; 4 matches the main config's worker count.
+  concurrency: 4
 
 # AppWire and device voice JSON use camelCase inside packages whose other
 # surfaces use snake_case. tagliatelle's overrides are per PACKAGE, so the

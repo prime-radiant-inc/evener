@@ -24,11 +24,14 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/hubendpoint"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func endpointTestRoot(t *testing.T) (string, string) {
 	t.Helper()
-	root := t.TempDir()
+	// Endpoint reports name the config file by its canonical path, so the
+	// fixture root is canonical for the path comparisons built from it.
+	root := testfs.CanonicalTempDir(t)
 	t.Setenv("HOME", filepath.Join(root, "home"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
@@ -82,15 +85,21 @@ func TestEndpointConfigFileIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(root) // Relative selections belong to the hub process, not its controller.
-	for _, tc := range []struct{ name, selected, want string }{
-		{"absolute", config, config},
-		{"relative", "hub.toml", config},
-		{"symlink", "alias.toml", config},
-		{"dotdot", "physical/../hub.toml", config},
-		{"symlink-dotdot-equivalent", "link/../../hub.toml", config},
-		{"symlink-dotdot-different", "link/../hub.toml", other},
+	for _, tc := range []struct{ name, cwd, selected, want string }{
+		{"absolute", "", config, config},
+		{"relative", "", "hub.toml", config},
+		{"symlink", "", "alias.toml", config},
+		{"dotdot", "", "physical/../hub.toml", config},
+		{"symlink-dotdot-equivalent", "", "link/../../hub.toml", config},
+		{"symlink-dotdot-different", "", "link/../hub.toml", other},
+		// The kernel resolves .. from the physical cwd (physical/inner), while
+		// $PWD still spells the cwd through link.
+		{"symlinked-cwd-dotdot", "link", "../hub.toml", other},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.cwd != "" {
+				t.Chdir(filepath.Join(root, tc.cwd))
+			}
 			report := endpointCommand(t, tc.selected)
 			want, err := filepath.EvalSymlinks(tc.want)
 			if err != nil {

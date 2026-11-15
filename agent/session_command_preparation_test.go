@@ -22,7 +22,7 @@ import (
 func commandPreparationSession(t *testing.T, root, pluginDir string) (*Session, *agenttest.ScriptedAdapter) {
 	t.Helper()
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("done-1", "ok")) }}
-	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
+	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}))
 	_, stop := captureEvents(s)
 	t.Cleanup(stop)
 	return s, adapter

@@ -16,7 +16,7 @@
 // state, so assistive tech sees the drag as it happens; re-rendering one
 // empty div per frame is free.
 import { type KeyboardEvent, type PointerEvent, type RefObject, useState } from "react";
-import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN } from "../../stores/prefs";
+import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, sidebarWidthMin } from "../../stores/prefs";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./RailResizeHandle.module.css";
 
@@ -105,7 +105,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
         step(coarse);
         break;
       case "Home":
-        step(SIDEBAR_WIDTH_MIN - shownWidth);
+        step(sidebarWidthMin() - shownWidth);
         break;
       case "End":
         step(SIDEBAR_WIDTH_MAX - shownWidth);
@@ -131,7 +131,7 @@ export function RailResizeHandle({ width, onCommit, railRef }: RailResizeHandleP
       aria-orientation="vertical"
       aria-label="Resize sidebar"
       aria-valuenow={shownWidth}
-      aria-valuemin={SIDEBAR_WIDTH_MIN}
+      aria-valuemin={sidebarWidthMin()}
       aria-valuemax={SIDEBAR_WIDTH_MAX}
       tabIndex={0}
       className={CLASS.resizeHandle}

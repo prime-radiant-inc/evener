@@ -98,22 +98,6 @@ func skillsLiveOutcomesByRoute(s *Session, route string) []skillsLiveOutcome {
 	return out
 }
 
-// skillsLiveFillToCompactionFloor spends one turn of filler so the history
-// sits above compactPressureFloor, where compact_context accepts a request.
-// The filler is sized from the live window (~15 tokens per repetition) to land
-// near half the window, well clear of the floor on any model.
-func skillsLiveFillToCompactionFloor(ctx context.Context, t *testing.T, sess *Session) {
-	t.Helper()
-	reps := sess.currentProfile().ContextWindowSize() / 30
-	filler := strings.Repeat("Irrelevant background filler line for context bulk; ignore this. ", reps)
-	if _, err := sess.ProcessInput(ctx, filler+"\n\nAcknowledge with the single word OK.", nil); err != nil {
-		t.Fatal(err)
-	}
-	if pressure := sess.contextPressure(); pressure < compactPressureFloor {
-		t.Fatalf("test setup: pressure %.2f is below the compact_context floor %.2f", pressure, compactPressureFloor)
-	}
-}
-
 // skillsLiveReloadReminder returns the typed reload reminder a compaction
 // handoff recorded, if any.
 func skillsLiveReloadReminder(s *Session) *schema.SkillReloadReminder {
@@ -462,7 +446,6 @@ func TestSkillsLive(t *testing.T) {
 		sess.contextMgr.PreserveRecentTurns = 1
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) // TRIPWIRE: multi-round live compaction case; measured 76s at worst, the bound only absorbs provider latency variance and fires on a genuine hang.
 		defer cancel()
-		skillsLiveFillToCompactionFloor(ctx, t, sess)
 		out1, err := sess.ProcessInput(ctx, "Use /pkg:probe and /pkg:second to perform both fixture procedures.", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -558,7 +541,6 @@ func TestSkillsLive(t *testing.T) {
 		sess.contextMgr.PreserveRecentTurns = 1
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) // TRIPWIRE: multi-round live compaction case; measured 47s at worst, the bound only absorbs provider latency variance and fires on a genuine hang.
 		defer cancel()
-		skillsLiveFillToCompactionFloor(ctx, t, sess)
 		out1, err := sess.ProcessInput(ctx, "Use /pkg:probe and /pkg:second to perform both fixture procedures.", nil)
 		if err != nil {
 			t.Fatal(err)

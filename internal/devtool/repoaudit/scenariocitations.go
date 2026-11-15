@@ -1,0 +1,714 @@
+package repoaudit
+
+import (
+	"context"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// scenarioGoCitation matches a card pointing at a place inside a Go file: a
+// backticked path carrying an anchor, either the `#symbol` this convention
+// prefers or the `:line` hint it replaces.
+//
+// The anchor is what makes it a citation. A backticked path on its own is a
+// mention — "relocated from the deleted `security.go`", "the package was
+// extracted out of `cmd/evener-tui/pending.go`" — and naming a file that is gone
+// is the whole point of those sentences, so they are not checked.
+var scenarioGoCitation = regexp.MustCompile("`([A-Za-z0-9._/-]+\\.go)(?:#([A-Za-z0-9_.]+)|:([0-9][0-9,-]*))`")
+
+// scenarioSourceCitation is scenarioGoCitation widened to every compiled
+// surface the corpus cites — the frontend's `.ts`/`.tsx` as well as Go.
+//
+// The Go-only spelling was not a decision, it was the language kata ypwb
+// happened to be looking at, and the corpus cites the frontend nearly as
+// heavily: 915 anchored source citations, 418 of them non-Go, none of which any
+// audit read until this one. Kata yj52 found the hole from the other side,
+// asking why a `.tsx` citation survived a green gate; the answer is that no
+// needle in the suite matched a `.tsx` path at all.
+//
+// The `#symbol` alternative carries its own capture group so
+// scenarioSourceSymbolsAreDeclared can read the symbol half without a
+// Go-only regex (issue #157); the `:line` alternative does not name anything
+// worth capturing here.
+var scenarioSourceCitation = regexp.MustCompile(
+	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#([A-Za-z0-9_.]+)|:[0-9][0-9,-]*)`")
+
+// scenarioSourceCitationsResolve keeps a card's pointer into source code
+// attached to a file that still exists. Kata 2mzk's audit deliberately exempts
+// source paths from the no-line-numbers rule, because code has no headings to
+// anchor to; that exemption said nothing about whether the paths were right.
+// Kata ypwb sampled four and found three stale, and a whole-file rename or
+// package move breaks every citation into it at once while every existing
+// audit stays green.
+//
+// Cards abbreviate a path down to the part that reads well
+// (`internal/hubcore/tree.go` for `cmd/evener-hub/internal/hubcore/tree.go`), so
+// resolution is by path SUFFIX against the tree. That still catches the failure
+// that matters — the file moved out from under the citation, or was renamed,
+// or never existed under that name.
+//
+// What this does NOT check is the anchor behind the path: `DocPane.tsx:133`
+// and `DocPane.tsx:1` are the same claim here. Line ranges rot faster than
+// paths do, and nothing in the suite reads one.
+func scenarioSourceCitationsResolve(a *audit) {
+	byBase := scenarioSourceFilesByBase(a)
+	var findings []string
+	resolved := 0
+	for _, path := range scenarioCardFiles(a) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			a.Fatalf("reading %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, m := range scenarioSourceCitation.FindAllStringSubmatch(line, -1) {
+				cited := m[1]
+				if len(scenarioResolveCitedPath(byBase, cited)) == 0 {
+					findings = append(findings, path+":"+strconv.Itoa(i+1)+
+						": `"+cited+"` names no source file in the tree: "+strings.TrimSpace(line))
+					continue
+				}
+				resolved++
+			}
+		}
+	}
+	// A corpus audit is green either because the corpus is clean or because its
+	// needle stopped matching anything; only a floor on matches tells the two
+	// apart. Cards cite source by the hundred today, so zero resolutions means
+	// the citation needle broke, not that the citations left.
+	if resolved == 0 {
+		a.Fatalf("the source-citation needle matched nothing across the corpus — " +
+			"the detector is dead and this audit is checking nothing")
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		a.Fatalf("a scenario card that points into a source file must name a file "+
+			"that is still there — a package move, a rename, or a deleted "+
+			"component silently turns every citation into it into a pointer at "+
+			"nothing, and no other audit sees it (katas ypwb, yj52). Repoint at "+
+			"the file that carries the code now, or drop the claim if the code "+
+			"it described is gone:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+// scenarioSourceSymbolsAreDeclared keeps the `#symbol` half of a source
+// citation resolvable. `agent/tree_counter.go#defaultMaxConcurrentDelegateTurns`
+// survives every edit to that file — which is the entire reason kata ypwb moved
+// the corpus off `:12` — but only until the symbol is renamed or moved to
+// another file, and nothing else in the suite would notice that.
+//
+// A symbol is anything a card legitimately anchors to. For Go, resolved with
+// go/parser (scenarioDeclarationsIn): a func or method, a type, a
+// package-level or grouped const or var, a struct field, an interface method.
+// Receiver-, type-, and package-qualified names such as `Type.Method` and
+// `openai.IssuerBaseURL` are preserved; an unqualified alias remains available
+// only when that name is unique in the file, so a collision cannot make a
+// citation appear to resolve by accident.
+//
+// For TS/TSX/JS/JSX, resolved with a line-anchored regex scan
+// (scenarioTSDeclarationsIn) rather than a parser — no TS toolchain is
+// in-tree, and a `.tsx#symbol` anchor resolving its file but not its symbol
+// was issue #157. A top-level function, const/let/var, class, interface, type
+// alias, or enum declaration is recognized, exported or not; destructured
+// exports, re-exports, and `declare`-block members are not. That gap fails in
+// the safe direction — a real symbol the scan misses turns the audit red, not
+// a fake one it accepts.
+func scenarioSourceSymbolsAreDeclared(a *audit) {
+	byBase := scenarioSourceFilesByBase(a)
+	declaredGo := map[string]map[string]bool{}
+	declaredTS := map[string]map[string]bool{}
+	var findings []string
+	checked := 0
+	for _, path := range scenarioCardFiles(a) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			a.Fatalf("reading %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, m := range scenarioSourceCitation.FindAllStringSubmatch(line, -1) {
+				cited, symbol := m[1], m[2]
+				if symbol == "" {
+					continue
+				}
+				checked++
+				found := false
+				for _, file := range scenarioResolveCitedPath(byBase, cited) {
+					var (
+						names map[string]bool
+						err   error
+					)
+					if filepath.Ext(file) == ".go" {
+						names, err = scenarioDeclarationsIn(declaredGo, file)
+					} else {
+						names, err = scenarioTSDeclarationsIn(declaredTS, file)
+					}
+					if err != nil {
+						a.Fatalf("parsing %s cited by %s: %v", file, path, err)
+					}
+					if names[symbol] {
+						found = true
+						break
+					}
+				}
+				if !found {
+					findings = append(findings, path+":"+strconv.Itoa(i+1)+
+						": `"+cited+"` declares no "+symbol+": "+strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+	// A corpus audit is green either because the corpus is clean or because its
+	// needle stopped matching anything; only a floor on matches tells the two
+	// apart. The corpus carries symbol anchors today, so zero checks means the
+	// `#symbol` needle broke, not that the anchors left.
+	if checked == 0 {
+		a.Fatalf("the `#symbol` needle matched nothing across the corpus — " +
+			"the detector is dead and this audit is checking nothing")
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		a.Fatalf("a scenario card's `file.go#symbol` anchor must name something "+
+			"that file still declares — a rename or a move to another file "+
+			"leaves the anchor parsing fine and pointing at nothing, which is "+
+			"the failure the line numbers it replaced had by construction "+
+			"(kata ypwb). Repoint at the file and symbol that carry the code "+
+			"now:\n%s", strings.Join(findings, "\n"))
+	}
+}
+
+// scenarioDir is the one directory this audit reads, relative to the repo root
+// the audit runs from, and scenarioCardFiles is its card corpus plus the one
+// prose file that carries citations of the same shape.
+const scenarioDir = "test" + string(filepath.Separator) + "scenarios"
+
+func scenarioCardFiles(a *audit) []string {
+	var files []string
+	entries, err := os.ReadDir(scenarioDir)
+	if err != nil {
+		a.Fatalf("reading %s: %v", scenarioDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
+			continue
+		}
+		files = append(files, filepath.Join(scenarioDir, e.Name()))
+	}
+	files = append(files, "docs/developing-evener/agentic-testing.md")
+	sort.Strings(files)
+	return files
+}
+
+// scenarioNeedleSourceExtensions are the compiled surfaces production emits
+// from: a citation can only point at a file some code path actually builds.
+// This lived in scenarioneedle_audit_test.go until that audit was deleted with
+// the rest of the framework; this file is the only remaining reader.
+var scenarioNeedleSourceExtensions = map[string]bool{
+	".go": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true,
+}
+
+// scenarioSourceExtensionAlternation builds the regexp alternation for the
+// compiled-source extensions from the set itself, longest first, so the needle
+// and the file index cannot drift apart as that set grows.
+func scenarioSourceExtensionAlternation() string {
+	quoted := make([]string, 0, len(scenarioNeedleSourceExtensions))
+	for ext := range scenarioNeedleSourceExtensions {
+		quoted = append(quoted, regexp.QuoteMeta(ext))
+	}
+	sort.Slice(quoted, func(i, j int) bool {
+		if len(quoted[i]) != len(quoted[j]) {
+			return len(quoted[i]) > len(quoted[j])
+		}
+		return quoted[i] < quoted[j]
+	})
+	return strings.Join(quoted, "|")
+}
+
+// scenarioSourceFilesByBase indexes the tracked compiled-source files in the
+// worktree by base name.
+func scenarioSourceFilesByBase(a *audit) map[string][]string {
+	byBase, err := scenarioTrackedFilesByBase(".", scenarioNeedleSourceExtensions)
+	if err != nil {
+		a.Fatalf("listing tracked source files: %v", err)
+	}
+	return byBase
+}
+
+// scenarioDeviceFlowCitesPackageDefault keeps the device-code-flow card citing
+// the issuer default where the openai auth package declares it.
+func scenarioDeviceFlowCitesPackageDefault(a *audit) {
+	const (
+		cardPath = "test/scenarios/cli-device-code-flow.md"
+		cited    = "auth/openai/config.go"
+		symbol   = "openai.IssuerBaseURL"
+	)
+	raw, err := os.ReadFile(cardPath)
+	if err != nil {
+		a.Fatalf("reading %s: %v", cardPath, err)
+	}
+	for _, m := range scenarioGoCitation.FindAllStringSubmatch(string(raw), -1) {
+		if m[1] != cited || m[2] != symbol {
+			continue
+		}
+		names, err := scenarioDeclarationsIn(map[string]map[string]bool{}, cited)
+		if err != nil {
+			a.Fatalf("parsing %s: %v", cited, err)
+		}
+		if !names[symbol] {
+			a.Fatalf("%s package default %q does not resolve", cited, symbol)
+		}
+		return
+	}
+	a.Fatalf("%s must cite the package default `%s#%s`", cardPath, cited, symbol)
+}
+
+// scenarioDeclarationsIn returns every name a Go file declares — funcs and
+// methods, types, package-level and grouped consts and vars, struct fields,
+// interface methods — memoized across citations into the same file.
+func scenarioDeclarationsIn(cache map[string]map[string]bool, path string) (map[string]bool, error) {
+	if names, ok := cache[path]; ok {
+		return names, nil
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	unqualifiedCounts := map[string]int{}
+	for _, decl := range parsed.Decls {
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			unqualifiedCounts[decl.Name.Name]++
+			if receiver := scenarioReceiverName(decl.Recv); receiver != "" {
+				names[receiver+"."+decl.Name.Name] = true
+			}
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					unqualifiedCounts[spec.Name.Name]++
+					scenarioAddMemberNames(names, unqualifiedCounts, spec.Name.Name, spec.Type)
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						unqualifiedCounts[name.Name]++
+						names[parsed.Name.Name+"."+name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	for name, count := range unqualifiedCounts {
+		if count == 1 {
+			names[name] = true
+		}
+	}
+	cache[path] = names
+	return names, nil
+}
+
+// scenarioAddMemberNames records a struct type's field names and an interface
+// type's method names; cards anchor to both. It records the qualified name
+// immediately and defers the unqualified alias until its file-wide count is
+// known, so same-named members cannot mask one another.
+func scenarioAddMemberNames(names map[string]bool, unqualifiedCounts map[string]int, typeName string, typ ast.Expr) {
+	var fields *ast.FieldList
+	switch typ := typ.(type) {
+	case *ast.StructType:
+		fields = typ.Fields
+	case *ast.InterfaceType:
+		fields = typ.Methods
+	default:
+		return
+	}
+	for _, field := range fields.List {
+		for _, name := range field.Names {
+			unqualifiedCounts[name.Name]++
+			names[typeName+"."+name.Name] = true
+		}
+	}
+}
+
+// scenarioReceiverName returns the declared receiver type name, including the
+// base type inside pointer and generic receiver expressions.
+func scenarioReceiverName(fields *ast.FieldList) string {
+	if fields == nil || len(fields.List) == 0 {
+		return ""
+	}
+	var receiverName func(ast.Expr) string
+	receiverName = func(expr ast.Expr) string {
+		switch expr := expr.(type) {
+		case *ast.Ident:
+			return expr.Name
+		case *ast.StarExpr:
+			return receiverName(expr.X)
+		case *ast.IndexExpr:
+			return receiverName(expr.X)
+		case *ast.IndexListExpr:
+			return receiverName(expr.X)
+		case *ast.ParenExpr:
+			return receiverName(expr.X)
+		default:
+			return ""
+		}
+	}
+	return receiverName(fields.List[0].Type)
+}
+
+// scenarioTSDeclarationPatterns are scenarioTSDeclarationsIn's declaration
+// forms, each capturing the declared name in its first group. This is a
+// line-anchored regex scan, not a TS parser — ts-morph/typescript are not
+// in-tree, and pulling a Node toolchain into a Go audit test is
+// disproportionate to what the audit needs (issue #157).
+//
+// The floor is deliberately honest rather than complete: destructured exports
+// (`export const { a, b } = ...`), re-exports (`export { x } from ...`), and
+// `declare`-block members are not matched. That failure mode is the safe
+// direction — a symbol that IS declared but not matched turns the audit red
+// at authoring time, so the author repoints the anchor or widens the scan,
+// versus a symbol that is NOT declared staying green forever, which is the
+// bug issue #157 closes.
+//
+// A `/* ... */` block comment is the one shape that failed in the UNSAFE
+// direction instead: a declaration-shaped line sitting inside a comment (a
+// commented-out old implementation, a JSDoc example) would register its name
+// as declared when it is not — the same stale-anchor-stays-green failure this
+// audit exists to catch, reached through a comment instead of a rename (PR
+// #271 review). scenarioStripTSBlockComments blanks every such span before
+// the scan runs, so this is closed rather than documented as accepted. It has
+// no model of string or template-literal bodies, so a `/*` inside a quoted
+// string still opens a (blanked) comment span; no citation in the corpus
+// trips that today.
+var scenarioTSDeclarationPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|enum)\s+([A-Za-z0-9_$]+)`),
+	regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)`),
+	regexp.MustCompile(`^\s*(?:export\s+)?type\s+([A-Za-z0-9_$]+)\s*=`),
+}
+
+// scenarioStripTSBlockComments blanks every `/* ... */` span in a
+// TypeScript/JavaScript source — a JSDoc `/** ... */` span opens the same way,
+// so it is covered too — replacing comment bytes with a space and preserving
+// newlines, so a declaration sharing a line with an inline block comment
+// (`export /* eslint-disable-next-line */ function Foo() {}`) still matches
+// and line counts are unaffected. A `//` line comment needs no equivalent
+// handling: scenarioTSDeclarationPatterns anchor at `^\s*`, and a
+// `//`-prefixed line can never match a bare keyword sitting right after it.
+func scenarioStripTSBlockComments(source string) string {
+	var out strings.Builder
+	out.Grow(len(source))
+	inComment := false
+	for i := 0; i < len(source); i++ {
+		switch {
+		case inComment && source[i] == '*' && i+1 < len(source) && source[i+1] == '/':
+			inComment = false
+			i++
+		case inComment:
+			if source[i] == '\n' {
+				out.WriteByte('\n')
+			} else {
+				out.WriteByte(' ')
+			}
+		case source[i] == '/' && i+1 < len(source) && source[i+1] == '*':
+			inComment = true
+			i++
+		default:
+			out.WriteByte(source[i])
+		}
+	}
+	return out.String()
+}
+
+// scenarioTSDeclarationsIn returns every top-level name a TypeScript or
+// JavaScript file declares, memoized across citations into the same file.
+// Mirrors scenarioDeclarationsIn's map[string]map[string]bool cache shape so
+// scenarioSourceSymbolsAreDeclared can dispatch on file extension without
+// changing how either side is called (issue #157).
+func scenarioTSDeclarationsIn(cache map[string]map[string]bool, path string) (map[string]bool, error) {
+	if names, ok := cache[path]; ok {
+		return names, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{}
+	for line := range strings.SplitSeq(scenarioStripTSBlockComments(string(raw)), "\n") {
+		for _, pattern := range scenarioTSDeclarationPatterns {
+			if m := pattern.FindStringSubmatch(line); m != nil {
+				names[m[1]] = true
+			}
+		}
+	}
+	cache[path] = names
+	return names, nil
+}
+
+// scenarioTrackedFilesByBase indexes the tracked files carrying one of the
+// given extensions by base name, so a cited path suffix can be resolved without
+// rewalking the tree per citation.
+func scenarioTrackedFilesByBase(root string, extensions map[string]bool) (map[string][]string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", "-C", root, "ls-files", "-z")
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	byBase := map[string][]string{}
+	for path := range strings.SplitSeq(string(raw), "\x00") {
+		if path == "" {
+			continue
+		}
+		path = filepath.ToSlash(path)
+		if !extensions[filepath.Ext(path)] {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat tracked file %s: %w", path, err)
+		}
+		byBase[filepath.Base(path)] = append(byBase[filepath.Base(path)], path)
+	}
+	return byBase, nil
+}
+
+// scenarioResolveCitedPath returns every file whose path is, or ends with, the
+// cited path. Cards abbreviate, so `internal/hubcore/tree.go` must find
+// `cmd/evener-hub/internal/hubcore/tree.go`; a bare `main.go` legitimately finds
+// many, which is imprecise but not stale.
+func scenarioResolveCitedPath(byBase map[string][]string, cited string) []string {
+	var out []string
+	for _, candidate := range byBase[scenarioCitedBaseName(cited)] {
+		if candidate == cited || strings.HasSuffix(candidate, "/"+cited) {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+// scenarioCitedBaseName is the file name at the end of a citation path.
+func scenarioCitedBaseName(cited string) string {
+	if _, base, ok := strings.CutLast(cited, "/"); ok {
+		return base
+	}
+	return cited
+}
+
+// scenarioBareLineAnchor matches a line-range anchor written on its own, with
+// no path in front of it: the `:128,139,159` in "`StatusRow.tsx:129` sets it,
+// and unset renders as `(default)` (`:128,139,159`)". The corpus abbreviates
+// this way once the path is already in the sentence, and scenarioSourceCitation
+// cannot see it — that needle's first capture is a path, and this shape has
+// none, so no audit read one until this one (issue #158).
+var scenarioBareLineAnchor = regexp.MustCompile("`(:[0-9][0-9,-]*)`")
+
+// scenarioSourcePathSpan matches a backticked source path, anchored or not:
+// `path`, `path:lines` and `path#symbol` all name the file a following bare
+// `:NNN` belongs to. A bare anchor resolves against the nearest one of these
+// before it.
+var scenarioSourcePathSpan = regexp.MustCompile(
+	"`([A-Za-z0-9._/-]+(?:" + scenarioSourceExtensionAlternation() + "))(?:#[A-Za-z0-9_.]+|:[0-9][0-9,-]*)?`")
+
+// scenarioBareLineAnchorResolution is one bare `:NNN` and the path it resolves
+// against.
+type scenarioBareLineAnchorResolution struct {
+	line   int    // 1-based line in the card
+	anchor string // the `:NNN` span, colon included
+	cited  string // the path it resolves against, "" when nothing precedes it
+}
+
+// scenarioBareLineAnchorResolutions resolves every bare `:NNN` in one card
+// against the nearest preceding source path, the way a reader supplies the
+// omitted path.
+//
+// The nearest preceding path in the same paragraph is the referent. Inside a
+// markdown table that rule would bind each row to the row above it, so a
+// table's anchors resolve against the nearest preceding path on a line that is
+// not itself a table row — the section header that introduced the table
+// (`**Composer** (`Composer.tsx`):` above its hook table).
+func scenarioBareLineAnchorResolutions(text string) []scenarioBareLineAnchorResolution {
+	lines := strings.Split(text, "\n")
+	paragraphs := scenarioParagraphIndex(lines)
+	spans := scenarioSourcePathSpan.FindAllStringSubmatchIndex(text, -1)
+	spanLines := make([]int, len(spans))
+	for i, span := range spans {
+		spanLines[i] = scenarioLineOfOffset(text, span[0])
+	}
+	var out []scenarioBareLineAnchorResolution
+	for _, match := range scenarioBareLineAnchor.FindAllStringSubmatchIndex(text, -1) {
+		line := scenarioLineOfOffset(text, match[0])
+		inTable := strings.Contains(lines[line-1], "|")
+		cited := ""
+		for i, span := range spans {
+			if span[0] >= match[0] {
+				break
+			}
+			if inTable {
+				// A row-to-row binding would be wrong; the table's referent
+				// path is named outside the table.
+				if strings.Contains(lines[spanLines[i]-1], "|") {
+					continue
+				}
+			} else if paragraphs[spanLines[i]-1] != paragraphs[line-1] {
+				continue
+			}
+			cited = text[span[2]:span[3]]
+		}
+		out = append(out, scenarioBareLineAnchorResolution{
+			line:   line,
+			anchor: text[match[2]:match[3]],
+			cited:  cited,
+		})
+	}
+	return out
+}
+
+// scenarioParagraphIndex numbers the blank-line-separated blocks of a card, so
+// two lines are in the same paragraph exactly when their indexes are equal.
+func scenarioParagraphIndex(lines []string) []int {
+	index := make([]int, len(lines))
+	paragraph := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			paragraph++
+		}
+		index[i] = paragraph
+	}
+	return index
+}
+
+// scenarioLineOfOffset is the 1-based line holding a byte offset.
+func scenarioLineOfOffset(text string, offset int) int {
+	return strings.Count(text[:offset], "\n") + 1
+}
+
+// scenarioAnchorLastLine is the highest line number a `:NNN` anchor names.
+// `36,44` and `81,120-125` each name their largest part.
+func scenarioAnchorLastLine(anchor string) int {
+	last := 0
+	for part := range strings.SplitSeq(strings.TrimPrefix(anchor, ":"), ",") {
+		high := part
+		if _, after, ok := strings.Cut(part, "-"); ok {
+			high = after
+		}
+		n, err := strconv.Atoi(high)
+		if err != nil {
+			continue
+		}
+		if n > last {
+			last = n
+		}
+	}
+	return last
+}
+
+// scenarioSourceLineCount is a source file's line count, memoized across
+// citations into the same file so a card citing one file many times reads it
+// once.
+func scenarioSourceLineCount(cache map[string]int, path string) (int, error) {
+	if count, ok := cache[path]; ok {
+		return count, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	count := len(strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n"))
+	cache[path] = count
+	return count, nil
+}
+
+// scenarioMinBareLineAnchors is the floor on how many bare `:NNN` anchors the
+// audit below must actually read. A corpus audit is green both when the corpus
+// is clean and when its needle stopped matching, and only a floor tells the two
+// apart; the corpus carried 97 resolvable bare anchors when this landed, so the
+// floor sat at 90, just below that. Lowered to 80 when the legacy TUI was
+// removed: deleting the `tui-*` cards (2026-10-16) dropped 14 cards and their
+// anchors, leaving 84. Raise it as the corpus grows; lower it again only with a
+// reason, and say why here.
+const scenarioMinBareLineAnchors = 80
+
+// scenarioBareLineAnchorsResolve reads the citation shape the rest of this
+// file cannot see: a `:NNN` anchor with the path left implicit. It resolves
+// each one against the nearest preceding source path and checks two things —
+// that a path is actually there to resolve against, and that the anchor's lines
+// fall inside the file that path names. A bare anchor whose path was renamed, or
+// whose file shrank below the numbers it cites, points at nothing while every
+// other audit stays green, which is the failure kata yj52 measured at 44% in a
+// single sweep (issue #158).
+//
+// What this does NOT check is that the numbers name the right statement: a file
+// that merely grew or moved code above the anchor passes, because a line
+// shift is not evidence the citation is wrong. The removed line-range audit
+// tried to read that through the card's own quotation and was brittle enough
+// that an unrelated insertion broke it, so this audit stops at the boundary
+// that is stable — the path resolves and the anchor is not past the file's end.
+// No exemption list is needed: unlike a literal search, "does the file reach
+// the cited line" has no plausible-but-wrong match to excuse.
+func scenarioBareLineAnchorsResolve(a *audit) {
+	byBase := scenarioSourceFilesByBase(a)
+	counts := map[string]int{}
+	var findings []string
+	checked := 0
+	for _, path := range scenarioCardFiles(a) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			a.Fatalf("reading %s: %v", path, err)
+		}
+		for _, resolved := range scenarioBareLineAnchorResolutions(string(raw)) {
+			if resolved.cited == "" {
+				findings = append(findings, path+":"+strconv.Itoa(resolved.line)+
+					": bare `"+resolved.anchor+"` has no source path before it to resolve against")
+				continue
+			}
+			candidates := scenarioResolveCitedPath(byBase, resolved.cited)
+			if len(candidates) == 0 {
+				findings = append(findings, path+":"+strconv.Itoa(resolved.line)+
+					": bare `"+resolved.anchor+"` resolves against `"+resolved.cited+
+					"`, which names no source file in the tree")
+				continue
+			}
+			checked++
+			last := scenarioAnchorLastLine(resolved.anchor)
+			covered := false
+			for _, candidate := range candidates {
+				count, err := scenarioSourceLineCount(counts, candidate)
+				if err != nil {
+					a.Fatalf("reading %s cited by %s: %v", candidate, path, err)
+				}
+				if last <= count {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				findings = append(findings, path+":"+strconv.Itoa(resolved.line)+
+					": bare `"+resolved.anchor+"` resolves against `"+resolved.cited+
+					"`, which does not reach line "+strconv.Itoa(last))
+			}
+		}
+	}
+	if checked < scenarioMinBareLineAnchors {
+		a.Fatalf("this audit read %d bare line anchors, below the floor of %d: "+
+			"either the `:NNN` needle stopped matching (check "+
+			"scenarioBareLineAnchor), or the cards dropped their abbreviated "+
+			"anchors. Restore the shape, or lower the floor deliberately and say "+
+			"why here.", checked, scenarioMinBareLineAnchors)
+	}
+	if len(findings) > 0 {
+		sort.Strings(findings)
+		a.Fatalf("a bare `:NNN` anchor must resolve against a source path that "+
+			"is still there and still reaches the cited lines — a renamed file, "+
+			"or code deleted from under the anchor, leaves the citation parsing "+
+			"fine and pointing at nothing, and the path-carrying needle cannot "+
+			"see the shape at all (issue #158). Give the anchor its path, or "+
+			"repoint it at the file that carries the code now:\n%s",
+			strings.Join(findings, "\n"))
+	}
+}

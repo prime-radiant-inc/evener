@@ -608,6 +608,7 @@ func (s *Session) announceSessionEnd(budgetCtx context.Context, emitEnd bool, tu
 // closeEventStream joins the detached event producers and closes the events
 // channel.
 func (s *Session) closeEventStream(budgetCtx context.Context) {
+	s.stopFrontierEmitter()
 	s.joinWithinCloseBudget(budgetCtx, &s.toolEventsWG, "in-flight tool events")
 	// Join detached event emitters (subagent runs, session namer) so their
 	// events are delivered before the channel closes. They are already
@@ -618,6 +619,7 @@ func (s *Session) closeEventStream(budgetCtx context.Context) {
 	// because run.go prints its answer only after Close(). Both joins are
 	// therefore bounded by the shared close budget.
 	s.joinWithinCloseBudget(budgetCtx, &s.sendersWG, "detached event emitters")
+	s.joinWithinCloseBudget(budgetCtx, &s.frontierEmitterWG, "recorded execution emitter")
 	s.releaseAPILogRoute()
 	// Close under eventsMu so a caller-owned emit() (the client-mutation queue
 	// handlers or the ProcessInput loop — goroutines the session cannot join)

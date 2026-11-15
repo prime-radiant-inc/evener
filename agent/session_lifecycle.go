@@ -173,6 +173,7 @@ func (s *Session) endOwnedCurrentScratch() {
 // distinction close() makes before retaining a child's scratch, read here so an
 // aborted candidate never deletes a scratch dir out from under its parent.
 func (s *Session) discardRestoredCandidate() {
+	s.releaseTranscriptFrontier()
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -207,6 +208,7 @@ func (s *Session) discardRestoredCandidate() {
 			s.mcpMgr.Close()
 		}
 		_ = s.closeAttachedTranscript()
+		s.stopFrontierEmitter()
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
@@ -297,10 +299,11 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls lets notification acknowledgements finish idle. After a
-// terminal communicate, notification silence must not resurrect the run (#329).
-func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
-	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
+// routeNoToolCalls lets single-turn notification acknowledgements finish idle
+// before any tool batch has executed in the wake. After a terminal communicate,
+// notification silence must not resurrect the run (#329).
+func routeNoToolCalls(kind EntryKind, priorToolActivity bool, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (afterTerminalCommunicate || (!noContent && !priorToolActivity)) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -1104,6 +1107,10 @@ func delegateEntryRequiresReport(kind EntryKind) bool {
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
 	communicatePreviewCalls := map[string]struct{}{}
+	// A speculative document strip that this input never resolves must not
+	// outlive it: cancellation, a round cap, or a recovery branch can exit
+	// before the retry that would commit or roll it back (#4465).
+	defer s.rollbackSpeculativeToolResultDocuments()
 	defer func() {
 		for callID := range communicatePreviewCalls {
 			s.emit(events.CommunicatePreviewResetData{CallID: callID})
@@ -1507,9 +1514,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	var toolSigs []string
 	var toolSigFailed []bool
-	var lastText string // accumulated assistant text for round-limit return
-	ctxWarned := false
-	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	var lastText string            // accumulated assistant text for round-limit return
+	contentFilterRetried := false  // track whether we've already tried recovering from a content filter error
+	documentRejectRetried := false // track whether we've already retried without a provider-rejected tool-result document
 	localAdmissionCompacted := false
 	providerContextRecovered := false
 	var tracker retryTracker
@@ -1521,6 +1528,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
 	admittedToRounds = true
+	s.beginAttentionCoverageRounds()
+	defer s.endAttentionCoverageRounds()
+	priorToolActivity := false
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
@@ -1625,6 +1635,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.resetCommunicatePreviews(communicatePreviewCalls)
 		}
 		if prepareErr != nil {
+			// A speculative document strip this attempt never dispatched cannot
+			// have resolved anything; restore the payload before another
+			// recovery branch runs (#4465).
+			s.rollbackSpeculativeToolResultDocuments()
 			if isLocalContextCompactionError(prepareErr) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", prepareErr))
@@ -1639,12 +1653,19 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.LLMCall = time.Since(tPhaseStart)
 
 		if err == nil {
+			// A speculative document strip whose retry succeeded was the fix:
+			// keep those payloads out of later requests (#4465).
+			s.commitSpeculativeToolResultDocuments()
 			if abortErr := errors.Join(s.abortResponseProcessing(ctx), sessionLifecycleFault(ctx, "abort_after_model")); abortErr != nil {
 				return "", progressed, abortErr
 			}
 		}
 
 		if err != nil {
+			// The attempt carrying a speculative strip failed, so the strip did
+			// not resolve the error: restore the payload before any recovery
+			// branch below, including compaction (#4465).
+			s.rollbackSpeculativeToolResultDocuments()
 			if isLocalContextCompactionError(err) && !localAdmissionCompacted && s.contextMgr != nil {
 				s.emit(warningDataFromError(
 					"Local context admission failed; compacting context and retrying", err))
@@ -1654,6 +1675,20 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			if isLocalContextBudgetError(err) {
 				return "", progressed, err
+			}
+			// A request-size rejection (413) on a request carrying tool-result
+			// documents is bounded document recovery, not context pressure:
+			// compaction preserves the newest tool results, so the oversized
+			// payload would survive it and fail again (#4465).
+			if isDocumentPayloadSizeRejection(err) && !documentRejectRetried {
+				if ids := toolResultDocumentCallIDs(req); len(ids) > 0 {
+					documentRejectRetried = true
+					s.speculateRejectedToolResultDocuments(ids)
+					s.emit(bareWarningDataFromError(
+						"Provider rejected the request size for a tool-result document — retrying without the document payload", err))
+					s.resetCommunicatePreviews(communicatePreviewCalls)
+					continue
+				}
 			}
 			if isProviderContextLengthError(err) && !providerContextRecovered && s.contextMgr != nil {
 				failedProvider, failedModel := strings.TrimSpace(req.Provider), strings.TrimSpace(req.Model)
@@ -1669,7 +1704,21 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.forceCompactForModelRecovery(ctx)
 				continue
 			}
-			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, providerContextRecovered)
+			// Compaction preserves the newest tool results, so a context-length
+			// rejection caused by a document batch survives it. After the one
+			// bounded compaction, retry once with the documents stripped and
+			// annotated (#4465).
+			if isProviderContextLengthError(err) && !documentRejectRetried {
+				if ids := toolResultDocumentCallIDs(req); len(ids) > 0 {
+					documentRejectRetried = true
+					s.speculateRejectedToolResultDocuments(ids)
+					s.emit(bareWarningDataFromError(
+						"Context length exceeded with tool-result documents — retrying without the document payload", err))
+					s.resetCommunicatePreviews(communicatePreviewCalls)
+					continue
+				}
+			}
+			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried, &documentRejectRetried, providerContextRecovered)
 			if retry {
 				s.resetCommunicatePreviews(communicatePreviewCalls)
 				continue
@@ -1688,16 +1737,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Accumulate usage and record exact input token count for pressure calculation.
 		s.recordResponseUsage(resp, req, usedProfile)
-
-		// Context window awareness: emit a warning when we exceed ~80% of the
-		// context window. A fallback that answered owns the round's window: the
-		// context accounting already switched to it, and the warning must not
-		// report the primary's window for a request the fallback served.
-		if !ctxWarned {
-			if sessionLifecycleFault(ctx, "warn") != nil || s.maybeWarnContextUsage(usedProfile, req) {
-				ctxWarned = true
-			}
-		}
 
 		// Best-effort nudge: when pressure crosses WarnThreshold, steer the agent to
 		// self-compact at its next clean seam. recordResponseUsage above just refreshed
@@ -1762,7 +1801,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if len(calls) == 0 {
-			// A bare-text (non-empty) response to a notification turn
+			// A bare-text (non-empty) response to a notification turn before any tool batch runs
 			// is the agent acknowledging a frame it has nothing to act on (it often
 			// already read the job's output itself). Finish idle instead of scolding it
 			// toward a no-op communicate — the text is already in the transcript, and a
@@ -1783,7 +1822,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					}
 				}
 			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			route := routeNoToolCalls(kind, priorToolActivity, noContent, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
@@ -1815,6 +1854,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
+		priorToolActivity = true
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
@@ -2373,11 +2413,11 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
 		marker = "Continuing toward: " + snap.Objective
 	}
-	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
 	s.recordTurn(turn, turn)
+	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 
 	// On resume the agent re-reads the current notes beside the continuation
 	// prompt, so a human edit that landed while the goal loop ran is visible.

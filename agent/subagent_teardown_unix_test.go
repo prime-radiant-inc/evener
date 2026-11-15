@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -59,8 +60,7 @@ func startInFlightProcess(t *testing.T, env *execenv.LocalExecutionEnvironment) 
 	t.Cleanup(release)
 	// The shell writes its PID within milliseconds of the spawn and nothing in
 	// process signals that write, so this is a poll with a hang guard only.
-	// TRIPWIRE: 30s sits orders of magnitude above the spawn-to-write time.
-	waitForCondition(t, 30*time.Second, "the in-flight process to report its PID", func() bool {
+	testwait.Until(t, "the in-flight process to report its PID", func() bool {
 		data, err := os.ReadFile(pidPath)
 		if err != nil || len(data) == 0 {
 			return false
@@ -121,7 +121,7 @@ func assertParentScratchUntouched(t *testing.T, what, scratch string) {
 func TestParentCloseSettlesAnOwnedUnsandboxedChildScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	parentLocal, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
@@ -375,7 +375,7 @@ func TestRootCloseSettlesAnUntrackedResidentRuntimeScratch(t *testing.T) {
 func TestSpawnedChildOnTheParentEnvironmentRecordsNoOwnership(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	shared, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
@@ -623,7 +623,7 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 func TestOwnedChildTeardownKeepsTheParkedWorktreeEnvironmentScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	parentLocal, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())
@@ -829,7 +829,7 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 func TestChildTeardownSettlesAbandonedEnvironmentScratch(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
+	parent := newSession(t, withClient(client), withDir(t.TempDir()))
 	parentLocal, ok := parent.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("parent env = %T, want a local environment", parent.currentEnv())

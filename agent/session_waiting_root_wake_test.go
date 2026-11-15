@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -84,7 +85,7 @@ func TestWaitingRootIsWokenByItsDelegateReport(t *testing.T) {
 	case <-time.After(stallHandshakeTimeout):
 		t.Fatal("the child's report did not wake the waiting root: a wait would have stranded the result")
 	}
-	waitForCondition(t, stallHandshakeTimeout, "the child's report attention to arm", func() bool {
+	testwait.Until(t, "the child's report attention to arm", func() bool {
 		return len(rootAttentionFold(t, root).pendingIDs()) > 0
 	})
 

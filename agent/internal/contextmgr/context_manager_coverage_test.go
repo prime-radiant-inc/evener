@@ -65,10 +65,8 @@ func TestApplyThresholdScale(t *testing.T) {
 			got  float64
 			want float64
 		}{
-			{"ObservationMask", cm.ObservationMaskThreshold, 0.30},
-			{"ThinkingClear", cm.ThinkingClearThreshold, 0.35},
 			{"Warn", cm.WarnThreshold, 0.375},
-			{"Checkpoint", cm.CheckpointThreshold, 0.40},
+			{"Checkpoint", cm.CheckpointThreshold, 0.45},
 			{"Summarize", cm.SummarizeThreshold, 0.475},
 		} {
 			if d := c.got - c.want; d > eps || d < -eps {
@@ -79,9 +77,9 @@ func TestApplyThresholdScale(t *testing.T) {
 
 	t.Run("clamps thresholds below the 0.20 floor", func(t *testing.T) {
 		cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
-		ApplyThresholdScale(cm, 0.25) // 0.60*0.25=0.15 -> floor, 0.95*0.25=0.2375 stays
-		if d := cm.ObservationMaskThreshold - 0.20; d > eps || d < -eps {
-			t.Errorf("ObservationMask = %v, want clamped to 0.20", cm.ObservationMaskThreshold)
+		ApplyThresholdScale(cm, 0.25) // 0.75*0.25=0.1875 -> floor, 0.95*0.25=0.2375 stays
+		if d := cm.WarnThreshold - 0.20; d > eps || d < -eps {
+			t.Errorf("Warn = %v, want clamped to 0.20", cm.WarnThreshold)
 		}
 		if d := cm.SummarizeThreshold - 0.2375; d > eps || d < -eps {
 			t.Errorf("Summarize = %v, want 0.2375 (above floor, unclamped)", cm.SummarizeThreshold)
@@ -92,8 +90,8 @@ func TestApplyThresholdScale(t *testing.T) {
 		t.Run("no-op", func(t *testing.T) {
 			cm := NewManager(testProfile("openai", "gpt-5.2", 1_000), nil, cheapmodel.New(nil))
 			ApplyThresholdScale(cm, scale)
-			if cm.ObservationMaskThreshold != 0.60 || cm.SummarizeThreshold != 0.95 {
-				t.Errorf("scale %v changed thresholds: obs=%v sum=%v", scale, cm.ObservationMaskThreshold, cm.SummarizeThreshold)
+			if cm.CheckpointThreshold != DefaultCompactAt || cm.SummarizeThreshold != 0.95 {
+				t.Errorf("scale %v changed thresholds: checkpoint=%v sum=%v", scale, cm.CheckpointThreshold, cm.SummarizeThreshold)
 			}
 		})
 	}

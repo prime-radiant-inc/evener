@@ -245,11 +245,14 @@ the new child and is persisted in the stable descriptor.
 
 delegate_send accepts to=dlg_..., message, and max_wait_ms:
 
-- If the delegate is running, the message is durably admitted to that
-  generation's child transcript and bound into the next legal model request.
-  The call returns
-  action=steered after that admission succeeds. It does not start another
-  generation and does not wait for a reply.
+- If the delegate is running and max_wait_ms is unset or 0, the message is
+  durably admitted to that generation's child transcript and bound into the
+  next legal model request. The call returns action=steered after that
+  admission succeeds. It does not start another generation and does not wait
+  for a reply. A delegate already being driven or otherwise busy is refused
+  target_busy. With a positive max_wait_ms the call takes the start path
+  instead: a still-running delegate is refused target_busy, while one that
+  becomes idle before admission is started and the wait is honored.
 - If the delegate is idle and resumable, the call restores or reuses the child
   runtime, starts the next private generation, durably admits the message as
   that generation's input, and returns action=started.
@@ -267,11 +270,12 @@ delegate_send accepts to=dlg_..., message, and max_wait_ms:
 
 delegate_send never accepts a job_... target and never returns a job ID.
 A positive max_wait_ms applies only when that call starts an idle delegate. A
-live steer returns on durable admission and reports that waiting was not
-applicable in the public wait_ignored_reason field. That field is specific to
-the call, remains only on the delegate_send result and the transcript/UI
-transport of that result, and is not folded into warnings, the delegate
-aggregate, stable events/status, or client snapshots.
+running delegate is steered only with max_wait_ms unset or 0: the call returns
+on durable admission, and a positive value on a still-running delegate is
+refused as target_busy rather than reporting a wait it cannot honor. A delegate
+that becomes idle before admission is started and the wait is honored. The
+call-scoped wait_ignored_reason field is retained in the result shape for
+compatibility; delegate_send no longer emits it.
 
 There is no caller route. A delegate reaches its owner only through
 communicate: end_turn=false posts an update into the delegate's ordered

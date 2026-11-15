@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -15,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -447,9 +447,7 @@ func newDelegateStartupFixture(t *testing.T) (*Session, *fakeAdapter) {
 func (a *fakeAdapter) waitFirstRequest(t *testing.T) llm.Request {
 	t.Helper()
 	var first llm.Request
-	// TRIPWIRE: the child's adapter is scripted in process and answers in
-	// milliseconds; 30s only fires on a genuine hang.
-	waitForCondition(t, 30*time.Second, "the child's first model request", func() bool {
+	testwait.Until(t, "the child's first model request", func() bool {
 		requests := a.Requests()
 		if len(requests) == 0 {
 			return false

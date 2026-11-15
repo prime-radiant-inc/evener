@@ -145,6 +145,8 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
+	frontier := s.LatestExecutionFrontier()
+	start.LatestExecutionTurnID, start.LatestExecutionSequence = frontier.TurnID, frontier.Sequence
 	// The sandbox request is fixed for the session's life; SessionStart
 	// carries it so a subagent's thread reports its own access (S15).
 	start.Sandbox = s.cfg.Sandbox
@@ -521,8 +523,15 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 	if open && events.KindOf(data) == events.EventWarning {
 		s.logSummaryFailure(data)
 	}
-	if open && s.descendantEvent != nil {
+	forwarded := open && s.descendantEvent != nil
+	if forwarded {
 		s.descendantEvent(ev)
+	}
+	if ev.Kind == events.EventSessionStart {
+		// The introduction must reach every synchronous route before held
+		// first-record signals can follow it. An unread child channel may drop
+		// even though its parent received the start. Release before job fan-out.
+		s.publishFrontierStartup(open && (delivered || forwarded))
 	}
 	return data, ev, open && delivered
 }

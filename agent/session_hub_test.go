@@ -303,7 +303,7 @@ func TestManagerRequestActualPolicyMatrix(t *testing.T) {
 						}
 					}
 					if name == "job_list" && mode == "present" {
-						agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", stage.golden), managerRequestGolden(req), *updatePromptGoldens, "Regenerate with go test ./ -run TestManagerRequestActualPolicyMatrix -update-prompt and inspect the diff.")
+						agenttest.CheckGolden(t, filepath.Join("testdata", "messagingprompt", stage.golden), managerRequestGolden(req), *updatePromptGoldens, "Regenerate with go test ./agent -run '^TestManagerRequestActualPolicyMatrix$' -count=1 -update-prompt and inspect the diff.")
 					}
 					var found *llm.ToolDefinition
 					for _, def := range req.Tools {

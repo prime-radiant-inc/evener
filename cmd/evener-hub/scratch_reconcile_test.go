@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/testfs"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // A cancelled pass must not remove an eligible archived tree; the next live
@@ -103,33 +104,33 @@ func testScratchReconcilerRunCancellation(t *testing.T, cancelAtEntry bool) {
 	go func() { defer close(done); r.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		waitFor(t, func() bool {
+		testwait.Until(t, "the scratch reconciler to join its canceled Run", func() bool {
 			select {
 			case <-done:
 				return true
 			default:
 				return false
 			}
-		}, "scratch reconciler did not join its canceled Run")
+		})
 	})
 	r.Kick()
 	var listed []string
-	waitFor(t, func() bool {
+	testwait.Until(t, "the kicked Run to reach the real scratch scanner", func() bool {
 		select {
 		case listed = <-scanned:
 			return true
 		default:
 			return false
 		}
-	}, "kicked Run did not reach the real scratch scanner")
-	waitFor(t, func() bool {
+	})
+	testwait.Until(t, "the scratch reconciler to join after cancellation", func() bool {
 		select {
 		case <-done:
 			return true
 		default:
 			return false
 		}
-	}, "scratch reconciler did not join after cancellation")
+	})
 	if cancelAtEntry && len(listed) != 0 {
 		t.Errorf("scanner returned %v after cancellation at entry, want no candidates", listed)
 	}
@@ -149,27 +150,27 @@ func testScratchReconcilerRunCancellation(t *testing.T, cancelAtEntry bool) {
 	go func() { defer close(nextDone); next.Run(nextCtx) }()
 	t.Cleanup(func() {
 		stopNext()
-		waitFor(t, func() bool {
+		testwait.Until(t, "the fresh scratch reconciler to join", func() bool {
 			select {
 			case <-nextDone:
 				return true
 			default:
 				return false
 			}
-		}, "fresh scratch reconciler did not join")
+		})
 	})
 	next.Kick()
-	waitFor(t, func() bool {
+	testwait.Until(t, "a fresh Run to remove the eligible released tree", func() bool {
 		_, err := os.Lstat(tree)
 		return os.IsNotExist(err)
-	}, "a fresh Run did not remove the eligible released tree")
+	})
 	stopNext()
-	waitFor(t, func() bool {
+	testwait.Until(t, "the fresh scratch reconciler to join after cancellation", func() bool {
 		select {
 		case <-nextDone:
 			return true
 		default:
 			return false
 		}
-	}, "fresh scratch reconciler did not join after cancellation")
+	})
 }

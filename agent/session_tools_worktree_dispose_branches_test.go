@@ -268,6 +268,41 @@ func TestDisposeAlreadyDisposedGoneBranch(t *testing.T) {
 	}
 }
 
+// TestWorktreeDispose_CleansResidentPointerWhenCleanupKeepsLane covers the
+// retry path after cleanup preserves late dirty residue: the first dispose
+// tears the child down but keeps the lane, so it must clear the controller's
+// exact runtime pointer or the retry sees an untracked resident runtime.
+func TestWorktreeDispose_CleansResidentPointerWhenCleanupKeepsLane(t *testing.T) {
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	_, childID := attachResidentUnlockChild(t, r, delegateID)
+	r.s.worktreeDisposeBeforeRemove = func(path string) {
+		_ = os.WriteFile(filepath.Join(path, "late-dirty.txt"), []byte("late\n"), 0o644)
+	}
+
+	if _, err := r.s.worktreeDispose(context.Background(), delegateID, false, false); err != nil {
+		t.Fatalf("first dispose: %v", err)
+	}
+	if _, err := os.Stat(lanePath); err != nil {
+		t.Fatalf("first dispose should keep the late-dirty lane: %v", err)
+	}
+	if r.s.subagents.get(childID) != nil {
+		t.Fatal("first dispose left the torn-down child in the subagent registry")
+	}
+	c := r.s.delegateController
+	c.mu.Lock()
+	live := c.live[delegateID]
+	untracked := live != nil && live.runtime != nil
+	c.mu.Unlock()
+	if untracked {
+		t.Fatal("first dispose left the controller's resident runtime pointer in place")
+	}
+
+	if _, err := r.s.worktreeDispose(context.Background(), delegateID, false, true); err != nil {
+		t.Fatalf("dispose retry after kept lane: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // isDelegateID + worktreeDispose validation (empty id)
 // ---------------------------------------------------------------------------

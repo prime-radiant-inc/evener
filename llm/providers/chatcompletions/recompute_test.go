@@ -13,6 +13,7 @@ import (
 // decoder: reasoning_content (a field a narrower struct could easily drop)
 // must round-trip.
 func TestExtractRecordedResponse_JSON(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"id":"chatcmpl_1","model":"","choices":[{"finish_reason":"tool_calls","message":{"content":"","reasoning_content":"thinking...","tool_calls":[{"id":"call_1","function":{"name":"write_file","arguments":"{\"path\":\"x\"}"}}]}}]}`)
 
 	resp, err := ExtractRecordedResponse(body, "fallback-model")
@@ -38,6 +39,7 @@ func TestExtractRecordedResponse_JSON(t *testing.T) {
 }
 
 func TestExtractRecordedResponse_SSE(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	write := func(data string) {
 		b.WriteString("data: ")
@@ -60,6 +62,7 @@ func TestExtractRecordedResponse_SSE(t *testing.T) {
 
 // TestExtractRecordedResponse_EmptyBody covers the empty body error path.
 func TestExtractRecordedResponse_EmptyBody(t *testing.T) {
+	t.Parallel()
 	if _, err := ExtractRecordedResponse([]byte("  "), "gpt-5.2"); err == nil {
 		t.Fatal("empty body should error")
 	}
@@ -67,6 +70,7 @@ func TestExtractRecordedResponse_EmptyBody(t *testing.T) {
 
 // TestExtractRecordedResponse_InvalidJSON covers the JSON decode error path.
 func TestExtractRecordedResponse_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	if _, err := ExtractRecordedResponse([]byte("{invalid"), "gpt-5.2"); err == nil {
 		t.Fatal("invalid JSON should error")
 	}
@@ -74,6 +78,7 @@ func TestExtractRecordedResponse_InvalidJSON(t *testing.T) {
 
 // TestExtractRecordedResponse_SSEEmptyData covers the empty data path.
 func TestExtractRecordedResponse_SSEEmptyData(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	b.WriteString("data: \n\n")
 	b.WriteString("data: {\"model\":\"gpt-5.2\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
@@ -90,6 +95,7 @@ func TestExtractRecordedResponse_SSEEmptyData(t *testing.T) {
 // TestExtractRecordedResponse_SSEInvalidChunk covers the JSON unmarshal error
 // path: one malformed chunk is skipped, not fatal.
 func TestExtractRecordedResponse_SSEInvalidChunk(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	b.WriteString("data: {not valid json}\n\n")
 	b.WriteString("data: {\"model\":\"gpt-5.2\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
@@ -105,6 +111,7 @@ func TestExtractRecordedResponse_SSEInvalidChunk(t *testing.T) {
 
 // TestExtractRecordedResponse_SSENoChoices covers the len(choices)==0 path.
 func TestExtractRecordedResponse_SSENoChoices(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	b.WriteString("data: {\"model\":\"gpt-5.2\",\"choices\":[]}\n\n")
 	b.WriteString("data: {\"model\":\"gpt-5.2\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
@@ -121,6 +128,7 @@ func TestExtractRecordedResponse_SSENoChoices(t *testing.T) {
 // TestExtractRecordedResponse_SSEToolCallDelta covers the tool call delta
 // handling path.
 func TestExtractRecordedResponse_SSEToolCallDelta(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	b.WriteString("data: {\"model\":\"gpt-5.2\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"x\\\"}\"}}]}}]}\n\n")
 	b.WriteString("data: [DONE]\n\n")
@@ -136,6 +144,7 @@ func TestExtractRecordedResponse_SSEToolCallDelta(t *testing.T) {
 
 // TestExtractRecordedResponse_SSENoDone covers the missing [DONE] error.
 func TestExtractRecordedResponse_SSENoDone(t *testing.T) {
+	t.Parallel()
 	body := "data: {\"model\":\"gpt-5.2\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
 	if _, err := ExtractRecordedResponse([]byte(body), "gpt-5.2"); err == nil {
 		t.Fatal("SSE without [DONE] should error")
@@ -145,6 +154,7 @@ func TestExtractRecordedResponse_SSENoDone(t *testing.T) {
 // TestExtractRecordedResponse_SSEModelFallback covers the Model=="" path
 // where requestedModel is used.
 func TestExtractRecordedResponse_SSEModelFallback(t *testing.T) {
+	t.Parallel()
 	// A chunk with no model field — the requestedModel should be used.
 	var b strings.Builder
 	b.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
@@ -162,6 +172,7 @@ func TestExtractRecordedResponse_SSEModelFallback(t *testing.T) {
 // the decoder's own failure: a recorded body with an empty choices list is an
 // error from ExtractRecordedResponse, not an empty success.
 func TestExtractRecordedResponse_JSONNoChoices(t *testing.T) {
+	t.Parallel()
 	if _, err := ExtractRecordedResponse([]byte(`{"choices":[]}`), "m"); err == nil {
 		t.Fatal("a JSON body with no choices must fail the re-extraction")
 	}

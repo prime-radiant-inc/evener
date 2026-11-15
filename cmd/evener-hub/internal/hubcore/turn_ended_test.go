@@ -47,8 +47,8 @@ func fuzzScenarioBuildTree_EveryRowCarriesTheTurnEndedTime(t *testing.T) {
 		{ID: "01ENDED", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting, LastTurnEndedAt: ended},
-		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusAwaiting, LastTurnEndedAt: ended},
+		{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, LastTurnEndedAt: ended},
+		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, LastTurnEndedAt: ended},
 	}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")

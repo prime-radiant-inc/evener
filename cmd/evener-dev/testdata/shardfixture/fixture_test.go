@@ -28,6 +28,7 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	recordTestTimeout()
+	recordShardSkip()
 	done := announceLiveShard()
 	code := m.Run()
 	if done != nil {
@@ -52,6 +53,18 @@ func recordTestTimeout() {
 	}
 	timeout := flag.Lookup("test.timeout").Value.String()
 	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%d", role, os.Getpid())), []byte(timeout), 0o644)
+}
+
+// recordShardSkip, when SHARD_FIXTURE_SKIP_DIR is set, records the -test.skip
+// a shard invocation (one carrying the run file) runs under as shard.<pid>.
+// Inert unless the test asks for it.
+func recordShardSkip() {
+	dir := os.Getenv("SHARD_FIXTURE_SKIP_DIR")
+	if dir == "" || os.Getenv("EVENER_SHARD_RUN_FILE") == "" {
+		return
+	}
+	skip := flag.Lookup("test.skip").Value.String()
+	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("shard.%d", os.Getpid())), []byte(skip), 0o644)
 }
 
 // liveShardTimeout bounds how long a shard binary waits for the peers the run

@@ -6,11 +6,11 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // Mutation caught: hashing raw selector order or duplicates replaces a durable
@@ -39,9 +39,7 @@ func TestHubWatchEquivalentSelectorsPreserveDurableState(t *testing.T) {
 			if err := jm.onHubObservation(first.WatchID, question); err != nil {
 				t.Fatal(err)
 			}
-			if err := jm.suspendHubWatch(first.WatchID); err != nil {
-				t.Fatal(err)
-			}
+			jm.suspendHubWatch(first.WatchID)
 			before := loadWatchSendRecord(t, jm)
 			if len(before.Pending) != 2 {
 				t.Fatalf("pending=%d, want question and interruption", len(before.Pending))
@@ -179,8 +177,8 @@ func TestManagerWatchOverflowRebindPreservesPendingCompletion(t *testing.T) {
 	}
 	healthyCtx := <-peer.started
 	jm := root.jobManager
-	// TRIPWIRE: durable pending state has no public completion signal.
-	waitForCondition(t, 30*time.Second, "initial pending question", func() bool { return len(loadWatchSendRecord(t, jm).Pending) == 1 })
+	// Durable pending state has no public completion signal.
+	testwait.Until(t, "initial pending question", func() bool { return len(loadWatchSendRecord(t, jm).Pending) == 1 })
 	before := loadWatchSendRecord(t, jm)
 	var id string
 	for _, pending := range before.Pending {

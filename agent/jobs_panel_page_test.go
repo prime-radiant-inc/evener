@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 func TestJobOutputPageSavedBoundsAndRawBytes(t *testing.T) {
@@ -101,8 +102,7 @@ func TestJobOutputPageRealShellLiveAndSettled(t *testing.T) {
 	}
 	session := &Session{}
 	session.jobManager = jm
-	// TRIPWIRE: six bytes arrive before the shell blocks on its gate; 30s detects a stuck launch or output drain.
-	waitForCondition(t, 30*time.Second, "real shell to write its complete first output", func() bool {
+	testwait.Until(t, "real shell to write its complete first output", func() bool {
 		page, found, err := session.JobOutputPage(result.JobID, nil, 6)
 		return err == nil && found && page.TotalBytes == 6
 	})
@@ -110,8 +110,7 @@ func TestJobOutputPageRealShellLiveAndSettled(t *testing.T) {
 	if err != nil || !found || page.OffsetBytes != 3 || page.BytesReturned != 3 || page.TotalBytes != 6 || page.RetainedStartBytes != 0 || !bytes.Equal(rawPageBytes(t, page), []byte{0xa9, 0x63, 0x64}) {
 		t.Fatalf("live page = %+v, found=%v, error %v", page, found, err)
 	}
-	// TRIPWIRE: readiness is written immediately after those bytes; 30s catches a shell stuck before opening its gate.
-	waitForCondition(t, 30*time.Second, "real shell to open its output gate", func() bool {
+	testwait.Until(t, "real shell to open its output gate", func() bool {
 		_, err := os.Stat(ready)
 		return err == nil
 	})

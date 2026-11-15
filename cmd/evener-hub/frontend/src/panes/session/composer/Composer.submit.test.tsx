@@ -28,6 +28,7 @@ import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { TurnBlock } from "../transcript/TurnBlock";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { resetComposerFocusStoreForTests } from "./composerFocus";
@@ -553,10 +554,16 @@ test("a hydrate that reports this client's own in-flight send still routes the n
   // Wait out the settlement the publish drives, so the second message is
   // composed in the harder of the two states this hydrate passes through: not
   // merely re-described from the authoritative projection, but with the durable
-  // record it re-described GONE. (The transient first state, where the record
-  // still exists and only `source` has flipped, is pendingReconcile.test.ts's.)
+  // outbox record it re-described GONE and only its accepted display copy left
+  // to keep the one pending row on screen until the transcript echo.
+  // (The transient first state, where the record still exists and only `source`
+  // has flipped, is pendingReconcile.test.ts's.)
   await flushPendingTurnsProjectionForTests();
-  expect((await readMutationPersistence("ref_a")).optimistic).toHaveLength(0);
+  const persisted = await readMutationPersistence("ref_a");
+  expect(persisted.outbox).toHaveLength(0);
+  expect(persisted.optimistic).toHaveLength(1);
+  expect(persisted.optimistic[0]?.clientMutationId).toBe(firstSendId);
+  expect(persisted.optimistic[0]?.state).toBe("accepted");
 
   await user.type(editor, "m2");
   await user.click(submitButton());
@@ -1354,7 +1361,16 @@ test.each(["", "  ", "occupied draft"])(
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(textarea().textContent).toBe(text);
     view.unmount();
-    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
+    render(
+      <>
+        <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
+        {/* The recovery row renders as the transcript's trailing row in
+            production (ConversationBody); mounted beside the remounted
+            composer so its Edit affordance exists, same as the shared
+            mount helper. */}
+        <PendingRowStack ref="ref_a" />
+      </>,
+    );
     await flushPendingTurnsProjectionForTests();
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(await storage.listRecovery("ref_a")).toHaveLength(1);

@@ -1,6 +1,6 @@
 // Command evener-dev is the dev/test infrastructure binary: it dispatches
 // the dev and test tooling subcommands that an end-user install never needs
-// (agent-shards, hub-shards, cli-shards, covstmt, module-lint, fuzz-harvest,
+// (agent-shards, hub-shards, cli-shards, covstmt, fuzz-harvest,
 // fuzzcov, fuzzregistry, internalcheck, tomlcheck, transcript-v2-upgrade).
 //
 // The end-user binary is `evener`; this binary is built and used by repo
@@ -36,7 +36,7 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "dev":
 		return devcmd.Run(args[1:], stdin, stdout, stderr)
-	case "module-lint", "agent-shards", "hub-shards", "cli-shards", "list-build-flags", "check-gate-flags", "root-test-flags":
+	case "agent-shards", "hub-shards", "cli-shards", "list-build-flags", "check-gate-flags", "root-test-flags":
 		return devcmd.Run(args, stdin, stdout, stderr)
 	case "fuzz-harvest":
 		return fuzzharvestcmd.Run(args[1:], stdin, stdout, stderr)
@@ -64,7 +64,6 @@ func usage(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(w, "Usage: evener-dev <subcommand> [flags]\n\nSubcommands:\n")
 	_, _ = fmt.Fprintf(tw, "  dev\t\t\tDev tooling (%s)\n", strings.Join(devcmd.Subcommands(), ", "))
-	_, _ = fmt.Fprintf(tw, "  module-lint\t\tRun golangci-lint across workspace modules in parallel waves\n")
 	_, _ = fmt.Fprintf(tw, "  agent-shards\t\tRun agent test shards in parallel\n")
 	_, _ = fmt.Fprintf(tw, "  hub-shards\t\tRun cmd/evener-hub test shards in parallel\n")
 	_, _ = fmt.Fprintf(tw, "  cli-shards\t\tRun cmd/evener test shards in parallel\n")

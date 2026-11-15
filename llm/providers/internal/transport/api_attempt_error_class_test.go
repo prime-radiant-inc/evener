@@ -69,6 +69,7 @@ const ordinaryRateLimitBody = `{"error":{"code":"rate_limit_exceeded","message":
 // that resets days out. Recording it as an ordinary rate limit loses the one
 // distinction a caller needs -- retry this, or stop for the session.
 func TestAPIAttemptErrorClassRecordsQuotaExhausted429(t *testing.T) {
+	t.Parallel()
 	got := recordProviderRejectClass(t, "ag_quota_429", http.StatusTooManyRequests, usageLimitBody)
 	if got != llm.KindQuotaExceeded.String() {
 		t.Fatalf("error_class = %q, want %q: a 429 naming a spent allowance is not an ordinary rate limit",
@@ -87,6 +88,7 @@ func TestAPIAttemptErrorClassRecordsQuotaExhausted429(t *testing.T) {
 // access_denied here, which agent/doctor/apilog.go's classifyAPIErrorClass then
 // buckets as "permanent" rather than "quota".
 func TestAPIAttemptErrorClassRecordsQuotaExhausted403(t *testing.T) {
+	t.Parallel()
 	got := recordProviderRejectClass(t, "ag_quota_403", http.StatusForbidden, usageLimitBody)
 	if got != llm.KindQuotaExceeded.String() {
 		t.Fatalf("error_class = %q, want %q: a 403 naming a spent billing cycle is not a bare access denial",
@@ -104,6 +106,7 @@ func TestAPIAttemptErrorClassRecordsQuotaExhausted403(t *testing.T) {
 // TestAPIAttemptErrorClassRecordsQuotaExhausted403 carries the derivation
 // property instead.
 func TestAPIAttemptErrorClassKeepsOrdinaryRateLimit(t *testing.T) {
+	t.Parallel()
 	got := recordProviderRejectClass(t, "ag_rate_429", http.StatusTooManyRequests, ordinaryRateLimitBody)
 	if got != llm.KindRateLimit.String() {
 		t.Fatalf("error_class = %q, want %q: a transient 429 must stay retryable", got, llm.KindRateLimit)
@@ -114,6 +117,7 @@ func TestAPIAttemptErrorClassKeepsOrdinaryRateLimit(t *testing.T) {
 // An adapter that hands back an error this package did not construct still
 // gets a class from the recorded status, rather than collapsing to unknown.
 func TestAPIAttemptErrorClassFallsBackToStatusForUntypedError(t *testing.T) {
+	t.Parallel()
 	got := recordProviderRejectErrorClass(t, "ag_untyped", http.StatusNotFound, errors.New("some adapter-specific failure"))
 	if got != llm.KindNotFound.String() {
 		t.Fatalf("error_class = %q, want %q: an untyped error still classifies from its status", got, llm.KindNotFound)
@@ -134,6 +138,7 @@ func TestAPIAttemptErrorClassFallsBackToStatusForUntypedError(t *testing.T) {
 // caller-supplied Unwrap/Is/As/Timeout is never invoked, and the class still
 // comes from the recorded status.
 func TestAPIAttemptErrorClassDoesNotInspectUntrustedErrorOnProviderReject(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  func(*hostileErrorCalls) error

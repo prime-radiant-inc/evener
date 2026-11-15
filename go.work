@@ -1,5 +1,10 @@
 go 1.27.0
 
+// The toolchain line names the Go release every build uses: the go command
+// switches to it under GOTOOLCHAIN=auto, and CI's actions/setup-go reads it
+// through go-version-file: go.work. The go line stays the language floor.
+toolchain go1.27.4
+
 use (
 	.
 	./agent

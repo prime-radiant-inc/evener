@@ -50,6 +50,9 @@ func runStreamGenerateCoverage(ctx context.Context, t *testing.T, adapter *strea
 
 // FuzzStreamGenerateCoverage replays the deterministic scripted-provider
 // scenarios that distinguish the high-level streaming loop's control paths.
+// The tests this replays run as plain calls on the fuzz body's shared t and
+// must not call t.Parallel(); keep the "Not parallel" comment on any test
+// added to its list.
 func FuzzStreamGenerateCoverage(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {

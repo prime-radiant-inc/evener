@@ -67,7 +67,7 @@ func TestDelegateSendRejectsTheCallerRoute(t *testing.T) {
 			delegateRootSessionID: "root-session",
 			reg:                   toolpkg.NewRegistry(),
 		}
-		root.attachTranscript(writer)
+		root.attachTranscript(writer, nil)
 		c.rootRuntime = root
 		if err := registerDelegateTool(root.reg, root); err != nil {
 			t.Fatalf("register root stable delegate tool: %v", err)

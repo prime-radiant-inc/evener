@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
@@ -107,21 +108,22 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		return appwire.ThreadReadResponse{}, err
 	}
 	if params.AnswerContinuation != nil {
-		cut := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		cut := s.appThreadReadCutForRequest(ctx, params)
 		if !cut.found || cut.history == nil {
 			return appwire.ThreadReadResponse{}, appwire.Unavailable("answer continuation history unavailable")
 		}
-		verdict, snapshot, err := cut.history.answerContinuation(ctx, params)
+		verdict, snapshot, frontier, err := cut.history.answerContinuation(ctx, params)
 		if err != nil {
 			return appwire.ThreadReadResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), cut.response.BootGeneration, cut.response.Epoch)
 		}
-		current := s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params))
+		current := s.appThreadReadCutForRequest(ctx, params)
 		if !current.found || current.history != cut.history || current.response.Thread.Evener.Ref != cut.response.Thread.Evener.Ref || current.response.Thread.Evener.InstanceID != cut.response.Thread.Evener.InstanceID || current.response.BootGeneration != cut.response.BootGeneration || current.response.Epoch != cut.response.Epoch {
 			return appwire.ThreadReadResponse{}, appwire.Unavailable("answer continuation target changed during read")
 		}
 		response := cut.response
 		response.Thread.Turns = nil
 		response.AnswerContinuation, response.Snapshot = &verdict, &snapshot
+		response.Thread.Evener.LatestExecutionTurnID = frontier
 		return response, nil
 	}
 	if params.FetchCursor != "" {
@@ -138,7 +140,7 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		return response, nil
 	}
 	if !params.Subscribe {
-		return s.appThreadReadSnapshotChecked(params)
+		return s.finishAppThreadRead(params, s.appThreadReadCutForRequest(ctx, params))
 	}
 	var threadID string
 	var cut appThreadReadCut
@@ -173,6 +175,19 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 // its subscription cut and before it projects history. Test seam only; nil
 // in production.
 var threadReadAfterCutHook func()
+
+// Versioned cuts include target resolution, row, history and epoch under one
+// projection gate. Projection and disk reads happen only after releasing it.
+// Legacy calls retain their existing capture behavior.
+func (s *Server) appThreadReadCutForRequest(ctx context.Context, params appwire.ThreadReadParams) (cut appThreadReadCut) {
+	capture := func() { cut = s.appThreadReadCutForTarget(params, s.appThreadIDForRead(params)) }
+	if appwire.HistoryServingFactsRequested(ctx) {
+		s.appServer.CommitProjection(func() []appserver.SequencedNotification { capture(); return nil })
+	} else {
+		capture()
+	}
+	return cut
+}
 
 // appThreadReadCut is what a thread read takes inside the subscription cut:
 // the thread envelope, and the thread's overlay and resync epoch. Its history
@@ -227,7 +242,7 @@ func (s *Server) appThreadReadCutForTarget(params appwire.ThreadReadParams, thre
 	// addressed child's durable queue and mutation receipts.
 	thread.Evener.MutationStateAuthoritative = threadID == s.appProjectionThreadID()
 	cut := appThreadReadCut{
-		response: appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: s.bootGenerationFor(threadID)},
+		response: appwire.ThreadReadResponse{Thread: thread, RequestGeneration: params.RequestGeneration, BootGeneration: s.bootGenerationFor(threadID), ServingFacts: &appwire.HistoryServingFacts{ServedFrom: "live-daemon", AsOf: time.Now().UTC().Format(time.RFC3339Nano), InstanceID: thread.Evener.InstanceID}},
 		found:    true,
 		history:  s.appHistoryForID(threadID),
 	}
@@ -432,7 +447,7 @@ func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) (transcript.
 
 // handleAppThreadTurnsList pages backward (older) through the thread's
 // history from the transcript.
-func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+func (s *Server) handleAppThreadTurnsList(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	threadID := s.appThreadIDForRead(appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 		return appwire.ThreadTurnsListResponse{}, s.readError(err, threadID)
@@ -444,21 +459,24 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	if threadID == "" {
 		return appwire.ThreadTurnsListResponse{}, s.readError(appwire.SessionUnavailable("thread is unavailable"), threadID)
 	}
-	history := s.appHistoryForID(threadID)
+	cut := s.appThreadReadCutForRequest(ctx, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+	history := cut.history
 	if history == nil {
-		return appwire.ThreadTurnsListResponse{BootGeneration: s.bootGenerationFor(threadID)}, nil
+		return appwire.ThreadTurnsListResponse{BootGeneration: cut.response.BootGeneration, ServingFacts: cut.response.ServingFacts, LatestExecutionTurnID: cut.response.Thread.Evener.LatestExecutionTurnID}, nil
 	}
-	epoch := history.Epoch()
-	turns, olderCursor, snapshot, err := history.before(history.ref, params)
+	epoch := cut.capture.epoch
+	turns, olderCursor, snapshot, frontier, err := history.beforeWithFrontier(history.ref, params)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)
 	}
 	response := appwire.ThreadTurnsListResponse{
-		Data:           turns,
-		NextCursor:     olderCursor,
-		BootGeneration: history.bootGeneration,
-		Epoch:          epoch,
-		Snapshot:       &snapshot,
+		Data:                  turns,
+		NextCursor:            olderCursor,
+		BootGeneration:        history.bootGeneration,
+		Epoch:                 epoch,
+		Snapshot:              &snapshot,
+		ServingFacts:          cut.response.ServingFacts,
+		LatestExecutionTurnID: frontier,
 	}
 	if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
 		return appwire.ThreadTurnsListResponse{}, appwire.WithHistoryReadIdentity(appserver.WireError(err), history.bootGeneration, epoch)

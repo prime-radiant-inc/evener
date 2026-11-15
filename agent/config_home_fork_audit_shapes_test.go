@@ -69,20 +69,27 @@ func TestLiteral(t *testing.T) {
 			flagged: []string{"TestVariableConfig", "TestVariableThroughOption", "TestGatedVariableDerivesAnotherOption", "TestGatedVariableFieldInsideUngatedLiteral"},
 		},
 		{
-			// Helpers: one gates unconditionally in its own body, one only on
-			// an option (the newSession fixture's shape).
-			name: "helpers gate by body or by option",
+			// Helpers: one gates unconditionally in its own body, one by the
+			// literal config it is passed; the session fixture gates unless
+			// the call opts in, and a wrapper that forwards the opt-in is not
+			// gated either.
+			name: "helpers gate by body or by default",
 			src: `
 func gatedSession(t *testing.T) *Session {
 	s, _ := NewSession(nil, nil, nil, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	return s
 }
-func optionalSession(t *testing.T, opts ...sessionOpt) *Session {
+func newSession(t *testing.T, opts ...sessionOpt) *Session {
 	var o sessionOpts
 	cfg := o.cfg
-	if o.skipGitSnapshot {
-		cfg.testOnly.skipGitSnapshot = true
-	}
+	cfg.testOnly.skipGitSnapshot = !o.environmentSnapshot
+	s, _ := NewSession(nil, nil, nil, cfg)
+	return s
+}
+func wrappedSession(t *testing.T, opts ...sessionOpt) *Session {
+	return newSession(t, opts...)
+}
+func configuredSession(t *testing.T, cfg SessionConfig) *Session {
 	s, _ := NewSession(nil, nil, nil, cfg)
 	return s
 }
@@ -90,23 +97,92 @@ func TestGatedHelper(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	_ = gatedSession(t)
 }
-func TestOptionalHelperWithOption(t *testing.T) {
+func TestFixtureBare(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t, withoutGitSnapshot())
+	_ = newSession(t)
 }
-func TestOptionalHelperWithGatedConfig(t *testing.T) {
+func TestFixtureWithUngatedConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t, withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}))
+	_ = newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
 }
-func TestOptionalHelperBare(t *testing.T) {
+func TestFixtureWithSnapshot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t)
+	_ = newSession(t, withEnvironmentSnapshot())
 }
-func TestOptionalHelperWithUngatedConfig(t *testing.T) {
+func TestWrapperBare(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	_ = optionalSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
+	_ = wrappedSession(t)
+}
+func TestWrapperWithSnapshot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = wrappedSession(t, withEnvironmentSnapshot())
+}
+func TestConfigHelperWithGatedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = configuredSession(t, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
+}
+func TestConfigHelperWithUngatedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = configuredSession(t, SessionConfig{MaxSubagentDepth: 1})
 }`,
-			flagged: []string{"TestOptionalHelperBare", "TestOptionalHelperWithUngatedConfig"},
+			flagged: []string{"TestConfigHelperWithUngatedConfig", "TestFixtureWithSnapshot", "TestWrapperWithSnapshot"},
+		},
+		{
+			// Opt-ins the scan cannot see are ungated: a slice variable spread
+			// into the fixture, an option held in a variable (directly or
+			// through a helper), and a function literal that sets the snapshot
+			// itself. Spreading the enclosing function's own variadic
+			// parameter stays gated, because that function's callers are
+			// audited; a spread of anything else, here a slice built by
+			// append, is opaque.
+			name: "hidden opt-ins are ungated",
+			src: `
+func newSession(t *testing.T, opts ...sessionOpt) *Session {
+	var o sessionOpts
+	cfg := o.cfg
+	cfg.testOnly.skipGitSnapshot = !o.environmentSnapshot
+	s, _ := NewSession(nil, nil, nil, cfg)
+	return s
+}
+func forwardingSession(t *testing.T, opts ...sessionOpt) *Session {
+	return newSession(t, opts...)
+}
+func appendedSession(t *testing.T, opts ...sessionOpt) *Session {
+	all := append([]sessionOpt{withDir("x")}, opts...)
+	return newSession(t, all...)
+}
+func TestSliceVariableOptIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	opts := []sessionOpt{withEnvironmentSnapshot()}
+	_ = newSession(t, opts...)
+}
+func TestOptionVariableOptIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	snap := withEnvironmentSnapshot()
+	_ = newSession(t, snap)
+}
+func TestOptionVariableThroughHelper(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	snap := withEnvironmentSnapshot()
+	_ = forwardingSession(t, snap)
+}
+func TestFuncLiteralOptIn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = newSession(t, func(o *sessionOpts) { o.environmentSnapshot = true })
+}
+func TestForwardedOptionsStayGated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = forwardingSession(t)
+}
+func TestAppendSpreadIsOpaque(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = appendedSession(t)
+}
+func TestDirectCallStaysGated(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_ = newSession(t, withDir("x"))
+}`,
+			flagged: []string{"TestSliceVariableOptIn", "TestOptionVariableOptIn", "TestOptionVariableThroughHelper", "TestFuncLiteralOptIn", "TestAppendSpreadIsOpaque"},
 		},
 		{
 			// The restore entry points: the config-bearing one is gated by

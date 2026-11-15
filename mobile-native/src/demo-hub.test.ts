@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -458,6 +459,73 @@ describe("the demo fleet's subagents and documents (phase 4, PR 9)", () => {
 });
 
 describe("native demonstration hub", () => {
+	it.each([
+		["evener/thread/history/read", { code: -32601, data: { evenerErrorInfo: "methodNotFound" } }],
+		["evener/thread/history/turns/list", { code: -32601, data: { evenerErrorInfo: "methodNotFound" } }],
+		["evener/unsupported-fixture-method", { code: -32602 }],
+	])("refuses unsupported method %s with its protocol error", async (method, error) => {
+		const hub = await createDemoHub(0);
+		const socket = new WebSocket(`${hub.origin.replace("http:", "ws:")}/rpc`);
+		try {
+			await once(socket, "open");
+			const response = once(socket, "message");
+			socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ref: "demo:playground" } }));
+			const [raw] = await response;
+			const frame = JSON.parse(String(raw));
+			expect(frame).toMatchObject({ id: 1, error });
+			expect(frame).not.toHaveProperty("result");
+		} finally {
+			socket.terminate();
+			await hub.close();
+		}
+	});
+
+	it("falls back for concurrent history probes and caches legacy reads on the connection", async () => {
+		const hub = await createDemoHub(0, "LEGACY_HISTORY_SENTINEL");
+		let socket: WebSocket | undefined;
+		const client = createHubClient(hub.origin, "", (url) => {
+			socket = new WebSocket(url);
+			return socket as unknown as WebSocketLike;
+		});
+		try {
+			await client.connect();
+			if (!socket) throw new Error("Missing demo transport");
+			const sent = vi.spyOn(socket, "send");
+			const params = { ref: "demo:playground", includeTurns: true };
+			const [read, page] = await Promise.all([
+				client.request("thread/read", params),
+				client.request("thread/turns/list", { ref: params.ref }),
+			]);
+			expect(read.thread.evener.ref).toBe(params.ref);
+			expect(read.thread.turns?.[0]?.items?.[0]).toMatchObject({
+				type: "agentMessage",
+				text: "LEGACY_HISTORY_SENTINEL",
+			});
+			expect(read).not.toHaveProperty("servedFrom");
+			expect(page.data).toEqual([]);
+			expect(sent.mock.calls.map(([data]) => JSON.parse(String(data)).method)).toEqual([
+				"evener/thread/history/read",
+				"evener/thread/history/turns/list",
+				"thread/read",
+				"thread/turns/list",
+			]);
+			sent.mockClear();
+			const [cachedRead, cachedPage] = await Promise.all([
+				client.request("thread/read", params),
+				client.request("thread/turns/list", { ref: params.ref }),
+			]);
+			expect(cachedRead).toEqual(read);
+			expect(cachedPage).toEqual(page);
+			expect(sent.mock.calls.map(([data]) => JSON.parse(String(data)).method)).toEqual([
+				"thread/read",
+				"thread/turns/list",
+			]);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
 	it("starts a turn when a resting playground is steered or its held message is sent", async () => {
 		const hub = await createDemoHub(0);
 		const client = createHubClient(hub.origin, "", (url) => new WebSocket(url) as unknown as WebSocketLike);

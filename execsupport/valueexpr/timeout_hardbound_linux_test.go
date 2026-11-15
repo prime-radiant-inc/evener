@@ -109,7 +109,7 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 		close(ready)
 	}()
 	start := time.Now()
-	_, err = evaluate(command)
+	_, err = evaluate(command, nil)
 	if err == nil {
 		t.Fatal("evaluate returned nil; want the timeout error")
 	}
@@ -153,7 +153,7 @@ func TestCommandWaitBoundedByDeadlinePlusDrain(t *testing.T) {
 	drainGrace = 200 * time.Millisecond
 
 	start := time.Now()
-	_, err := evaluate(`setsid sh -c 'sleep 10 & echo $! > ` + marker + `' & exec sleep 30`)
+	_, err := evaluate(`setsid sh -c 'sleep 10 & echo $! > `+marker+`' & exec sleep 30`, nil)
 	if cmdErr, ok := errors.AsType[*CommandError](err); !ok || !cmdErr.Timeout {
 		t.Fatalf("err = %v; want the command timeout", err)
 	}
@@ -182,7 +182,7 @@ func TestWaitDelayKillsLingeringGroup(t *testing.T) {
 	}
 	t.Cleanup(func() { exec.Command("pkill", "-f", script).Run() })
 
-	_, err := realRunCommand(`"` + script + `" & exit 0`)
+	_, err := realRunCommand(`"`+script+`" & exit 0`, nil)
 	if err == nil {
 		t.Fatal("realRunCommand returned nil; want the drain error")
 	}
@@ -223,7 +223,7 @@ func TestWaitDelayKillsLingeringGroupOnNonzeroExit(t *testing.T) {
 	}
 	t.Cleanup(func() { exec.Command("pkill", "-f", script).Run() })
 
-	_, err := realRunCommand(`"` + script + `" & exit 3`)
+	_, err := realRunCommand(`"`+script+`" & exit 3`, nil)
 	cmdErr, ok := errors.AsType[*CommandError](err)
 	if !ok || cmdErr.Status != 3 {
 		t.Fatalf("err = %v; want the shell's exit status 3", err)
@@ -269,7 +269,7 @@ func TestSuccessfulRunKillsLingeringGroup(t *testing.T) {
 		}
 	})
 
-	res, err := evaluate(`"` + script + `" & echo $! > ` + marker + `; echo token`)
+	res, err := evaluate(`"`+script+`" & echo $! > `+marker+`; echo token`, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}

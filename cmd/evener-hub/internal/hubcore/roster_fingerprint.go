@@ -69,7 +69,7 @@ var rosterShownFields = []string{
 var rosterNotShownFields = []string{
 	"Entry", "SessionID", "RosterInstanceID", "Activity", "Profile", "Project", "Manager",
 	"PendingEscalations.ThreadID", "PendingEscalations.Ref", "PendingEscalations.Mode",
-	"PendingEscalations.Tool", "PendingEscalations.Kind", "PendingEscalations.DeniedPath",
+	"PendingEscalations.Tool", "PendingEscalations.Kind", "PendingEscalations.DeniedPath", "PendingEscalations.RequestedPath",
 	"PendingEscalations.Command", "PendingEscalations.OutputSoFar", "PendingEscalations.PartiallyRan",
 	"RunningJobs.ExhaustionBudget", "RunningJobs.ExhaustionLimit", "RunningJobs.Resumable", "RunningJobs.ExitCode", "RunningJobs.OutputBytes", "RunningJobs.TranscriptRef",
 	"RunningJobs.FromWatch", "RunningJobs.Background", "RunningJobs.Intent", "RunningJobs.ParentDelegateID", "RunningJobs.DelegateID", "RunningJobs.OriginTurnID", "RunningJobs.OriginToolCallID", "RunningJobs.OriginItemID",

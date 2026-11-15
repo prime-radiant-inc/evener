@@ -54,6 +54,12 @@ func TestS3Cov_FormatDirListing(t *testing.T) {
 		if line := formatDirListing(listDirResult{Entries: []execenv.DirEntry{ctrl}}); dirEntrySize(ctrl) < len(strings.SplitN(line, "\n", 2)[0])+1 {
 			t.Fatalf("dirEntrySize(%q) = %d, under its rendered line %q", ctrl.Name, dirEntrySize(ctrl), line)
 		}
+		// A colon is ordinary here too: list_dir has no following field a
+		// colon could blur, so its output stays a usable path (#4526).
+		colon := formatDirListing(listDirResult{Entries: []execenv.DirEntry{{Name: "a:1:b.md", Size: 1}}})
+		if !strings.HasPrefix(colon, "a:1:b.md\t1\n") {
+			t.Fatalf("colon listing = %q, want the raw name", colon)
+		}
 	})
 
 	t.Run("truncated footer", func(t *testing.T) {
@@ -290,5 +296,32 @@ func TestS3Cov_GlobTool_QuotesAControlCharacterPath(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(lines, want) {
 		t.Fatalf("glob lines = %q, want %q", lines, want)
+	}
+}
+
+// Issue #4526: a colon is ordinary in a glob path; only a grep result's
+// path:line:text form needs quoting. Quoting here would turn every Windows
+// drive-letter match, and any match under a colon-bearing root, into non-path
+// text a model cannot pass back to read_file or apply_patch.
+func TestS3Cov_GlobTool_KeepsAColonPathRaw(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const colonName = "a:1:b.md"
+	for _, name := range []string{colonName, "ok.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newSession(t, withDir(dir))
+	res := s3cov_exec(t, s, "glob", `{"pattern":"*.md","path":"."}`)
+	if res.IsError {
+		t.Fatalf("glob error: %v", res.Output)
+	}
+	lines := strings.Split(res.Output, "\n")
+	slices.Sort(lines)
+	want := []string{filepath.Join(dir, colonName), filepath.Join(dir, "ok.md")}
+	slices.Sort(want)
+	if !slices.Equal(lines, want) {
+		t.Fatalf("glob lines = %q, want raw paths %q", lines, want)
 	}
 }

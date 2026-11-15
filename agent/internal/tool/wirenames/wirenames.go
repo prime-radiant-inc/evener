@@ -11,9 +11,32 @@ import (
 )
 
 var (
-	openAI = map[string]string{"shell": "exec_command", "grep": "grep_files", "glob": "find_files"}
-	google = map[string]string{"shell": "run_shell_command", "grep": "grep_search", "list_dir": "list_directory"}
+	openAI      = map[string]string{"shell": "exec_command", "grep": "grep_files", "glob": "find_files"}
+	google      = map[string]string{"shell": "run_shell_command", "grep": "grep_search", "list_dir": "list_directory"}
+	toCanonical = buildCanonicalMap(openAI, google)
 )
+
+func buildCanonicalMap(surfaces ...map[string]string) map[string]string {
+	inv := make(map[string]string)
+	for _, renames := range surfaces {
+		for canonical, wire := range renames {
+			if prev, exists := inv[wire]; exists && prev != canonical {
+				panic("wirenames: conflicting canonical mappings for " + wire)
+			}
+			inv[wire] = canonical
+		}
+	}
+	return inv
+}
+
+// Canonical returns the canonical Evener tool name for a provider wire alias,
+// or name unchanged when it is already canonical or belongs to an unmapped tool.
+func Canonical(name string) string {
+	if canonical, ok := toCanonical[name]; ok {
+		return canonical
+	}
+	return name
+}
 
 // ForSurface returns the canonical→wire renames for surface, or nil when the
 // surface uses canonical names. The map is the caller's to keep.

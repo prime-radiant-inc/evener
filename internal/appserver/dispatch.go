@@ -73,7 +73,9 @@ func (c *Connection) clearRecoveryOnPanic(id string, fn func()) {
 // out of order against every other request on the connection.
 func concurrentDispatchMethod(method string) bool {
 	switch method {
-	case appwire.MethodThreadRead, appwire.MethodThreadTurnsList, appwire.MethodEvenerSubagentPreview,
+	case appwire.MethodThreadRead, appwire.MethodThreadTurnsList,
+		appwire.MethodThreadHistoryRead, appwire.MethodThreadHistoryTurnsList,
+		appwire.MethodEvenerSubagentPreview,
 		// evener/update/check is a read-only network comparison with no
 		// shared-state writes; running it inline blocks unrelated RPCs
 		// on the connection for up to two 10s GitHub timeouts. The
@@ -121,6 +123,12 @@ func concurrentDispatchMethod(method string) bool {
 		return true
 	}
 	return false
+}
+
+// IsThreadReadMethod reports whether method reads a thread and may subscribe to
+// it. The history page methods only read turns and cannot subscribe.
+func IsThreadReadMethod(method string) bool {
+	return method == appwire.MethodThreadRead || method == appwire.MethodThreadHistoryRead
 }
 
 // receiveInbound applies the connection's inbound policy to one frame on
@@ -444,14 +452,15 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	var secondaryKey string
 	var resolved bool
 	intent := SubscriptionAdmissionNotSubscribe
-	if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (msg.Request.Method == appwire.MethodThreadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
+	threadRead := msg.Request != nil && IsThreadReadMethod(msg.Request.Method)
+	if resolve := c.server.cfg.SubscriptionAdmissionResolver; resolve != nil && msg.Request != nil && c.isInitialized() && (threadRead || msg.Request.Method == appwire.MethodThreadUnsubscribe) {
 		var result SubscriptionAdmissionResolution
 		result, resolverPanic = safeResolveAdmission(c.server, resolve, msg)
 		resolvedKey, secondaryKey, resolved, intent = result.Key, result.SecondaryKey, result.Intent == SubscriptionAdmissionResolved, result.Intent
 	}
 	if resolverPanic {
 		ctx = context.WithValue(ctx, subscriptionAdmissionResolverPanicContextKey{}, true)
-	} else if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead && threadReadAdmissionEligible(msg.Request.Params) && intent == SubscriptionAdmissionUnresolved {
+	} else if threadRead && threadReadAdmissionEligible(msg.Request.Params) && intent == SubscriptionAdmissionUnresolved {
 		ctx = context.WithValue(ctx, subscriptionAdmissionFailureContextKey{}, "subscription admission is unavailable")
 	}
 	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadUnsubscribe && c.isInitialized() {
@@ -470,7 +479,7 @@ func (c *Connection) executeOrdered(ctx context.Context, msg appwire.Message) {
 	if msg.Request != nil && concurrentDispatchMethod(msg.Request.Method) && c.isInitialized() {
 		method := msg.Request.Method
 		var admission *subscriptionAdmission
-		if method == appwire.MethodThreadRead {
+		if threadRead {
 			if resolved && resolvedKey != "" {
 				admission = c.beginSubscriptionAdmission(requestIDKey(msg.Request.ID), resolvedKey)
 			}

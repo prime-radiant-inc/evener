@@ -171,12 +171,15 @@ evener_path_value() {
   printf '%s\\n' "$evener_value"
 }
 evener_directory() { CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P; }
+# BSD readlink omits its trailing LF when the target already ends in one, so
+# the framing LF evener_path_value strips is supplied here instead.
+evener_link() { readlink -n "$1" 2>/dev/null && printf '\\n' || readlink "$1"; }
 config_path() {
     p=$1
     n=0
     while [ -L "$p" ]; do
         n=$((n+1)); [ "$n" -le 40 ] || return 1
-        link=$(evener_path_value readlink "$p") || return 1
+        link=$(evener_path_value evener_link "$p") || return 1
         case "$link" in
             /*) p=$link ;;
             *) parent=$(evener_path_value dirname "$p") || return 1; p=$parent/$link ;;

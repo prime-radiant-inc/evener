@@ -1,5 +1,5 @@
 import {
-  approvalWaiting,
+  type AttentionFacts,
   attentionNeedsYou,
   attentionState,
   type NavigationSessionSummary,
@@ -9,8 +9,8 @@ import type { NotificationsLoudScopePref } from "../stores/prefs";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
 
-export function levelFromState(state: string): AttentionLevel {
-  const attention = attentionState(state);
+export function levelFromState(state: string, facts: AttentionFacts = {}): AttentionLevel {
+  const attention = attentionState(state, facts);
   if (attentionNeedsYou(attention)) return "needs_you";
   switch (attention) {
     case "working":
@@ -41,7 +41,7 @@ export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[]
     // An approval blocks its turn mid-tool, so the row still reports
     // "active"; like the hub's promotedAttentionLevel, a pending approval
     // makes any row short of a failure need you.
-    const level = approvalWaiting(row.state, approvalPending) ? "needs_you" : levelFromState(row.state);
+    const level = levelFromState(row.state, { askPending: row.ask_pending === true, approvalPending });
     if (level !== "needs_you" && level !== "error") continue;
     snapshot.set(row.ref, {
       ref: row.ref,

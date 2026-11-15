@@ -48,7 +48,9 @@ e2e_stop_owned_pid() {
 		echo "$SCRIPT_NAME: pid $pid is alive but is not this run's $label (recycled pid); leaving it alone" >&2
 		return 0
 	fi
-	kill "$pid"
+	# The pid can exit between the ownership check and the signal; that is a
+	# successful stop, not a reason to abort the caller's cleanup under set -e.
+	kill "$pid" 2>/dev/null || true
 	echo "$SCRIPT_NAME: stopped $label (pid $pid)" >&2
 }
 

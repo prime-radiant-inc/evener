@@ -6,6 +6,7 @@ import (
 )
 
 func TestOrderedGlobKeys_TargetBeforeReferenceOnce(t *testing.T) {
+	t.Parallel()
 	rows := map[string]Model{
 		"claude-*":     {ID: "claude-*"},
 		"*-opus-4-6":   {ID: "*-opus-4-6"},

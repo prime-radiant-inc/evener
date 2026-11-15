@@ -75,7 +75,7 @@ func TestPrepareToolCall_UpdateEntryInAddArrayExplains(t *testing.T) {
 // task-list diagnostic before generic schema repair can discard its fields.
 func TestExecTool_TaskListMisfiledEntrySurfacesTargetedPrevalidation(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
 		emit:           func(events.EventData) {},
@@ -103,7 +103,7 @@ func TestExecTool_TaskListMisfiledEntrySurfacesTargetedPrevalidation(t *testing.
 
 func TestExecTool_TaskListBriefSurfacesTargetedPrevalidation(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.stateDir = t.TempDir()
 	registerTaskTools(s.reg, &toolDeps{
 		emit:           func(events.EventData) {},

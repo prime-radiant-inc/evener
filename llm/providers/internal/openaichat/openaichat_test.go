@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseChatUsageSubtractsCachedTokensFromPrompt(t *testing.T) {
+	t.Parallel()
 	// prompt_tokens is total-including-cached on these endpoints, while
 	// llm.Usage.InputTokens means NEW uncached input. Skipping the subtraction
 	// double-counts every cached token and inflates spend accounting.
@@ -43,6 +44,7 @@ func TestParseChatUsageSubtractsCachedTokensFromPrompt(t *testing.T) {
 }
 
 func TestInbandErrorStatusCodeAcceptsOnlyHTTPRange(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		code string
@@ -71,6 +73,7 @@ func TestInbandErrorStatusCodeAcceptsOnlyHTTPRange(t *testing.T) {
 }
 
 func TestToolArgumentsString(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  json.RawMessage
@@ -93,6 +96,7 @@ func TestToolArgumentsString(t *testing.T) {
 }
 
 func TestToChatResponseFormat(t *testing.T) {
+	t.Parallel()
 	schema := map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}}
 
 	for _, tc := range []struct {
@@ -194,6 +198,7 @@ func TestToChatResponseFormat(t *testing.T) {
 }
 
 func TestToChatTools(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		got := ToChatTools(nil)
 		if len(got) != 0 {

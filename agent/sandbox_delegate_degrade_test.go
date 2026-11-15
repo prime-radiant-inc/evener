@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -475,11 +476,7 @@ func newNoBackendDelegateSession(t *testing.T) *Session {
 // layer must resolve without following symlinks.
 func realTempDirForTest(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	return dir
+	return testfs.CanonicalTempDir(t)
 }
 
 // sbxSetParentEnv points the session's current env at dir with no sandbox policy,

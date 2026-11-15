@@ -121,7 +121,13 @@ export type UsageSummary = Readonly<
   EvenerUsage &
     Pick<
       EvenerThread,
-      "cost" | "contextUsed" | "contextWindow" | "contextRemaining" | "contextPressure" | "contextAssumed"
+      | "cost"
+      | "contextUsed"
+      | "contextWindow"
+      | "contextRemaining"
+      | "contextPressure"
+      | "contextAssumed"
+      | "compactionThreshold"
     > & {
       durationMs?: number;
     }
@@ -138,6 +144,7 @@ export function threadUsageSummary(evener: EvenerThread): UsageSummary {
     contextRemaining: evener.contextRemaining,
     contextPressure: evener.contextPressure,
     contextAssumed: evener.contextAssumed,
+    compactionThreshold: evener.compactionThreshold,
     durationMs: evener.workMillis,
   };
 }

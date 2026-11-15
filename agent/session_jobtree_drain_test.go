@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1071,9 +1072,7 @@ func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
 		_, _ = sess.jobManager.stop(started.JobID)
 		waitForShellDone(t, sess.jobManager, started.JobID)
 	})
-	// TRIPWIRE: the shell emits READY immediately; 5s only fires if the real
-	// background process/output path wedges.
-	waitForCondition(t, 5*time.Second, "READY output", func() bool {
+	testwait.Until(t, "READY output", func() bool {
 		sess.jobManager.mu.Lock()
 		defer sess.jobManager.mu.Unlock()
 		run := sess.jobManager.running[started.JobID]

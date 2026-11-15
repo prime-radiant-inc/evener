@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // metaPredicates is search's view of lineage over a plain meta map: a
@@ -138,7 +139,9 @@ func TestWalkToTopLevelHonorsTheKnownPredicate(t *testing.T) {
 func TestWalkToTopLevelAgreesWithTheTreeRollup(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-	chainDir, forkDir, brokenDir := t.TempDir(), t.TempDir(), t.TempDir()
+	// Project rows carry each working directory's canonical path, so the
+	// fixture dirs are canonical for the rollup lookups below.
+	chainDir, forkDir, brokenDir := testfs.CanonicalTempDir(t), testfs.CanonicalTempDir(t), testfs.CanonicalTempDir(t)
 	metas := []schema.SessionMeta{
 		// A live delegate chain: C under B under A, all live.
 		{ID: "A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: chainDir}},

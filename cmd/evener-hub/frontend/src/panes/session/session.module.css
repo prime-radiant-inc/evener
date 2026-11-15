@@ -105,6 +105,29 @@
   }
 }
 
+/* The group's actions share one tool card (styles/surface.module.css), held
+ * here by one element: the grouped surface with its divided rows. The card
+ * does not clip: a row's Open control overhangs its line by more than the
+ * row's padding on a phone, so the last rendered row takes the card's lower
+ * corners instead and its evidence band inherits them. This is the transcript's own
+ * tool-card grammar, not the Card widget: it holds divided rows edge to edge
+ * and has to match the card a turn draws across sibling rows. A member whose
+ * descriptor suppresses its row renders an empty wrapper, which the shared
+ * rows rule gives no divider. */
+.intentGroupRows {
+  composes: grouped from "../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: groupedRows from "../../styles/surface.module.css";
+  margin-block: var(--rhythm-item);
+}
+
+/* The last wrapper that renders a row, and the row's root inside it. */
+.intentGroupRows > :not(:empty):not(:has(~ :not(:empty))),
+.intentGroupRows > :not(:empty):not(:has(~ :not(:empty))) > * {
+  border-bottom-left-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
 .coldStart {
   width: 100%;
   max-width: var(--session-measure);

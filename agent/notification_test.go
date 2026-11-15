@@ -1442,7 +1442,7 @@ func TestNotificationTurnStoppedDuringRoundEndCompactionLeavesLateArrivalPending
 		},
 	})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), summarizerProvider+"/model")
-	sess := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot())
+	sess := newSession(t, withClient(client), withProfile(profile))
 	seedNumberedSessionHistory(t, sess, 12) // enough turns that the forced compaction really folds
 	sess.registerTool("enqueue_test_notification", "test-only: finish a managed job and request a compaction",
 		map[string]any{"type": "object", "properties": map[string]any{}},

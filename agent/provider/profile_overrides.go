@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -13,10 +14,17 @@ var (
 	profileJSONUnmarshal = json.Unmarshal
 )
 
-// WithCommunicateOutputSchema returns a cloned profile whose `communicate` tool
-// has its `output` property schema replaced wholesale by the given schema. The
-// top-level `required` list on the tool parameters is also updated to include
-// `output`.
+// WithCommunicateOutputSchema returns a cloned profile whose `communicate`
+// tool has its `output` property schema replaced wholesale by the given
+// schema. The top-level `required` list on the tool parameters is also
+// updated to include `output`.
+//
+// The schema is validated against the draft 2020-12 meta-schema first: a
+// caller-supplied schema spliced into tool parameters verbatim ships on the
+// child's first model call, and every provider that validates tool schemas
+// (lunaroute's draft-2020-12 check, issue #6298) then rejects the request
+// before the delegate does any work. An invalid schema returns an error
+// instead of binding.
 //
 // Passing nil or an empty map returns p unchanged.
 //
@@ -25,9 +33,12 @@ var (
 // so the caller-supplied schema must have (or be compatible with) a properties
 // map. Applying WithCommunicateOutputSchema twice silently replaces the prior
 // schema each time.
-func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) *Profile {
+func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) (*Profile, error) {
 	if p == nil || len(outputSchema) == 0 {
-		return p
+		return p, nil
+	}
+	if err := llm.ValidateSchemaDocument(outputSchema); err != nil {
+		return nil, fmt.Errorf("invalid output schema: %w", err)
 	}
 
 	clone := *p
@@ -38,7 +49,7 @@ func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) *Profi
 		}
 	}
 	clone.toolDefs = defs
-	return &clone
+	return &clone, nil
 }
 
 // WithAllowedDecisions returns a cloned profile where the `communicate` tool
@@ -83,24 +94,6 @@ func WithCheapModel(p *Profile, ref string) *Profile {
 		clone.cheapProvider = ""
 		clone.cheapModel = ref
 	}
-	return &clone
-}
-
-// WithContextWindow returns a cloned profile whose ContextWindowSize reports n.
-// Passing n <= 0 returns p unchanged, so callers can pass the result of a
-// best-effort lookup (which yields 0 when unavailable) and keep the profile's
-// constructor-derived window as the fallback.
-//
-// This is the seam the app layer uses to override an openai-compat profile's
-// catalog-derived window with a live value queried from the provider, keeping
-// that network lookup out of the agent library.
-func WithContextWindow(p *Profile, n int) *Profile {
-	if p == nil || n <= 0 {
-		return p
-	}
-
-	clone := *p
-	clone.contextWindow = n
 	return &clone
 }
 

@@ -1,9 +1,19 @@
 # Every non-fuzz Go module in the workspace. Under go.work, `./...` resolves
-# per-module, so gates and lint must loop modules explicitly. Fuzz targets and
-# the fuzz toolkit module run through the explicit fuzz targets below, not the
-# regular test gate.
+# per-module, so gates and lint must name every module explicitly — through
+# the ws-patterns function below, which turns this list into cross-module
+# package patterns for one invocation per gate. Fuzz targets and
+# the fuzz toolkit module run through the explicit fuzz targets below, not
+# the regular test gate.
 GO_MODULES := . agent llm auth envvars invariant identifier execsupport
 FUZZ_GO_MODULES := $(GO_MODULES) fuzz
+
+# ws-patterns maps a workspace module list to package patterns from the repo
+# root: the root module as ./... and each sibling module directory as
+# ./<dir>/... . go.work resolves cross-module patterns in one invocation, so
+# every gate that sweeps the workspace uses this instead of a per-module loop.
+ws-patterns = ./... $(foreach m,$(filter-out .,$(1)),./$(m)/...)
+WORKSPACE_LINT_PATTERNS := $(call ws-patterns,$(FUZZ_GO_MODULES))
+WORKSPACE_TEST_PATTERNS := $(call ws-patterns,$(GO_MODULES))
 
 # golangci-lint caches raw findings before path-based suppressions and
 # exclusions run. Keep that cache durable within this worktree, but never let

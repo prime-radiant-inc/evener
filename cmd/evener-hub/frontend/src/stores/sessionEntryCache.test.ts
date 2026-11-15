@@ -125,6 +125,411 @@ afterEach(async () => {
   for (const { factory, name } of databases.splice(0)) await deleteFixtureDatabase(factory, name);
 });
 
+it("bounds page replacement to the observed interval while keeping both outside turn owners", async () => {
+  const factory = new IDBFactory();
+  const name = `entry-bounded-page-${crypto.randomUUID()}`;
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "bounded-history";
+  const row = (entry: number, version = entry) => ({
+    historyKey,
+    transcriptKey: `item-${entry}`,
+    position: { entry, item: 0 },
+    version,
+    item: { id: `item-${entry}`, type: "agentMessage", turnId: `turn-${entry}`, text: `value-${version}` },
+  });
+  const authority = (representedSnapshot: number) => ({
+    bootGeneration: "1",
+    epoch: 0,
+    incarnation: "inc",
+    representedSnapshot,
+  });
+  expect(
+    (
+      await cache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        sourceAuthority: authority(100),
+        items: Array.from({ length: 9 }, (_, i) => row(i + 1)),
+        turns: Array.from({ length: 9 }, (_, i) => ({
+          id: `turn-${i + 1}`,
+          status: "completed",
+          version: i + 1,
+          items: [],
+        })),
+      })
+    ).outcome,
+  ).toBe("committed");
+  const before = await cache.getLatest(historyKey, 40);
+  expect(before).toHaveLength(9);
+  const page = {
+    historyKey,
+    clearEpoch: 0,
+    sourceAuthority: authority(120),
+    replacement: { from: { entry: 3, item: 0 }, to: { entry: 7, item: 0 }, representedOrdinal: 120 },
+    items: [row(3, 120), row(7, 120)],
+    turns: [3, 7].map((entry) => ({ id: `turn-${entry}`, status: "completed", version: 120, items: [] })),
+  };
+  expect((await cache.commitBatch(page)).outcome).toBe("committed");
+  const after = await cache.getLatest(historyKey, 40);
+  expect(after.map((item) => item.transcriptKey)).toEqual(["item-1", "item-2", "item-3", "item-7", "item-8", "item-9"]);
+  expect(after.filter((item) => item.position.entry < 3 || item.position.entry > 7)).toEqual(
+    before.filter((item) => item.position.entry < 3 || item.position.entry > 7),
+  );
+  expect(await cache.getTurn(historyKey, "turn-1")).toMatchObject({ version: 1 });
+  expect(await cache.getTurn(historyKey, "turn-9")).toMatchObject({ version: 9 });
+  expect(await cache.getTurn(historyKey, "turn-5")).toBeUndefined();
+});
+
+it("counts a first bounded page's persisted omission authority in bytes and capacity", async () => {
+  const factory = new IDBFactory();
+  const name = `entry-first-page-bytes-${crypto.randomUUID()}`;
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "first-page-history";
+  const batch = {
+    historyKey,
+    clearEpoch: 0,
+    sourceAuthority: { bootGeneration: "1", epoch: 0, incarnation: "inc", representedSnapshot: 120 },
+    replacement: { from: { entry: 3, item: 0 }, to: { entry: 7, item: 0 }, representedOrdinal: 120 },
+    items: [3, 7].map((entry) => ({
+      historyKey,
+      transcriptKey: `item-${entry}`,
+      position: { entry, item: 0 },
+      version: 120,
+      item: { id: `item-${entry}`, type: "agentMessage", turnId: "turn", text: "\u2603\ud83c\udf32" },
+    })),
+  };
+  expect((await cache.commitBatch(batch)).outcome).toBe("committed");
+  const rows = await cache.getLatest(historyKey, 40);
+  expect(rows).toHaveLength(2);
+  const database = await openFixtureDatabase(factory, name);
+  const transaction = database.transaction(ENTRY_ITEM_STORE, "readonly");
+  const complete = transactionDone(transaction);
+  const stored = await requestValue<unknown[]>(transaction.objectStore(ENTRY_ITEM_STORE).getAll());
+  await complete;
+  const metadata = await readEntryMeta(factory, name, historyKey);
+  const expected =
+    stored.reduce((total: number, row) => total + independentJsonBytes(row), 0) +
+    independentJsonBytes(persistedSessionMetadataPayload(metadata));
+  expect(await cache.getByteTotals(historyKey)).toEqual({ historyBytes: expected, aggregateBytes: expected });
+  const limitedName = `${name}-limited`;
+  databases.push({ factory, name: limitedName });
+  const limited = new SessionEntryCache({
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    databaseName: limitedName,
+    maxBytes: expected - 1,
+  });
+  caches.push(limited);
+  expect(await limited.commitBatch(batch)).toEqual({ outcome: "refused", reason: "capacity" });
+  expect(await limited.getLatest(historyKey, 40)).toEqual([]);
+});
+
+it.each(["omitted", "returned", "capacity"] as const)(
+  "preserves a newer recorded version through bounded page reconciliation: %s",
+  async (schedule) => {
+    const factory = new IDBFactory();
+    const name = `entry-newer-page-version-${crypto.randomUUID()}`;
+    databases.push({ factory, name });
+    const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+    caches.push(cache);
+    const historyKey = "newer-version-history";
+    const authority = (representedSnapshot: number) => ({
+      bootGeneration: "1",
+      epoch: 0,
+      incarnation: "inc",
+      representedSnapshot,
+    });
+    const row = (entry: number, version = entry, text = `value-${version}`) => ({
+      historyKey,
+      transcriptKey: `item-${entry}`,
+      position: { entry, item: 0 },
+      version,
+      item: { id: `item-${entry}`, type: "agentMessage", turnId: `turn-${entry}`, text },
+    });
+    expect(
+      (
+        await cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          sourceAuthority: authority(100),
+          items: Array.from({ length: 9 }, (_, i) => row(i + 1)),
+        })
+      ).outcome,
+    ).toBe("committed");
+    expect(
+      (
+        await cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          sourceAuthority: authority(150),
+          items: [row(3, 150, schedule === "capacity" ? "x".repeat(20_000) : "value-150")],
+        })
+      ).outcome,
+    ).toBe("committed");
+    const before = await cache.getLatest(historyKey, 40);
+    expect(before.find((item) => item.transcriptKey === "item-3")?.version).toBe(150);
+    const target =
+      schedule === "capacity"
+        ? new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name, maxBytes: 5_000 })
+        : cache;
+    if (target !== cache) caches.push(target);
+    const batch = {
+      historyKey,
+      clearEpoch: 0,
+      sourceAuthority: authority(130),
+      replacement: { from: { entry: 1, item: 0 }, to: { entry: 7, item: 0 }, representedOrdinal: 130 },
+      items: (schedule === "returned" ? [1, 3, 7] : [1, 7]).map((entry) => row(entry, 130)),
+    };
+    const plan = await target.planCapacity(batch);
+    const outcome = await target.commitBatch(batch);
+    if (schedule === "capacity") {
+      expect(outcome).toEqual({ outcome: "refused", reason: "capacity" });
+      expect(target.refusedCapacityPlan(batch)).toEqual(plan);
+      expect(await cache.getLatest(historyKey, 40)).toEqual(before);
+    } else {
+      expect(outcome.outcome).toBe("committed");
+      const after = await cache.getLatest(historyKey, 40);
+      expect(after.find((item) => item.transcriptKey === "item-3")).toEqual(
+        before.find((item) => item.transcriptKey === "item-3"),
+      );
+      expect(after.map((item) => item.transcriptKey)).toEqual(["item-1", "item-3", "item-7", "item-8", "item-9"]);
+    }
+  },
+);
+
+it.each(["below", "above", "partial", "stale-additive", "missing-authority", "empty-certificate"] as const)(
+  "keeps bounded page observation authority local to its range: %s",
+  async (schedule) => {
+    const factory = new IDBFactory();
+    const name = `entry-page-order-${crypto.randomUUID()}`;
+    databases.push({ factory, name });
+    const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+    caches.push(cache);
+    const historyKey = "page-order-history";
+    const row = (entry: number, version = entry) => ({
+      historyKey,
+      transcriptKey: `item-${entry}`,
+      position: { entry, item: 0 },
+      version,
+      item: { id: `item-${entry}`, type: "agentMessage", turnId: "turn", text: `value-${version}` },
+    });
+    const authority = (representedSnapshot: number) => ({
+      bootGeneration: "1",
+      epoch: 0,
+      incarnation: "inc",
+      representedSnapshot,
+    });
+    expect(
+      (
+        await cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          sourceAuthority: authority(100),
+          items: Array.from({ length: 9 }, (_, i) => row(i + 1)),
+        })
+      ).outcome,
+    ).toBe("committed");
+    const replacement = { from: { entry: 3, item: 0 }, to: { entry: 7, item: 0 }, representedOrdinal: 120 };
+    expect(
+      (
+        await cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          sourceAuthority: authority(120),
+          replacement,
+          items: [row(3, 120), row(7, 120)],
+        })
+      ).outcome,
+    ).toBe("committed");
+    expect((await cache.getLatest(historyKey, 40)).map((item) => item.transcriptKey)).not.toContain("item-5");
+    if (schedule === "empty-certificate") {
+      await cache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        sourceAuthority: authority(110),
+        items: [],
+        coverage: {
+          kind: "page",
+          readId: "late",
+          boundary: "late",
+          before: { entry: 7, item: 0 },
+          start: { entry: 4, item: 0 },
+          end: { entry: 6, item: 0 },
+          representedSnapshot: 110,
+        },
+      });
+      expect(await cache.getCoverage(historyKey, "page:late:late")).toBeUndefined();
+    } else if (schedule === "stale-additive" || schedule === "missing-authority") {
+      await cache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        items: [row(5, 110)],
+        ...(schedule === "stale-additive" ? { sourceAuthority: authority(110) } : {}),
+      });
+      expect((await cache.getLatest(historyKey, 40)).map((item) => item.transcriptKey)).not.toContain("item-5");
+    } else {
+      const from = schedule === "above" ? 8 : 1;
+      const to = schedule === "below" ? 2 : schedule === "above" ? 9 : 5;
+      const items = schedule === "partial" ? [row(1, 110), row(5, 110)] : [row(from, 110), row(to, 110)];
+      expect(
+        (
+          await cache.commitBatch({
+            historyKey,
+            clearEpoch: 0,
+            sourceAuthority: authority(110),
+            replacement: { from: { entry: from, item: 0 }, to: { entry: to, item: 0 }, representedOrdinal: 110 },
+            items,
+          })
+        ).outcome,
+      ).toBe("committed");
+      const actual = await cache.getLatest(historyKey, 40);
+      expect(actual.find((item) => item.transcriptKey === `item-${from}`)).toMatchObject({ version: 110 });
+      expect(actual.map((item) => item.transcriptKey)).not.toContain("item-5");
+      expect(actual.find((item) => item.transcriptKey === "item-3")).toMatchObject({ version: 120 });
+    }
+  },
+);
+
+it.each([3, 4, 5])(
+  "merges returned bounded-page identities with richer committed version 4: incoming %s",
+  async (version) => {
+    const factory = new IDBFactory();
+    const name = `entry-returned-page-${crypto.randomUUID()}`;
+    databases.push({ factory, name });
+    const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+    caches.push(cache);
+    const historyKey = "returned-page-history";
+    const held = {
+      historyKey,
+      transcriptKey: "item-4",
+      position: { entry: 4, item: 0 },
+      version: 4,
+      item: {
+        id: "item-4",
+        turnId: "turn-1",
+        type: "assistant",
+        text: "known text",
+        output: "known output",
+        images: [{ src: "data:image/png;base64,AA==", name: "held.png" }],
+      },
+    };
+    await cache.putItems([held]);
+    const batch = {
+      historyKey,
+      clearEpoch: 0,
+      sourceAuthority: { bootGeneration: "1", epoch: 0, incarnation: "inc", representedSnapshot: 120 },
+      replacement: { from: held.position, to: held.position, representedOrdinal: 120 },
+      items: [{ ...held, version, item: { id: "item-4", turnId: "turn-1", type: "assistant", text: "" } }],
+    };
+    const expected = version > held.version ? { ...batch.items[0], item: { ...held.item, text: "" } } : held;
+    const planned = await cache.planCapacity(batch);
+    expect
+      .soft(planned.recordedBytes)
+      .toBe(version > held.version ? independentJsonBytes({ ...expected, positionSub: 0 }) : 0);
+    expect((await cache.commitBatch(batch)).outcome).toBe("committed");
+    expect(await cache.getLatest(historyKey, 10)).toEqual([expected]);
+  },
+);
+
+it("judges each interval of a widened replacement by its own observation", async () => {
+  const factory = new IDBFactory();
+  const name = `entry-widened-${crypto.randomUUID()}`;
+  databases.push({ factory, name });
+  const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+  caches.push(cache);
+  const historyKey = "widened-history";
+  const row = (entry: number) => ({
+    historyKey,
+    transcriptKey: `item-${entry}`,
+    position: { entry, item: 0 },
+    version: entry,
+    item: { id: `item-${entry}`, turnId: `turn-${entry}`, type: "agentMessage", text: `value-${entry}` },
+  });
+  expect(
+    (
+      await cache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        sourceAuthority: { bootGeneration: "1", epoch: 0, incarnation: "inc", representedSnapshot: 40 },
+        items: [row(41), row(50)],
+      })
+    ).outcome,
+  ).toBe("committed");
+  // A read through entry 40 left entry 41 uncommitted; a later read covers
+  // entries 42..81. Neither could have omitted entry 41.
+  expect(
+    (
+      await cache.commitBatch({
+        historyKey,
+        clearEpoch: 0,
+        sourceAuthority: { bootGeneration: "1", epoch: 0, incarnation: "inc", representedSnapshot: 81 },
+        replacement: {
+          from: { entry: 1, item: 0 },
+          representedOrdinal: 81,
+          inherited: [{ from: { entry: 1, item: 0 }, to: { entry: 42, item: 0 }, representedOrdinal: 40 }],
+        },
+        items: [],
+      })
+    ).outcome,
+  ).toBe("committed");
+  const kept = (await cache.getLatest(historyKey, 10)).map((entry) => entry.transcriptKey);
+  expect(kept).toContain("item-41");
+  expect(kept).not.toContain("item-50");
+});
+
+it.each([5, 6])(
+  "keeps a richer cached payload when a read re-serves its identity poorer at version %s",
+  async (servedVersion) => {
+    const factory = new IDBFactory();
+    const name = `entry-read-reserve-${crypto.randomUUID()}`;
+    databases.push({ factory, name });
+    const cache = new SessionEntryCache({ indexedDB: factory, keyRange: IDBKeyRange, databaseName: name });
+    caches.push(cache);
+    const historyKey = "read-reserve-history";
+    const rich = {
+      historyKey,
+      transcriptKey: "item-5",
+      position: { entry: 5, item: 0 },
+      version: 5,
+      item: { id: "item-5", turnId: "turn-5", type: "assistant", text: "rich text", output: "rich output" },
+    };
+    expect(
+      (
+        await cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          sourceAuthority: { bootGeneration: "1", epoch: 0, incarnation: "inc", representedSnapshot: 5 },
+          items: [rich],
+        })
+      ).outcome,
+    ).toBe("committed");
+    // A later read replaces the suffix from entry 0 and re-serves the identity
+    // with a body the phone omitted.
+    expect(
+      (
+        await cache.commitBatch({
+          historyKey,
+          clearEpoch: 0,
+          sourceAuthority: { bootGeneration: "1", epoch: 0, incarnation: "inc", representedSnapshot: 6 },
+          replacement: { from: { entry: 0, item: 0 } },
+          items: [
+            { ...rich, version: servedVersion, item: { id: "item-5", turnId: "turn-5", type: "assistant", text: "" } },
+          ],
+        })
+      ).outcome,
+    ).toBe("committed");
+    // The merge decides: a newer record's text supersedes the cached one, and a
+    // field the newer record omits keeps the richer cached value.
+    const expected =
+      servedVersion > rich.version ? { ...rich, version: servedVersion, item: { ...rich.item, text: "" } } : rich;
+    expect(await cache.getLatest(historyKey, 10)).toEqual([expected]);
+  },
+);
+
 it("plans replacement capacity after removing held bodies", async () => {
   const factory = new IDBFactory();
   const name = `entry-preflight-${crypto.randomUUID()}`;

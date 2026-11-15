@@ -7,10 +7,9 @@ import (
 )
 
 // A tool result's document bytes are billed only where the adapter puts them on
-// the wire. The Anthropic and Responses builders write image media only (#4209;
-// a document media type written into an image block is rejected), so a PDF tool
-// result prices the same as its text alone. Google likewise omits non-image
-// bytes from function responses to avoid duplicating side-channel documents.
+// the wire. Anthropic's tool_result content carries a document block (#4465),
+// so it prices the bytes; the Responses and Google tool-result shapes carry no
+// document, so a PDF prices the same as its text alone there.
 func TestEstimateMessagesInputTokensForResolved_BillsToolResultDocumentsOnlyWhereTheyRide(t *testing.T) {
 	t.Parallel()
 	pdfResult := func() []Message {
@@ -26,16 +25,26 @@ func TestEstimateMessagesInputTokensForResolved_BillsToolResultDocumentsOnlyWher
 		return EstimateMessagesInputTokensForResolved(row, stripped).Tokens
 	}
 	declared := true
-	for _, row := range []registry.Resolved{
-		{Instance: "gateway", ModelID: "doc-model", Protocol: registry.ProtocolAnthropic},
-		{Instance: "gateway", ModelID: "doc-model", Protocol: registry.ProtocolOpenAIResponses},
-		{
+	cases := []struct {
+		row    registry.Resolved
+		billed bool
+	}{
+		{registry.Resolved{Instance: "gateway", ModelID: "doc-model", Protocol: registry.ProtocolAnthropic,
+			Caps: registry.Caps{InputModalities: []string{"text", "pdf"}}}, true},
+		{registry.Resolved{Instance: "gateway", ModelID: "doc-model", Protocol: registry.ProtocolAnthropic}, false},
+		{registry.Resolved{Instance: "gateway", ModelID: "doc-model", Protocol: registry.ProtocolOpenAIResponses}, false},
+		{registry.Resolved{
 			Instance: "google", ModelID: "gemini-3-pro", Protocol: registry.ProtocolGoogle,
 			Caps: registry.Caps{MultimodalToolResults: &declared},
-		},
-	} {
-		if got, want := EstimateMessagesInputTokensForResolved(row, pdfResult()).Tokens, textOnly(row); got != want {
-			t.Errorf("%s tool-result document = %d, want the text-only estimate %d: the builder never serializes the bytes", row.Protocol, got, want)
+		}, false},
+	}
+	for _, tc := range cases {
+		got, want := EstimateMessagesInputTokensForResolved(tc.row, pdfResult()).Tokens, textOnly(tc.row)
+		switch {
+		case tc.billed && got <= want:
+			t.Errorf("%s tool-result document = %d, want more than the text-only estimate %d: the bytes ride inline", tc.row.Protocol, got, want)
+		case !tc.billed && got != want:
+			t.Errorf("%s tool-result document = %d, want the text-only estimate %d: the builder never serializes the bytes", tc.row.Protocol, got, want)
 		}
 	}
 }

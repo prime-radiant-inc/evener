@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -106,6 +107,12 @@ type delegateTreeController struct {
 	attentionCauses delegateAttentionCauses
 	reclamations    map[uint64]*delegateRuntimeReclamationClaim
 	reclaiming      map[string]uint64
+	// releasing records a non-terminal runtime release that has committed (its
+	// subagent record unhooked and its resident pointer cleared) but whose
+	// teardown has not finished. A lane handoff treats the subtree as busy
+	// until it ends: the runtime can still be winding down in the lane even
+	// though no live pointer names it.
+	releasing       map[string]*Session
 	stop            *delegateStopState
 	stopDriver      *delegateStopDriver
 	evidenceVersion uint64
@@ -415,6 +422,7 @@ type delegateMutationPlans struct {
 	attention             []delegateAttentionCleanupPlan
 	attentionFinalization *delegateSettlementClaim
 	shellRepairs          []delegateShellRepairPlan
+	warnings              []events.WarningData
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {
@@ -482,6 +490,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
 		reclaiming:          make(map[string]uint64),
+		releasing:           make(map[string]*Session),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           delegateRunStartIndex(events),
 		owedAdmission:       true,

@@ -1187,6 +1187,16 @@ func TestEmitCatalogEmitsWireFieldKeys(t *testing.T) {
 	if got, want := emitted["EvenerUsage"], []string{"inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"}; !slices.Equal(got, want) {
 		t.Errorf("WIRE_FIELD_KEYS.EvenerUsage = %v, want %v", got, want)
 	}
+	if got, want := emitted["ThreadTurnsListResponse"], []string{"data", "nextCursor", "window", "bootGeneration", "epoch", "snapshot", "authoritative"}; !slices.Equal(got, want) {
+		t.Errorf("legacy page keys = %v, want %v", got, want)
+	}
+	for _, name := range []string{"ThreadHistoryReadResponse", "ThreadHistoryTurnsListResponse"} {
+		for _, key := range []string{"servedFrom", "fallbackReason", "asOf", "instanceId", "latestExecutionTurnId"} {
+			if !slices.Contains(emitted[name], key) {
+				t.Errorf("%s lacks %s", name, key)
+			}
+		}
+	}
 	for _, f := range rawFieldsOf(reflect.TypeFor[appwire.EvenerDelegateInfo]()) {
 		if !slices.Contains(emitted["EvenerDelegateInfo"], f.json) {
 			t.Errorf("WIRE_FIELD_KEYS.EvenerDelegateInfo lacks %s", f.json)
