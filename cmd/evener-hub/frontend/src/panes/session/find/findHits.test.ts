@@ -147,6 +147,10 @@ test("a character reference in a reply is searched as the character it shows", (
   expect(keys("a &amp; b")).toEqual(["a"]);
   expect(keys("&amp; stays escaped")).toEqual(["a"]);
   expect(keys("typed &amp; kept")).toEqual(["u"]);
+  // An unterminated reference stays literal in the rendered reply.
+  const malformed = [turnRow("t", [message("unfinished", "costs &#36")])];
+  expect(findHits(malformed, "$")).toEqual([]);
+  expect(findHits(malformed, "&#36").map((hit) => hit.key)).toEqual(["unfinished"]);
 });
 
 test("the current match is found again by its message, whatever key that message goes by", () => {

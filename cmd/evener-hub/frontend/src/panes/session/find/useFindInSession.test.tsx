@@ -120,6 +120,7 @@ function Harness() {
       <button type="button" data-testid="reader-older" onClick={() => void transcript.loadOlder().catch(() => {})}>
         reader older
       </button>
+      <div data-testid="reader-older-state" data-error={transcript.olderError !== null} />
       <button type="button" data-testid="jump-latest" onClick={() => find.leaveHistory()}>
         latest
       </button>
@@ -381,8 +382,10 @@ test("closing Find withdraws Find's demand and leaves the reader's standing", as
   older();
   await settle();
   expect(attempts).toBeGreaterThan(1);
+  expect(screen.getByTestId("reader-older-state").getAttribute("data-error")).toBe("true");
   fireEvent.keyDown(field(), { key: "Escape" });
   expect(screen.queryByTestId("find-bar")).toBeNull();
+  expect(screen.getByTestId("reader-older-state").getAttribute("data-error")).toBe("false");
   await settle();
   const afterClose = attempts;
   await settle();
@@ -395,6 +398,7 @@ test("closing Find withdraws Find's demand and leaves the reader's standing", as
   older();
   await settle();
   fireEvent.keyDown(field(), { key: "Escape" });
+  expect(screen.getByTestId("reader-older-state").getAttribute("data-error")).toBe("true");
   const withReader = attempts;
   await settle();
   expect(attempts).toBeGreaterThan(withReader);

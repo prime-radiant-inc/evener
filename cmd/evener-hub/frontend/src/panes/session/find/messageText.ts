@@ -10,18 +10,21 @@ import type { Token } from "marked";
 import { splitMarkdownSegments } from "../../../widgets/markdown/segments";
 import { closeOpenMarkdown } from "../../../widgets/markdown/streaming";
 
-// Character references ("&amp;", "&#36;") as the page shows them. The
-// browser's own parser decodes them, exactly as it does for the rendered
-// reply; a textarea's content is text only, so nothing in it is parsed as
-// markup. Without a document (a node-environment caller) the text is left as
-// written.
+// Marked preserves only semicolon-terminated references in ordinary text;
+// it escapes other ampersands before the browser parses the reply. Decode
+// only those preserved references, one at a time, so a decoded ampersand
+// cannot turn the rest of the text into another reference.
+// Without a document (a node-environment caller) the text stays as written.
 let decoder: HTMLTextAreaElement | undefined;
 
 function decodeReferences(text: string): string {
   if (!text.includes("&") || typeof document === "undefined") return text;
   decoder ??= document.createElement("textarea");
-  decoder.innerHTML = text;
-  return decoder.value;
+  const element = decoder;
+  return text.replace(/&(?:#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);/g, (reference) => {
+    element.innerHTML = reference;
+    return element.value;
+  });
 }
 
 function read(tokens: readonly Token[], into: string[]): void {

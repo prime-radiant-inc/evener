@@ -76,7 +76,8 @@ export class HistoryPaging {
     if (this.consumers.size > 0) return;
     this.cancelRetry();
     this.failures = 0;
-    if (this.state.pending) this.publish({ ...this.state, pending: false });
+    if (this.state.pending || this.state.error !== null || this.state.permanent)
+      this.publish({ ...this.state, pending: false, error: null, permanent: false });
     this.releaseIdle();
   };
 
@@ -108,8 +109,11 @@ export class HistoryPaging {
       }
     } catch (error) {
       this.failures += 1;
-      const permanent = isUpgradeRequiredError(error) || mutationErrorData(error)?.mutationOutcome === "targetDeleted";
-      settled = { loading: false, pending: this.consumers.size > 0 && !permanent, error, permanent };
+      const demanded = this.consumers.size > 0;
+      const permanent =
+        demanded && (isUpgradeRequiredError(error) || mutationErrorData(error)?.mutationOutcome === "targetDeleted");
+      if (!demanded) this.failures = 0;
+      settled = { loading: false, pending: demanded && !permanent, error: demanded ? error : null, permanent };
       failure = { error };
     }
     // Release the request and arm failure pacing before notifying readers:
