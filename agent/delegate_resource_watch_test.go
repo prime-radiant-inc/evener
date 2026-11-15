@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
@@ -1185,6 +1186,91 @@ func TestDelegateWatch_LegacyDelegateJobRowFailsClosed(t *testing.T) {
 	watchID, found := firstLegacyDelegateWatch(events, legacy)
 	if !found || watchID != "watch_legacy" {
 		t.Fatalf("legacy delegate watch preflight = %q/%t", watchID, found)
+	}
+}
+
+// A stable frame that carries the hourly backstop notice renders content its
+// durable pending state does not hold. The exact delivered content must be
+// durable before the receiver sees it, so a restart between the transcript
+// append and the delivered marker replays the same content instead of
+// rejecting it as conflicting.
+func TestDelegateWatch_RestartReplaysANoticeBearingFrameUnchanged(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	cfg := fixture.onlyWatchConfig(t)
+	// Deliveries inside the window push the watch past its hourly threshold,
+	// so the frame this test delivers carries the notice.
+	fixture.sourceJM.mu.Lock()
+	seeded := time.Now().UTC()
+	for i := range watchBackstopFires {
+		cfg.recentDeliveries = append(cfg.recentDeliveries, seeded.Add(-time.Duration(i+1)*time.Second))
+	}
+	fixture.sourceJM.mu.Unlock()
+
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "notice repair"})
+	pending := fixture.requireOnePending(t)
+	attentionID := stableWatchAttentionID(pending.state)
+
+	sourceAckFailure := errors.New("source delivered acknowledgement failed")
+	originalAppend := fixture.sourceJM.appendEvent
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendDelivered {
+			return sourceAckFailure
+		}
+		return originalAppend(event)
+	}
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); !errors.Is(err, sourceAckFailure) {
+		t.Fatalf("notice-bearing delivery error = %v, want %v", err, sourceAckFailure)
+	}
+	fold, err := readDelegateAttentionFold(fixture.rootTranscriptPath, fixture.root.ID())
+	if err != nil {
+		t.Fatalf("read receiver fold: %v", err)
+	}
+	row, reached := fold.content[attentionID]
+	if !reached {
+		t.Fatal("the notice-bearing frame never reached the receiver transcript")
+	}
+	if row.Text() == stableWatchNotificationContent(pending.state.Frame) {
+		t.Fatal("the delivered row carries no notice, so the restart replay cannot conflict")
+	}
+
+	fixture.sourceJM.releaseStableWatchReceipt(pending.state.DeliveryID)
+	if err := fixture.sourceJM.closeStoreOnly(); err != nil {
+		t.Fatalf("close source journal: %v", err)
+	}
+	fixture.sourceJM = nil
+	if err := fixture.root.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close receiver transcript: %v", err)
+	}
+	if err := fixture.controller.store.Close(); err != nil {
+		t.Fatalf("close delegate controller: %v", err)
+	}
+	seedBootstrapControllerJournal(t, fixture)
+	fresh := &Session{
+		id:       fixture.root.ID(),
+		stateDir: fixture.controller.stateDir,
+		cfg: SessionConfig{
+			MaxConcurrentDelegateTurns: 2,
+		},
+		state: SessionIdle,
+	}
+	if err := fresh.bootstrapDelegateResources(); err != nil {
+		t.Fatalf("bootstrap stable watch repair: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.delegateController.store.Close() })
+	if got := countAttentionEntries(t, fixture.rootTranscriptPath, attentionID); got != 1 {
+		t.Fatalf("receiver attention count after restart repair = %d, want 1", got)
+	}
+	restarted, err := jobstore.Open(filepath.Join(jobsDir(fixture.controller.stateDir, fixture.source.ID()), "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("open repaired source journal: %v", err)
+	}
+	defer restarted.Close()
+	folded, err := restarted.LoadWatchSends()
+	if err != nil {
+		t.Fatalf("fold repaired source journal: %v", err)
+	}
+	if len(folded.Pending) != 0 {
+		t.Fatalf("source pending after restart repair = %#v", folded.Pending)
 	}
 }
 

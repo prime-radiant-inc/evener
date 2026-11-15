@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -203,6 +204,164 @@ func TestAcceptedTriggerCauseReachesTheGenerationItLaunches(t *testing.T) {
 
 	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 1 {
 		t.Fatalf("the launched generation's lineage holds %d messages behind its trigger, want 1", got)
+	}
+}
+
+// A presentation start whose commit's journal append failed retries the same
+// accepted trigger. The first accept's resolution already dropped the
+// controller's copy of the trigger's cause, so the retry's re-hold must keep
+// the cause the first hold latched — the generation that finally runs still
+// descends from what triggered it.
+func TestAcceptedTriggerCauseSurvivesTheStickyCommitRetry(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	causes := &root.delegateController.attentionCauses
+	const trigger = "watch:frame/1"
+	causes.remember(trigger, provenance.WithMessage(nil, "child-session", trigger))
+
+	root.holdAcceptedTrigger(trigger) // the accept latches the trigger
+	causes.forget(trigger)            // its resolution drops the controller's copy
+	root.holdAcceptedTrigger(trigger) // the sticky retry re-holds the same trigger
+
+	root.attentionMu.Lock()
+	root.attentionStagedIDs = map[string]struct{}{trigger: {}}
+	root.attentionMu.Unlock()
+	root.promoteStagedAttentionCoverage(llm.Request{})
+	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 1 {
+		t.Fatalf("the retried generation's lineage holds %d messages behind its trigger, want 1", got)
+	}
+}
+
+// Two updates per exchange share one fire's ancestry, and a turn that
+// presents both merges the shared entries twice. However the diagnostic chain
+// truncates, the runaway accounting must retain every distinct fire, so the
+// guard still stops an endless parent/delegate loop.
+func TestParentDelegateExchangesWithTwoUpdatesKeepTheRunawayFuseVisible(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	causes := &root.delegateController.attentionCauses
+	const (
+		watchID         = "watch_loop"
+		watchGeneration = "wg_loop"
+		delegateSession = "child-session"
+	)
+	// One exchange: the parent's reply fires the delegate's watch once, the
+	// delegate answers with two updates whose causes share that lineage, and
+	// the parent's next turn presents both updates.
+	exchange := func(turn *provenance.Causal, n int) *provenance.Causal {
+		fired := provenance.WithWatch(turn, watchID, watchGeneration, jobstore.NewWatchSendDeliveryID(), delegateSession, "")
+		updates := []string{
+			fmt.Sprintf("delegate:dlg_x/update/%d-a", n),
+			fmt.Sprintf("delegate:dlg_x/update/%d-b", n),
+		}
+		for _, update := range updates {
+			causes.remember(update, provenance.WithMessage(fired, delegateSession, update))
+		}
+		root.replaceActiveProvenance(nil)
+		root.resetAttentionCoverage()
+		for _, update := range updates {
+			root.attentionMu.Lock()
+			root.attentionStagedIDs = map[string]struct{}{update: {}}
+			root.attentionMu.Unlock()
+			root.promoteStagedAttentionCoverage(llm.Request{})
+		}
+		causes.forget(updates...)
+		return root.activeCausalProvenance()
+	}
+	var turn *provenance.Causal
+	for i := range runawaySelfInfluenceDepth {
+		turn = exchange(turn, i)
+	}
+	depth := provenance.SelfInfluenceDepth(turn, watchID, "", func(string) bool { return true })
+	if depth < runawaySelfInfluenceDepth {
+		t.Fatalf("the parent turn's lineage exposes %d fires of the watch, want %d so the runaway guard trips", depth, runawaySelfInfluenceDepth)
+	}
+}
+
+// A delegate that answers each of its parent's frames with a terminal report
+// cannot restart the runaway count at zero: the report carries the producing
+// generation's lineage to the parent turn that consumes it, so every
+// exchange's fire counts toward the guard's depth and the loop stops at the
+// cap.
+func TestTerminalReportsCarryTheParentLoopToTheRunawayGuard(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	var causes *delegateAttentionCauses
+	const exchanges = 4 * runawaySelfInfluenceDepth
+	steps := make([]func(llm.Request) llm.Response, 0, 2*exchanges+1)
+	steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") })
+	for k := range exchanges {
+		steps = append(steps,
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(true, fmt.Sprintf("child report %d", k))
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.CommunicateResponse(true, fmt.Sprintf("root reply %d", k))
+			},
+		)
+	}
+	fixture.adapter.setSteps(steps)
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+
+	type frameFire struct {
+		notification jobNotification
+		depth        int
+	}
+	var fires []frameFire
+	var res watchResult
+	res, err := root.jobManager.configureWatch(watchArgs{
+		Target:            "*",
+		Events:            []string{"communicate"},
+		ReceiverSessionID: fixture.childID,
+		ReceiverNotify: func(n jobNotification) {
+			fires = append(fires, frameFire{
+				notification: n,
+				depth:        provenance.SelfInfluenceDepth(n.Provenance, res.WatchID, "", func(string) bool { return true }),
+			})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frameID := func(k int) string { return fmt.Sprintf("attention:report-%d", k) }
+
+	// Exchange 0 begins from outside the loop: the initial delegation. Each
+	// later exchange's report answers the frame the previous reply fired.
+	causes = &root.delegateController.attentionCauses
+	armStableSupervisionAttention(t, sub, frameID(0), "begin the loop")
+	root.drivePendingDelegateAttention()
+	waitForStableSupervisionRun(t, root, fixture.childID)
+	var depths []int
+	for k := range exchanges {
+		if len(fires) < k {
+			break // the previous reply's fire was refused: the guard stopped the loop
+		}
+		testwait.Until(t, fmt.Sprintf("exchange %d's report to arm as root attention", k), func() bool {
+			return len(rootPendingAttention(root)) == 1
+		})
+		if _, err := root.ProcessInputKind(tripwireCtx(t), "", nil, EntryNotification); err != nil {
+			t.Fatalf("root turn %d: %v", k, err)
+		}
+		if len(fires) <= k {
+			continue // this reply's fire was refused; the loop drains and ends
+		}
+		depths = append(depths, fires[k].depth)
+		causes.remember(frameID(k+1), fires[k].notification.Provenance)
+		armStableSupervisionAttention(t, sub, frameID(k+1), "answer the frame")
+		root.drivePendingDelegateAttention()
+		waitForStableSupervisionRun(t, root, fixture.childID)
+	}
+	if got := len(fires); got != runawaySelfInfluenceDepth {
+		t.Fatalf("the loop delivered %d fires, want it stopped at the runaway depth %d", got, runawaySelfInfluenceDepth)
+	}
+	// Each notification's lineage carries its own delivery, so a fire
+	// counts itself: exchange k's fire reads depth k+1.
+	want := make([]int, runawaySelfInfluenceDepth)
+	for i := range want {
+		want[i] = i + 1
+	}
+	if !slices.Equal(depths, want) {
+		t.Fatalf("fire depths per exchange = %v, want %v with the chain stopped at the cap", depths, want)
 	}
 }
 

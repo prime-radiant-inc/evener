@@ -390,12 +390,18 @@ func watchBackstopNotice(watchID string, fires int) string {
 }
 
 // ownWatchFires returns the distinct delivery ids of watchID's own fires in
-// p's lineage.
+// p's lineage, from the fire record the chain's bound can never drop and from
+// the diagnostic chain alike.
 func ownWatchFires(p *provenance.Causal, watchID string) []string {
 	if p == nil {
 		return nil
 	}
 	var ids []string
+	for _, fire := range p.FireKeys {
+		if fire.WatchID == watchID && fire.DeliveryID != "" && !slices.Contains(ids, fire.DeliveryID) {
+			ids = append(ids, fire.DeliveryID)
+		}
+	}
 	for _, entry := range p.Chain {
 		if entry.Kind == "watch" && entry.WatchID == watchID && entry.DeliveryID != "" && !slices.Contains(ids, entry.DeliveryID) {
 			ids = append(ids, entry.DeliveryID)

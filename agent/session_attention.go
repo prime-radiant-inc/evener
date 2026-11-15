@@ -1325,12 +1325,18 @@ func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema
 func (s *Session) holdAcceptedTrigger(attentionID string) {
 	// The accept resolves the trigger before its generation runs, and the
 	// resolution drops the controller's copy of its cause; the latch keeps the
-	// cause for the request that presents the trigger.
+	// cause for the request that presents the trigger. A re-hold of the same
+	// trigger (a commit whose journal append failed and retried) finds the
+	// controller's copy already dropped, so it keeps the cause the first hold
+	// latched instead of overwriting it with none.
 	var cause *provenance.Causal
 	if s.delegateController != nil {
 		cause = s.delegateController.attentionCauses.union([]string{attentionID})
 	}
 	s.attentionMu.Lock()
+	if cause == nil && s.attentionAcceptedID == attentionID {
+		cause = s.attentionAcceptedCause
+	}
 	s.attentionAcceptedID = attentionID
 	s.attentionAcceptedCause = cause
 	s.attentionMu.Unlock()

@@ -340,9 +340,27 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		return false, err
 	}
 	attentionID := stableWatchAttentionID(state)
+	// A frame that carries the hourly backstop notice renders content its
+	// durable pending state does not hold. Persist the exact rendered frame
+	// before the receiver sees it, so a restart between the transcript append
+	// and the delivered marker replays the same content instead of rejecting
+	// the receiver's row as conflicting. The same-seq pending event replaces
+	// the frame in the fold without touching the runtime cursor.
+	rendered := jm.renderWatchSendFrame(cfg, state)
+	if rendered != state.Frame {
+		noticed := state
+		noticed.Frame = rendered
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{
+			Kind:      jobstore.EventWatchSendPending,
+			TS:        jm.now(),
+			WatchSend: &noticed,
+		}}); err != nil {
+			return false, err
+		}
+	}
 	// The receiver's turn that consumes the frame adopts the frame's lineage.
 	controller.attentionCauses.remember(attentionID, state.Provenance)
-	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(jm.renderWatchSendFrame(cfg, state)))
+	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(rendered))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		if appendErr != nil {
 			// A frame the receiver took on an earlier attempt keeps its
