@@ -1266,24 +1266,55 @@ test("a frame matching a loaded identity patches immediately while the collectio
   expect(target()).toBe("failed");
 });
 
-test("a frame without a child ref patches nothing and asks for one read per id", async () => {
-  const { client, store } = await pushOwner();
+test("a frame without a child ref patches nothing and asks one read per newer revision per id", async () => {
+  const client = pushClient();
+  // The read's answer ages with the producer: the first read still serves the
+  // pre-frame snapshot, and the read a strictly newer frame asks for serves the
+  // settlement that frame carried.
+  let settledGeneration = false;
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      settledGeneration
+        ? delegateRow({ status: "failed", projectionRevision: 10, reportPreview: "settled" })
+        : delegateRow({ status: "completed" }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
   const before = callsTo(client, "evener/thread/delegates/list");
+  // A running frame from an older producer cannot name its row: the read it
+  // asks for is the only place its change can land, and the collection still
+  // serves the pre-frame snapshot.
   client.emitNotification(
-    pushedFrame({ ...frameInfo({ projectionRevision: 9, status: "failed" }), childRef: undefined }),
+    pushedFrame({ ...frameInfo({ projectionRevision: 9, status: "running" }), childRef: undefined }),
   );
-  // An older producer's frame cannot name its row: the read it asks for is the
-  // only place its change can land.
   expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
   await activityState(store, () => callsTo(client, "evener/thread/delegates/list") === before + 1);
-  const settled = callsTo(client, "evener/thread/delegates/list");
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  const asked = callsTo(client, "evener/thread/delegates/list");
+  // A repeat at the same revision is the same news: it asks for nothing.
   client.emitNotification(
-    pushedFrame({ ...frameInfo({ projectionRevision: 10, status: "failed" }), childRef: undefined }),
+    pushedFrame({ ...frameInfo({ projectionRevision: 9, status: "running" }), childRef: undefined }),
   );
   await vi.advanceTimersByTimeAsync(0);
-  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
-  expect(callsTo(client, "evener/thread/delegates/list")).toBe(settled);
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(asked);
+  // The terminal frame is strictly newer news than the read the running frame
+  // asked for, and the producer cannot name the row itself: one more read is
+  // the only way the row's status and report stop being stale.
+  settledGeneration = true;
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 10, status: "failed", reportPreview: "settled" }),
+      childRef: undefined,
+    }),
+  );
+  await store.settleForTests("delegates");
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("failed");
+  expect(store.getSnapshot().delegates.rows[0]?.reportPreview).toBe("settled");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(asked + 1);
 });
 
 test("a frame without a child ref arriving during a walk asks for its read once the walk settles", async () => {
@@ -1337,6 +1368,78 @@ test("a frame without a child ref arriving during a walk asks for its read once 
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(initial + 3);
   const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-1");
   expect(row?.status).toBe("failed");
+});
+
+test("a frame for a delegate created after a walk's membership froze is read once the walk finishes", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  // A user refresh walks the collection: its root page is served at once and
+  // the continuation page is held in flight. The answers age with the
+  // collection: the walk's pages predate the new delegate, and only the read
+  // that follows the walk serves it.
+  const continuation = deferred<SessionDelegatesResponse>();
+  let admitted = false;
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => {
+    if (cursor) return continuation.promise;
+    return admitted
+      ? {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: true, issues: [] },
+          delegates: [
+            delegateRow({ delegateId: "delegate-2", childRef: "remote:delegate-2", status: "running" }),
+            delegateRow({ status: "running" }),
+          ],
+        }
+      : {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: false, issues: [], nextCursor: "next" },
+          // The walk's first page serves a row the display has not reached,
+          // so the walk keeps going and stays in flight.
+          delegates: [delegateRow({ delegateId: "delegate-3", childRef: "remote:delegate-3", status: "running" })],
+        };
+  });
+  const refreshed = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot().delegates.loading).toBe(true);
+  // The walk froze its membership before this delegate existed (the hub's
+  // capture holds one highwater per walk), so no page it serves can carry the
+  // row: the frame it pushes is buffered, and the read that can admit the row
+  // must not restart the walk it arrives in.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        delegateId: "delegate-2",
+        childRef: "remote:delegate-2",
+        projectionRevision: 9,
+        status: "failed",
+        reportPreview: "settled",
+      }),
+    ),
+  );
+  const midWalk = callsTo(client, "evener/thread/delegates/list");
+  expect(store.getSnapshot().delegates.loading).toBe(true);
+  // The collection admits the new delegate; the walk's own pages predate it,
+  // so they settle without it.
+  admitted = true;
+  continuation.resolve({
+    context: pushContext(),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    // The continuation page reaches the displayed boundary, ending the walk.
+    delegates: [delegateRow({ status: "running" })],
+  });
+  await vi.advanceTimersByTimeAsync(200);
+  await refreshed;
+  // The walk finished without the row, so the one coalesced read the frame
+  // was owed runs now and admits it.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(midWalk + 2);
+  const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
+  expect(row?.status).toBe("failed");
+  expect(row?.reportPreview).toBe("settled");
 });
 
 test("a frame buffered during the replacement window survives the replacement read", async () => {
@@ -1650,6 +1753,53 @@ test("a frame that arrives while a replacement is announced is not overwritten b
   await activityState(store, () => !store.getSnapshot().delegates.loading);
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.status).toBe("completed");
+  expect(row?.reportPreview).toBe("settled");
+});
+
+test("a terminal frame racing the first response of a retained owner waits for the ordering it establishes", async () => {
+  const client = pushClient();
+  // A previous owner's rows are retained across a client replacement; the
+  // replacement's own first delegates response has not established its epoch.
+  const first = owner(client);
+  first.start();
+  const leaveFirst = first.observe("delegates");
+  await activityState(first, () => first.getSnapshot().delegates.complete);
+  const retained = first.getSnapshot();
+  leaveFirst();
+  const reconciled = deferred<SessionDelegatesResponse>();
+  client.on("evener/thread/delegates/list", () => reconciled.promise);
+  const store = owner(client, "session", retained);
+  store.start();
+  store.observe("delegates");
+  // The replacement's own summary response enables the push merge before its
+  // delegates response arrives, so a frame in that window is live news with
+  // no ordering to join. (The retained snapshot already carries a summary, so
+  // the wait is on this owner's read completing, not on the snapshot.)
+  await activityState(store, () => {
+    const summaryState = store.getSnapshot().summaryState;
+    return !summaryState.loading && !summaryState.pending;
+  });
+  const reads = callsTo(client, "evener/thread/delegates/list");
+  expect(store.getSnapshot().delegates.loading).toBe(true);
+  client.emitNotification(
+    pushedFrame(frameInfo({ projectionRevision: 9, status: "failed", reportPreview: "settled" })),
+  );
+  // The frame is buffered rather than applied: a merge recorded before any
+  // epoch exists would be invisible to the ordering the first response is
+  // about to establish, and its older snapshot would overwrite the frame.
+  expect(store.getSnapshot().delegates.rows[0]?.status).toBe("completed");
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads);
+  // The response carries the pre-frame snapshot; the buffered frame reconciles
+  // against it by revision once the epoch exists.
+  reconciled.resolve({
+    context: pushContext(),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "completed", projectionRevision: 1 })],
+  });
+  await activityState(store, () => !store.getSnapshot().delegates.loading);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.status).toBe("failed");
   expect(row?.reportPreview).toBe("settled");
 });
 

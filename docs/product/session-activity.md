@@ -484,13 +484,19 @@ names, so it patches exactly the loaded row that shares its delegate identity
 without a read: no row-set proof can reassign it to another child, because two
 rows under one delegate id never share a child ref. A frame from an older
 producer with no child ref can name no row, so it patches nothing itself and
-asks for one read per delegate id per source epoch: after that one read its id
-is spent, and later frames from that producer do nothing until an epoch change
-clears the bound. A frame whose identity no loaded row matches
+asks for one read per delegate id per strictly newer revision: the first frame
+for an id asks once, a repeat at the same or an older revision asks for
+nothing, and a terminal frame after a running one asks again, because only a
+read can land a legacy frame's change. An epoch change clears the ladder. A
+frame whose identity no loaded row matches
 asks for one read per identity per source epoch, and its latest frame waits for
 the read that admits its row. It reads
 none of that while a fresh walk is in flight: that walk settles the frames
-it carries at its displayed boundary, so they do not restart it. A frame the
+it carries at its displayed boundary, so they do not restart it. A walk also
+freezes the membership it will serve before it starts, so a frame for a
+delegate created after that freeze names a row no page of the walk can carry:
+its read is remembered, coalesced across identities, and issued once the walk
+ends. A frame the
 buffer evicts before that is recovered by one read when the walk ends. It also
 reads on observe/paging/resync/reconnect, and when an epoch change retires its
 push state; a resync and a reconnect both turn the merge off until a refreshed
@@ -507,7 +513,12 @@ the ordering or force a read, and a delegates read settling while such an
 announcement stands clears it. A buffered frame waits
 for the read whose row set is settled, which places it on the row its identity
 names, and leaves it waiting while that read does not
-serve it. A source that
+serve it. A frame that matches a retained row before the first delegates
+response establishes the ordering's epoch is buffered until that response
+settles: recorded under no epoch, its merge would be first sight to the
+ordering the response establishes, and the response's older snapshot would
+overwrite it, so the settlement reconciles the buffered frame with the row the
+response served instead. A source that
 does not advertise the capability, a retained context
 whose released runtime receives invalidations but no frames, or an invalidation
 that refreshes no other observed resource (the store observes none, the

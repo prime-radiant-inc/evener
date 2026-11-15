@@ -173,11 +173,15 @@ export class SessionActivityStore {
    * epoch can still arrive late, and its context names that epoch: announcing it
    * again would point the merge ordering at records this store already cleared. */
   private readonly retiredDelegateEpochs = new Set<string>();
-  /** What a frame that named no loaded row asked for a root read with: the
-   * frame's row identity when it carries a child ref, else its delegate id
-   * (an older producer's frame names no row). At most one read per key. Cleared
-   * with the applied map. */
+  /** What a frame that named no loaded row identity asked for a root read
+   * with: at most one read per identity. A legacy frame's reads are bounded
+   * per delegate id by its own revision ladder. Cleared with the applied map. */
   private readonly seenUnknownDelegates = new Set<string>();
+  /** The revision of the last frame an older, child-ref-less producer asked
+   * for a read with, per delegate id: a legacy frame can name no row, so a read
+   * is the only place its change can land, and only a strictly newer revision
+   * is newer news worth one. Cleared with the applied map. */
+  private readonly legacyDelegateReadRevisions = new Map<string, number>();
   /** Latest pushed frame per unknown row identity, applied once a read admits
    * the row so a settle during a later-page read is not dropped. */
   private readonly bufferedUnknownDelegates = new Map<string, EvenerDelegateInfo>();
@@ -185,6 +189,11 @@ export class SessionActivityStore {
    * in flight keeps the frames for the rows it will settle, so the recovery read
    * waits for that walk to finish rather than restarting it. */
   private evictedDelegateFrame = false;
+  /** A frame naming an identity arrived while a walk was in flight, and that
+   * walk froze its membership before the identity's row was created, so its
+   * pages cannot serve the row: one coalesced root read is owed once the walk
+   * finishes. Cleared with the applied map. */
+  private followUpDelegateRead = false;
   /** The last accepted context's no-read-merge eligibility. */
   private pushEligible = false;
   /** Escalations still pending for this scope, so resolving one of several
@@ -635,7 +644,22 @@ export class SessionActivityStore {
             unavailable: false,
             permanent: false,
           });
-          if (resource === "delegates") this.settleBufferedFrames(rowsSettled);
+          if (resource === "delegates") {
+            this.settleBufferedFrames(rowsSettled);
+            // A frame buffered during a walk named a row that walk's frozen
+            // membership could not serve. The walk is over and its settlement
+            // placed every frame it could, so the frames still buffered are
+            // owed the one coalesced read that can admit their rows.
+            if (
+              this.followUpDelegateRead &&
+              rowsSettled &&
+              read.refresh === null &&
+              this.bufferedUnknownDelegates.size > 0
+            ) {
+              this.followUpDelegateRead = false;
+              read.rootQueued = true;
+            }
+          }
           if (dropped()) continue;
           this.publish({
             context: page.context,
@@ -789,7 +813,9 @@ export class SessionActivityStore {
   private clearDelegates(): void {
     this.appliedDelegates.clear();
     this.seenUnknownDelegates.clear();
+    this.legacyDelegateReadRevisions.clear();
     this.bufferedUnknownDelegates.clear();
+    this.followUpDelegateRead = false;
   }
   private retireDelegates(): void {
     this.clearDelegates();
@@ -849,8 +875,15 @@ export class SessionActivityStore {
    * names its row identity directly. A frame whose identity no loaded row
    * matches asks for one root read (bounded per identity) and its latest frame
    * waits for a read to admit the row. A frame from an older producer carries
-   * no child ref and can name no row: it asks for one read per delegate id and
-   * patches nothing itself. */
+   * no child ref and can name no row: it asks for one read per delegate id
+   * per strictly newer revision and patches nothing itself. A frame that
+   * matches a loaded row before any read has established the delegates
+   * ordering's epoch -- a replacement's retained
+   * rows with the first response still pending -- is buffered like an unknown
+   * one: a merge recorded under an undefined epoch is invisible to the ordering
+   * that response is about to establish, and its older snapshot would overwrite
+   * the frame as first sight. The response's settlement reconciles the buffered
+   * frame with the row it served. */
   private applyDelegateFrame(frame: EvenerDelegateInfo): void {
     if (!this.delegateFrameInScope(frame)) return;
     const rows = this.state.delegates.rows;
@@ -865,6 +898,16 @@ export class SessionActivityStore {
           index = at;
           break;
         }
+      }
+      if (index !== -1 && this.delegateEpoch() === undefined) {
+        // The frame matched a retained row before any read established the
+        // ordering's epoch: recording the merge under an undefined epoch would
+        // let the pending first response treat the row as first sight and
+        // overwrite the frame with a snapshot that predates it. The frame is
+        // buffered instead, and the response's settlement reconciles it with
+        // the row it served.
+        this.bufferDelegateFrame(frame, delegateIdentityKey(frame.delegateId, frame.childRef));
+        return;
       }
     }
     if (index === -1) {
@@ -910,27 +953,44 @@ export class SessionActivityStore {
     }
   }
   /** The frame named a row identity the loaded set does not carry -- or, from
-   * an older producer, no identity at all: the row cannot be invented, so read
-   * once for what the frame names. A frame with an identity is buffered for a
-   * read to admit and a walk in flight settles it, so the walk is left to
-   * finish. A legacy frame carries nothing a walk could settle, so its read is
-   * queued even mid-walk: the drain finishes the walk first, then the queued
-   * read re-serves the collection with the frame's change. */
+   * an older producer, no identity at all: the row cannot be invented, so a
+   * read is the only place the frame's change can land. A frame with an
+   * identity is buffered for a read to admit; a walk in flight settles the
+   * frames for the rows it can serve, so it is left to finish, and a frame for
+   * a row the walk's frozen membership cannot reach is owed one coalesced read
+   * once the walk ends. A legacy frame carries nothing a walk could settle, so
+   * its read is queued even mid-walk: the drain finishes the walk first, then
+   * the queued read re-serves the collection with the frame's change. */
   private noteUnknownDelegate(frame: EvenerDelegateInfo, identity: string | undefined): void {
     const read = this.reads.delegates;
     if (read.observers === 0 && !read.oneShot) return;
     if (identity !== undefined) {
       this.bufferDelegateFrame(frame, identity);
       // A fresh walk in flight reaches the displayed boundary and settles the
-      // buffered frames itself, so it is left to finish: asking again per frame
-      // would restart that walk forever and never settle the promise it
-      // carries. A frame that arrives while no walk runs asks for the one read
-      // that can admit its row.
-      if (read.inFlight !== null && read.refresh !== null) return;
+      // buffered frames it can serve, so it is left to finish: asking again per
+      // frame would restart that walk forever and never settle the promise it
+      // carries. A walk also freezes its membership before it starts (the hub
+      // holds one highwater per walk), so a frame for a row created after that
+      // is served by no page the walk returns: its one read is remembered
+      // here, coalesced across identities, and issued once the walk is over.
+      if (read.inFlight !== null && read.refresh !== null) {
+        this.followUpDelegateRead = true;
+        return;
+      }
+      if (this.seenUnknownDelegates.has(identity)) return;
+      this.seenUnknownDelegates.add(identity);
+      void this.request("delegates", "root");
+      return;
     }
-    const readKey = identity ?? frame.delegateId;
-    if (this.seenUnknownDelegates.has(readKey)) return;
-    this.seenUnknownDelegates.add(readKey);
+    // A legacy frame names no row, so only a read can land its change: the
+    // first frame for an id asks once, a repeat at the same or an older
+    // revision asks for nothing, and a strictly newer revision asks again --
+    // a terminal frame after a running one is newer news, and the row it
+    // would leave stale is the one the first read served.
+    const revision = revisionOf(frame.projectionRevision);
+    const asked = this.legacyDelegateReadRevisions.get(frame.delegateId);
+    if (asked !== undefined && asked >= revision) return;
+    this.legacyDelegateReadRevisions.set(frame.delegateId, revision);
     void this.request("delegates", "root");
   }
   /** The projector's join: the strictly greater revision supplies the snapshot
@@ -994,12 +1054,13 @@ export class SessionActivityStore {
       return merged;
     });
   }
-  /** Place the frames buffered for identities no loaded row could take. A
-   * read whose row set is settled -- the page served the whole collection, or
-   * a bounded refresh reached the displayed boundary -- carries a row under
-   * the same identity its frame named, so the frame takes exactly its own row.
-   * An identity the read does not serve keeps waiting: its row is not in the
-   * collection this read saw, and no other row may take its place. */
+  /** Place the frames buffered for identities no loaded row could take -- or
+   * for a row a frame matched before any read established the ordering's
+   * epoch. A read whose row set is settled -- the page served the whole
+   * collection, or a bounded refresh reached the displayed boundary -- carries
+   * a row under the same identity its frame named, so the frame takes exactly
+   * its own row. An identity the read does not serve keeps waiting: its row is
+   * not in the collection this read saw, and no other row may take its place. */
   private settleBufferedFrames(settled: boolean): void {
     if (!settled || this.bufferedUnknownDelegates.size === 0) return;
     const rows = this.state.delegates.rows as readonly SessionDelegate[];
