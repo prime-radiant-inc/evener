@@ -100,6 +100,12 @@ const PROSE = {
 
 const VIEWPORT = { width: 1440, height: 1000 };
 
+// The pending rows' root: PendingRowStack's ul, the one surface for
+// undelivered user input (rendered as the transcript's trailing
+// virtual-list row, so it only exists while the reader is at the tail).
+// PendingChips and the docked "Queued messages" strip are gone.
+const PENDING_ROW_STACK_SELECTOR = "[data-testid='pending-row-stack']";
+
 // The steered turn's input is rendered only once the daemon's own turn/start
 // push has crossed the hub and React has committed it into the virtualized
 // transcript -- a full round trip that is independent of (and later than) the
@@ -944,27 +950,39 @@ export class Driver {
     return ref === null || ref === undefined ? `document` : this.paneScopeExpr(ref);
   }
 
-  // The pending stack is the one surface carrying queue rows now, so the
-  // queue-strip helpers below read it. Its root is the single DOM anchor for
-  // the reader, the failure dump and the presses.
+  // The pending rows' own root, or null: PendingRowStack's ul, the one
+  // surface for undelivered user input. One DOM anchor for the reader, the
+  // failure dump and the presses. Scoped to one session's pane when a `ref`
+  // is passed (two sessions mount, and each renders its own stack).
   queueStripRootExpr(ref = null) {
     return `(() => {
       const root = ${this.paneOrDocumentExpr(ref)};
-      return root ? root.querySelector("[data-testid='pending-message-stack']") : null;
+      if (!root) return null;
+      return root.querySelector(${JSON.stringify(PENDING_ROW_STACK_SELECTOR)});
     })()`;
   }
 
-  // The historical name for the pending stack's rows.
+  // The pending rows' whole reading: every undelivered message this session
+  // renders -- the daemon queue's own rows (data-kind "queued"), this
+  // client's unattempted editable rows ("waiting"), the durable blocked/
+  // canceled rows, and the recovery rows -- with each row's text, kind and
+  // control labels. The retired strip's header is gone with it; the stack's
+  // own queued-count attribute stands in, so a dump still answers "what was
+  // in flight?" without a header to quote. The stack lives inside the
+  // transcript's VIRTUAL list (its trailing row), so a dump can only see
+  // the rows while the trailing row is mounted -- every wait on these rows
+  // brings the tail into view first (withTranscriptTail).
   queueStripExpr(ref = null) {
     return `(() => {
       const stack = ${this.queueStripRootExpr(ref)};
       if (!stack) return null;
-      const rows = [...stack.querySelectorAll("[data-testid='pending-message-row']")].map((li) => ({
+      const rows = [...stack.querySelectorAll("li")].map((li) => ({
         text: li.textContent,
-        kind: li.dataset.state ?? null,
+        kind: li.dataset.kind ?? null,
+        busy: li.dataset.busy ?? null,
         buttons: [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent),
       }));
-      return { header: "pending messages", rows };
+      return { queuedCount: stack.getAttribute("data-queued-count") ?? "", rows };
     })()`;
   }
 
@@ -1200,12 +1218,13 @@ export class Driver {
   // characters are wrong and stops at the action that would have carried it.
   //
   // THREE actions send it, not two. Submit and steer are the obvious pair.
-  // The queue strip's "Steer queue now" is the third: turn/drainAsSteer
-  // "atomically appends the composer's current text/attachments (if any) to
-  // the input queue, then drains the whole queue into the active turn as one
-  // steering message" (stores/threads.ts:157), so a stray draft rides along
-  // with rows the scenario meant to send alone. Only "Edit message" sends
-  // nothing -- it returns a row TO the composer.
+  // The composer's own Steer control with queue depth is the third: it routes
+  // to turn/drainAsSteer (the retired strip's "Steer queue now" button is
+  // gone), which "atomically appends the composer's current text/attachments
+  // (if any) to the input queue, then drains the whole queue into the active
+  // turn as one steering message" (stores/threads.ts:157), so a stray draft
+  // rides along with rows the scenario meant to send alone. Only
+  // "Edit message" sends nothing -- it returns a row TO the composer.
   // The whole payload, not just the prose: a send carries the composer's text,
   // its skill chips and its staged attachments, so an unexpected chip or a
   // stray tile is as wrong as a scrambled character and was as invisible.
@@ -1353,20 +1372,25 @@ export class Driver {
   //      releases when the session is demonstrably not working; and
   //   2. queue depth — the status row's queue indicator renders only while
   //      queueDepth > 0, so its absence is an empty WIRE queue; and
-  //   3. the client-side pending-work surfaces, because (2) covers only what
+  //   3. the client-side pending-work surface, because (2) covers only what
   //      the wire already knows: an optimistic/pending queue row that has not
   //      been acknowledged yet, an accepted-but-unreflected send/steer/drain,
   //      or a durable outbox record still in flight are all invisible to
-  //      queueDepth while they exist. Those are exactly the states PendingChips
-  //      (send/steer/drain entries) and the "Queued messages" strip (queue
-  //      rows, plus recovery/blocked records) render, from the same durable
-  //      outbox and authoritative pending-mutation projections the durable
-  //      reads use, so either one being on screen blocks the release -- and
-  //      the stores those surfaces are projected from are read directly too,
-  //      because a render lands a commit after the durable write and a poll
-  //      can land in that gap; and
+  //      queueDepth while they exist. Those are exactly the rows
+  //      PendingRowStack renders (the transcript's trailing pending rows),
+  //      from the same durable outbox and authoritative pending-mutation
+  //      projections the durable reads use. The IN-FLIGHT family is what
+  //      blocks the release: a row still on its way to the hub renders as a
+  //      pending entry with data-busy, or as this client's durable submitting
+  //      row (data-kind "waiting") -- the states the retired PendingChips
+  //      used to cover. A settled queue row ("queued") or a durable blocked/
+  //      canceled record does NOT block: those are at rest, not in flight,
+  //      and (2)+(4) already own their wire and durable halves. The stores
+  //      those surfaces are projected from are read directly too, because a
+  //      render lands a commit after the durable write and a poll can land
+  //      in that gap; and
   //   4. the session's DURABLE recovery records, because (3)'s strip is not
-  //      authoritative for them: QueueStrip filters out the record its own
+  //      authoritative for them: PendingRowStack filters out the record its own
   //      composer has taken ownership of (activeRecoveryId), so a failed
   //      request the composer has restored as a draft renders NOTHING in the
   //      strip -- and the barrier would release over a composer that is about
@@ -1389,8 +1413,8 @@ export class Driver {
   // arrives while the continuation leg is still pending.
   //
   // The session's own recovery records are read from the DURABLE store that
-  // owns them, not from a render of them: QueueStrip hides the record its
-  // composer has taken ownership of (activeRecoveryId), so the strip is
+  // owns them, not from a render of them: PendingRowStack hides the record
+  // its composer has taken ownership of (activeRecoveryId), so the stack is
   // blind to a failed request that has already been restored into the
   // composer. True is returned only when the store was read AND holds no such
   // record for this session: an unreadable store (null) and a pending record
@@ -1407,10 +1431,10 @@ export class Driver {
     })()`;
   }
 
-  // The same reading for the OTHER two durable stores the pending surfaces are
-  // projected from. The pending stack renders send/steer/drain
-  // and queue entries out of the outbox and the accepted-mutation store, but
-  // they render them a commit LATER than the durable write: the projection is
+  // The same reading for the OTHER two durable stores the pending rows are
+  // projected from. PendingRowStack renders send/steer/drain and queue
+  // entries out of the outbox and the accepted-mutation store, but it
+  // renders them a commit LATER than the durable write: the projection is
   // another IndexedDB round trip plus a React commit, so a poll can see a
   // quiet pane while the durable record for the session is already there. The
   // barrier must not release into that gap -- the next hold would capture the
@@ -1419,7 +1443,7 @@ export class Driver {
   // pending record (false) both keep the barrier from releasing.
   //
   // `notes/human/set` is the one mutation kind this app never treats as
-  // pending turn work (QueueStrip and Composer's fresh-recovery effect both
+  // pending turn work (PendingRowStack and Composer's fresh-recovery effect both
   // filter it out by that exact method), so it is excluded here for the same
   // reason the recovery read excludes it.
   noPendingTurnRecordExpr(ref) {
@@ -1438,6 +1462,18 @@ export class Driver {
   // reading: the barrier below waits on it, and nothing else has a private
   // copy that could drift from it.
   turnIdleExpr(ref) {
+    // This barrier never moves the reader: journeys wheel the reader away
+    // and then wait for idle (cascadeguard's away-reader pill legs), and a
+    // tail-pinning poll would undo the wheel on its first tick, land the
+    // reply on a reader held at the bottom, and make the observed pill
+    // unreachable. So unlike the transcript-content waits, there is no
+    // withTranscriptTail here. The pending stack renders as the trailing
+    // virtual-list row, so a scrolled-away reader keeps it unmounted; the
+    // stack's DOM veto therefore only fires while the stack IS mounted (a
+    // mounted busy row is live state no store read should outrank), and the
+    // unmounted case falls to the durable-store checks below, which read the
+    // same outbox/optimistic/recovery stores the stack projects from and are
+    // scroll-independent.
     return `(async () => {
       const pane = ${this.paneScopeExpr(ref)};
       if (!pane) return null;
@@ -1446,7 +1482,9 @@ export class Driver {
       const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
       if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
       if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
-      if (pane.querySelector("[data-testid='pending-message-stack']") !== null) return null;
+      const stack = pane.querySelector(${JSON.stringify(PENDING_ROW_STACK_SELECTOR)});
+      if (stack !== null && [...stack.querySelectorAll("li")]
+        .some((li) => li.dataset.kind === "waiting" || li.dataset.busy === "true")) return null;
       if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
       if ((await ${this.noPendingTurnRecordExpr(ref)}) !== true) return null;
       return true;
@@ -1467,8 +1505,8 @@ export class Driver {
   //
   // Why it exists: a failed request can come back to the composer instead of
   // resting in the strip. Composer's fresh-recovery effect restores a rejected
-  // record into an EMPTY composer and takes ownership of it, and QueueStrip
-  // then hides the record (activeRecoveryId) -- so the strip is empty AND the
+  // record into an EMPTY composer and takes ownership of it, and the pending
+  // rows then hide the record (activeRecoveryId) -- so the stack is empty AND the
   // composer holds the failed draft, and a retry that types without looking
   // appends to it instead of composing it. Clearing is not a workaround for
   // that shape: it is the app's own reading of it.
@@ -1714,8 +1752,8 @@ export class Driver {
   }
 
   // clickQueueStripControl applies the composer-action lesson (see
-  // clickComposerAction's own hazard comment) to the queue strip's
-  // un-testid'd controls: the strip re-renders as its durable records settle,
+  // clickComposerAction's own hazard comment) to the pending rows'
+  // un-testid'd controls: the stack re-renders as its durable records settle,
   // so a single-shot click — or the element query itself — racing that
   // re-render fails outright. Each click is verified by an OBSERVED effect
   // and retried; a re-click while the first landed is harmless because the
@@ -1746,13 +1784,13 @@ export class Driver {
     }
     const diagnosis = await evaluate(
       this.send,
-      `(() => { const strip = ${this.queueStripExpr()}; return strip ? JSON.stringify(strip) : "queue strip not rendered"; })()`,
+      `(() => { const strip = ${this.queueStripExpr()}; return strip ? JSON.stringify(strip) : "pending rows not rendered"; })()`,
     ).catch((error) => `diagnosis failed: ${error}`);
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
-  // clickQueueRowControl presses the named control on the queue strip row
-  // whose own text carries rowText. The strip renders one control per row kind
+  // clickQueueRowControl presses the named control on the pending row
+  // whose own text carries rowText. The stack renders one control per row kind
   // and re-renders as its durable records settle, so a document-wide
   // first-match lookup can press another row's (possibly disabled) control and
   // then lose the target's control when the target row settles (#5788).
@@ -1786,7 +1824,7 @@ export class Driver {
       throw new Error(`clickQueueRowControl: unexpected result ${result} for ${label} on ${where}`);
   }
 
-  // True while the strip still holds a row carrying rowText. The queue edit
+  // True while the stack still holds a row carrying rowText. The queue edit
   // restores the composer before its durable cancel removes the row; this
   // predicate lets that removal be the awaited signal. Boolean, so each poll
   // sends no row prose or button labels over CDP.
@@ -1796,6 +1834,34 @@ export class Driver {
       return strip !== null && [...strip.querySelectorAll("li")]
         .some((li) => (li.textContent ?? "").includes(${JSON.stringify(rowText)}));
     })()`;
+  }
+
+  // pressComposerSteerControl presses the composer's own Steer control: the
+  // drain's entry point now the retired strip's "Steer queue now" button is
+  // gone -- with queue depth, decideSteerRoute routes this press to
+  // turn/drainAsSteer. Same one-page-turn contract as clickQueueRowControl
+  // (find, refuse-check, hit-test and press together, so a re-render between
+  // measuring and pressing cannot land the press elsewhere), scoped to the
+  // session's own pane: two composers mount, and only this session's Steer
+  // knows this session's queue depth.
+  async pressComposerSteerControl(ref) {
+    const result = await evaluate(
+      this.send,
+      `(() => {
+        const pane = ${this.paneScopeExpr(ref)};
+        const button = pane && pane.querySelector("[data-testid='composer-steer']");
+        if (!button) return "missing";
+        if (button.matches(${JSON.stringify(REFUSED_BUTTON_SELECTOR)})) return "disabled";
+        if ((${uncoveredCenter})(button, "center") === null) return "covered";
+        button.click();
+        return "clicked";
+      })()`,
+    );
+    if (result === "missing") throw new Error(`pressComposerSteerControl: no composer Steer control in ${ref}`);
+    if (result === "disabled") throw new Error(`pressComposerSteerControl: composer Steer is disabled in ${ref}`);
+    if (result === "covered")
+      throw new Error(`pressComposerSteerControl: composer Steer is covered at its center in ${ref}`);
+    if (result !== "clicked") throw new Error(`pressComposerSteerControl: unexpected result ${result} in ${ref}`);
   }
 
   // turnTextsExpr evaluates to one session's mounted transcript text per turn:
@@ -2280,16 +2346,22 @@ async function runScenarios(driver) {
   await driver.typeText(driver.sessionA, PROSE.queue1);
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue1));
-  // The strip first shows the submission's own durable "waiting" row; Edit on
+  // The stack first shows the submission's own durable "waiting" row; Edit on
   // that row is refused once the daemon's receipt settles it into the daemon's
   // queued row (data-kind "queued"), so the press waits for the settled row.
+  // The stack renders as the transcript's trailing virtual-list row, so the
+  // wait brings the tail into view on every poll (withTranscriptTail) before
+  // asking about rows -- a reader scrolled away unmounts them.
   let queue = await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
-    { label: "queue strip with first pass settled" },
+    driver.withTranscriptTail(
+      driver.sessionA,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
+    ),
+    { label: "pending rows with first pass settled" },
   );
   check(
     queue.rows.some((row) => row.text.includes(PROSE.queue1)),
-    `queue strip missing ${PROSE.queue1}: ${JSON.stringify(queue)}`,
+    `pending rows missing ${PROSE.queue1}: ${JSON.stringify(queue)}`,
   );
   driver.milestone("queued", {
     rows: queue.rows,
@@ -2297,7 +2369,7 @@ async function runScenarios(driver) {
   });
   // Edit the queued entry: its text returns to the composer and the entry
   // leaves the queue with its inline reference intact. The
-  // click is effect-verified and retried: the strip re-renders as its
+  // click is effect-verified and retried: the stack re-renders as its
   // durable record settles and a single-shot click can be lost outright.
   await driver.clickQueueStripControl({
     locate: () =>
@@ -2312,11 +2384,13 @@ async function runScenarios(driver) {
     // re-click could find the control gone (#5788) and the next submit could
     // fence against a recovery row that changed underneath it (#4916). The
     // awaited signal is the whole edit transition: the composer carries the
-    // text and the row has left the queue.
+    // text and the row has left the stack. The row-absent read runs inside
+    // the same tail-keeping wrapper so a scrolled-away reader cannot read
+    // the stack as empty.
     effectExpr: `(() => {
       const state = ${driver.composerStateExpr(driver.sessionA)};
       if (!state || !state.text.includes(${JSON.stringify(PROSE.queue1)})) return null;
-      return ${driver.queueRowPresentExpr(PROSE.queue1, driver.sessionA)} ? null : true;
+      return ${driver.withTranscriptTail(driver.sessionA, driver.queueRowPresentExpr(PROSE.queue1, driver.sessionA))} ? null : true;
     })()`,
     label: "Edit message",
   });
@@ -2328,21 +2402,27 @@ async function runScenarios(driver) {
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue2));
   queue = await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
-    { label: "queue strip with second pass" },
+    driver.withTranscriptTail(
+      driver.sessionA,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
+    ),
+    { label: "pending rows with second pass" },
   );
   check(
     queue.rows.some((row) => row.text.includes(PROSE.queue2)),
-    `queue strip missing ${PROSE.queue2}: ${JSON.stringify(queue)}`,
+    `pending rows missing ${PROSE.queue2}: ${JSON.stringify(queue)}`,
   );
   driver.milestone("requeued", {
     rows: queue.rows,
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
   // The drain commits durably before the release below lets the held turn
-  // finish; the queue strip empties once the daemon has folded the queue into
-  // the running turn. The click is effect-verified and retried — a lost
-  // click here strands the whole choreography behind a held turn.
+  // finish; the daemon's queued rows leave the stack once the daemon has
+  // folded the queue into the running turn. The drain's entry point is the
+  // composer's own Steer control (the retired strip's "Steer queue now"
+  // button is gone): with queue depth it routes to turn/drainAsSteer. The
+  // click is effect-verified and retried — a lost click here strands the
+  // whole choreography behind a held turn.
   //
   // It also sends whatever the composer holds, appended to the queue, so this
   // scenario's "the queue drained" assertions are only about the queue while
@@ -2350,9 +2430,20 @@ async function runScenarios(driver) {
   // extra steering message in the provider requests.
   await driver.assertComposerDraft(driver.sessionA, "drainAsSteer", draft("", { chips: [] }));
   await driver.clickQueueStripControl({
-    locate: () => driver.clickByText("Steer queue now"),
-    effectExpr: `(() => { const strip = ${driver.queueStripExpr()}; return !strip || !strip.rows.some((row) => row.kind === "queued" || row.kind === "held") ? true : null; })()`,
-    label: "Steer queue now (drain)",
+    locate: () => driver.pressComposerSteerControl(driver.sessionA),
+    // The awaited effect is the daemon queue's own rows leaving: after the
+    // drain the stack still renders the drain's in-flight pending-entry row
+    // (a data-busy li, no data-kind) while the turn is held, and it renders
+    // the empty-drain's parked "waiting" row too -- so "the stack is empty"
+    // can never become true here. Zero data-kind "queued" rows is exactly
+    // "the daemon folded the queue into the running turn", read inside the
+    // tail-keeping wrapper because the trailing row unmounts when the
+    // reader scrolls away.
+    effectExpr: `(() => {
+      const strip = ${driver.withTranscriptTail(driver.sessionA, driver.queueStripExpr(driver.sessionA))};
+      return strip === null || strip.rows.every((row) => row.kind !== "queued") ? true : null;
+    })()`,
+    label: "Steer (drain)",
   });
   driver.milestone("drain-committed", {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
@@ -2491,8 +2582,11 @@ async function runScenariosPart2(driver) {
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   const queue = await driver.waitPage(
-    `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`,
-    { label: "queue strip with failing request" },
+    driver.withTranscriptTail(
+      driver.sessionA,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`,
+    ),
+    { label: "pending rows with failing request" },
   );
   check(
     queue.rows.some((row) => row.text.includes(PROSE.fail)),
@@ -2510,9 +2604,9 @@ async function runScenariosPart2(driver) {
   // Explicit retry: the failed input kept the names and prose for correction;
   // the user re-composes the same request and sends it again.
   //
-  // The failed request can be waiting in the COMPOSER rather than the strip: a
+  // The failed request can be waiting in the COMPOSER rather than the stack: a
   // rejected recovery record the composer has taken ownership of is filtered
-  // out of the strip (QueueStrip drops the record whose clientMutationId is
+  // out of the stack (PendingRowStack drops the record whose clientMutationId is
   // activeRecoveryId) while its draft sits in the textarea, and a retry that
   // simply typed would append to it. So the composer is taken to the state the
   // retry composes from FIRST -- clearComposerDraft empties it and waits for

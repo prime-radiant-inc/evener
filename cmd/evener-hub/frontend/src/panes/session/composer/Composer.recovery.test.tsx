@@ -1013,7 +1013,10 @@ test("draining an active recovery consumes its owner before the next submission"
   const committed = hold.reached;
   try {
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Steer queue now" }));
+      // With queue depth the composer's own Steer control routes to
+      // drain (decideSteerRoute) - the retired strip's header button is
+      // gone.
+      fireEvent.click(screen.getByTestId("composer-steer"));
       await committed;
     });
     // Recovery ownership must be consumed by the same durable write, before

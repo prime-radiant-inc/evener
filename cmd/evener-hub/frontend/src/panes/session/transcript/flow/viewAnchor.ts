@@ -103,6 +103,27 @@ export function readAnchorPositions(el: HTMLElement): ViewAnchorPosition[] {
   });
 }
 
+// The share of the viewport a reader's own message may take above the divider
+// before the opening drops it: past this the reply would start too far down.
+const OPENING_CONTEXT_SHARE = 0.4;
+
+/** Where a session opening at its unseen reply lands, as an offset from the
+ * top of the scroll port's viewport; undefined while the row holding the
+ * divider is not rendered. The landing is the top of the divider's turn, so
+ * the reader's own message gives the reply its context, unless that message
+ * is long enough to push the divider down the viewport: then it is the
+ * divider itself. */
+export function unseenReplyLandingOffset(port: HTMLElement): number | undefined {
+  const divider = port.querySelector("[data-seen-divider]");
+  if (!divider) return undefined;
+  const portTop = port.getBoundingClientRect().top;
+  const dividerTop = divider.getBoundingClientRect().top - portTop;
+  const turn = divider.closest("[data-turn-id]");
+  if (!turn) return dividerTop;
+  const turnTop = turn.getBoundingClientRect().top - portTop;
+  return dividerTop - turnTop <= port.clientHeight * OPENING_CONTEXT_SHARE ? turnTop : dividerTop;
+}
+
 export function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAnchorPosition | undefined {
   // Overscan entries are rendered above the viewport. The anchor is the entry
   // whose measured box actually crosses the viewport top, not the first DOM
@@ -418,4 +439,7 @@ export interface PendingViewAnchor {
   proportion: number;
   target?: RestoredViewAnchor;
   scrollRequested?: boolean;
+  /** Set for a session opening at its unseen reply: the row holding the seen
+   * divider, which the landing puts at the top of the viewport. */
+  openingRow?: number;
 }

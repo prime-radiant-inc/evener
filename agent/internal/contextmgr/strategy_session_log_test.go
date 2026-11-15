@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -135,6 +136,42 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	lastTurn := history[len(history)-1]
 	if lastTurn.Message.Text() != "recent answer" {
 		t.Errorf("expected last turn to be preserved recent turn, got: %s", lastTurn.Message.Text())
+	}
+}
+
+func TestSessionLogStrategy_CheckpointExcludesFailedAppend(t *testing.T) {
+	client := llm.NewClient()
+	profile := testOpenAIProfileWithContextWindow(1000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+
+	base := t.TempDir()
+	blockedDir := filepath.Join(base, "blocked")
+	if err := os.WriteFile(blockedDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failedLog, err := sessionlog.NewSessionLog(filepath.Join(blockedDir, "session.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedEntry := sessionlog.SessionLogEntry{Turn: 7, Action: "shell", Summary: "unpersisted", Outcome: "success"}
+	if err := failedLog.Append(failedEntry); err == nil {
+		t.Fatal("Append succeeded despite blocked parent directory")
+	}
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("initial task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("work")},
+		{Kind: schema.TurnUserInput, Message: llm.User("recent")},
+	}
+	failedCheckpoint := (&SessionLogStrategy{cm: cm, log: failedLog}).sessionLogCheckpoint(history, 1)
+	emptyLog, err := sessionlog.NewSessionLog(filepath.Join(base, "empty.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyCheckpoint := (&SessionLogStrategy{cm: cm, log: emptyLog}).sessionLogCheckpoint(history, 1)
+	failedCheckpoint[0].Timestamp = emptyCheckpoint[0].Timestamp
+	if !reflect.DeepEqual(failedCheckpoint, emptyCheckpoint) {
+		t.Fatalf("checkpoint built after failed append differs from the empty-log checkpoint")
 	}
 }
 

@@ -1032,7 +1032,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// anchors at first.
 		anchor := dedupeRoots([]string{worktree})
 		fileTool = AccessScope{Read: ReadAnywhere, ReadRoots: anchor}
-		spawned = AccessScope{Read: ReadAnywhere}
+		spawned = AccessScope{Read: ReadAnywhere, ReadRoots: dedupeRoots(policy.InfraReadRoots)}
 
 	case ModeWorkspaceWrite:
 		writeFile := dedupeRoots(append([]string{worktree}, policy.ExtraWritableRoots...))
@@ -1040,7 +1040,7 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// index/logs/packed-refs); config/hooks stay in Git.ProtectedPaths.
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadAnywhere, WriteRoots: writeFile}
-		spawned = AccessScope{Read: ReadAnywhere, WriteRoots: writeSpawn}
+		spawned = AccessScope{Read: ReadAnywhere, ReadRoots: dedupeRoots(policy.InfraReadRoots), WriteRoots: writeSpawn}
 
 	case ModeRestricted:
 		// File tools stay WORKTREE-ONLY (tools = what the model may browse). The
@@ -1062,9 +1062,12 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		// git shim must reach its toolchain, but the model must not gain a file-tool
 		// browse grant over either along with it.
 		//
-		// The other modes need no equivalent line: their spawned layer already reads
-		// anywhere-minus-the-denylist, which covers any hook/MCP/toolchain path that
-		// is not masked — and a masked one must stay masked in every mode.
+		// The other modes carry their own InfraReadRoots line above: reads are
+		// already allowed anywhere minus the mask, so the grant adds nothing to
+		// what a spawned process may read on the host — but a root under /tmp (or
+		// /dev/shm) is shadowed by the backend's private mount there, and only a
+		// ReadRoots entry re-binds it (#6208). A masked root still stays masked in
+		// every mode: the fail-closed filter below applies to all of them.
 		devRoots := guardedHostRoots(host.DeveloperToolRoots, host.Home, worktree)
 		gitConfig := guardedHostRoots(slices.Concat(host.GitGlobalConfigPaths, host.GitSystemConfigPaths), host.Home, worktree)
 		readSpawn := dedupeRoots(slices.Concat(readFile, layout.ReadGrantPaths, defaultSystemReadRoots, devRoots, gitConfig, policy.InfraReadRoots))

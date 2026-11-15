@@ -12,6 +12,7 @@ import {
   pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
+  truncateForDisplay,
 } from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
 import { threadModel as model } from "./testing";
@@ -41,6 +42,20 @@ test("queueEntryPreviewText prefers normalized text and falls back to images", (
   expect(queueEntryPreviewText("", 1)).toBe("[image]");
   expect(queueEntryPreviewText("   ", 2)).toBe("[2 images]");
   expect(queueEntryPreviewText("", 0)).toBe("");
+});
+
+test("truncateForDisplay returns text unchanged at or under the 140-char default cap", () => {
+  expect(truncateForDisplay("a".repeat(140))).toBe("a".repeat(140));
+  expect(truncateForDisplay("short text")).toBe("short text");
+});
+
+test("truncateForDisplay caps text over 140 chars to 140 chars plus a trailing ellipsis", () => {
+  expect(truncateForDisplay("a".repeat(141))).toBe(`${"a".repeat(140)}…`);
+});
+
+test("truncateForDisplay accepts a custom max length", () => {
+  expect(truncateForDisplay("abcdef", 4)).toBe("abcd…");
+  expect(truncateForDisplay("abcd", 4)).toBe("abcd");
 });
 
 test("pendingEntryPreview preserves the entry's own line structure", () => {
@@ -85,6 +100,28 @@ const NOTHING_SUBMITTED_HERE: ReadonlyMap<string, number> = new Map();
 // so this is indistinguishable from a real identity's rule for them; the
 // "names this client" branch gets its own predicate and test further down.
 const UNATTRIBUTED_ONLY = (record: { originClientId?: string }): boolean => record.originClientId === undefined;
+
+// A retargeted resend targets the destination a peer chose while the pane
+// that authored it stays its displayedRef (records.ts' field contract). The
+// blocked, canceled and recovery selectors already match displayedRef for
+// exactly that reason; the entries reconcile is the one remaining surface,
+// and without the same widening an in-flight resend (attempted, submitting)
+// vanishes from its author's pane for the whole send: the editable selector
+// drops it (attempted), and the reconcile drops it too (targetRef is the
+// destination). The author keeps seeing their undelivered work.
+test("a retargeted in-flight resend stays in its author's pending entries", () => {
+  const retargeted: MutationOutboxRecord = {
+    ...outbox("mutation_retargeted"),
+    targetRef: "local:resumed",
+    displayedRef: "ref_a",
+    attempted: true,
+  };
+  expect(reconcilePendingEntries("ref_a", [retargeted], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY)).toEqual([
+    // The entry keeps its own destination as its ref: presentation follows
+    // the displayed pane, routing keeps the record's targetRef.
+    expect.objectContaining({ id: "mutation_retargeted", ref: "local:resumed", method: "send" }),
+  ]);
+});
 
 test("two same-text outbox records remain distinct by client mutation identity", () => {
   expect(

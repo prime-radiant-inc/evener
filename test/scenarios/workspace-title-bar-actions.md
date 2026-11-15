@@ -91,8 +91,9 @@ head and runs it as a fresh user turn.
      `[data-testid="composer-submit"]` — **Send** routes to `turn/queue`
      while a turn is running and `turn/start` otherwise
      (`appwire-client/typescript/submitRouting.ts:19-23`), one label with two
-     timings. The queue then shows up as one row per message in the pending
-     stack (`pending/PendingMessageStack.tsx`, `:50-69`) and as
+     timings. The queue then shows up as a `li[data-kind=queued]` row in the
+     transcript's trailing pending stack
+     (`transcript/messages/PendingRowStack.tsx:595-604`) and as
      `[data-testid="status-row-queue"]` reading `N queued` on the status
      strip (`chrome/StatusRow.tsx:185-200`).
 

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -897,45 +896,26 @@ func (c *countingTranscriptRead) Read(p []byte) (int, error) {
 // journal's head: with the bound shrunk, a corrupt line beyond the window no
 // longer fails the session's row, while the retired delegate activation record
 // at the head — what the failures fold exists to find — still reports.
-// Not parallel: overrides sessionRowJobsMaxBytes.
+// Not parallel: overrides legacyFailureScanMaxBytes.
 func TestListSessions_BoundedJobsScan(t *testing.T) {
-	origMax := sessionRowJobsMaxBytes
-	sessionRowJobsMaxBytes = 512
-	t.Cleanup(func() { sessionRowJobsMaxBytes = origMax })
+	origMax := legacyFailureScanMaxBytes
+	legacyFailureScanMaxBytes = 512
+	t.Cleanup(func() { legacyFailureScanMaxBytes = origMax })
 
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	sid := newSessionsTestSID(t)
 	startedAt := time.Unix(100, 0).UTC()
-	events := []jobstore.Event{{
-		// The retired activation format: a delegate-type job, the oldest
-		// record in the journal and the one the failures fold exists to find.
-		Kind: jobstore.EventJobStarted, TS: startedAt, JobID: "delegate_legacy", Type: jobstore.JobType("delegate"), OwnerSessionID: sid, VisibleToSession: sid, StartedAt: &startedAt,
-	}}
-	// Padding shell jobs push the corrupt line far beyond the head window.
-	for i := range 12 {
-		ts := startedAt.Add(time.Duration(i) * time.Second)
-		events = append(events, jobstore.Event{Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("shell_%02d", i), Type: jobstore.JobShell, OwnerSessionID: sid, VisibleToSession: sid, Command: "echo padding", StartedAt: &ts})
-	}
 	writeSessionsFixtureSession(t, bucket, sid,
 		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
 		[]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}})},
-		schema.SessionMeta{}, events, time.Unix(2, 0).UTC())
+		schema.SessionMeta{}, legacyFailureJournalEvents(sid, startedAt), time.Unix(2, 0).UTC())
 
 	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
 	// The corrupt line is the one byte sequence the Store cannot write, so it
 	// lands raw after the Store-shaped fixture lines, beyond the head window:
 	// a full scan fails the session on it, the bounded scan never reaches it.
-	jobsFile, err := os.OpenFile(jobsPath, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := jobsFile.WriteString("{not json}\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := jobsFile.Close(); err != nil {
-		t.Fatal(err)
-	}
+	appendRawLine(t, jobsPath, "{not json}\n")
 
 	res, err := ListSessions(context.Background(), base, SessionsOpts{})
 	if err != nil {
@@ -944,13 +924,7 @@ func TestListSessions_BoundedJobsScan(t *testing.T) {
 	if len(res.Sessions) != 1 || len(res.Unreadable) != 0 {
 		t.Fatalf("sessions = %d, unreadable = %+v; the corrupt line beyond the window must not fail the row", len(res.Sessions), res.Unreadable)
 	}
-	var foundLegacy bool
-	for _, failure := range res.Sessions[0].Failures {
-		if failure.Code == "legacy_delegate_state" {
-			foundLegacy = true
-		}
-	}
-	if !foundLegacy {
+	if !hasFailureCode(res.Sessions[0].Failures, "legacy_delegate_state") {
 		t.Fatalf("Failures = %+v, want the head-window legacy delegate activation reported", res.Sessions[0].Failures)
 	}
 }

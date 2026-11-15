@@ -263,6 +263,49 @@ func TestCount_PreservesCustomResultToolAndCustomSameNamedTools(t *testing.T) {
 	}
 }
 
+// TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool covers
+// #6241: a session that invoked BOTH a tool whose resolved name stays the
+// literal wire alias (a custom tool, or a rejected call whose result echoed
+// the call name) and the built-in tool that alias canonically maps to must,
+// for a query by the alias, count only the exact resolved tool — the same
+// exact-first preference TranscriptHealth and metricSource.hasExactTool apply —
+// instead of summing both.
+func TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("grep_search", `{"query":"custom"}`),
+			toolCall("grep", `{"pattern":"built-in"}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("grep_search", "hit", false),
+			toolResult("grep", "a.go:1:foo", false),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	got, err := Count(base, sid, "grep_search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Calls != 1 {
+		t.Errorf("Count(grep_search).Calls = %d, want 1 (the exact resolved tool, not the sum with canonical grep)", got.Calls)
+	}
+
+	builtin, err := Count(base, sid, "grep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builtin.Calls != 1 {
+		t.Errorf("Count(grep).Calls = %d, want 1 (the built-in grep, not the custom grep_search)", builtin.Calls)
+	}
+}
+
 func TestCount_RenderDisambiguates(t *testing.T) {
 	base, sid := countFixture(t)
 	ds, _ := Count(base, sid, "delegate_send")

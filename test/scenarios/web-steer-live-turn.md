@@ -89,24 +89,23 @@ HUB=http://127.0.0.1:$PORT
 4. **Path A — the Steer button.** Type the steer text into the composer and
    click `[data-testid="composer-steer"]`. Take the synchronous snapshot
    before the ack lands (see "Synchronous vs. async assertion shape" in the
-   runbook): a pending row carrying the steer text should be in
-   `[data-testid="pending-message-stack"]` immediately, and gone once the
-   daemon acknowledges.
+   runbook): a provisional pending row for the steer should be in
+   `[data-testid="pending-row-stack"]`
+   immediately, and gone once the daemon acknowledges.
    ```javascript
    (async () => {
-     const rows = () => Array.from(
-       document.querySelectorAll('[data-testid="pending-message-row"]'),
-       (li) => li.textContent);
+     const pendingRows = () => Array.from(
+       document.querySelectorAll('[data-testid="pending-row-stack"] li'), (li) => li.textContent);
      const ta = document.querySelector('[data-testid="composer-input-card"] textarea');
      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
      setter.call(ta, "Make it 1 paragraph instead of 5, about Go testing specifically.");
      ta.dispatchEvent(new Event("input", { bubbles: true }));
      document.querySelector('[data-testid="composer-steer"]').click();
-     const sync = rows();                                   // optimistic row, right now
+     const sync = pendingRows();                             // optimistic row, right now
      await new Promise((r) => setTimeout(r, 3000));
      return JSON.stringify({
        sync,
-       after: rows(),
+       after: pendingRows(),
        textAfter: ta.value,
        steers: document.querySelectorAll(
          '[data-testid="user-message-item"]:not([data-opens-exchange])').length,
@@ -138,10 +137,11 @@ HUB=http://127.0.0.1:$PORT
   `composer-stop`, and `location.port` is your hub's. Falsify: the Steer
   button never appears while the server reports `state=active` — the AppWire
   socket did not hydrate; check `$run/hub.log` before blaming the composer.
-- **Step 4 (Path A)**: `sync` contains one pending row carrying the steer
-  text, with its state caption (`pending/PendingMessageStack.tsx`, `:50-69`,
-  caption at `pending/pendingMessageCaption.ts:12-40`); `after` is empty (the
-  row retired off the `clientMutationId` echoed back on
+- **Step 4 (Path A)**: `sync` contains one provisional row carrying the
+  steer text with its `Joining this turn` caption
+  (`transcript/messages/PendingRowStack.tsx:503-519`, the caption table at
+  `:110-117`); `after` is empty (the
+  row reconciled off the `clientMutationId` echoed back on
   `evener/steering/injected`, `stores/threads.ts:797-801`); the composer text is
   cleared; the steer appears in the transcript as a **user-message item with
   no `data-opens-exchange` attribute** — a steer the human typed reuses

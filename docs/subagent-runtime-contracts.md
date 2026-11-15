@@ -178,10 +178,13 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
 - **Matchers** (`agent/internal/hooks/matcher.go`): empty/`*` = all; the set
   `[A-Za-z0-9_|,\- ]` = exact name or a separator list (`|` or `,`, alternatives
   trimmed); otherwise Go RE2. `Bash` does not match `BashOutput`. Matchers run
-  against the **Claude** tool name (`shell` → `Bash`). An invalid regex is skipped
+  against the **Claude** tool name (`shell` → `Bash`); MCP tools are the exception —
+  matchers see their registered `<server>__<tool>` name, with no `mcp__` prefix
+  (see [MCP tool names](mcp.md#tool-names-failures-and-teardown)). An invalid regex is skipped
   and diagnosed once at load, not per dispatch.
 - **Matcher targets by event:** tool events (`PreToolUse`, `PostToolUse`,
-  `PostToolUseFailure`) match the Claude tool name; `SessionStart` matches
+  `PostToolUseFailure`) match the Claude tool name (MCP tools: their registered
+  `<server>__<tool>` name); `SessionStart` matches
   `startup`/`resume`/`clear`/`compact`; `SubagentStart`/`SubagentStop` match the
   child agent type (the same value as the input's `agent_type`); `StopFailure`
   matches the Claude error name; `PreCompact`/`PostCompact` match `manual`/`auto`;

@@ -2,6 +2,7 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { type ComposerVerb, composerVerb } from "./composerMethods";
+import type { ConsumedQueueEntry } from "./pendingMessages";
 import {
   effectiveWireId,
   type MutationOptimisticRecord,
@@ -10,6 +11,7 @@ import {
 } from "./records";
 
 export type PendingMethod = ComposerVerb;
+export type { ConsumedQueueEntry } from "./pendingMessages";
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -201,6 +203,16 @@ function ownUnsettledInput(
   return (entries ?? []).some((entry) => methods.includes(entry.method) && isOwnUnsettledEntry(entry));
 }
 
+const DEFAULT_MAX_DISPLAY_LENGTH = 140;
+
+// The client-side visual cap layered on top of the daemon's own first-line
+// truncation - independent of and smaller than
+// most real messages, so this mostly matters for a single very long line.
+export function truncateForDisplay(text: string, max: number = DEFAULT_MAX_DISPLAY_LENGTH): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}…`;
+}
+
 export function commandMarkers(names: readonly string[]): string {
   return names.map((name) => `[command: ${name}]`).join(" ");
 }
@@ -256,6 +268,22 @@ export function outboxInput(record: MutationRecord): InputItem[] | undefined {
     return display.input as InputItem[];
   }
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : undefined;
+}
+
+// A durable record's display parts, through the same extraction every
+// projected pending entry uses: the optimisticDisplay.input carries a
+// promoted row's composed content (its wire params carry only the queue
+// position), so it is preferred over the payload input every other method
+// populates. The surfaces that render or copy a durable row directly read
+// this, so a durable row and its optimistic twin can never compose the same
+// message differently.
+export function outboxRecordPreview(record: PendingRecord): {
+  text: string;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
+  return inputPreview(outboxInput(record));
 }
 
 // The transcript-item half of the reflected-identity rule, shared by the
@@ -398,6 +426,7 @@ export function reconcilePendingEntries(
   model: ThreadModel | undefined,
   submittedHere: ReadonlyMap<string, number>,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
+  consumedQueueEntries?: readonly ConsumedQueueEntry[],
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
   const entries = new Map<string, PendingTurnEntry>();
@@ -410,9 +439,46 @@ export function reconcilePendingEntries(
     // keying projects the one composition twice. The entry's own id stays
     // the storage key; only the projection's identity is the wire id.
     const wireId = effectiveWireId(record);
-    if (record.targetRef !== ref || reflected.has(wireId)) continue;
+    // A retargeted resend targets the destination a peer chose while the
+    // pane that authored it stays its displayedRef: presentation follows
+    // the displayed ref (the same association the blocked, canceled and
+    // recovery selectors carry), so the author keeps seeing their
+    // in-flight work. Submission routing reads the record's own targetRef
+    // and never this filter. displayedRef is an outbox-record field - an
+    // optimistic (accepted) snapshot never carries it, so the read narrows.
+    const displayedHere = "displayedRef" in record ? record.displayedRef : undefined;
+    if ((record.targetRef !== ref && displayedHere !== ref) || reflected.has(wireId)) continue;
     const entry = outboxEntry(record, isOwnMutationRecord);
     if (entry) entries.set(wireId, entry);
+  }
+
+  // A consumed queue row still awaiting its authoritative replacement: the
+  // registry (consumedQueueEntriesFor) keeps it after thread/queueChanged
+  // removes the queue row and before hydration supplies the pending mutation
+  // or transcript item, so the message never vanishes for that window. A row
+  // the model reflects, or that the queue still names, retires here exactly
+  // as the pending-message projection retires it.
+  const queuedEntryIds = new Set(model?.queue?.ids ?? []);
+  for (const carried of consumedQueueEntries ?? []) {
+    if (queuedEntryIds.has(carried.entryId)) continue;
+    if (entries.has(carried.entryId)) continue;
+    if (entries.has(carried.clientMutationId)) continue;
+    if (reflected.has(carried.clientMutationId)) continue;
+    entries.set(carried.entryId, {
+      id: carried.entryId,
+      ref,
+      method: "queue",
+      text: carried.text,
+      imageCount: carried.imageCount,
+      skillNames: [...carried.skillNames],
+      commandNames: [...carried.commandNames],
+      createdAt: submittedHere.get(carried.clientMutationId),
+      state: "submitting",
+      source: "authoritative",
+      // The daemon accepted this entry into a mutation this client may not
+      // have submitted; provenance stays the registry's own answer.
+      fromThisClient: submittedHere.has(carried.clientMutationId),
+    });
   }
 
   for (const mutation of model?.pendingMutations ?? []) {
