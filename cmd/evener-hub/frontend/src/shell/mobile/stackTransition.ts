@@ -30,6 +30,11 @@ export interface StackTransitionClasses {
  * written back once the old pane is in its leaving layer. */
 export type ScrollOffsets = Map<Element, readonly [top: number, left: number]>;
 
+/** Discard scrollers unmounted within the shown pane without losing its live offsets. */
+export function pruneDetachedOffsets(offsets: ScrollOffsets): void {
+  for (const element of offsets.keys()) if (!element.isConnected) offsets.delete(element);
+}
+
 const classList = (names: string) => names.split(/\s+/).filter(Boolean);
 
 /**

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { type ScrollOffsets, startStackTransition } from "./stackTransition";
+import { pruneDetachedOffsets, type ScrollOffsets, startStackTransition } from "./stackTransition";
 
 const CLASSES = { enter: "enter", leavingUnder: "under", leavingOver: "over" };
 
@@ -25,4 +25,25 @@ test.each(["push", "pop"] as const)("a %s that completes at once hands back noth
   expect(outgoing.isConnected).toBe(false);
   expect(body.hasAttribute("data-stack-transition")).toBe(false);
   body.remove();
+});
+
+test("pruning a pane's removed scroller retains the shown pane's scroll position", () => {
+  const removedPane = document.createElement("div");
+  const removedScroller = document.createElement("div");
+  removedPane.append(removedScroller);
+  const shownScroller = document.createElement("div");
+  document.body.append(removedPane, shownScroller);
+  removedScroller.scrollTop = 37;
+  shownScroller.scrollTop = 12;
+  const offsets: ScrollOffsets = new Map([
+    [removedScroller, [removedScroller.scrollTop, 0]],
+    [shownScroller, [shownScroller.scrollTop, 0]],
+  ]);
+
+  removedPane.remove();
+  pruneDetachedOffsets(offsets);
+
+  expect(offsets.has(removedScroller)).toBe(false);
+  expect(offsets.get(shownScroller)).toEqual([12, 0]);
+  shownScroller.remove();
 });

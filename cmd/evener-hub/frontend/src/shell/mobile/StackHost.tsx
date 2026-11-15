@@ -66,7 +66,12 @@ import {
 } from "../workspace";
 import { MobilePanel } from "./MobilePanel";
 import styles from "./StackHost.module.css";
-import { type ScrollOffsets, type StackTransitionKind, startStackTransition } from "./stackTransition";
+import {
+  pruneDetachedOffsets,
+  type ScrollOffsets,
+  type StackTransitionKind,
+  startStackTransition,
+} from "./stackTransition";
 import { TreeDrawer } from "./TreeDrawer";
 
 const TRANSITION_CLASSES = {
@@ -389,7 +394,10 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
     const offsets = scrollOffsetsRef.current;
     const onScroll = (event: Event) => {
       const target = event.target;
-      if (target instanceof Element) offsets.set(target, [target.scrollTop, target.scrollLeft]);
+      if (target instanceof Element) {
+        pruneDetachedOffsets(offsets);
+        offsets.set(target, [target.scrollTop, target.scrollLeft]);
+      }
     };
     body.addEventListener("scroll", onScroll, { capture: true, passive: true });
     return () => body.removeEventListener("scroll", onScroll, { capture: true });
