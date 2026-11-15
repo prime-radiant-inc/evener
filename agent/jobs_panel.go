@@ -2,7 +2,6 @@ package agent
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -79,11 +78,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (*jobstore.JobRecor
 		return nil, false, err
 	}
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	if _, err := historicalJobsStat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
+	if _, valid, err := validateLocalJobJournal(stateDir, path); err != nil {
 		return nil, false, err
+	} else if !valid {
+		return nil, false, nil
 	}
 	events, err := jobstore.ReadEvents(path)
 	if err != nil {

@@ -58,9 +58,13 @@ func FuzzProfileOverrides(f *testing.F) {
 		decisions := splitNonEmpty(decisionBlob)
 
 		// Apply WithCommunicateOutputSchema then WithAllowedDecisions (the
-		// documented stacking order).
-		p1 := WithCommunicateOutputSchema(base, outputSchema)
+		// documented stacking order). An invalid schema fails to bind; the
+		// decoration oracles below apply only to a successful bind.
+		p1, bindErr := WithCommunicateOutputSchema(base, outputSchema)
 		assertBaseUnchanged(t, base, baseSnapshot, "WithCommunicateOutputSchema")
+		if bindErr != nil {
+			return
+		}
 
 		p2 := WithAllowedDecisions(p1, decisions)
 		assertBaseUnchanged(t, base, baseSnapshot, "WithAllowedDecisions(base)")

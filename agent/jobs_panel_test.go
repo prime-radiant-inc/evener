@@ -319,6 +319,42 @@ func TestLoadSessionJobGetNotFound(t *testing.T) {
 	}
 }
 
+func TestLoadSessionJobGetRejectsUnsafeJournal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("symlink returns not found", func(t *testing.T) {
+		dir := t.TempDir()
+		sessionID := identifier.MustNewSessionID()
+		journalDir := jobsDir(dir, sessionID)
+		if err := os.MkdirAll(journalDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(t.TempDir(), "jobs.jsonl")
+		store, err := jobstore.OpenNoSync(outside)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if err := store.Append(jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: now, JobID: "job_x",
+			Type: jobstore.JobShell, Status: jobstore.StatusRunning,
+			OwnerSessionID: sessionID, VisibleToSession: sessionID, StartedAt: &now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(journalDir, "jobs.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+		_, found, err := LoadSessionJobGet(dir, sessionID, "job_x")
+		if found {
+			t.Fatalf("LoadSessionJobGet(symlink) followed external journal: err=%v", err)
+		}
+	})
+}
+
 // LoadSessionJobGet joins sessionID into a jobsDir path, so a traversal-shaped
 // ID must be refused before that join.
 func TestLoadSessionJobGetRejectsUnsafeSessionID(t *testing.T) {

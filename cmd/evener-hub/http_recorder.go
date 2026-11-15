@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"primeradiant.com/evener/envvars"
@@ -46,6 +47,10 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 	if err != nil {
 		return identity
 	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close() //nolint:errcheck // best-effort; recording remains disabled if its mode cannot be secured
+		return identity
+	}
 	var mu sync.Mutex
 	write := func(rec recordedHTTPRequest) {
 		line, err := httpRecorderMarshal(rec)
@@ -59,11 +64,29 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			segments := strings.Split(path, "/")
+			if len(segments) > 2 && segments[1] == "auth" {
+				segments[2] = "[redacted]"
+				path = strings.Join(segments, "/")
+			}
+			query := r.URL.Query()
+			if _, ok := query["token"]; ok {
+				query.Set("token", "[redacted]")
+			}
+			headers := make(http.Header, len(r.Header))
+			for name, values := range r.Header {
+				if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Cookie") || strings.EqualFold(name, "Set-Cookie") {
+					headers[name] = []string{"[redacted]"}
+					continue
+				}
+				headers[name] = append([]string(nil), values...)
+			}
 			rec := recordedHTTPRequest{
 				Method:  r.Method,
-				Path:    r.URL.Path,
-				Query:   r.URL.RawQuery,
-				Headers: r.Header,
+				Path:    path,
+				Query:   query.Encode(),
+				Headers: headers,
 			}
 			if r.Body != nil {
 				// Read a capped copy for the recording, then restore the body so the
