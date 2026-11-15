@@ -625,6 +625,136 @@ func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	}
 }
 
+// TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown pins the same
+// pairing on the leased-delegate path. A leased round presents the
+// controller's own snapshot, taken after the round's first capture; a fold
+// committing between the two reads leaves that snapshot holding the fold's
+// marker while the staged coverage still describes the pre-fold chain, and
+// resolving the marker's frontier against that map observes the fold
+// half-committed. Here a Compact parks between its publication and its
+// transcript commit while a leased request builds; the leased read must pair
+// its history with the coverage of the same read, and the request's coverage
+// must stay known and complete.
+func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := newScriptedSummaryCompactSession(t, "leased-fold-commit-window-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-leased-fold-commit-window-summary\n[END SUMMARY]")}
+	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	s.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = s
+	c.live[lease.delegateID].binding.runtime = s
+	c.mu.Unlock()
+
+	// The strategy is cleared so the request below runs no context-management
+	// fold of its own: the fold spawned from the snapshot hook must be the
+	// only writer holding the transcript door, and the request must reach its
+	// leased read while that fold is parked mid-commit — the interleaving
+	// this test pins. The leased read itself is the same code every leased
+	// round runs.
+	s.mu.Lock()
+	s.strategy = nil
+	s.mu.Unlock()
+	final := func(llm.Request) llm.Response { return agenttest.FinalResponse("opaque-leased-fold-commit-window-result") }
+	steps := make([]func(llm.Request) llm.Response, 0, 4)
+	for range 4 {
+		steps = append(steps, final)
+	}
+	s.client.Register(&fakeAdapter{name: "openai", steps: steps})
+	const rounds = 4
+	for i := range rounds {
+		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-leased-fold-commit-window-input-%d", i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := s.ConversationProvenance().AdmittedInputs
+	if len(original) != rounds {
+		t.Fatalf("admitted inputs before the fold = %v, want %d", original, rounds)
+	}
+
+	// The snapshot hook spawns the fold only after the round's first capture,
+	// then holds the request between its two history reads until the fold
+	// parks: the leased read must land inside the park, never before the fold
+	// publishes.
+	inWindow := make(chan struct{})
+	releaseFold := make(chan struct{})
+	compactDone := make(chan error, 1)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.beforeFoldTranscriptCommit = func() {
+			close(inWindow)
+			select {
+			case <-releaseFold:
+			// TRIPWIRE: the request's completion releases this park in
+			// milliseconds once its leased read passes the window; when that
+			// read instead waits on the door this park holds, a lock waiter
+			// exposes no signal to await, so this far-above ceiling is what
+			// ends the park for it.
+			case <-time.After(2 * time.Second):
+			}
+		}
+		cfg.afterModelHistorySnapshot = func() {
+			go func() { compactDone <- s.Compact(context.Background()) }()
+			<-inWindow
+		}
+	})
+	requestDone := make(chan error, 1)
+	builtReq := make(chan llm.Request, 1)
+	go func() {
+		var timings events.RoundTimings
+		ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+		_, _, _, req, _, _, err := s.prepareModelRequestWithError(ctx, 0, &timings)
+		builtReq <- req
+		requestDone <- err
+	}()
+	if err := <-requestDone; err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	req := <-builtReq
+	close(releaseFold)
+	if err := <-compactDone; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	// The scenario really ran: the fold compacted the seeded prefix and left
+	// its marker in the live history, so a frontier was published for the
+	// leased read to observe.
+	live := currentHistory(t, s)
+	if at := indexOfTurnText(live, "opaque-leased-fold-commit-window-input-0"); at >= 0 {
+		t.Fatalf("the parked fold did not compact the seeded prefix: the first input still stands at %d, so the window under test never opened", at)
+	}
+	foundMarker := false
+	for _, turn := range live {
+		foundMarker = foundMarker || turn.Kind == schema.TurnCheckpoint || turn.Kind == schema.TurnSummary
+	}
+	if !foundMarker {
+		t.Fatal("the parked fold left no compaction marker in the live history, so no frontier was published for the leased read to observe")
+	}
+	// The request really presented the controller's snapshot: the folded
+	// first input is gone from what it built, so the leased read — not the
+	// round's first capture — produced this request's history.
+	for _, m := range req.Messages {
+		if strings.Contains(m.Text(), "opaque-leased-fold-commit-window-input-0") {
+			t.Fatalf("the leased request presented the fold's folded-away input instead of the controller's snapshot: %s", m.Text())
+		}
+	}
+
+	s.mu.Lock()
+	prepared := slices.Clone(s.conversation.preparedInputs)
+	s.mu.Unlock()
+	for _, id := range original {
+		if !slices.Contains(prepared, id) {
+			t.Fatalf("a leased request built while the fold committed lost the folded input %s: prepared=%v", id, prepared)
+		}
+	}
+	if state := s.ConversationProvenance(); !state.Authoritative {
+		t.Fatalf("a leased request built while the fold committed made the conversation unknown: state=%+v", state)
+	}
+}
+
 // TestConsecutiveWithheldFoldsKeepTheConversationCovered pins the retracted
 // frontier's lifetime across two withheld folds. The first fold mints a node
 // and keeps it in the chain as the live-only head. A later fold whose folded
