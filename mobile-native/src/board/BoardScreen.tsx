@@ -1252,6 +1252,7 @@ function Board({
 										openDocumentInSession(navigation, {
 											hubId,
 											sessionRef: trail.sessionRef,
+											...(trail.messageSessionRef === undefined ? {} : { messageSessionRef: trail.messageSessionRef }),
 											path: trail.path,
 											reference: trail.reference,
 											sessionTitle: trail.sessionTitle,

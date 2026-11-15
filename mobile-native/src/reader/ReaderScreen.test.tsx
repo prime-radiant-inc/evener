@@ -691,6 +691,27 @@ it("remembers where you were and what you read when you leave, and leaves the wa
 	});
 });
 
+it("remembers the resumed message target separately when leaving a partial document", async () => {
+	const { tree } = await mount();
+	const list = documentList(tree);
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }], changed: [] }));
+	act(() =>
+		list.props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+		}),
+	);
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await settle();
+	act(() => tree.unmount());
+	expect(memory.continueReading()).toMatchObject({
+		sessionRef: "local:fix",
+		messageSessionRef: "local:fix-2",
+		path: PATH,
+	});
+});
+
 it("keeps the visible reading position when another viewability token has no index", async () => {
 	const { tree } = await mount();
 	const list = documentList(tree);
@@ -908,6 +929,45 @@ it("saves a Reader's resumed message identity while keeping its original documen
 		sessionRef: "local:fix",
 		messageSessionRef: "local:fix-2",
 	});
+});
+
+it("uses the owning conversation's pending identity when a resume precedes reader mount", async () => {
+	stack.state.routes[1] = {
+		key: "fix",
+		name: "Conversation",
+		params: { hubId: "studio", ref: "local:fix", pendingIdentity: "local:fix-2", title: "Fix race" },
+	};
+	const { tree } = await mount();
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	act(() =>
+		documentList(tree)
+			.props.renderItem({ item: { kind: "block", block } })
+			.props.onAction("quote", block),
+	);
+	expect(takeQuote("studio", "local:fix-2")).toBe(block.text);
+	expect(takeQuote("studio", "local:fix")).toBeNull();
+});
+
+it("keeps the latest message target when route params lag two identity changes", async () => {
+	const { tree, navigation, params, rerender } = await mount();
+	const writes: { messageSessionRef?: string }[] = [];
+	navigation.setParams.mockImplementation((next) => writes.push(next));
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await settle();
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" });
+	});
+	await settle();
+	Object.assign(params, writes[0]);
+	await rerender();
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	const row = documentList(tree).props.renderItem({ item: { kind: "block", block } });
+	act(() => row.props.onAction("quote", block));
+	expect(takeQuote("studio", "local:fix-3")).toBe(block.text);
 });
 
 it("returns a quote to the covered Subagent route while holding it for the resumed identity", async () => {

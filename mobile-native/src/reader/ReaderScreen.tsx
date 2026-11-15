@@ -42,6 +42,7 @@ import { timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { holdQuote } from "../session/pendingQuote";
 import { BackButton } from "../session/BackButton";
+import { resolveOwnerIdentity } from "../session/resolveOwnerIdentity";
 import { owningSessionRef, returnToSession } from "../session/returnToSession";
 import { SessionLink } from "../session/sessionMessage";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
@@ -97,16 +98,21 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const openedMessageRef = messageSessionRef ?? sessionRef;
 	const [messageRef, setMessageRef] = useState(openedMessageRef);
 	useEffect(() => {
-		setMessageRef(openedMessageRef);
-		return subscribeNativeIdentities((change) => {
-			if (change.hubId === hubId) {
-				setMessageRef((current) => (change.from === current ? change.to : current));
-			}
-		});
-	}, [hubId, openedMessageRef]);
+		return resolveOwnerIdentity(
+			{ hubId, documentRef: sessionRef, openedMessageRef, currentRef: openedMessageRef },
+			() => navigation.getState(),
+			subscribeNativeIdentities,
+			setMessageRef,
+		).unsubscribe;
+	}, [hubId]);
 	useEffect(() => {
-		if (messageRef !== openedMessageRef)
-			navigation.setParams({ messageSessionRef: messageRef === sessionRef ? undefined : messageRef });
+		const resolved = resolveOwnerIdentity(
+			{ hubId, documentRef: sessionRef, openedMessageRef, currentRef: messageRef },
+			() => navigation.getState(),
+		).current();
+		if (resolved !== messageRef) setMessageRef(resolved);
+		if (resolved !== openedMessageRef)
+			navigation.setParams({ messageSessionRef: resolved === sessionRef ? undefined : resolved });
 	}, [messageRef, openedMessageRef, sessionRef, navigation]);
 	const memory = documentMemory(hubId);
 	const { client, activeProfile, state } = useConnection();
@@ -239,12 +245,17 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const leave = useRef(() => {});
 	leave.current = () => {
 		if (!document || !READABLE.has(document.kind)) return;
+		const resolved = resolveOwnerIdentity(
+			{ hubId, documentRef: sessionRef, openedMessageRef, currentRef: messageRef },
+			() => navigation.getState(),
+		).current();
 		memory.left(key, {
 			title: document.title,
 			reference,
 			blocks: blocks?.map((block) => block.hash) ?? [],
 			position: position(),
 			sessionTitle,
+			...(resolved === sessionRef ? {} : { messageSessionRef: resolved }),
 			...(updatedAt === undefined ? {} : { updatedAt }),
 		});
 	};

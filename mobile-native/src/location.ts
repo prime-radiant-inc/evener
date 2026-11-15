@@ -1,6 +1,7 @@
 import { isPlainObject } from "@evener/appwire-client";
 import type { FileReference } from "@evener/appwire-client/docContent";
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
+import { resolveOwnerIdentity } from "./session/resolveOwnerIdentity";
 import { localSessionId } from "./sessionDeletionResult";
 import { isSheetRoute } from "./sheet/sheetRoutes";
 import type { SyncStringStorage } from "./syncStringStorage";
@@ -198,6 +199,16 @@ export function routeToSave(state: { index: number; routes: readonly SavedRoute[
 	if (front?.name === "Sessions") {
 		const detail = nestedState(front.state);
 		if (detail) return routeToSave(detail) ?? front;
+	}
+	if (front?.name === "Activity" && isPlainObject(front.params)) {
+		const { hubId, ref } = front.params;
+		if (typeof hubId === "string" && typeof ref === "string") {
+			const resolved = resolveOwnerIdentity(
+				{ hubId, documentRef: ref, openedMessageRef: ref, currentRef: ref },
+				() => state,
+			).current();
+			if (resolved !== ref) return { ...front, params: { ...front.params, ref: resolved } };
+		}
 	}
 	return front;
 }

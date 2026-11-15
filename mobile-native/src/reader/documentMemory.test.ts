@@ -89,6 +89,18 @@ describe("what the phone remembers about a document", () => {
 		});
 	});
 
+	it("restores a resumed message target separately from its document after relaunch", () => {
+		const storage = memoryStorage();
+		new DocumentMemory(storage, "hub-1", () => 10_000).left(plan, {
+			...leaving(0.62),
+			messageSessionRef: "local:s-pr2138-resumed",
+		});
+		const trail = new DocumentMemory(storage, "hub-1", () => 10_000).continueReading();
+		expect(trail?.sessionRef).toBe(plan.sessionRef);
+		expect(trail?.messageSessionRef).toBe("local:s-pr2138-resumed");
+		expect(trail?.reference).toEqual(reference);
+	});
+
 	it("keeps your place and the version you last read across a relaunch", () => {
 		const storage = memoryStorage();
 		let now = 1_000;

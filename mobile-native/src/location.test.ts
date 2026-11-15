@@ -84,6 +84,27 @@ describe("last mobile location", () => {
 			params: { hubId: "studio", ref: "local:new", title: "Session" },
 		});
 	});
+	it("restores a conversation's pending identity when Activity covers it at restart", () => {
+		const disk = storage();
+		const state = {
+			index: 2,
+			routes: [
+				{ name: "Sessions" },
+				{
+					name: "Conversation",
+					params: { hubId: "studio", ref: "local:old", title: "Session", pendingIdentity: "local:new" },
+				},
+				{ name: "Activity", params: { hubId: "studio", ref: "local:old", title: "Session", kind: "jobs" } },
+			],
+		};
+		const route = routeToSave(state);
+		if (!route) throw new Error("no saved route");
+		new LocationRepository(disk).save(locationForRoute(route, "studio"));
+		expect(restoredStack(new LocationRepository(disk).read(["studio"])).routes.at(-1)).toEqual({
+			name: "Conversation",
+			params: { hubId: "studio", ref: "local:new", title: "Session" },
+		});
+	});
 	it("restores the resumed message target without changing the Reader's original document", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);
