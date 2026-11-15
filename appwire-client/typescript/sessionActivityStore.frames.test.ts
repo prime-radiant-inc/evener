@@ -1356,6 +1356,33 @@ test("a legacy frame's advancing activity lands on its one row without a newer r
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads);
 });
 
+test("a malformed legacy heartbeat cannot poison a blank row's activity", async () => {
+  const { client, store } = await pushOwner();
+  const activity = () => store.getSnapshot().delegates.rows[0]?.latestActivityAt;
+  expect(activity()).toBeUndefined();
+  // A malformed timestamp is nonblank, so the blank-current rule alone would
+  // take it -- and once it stuck, no later heartbeat could compare as later
+  // against a value that cannot parse, and no equal-revision frame asks a
+  // read. The modern frame path admits a timestamp only when the projector
+  // can parse it; the legacy heartbeat must leave the row alone the same way.
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 1, latestActivityAt: "not a timestamp" }),
+      childRef: undefined,
+    }),
+  );
+  await store.settleForTests("delegates");
+  expect(activity()).toBeUndefined();
+  // The valid heartbeat that follows at the same revision still lands.
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ projectionRevision: 1, latestActivityAt: "2026-09-30T12:00:01Z" }),
+      childRef: undefined,
+    }),
+  );
+  expect(activity()).toBe("2026-09-30T12:00:01Z");
+});
+
 test("a legacy heartbeat from an unloaded twin does not advance the visible child", async () => {
   const client = pushClient();
   // The collection holds two rows under one delegate id; only the first page

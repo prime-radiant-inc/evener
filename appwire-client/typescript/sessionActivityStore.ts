@@ -934,7 +934,8 @@ export class SessionActivityStore {
    * streaming legacy delegate's heartbeat and leave its row reading as quiet.
    * A paged set cannot prove which child under the id the heartbeat belongs
    * to, so anything short of a complete set, an ambiguous or absent id, or an
-   * ordering with no established epoch is left to the read. */
+   * ordering with no established epoch -- or a heartbeat timestamp the
+   * projector cannot parse -- is left to the read. */
   private mergeLegacyDelegateActivity(frame: EvenerDelegateInfo): void {
     if (this.delegateEpoch() === undefined) return;
     if (!this.state.delegates.complete) return;
@@ -950,6 +951,17 @@ export class SessionActivityStore {
     }
     if (at === -1) return;
     const current = rows[at];
+    // The modern frame's ingress (delegateRowFromFrame) admits a timestamp
+    // only when the projector can parse it; the legacy heartbeat must carry
+    // the same guarantee before it takes a row. The blank-current rule of
+    // activityAfter would otherwise accept any nonblank candidate on a row
+    // with no activity, and once such a value stuck, no later heartbeat could
+    // compare as later against a timestamp that cannot parse, while the
+    // equal-revision ladder asks no read. Refuse only the direct merge: the
+    // frame's ladder read still runs, and the row keeps the activity it had.
+    if (frame.latestActivityAt === undefined || !isValidActivityTimestamp(frame.latestActivityAt)) {
+      return;
+    }
     if (!current || !activityAfter(frame.latestActivityAt, current.latestActivityAt)) return;
     const next = rows.slice();
     next[at] = { ...current, latestActivityAt: frame.latestActivityAt };
