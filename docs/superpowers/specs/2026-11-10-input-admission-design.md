@@ -84,7 +84,8 @@ type admissionItem struct {
     turns      func() []schema.Turn // rendered at admission time, not at submit
     provenance *provenance.Causal
     startsTurn bool              // may open a turn when the session is idle
-    onSent     func(ctx)         // settle: delivered marker, incorporation, coverage, watch count
+    onSent     func(ctx)         // dispatch acknowledgment: delivered marker, incorporation, watch count
+    onSettled  func(ctx)         // the call answered: attention coverage
     onUnsent   func(ctx, admitted bool) // left owed; the undispatched cap applies
 }
 ```
@@ -134,8 +135,21 @@ projection. It:
 
 The round loop already wraps the call in `llm.WithRequestSentObserver`.
 When the request is sent, it runs `onSent` for each carried item: delivered
-markers, incorporation, attention coverage and watch delivery counting. That
-is rules (a) and (d) for every kind.
+markers, incorporation and watch delivery counting. That is rules (a) and (d)
+for every kind.
+
+Dispatch acknowledgment is not settlement. When the call answers, the loop
+runs `onSettled` for each item it still carries, and attention coverage is
+credited there. A rejected request must not credit coverage: the accept path
+has already resolved the trigger as consumed, and coverage promotion is what
+clears `attentionAcceptedID`, the latch a fold reads to keep the trigger's
+turn. Crediting coverage at dispatch would let the recovery compaction after
+a context-length rejection drop that turn, so the retry would carry a model
+that never saw what started the generation.
+
+A call that fails after the send keeps its `onSent` effects; a delivered
+marker is about dispatch. Its `onSettled` stays owed, and the next request
+carries the item again.
 
 When the request is not sent (a Stop, an admission refusal, a failure before
 the send), it runs `onUnsent`, and the item stays owed. The existing
@@ -220,7 +234,8 @@ adds that kind to one shared table test.
    become admission. This settles the Stop-hook gap one way or the other.
 4. **Delegate attention, updates and steers (P9–P12).** Provenance and
    coverage move through admission. `promoteStagedAttentionCoverage` becomes
-   the attention item's `onSent`.
+   the attention item's `onSettled`, not its `onSent`, so a rejected request
+   leaves the accepted trigger latched for the retry.
 5. **Continuations and runtime nudges (P13, P14).** These are mostly
    deletions in the openers.
 
@@ -232,6 +247,9 @@ asserts:
 
 - **Unsent.** A Stop before the send leaves the item owed, and the next
   turn carries it.
+- **Sent but rejected** (attention kinds only). A provider rejection after
+  the send credits no coverage, and the item's trigger is still presented by
+  the retry that follows the recovery compaction.
 - **Sent once.** One sent request settles it exactly once, and a
   replay after restart does not write it twice.
 - **Provenance.** The turn that carries it reports its provenance.
