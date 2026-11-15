@@ -1134,6 +1134,39 @@ func TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne(t *testing.T) {
 	}
 }
 
+// TestRejectedPickSurvivesAStalePendingSample pins the outcome half of the same
+// ordering. A pick keeps ONE sequence from admission to its outcome, so an
+// equal sequence is not evidence of a newer acceptance: it is the same pick at
+// a different outcome, and those outcomes only move forward. A refresh that
+// sampled the pick while it was still pending can install after the refusal, so
+// sequence alone would hand the rejection back to pending and a reconnecting
+// client would keep presenting a pick the session refused.
+func TestRejectedPickSurvivesAStalePendingSample(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	src := &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "th_1"}}
+	srv.SetThreadEnvelopeSource(src)
+	src.setModelPick(appwire.ModelPickState{Sequence: 4, Outcome: appwire.ModelPickApplied, ClientMutationID: "pick-open"})
+	srv.RefreshThreadEnvelope()
+
+	// The refusal lands first: the pick did not become the model.
+	src.setModelPick(appwire.ModelPickState{Sequence: 5, Outcome: appwire.ModelPickRejected, ClientMutationID: "pick-refused-while-pending"})
+	srv.RefreshAcceptedModelPick()
+	if got := readThreadOverWire(t, srv, "local:th_1").Evener.ModelPick; got == nil || got.Outcome != appwire.ModelPickRejected {
+		t.Fatalf("modelPick = %+v, want the rejected outcome installed before the stale sample", got)
+	}
+
+	// A refresh that started earlier still holds the same pick, mid-flight.
+	src.setModelPick(appwire.ModelPickState{Sequence: 5, Outcome: appwire.ModelPickPending, ClientMutationID: "pick-refused-while-pending"})
+	srv.RefreshAcceptedModelPick()
+
+	got := readThreadOverWire(t, srv, "local:th_1").Evener.ModelPick
+	if got == nil || got.Outcome != appwire.ModelPickRejected {
+		t.Fatalf("modelPick = %+v, want the rejected outcome kept: an equal-sequence pending sample reinstated a pick the session had already refused, so a reconnecting client loses the rejection", got)
+	}
+}
+
 // TestEveryMutationHandlerPublishesItsQueueChange pins the change points that
 // reach the daemon through a HANDLER rather than through the event stream.
 //

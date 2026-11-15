@@ -564,6 +564,18 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	s.commitConversationProvenance(threadID, sourceID, ref, next.ConversationProvenance)
 }
 
+// modelPickOutcomeRegresses reports that next would move the installed pick
+// backwards within its own sequence. A pick is admitted pending and settles
+// applied or rejected; once settled it never returns to pending. Both settled
+// outcomes are terminal for that sequence — a second, different settled outcome
+// is left to the sequence check, which already refuses an older one.
+func modelPickOutcomeRegresses(installed, next *appwire.ModelPickState) bool {
+	if installed == nil || next == nil {
+		return false
+	}
+	return installed.Outcome != appwire.ModelPickPending && next.Outcome == appwire.ModelPickPending
+}
+
 // assign copies exactly the named facets out of next. notesStale and urlsStale
 // name the overlapping-carrier cases: a notes carrier or a URLs carrier
 // committed after this sample was taken, so the sampled fields that carrier
@@ -645,7 +657,15 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		// reach this install after a later one and would otherwise reinstate
 		// the pick the session has already replaced. Acceptance order never
 		// moves backwards, so an older sample is not the installed truth.
-		if next.acceptedPickSeq >= e.acceptedPickSeq {
+		//
+		// One pick keeps its sequence from admission to its outcome, so an
+		// equal sequence is the same pick further along, never a newer one.
+		// A sample taken while it was still pending can arrive after the
+		// refusal; installing it would hand the rejection back to pending,
+		// and the notice that announced the refusal is bounded, so a client
+		// reconnecting later would have no other account of it.
+		if next.acceptedPickSeq > e.acceptedPickSeq ||
+			next.acceptedPickSeq == e.acceptedPickSeq && !modelPickOutcomeRegresses(e.ModelPick, next.ModelPick) {
 			e.ModelPick = next.ModelPick
 			e.acceptedPickSeq = next.acceptedPickSeq
 		}
