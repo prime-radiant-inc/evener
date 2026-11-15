@@ -103,13 +103,17 @@ A model-pick authority is identified by:
 - `instanceId`: the live thread incarnation;
 - `bootGeneration`: the daemon generation serving it.
 
+These fields fence records; they do not order thread incarnations. Only an accepted `thread/read` replacement, admitted through the client's existing read-generation, boot-generation, and instance fences, installs a different authority. A response or notification whose identity does not exactly match the installed thread cannot replace it. It triggers the existing invalidate-and-reread path, and the client drops the old display override as soon as invalidation begins.
+
 A pick target always carries separate `modelProvider` and `model` fields. The daemon qualifies those fields for profile lookup, but no protocol or client code reparses a combined `provider/model` string.
 
 Every `thread/model/set` request may carry a `clientMutationId`. Browser and native clients generate a secure UUID for every pick. The field remains optional so older clients continue to work. The daemon preserves it unchanged in every record and receipt derived from that request.
 
 ### Server sequence
 
-The session assigns a monotonically increasing unsigned sequence before admission work starts. Assignment and record transitions are serialized under session state. A sequence is meaningful only within the authority identity above.
+After AppWire has accepted a well-formed root-target request, the session assigns a monotonically increasing unsigned sequence before model admission starts. Protocol-shape failures, such as an empty model or invalid target ref, never enter the model-pick state machine. Assignment and record transitions are serialized under session state. A sequence is meaningful only within the authority identity above.
+
+Once assigned, admission is a session mutation rather than transport-scoped work. It continues to a terminal attempt outcome if the caller disconnects or cancels its request. If the daemon exits first, the next boot's different authority discards the unfinished `checking` record. A request therefore cannot remain `checking` forever inside a live authority merely because its transport disappeared.
 
 Strictly newer sequence wins. Equal sequence means another observation of the same request farther through its lifecycle. A lower sequence never changes either record.
 
@@ -192,6 +196,8 @@ The envelope, notification, response, and snapshot all serialize the same state 
 
 The server stamps the live `instanceId` and serving `bootGeneration` when it builds a response, notification, or snapshot. If the thread instance changes or the daemon restarts, the new identity starts with no model-pick state.
 
+Clients learn that reset through the existing authoritative replacement paths: `thread/clear` installs its returned replacement thread, while reconnect, daemon replacement, or an identity mismatch invalidates the old thread and requires a fresh `thread/read`. Invalidation clears the old display override before useful rendering resumes. The accepted replacement read may omit `modelPickState`, which explicitly means that authority has no accepted override. The protocol does not need an empty pick-state notification solely to announce a reset.
+
 ### End-to-end flow
 
 ```mermaid
@@ -222,15 +228,16 @@ The AppWire TypeScript package owns a pure merge function used by browser and na
 
 For every response receipt, state notification, or snapshot:
 
-1. Compare authority identities before comparing sequence.
-2. Ignore an older boot generation for the same live identity according to the existing boot-generation rules.
-3. Replace state on a new instance or replacement boot; absent state under the new authority means no accepted override.
-4. Within one authority, merge `latestAttempt` and `latestAcceptedPick` independently by sequence.
-5. For equal sequence, allow only forward lifecycle movement:
+1. Require an exact match with the authority already installed by an accepted thread read or replacement response before comparing sequence.
+2. Ignore a carrier from an older boot according to the existing boot-generation rules.
+3. On any other identity mismatch, invalidate the thread, clear its display override, and use the existing fresh-read replacement path. Never decide which opaque `instanceId` is newer.
+4. An accepted replacement read installs its authority and its complete model-pick state. An absent state under that authority means no accepted override.
+5. Within one authority, merge `latestAttempt` and `latestAcceptedPick` independently by sequence.
+6. For equal sequence, allow only forward lifecycle movement:
    - attempt: `checking` to one terminal outcome;
    - accepted pick: `pending` to `applied` or `rejected`.
-6. Ignore lower sequences and equal-sequence regressions. A delayed pending response cannot overwrite a terminal notification.
-7. Preserve a newer live state when a read that began earlier completes. Existing read-generation and snapshot fences still apply before the field merge.
+7. Ignore lower sequences and equal-sequence regressions. A delayed pending response cannot overwrite a terminal notification.
+8. Preserve a newer live state when a read that began earlier completes. Existing read-generation and snapshot fences still apply before the field merge.
 
 The display projection is:
 
@@ -240,6 +247,8 @@ The display projection is:
 `latestAttempt` never directly controls the label. It explains why a newer request did not take authority without hiding an already accepted pick.
 
 Canonical `thread/model/changed` handling remains independent. The reducer applies the active provider/model and its profile metadata even when that change belongs to an older sequence than the displayed accepted pick. For example, a delayed sequence 1 commit can update canonical state while accepted sequence 2 remains displayed. Sequence 2's eventual apply or rejection then resolves the display without lying about what the daemon currently runs.
+
+Within one live authority, production code changes the canonical session profile only through `applyModelSwitch`, so every active-model change after startup belongs to an accepted pick. Startup profile resolution happens before the authority begins. Any future production path that changes the canonical model must either enter this state machine or explicitly retire the accepted-pick record in the same transition. A new-daemon model-changed event that omits pick identity while model-pick state is installed is a protocol inconsistency: the client invalidates and rereads rather than guessing which fact wins.
 
 ## Browser behavior
 
@@ -267,8 +276,11 @@ The native client currently discards the model-set result. That changes only for
 | Same-model pick is accepted | Accepted record becomes applied even if no model-changed event is emitted |
 | Model-changed sequence 1 arrives after accepted sequence 2 | Canonical active model updates from sequence 1; display remains accepted sequence 2 |
 | Pending response arrives after applied/rejected notification | Equal-sequence regression is ignored |
+| Caller disconnects after sequence assignment | Session admission continues to a terminal attempt outcome |
 | Client reconnects | Snapshot restores both records under the same authority identity |
-| Daemon boot or thread instance changes | Old authority is discarded; absent new state means canonical model controls display |
+| Daemon boot or thread instance changes | Client invalidates, clears the old override, and installs only an accepted replacement read; absent new state means canonical model controls display |
+| Delayed old-instance response follows replacement | Identity mismatch cannot replace the installed authority; the stale response is ignored |
+| New-daemon model change lacks pick identity while authority state exists | Protocol inconsistency invalidates the thread and forces a fresh read |
 | Old daemon returns `{}` | No accepted override is invented; canonical model behavior is unchanged |
 | New daemon serves old client | Old client ignores additive fields/notification and follows canonical model changes |
 
@@ -296,7 +308,8 @@ Read and follow `docs/developing-evener/testing.md`. Tests assert state and beha
 
 Use real `Session` model switching with controlled profile resolution and turn boundaries. Cover:
 
-- sequence assignment before validation;
+- sequence assignment before model admission, after protocol-shape validation;
+- transport cancellation after assignment still reaching a terminal attempt outcome;
 - slow older validation superseded by a newer request;
 - refused latest attempt preserving the accepted record;
 - pending to applied and pending to rejected;
@@ -313,7 +326,9 @@ Use a scripted provider at the LLM boundary and real session, event, envelope, R
 - cached-envelope overlap cannot install an older model-pick state;
 - the active-model notification carries its originating identity when known;
 - a daemonless read omits authority state;
-- boot and instance replacement clear old authority;
+- boot and instance replacement invalidate first, clear the old display override, and install authority only from the accepted replacement read;
+- a delayed response from an old opaque instance cannot replace the accepted authority;
+- a new-daemon unqualified model change with installed pick state forces resynchronization;
 - `{}` decodes as a valid receipt-less response.
 
 ### Shared TypeScript reducer
@@ -327,6 +342,7 @@ Table-test every carrier ordering, including:
 - local pick 1, foreign pick 2 accepted, pick 3 refused;
 - delayed canonical sequence 1 change after accepted sequence 2;
 - same authority reconnect and replacement authority reset;
+- identity-mismatched responses and notifications invalidating rather than ordering opaque instance IDs;
 - absent old-daemon state.
 
 ### Browser
