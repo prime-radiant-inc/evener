@@ -68,6 +68,16 @@ body {
    * user-agent default. */
   caret-color: var(--accent);
   accent-color: var(--accent);
+  /* A double-tap is two taps, never Safari's zoom-to-fit. manipulation
+   * removes only double-tap zoom: panning and pinch zoom stay, so the
+   * viewport keeps its never-locked zoom (WCAG 1.4.4, viewport-pin.test.ts).
+   * Declared on the top-level body rule, ungated, because a touch screen is
+   * not bounded by the phone query — the iPhone Duo's 951pt inner display in
+   * landscape renders the desktop layout, and double-taps there zoom too.
+   * Component drag gestures (sheet, rail resize, mermaid pan) declare
+   * touch-action: none on their own elements; the intersection keeps those
+   * exactly as they are. */
+  touch-action: manipulation;
 }
 
 ::selection {

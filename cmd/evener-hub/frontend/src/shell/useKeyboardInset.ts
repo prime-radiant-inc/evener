@@ -17,8 +17,9 @@ const VAR_NAME = "--keyboard-inset";
  * offsetTop is subtracted because the visual viewport may also be scrolled
  * away from the layout viewport's top edge; only the remainder hangs past its
  * bottom. Pinch zoom (scale > 1) shrinks the visual viewport without occluding
- * anything, so it reports 0 — and the pinned viewport meta keeps scale at 1 in
- * practice, so this is a guard, not the mechanism.
+ * anything, so it reports 0 — and nothing else moves scale in practice
+ * (fields stay at or above 16px, and the root's touch-action: manipulation
+ * drops double-tap zoom), so this is a guard, not the mechanism.
  */
 export function keyboardInset(vv: Pick<VisualViewport, "height" | "offsetTop" | "scale">, innerHeight: number): number {
   if (Math.abs(vv.scale - 1) > 0.01) return 0;

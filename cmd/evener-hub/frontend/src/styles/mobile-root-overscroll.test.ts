@@ -47,3 +47,23 @@ test("desktop: root overscroll containment is not declared outside the mobile qu
   const withoutMobileBlock = removeMobileMediaBlock(GLOBAL_CSS);
   expect(withoutMobileBlock).not.toContain("overscroll-behavior");
 });
+
+test("the root spends touch-action: manipulation so a double-tap never zooms", () => {
+  // Safari's double-tap zoom-to-fit makes a tap-heavy app feel like it zooms
+  // in and out. manipulation removes only that: panning and pinch zoom stay
+  // (the viewport meta never locks zoom - WCAG 1.4.4, viewport-pin.test.ts).
+  // Declared on the top-level body rule, ungated, because a touch screen is
+  // not bounded by the phone query: the iPhone Duo's 951pt inner display in
+  // landscape renders the desktop layout and double-taps there zoom too.
+  // Component drag gestures (sheet, rail resize, mermaid pan) declare
+  // touch-action: none on their own elements; the intersection with the root
+  // keeps those exactly as they are.
+  const bodyRule = /\nbody \{([^}]*)\}/.exec(GLOBAL_CSS);
+  expect(bodyRule, "global.css must have a top-level body rule").not.toBeNull();
+  expect(bodyRule![1]).toContain("touch-action: manipulation");
+  // It must not migrate into the phone gate: the rule is for every touch
+  // pointer, not only phone widths.
+  const mobile = GLOBAL_CSS.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
+  expect(mobile).not.toBeNull();
+  expect(mobile![1]).not.toContain("touch-action");
+});
