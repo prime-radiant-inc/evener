@@ -324,7 +324,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
+	// Continuation planning can REBUILD req.Messages from the turns it is
+	// given: a delta is expressed relative to an anchor, so a turn present in
+	// the projected messages but absent from this slice is dropped from the
+	// dispatched request. It must therefore see the snapshot this request
+	// projects (presentedTurns), not the earlier capture: a leased round's
+	// snapshot can hold a turn — a parent steer, say — accepted after
+	// historyTurns was taken.
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}

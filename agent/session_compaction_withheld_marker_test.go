@@ -828,6 +828,109 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	}
 }
 
+// TestLeasedRequestKeepsASteerAcceptedAfterTheFirstCapture pins the leased
+// snapshot's reach past history expansion. A leased round expands its request
+// from the controller's own later snapshot, but continuation planning used to
+// be handed the round's FIRST capture. Planning may rebuild the messages from
+// the turns it is given — a delta is expressed relative to an anchor — so a
+// turn present in the expanded request but absent from that earlier capture was
+// dropped from the request the provider received, and the session then marked
+// it consumed.
+//
+// The turn planted here is a message accepted while the round runs, so it can
+// only reach the request through the later snapshot. It is user input rather
+// than a steering turn because a continuation delta is only expressible over
+// the kinds planning accepts, and a steering turn would force full history and
+// leave this window unexercised.
+func TestLeasedRequestKeepsASteerAcceptedAfterTheFirstCapture(t *testing.T) {
+	t.Parallel()
+	const steerText = "opaque-leased-continuation-steer"
+	root, dir := t.TempDir(), t.TempDir()
+	adapter := &agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	}
+	adapter.SetSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("opaque-leased-continuation-result") },
+	})
+	client := llm.NewClient()
+	client.Register(adapter)
+	s := newScriptedSummaryCompactSession(t, "leased-continuation-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque\n[END SUMMARY]")}
+	}, withClient(client), withConfig(SessionConfig{
+		StateDir:        dir,
+		MemoryStateRoot: root,
+		// Continuation must be live, or planning returns before it can rebuild
+		// anything and the window this test opens goes unexercised.
+		OpenAIResponsesContinuation: "auto",
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	}), withStateDir(dir))
+	defer s.Close()
+	drainSessionEvents(s)
+
+	// An eligible anchor, so planning takes the delta path rather than falling
+	// back to full history.
+	anchor := phase9MatchingAnchor("resp_leased_continuation")
+	anchor.Timestamp = time.Now()
+	s.mu.Lock()
+	s.history = append(s.history,
+		schema.NewTurn(schema.TurnUserInput, llm.User("opaque-leased-continuation-pre-anchor")),
+		anchor,
+		// A turn already after the anchor: without it the delta over the
+		// round's first capture is empty and planning falls back to full
+		// history, which carries every message and would hide the defect this
+		// test exists to catch.
+		schema.NewTurn(schema.TurnUserInput, llm.User("opaque-leased-continuation-first-delta-turn")),
+	)
+	s.strategy = nil
+	s.mu.Unlock()
+
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	lease := delegateLease{delegateID: "dlg_target", generation: 1}
+	s.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = s
+	c.live[lease.delegateID].binding.runtime = s
+	c.mu.Unlock()
+
+	// The steer lands after the round's first capture and before its leased
+	// read: exactly the window a stale continuation slice cannot see.
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			s.mu.Lock()
+			s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(steerText)))
+			s.mu.Unlock()
+		}
+	})
+
+	var timings events.RoundTimings
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	_, _, _, req, _, _, err := s.prepareModelRequestWithError(ctx, 0, &timings)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+
+	// The scenario ran only if planning really chose the delta path: on full
+	// history the whole request is present and a dropped steer is impossible.
+	if req.HistoryMode != llm.HistoryModeResponsesDelta {
+		t.Fatalf("history mode = %q, want %q: the request did not take the continuation path this window is about", req.HistoryMode, llm.HistoryModeResponsesDelta)
+	}
+	if !requestMessagesContainText(req.Messages, steerText) {
+		t.Fatal("the leased request dropped a message accepted after the round's first capture: continuation planning rebuilt the messages from the earlier snapshot")
+	}
+}
+
 // TestConsecutiveWithheldFoldsKeepTheConversationCovered pins the retracted
 // frontier's lifetime across two withheld folds. The first fold mints a node
 // and keeps it in the chain as the live-only head. A later fold whose folded
