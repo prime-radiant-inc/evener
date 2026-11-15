@@ -324,6 +324,12 @@ nothing — lineage is the hub's, and an older hub's response must render
 unchanged. The web command palette and the native Board search both render
 from this one implementation.
 
+The root also exports the facts a session-details surface reads off a thread
+(`sessionFacts.ts`): `hostIdOf(ref)`, `sessionHosts(sources, hubName,
+hubConnected)` for a host's name and connection, `accessFacts(session)` for the
+sandbox mode and network setting, and `loadedPluginNames(session)`, which
+returns `null` for an unknown inventory and an empty array for an empty one.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach
