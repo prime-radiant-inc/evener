@@ -5,8 +5,10 @@
 // the sheet, then opens the document in the Reader over the session.
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { bindFilePath } from "@evener/appwire-client/docContent";
+import { useEffect, useRef } from "react";
 import { FlatList, Pressable, Text, View } from "react-native";
 import { fonts } from "../design/tokens";
+import { subscribeNativeIdentities } from "../nativeMutationRuntime";
 import type { Routes } from "../screens";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
@@ -18,6 +20,13 @@ import type { SessionDocument } from "./sessionDocuments";
 
 export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes, "FilesSheet">) {
 	const { hubId, ref, title, cwd, documents } = route.params;
+	const messageRef = useRef(ref);
+	useEffect(() => {
+		messageRef.current = ref;
+		return subscribeNativeIdentities((change) => {
+			if (change.hubId === hubId && change.from === messageRef.current) messageRef.current = change.to;
+		});
+	}, [hubId, ref]);
 	const sheet = useSheet();
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -29,6 +38,7 @@ export function FilesSheet({ route, navigation }: NativeStackScreenProps<Routes,
 			navigation.navigate("Reader", {
 				hubId,
 				sessionRef: ref,
+				...(messageRef.current !== ref ? { messageSessionRef: messageRef.current } : {}),
 				path: reference.path,
 				reference,
 				sessionTitle: title,

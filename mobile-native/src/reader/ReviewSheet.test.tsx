@@ -7,6 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { restoredStack } from "../location";
 import { hasTestID, markers, withTestID } from "../markerTestUtils";
 import { NativeMutationRuntime } from "../nativeMutationRuntime";
 import {
@@ -58,6 +59,8 @@ vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory 
 vi.mock("../nativeMutationRuntime", async (original) => ({
 	...(await original<typeof import("../nativeMutationRuntime")>()),
 	getNativeMutationRuntime: () => harness.runtime,
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) =>
+		(harness.runtime as NativeMutationRuntime).subscribeIdentities(listener),
 }));
 
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";
@@ -66,6 +69,7 @@ const KEY = { sessionRef: "local:fix", path: PATH };
 const PARAMS: {
 	hubId: string;
 	sessionRef: string;
+	messageSessionRef?: string;
 	path: string;
 	sessionTitle: string;
 	root?: "artifacts";
@@ -109,13 +113,13 @@ function storage(): SyncStringStorage {
 	};
 }
 
-const read = (): ThreadReadResponse => ({
-	thread: wireThread("local:fix", {
+const readAt = (ref: string): ThreadReadResponse => ({
+	thread: wireThread(ref, {
 		id: "thread-fix",
 		status: { type: status },
 		turns: [],
 		evener: {
-			ref: "local:fix",
+			ref,
 			instanceId: "instance-fix",
 			capabilities: capabilities(),
 			queue: { revision: 1 },
@@ -124,6 +128,7 @@ const read = (): ThreadReadResponse => ({
 		},
 	}),
 });
+const read = (): ThreadReadResponse => readAt("local:fix");
 
 const applied = (params: unknown): never =>
 	({
@@ -394,6 +399,142 @@ it("sends a review to a paused session by resuming it", async () => {
 	expect(sendDisabled(tree)).toBe(false);
 	await send(tree);
 	expect(mutations()).toEqual(["turn/start"]);
+});
+
+it("returns to the owning conversation after its session resumes elsewhere", async () => {
+	status = "idle";
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readAt("local:fix-2");
+	};
+	const tree = await mount();
+	choose(tree, "Approve");
+	await send(tree);
+	await settle();
+	expect(sheetNavigation.pop).toHaveBeenCalledWith(2);
+	expect(sheetNavigation.navigate).not.toHaveBeenCalled();
+});
+
+it("returns from a restored Reader to the conversation that receives its review", async () => {
+	const resumed = "local:fix-2";
+	const restored = restoredStack({
+		hubId: "studio",
+		conversation: { ref: resumed, title: PARAMS.sessionTitle },
+		reader: {
+			sessionRef: PARAMS.sessionRef,
+			messageSessionRef: resumed,
+			path: PATH,
+			reference: { path: PATH, cwd: "/work/old", readTarget: `/work/old/${PATH}`, provenance: "relative" },
+		},
+	});
+	const routes: { key: string; name: string; params?: object }[] = [
+		...restored.routes.map((route, index) => ({ ...route, key: String(index) })),
+		{ key: "review", name: "ReviewSheet", params: { ...PARAMS, messageSessionRef: resumed } },
+	];
+	let index = routes.length - 1;
+	sheetNavigation.getState = () => ({ index, routes });
+	sheetNavigation.pop.mockImplementation((count: number) => {
+		index -= count;
+		routes.splice(index + 1);
+	});
+	sheetNavigation.navigate.mockImplementation((name: string, params: object) => {
+		routes.push({ key: String(routes.length), name, params });
+		index = routes.length - 1;
+	});
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	runtime.registerTarget("studio", resumed, client);
+	const tree = await mount({ ...PARAMS, messageSessionRef: resumed });
+	choose(tree, "Approve");
+	await send(tree);
+	expect(
+		client.calls.some((call) => call.method === "turn/start" && (call.params as { ref: string }).ref === resumed),
+	).toBe(true);
+	expect(routes[index]?.name).toBe("Conversation");
+	expect(routes[index]?.params).toMatchObject({ ref: resumed });
+});
+
+it("returns from a restored Reader to its owning route when the review resumes the message session again", async () => {
+	const resumed = "local:fix-2";
+	const next = "local:fix-3";
+	const restored = restoredStack({
+		hubId: "studio",
+		conversation: { ref: resumed, title: PARAMS.sessionTitle },
+		reader: {
+			sessionRef: PARAMS.sessionRef,
+			messageSessionRef: resumed,
+			path: PATH,
+			reference: { path: PATH, cwd: "/work/old", readTarget: `/work/old/${PATH}`, provenance: "relative" },
+		},
+	});
+	const routes: { key: string; name: string; params?: object }[] = [
+		...restored.routes.map((route, index) => ({ ...route, key: String(index) })),
+		{ key: "review", name: "ReviewSheet", params: { ...PARAMS, messageSessionRef: resumed } },
+	];
+	let index = routes.length - 1;
+	sheetNavigation.getState = () => ({ index, routes });
+	sheetNavigation.pop.mockImplementation((count: number) => {
+		index -= count;
+		routes.splice(index + 1);
+	});
+	sheetNavigation.navigate.mockImplementation((name: string, params: object) => {
+		routes.push({ key: String(routes.length), name, params });
+		index = routes.length - 1;
+	});
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		const owner = routes.find((route) => route.name === "Conversation");
+		if (owner?.params) Object.assign(owner.params, { pendingIdentity: next });
+		return readAt(next);
+	};
+	runtime.registerTarget("studio", resumed, client);
+	const tree = await mount({ ...PARAMS, messageSessionRef: resumed });
+	choose(tree, "Approve");
+	await send(tree);
+	expect(
+		client.calls.some((call) => call.method === "turn/start" && (call.params as { ref: string }).ref === next),
+	).toBe(true);
+	expect(routes[index]?.name).toBe("Conversation");
+	expect(routes[index]?.params).toMatchObject({ ref: resumed, pendingIdentity: next });
+});
+
+it("keeps a review pending when its send read finishes after the target moves", async () => {
+	resumeRequired = true;
+	client.on("thread/read", (params) => readAt(String((params as { ref: string }).ref)));
+	client.resumeThread = async () => {
+		resumeRequired = false;
+		return readAt("local:fix-2");
+	};
+	const first = await mount();
+	const otherPath = "docs/other.md";
+	const second = await mount({ ...PARAMS, path: otherPath });
+	choose(first, "Approve");
+	choose(second, "Approve");
+	let answer: ((value: ThreadReadResponse) => void) | undefined;
+	let started: (() => void) | undefined;
+	const reading = new Promise<void>((resolve) => (started = resolve));
+	let held = false;
+	client.on("thread/read", (params) => {
+		const ref = String((params as { ref: string }).ref);
+		if (!held) {
+			held = true;
+			started?.();
+			return new Promise<ThreadReadResponse>((resolve) => (answer = resolve));
+		}
+		return readAt(ref);
+	});
+	act(() => sendButton(first)?.props.onPress());
+	await reading;
+	await send(second);
+	await act(async () => answer?.(readAt("local:fix")));
+	await settle();
+	expect(client.calls.filter((call) => call.method.startsWith("turn/"))).toHaveLength(1);
+	expect(memory.comments(KEY)).toHaveLength(2);
+	expect(pressable(first, "Approve")?.props.accessibilityState).toMatchObject({ selected: true });
+	expect(sendDisabled(first)).toBe(false);
 });
 
 it("waits for the connection, and reads again when it returns", async () => {

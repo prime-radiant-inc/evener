@@ -1,4 +1,5 @@
 // Opening a document from outside its session (spec 7.1).
+import { StackActions, StackRouter } from "@react-navigation/routers";
 import { expect, it } from "vitest";
 import { openDocumentInSession } from "./openDocument";
 
@@ -39,4 +40,33 @@ it("opens the document inside its session, so Back lands in the session", () => 
 			},
 		],
 	]);
+});
+
+it("opens a resumed message session under the original document route", () => {
+	const router = StackRouter({ initialRouteName: "Sessions" });
+	const options = { routeNames: ["Sessions", "Conversation", "Reader"], routeParamList: {}, routeGetIdList: {} };
+	let state = router.getInitialState(options);
+	openDocumentInSession(
+		{
+			push: (name: string, params: object) => {
+				const next = router.getStateForAction(state, StackActions.push(name, params), options);
+				if (!next) throw new Error("stack rejected document route");
+				state = router.getRehydratedState(next, options);
+			},
+		} as never,
+		{
+			hubId: "studio",
+			sessionRef: trail.sessionRef,
+			messageSessionRef: "local:fix-2",
+			path: trail.path,
+			reference: trail.reference,
+			sessionTitle: trail.sessionTitle,
+			updatedAt: trail.updatedAt,
+		},
+	);
+	expect(state.routes[1]).toMatchObject({ name: "Conversation", params: { ref: "local:fix-2" } });
+	expect(state.routes[2]).toMatchObject({
+		name: "Reader",
+		params: { sessionRef: "local:fix", messageSessionRef: "local:fix-2", reference: trail.reference },
+	});
 });

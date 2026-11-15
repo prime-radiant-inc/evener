@@ -7,7 +7,7 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { SessionActivityReadParams } from "@evener/appwire-client";
 import { threadActivityFixture } from "./subagents/sessionActivityTestUtils";
-import { CommonActions, StackRouter } from "@react-navigation/routers";
+import { CommonActions, StackActions, StackRouter } from "@react-navigation/routers";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -44,9 +44,22 @@ import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
 import { archivedListStoreFor } from "./archivedLists";
+import { activeConversation } from "./navigationRoutes";
+import type { NavigationState } from "@react-navigation/native";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
+	identities: [] as ((change: { hubId: string; from: string; to: string }) => void)[],
+}));
+
+vi.mock("./nativeMutationRuntime", async (original) => ({
+	...(await original<typeof import("./nativeMutationRuntime")>()),
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+		harness.identities.push(listener);
+		return () => {
+			harness.identities = harness.identities.filter((entry) => entry !== listener);
+		};
+	},
 }));
 
 // The root stack the screen sits in: whether it is focused, and the routes.
@@ -206,6 +219,7 @@ const navigation = {
 	pop: vi.fn(),
 	goBack: vi.fn(),
 	setParams: vi.fn(),
+	replace: vi.fn(),
 	setOptions: vi.fn(),
 };
 
@@ -312,10 +326,13 @@ beforeEach(({ onTestFinished }) => {
 beforeEach(() => {
 	stack.focused = true;
 	stack.state = { index: 0, routes: [session] };
+	harness.identities = [];
 	navigation.navigate.mockClear();
 	navigation.push.mockClear();
 	navigation.pop.mockClear();
 	navigation.goBack.mockReset();
+	navigation.replace.mockReset();
+	navigation.setParams.mockReset();
 	navigation.setOptions.mockClear();
 	alertRequests.length = 0;
 	listScrolls.length = 0;
@@ -357,6 +374,94 @@ function levelAction(label: string): NativeStackHeaderItemMenuAction {
 const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]>): Thread => ({
 	...thread,
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
+});
+
+it("carries a covered conversation's identity through a Duo fold and reconstruction", async () => {
+	stack.state = {
+		index: 1,
+		routes: [{ ...session, params: route.params } as typeof session, { key: "notes", name: "NotesSheet" }],
+	};
+	let foldedParams: ConversationScreenProps["route"]["params"] = route.params;
+	navigation.setParams.mockImplementation((params) => {
+		const current = stack.state.routes[0];
+		stack.state.routes[0] = { ...current, params: { ...foldedParams, ...params } } as typeof current;
+	});
+	const { tree } = mount();
+	await settle();
+	act(() => {
+		for (const listener of harness.identities) listener({ hubId: "hub-1", from: ref, to: "local:resumed" });
+	});
+	await settle();
+	const outer = {
+		index: 0,
+		routes: [{ key: "sessions", name: "Sessions", state: stack.state }],
+	} as unknown as NavigationState;
+	const active = activeConversation(outer);
+	expect(active?.ref).toBe(ref);
+	expect(active?.pendingIdentity).toBe("local:resumed");
+	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.messageRef()).toBe("local:resumed");
+	if (!active) throw new Error("the Duo did not retain its conversation");
+	foldedParams = active;
+	act(() => tree.unmount());
+	stack.state = { index: 0, routes: [{ ...session, params: foldedParams } as typeof session] };
+	navigation.replace.mockImplementation((_name, params) => {
+		stack.state.routes[0] = { ...session, params } as typeof session;
+	});
+	const reconstructed = render(
+		<SessionScreen
+			route={{ ...route, params: foldedParams }}
+			navigation={navigation as unknown as ConversationScreenProps["navigation"]}
+		/>,
+	);
+	await settle();
+	expect((stack.state.routes[0] as unknown as { params: { ref: string } }).params.ref).toBe("local:resumed");
+	act(() => reconstructed.unmount());
+});
+
+it("keeps a Reader on top when its conversation resumes before rerendering", async () => {
+	const router = StackRouter({ initialRouteName: "Conversation" });
+	const options = { routeNames: ["Conversation", "Reader"], routeParamList: {}, routeGetIdList: {} };
+	let state = router.getInitialState(options);
+	const conversation = { ...route, key: state.routes[0].key };
+	const withParams = router.getStateForAction(state, CommonActions.setParams(route.params), options);
+	if (!withParams) throw new Error("stack rejected session params");
+	state = router.getRehydratedState(withParams, options);
+	stack.state = state as typeof stack.state;
+	const dispatch = (action: Parameters<typeof router.getStateForAction>[1]) => {
+		const next = router.getStateForAction(state, action, options);
+		if (!next) throw new Error("stack rejected action");
+		state = router.getRehydratedState(next, options);
+		stack.state = state as typeof stack.state;
+	};
+	navigation.replace.mockImplementation((name, params) => dispatch(StackActions.replace(name, params)));
+	navigation.setParams.mockImplementation((params) =>
+		dispatch({ ...CommonActions.setParams(params), source: conversation.key }),
+	);
+	const { client } = sessionClient(thread, {});
+	harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+	const screenView = () => (
+		<SessionScreen route={conversation} navigation={navigation as unknown as ConversationScreenProps["navigation"]} />
+	);
+	const tree = render(screenView());
+	try {
+		await settle();
+		dispatch(StackActions.push("Reader", { hubId: "hub-1", sessionRef: ref, title: "Reader" }));
+		// The navigation state changes before React rerenders the covered conversation.
+		act(() => {
+			for (const listener of harness.identities) listener({ hubId: "hub-1", from: ref, to: "local:resumed" });
+			for (const listener of harness.identities)
+				listener({ hubId: "hub-1", from: "local:resumed", to: "local:resumed-again" });
+		});
+		expect(state.routes.map((entry) => entry.name)).toEqual(["Conversation", "Reader"]);
+		expect(state.routes[0].params).toMatchObject({ ref, pendingIdentity: "local:resumed-again" });
+		act(() => tree.update(screenView()));
+		dispatch(CommonActions.goBack());
+		act(() => tree.update(screenView()));
+		expect(state.routes).toHaveLength(1);
+		expect(state.routes[0].params).toMatchObject({ ref: "local:resumed-again" });
+	} finally {
+		act(() => tree.unmount());
+	}
 });
 
 // A session with shell jobs and no subagents has a Jobs list too, and the

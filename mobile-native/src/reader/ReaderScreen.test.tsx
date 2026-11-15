@@ -14,6 +14,7 @@ import { FlatList } from "react-native";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { locationForRoute, restoredStack } from "../location";
 import { markers, withTestID } from "../markerTestUtils";
 import {
 	alertRequests,
@@ -30,6 +31,7 @@ import {
 	untilRendered,
 } from "../renderNative.testkit";
 import { sheetKey } from "../sheet/sheetHosts";
+import { takeQuote } from "../session/pendingQuote";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { documentBlocks } from "./documentBlocks";
 import { DocumentMemory } from "./documentMemory";
@@ -63,6 +65,9 @@ const sheetNavigation = vi.hoisted(() => ({
 }));
 const stack = vi.hoisted(() => ({
 	state: { index: 2, routes: [] as { key: string; name: string; params?: object }[] },
+}));
+const identity = vi.hoisted(() => ({
+	listeners: [] as ((change: { hubId: string; from: string; to: string }) => void)[],
 }));
 
 vi.mock("react-native", async () => ({
@@ -127,6 +132,16 @@ vi.mock("expo-secure-store", () => ({
 }));
 // SessionLink's module also holds the durable outbox, which opens sqlite.
 vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("../nativeMutationRuntime", async (original) => ({
+	...(await original<typeof import("../nativeMutationRuntime")>()),
+	subscribeNativeIdentities: (listener: (change: { hubId: string; from: string; to: string }) => void) => {
+		identity.listeners.push(listener);
+		return () => {
+			const index = identity.listeners.indexOf(listener);
+			if (index >= 0) identity.listeners.splice(index, 1);
+		};
+	},
+}));
 vi.mock("../alerts/alertsContext", () => ({
 	useHoldAlerts: (active: boolean, kind: string) => alerts.holds.push([active, kind]),
 	useHeldAlertCount: () => alerts.held,
@@ -191,6 +206,7 @@ beforeEach(() => {
 	harness.shares = [];
 	harness.shareFailure = null;
 	harness.appState = [];
+	identity.listeners = [];
 	served = { [PATH]: { body: PLAN } };
 	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 		const url = new URL(String(input));
@@ -675,6 +691,27 @@ it("remembers where you were and what you read when you leave, and leaves the wa
 	});
 });
 
+it("remembers the resumed message target separately when leaving a partial document", async () => {
+	const { tree } = await mount();
+	const list = documentList(tree);
+	act(() => list.props.onViewableItemsChanged({ viewableItems: [{ index: 1 }], changed: [] }));
+	act(() =>
+		list.props.onMomentumScrollEnd({
+			nativeEvent: { contentOffset: { y: 100 }, layoutMeasurement: { height: 400 }, contentSize: { height: 1000 } },
+		}),
+	);
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await settle();
+	act(() => tree.unmount());
+	expect(memory.continueReading()).toMatchObject({
+		sessionRef: "local:fix",
+		messageSessionRef: "local:fix-2",
+		path: PATH,
+	});
+});
+
 it("keeps the visible reading position when another viewability token has no index", async () => {
 	const { tree } = await mount();
 	const list = documentList(tree);
@@ -839,6 +876,182 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(harness.clipboard.at(-1)).toBe(PLAN);
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
+});
+
+it("pops to the conversation that owns the reader after its identity changes", async () => {
+	const { navigation } = await mount();
+	const listener = identity.listeners.at(-1);
+	if (!listener) throw new Error("the reader did not subscribe to identity changes");
+	act(() => listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" }));
+	act(() => listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" }));
+	await settle();
+	menuAction(navigation, "Open session").onPress();
+	expect(navigation.pop).toHaveBeenCalledWith(1);
+	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("returns from a restored Reader to its covered owner after another resume", async () => {
+	stack.state.routes[1] = {
+		key: "fix",
+		name: "Conversation",
+		params: { hubId: "studio", ref: "local:fix-2", pendingIdentity: "local:fix-3", title: "Fix race" },
+	};
+	const { navigation } = await mount(PATH, { messageSessionRef: "local:fix-2" });
+	const listener = identity.listeners.at(-1);
+	if (!listener) throw new Error("the reader did not subscribe to identity changes");
+	act(() => listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" }));
+	await settle();
+	navigation.pop.mockImplementation((count: number) => {
+		stack.state.index -= count;
+		stack.state.routes.splice(stack.state.index + 1);
+	});
+	navigation.navigate.mockImplementation((name: string, params: object) => {
+		stack.state.routes.push({ key: String(stack.state.routes.length), name, params });
+		stack.state.index = stack.state.routes.length - 1;
+	});
+	menuAction(navigation, "Open session").onPress();
+	expect(stack.state.routes[stack.state.index]).toMatchObject({
+		name: "Conversation",
+		params: { ref: "local:fix-2", pendingIdentity: "local:fix-3" },
+	});
+	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("saves a Reader's resumed message identity while keeping its original document", async () => {
+	const { navigation, params } = await mount();
+	navigation.setParams.mockImplementation((next) => Object.assign(params, next));
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await settle();
+	const saved = locationForRoute({ name: "Reader", params }, "studio");
+	expect(restoredStack(saved).routes.at(-1)?.params).toMatchObject({
+		sessionRef: "local:fix",
+		messageSessionRef: "local:fix-2",
+	});
+});
+
+it("uses the owning conversation's pending identity when a resume precedes reader mount", async () => {
+	stack.state.routes[1] = {
+		key: "fix",
+		name: "Conversation",
+		params: { hubId: "studio", ref: "local:fix", pendingIdentity: "local:fix-2", title: "Fix race" },
+	};
+	const { tree } = await mount();
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	act(() =>
+		documentList(tree)
+			.props.renderItem({ item: { kind: "block", block } })
+			.props.onAction("quote", block),
+	);
+	expect(takeQuote("studio", "local:fix-2")).toBe(block.text);
+	expect(takeQuote("studio", "local:fix")).toBeNull();
+});
+
+it("keeps the latest message target when route params lag two identity changes", async () => {
+	const { tree, navigation, params, rerender } = await mount();
+	const writes: { messageSessionRef?: string }[] = [];
+	navigation.setParams.mockImplementation((next) => writes.push(next));
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await settle();
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix-2", to: "local:fix-3" });
+	});
+	await settle();
+	Object.assign(params, writes[0]);
+	await rerender();
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	const row = documentList(tree).props.renderItem({ item: { kind: "block", block } });
+	act(() => row.props.onAction("quote", block));
+	expect(takeQuote("studio", "local:fix-3")).toBe(block.text);
+});
+
+it("returns a quote to the covered Subagent route while holding it for the resumed identity", async () => {
+	stack.state = {
+		index: 3,
+		routes: [
+			{ key: "board", name: "Sessions" },
+			{ key: "coordinator", name: "Conversation", params: { hubId: "studio", ref: "local:coordinator" } },
+			{ key: "fix", name: "Subagent", params: { hubId: "studio", ref: "local:fix" } },
+			{ key: "reader-1", name: "Reader" },
+		],
+	};
+	const { tree, navigation } = await mount();
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	const row = documentList(tree).props.renderItem({ item: { kind: "block", block } });
+	act(() => row.props.onAction("quote", block));
+	expect(takeQuote("studio", "local:fix-2")).toBe(block.text);
+	expect(navigation.pop).toHaveBeenCalledWith(1);
+	expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("opens the resumed conversation when the reader has no owning session route", async () => {
+	stack.state = {
+		index: 1,
+		routes: [
+			{ key: "board", name: "Sessions" },
+			{ key: "reader-1", name: "Reader" },
+		],
+	};
+	const { navigation } = await mount(PATH, { messageSessionRef: "local:fix-2" });
+	menuAction(navigation, "Open session").onPress();
+	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
+		hubId: "studio",
+		ref: "local:fix-2",
+		title: "Fix race",
+	});
+	expect(navigation.pop).not.toHaveBeenCalled();
+});
+
+it("keeps the document in its original cwd when the message session resumes elsewhere", async () => {
+	client.on("thread/read", ({ ref }) => ({
+		thread: {
+			...threadRead("idle").thread,
+			cwd: ref === "local:fix-2" ? "/work/resumed" : "/work/a",
+			evener: { ...threadRead("idle").thread.evener, ref: ref ?? "local:fix" },
+		},
+	}));
+	await mount();
+	act(() => {
+		for (const listener of identity.listeners) listener({ hubId: "studio", from: "local:fix", to: "local:fix-2" });
+	});
+	await untilRendered(() =>
+		expect(
+			client.calls.some(
+				(call) => call.method === "thread/read" && (call.params as { ref: string }).ref === "local:fix-2",
+			),
+		).toBe(true),
+	);
+	await settle();
+	expect(fetchSpy).toHaveBeenCalled();
+	expect(
+		fetchSpy.mock.calls.every(
+			([input]: unknown[]) => new URL(String(input)).searchParams.get("path") === `/work/a/${PATH}`,
+		),
+	).toBe(true);
+});
+
+it("uses the resolved message target passed by a document opener without changing its document key", async () => {
+	const { tree } = await mount(PATH, { messageSessionRef: "local:fix-2" });
+	const reads = client.calls.filter((call) => call.method === "thread/read");
+	expect(reads.some((call) => (call.params as { ref: string }).ref === "local:fix-2")).toBe(true);
+	const block = documentBlocks(PLAN)[1];
+	if (!block) throw new Error("the document did not have a paragraph");
+	const row = documentList(tree).props.renderItem({ item: { kind: "block", block } });
+	act(() => row.props.onAction("quote", block));
+	expect(takeQuote("studio", "local:fix-2")).toBe(block.text);
+	expect(takeQuote("studio", "local:fix")).toBeNull();
+	act(() => trees.pop()?.unmount());
+	expect(memory.lastRead(KEY)).not.toBeNull();
+	expect(memory.lastRead({ sessionRef: "local:fix-2", path: PATH })).toBeNull();
 });
 
 // A retained artifact's folder-relative path names a different file when pasted
