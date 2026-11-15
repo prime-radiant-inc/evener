@@ -1544,6 +1544,77 @@ test("a frame for a delegate created after a walk's membership froze is read onc
   expect(row?.reportPreview).toBe("settled");
 });
 
+// A view that releases the collection while the walk a buffered frame waits
+// on is settling (a listener unsubscribing the last observer as the walk's
+// final page publishes) takes the owed follow-up read with it: the frames
+// stay buffered for whoever observes next, and an unobserved collection
+// neither issues that read nor publishes its page.
+test("a release during the walk's settling publish takes the follow-up read with it", async () => {
+  const client = pushClient();
+  const store = owner(client);
+  const leave = store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+  const continuation = deferred<SessionDelegatesResponse>();
+  let admitted = false;
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => {
+    if (cursor) return continuation.promise;
+    return admitted
+      ? {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: true, issues: [] },
+          delegates: [
+            delegateRow({ delegateId: "delegate-2", childRef: "remote:delegate-2", status: "running" }),
+            delegateRow({ status: "running" }),
+          ],
+        }
+      : {
+          context: pushContext(),
+          scope: scope ?? "session",
+          page: { complete: false, issues: [], nextCursor: "next" },
+          delegates: [delegateRow({ delegateId: "delegate-3", childRef: "remote:delegate-3", status: "running" })],
+        };
+  });
+  const refreshed = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(store.getSnapshot().delegates.loading).toBe(true);
+  // The walk froze its membership before this delegate existed, so its pages
+  // cannot serve the row: the frame is buffered, and one read is owed once
+  // the walk finishes.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        delegateId: "delegate-2",
+        childRef: "remote:delegate-2",
+        projectionRevision: 9,
+        status: "failed",
+        reportPreview: "settled",
+      }),
+    ),
+  );
+  admitted = true;
+  const settling = store.getSnapshot().delegates;
+  let released = 0;
+  const stop = store.subscribe(() => {
+    if (store.getSnapshot().delegates !== settling) {
+      stop();
+      released = callsTo(client, "evener/thread/delegates/list");
+      leave();
+    }
+  });
+  continuation.resolve({
+    context: pushContext(),
+    scope: "session",
+    page: { complete: true, issues: [] },
+    delegates: [delegateRow({ status: "running" })],
+  });
+  await vi.advanceTimersByTimeAsync(200);
+  await refreshed;
+  stop();
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(released);
+  expect(store.getSnapshot().delegates.rows.find((row) => row.delegateId === "delegate-2")).toBeUndefined();
+});
+
 test("repeated frames for an identity no walk can admit defer one follow-up read in total", async () => {
   const client = pushClient();
   let hold: 0 | 1 | 2 = 0;

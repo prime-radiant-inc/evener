@@ -645,11 +645,24 @@ export class SessionActivityStore {
           });
           if (resource === "delegates") {
             this.settleBufferedFrames();
+            // A read whose collection lost its last observer -- a listener
+            // can release it during the publish above -- is dropped from here
+            // on: it may not schedule the follow-up read either, or the
+            // loop's own condition would fetch and publish a page nobody
+            // observes.
+            if (dropped()) continue;
             // A frame buffered during a walk named a row that walk's frozen
             // membership could not serve. The walk is over and no page it
             // served could place it, so the frames still buffered are owed
-            // the one coalesced read that can admit their rows.
-            if (this.followUpDelegateRead && read.refresh === null && this.bufferedUnknownDelegates.size > 0) {
+            // the one coalesced read that can admit their rows -- but only
+            // while something still asks for the collection: a released
+            // collection leaves its frames buffered, not reading.
+            if (
+              this.followUpDelegateRead &&
+              read.refresh === null &&
+              this.bufferedUnknownDelegates.size > 0 &&
+              (read.observers > 0 || read.oneShot)
+            ) {
               this.followUpDelegateRead = false;
               read.rootQueued = true;
             }
