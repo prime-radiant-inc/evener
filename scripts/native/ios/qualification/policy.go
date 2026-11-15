@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -20,6 +22,11 @@ var (
 	errLockMismatch = errors.New("CocoaPods resolution differs from the committed lock")
 	errIdentity     = errors.New("native bundle identity or capability is invalid")
 	errMacRequired  = errors.New("iOS qualification requires macOS, Xcode, simctl, codesign and CocoaPods")
+	// errPodRefusalName is a changed-local-podspec refusal naming a pod the
+	// committed lock does not declare under EXTERNAL SOURCES. Unlocking it
+	// would move a registry pod, so the resolver surfaces it instead.
+	errPodRefusalName  = errors.New("CocoaPods named a pod the committed lock does not declare as local")
+	errPodRefusalStuck = errors.New("CocoaPods repeated a changed-local-podspec refusal with no new pod")
 )
 
 // generatedProjectFile is the one generated file whose identity is its complete
@@ -52,6 +59,27 @@ func canonicalProjectCommand(script, native, project, canonical string) []string
 func podUnlockNeeded(installLog []byte) bool {
 	return strings.Contains(string(installLog),
 		"It seems like you've changed the version of the dependency")
+}
+
+// changedPodRefusal names the pod in one refusal sentence. CocoaPods prints the
+// pod name in backticks on the "changed the version of the dependency" line;
+// the surrounding compatibility block is not a reliable source because it also
+// names the pod in a "could not find compatible versions" heading.
+var changedPodRefusal = regexp.MustCompile("changed the version of the dependency `([^`\n]+)`")
+
+// podRefusalNames returns the local pods CocoaPods named as changed, in the
+// order it named them, without duplicates. CocoaPods names one pod per refusal
+// in practice and refuses again for the next one after an update, so the
+// caller repeats until a refusal names nothing new.
+func podRefusalNames(installLog []byte) []string {
+	var names []string
+	for _, match := range changedPodRefusal.FindAllSubmatch(installLog, -1) {
+		name := strings.TrimSpace(string(match[1]))
+		if name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // localPodNames returns the local development pods the committed lock declares
@@ -89,11 +117,9 @@ func localPodNames(lock []byte) []string {
 	return names
 }
 
-// podUnlockCommand re-resolves the local development pods the lock declares —
-// every one of them, not only the pod the refusal names, because the closure
-// the named pod needs is not derivable from the refusal text. Registry pins
-// reachable only through those local pods may move with their parents, so the
-// candidate diff is reviewed before it is applied.
+// podUnlockCommand re-resolves the local development pods the refusal named.
+// Registry pins reachable only through those local pods may move with their
+// parents, so the candidate diff is reviewed before it is applied.
 func podUnlockCommand(names []string) []string {
 	args := append([]string{"bundle", "exec", "pod", "update"}, names...)
 	return append(args, "--no-repo-update", "--project-directory=ios")

@@ -78,7 +78,7 @@ func testPluginRevisionPreservation(t *testing.T, migrate bool) {
 	observed := filepath.Join(root, "hook-output")
 	script := "#!/bin/sh\ncat \"$CLAUDE_PLUGIN_ROOT/resources/companion.bin\" > \"" + observed + "\"\n"
 	revisionFile(t, pluginRepo, "scripts/probe.sh", []byte(script), 0o755)
-	revisionFile(t, pluginRepo, "hooks/hooks.json", []byte(`{"hooks":{"PreToolUse":[{"matcher":"use_skill","hooks":[{"type":"command","command":"${CLAUDE_PLUGIN_ROOT}/scripts/probe.sh"}]}]}}`), 0o644)
+	revisionFile(t, pluginRepo, "hooks/hooks.json", []byte(`{"hooks":{"PreToolUse":[{"matcher":"Skill","hooks":[{"type":"command","command":"${CLAUDE_PLUGIN_ROOT}/scripts/probe.sh"}]}]}}`), 0o644)
 	revisionGit(t, pluginRepo, "init", "-q")
 	revisionGit(t, pluginRepo, "add", ".")
 	revisionGit(t, pluginRepo, "commit", "-qm", "A")

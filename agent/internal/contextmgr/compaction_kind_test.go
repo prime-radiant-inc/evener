@@ -38,14 +38,11 @@ func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -79,26 +76,20 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 func TestSummarizeWithLLM_RoutesToCheapProvider(t *testing.T) {
 	// A cross-provider cheap model summarizes on the cheap provider; the active
 	// model remains the fallback on its own (main) provider.
-	mainAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				t.Errorf("summarizer routed to active provider %q, want cheap provider anthropic", req.Provider)
-				return llm.Response{Message: llm.Assistant("wrong")}
-			},
+	mainAdapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			t.Errorf("summarizer routed to active provider %q, want cheap provider anthropic", req.Provider)
+			return llm.Response{Message: llm.Assistant("wrong")}
 		},
-	}
-	cheapAdapter := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.Provider != "anthropic" || req.Model != "claude-haiku-4-5-20251001" {
-					t.Fatalf("cheap call = (%q, %q), want (anthropic, claude-haiku-4-5-20251001)", req.Provider, req.Model)
-				}
-				return llm.Response{Message: llm.Assistant("## Progress\nSummary: routed to cheap")}
-			},
+	})
+	cheapAdapter := newFakeAdapter("anthropic", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			if req.Provider != "anthropic" || req.Model != "claude-haiku-4-5-20251001" {
+				t.Fatalf("cheap call = (%q, %q), want (anthropic, claude-haiku-4-5-20251001)", req.Provider, req.Model)
+			}
+			return llm.Response{Message: llm.Assistant("## Progress\nSummary: routed to cheap")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(mainAdapter)
 	client.Register(cheapAdapter)
@@ -193,15 +184,12 @@ func TestSummarizeWithLLM_ResummarizingKeepsThePreviousSummary(t *testing.T) {
 func resummarizePrompt(t *testing.T, previous string) string {
 	t.Helper()
 	var prompt string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				prompt = req.Messages[0].Text()
-				return llm.Response{Message: llm.Assistant("## Progress\nre-summarized")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			prompt = req.Messages[0].Text()
+			return llm.Response{Message: llm.Assistant("## Progress\nre-summarized")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
@@ -229,7 +217,7 @@ func TestForceCompact_SecondCompactionSeesTheFirstSummary(t *testing.T) {
 		prompts = append(prompts, req.Messages[0].Text())
 		return llm.Response{Message: llm.Assistant("## " + summarySections[0] + "\nFIRST_SUMMARY_QUOTE_SENTINEL\n\n## Progress\nfirst summary")}
 	}
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{summarize, summarize}}
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{summarize, summarize})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 100_000), client, cheapmodel.New(client))
@@ -379,7 +367,7 @@ func TestForceCompact_SummarizerSeesTheWholeCheckpoint(t *testing.T) {
 		prompts = append(prompts, req.Messages[0].Text())
 		return llm.Response{Message: llm.Assistant("## Progress\n" + strings.Repeat("earlier work ", 2000))}
 	}
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{summarize, summarize}}
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{summarize, summarize})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(testProfile("openai", "test", 1_000_000), client, cheapmodel.New(client))

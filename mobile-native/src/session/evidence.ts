@@ -11,8 +11,8 @@ import {
 	diffStats,
 	editDiffText,
 	filePathOf,
-	jobStatusDisplay,
 	freshNotes,
+	jobStatusDisplay,
 	lineCount,
 	memoryFileTarget,
 	memoryWritePage,
@@ -190,7 +190,7 @@ function outputEvidence(label: string, detail: EvidenceSource["detail"]): Eviden
 			const job = toolJSONResult(text);
 			const status = job ? str(job, "status") : undefined;
 			if (!job || !status) return rawOutput(text);
-			const description = str(job, "description");
+			const description = str(job, "description") ?? str(job, "task");
 			const line = jobStatusDisplay(status, str(job, "reason"));
 			return rawOutput(description ? `${line} — ${description}` : line);
 		}

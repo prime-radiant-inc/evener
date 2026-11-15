@@ -27,6 +27,39 @@ func TestW2Conc_FireProgressTickClosingBails(t *testing.T) {
 	}
 }
 
+// TestW2Conc_FireProgressTickClearRace tests concurrent fireProgressTick and clearWatchByID.
+func TestW2Conc_FireProgressTickClearRace(t *testing.T) {
+	t.Parallel()
+	for range 50 {
+		jm := newTestJM(t)
+		res, err := jm.configureWatch(watchArgs{
+			Operation:     "create",
+			Source:        "self",
+			Target:        "self",
+			RepeatSeconds: 60,
+		})
+		if err != nil {
+			t.Fatalf("configureWatch: %v", err)
+		}
+		cfg := jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: res.WatchID}]
+		key := watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: res.WatchID}
+
+		done := make(chan struct{})
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					jm.fireProgressTick(key, cfg)
+				}
+			}
+		}()
+		_, _ = jm.clearWatchByID(res.WatchID)
+		close(done)
+	}
+}
+
 // TestW2Conc_FireProgressTickStaleConfigBails pins the config-mismatch guard: a
 // tick whose config no longer occupies its key (cleared/replaced) bails false.
 func TestW2Conc_FireProgressTickStaleConfigBails(t *testing.T) {

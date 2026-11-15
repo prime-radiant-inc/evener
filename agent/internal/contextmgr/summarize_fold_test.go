@@ -15,31 +15,28 @@ import (
 )
 
 func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				// Without an explicitly configured compaction model, summarize on
-				// the active session model. This avoids provider-default auxiliary
-				// models that may be unavailable for the account type.
-				if req.Model != "gpt-5.2" {
-					t.Errorf("expected active model gpt-5.2, got %q", req.Model)
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			// Without an explicitly configured compaction model, summarize on
+			// the active session model. This avoids provider-default auxiliary
+			// models that may be unavailable for the account type.
+			if req.Model != "gpt-5.2" {
+				t.Errorf("expected active model gpt-5.2, got %q", req.Model)
+			}
+			// Verify the prompt asks for compaction/summarization.
+			found := false
+			for _, m := range req.Messages {
+				text := m.Text()
+				if strings.Contains(text, "COMPACTION") || strings.Contains(text, "handoff summary") {
+					found = true
 				}
-				// Verify the prompt asks for compaction/summarization.
-				found := false
-				for _, m := range req.Messages {
-					text := m.Text()
-					if strings.Contains(text, "COMPACTION") || strings.Contains(text, "handoff summary") {
-						found = true
-					}
-				}
-				if !found {
-					t.Error("expected compaction/handoff prompt")
-				}
-				return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
-			},
+			}
+			if !found {
+				t.Error("expected compaction/handoff prompt")
+			}
+			return llm.Response{Message: llm.Assistant("## Progress\nSummary: fixed auth bug")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -65,9 +62,9 @@ func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_UsesConfiguredCompactionModel(t *testing.T) {
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("## Progress\nsummary")} },
-	}}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -195,14 +192,11 @@ func (a *fallbackSummaryAdapter) Stream(ctx context.Context, req llm.Request) (l
 }
 
 func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nSummary of work done")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\nSummary of work done")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -233,14 +227,11 @@ func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -291,14 +282,11 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 }
 
 func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
@@ -329,17 +317,14 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 // H4: summarizeFold should truncate the prompt to avoid exceeding the cheap model's context.
 func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 	var receivedPromptLen int
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				for _, m := range req.Messages {
-					receivedPromptLen += len(m.Text())
-				}
-				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			for _, m := range req.Messages {
+				receivedPromptLen += len(m.Text())
+			}
+			return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
@@ -365,19 +350,16 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 
 func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) {
 	var prompt string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				var promptSb1365 strings.Builder
-				for _, m := range req.Messages {
-					promptSb1365.WriteString(m.Text())
-				}
-				prompt += promptSb1365.String()
-				return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			var promptSb1365 strings.Builder
+			for _, m := range req.Messages {
+				promptSb1365.WriteString(m.Text())
+			}
+			prompt += promptSb1365.String()
+			return llm.Response{Message: llm.Assistant("## Progress\nsummary")}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))
@@ -522,15 +504,12 @@ func TestAttentionResolutionDoesNotConsumeContextBudgetOrRecentSlots(t *testing.
 }
 
 func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				t.Fatal("LLM should not be called when safeCutoff returns -1")
-				return llm.Response{}
-			},
+	adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			t.Fatal("LLM should not be called when safeCutoff returns -1")
+			return llm.Response{}
 		},
-	}
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), client, cheapmodel.New(client))

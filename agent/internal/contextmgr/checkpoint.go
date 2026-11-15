@@ -84,8 +84,9 @@ type checkpointData struct {
 // for conversation or working notes.
 //
 // This is the deterministic checkpoint's carry, which the default compaction
-// paths use. Opt-in strategies that write their own checkpoints (session-log,
-// OODA) do not carry earlier summaries yet; that gap is tracked in #4181.
+// paths use. The opt-in session-log strategy, and OODA which embeds it, now
+// carries the partner conversation in the same section, but not earlier
+// summaries.
 func (d *checkpointData) collectCompaction(text string, summary bool) {
 	if summary {
 		if !carriesPartnerMessages(text) {

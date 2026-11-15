@@ -53,6 +53,20 @@ const LIVE_SECTION: NavigationSectionResource = {
       branch: "main",
     }),
     session({ ref: "ref_failed", title: "Refactor the job scheduler", state: "errored", branch: "refactor/scheduler" }),
+    session({ ref: "ref_approval", title: "Bump the release tooling", state: "active", approval_pending: true }),
+    session({
+      ref: "ref_job",
+      title: "Run the migration suite",
+      state: "active",
+      running_job_count: 1,
+      running_job_command: "go test ./internal/migrate/...",
+    }),
+    session({
+      ref: "ref_subagents",
+      title: "Audit the plugin loaders",
+      state: "active",
+      subagents: { running: 3, failed: 0, done: 1 },
+    }),
     session({ ref: "ref_idle", title: "Write docs for the new gallery route", state: "idle" }),
     session({ ref: "ref_dormant", title: "Untitled session", state: "idle", dormant: true }),
   ],
@@ -196,8 +210,8 @@ export default function RailSurfaceSection() {
       <h2>Rail</h2>
       <p className={styles.note}>
         Real Rail, with navigationStore seeded directly (fixture navigation resources — no network). Live sessions in
-        different states: working, needs-you (a pending question), failed, idle, dormant, plus one nested under a
-        project.
+        attention bands: needs-you (failed, a pending question, a pending approval), working (plain, running a job,
+        waiting on subagents) and idle (rested, dormant), plus one nested under a project.
       </p>
       <ThemeFlip>
         <ClientProvider client={new FakeClient()}>

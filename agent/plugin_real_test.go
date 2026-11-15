@@ -697,6 +697,7 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 		"WebFetch":     "web_fetch",
 		"WebSearch":    "web_search",
 		"NotebookEdit": "notebook_edit",
+		"Skill":        "use_skill",
 	}
 
 	for claude, evener := range mappings {

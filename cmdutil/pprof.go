@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -25,7 +26,7 @@ import (
 //
 // The handlers live on a private mux. Importing net/http/pprof also registers
 // them on http.DefaultServeMux, which no Evener server serves.
-func StartLivePprof(logf func(format string, args ...any)) (indexURL string, stop func(), err error) {
+func StartLivePprof(log *slog.Logger) (indexURL string, stop func(), err error) {
 	want := envvars.EVENERPprofAddr.Trimmed()
 	if want == "" {
 		return "", func() {}, nil
@@ -36,7 +37,7 @@ func StartLivePprof(logf func(format string, args ...any)) (indexURL string, sto
 	var lc net.ListenConfig
 	ln, err := lc.Listen(context.Background(), "tcp", want)
 	if err != nil {
-		logf("warning: running without pprof: %s=%q: %v", envvars.EVENERPprofAddr.Name, want, err)
+		log.Warn("running without pprof", "env", envvars.EVENERPprofAddr.Name, "value", want, "err", err)
 		return "", func() {}, nil
 	}
 	mux := http.NewServeMux()
@@ -48,7 +49,7 @@ func StartLivePprof(logf func(format string, args ...any)) (indexURL string, sto
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	indexURL = "http://" + ln.Addr().String() + "/debug/pprof/"
-	logf("pprof listening on %s", indexURL)
+	log.Info("pprof listening", "url", indexURL)
 	return indexURL, func() { _ = srv.Close() }, nil
 }
 

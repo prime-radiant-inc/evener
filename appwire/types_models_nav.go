@@ -326,6 +326,7 @@ type ModelDescriptor struct {
 	DisplayName           string   `json:"displayName,omitempty"`
 	ContextWindow         *int     `json:"contextWindow,omitempty"`
 	MaxInputTokens        *int     `json:"maxInputTokens,omitempty"`
+	CompactionThreshold   *int     `json:"compactionThreshold,omitempty"`
 	SupportsTools         *bool    `json:"supportsTools,omitempty"`
 	SupportsVision        *bool    `json:"supportsVision,omitempty"`
 	MaxOutputTokens       *int     `json:"maxOutputTokens,omitempty"`

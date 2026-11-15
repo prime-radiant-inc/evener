@@ -489,6 +489,11 @@ async function measureComposerFooter(cdpEndpoint, url, width, safeAreaSupported)
               activityChipCount: activityChips.filter((chip) => visible(chip)).length,
               activityLine: rect(activityLine),
               activityLineOutsideForm: activityLine !== null && activityLine.closest('form') === null,
+              // The resting field must keep most of the card's width. A leading
+              // slot reserving width it cannot fill starves the field while
+              // looking like a rendering quirk rather than a clipped control.
+              card: rect(cards[0]),
+              field: rect(form?.querySelector('[class*="field"]')),
               modelTrigger: modelTrigger
                 ? {
                     visible: visible(modelTrigger),
@@ -535,8 +540,11 @@ function assertComposerFooter(measurement, width) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   // The phone pane keeps one bottom surface: no edge footer at all, so the
-  // composer's own dock is the pane's bottom edge and owns the safe-area
-  // band in every focus state - resting, editing, or a control focused.
+  // composer's own dock is the pane's bottom edge. When its activity line
+  // renders, that line IS the bottom surface - the chips fill the safe-area
+  // band themselves, so the dock reserves nothing below them (Jesse,
+  // 2026-11-11: the band was eating the transcript). Without the line, the
+  // dock keeps owning the band.
   if (mobile) {
     if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
     if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
@@ -549,9 +557,11 @@ function assertComposerFooter(measurement, width) {
     ) {
       failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, requiredClearance)) {
+    const lineCarriesBand = measurement.focus === "editor" && measurement.activityLine !== null;
+    const expectedPadding = lineCarriesBand ? 0 : requiredClearance;
+    if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, expectedPadding)) {
       failures.push(
-        `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
+        `composer dock padding=${measurement.paddingBottom}px, expected ${expectedPadding}px (${lineCarriesBand ? "activity line owns the band" : `safe-area clearance=${requiredClearance}px`})`,
       );
     }
     // The resting row sheds attach but never its actions control - Send, or
@@ -559,10 +569,31 @@ function assertComposerFooter(measurement, width) {
     // their own line below the card, outside the form, in every focus state.
     if (!measurement.submitVisible && !measurement.stopVisible)
       failures.push("phone resting row lost its Send/Stop actions control");
-    if (measurement.rowChipCount !== 0)
-      failures.push("activity chips must not ride in the composer control row");
-    if (measurement.activityChipCount === 0) failures.push("phone activity line is missing its chips");
-    if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
+    if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
+    if (measurement.focus !== "editor" && measurement.card !== null && measurement.field !== null) {
+      const fieldShare = measurement.field.width / measurement.card.width;
+      if (fieldShare < 0.5) {
+        failures.push(
+          `resting field takes ${Math.round(fieldShare * 100)}% of the card (${JSON.stringify(measurement.field)} in ${JSON.stringify(measurement.card)})`,
+        );
+      }
+    }
+    // The folded resting card is the phone's smallest surface: it shows no
+    // activity line, and the counts come back with the expanded card.
+    if (measurement.focus === "editor") {
+      if (measurement.activityChipCount === 0) failures.push("engaged composer lost its activity chips");
+      if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
+      if (measurement.activityLine !== null && measurement.card !== null) {
+        const lineBottom = measurement.activityLine.bottom;
+        if (measurement.paneBottom !== null && lineBottom < measurement.paneBottom - 1) {
+          failures.push(
+            `activity line leaves ${Math.round(measurement.paneBottom - lineBottom)}px below itself at the pane's bottom edge`,
+          );
+        }
+      }
+    } else if (measurement.activityLine !== null) {
+      failures.push("resting composer still renders its activity line");
+    }
     if (
       measurement.activityLine !== null &&
       measurement.lastBottom !== null &&
@@ -744,7 +775,9 @@ function assertDuoCompactStates(result) {
     );
   }
   if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  if (focused && (focused.cardGap !== "4px" || focused.cardPaddingBlock !== "4px 4px")) {
+  // Ordinary spacing is PromptCard's own stacked inset: one --space-2 between
+  // field and controls, --space-3 above the field and --space-2 below the row.
+  if (focused && (focused.cardGap !== "8px" || focused.cardPaddingBlock !== "12px 8px")) {
     failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)
@@ -762,10 +795,11 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The activity counts live on their own line below the card, so every
-    // phone state - empty, engaged, drafting, attached, ask-pending,
-    // approval - mounts all four counters.
-    const expectedCount = 4;
+    // The activity counts live on their own line below the card. The folded
+    // resting card renders no line, so the empty state mounts none; every
+    // expanded state - engaged, drafting, attached, ask-pending, approval -
+    // mounts all four.
+    const expectedCount = state.state === "empty" ? 0 : 4;
     if (state.counters.length !== expectedCount)
       failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
     for (const counter of state.counters) {
@@ -1191,7 +1225,7 @@ async function verifyIntentColumn(cdpEndpoint, url) {
   return inspectOnSettledPage(cdpEndpoint, url, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");
 }
 
-// The trailing held-steer ghost stack's column: Session renders HeldSteerStack
+// The trailing pending stack's column: Session renders the pending stack
 // as the transcript's trailing virtual-list row, outside TurnBlock's .turn
 // column, so like the top-level intent group it must read the reading measure
 // itself or it spans the full pane while every turn above stays clamped and
@@ -1403,7 +1437,7 @@ function nearlyEqual(actual, expected, tolerance = GEOMETRY_TOLERANCE) {
   return Math.abs(actual - expected) <= tolerance;
 }
 
-// The column-alignment contract the intent-group and held-steer-stack checks
+// The column-alignment contract the intent-group and pending-stack checks
 // share: the row was found, both turn edges were measured, and both of its
 // edges sit within GEOMETRY_TOLERANCE of the turn's. Positional
 // (found, left, right, turnLeft, turnRight); the per-check JSON field names

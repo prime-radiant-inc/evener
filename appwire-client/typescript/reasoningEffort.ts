@@ -6,7 +6,7 @@
 
 import { EFFORT_TIERS, FALLBACK_EFFORT_LEVELS } from "./reasoningEffort.gen";
 
-export { FALLBACK_EFFORT_LEVELS };
+export { EFFORT_TIERS, FALLBACK_EFFORT_LEVELS };
 
 export function effortLabel(level: string, levels: string[]): string {
   if (level === "") return "(default)";

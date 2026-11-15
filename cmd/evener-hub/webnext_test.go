@@ -16,7 +16,16 @@ import (
 // disabled — see hubedge.AuthGuard) whose state roots are private to the test.
 func newTestWebServer(t *testing.T) *WebServer {
 	t.Helper()
-	cfg := hubcore.WebConfig{}
+	return newTestWebServerWithConfig(t, hubcore.WebConfig{})
+}
+
+// newTestWebServerWithConfig builds a WebServer from cfg with every state root
+// cfg leaves unset defaulted to its own t.TempDir(), so a test that customizes
+// other fields still gets the private roots newTestWebServer gives it. A config
+// that must keep a root unset or exercise a seeded XDG environment is passed to
+// NewWebServer directly.
+func newTestWebServerWithConfig(t *testing.T, cfg hubcore.WebConfig) *WebServer {
+	t.Helper()
 	defaultTestRoots(t, &cfg)
 	return NewWebServer(cfg)
 }

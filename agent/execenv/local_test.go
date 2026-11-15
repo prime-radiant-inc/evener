@@ -906,7 +906,7 @@ func TestGrepNative_ExplicitSymlinkRoots(t *testing.T) {
 	}{
 		{name: "default", mode: "", want: "1:needle in target"},
 		{name: "content", mode: "content", want: "1:needle in target"},
-		{name: "files", mode: "files_with_matches", want: "."},
+		{name: "files", mode: "files_with_matches", want: "file-link"},
 		{name: "count", mode: "count", want: "1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

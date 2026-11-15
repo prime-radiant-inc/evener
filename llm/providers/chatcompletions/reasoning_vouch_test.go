@@ -23,6 +23,7 @@ func emptyLadderCaps(format string) registry.Resolved {
 // of "medium" 400 on an uncatalogued gateway model. openrouter is the
 // documented exception and is covered separately.
 func TestBuildBody_EmptyLadderNeverWritesAnEffortName(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	for _, format := range []string{"", "openai", "zai", "deepseek", "together", "string-thinking"} {
 		t.Run(format, func(t *testing.T) {
@@ -47,6 +48,7 @@ func TestBuildBody_EmptyLadderNeverWritesAnEffortName(t *testing.T) {
 // The mandatory-thinking backstop must not force its default onto a row that
 // cannot accept a level: an empty-ladder always-on row gets no effort name.
 func TestBuildBody_EmptyLadderAlwaysOnBackstopWritesNothing(t *testing.T) {
+	t.Parallel()
 	res := resolved(func(c *registry.Caps) {
 		c.Reasoning = new(true)
 		c.ReasoningControls = []string{"effort"}
@@ -65,6 +67,7 @@ func TestBuildBody_EmptyLadderAlwaysOnBackstopWritesNothing(t *testing.T) {
 // (docs/llm-providers.md pins the dialect as "unconditionally"). With no
 // effort at all, an always-on row still gets its enable object.
 func TestBuildBody_OpenrouterKeepsExplicitEffortOnAnEmptyLadder(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	req := userReq("hi")
 	req.ReasoningEffort = &high
@@ -86,6 +89,7 @@ func TestBuildBody_OpenrouterKeepsExplicitEffortOnAnEmptyLadder(t *testing.T) {
 
 // A vouched level is still clamped within the row's ladder.
 func TestBuildBody_VouchedEffortClampsToTheLadder(t *testing.T) {
+	t.Parallel()
 	xhigh := "xhigh"
 	res := resolved(func(c *registry.Caps) {
 		c.Reasoning = new(true)

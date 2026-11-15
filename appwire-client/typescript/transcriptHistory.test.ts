@@ -983,6 +983,108 @@ test("wireItemToModel carries the wire eventKind (scaffold/system discriminator)
 });
 
 // A system item can attach structured detail behind its prose text, e.g. a
+// A promotion or drain records its own clientMutationId but inherits the
+// consumed queue entry's conversation input ids. That lineage is the only tie
+// between a recorded message and the queue row it replaced, so the model must
+// carry it or a carried row can never retire.
+test("wireItemToModel carries the wire conversationInputIds lineage onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_user_1",
+            type: "userMessage",
+            text: "promoted message",
+            clientMutationId: "promotion-control",
+            conversationInputIds: ["client:original-queue"],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).conversationInputIds).toEqual(["client:original-queue"]);
+});
+
+// An answered ask round's reply crosses the wire carrying
+// ThreadItem.observation (appwire.SessionObservationMetadata), whose
+// answerToTurnIds name the pending question executions the accepted input
+// resolved — the server-stamped link from the reply to the round it answers
+// (issue #5836). wireItemToModel historically dropped the whole observation,
+// so no frontend surface could tell an answered round's reply from any other
+// message; every answer-aware read had to match the fragile "[answers]" text
+// shape instead. Both hydrate and live paths fold through wireItemToModel, so
+// the snapshot path proves the carry.
+test("wireItemToModel carries the wire observation's answer link onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_user_2",
+            type: "userMessage",
+            turnId: "turn_2",
+            text: '[answers]\n1. [Deploy?] → "Yes"',
+            status: "completed",
+            observation: { ref: "", turnId: "turn_2", answerToTurnIds: ["turn_1"], causalKnown: false },
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).answerToTurnIds).toEqual(["turn_1"]);
+});
+
+// The link is set only when the wire carried it, like conversationInputIds: an
+// item with no observation (a pre-#5498 daemon, or any ordinary message) keeps
+// the field absent rather than reading as "answers nothing".
+test("an item whose wire carried no observation keeps the answer link absent", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "item_user_1", type: "userMessage", text: "plain message", status: "completed" }],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).answerToTurnIds).toBeUndefined();
+});
+
+// The daemon's retired-input list is the only durable evidence that a canceled
+// message will never reach history. A read snapshot must carry it, or the
+// client can never retire the row that message left behind.
+test("a read snapshot carries the daemon's conversation provenance onto the model", () => {
+  const thread = testThread({
+    evener: {
+      conversationProvenance: {
+        version: 1,
+        authoritative: true,
+        instanceId: "instance_1",
+        revision: 7,
+        consumedFrontierId: "",
+        admittedInputs: [],
+        retiredInputs: ["client:canceled-message"],
+        frontiers: [],
+      },
+    },
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(model.conversationProvenance?.retiredInputs).toEqual(["client:canceled-message"]);
+});
+
+// A system item can attach structured detail behind its prose text, e.g. a
 // round_timings item's per-phase durations (ThreadItem.raw) or a
 // compaction item's before/after counts. wireItemToModel historically dropped
 // it, forcing a renderer to re-parse numbers out of human-readable text. The

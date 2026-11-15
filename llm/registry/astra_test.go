@@ -6,6 +6,7 @@ import (
 )
 
 func TestCodexAstraAvailableOnNamedInstance(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
 	res := mustResolve(t, r, "subscription/gpt-6-astra")
 	if res.WireID != "gpt-6-astra" || res.Protocol != ProtocolOpenAIResponses || res.Transport.Auth != AuthOAuthOpenAICodex {
@@ -25,6 +26,7 @@ func TestCodexAstraAvailableOnNamedInstance(t *testing.T) {
 }
 
 func TestCodexCurrentModelsAvailableOnNamedInstance(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
 	wantEfforts := []string{"low", "medium", "high", "xhigh", "max"}
 	for _, tc := range []struct {
@@ -59,6 +61,7 @@ func TestCodexCurrentModelsAvailableOnNamedInstance(t *testing.T) {
 }
 
 func TestCodexSolOneMillionAliasUsesBaseWireID(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
 	res := mustResolve(t, r, "subscription/gpt-6.1-sol-1m")
 	if res.WireID != "gpt-6.1-sol" || res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 872000 {
@@ -70,6 +73,7 @@ func TestCodexSolOneMillionAliasUsesBaseWireID(t *testing.T) {
 // live row (taken from the shared wire id) must not replace it, while a live
 // row listed under the alias's own id still reports the truth.
 func TestAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
 	r.ApplyLive("subscription", []Model{{ID: "gpt-6.1-sol", Caps: Caps{ContextWindow: new(524288)}}})
 	res := mustResolve(t, r, "subscription/gpt-6.1-sol-1m")
@@ -93,6 +97,7 @@ func TestAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
 // A narrowed instance keeps the shaping glob that applies to the rows it
 // kept: Astra still resolves with the Lite framing and its window.
 func TestCodexInheritModelsMatchingKeepsShapingGlobForKeptRows(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\ninherit_models_matching = [\"gpt-6-astra\"]\n")
 	res := mustResolve(t, r, "subscription/gpt-6-astra")
 	if res.Synthesized || !BoolValue(res.Caps.ResponsesLite) || res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 272000 || res.Transport.Body["text.verbosity"] != "low" {
@@ -104,6 +109,7 @@ func TestCodexInheritModelsMatchingKeepsShapingGlobForKeptRows(t *testing.T) {
 }
 
 func TestConfigAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n[providers.subscription.models.\"sol-wide\"]\nalias_of = \"gpt-6.1-sol\"\nwire_id = \"gpt-6.1-sol\"\ncontext_window = 600000\n")
 	r.ApplyLive("subscription", []Model{{ID: "gpt-6.1-sol", Caps: Caps{ContextWindow: new(524288)}}})
 	res := mustResolve(t, r, "subscription/sol-wide")
@@ -116,6 +122,7 @@ func TestConfigAliasDeclaredWindowBeatsLiveRowOfWireID(t *testing.T) {
 // target's figure: the alias's own provider listing, found by the shared wire
 // id, outranks it. Only a window declared on the alias row itself is protected.
 func TestInheritedAliasWindowYieldsToLiveRowOfWireID(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai\"\n[providers.mine.models.\"sol-alias\"]\nalias_of = \"anthropic/claude-mythos-preview\"\nwire_id = \"claude-mythos-preview\"\n")
 	res := mustResolve(t, r, "mine/sol-alias")
 	if res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1000000 || res.Provenance["ContextWindow"] != "overlay/row" {

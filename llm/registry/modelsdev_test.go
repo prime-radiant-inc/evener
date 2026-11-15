@@ -25,6 +25,7 @@ func loadFixture(t *testing.T) map[string]Provider {
 }
 
 func TestFromModelsDev_ProviderLevel(t *testing.T) {
+	t.Parallel()
 	p := loadFixture(t)
 
 	groq := p["groq"]
@@ -98,6 +99,7 @@ func TestFromModelsDev_ProviderLevel(t *testing.T) {
 }
 
 func TestFromModelsDev_ModelLevel(t *testing.T) {
+	t.Parallel()
 	p := loadFixture(t)
 
 	gpt5 := p["openai"].Models["gpt-5"]
@@ -215,6 +217,7 @@ func TestFromModelsDev_ModelLevel(t *testing.T) {
 }
 
 func TestFromModelsDev_PreservesDistinctTokenCaps(t *testing.T) {
+	t.Parallel()
 	const raw = `{
 		"openai": {
 			"id": "openai",
@@ -252,6 +255,7 @@ func TestFromModelsDev_PreservesDistinctTokenCaps(t *testing.T) {
 }
 
 func TestFromModelsDev_SurfaceRule(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"claude-opus": SurfaceAnthropic, "gpt": SurfaceOpenAI, "gpt-oss": SurfaceGeneric,
 		"o": SurfaceOpenAI, "o-mini": SurfaceOpenAI, "o-pro": SurfaceOpenAI,
@@ -265,6 +269,7 @@ func TestFromModelsDev_SurfaceRule(t *testing.T) {
 }
 
 func TestStripRegionPrefix(t *testing.T) {
+	t.Parallel()
 	if stripRegionPrefix("global.anthropic.claude-opus-5") != "anthropic.claude-opus-5" ||
 		stripRegionPrefix("anthropic.claude-opus-5") != "anthropic.claude-opus-5" ||
 		stripRegionPrefix("au.anthropic.x") != "anthropic.x" {
@@ -273,6 +278,7 @@ func TestStripRegionPrefix(t *testing.T) {
 }
 
 func TestFromModelsDev_Deterministic(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("testdata/models.dev.sample.json")
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +296,7 @@ func TestFromModelsDev_Deterministic(t *testing.T) {
 }
 
 func TestNPMProtocol_Table(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		npm      string
 		protocol string
@@ -317,6 +324,7 @@ func TestNPMProtocol_Table(t *testing.T) {
 }
 
 func TestIsKeyVar(t *testing.T) {
+	t.Parallel()
 	for name, want := range map[string]bool{
 		"OPENAI_API_KEY": true, "AWS_BEARER_TOKEN_BEDROCK": true, "AWS_SECRET_ACCESS_KEY": true,
 		"GITHUB_PAT": true, "WATSONX_AI_APIKEY": true,
@@ -329,6 +337,7 @@ func TestIsKeyVar(t *testing.T) {
 }
 
 func TestFromModelsDev_UnknownNPMFallsBackWithNote(t *testing.T) {
+	t.Parallel()
 	data := []byte(`{"acme":{"id":"acme","npm":"some-unknown-sdk","models":{"m":{"id":"m","modalities":{"output":["text"]}}}}}`)
 	provs, err := FromModelsDev(data)
 	if err != nil {

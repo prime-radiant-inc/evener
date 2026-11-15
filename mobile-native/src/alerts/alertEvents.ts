@@ -7,7 +7,7 @@
 // great (Jesse, question 3). Each source's first read on a connection is
 // its baseline and alerts nothing (ruling 2), so opening the app never drops
 // a pile of banners on what the Board already shows.
-import { type BoardState, bandOf, type LiveBands, liveRows, whyLine } from "../board/attention";
+import { type BoardState, bandOf, type LiveBands, liveRows, whyLine } from "@evener/appwire-client/state/navigation";
 import type { Notice } from "../board/notices";
 import type { AlertCenter, NeedsYouKind, NoticeAlert, SessionAlert } from "./alertCenter";
 

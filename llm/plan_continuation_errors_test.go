@@ -59,6 +59,7 @@ func planningClient(t *testing.T) *Client {
 // A body that cannot be fingerprinted fails the plan: the fingerprint helper
 // reports the marshal failure rather than hashing a partial body.
 func TestResponsesRequestFingerprintRejectsAnUnmarshalableBody(t *testing.T) {
+	t.Parallel()
 	_, err := ResponsesRequestFingerprint(ResponsesEndpointFamilyOpenAIPublic, map[string]any{"bad": make(chan int)})
 	if err == nil {
 		t.Fatal("fingerprint of an unmarshalable body succeeded")
@@ -72,6 +73,7 @@ func TestResponsesRequestFingerprintRejectsAnUnmarshalableBody(t *testing.T) {
 // error, with the endpoint family still set so the caller can fall back to
 // full history.
 func TestPlanContinuationSurfacesEachBuildFailure(t *testing.T) {
+	t.Parallel()
 	buildFailed := errors.New("no body could be built")
 	cases := []struct {
 		name     string
@@ -104,6 +106,7 @@ func TestPlanContinuationSurfacesEachBuildFailure(t *testing.T) {
 // A public-family body that does not set store plans as no-store: the label
 // and the storage permission both record that the provider keeps nothing.
 func TestPlanContinuationLabelsAPublicNoStoreBody(t *testing.T) {
+	t.Parallel()
 	res := continuationCapableRow("")
 	plan, err := planningClient(t).planContinuation(context.Background(), Request{Model: "gpt-5.5"}, res,
 		planStubProtocol{body: map[string]any{"input": "hi"}})
@@ -122,6 +125,7 @@ func TestPlanContinuationLabelsAPublicNoStoreBody(t *testing.T) {
 // fails the plan with the sign-in sentinel: the account and workspace claims
 // are part of the storage scope, and a row that cannot name them cannot plan.
 func TestPlanContinuationCodexScopeWithoutOAuthFailsWithSignInRequired(t *testing.T) {
+	t.Parallel()
 	if _, ok := AuthenticatorFor(registry.AuthOAuthOpenAICodex); !ok {
 		t.Fatal("the codex authenticator must be registered (the llm_test package imports tokenauth); without it the scope seam this test drives does not exist")
 	}

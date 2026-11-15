@@ -135,7 +135,7 @@ func embeddedProcessSkillsDir() (string, error) {
 	if processSkillsDir != "" && cacheDirUsable(processSkillsDir, digest) {
 		return processSkillsDir, nil
 	}
-	root, err := resolveTrustedRoot(os.TempDir(), ensureTrustedProcessRoot)
+	root, fallback, err := resolveSkillsRoot(os.TempDir(), ensureTrustedProcessRoot)
 	if err != nil {
 		return "", err
 	}
@@ -146,8 +146,9 @@ func embeddedProcessSkillsDir() (string, error) {
 		return os.MkdirTemp(root, processSkillsTempPattern)
 	})
 	if err != nil {
-		return "", err
+		return "", skillsFallbackError(root, fallback, err)
 	}
+	rememberSkillsFallback(fallback)
 	processSkillsDir = dir
 	return dir, nil
 }
@@ -332,10 +333,11 @@ func forgetEmbeddedSkillsLocked() {
 // worktree can still read temp, while the config root is sandbox-denylisted and
 // the cache root is outside a restricted session's readable roots. It is
 // namespaced by user and verified private, so another user on a shared host
-// cannot occupy the name or read the published copy. A root or a per-user name
-// that cannot be verified fails the resolution rather than publishing a copy
-// into a directory this process does not own; EmbeddedSkillsDir then serves the
-// process-lifetime extraction instead.
+// cannot occupy the name or read the published copy. A root that cannot be
+// verified is replaced by the platform's verified fallback (resolveSkillsRoot)
+// rather than published into; a per-user name that cannot be verified fails the
+// resolution, and EmbeddedSkillsDir then serves the process-lifetime
+// extraction instead.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
 	root, err := skillsBaseRoot()
 	if err != nil {
@@ -351,14 +353,15 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// The root is resolved before it is verified, so a temp root that is itself a
 	// symlink is served rather than refused, and the per-user base is created
 	// under the directory the link names rather than through the link.
-	resolved, err := resolveTrustedRoot(root, ensureTrustedRoot)
+	resolved, fallback, err := resolveSkillsRoot(root, ensureTrustedRoot)
 	if err != nil {
 		return "", err
 	}
 	dir := filepath.Join(resolved, embeddedSkillsPrefix+processOwnerTag())
 	if err := ensurePrivateCacheDir(dir); err != nil {
-		return "", err
+		return "", skillsFallbackError(resolved, fallback, err)
 	}
+	rememberSkillsFallback(fallback)
 	return dir, nil
 }
 
@@ -440,14 +443,19 @@ func ensureTrustedProcessRoot(root string) error {
 // user namespace that does not map host root it appears owned by the overflow
 // uid, which the ownership rule must otherwise refuse (issue #4226). Its mode
 // still has to keep other users from replacing names inside it through a
-// writable host mount. An ordinary ancestor gets no exemption at all, even on a
-// read-only mount: the mount only refuses writes through this namespace, while
-// another user with a writable mount of the same host filesystem can rename the
-// directory and replace its subtree, which path lookup here then follows.
+// writable host mount.
+//
+// An ordinary ancestor gets no exemption at all. An unmapped owner is not
+// evidence that host root owns the directory: every host user the namespace
+// does not map appears as the same overflow uid, so the ancestor could belong
+// to another user who can rename it through a writable mount of the same host
+// filesystem and substitute the cache tree after verification (#5809 review).
+// The configured root is therefore refused, and resolution falls back to a root
+// whose ownership this process can verify (see resolveSkillsRoot).
 func ensureTrustedAncestors(root string) error {
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
-		info, err := os.Stat(dir)
+		info, err := statAncestor(dir)
 		if err != nil {
 			return fmt.Errorf("checking skill cache ancestor %s: %w", dir, err)
 		}
@@ -469,6 +477,103 @@ func ensureTrustedAncestors(root string) error {
 		}
 		dir = parent
 	}
+}
+
+// statAncestor is the stat boundary for the ancestor chain. It is a seam so a
+// test can describe an ancestor owned by a user this process is not: ownership
+// of a real directory cannot be arranged without privilege.
+var statAncestor = os.Stat
+
+// skillsFallbackRoot names the platform root resolution falls back to when the
+// configured temp root cannot be verified. It is a seam so tests can point the
+// fallback at a controlled directory.
+var skillsFallbackRoot = defaultSkillsFallbackRoot
+
+// skillsFallbackMu guards skillsFallback. The resolution paths that record a
+// fallback already hold the cache or process lock, so this is a separate lock
+// rather than a field on either.
+var (
+	skillsFallbackMu sync.Mutex
+	skillsFallback   *Diagnostic
+)
+
+// resolveSkillsRoot verifies the configured root, and when that root cannot be
+// verified it falls back to the platform's verified fallback root. An
+// unverifiable configured root is refused rather than accepted on mount
+// evidence alone; the fallback keeps bundled skills available without weakening
+// the write boundary. The fallback is reported through the skill diagnostics.
+func resolveSkillsRoot(root string, verify func(string) error) (string, *skillsRootFallback, error) {
+	resolved, err := resolveTrustedRoot(root, verify)
+	if err == nil {
+		clearSkillsFallback()
+		return resolved, nil, nil
+	}
+	fallback := skillsFallbackRoot()
+	if fallback == "" || filepath.Clean(fallback) == filepath.Clean(root) {
+		return "", nil, err
+	}
+	resolvedFallback, fallbackErr := resolveTrustedRoot(fallback, verify)
+	if fallbackErr != nil {
+		return "", nil, err
+	}
+	return resolvedFallback, &skillsRootFallback{configured: root, resolved: resolvedFallback, cause: err}, nil
+}
+
+// skillsRootFallback records a configured root that failed verification and the
+// verified root used instead. The diagnostic is committed only after the
+// fallback proves usable, so a report never claims a root the process could not
+// write.
+type skillsRootFallback struct {
+	configured string
+	resolved   string
+	cause      error
+}
+
+// skillsFallbackError preserves the configured root's failure when the fallback
+// turns out unusable, instead of reporting only the fallback's error.
+func skillsFallbackError(resolved string, fallback *skillsRootFallback, err error) error {
+	if fallback == nil {
+		return err
+	}
+	return fmt.Errorf("skill cache fallback %s is not usable: %w (configured root %s: %w)", resolved, err, fallback.configured, fallback.cause)
+}
+
+// rememberSkillsFallback commits the diagnostic for a fallback that actually
+// served the base.
+func rememberSkillsFallback(fallback *skillsRootFallback) {
+	if fallback == nil {
+		return
+	}
+	skillsFallbackMu.Lock()
+	skillsFallback = &Diagnostic{
+		Category: "unverified_cache_root",
+		Name:     "embedded",
+		Source:   "embedded",
+		Message:  fmt.Sprintf("configured skill cache root %s cannot be verified (%v); using the verified fallback %s", fallback.configured, fallback.cause, fallback.resolved),
+	}
+	skillsFallbackMu.Unlock()
+}
+
+// clearSkillsFallback drops an earlier fallback warning once the configured
+// root verifies again, so a long-lived process does not keep reporting a root
+// it no longer uses.
+func clearSkillsFallback() {
+	skillsFallbackMu.Lock()
+	skillsFallback = nil
+	skillsFallbackMu.Unlock()
+}
+
+// EmbeddedSkillsDiagnostics reports a configured skill cache root this process
+// refused and the verified fallback it used instead. It is how the warning
+// reaches a session: Discover appends these to the catalog diagnostics, and
+// session init turns each into a user-facing warning.
+func EmbeddedSkillsDiagnostics() []Diagnostic {
+	skillsFallbackMu.Lock()
+	defer skillsFallbackMu.Unlock()
+	if skillsFallback == nil {
+		return nil
+	}
+	return []Diagnostic{*skillsFallback}
 }
 
 // readOnlyFilesystemRoot reports whether dir is the root of the filesystem tree

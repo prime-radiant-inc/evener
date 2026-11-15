@@ -6,6 +6,7 @@ import (
 )
 
 func TestStrictifyJSONSchemaRewritesObjectsWithoutMutatingInput(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{"type": "object", "properties": map[string]any{
 		"b": map[string]any{"type": "string"},
 		"a": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "integer"}}}},
@@ -32,6 +33,7 @@ func TestStrictifyJSONSchemaRewritesObjectsWithoutMutatingInput(t *testing.T) {
 // A nil schema strictifies to an empty schema rather than panicking: the
 // deep copy normalizes the absent map, and the rewrite is a no-op on it.
 func TestStrictifyJSONSchemaNilSchemaIsSafe(t *testing.T) {
+	t.Parallel()
 	got := StrictifyJSONSchema(nil)
 	if len(got) != 0 {
 		t.Fatalf("StrictifyJSONSchema(nil) = %v, want an empty schema", got)

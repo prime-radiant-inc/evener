@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/transcriptindex"
 )
 
@@ -35,7 +36,7 @@ var transcriptRepairLaneExhaustedInterval = 10 * time.Minute
 var transcriptIndexRepairNow = time.Now
 
 // transcriptIndexRepairLogSink is the repair registry's log destination,
-// resolved when the registry is armed — hubLogfFor's rule: a detached
+// resolved when the registry is armed — hubLogFor's rule: a detached
 // repair outlives the startup and shutdown windows where os.Stderr gets
 // redirected, so reading the mutable global per line would follow a late
 // reassign (captureHubStderr, issue #2783) into an unintended or closed
@@ -43,11 +44,11 @@ var transcriptIndexRepairNow = time.Now
 // is the one the hub's own startup chose.
 var transcriptIndexRepairLogSink = os.Stderr
 
-// transcriptIndexRepairLog is the repair registry's advisory log line, in the
-// established [hub] style, naming the session's transcript. A package
+// transcriptIndexRepairLog is the repair registry's advisory log line, through
+// the hub component logger, naming the session's transcript. A package
 // variable so tests can capture the lines.
 var transcriptIndexRepairLog = func(format string, args ...any) {
-	_, _ = fmt.Fprintf(transcriptIndexRepairLogSink, "[hub] "+format+"\n", args...)
+	componentlog.NewWriter("hub", transcriptIndexRepairLogSink).Info(fmt.Sprintf(format, args...))
 }
 
 // runTranscriptIndexRepair is the repair recipe the registry runs: rebuild

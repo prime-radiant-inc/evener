@@ -48,6 +48,16 @@ incremental change set. Changed older items and turn status/version/usage remain
 in `changes` when a smaller selected window drops them from the source's latest
 window.
 
+A window reports turn completeness from logical turn membership, not physical
+adjacency: the index's item pages stamp each item's earlier/later flags from its
+ordinal within its logical turn (`Index.span` in
+[`internal/transcriptindex/window.go`](../../internal/transcriptindex/window.go)),
+so a turn a later entry reopens reports completeness at its fragment boundaries
+even when its fragments are not physically adjacent. A window holding only a
+later fragment of a reopened turn therefore reports that earlier items of that
+turn exist, and the omitted leading fragment gets a recovery cursor instead of
+a false completeness claim.
+
 Selection also applies to the subscription established by a read: history
 updates, overlay items and their deltas use the same view. Lifecycle, status,
 capabilities, queue state, delivery receipts, mutation authority and recovery
@@ -117,6 +127,19 @@ A cursor mismatch refreshes the view. A changed reachable item reports its new
 version. A remote or compatibility item outside the bounded recovery path reports
 the named degradation instead of returning partial bytes. These recovery reads
 do not change the ordinary client subscription or its selected history view.
+
+A window continuation keeps the resolved logical turn range it was minted for:
+`resolveTranscriptWindowContinuation` in
+[`cmd/evener-hub/transcript_window_continuation.go`](../../cmd/evener-hub/transcript_window_continuation.go)
+carries a whole-turn continuation's range in its resume window and validates it
+against the cursor's anchor, so turns an earlier page withheld upstream of the
+page it served are re-covered by the resumed range rather than lost. Position
+slicing applies only to a cursor that resumes inside one turn (an intra-turn
+cut), because physical positions do not order interleaved reopened turns like
+their logical turns. An empty-range digest is valid only when the whole
+resumed range is known empty — a candidate in it fails the cursor stale — and
+a range that still withholds turns upstream stays open so the packer can
+continue from them.
 
 ## Serving facts and status comparison
 
@@ -259,6 +282,67 @@ Keeping both paths carries two response contracts and two merge policies;
 remove that compatibility path only when legacy methods and their clients are
 retired together.
 
+## Browser transcript cache
+
+The browser keeps an entry-oriented cache of recorded history: one repository
+per session accepts recorded updates, publishes them to open panes immediately,
+and owns their asynchronous IndexedDB writes (the
+[`TranscriptRepository`](../../cmd/evener-hub/frontend/src/stores/transcriptRepository.ts)
+implementation). The server transcript stays authoritative; the cache is
+derived storage that a fresh server read can always refill. There is no
+competing blob writer — a legacy whole-session cache that predates entry
+storage is discarded on the schema upgrade rather than migrated, and its
+sessions refetch from the server. Entry-sized writes exist so a browser never
+restores and rewrites a whole-session model to record one update.
+
+Publication precedes persistence. `accept` folds a recorded update into the
+published model synchronously, then queues the entry-sized write; a reader sees
+new history before the database commit. Cached coverage claims advance only
+after a commit, which records the committed certificate, coverage boundary and
+read id together, so a crash between publication and commit leaves coverage
+honest and the server refetch refills the local cache. Publication also
+survives cache failures that persistence cannot: an accepted update whose
+bodies no longer fit the cache is refused for caching while the published model
+keeps its content, and an oversize recorded window takes the one exclusive
+immediate batch rather than starting an unbounded write.
+
+Residency budgets bound completed work, not the live session. The pending
+resync buffer and the shared write admission queue
+(`EntryWriteAdmission` in
+[`entryWriteAdmission.ts`](../../cmd/evener-hub/frontend/src/stores/entryWriteAdmission.ts))
+bound completed recorded input and pending completed writes
+(`backgroundTranscriptOptions().pendingBytes`), but unfinished live output is
+never spilled to disk or discarded to enforce a budget, so the budget is not a
+total-memory bound. Retained bodies charge by identity: `EntryRetainedBody`
+keys are the objects themselves, so one body shared by two accounting sites is
+charged once, while two independently decoded copies of the same content are
+two charges — equal serialized content does not deduplicate. Issued background
+reads keep their capacity slot until the real response, rejection or the
+lookup deadline settles them; retirement (`retireHydration`) cancels queued
+work and resolves the owner's wait early, but never promises immediate release
+of a server read already executing.
+
+Older-page demand is a live-UI promise. A reader's older-page request uses
+contiguous cached coverage first (the repository's local continuation, fenced
+by source revision and certified coverage), then an existing server cursor or
+supported position-based request for missing ranges. The paging scheduler
+(`HistoryPaging` in
+[`historyPaging.ts`](../../appwire-client/typescript/historyPaging.ts)) and the
+pane's load-older control are part of the guarantee, not just the repository
+and store beneath them: a null scheduling key or a hidden control makes
+genuine cached bodies unreachable. The store's tagged scheduling key
+(`olderTranscriptPageKey`) never goes onto the wire.
+
+Reopen honors an explicit older-page demand. A caught-up pane with healthy
+durable coverage needs no activation `thread/read` — zero activation reads is
+the assertion for a healthy fixture (`openEntryTranscript` resolves from local
+bodies) — but a reopen with missing older history may fetch it through the
+retained server cursor or position-based paging, and incomplete local coverage
+or dropped opening work requires reconciliation. A rendered retained-items
+flag alone does not prove healthy durable coverage: the repository's recovery
+verdict (`openLocal`'s status and the opening-cut certificate) decides whether
+a recovery read is owed.
+
 ## Original transcript authors
 
 Optional `ThreadItem.authorship` records an original author and an `inherited`
@@ -324,6 +408,28 @@ the new field, so downgrading a writer is not a promise of readable new history.
 This shared metadata does not change human-interaction permissions.
 
 ## Summary failure diagnostics
+
+The same survive-and-reconcile rule governs every partial transcript write. A
+write that fails halfway keeps the original readable: the writer
+(`settleFailedWriteLocked` in
+[`transcript.go`](../../agent/transcript/transcript.go)) removes a clean
+rollback's bytes, keeps a whole line that landed as unsynced debt the next
+fsync settles, and only a partial line poisons the writer — because a whole
+line is a record every reader finds. There is no per-outcome rule set and no
+poisoned-transcript dead end: the writer settles every rollback outcome
+itself, and reopening the transcript rebuilds the writer from the complete
+records the file still holds, truncating a torn tail a crash may have left. A
+fold that fails to publish runs neither commit phase, so a restart anchors on
+the last compaction marker that did land and brings back the pre-compaction
+history; the fold's replay tail and merged-back turns are re-appended only
+after their marker lands. A served session fails closed — one diagnostic,
+every later input refused — only when the transcript can no longer record what
+it announces (a COMMUNICATE message or a turn completion was not recorded);
+ordinary append failures keep the session running with a warning. The retained
+tail after compaction is preserved verbatim — a byte-identical suffix of the
+pre-compaction history, not trimmed to a fit guarantee — so an occasional first
+request after compaction can fail with a context-window error the user retries;
+that trade keeps maximum detail in the retained tail.
 
 A failed conversation summary leaves the existing history or the operation's
 deterministic checkpoint available. The authoritative transcript is unchanged.

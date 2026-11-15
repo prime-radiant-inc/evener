@@ -94,21 +94,41 @@ func (s *Store) Snapshot() (Snapshot, bool) {
 	return s.snapLocked(), true
 }
 
-// SetTerminal transitions an active goal to a terminal status (used by update_goal
-// and terminateGoalOnError). Returns false (no-op) if there is no active goal.
-func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
+// SetTerminalResult describes the outcome of an attempt to transition a goal to a terminal status.
+type SetTerminalResult int
+
+const (
+	SetTerminalSuccess SetTerminalResult = iota
+	SetTerminalNoGoal
+	SetTerminalAlreadyTerminal
+	SetTerminalInvalidStatus
+)
+
+// TransitionTerminal transitions an active goal to a terminal status, distinguishing
+// success, no configured goal, an already-terminal goal, and invalid status.
+func (s *Store) TransitionTerminal(status Status, reason string, now time.Time) (Snapshot, SetTerminalResult) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !status.Valid() || !status.IsTerminal() {
-		return false
+		return Snapshot{}, SetTerminalInvalidStatus
 	}
-	if s.goal == nil || s.goal.Status != StatusActive {
-		return false
+	if s.goal == nil {
+		return Snapshot{}, SetTerminalNoGoal
+	}
+	if s.goal.Status != StatusActive {
+		return s.snapLocked(), SetTerminalAlreadyTerminal
 	}
 	s.goal.Status = status
 	s.goal.StopReason = reason
 	s.goal.UpdatedAt = now
-	return true
+	return s.snapLocked(), SetTerminalSuccess
+}
+
+// SetTerminal transitions an active goal to a terminal status (used by update_goal
+// and terminateGoalOnError). Returns false (no-op) if there is no active goal.
+func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
+	_, res := s.TransitionTerminal(status, reason, now)
+	return res == SetTerminalSuccess
 }
 
 // TakeTerminalReport returns (snapshot, true) exactly once for a terminal goal —

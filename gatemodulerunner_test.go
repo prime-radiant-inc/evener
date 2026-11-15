@@ -682,8 +682,11 @@ func runHubIntegrationTarget(t *testing.T, root string, extraEnv ...string) modu
 // target pass while running nothing — the exact silent no-op PR #222 shipped in
 // a Makefile copy. The positive control first proves the target can pass and
 // execute a real list member on this fixture; the same fixture with a
-// non-member test name must then fail with the refusal message instead of
-// passing.
+// non-member test name must then fail instead of passing. The exit status is
+// the oracle: the zero-match fixture holds no test the shipped regex can
+// select, and the positive control proves this target can pass and run a test,
+// so an exit 0 here means the zero-match guard did not fire. The refusal's
+// wording is copy and stays free to change.
 func TestHubIntegrationTargetRefusesAZeroMatch(t *testing.T) {
 	t.Parallel()
 	members := hubIntegrationMembers(t)
@@ -715,9 +718,6 @@ func TestUnrelated(t *testing.T) {}
 	zero := runHubIntegrationTarget(t, root)
 	if zero.exitCode == 0 {
 		t.Fatalf("test-hub-integration exit = 0 when GATE_HUB_INTEGRATION_RUN matched no test; the refusal did not fire:\n%s", zero.output)
-	}
-	if !strings.Contains(zero.output, "matched no tests") {
-		t.Fatalf("test-hub-integration failed without the zero-match refusal message:\n%s", zero.output)
 	}
 }
 

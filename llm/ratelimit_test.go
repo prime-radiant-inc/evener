@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseRateLimitHeaders_AllPresent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-remaining-requests", "99")
 	h.Set("x-ratelimit-limit-requests", "100")
@@ -40,6 +41,7 @@ func TestParseRateLimitHeaders_AllPresent(t *testing.T) {
 }
 
 func TestParseRateLimitHeaders_NoHeaders_ReturnsNil(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	info := ParseRateLimitHeaders(h)
 	if info != nil {
@@ -48,6 +50,7 @@ func TestParseRateLimitHeaders_NoHeaders_ReturnsNil(t *testing.T) {
 }
 
 func TestParseRateLimitHeaders_PartialHeaders(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-remaining-requests", "50")
 
@@ -64,6 +67,7 @@ func TestParseRateLimitHeaders_PartialHeaders(t *testing.T) {
 }
 
 func TestParseRateLimitHeaders_InvalidNumber_Ignored(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-remaining-requests", "not-a-number")
 	h.Set("x-ratelimit-limit-tokens", "1000")
@@ -84,6 +88,7 @@ func TestParseRateLimitHeaders_InvalidNumber_Ignored(t *testing.T) {
 // x-ratelimit-reset-requests and x-ratelimit-reset-tokens are present,
 // reset-requests takes priority.
 func TestParseRateLimitHeaders_ResetRequestsPriority(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-reset-requests", "2026-02-10T12:00:00Z")
 	h.Set("x-ratelimit-reset-tokens", "2026-02-10T13:00:00Z")
@@ -102,6 +107,7 @@ func TestParseRateLimitHeaders_ResetRequestsPriority(t *testing.T) {
 }
 
 func TestParseRateLimitHeaders_ResetTokensFallback(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-reset-tokens", "2026-02-10T13:00:00Z")
 
@@ -119,6 +125,7 @@ func TestParseRateLimitHeaders_ResetTokensFallback(t *testing.T) {
 }
 
 func TestParseRateLimitHeaders_ResetAt_HTTPDate(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-reset-requests", "Tue, 10 Feb 2026 14:00:00 GMT")
 
@@ -136,6 +143,7 @@ func TestParseRateLimitHeaders_ResetAt_HTTPDate(t *testing.T) {
 }
 
 func TestParseRateLimitHeaders_ResetAt_InvalidTimeIgnored(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	h := http.Header{}
 	h.Set("x-ratelimit-reset-requests", "not-a-time")
 	h.Set("x-ratelimit-remaining-requests", "5")

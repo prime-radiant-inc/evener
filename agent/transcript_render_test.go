@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -857,6 +859,28 @@ func TestRenderMarkdown_OrphanedToolResult(t *testing.T) {
 	}
 }
 
+func TestRenderTranscript_UnpairedResultUsesOriginatingWireToolName(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		toolCallEntry(call("g1", "grep_search", `{"pattern":"needle","path":"agent"}`)),
+		toolResultEntry(result("g1", "grep", "a.go:1:needle", false)),
+		toolCallEntry(call("comm-1", "communicate", `{"message":"done","end_turn":true}`)),
+		toolResultEntry(result("comm-1", "communicate", `{"accepted":true,"end_turn":true}`, false)),
+	}
+	out, _ := renderTranscript(transcript.Header{}, entries, "1-1", renderOpts{})
+	if !strings.Contains(out, "[call not shown] `grep_search`") {
+		t.Fatalf("expected unpaired result to display originating wire name grep_search, got:\n%s", out)
+	}
+	if strings.Contains(out, "[call not shown] `grep`") {
+		t.Fatalf("unpaired result fell back to canonical grep despite originating grep_search call:\n%s", out)
+	}
+
+	commSlice, _ := renderTranscript(transcript.Header{}, entries, "3-3", renderOpts{})
+	if strings.Contains(commSlice, "[call not shown]") || strings.Contains(commSlice, `"accepted"`) {
+		t.Fatalf("sub-range starting on communicate ack leaked internal ack card:\n%s", commSlice)
+	}
+}
+
 // TestRenderMarkdown_ErrorToolResult verifies an error result is [error].
 func TestRenderMarkdown_ErrorToolResult(t *testing.T) {
 	t.Parallel()
@@ -1068,12 +1092,18 @@ func TestToolInputSummary(t *testing.T) {
 		notWant string
 	}{
 		{"shell shows command", "shell", `{"command":"go test ./..."}`, "go test ./...", ""},
+		{"exec_command shows command", "exec_command", `{"command":"go test ./..."}`, "go test ./...", "command="},
+		{"run_shell_command shows command", "run_shell_command", `{"command":"go test ./..."}`, "go test ./...", "command="},
 		{"read_file shows path", "read_file", `{"file_path":"agent/transcript_read.go"}`, "agent/transcript_read.go", ""},
 		{"read_file shows offset/limit", "read_file", `{"file_path":"a.go","offset":10,"limit":20}`, "offset 10", ""},
 		{"write_file shows bytes not content", "write_file", `{"file_path":"out.txt","content":"hello world"}`, "11 bytes", "hello world"},
 		{"edit_file summary not strings", "edit_file", `{"file_path":"a.go","old_string":"aaaa","new_string":"bbbbbb"}`, "a.go", "aaaa"},
 		{"grep shows pattern and path", "grep", `{"pattern":"needle","path":"./agent"}`, "needle", ""},
+		{"grep_search shows pattern and path", "grep_search", `{"pattern":"needle","path":"./agent"}`, "in ./agent", "pattern="},
+		{"grep_search custom schema falls back to scalar args", "grep_search", `{"query":"custom","limit":5}`, "query=custom", ""},
+		{"grep_files shows pattern and path", "grep_files", `{"pattern":"needle","path":"./agent"}`, "in ./agent", "pattern="},
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
+		{"find_files shows pattern", "find_files", `{"pattern":"**/*.go"}`, "`**/*.go`", "pattern="},
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
 		{"delegate shows task/type/max_wait_ms", "delegate", `{"prompt":"do thing","agent_type":"explorer","max_wait_ms":5000}`, "max_wait_ms=5000", "background"},
@@ -1526,6 +1556,73 @@ func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 	if utf8.RuneCountInString(content) > convBudgetChars+overhead {
 		t.Errorf("content length %d exceeds budget %d (+%d overhead)",
 			utf8.RuneCountInString(content), convBudgetChars, overhead)
+	}
+}
+
+func TestWriteAssistantContentPreservesPartOrderWithCommunicateAfterTool(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		makeEntry(schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "plan"}},
+					{Kind: llm.ContentToolCall, ToolCall: call("c1", "shell", `{"command":"echo hi"}`)},
+					{Kind: llm.ContentToolCall, ToolCall: call("comm", "communicate", `{"message":"final summary"}`)},
+				},
+			},
+		}),
+		toolResultEntry(
+			result("c1", "shell", "hi\n", false),
+			result("comm", "communicate", `{"accepted":true}`, false),
+		),
+	}
+	for _, budgeted := range []bool{false, true} {
+		name := fmt.Sprintf("budgeted=%v", budgeted)
+		t.Run(name, func(t *testing.T) {
+			opt := renderOpts{}
+			if budgeted {
+				opt.proseBudget = map[int]int{0: 2000}
+			}
+			content, _ := renderTranscript(transcript.Header{}, entries, "0-1", opt)
+			planIdx := strings.Index(content, "plan")
+			shellIdx := strings.Index(content, "`shell`")
+			summaryIdx := strings.Index(content, "final summary")
+			if planIdx == -1 || shellIdx == -1 || summaryIdx == -1 {
+				t.Fatalf("missing expected elements: plan=%d shell=%d summary=%d\ncontent=%s", planIdx, shellIdx, summaryIdx, content)
+			}
+			if planIdx >= shellIdx || shellIdx >= summaryIdx {
+				t.Fatalf("order violated: plan=%d, shell=%d, summary=%d (want plan < shell < summary)\ncontent=%s", planIdx, shellIdx, summaryIdx, content)
+			}
+		})
+	}
+}
+
+func TestWriteAssistantContentZeroProseBudgetPreservesOriginalElidedCount(t *testing.T) {
+	t.Parallel()
+	body := strings.Repeat("a", 205000)
+	entries := []transcript.Entry{
+		makeEntry(schema.NewTurn(schema.TurnAssistant, llm.Assistant(body))),
+	}
+	opt := renderOpts{
+		proseBudget: map[int]int{0: 0},
+	}
+	content, meta := renderTranscript(transcript.Header{}, entries, "0-0", opt)
+	if !meta.Truncated {
+		t.Fatalf("want truncated=true, got %+v", meta)
+	}
+	re := regexp.MustCompile(`_… (\d+) characters elided from this oversized turn`)
+	match := re.FindStringSubmatch(content)
+	if match == nil {
+		t.Fatalf("elision notice not found in content:\n%s", content)
+	}
+	count, err := strconv.Atoi(match[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count < 200000 {
+		t.Fatalf("elision count was clobbered to %d, want > 200000:\n%s", count, content)
 	}
 }
 

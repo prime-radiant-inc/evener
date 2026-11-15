@@ -381,7 +381,7 @@ func (s *Session) createTranscript(faultPoint string, hdr transcript.Header) (*t
 // the tools it provides.
 func (s *Session) installContextStrategy() error {
 	if percent := s.cfg.CompactAtPercent; percent > 0 {
-		s.contextMgr.SetCompactAt(float64(percent) / 100)
+		s.contextMgr.SetExplicitCompactAt(float64(percent) / 100)
 	}
 	contextmgr.ApplyThresholdScale(s.contextMgr, s.cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
@@ -1782,6 +1782,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	} else {
 		reg = newProfileToolRegistry(s.profile)
+		s.reg = reg
 		if err := s.restoreSideEffect("register_core_tools", func() error { return registerCoreTools(reg, s) }); err != nil {
 			return nil, err
 		}
@@ -1849,6 +1850,15 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Apply the final intersection after NewSession has added every intrinsic
 		// tool so neither the live registry nor its model-facing cache can widen it.
 		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
+	}
+	// Only the coordinator writes the session URL list, and a subagent cannot
+	// ask the human (#6080, ask_user). This gate is the last removal, after the
+	// allowed/denied policy and the frozen ceiling, so an all-tools role or a
+	// restored descriptor cannot reintroduce a protected tool.
+	if s.isSubagentSession() {
+		for _, name := range protectedGrantTools() {
+			s.reg.Remove(name)
+		}
 	}
 	s.filterUnavailableMemoryTools()
 	// A role preload is prepared on the creating parent and a frozen descriptor
@@ -2093,7 +2103,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 				Source:     "hooks",
 				Title:      "unsupported hook event",
-				Message:    unsupportedHookEventWarning(p.Manifest.Name, event),
+				Message:    plugin.UnsupportedHookEventWarning(p.Manifest.Name, event),
 				PluginName: p.Manifest.Name,
 				EventName:  event,
 			})
@@ -2111,7 +2121,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 				Source:     "hooks",
 				Title:      "unknown hook event",
-				Message:    unknownHookEventWarning(p.Manifest.Name, event),
+				Message:    plugin.UnknownHookEventWarning(p.Manifest.Name, event),
 				PluginName: p.Manifest.Name,
 				EventName:  event,
 			})
@@ -2533,25 +2543,6 @@ func (s *Session) restoreSideEffect(point string, run func() error) error {
 	return run()
 }
 
-// unknownHookEventWarning builds the load-time warning text for a hook declared
-// under an event name that is neither a evener event nor a recognized Claude
-// event — almost always a typo. It names the plugin and the offending event
-// only; no hook payload or secret is included.
-func unknownHookEventWarning(pluginName, event string) string {
-	return fmt.Sprintf(
-		"plugin %q declares a hook for %q, which is not a recognized Claude or evener hook event (likely a typo); this hook will never fire",
-		pluginName, event)
-}
-
-// unsupportedHookEventWarning builds the load-time warning text for a hook
-// declared under a recognized Claude event that evener does not yet fire
-// (reserved-placeholder). It names the plugin and the reserved event only.
-func unsupportedHookEventWarning(pluginName, event string) string {
-	return fmt.Sprintf(
-		"plugin %q declares a hook for the reserved event %q, which evener does not yet fire; this hook will not run",
-		pluginName, event)
-}
-
 // supportedHookHandlerTypes is the set of handler "type" values evener actually
 // executes. Everything else (http, mcp_tool, agent, …) is reserved and skipped.
 // Must stay in sync with the dispatch-side hooks.supportedHandlerTypes / runHook
@@ -2621,6 +2612,9 @@ func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 		warning.Code = events.WarningCodePluginCompatibility
 		warning.Title = "Skill compatibility"
 		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
+	case "unverified_cache_root":
+		warning.Title = "Skill cache fallback"
+		warning.Hint = "Set TMPDIR to a directory this process can verify, or keep using the fallback named in the message. Other skills remain usable."
 	}
 	return warning
 }

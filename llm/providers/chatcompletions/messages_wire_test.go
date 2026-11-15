@@ -14,6 +14,7 @@ import (
 // for an assistant turn that thought but never answered: the reasoning becomes
 // the message content and no reasoning field is set.
 func TestToChatMessages_ThinkingAsTextReasoningOnly(t *testing.T) {
+	t.Parallel()
 	turn := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "just thinking"}},
 	}}}
@@ -35,6 +36,7 @@ func TestToChatMessages_ThinkingAsTextReasoningOnly(t *testing.T) {
 // carrying both text and tool calls keeps its text on the wire beside the
 // calls, instead of dropping it.
 func TestToChatMessages_AssistantTextWithToolCall(t *testing.T) {
+	t.Parallel()
 	turn := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "let me check"},
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "f", Arguments: json.RawMessage(`{"a":1}`)}},
@@ -54,6 +56,7 @@ func TestToChatMessages_AssistantTextWithToolCall(t *testing.T) {
 // TestToChatMessages_ToolCallThoughtSignature preserves Gemini's opaque
 // continuation token in the OpenAI-compatible escape hatch used by shisa.
 func TestToChatMessages_ToolCallThoughtSignature(t *testing.T) {
+	t.Parallel()
 	turn := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 			ID: "call_gemini", Name: "read_file", Arguments: json.RawMessage(`{"path":"x"}`), ThoughtSignature: "sig-1",
@@ -88,6 +91,7 @@ func TestToChatMessages_ToolCallThoughtSignature(t *testing.T) {
 // the tool-result content switch: any non-string value reaches the wire as
 // its JSON encoding.
 func TestToChatMessages_ToolResultNonStringContent(t *testing.T) {
+	t.Parallel()
 	turn := []llm.Message{{Role: llm.RoleTool, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Content: map[string]any{"rows": 2}}},
 	}}}
@@ -104,6 +108,7 @@ func TestToChatMessages_ToolResultNonStringContent(t *testing.T) {
 // two text parts in one message become one newline-separated string, and two
 // thinking parts join the same way on the reasoning field.
 func TestToChatMessages_TextPartsJoinWithNewline(t *testing.T) {
+	t.Parallel()
 	twoText := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "line one"},
 		{Kind: llm.ContentText, Text: "line two"},
@@ -134,6 +139,7 @@ func TestToChatMessages_TextPartsJoinWithNewline(t *testing.T) {
 // png type from the bytes, and an image part with neither URL nor data is
 // dropped.
 func TestToChatMessages_ImagePartShapes(t *testing.T) {
+	t.Parallel()
 	png := testPNG(t)
 	msg := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "look"},
@@ -165,6 +171,7 @@ func TestToChatMessages_ImagePartShapes(t *testing.T) {
 // non-matching parts pass through untouched, and later messages can carry the
 // image-bearing result without the earlier scan short-circuiting.
 func TestRequestWithoutToolResultImagesPrivateCopy(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "run"}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{
@@ -205,6 +212,7 @@ func TestRequestWithoutToolResultImagesPrivateCopy(t *testing.T) {
 // of the cache-control marker: a multimodal user message gets its marker on
 // the last text part of the content array, not by promoting a string.
 func TestBuildBody_CacheControlMarksMultimodalContent(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "look"},

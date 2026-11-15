@@ -1,63 +1,116 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { mix, palettes as sharedPalettes, type ThemePalette } from "@evener/appwire-client/palette";
 import { contrast } from "./contrast.testkit";
-import { fonts, mix, paletteFor, palettes, scaledType, typeRoles, uiType } from "./tokens";
+import { fonts, paletteFor, palettes, type Palette, scaledType, typeRoles, uiType } from "./tokens";
 
-describe("the native neutral palette", () => {
-	it("light", () => {
-		expect(palettes.light).toMatchObject({
-			scheme: "light",
-			page: "#FFFFFF",
-			canvas: "#F2F2F7",
-			surface: "#FFFFFF",
-			inset: "#EDEDF2",
-			pressed: "#E5E5EA",
-			edge: "#D8D8DF",
-			edgeStrong: "#B8B8C1",
-			inkHi: "#1C1C1E",
-			inkMid: "#55555E",
-			inkLow: "#62626D",
-			prose: "#1C1C1E",
-			attention: "#F59E0B",
-			attentionInk: "#9C4908",
-			alive: "#189A4D",
-			aliveInk: "#12763B",
-			danger: "#E3474C",
-			dangerInk: "#C51D23",
-			accent: "#0285FF",
-			accentInk: "#0064C2",
-			accentFill: "#0070E0",
-			onFill: "#FFFFFF",
-			diffAdd: "#E9F4EE",
-			diffDel: "#F5EAF0",
-		});
+// The phone's role -> the shared role it must render. Restated here rather
+// than read from design/tokens.ts's alias table: this is the expected
+// contract, so a one-sided edit to that table fails.
+const NATIVE_ALIASES: Record<string, keyof ThemePalette> = {
+	page: "surface-0",
+	canvas: "surface-canvas",
+	surface: "surface-1",
+	inset: "surface-inset",
+	pressed: "hover-2",
+	edge: "edge",
+	edgeStrong: "edge-strong",
+	inkHi: "ink-hi",
+	inkMid: "ink-mid",
+	inkLow: "ink-low",
+	prose: "prose-ink",
+	attention: "attention",
+	attentionInk: "attention-ink",
+	attentionBg: "attention-bg",
+	attentionEdge: "attention-edge",
+	alive: "alive",
+	aliveInk: "alive-ink",
+	aliveBg: "alive-bg",
+	aliveEdge: "alive-edge",
+	danger: "danger",
+	dangerInk: "danger-ink",
+	dangerBg: "danger-bg",
+	dangerEdge: "danger-edge",
+	accent: "accent",
+	accentInk: "accent-ink",
+	accentBg: "accent-bg",
+	accentEdge: "accent-edge",
+	accentFill: "accent-fill",
+	onFill: "on-fill",
+	bubble: "accent-bg",
+	diffAdd: "diff-add-bg",
+	diffDel: "diff-del-bg",
+};
+
+describe("the native palette aliases the shared palette", () => {
+	it.each(["light", "dark"] as const)("%s", (scheme) => {
+		for (const [role, sharedRole] of Object.entries(NATIVE_ALIASES)) {
+			expect(palettes[scheme][role as keyof typeof palettes.light], `${role} -> ${sharedRole}`).toBe(
+				sharedPalettes[scheme][sharedRole],
+			);
+		}
 	});
-	it("dark", () => {
-		expect(palettes.dark).toMatchObject({
-			scheme: "dark",
-			page: "#111113",
-			canvas: "#08080A",
-			surface: "#1C1C1E",
-			inset: "#252528",
-			pressed: "#303034",
-			edge: "#38383D",
-			edgeStrong: "#56565F",
-			inkHi: "#F5F5F7",
-			inkMid: "#B8B8C1",
-			inkLow: "#A5A5B0",
-			prose: "#E3E3E8",
-			attention: "#F68F3C",
-			attentionInk: "#F68F3C",
-			alive: "#3DBB72",
-			aliveInk: "#3DBB72",
-			danger: "#EE5C61",
-			dangerInk: "#F17478",
-			accent: "#3D9AFF",
-			accentInk: "#459EFF",
-			accentFill: "#0070E0",
-			onFill: "#FFFFFF",
-			diffAdd: "#19251A",
-			diffDel: "#170B17",
-		});
+
+	it("covers every Palette role", () => {
+		expect(
+			Object.keys(palettes.light)
+				.filter((role) => role !== "scheme")
+				.sort(),
+		).toEqual(Object.keys(NATIVE_ALIASES).sort());
+	});
+});
+
+const PALETTE_CONSUMERS = [
+	["design/tokens.ts", readFileSync(new URL("./tokens.ts", import.meta.url), "utf8")],
+	["ansiOutputStyles.ts", readFileSync(new URL("../ansiOutputStyles.ts", import.meta.url), "utf8")],
+] as const;
+
+describe("the phone keeps no palette hex of its own", () => {
+	it.each(PALETTE_CONSUMERS)("%s", (_path, text) => {
+		const withoutComments = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+		expect(withoutComments.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([]);
+	});
+});
+
+// The frontmatter is the phone's design record; keep it tied to the palette
+// it documents instead of trusting a hand edit.
+const DESIGN_FRONTMATTER: Record<string, Exclude<keyof Palette, "scheme">> = {
+	background: "page",
+	surface: "inset",
+	text: "inkHi",
+	secondary: "inkMid",
+	border: "edge",
+	accent: "accentInk",
+	"accent-fill": "accentFill",
+	error: "dangerInk",
+	raised: "surface",
+	canvas: "canvas",
+	"attention-ink": "attentionInk",
+	"quiet-ink": "inkLow",
+	prose: "prose",
+	pressed: "pressed",
+	"strong-border": "edgeStrong",
+	"on-fill": "onFill",
+	attention: "attention",
+	"attention-bg": "attentionBg",
+	"attention-edge": "attentionEdge",
+	alive: "alive",
+	"alive-ink": "aliveInk",
+	danger: "danger",
+	"accent-mark": "accent",
+	"accent-bg": "accentBg",
+	"accent-edge": "accentEdge",
+};
+
+describe("DESIGN.md records the shared palette", () => {
+	const design = readFileSync(new URL("../../DESIGN.md", import.meta.url), "utf8");
+	const colors = /^colors:\n([\s\S]*?)^typography:/m.exec(design)?.[1] ?? "";
+
+	it.each(["light", "dark"] as const)("%s frontmatter", (scheme) => {
+		for (const [key, role] of Object.entries(DESIGN_FRONTMATTER)) {
+			const value = new RegExp(`^  ${scheme}-${key}: "(#[0-9A-Fa-f]{6})"$`, "m").exec(colors)?.[1];
+			expect(value?.toUpperCase(), `${scheme}-${key}`).toBe(palettes[scheme][role].toUpperCase());
+		}
 	});
 });
 
@@ -88,38 +141,18 @@ describe.each(Object.entries(palettes))("%s text contrast", (_scheme, palette) =
 		])
 			expect(contrast(ink, surface), `${ink} on ${surface}`).toBeGreaterThanOrEqual(4.5);
 	});
+
+	it("keeps the pressed wash visibly distinct from every neutral surface", () => {
+		for (const surface of [palette.page, palette.canvas, palette.surface, palette.inset]) {
+			expect(contrast(palette.pressed, surface), `${palette.pressed} on ${surface}`).toBeGreaterThanOrEqual(1.1);
+		}
+	});
 });
 
-describe("tints: the hue at 15% over surface, edges at 40% over edge", () => {
+describe("tints", () => {
 	it("mix blends in OKLab, as CSS color-mix does, and rounds each channel", () => {
 		expect(mix("#000000", "#FFFFFF", 0.5)).toBe("#636363");
 		expect(mix("#F59E0B", "#FCFBF8", 0.15)).toBe("#FCEEDC");
-	});
-	it("light tints", () => {
-		expect(palettes.light).toMatchObject({
-			attentionBg: "#FFF1E2",
-			attentionEdge: "#E6C3A0",
-			aliveBg: "#E1F0E3",
-			aliveEdge: "#98C0A5",
-			dangerBg: "#FFE5E3",
-			dangerEdge: "#E4A4A4",
-			accentBg: "#DFEEFF",
-			accentEdge: "#94BAEF",
-			bubble: "#DFEEFF",
-		});
-	});
-	it("dark tints", () => {
-		expect(palettes.dark).toMatchObject({
-			attentionBg: "#382C26",
-			attentionEdge: "#805B45",
-			aliveBg: "#24312A",
-			aliveEdge: "#436A53",
-			dangerBg: "#382728",
-			dangerEdge: "#7F4A4C",
-			accentBg: "#232D3B",
-			accentEdge: "#405E86",
-			bubble: "#232D3B",
-		});
 	});
 });
 

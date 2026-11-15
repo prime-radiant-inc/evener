@@ -410,85 +410,15 @@ func steeringOriginBoundary(divergenceTurn, historyLen int) int {
 }
 
 // minimalExampleQuestionsArray returns a minimal valid example for error messages.
+// It delegates to tool.MinimalExampleQuestionsArray so definitions never diverge.
 func minimalExampleQuestionsArray() string {
-	ex := map[string]any{
-		"questions": []any{
-			map[string]any{
-				"question": "Which option?",
-				"options": []any{
-					map[string]any{"label": "Option A", "detail": "First choice"},
-					map[string]any{"label": "Option B", "detail": "Second choice"},
-				},
-			},
-		},
-	}
-	b, _ := json.MarshalIndent(ex, "", "  ")
-	return string(b)
+	return tool.MinimalExampleQuestionsArray()
 }
 
-// normalizeAskArgs normalizes ask_user arguments by wrapping the shorthand form
-// into the canonical batch form. When `questions` is absent but `question` +
-// `options` are present (plus optional `why`, `if_unanswered`, `multi_select`,
-// `header`), wraps them into a one-element `questions` array. Returns a
-// normalized copy of args, or an error if the shape is invalid.
+// normalizeAskArgs delegates to tool.NormalizeAskUserArgs, the single canonical
+// normalizer for ask_user shorthand arguments.
 func normalizeAskArgs(args map[string]any) (map[string]any, error) {
-	_, hasQuestions := args["questions"]
-	question, hasQuestion := args["question"]
-	options, hasOptions := args["options"]
-
-	// Case 1: questions present, question/options absent → use as-is (batch form)
-	if hasQuestions && !hasQuestion && !hasOptions {
-		return args, nil
-	}
-
-	// Case 2: question + options present, questions absent → wrap into batch form
-	if !hasQuestions && hasQuestion && hasOptions {
-		// Collect optional fields
-		wrapped := map[string]any{
-			"question": question,
-			"options":  options,
-		}
-		if why, ok := args["why"].(string); ok && why != "" {
-			wrapped["why"] = why
-		}
-		if ifUnanswered, ok := args["if_unanswered"].(string); ok && ifUnanswered != "" {
-			wrapped["if_unanswered"] = ifUnanswered
-		}
-		if multiSelect, ok := args["multi_select"].(bool); ok && multiSelect {
-			wrapped["multi_select"] = multiSelect
-		}
-		if header, ok := args["header"].(string); ok && header != "" {
-			wrapped["header"] = header
-		}
-
-		// Create normalized args with wrapped questions
-		out := make(map[string]any, len(args))
-		for k, v := range args {
-			if k != "question" && k != "options" && k != "why" && k != "if_unanswered" &&
-				k != "multi_select" && k != "header" {
-				out[k] = v
-			}
-		}
-		out["questions"] = []any{wrapped}
-		return out, nil
-	}
-
-	// Case 3: distinguish sub-cases within invalid shapes
-	// Sub-case 3a: both questions and question/options present
-	if hasQuestions && hasQuestion {
-		errorMsg := "ask_user: both 'questions' and 'question'/'options' given — supply exactly one form. Minimal example:\n" + minimalExampleQuestionsArray()
-		return nil, errors.New(errorMsg)
-	}
-
-	// Sub-case 3b: question present but options missing (shorthand attempted but incomplete)
-	if hasQuestion && !hasOptions {
-		errorMsg := "ask_user: 'options' is required when using the 'question' shorthand. Minimal example:\n" + minimalExampleQuestionsArray()
-		return nil, errors.New(errorMsg)
-	}
-
-	// Sub-case 3c: neither questions nor question+options present
-	errorMsg := "ask_user: 'questions' is required (or use the 'question'+'options' shorthand for a single question). Minimal example:\n" + minimalExampleQuestionsArray()
-	return nil, errors.New(errorMsg)
+	return tool.NormalizeAskUserArgs(args)
 }
 
 // parseAskQuestions extracts the askQuestions from an ask_user call's parsed
@@ -558,7 +488,7 @@ func ParseAskUserCallArguments(argsJSON []byte) ([]schema.AskUserQuestion, error
 	if err := json.Unmarshal(argsJSON, &args); err != nil {
 		return nil, fmt.Errorf("ask_user arguments: %w", err)
 	}
-	normalized, err := normalizeAskArgs(args)
+	normalized, err := tool.NormalizeAskUserArgs(args)
 	if err != nil {
 		return nil, err
 	}
@@ -1127,7 +1057,7 @@ func questionsFromAskCalls(history []schema.Turn, toolResultsIdx int, wantCallID
 				continue // unparseable JSON; skip this call, never fail the restore
 			}
 			// Normalize shorthand form into batch form
-			normalized, err := normalizeAskArgs(args)
+			normalized, err := tool.NormalizeAskUserArgs(args)
 			if err != nil {
 				continue // invalid shape; skip this call, never fail the restore
 			}

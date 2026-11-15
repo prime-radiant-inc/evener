@@ -197,6 +197,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// boundary with the exact history it guards.
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
+	// A request's coverage belongs to its history snapshot. A later fold may
+	// replace a retracted frontier before this request stages its inputs.
+	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
 	inFlightFrom := s.turnHistoryBaseline
 	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments)+len(s.pendingToolResultDocuments))
 	for id := range s.rejectedToolResultDocuments {
@@ -411,7 +414,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
-	s.stageConversationInputs(presentedTurns)
+	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 

@@ -11,6 +11,7 @@ import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/ext
 import { type Dispatch, type FormEvent, type SetStateAction, useEffect, useId, useRef, useState } from "react";
 import {
   Button,
+  Card,
   Chip,
   ConfirmDialog,
   EmptyState,
@@ -276,7 +277,7 @@ export function MarketplacesSection({
       <ul aria-label="Marketplaces" className={CLASS.list}>
         {marketplaces.length === 0 ? (
           <li>
-            <EmptyState size="compact" reason="empty" title="No marketplaces registered. Add one below." />
+            <EmptyState size="compact" reason="empty" title="No marketplaces yet. Add one below." />
           </li>
         ) : trimmedQuery !== "" && visibleMarketplaces.length === 0 ? (
           <li>
@@ -342,78 +343,80 @@ export function MarketplacesSection({
         )}
       </ul>
       {addOpen ? (
-        <form className={CLASS.addForm} onSubmit={(event) => void handleSubmit(event)}>
-          <RadioGroup
-            label="Source"
-            value={kind}
-            onChange={(value) => setKind(value as MarketplaceSourceKind)}
-            options={MARKETPLACE_SOURCE_OPTIONS}
-          />
-          {kind === "url" && (
-            <FormRow label="Git URL" htmlFor={urlId}>
-              <Input
-                id={urlId}
-                value={urlValue}
-                onChange={(event) => setUrlValue(event.target.value)}
-                placeholder="https://github.com/owner/repo.git"
-              />
-            </FormRow>
-          )}
-          {kind === "github" && (
-            <FormRow label="owner/repo" htmlFor={repoId}>
-              <Input
-                id={repoId}
-                value={repoValue}
-                onChange={(event) => setRepoValue(event.target.value)}
-                placeholder="owner/repo"
-              />
-            </FormRow>
-          )}
-          {kind === "directory" && (
-            <FormRow label="Local path" htmlFor={pathId}>
-              <PathField
-                ariaLabel="Local path"
-                directory={directory}
-                id={pathId}
-                value={pathValue}
-                onChange={setPathValue}
-                kind="dir"
-                complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
-                placeholder="/absolute/path"
-              />
-            </FormRow>
-          )}
-          {marketplaceSourceTakesRef(kind) && (
-            <FormRow
-              label="Branch or tag (optional)"
-              htmlFor={refId}
-              help="Defaults to the repository's default branch."
-            >
-              <Input
-                id={refId}
-                value={refValue}
-                onChange={(event) => setRefValue(event.target.value)}
-                placeholder="main"
-              />
-            </FormRow>
-          )}
-          <FormRow label="Name (optional)" htmlFor={nameId} help="Defaults to the marketplace's own name.">
-            <Input
-              id={nameId}
-              value={nameValue}
-              onChange={(event) => setNameValue(event.target.value)}
-              placeholder="defaults to the marketplace's own name"
+        <Card variant="outlined">
+          <form className={CLASS.addForm} onSubmit={(event) => void handleSubmit(event)}>
+            <RadioGroup
+              label="Source"
+              value={kind}
+              onChange={(value) => setKind(value as MarketplaceSourceKind)}
+              options={MARKETPLACE_SOURCE_OPTIONS}
             />
-          </FormRow>
-          <div className={CLASS.formActions}>
-            <Button type="submit" disabled={hubWriteBusy || readUnavailable}>
-              Add
-            </Button>
-            <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={hubWriteBusy}>
-              Cancel
-            </Button>
-          </div>
-        </form>
+            {kind === "url" && (
+              <FormRow label="Git URL" htmlFor={urlId}>
+                <Input
+                  id={urlId}
+                  value={urlValue}
+                  onChange={(event) => setUrlValue(event.target.value)}
+                  placeholder="https://github.com/owner/repo.git"
+                />
+              </FormRow>
+            )}
+            {kind === "github" && (
+              <FormRow label="owner/repo" htmlFor={repoId}>
+                <Input
+                  id={repoId}
+                  value={repoValue}
+                  onChange={(event) => setRepoValue(event.target.value)}
+                  placeholder="owner/repo"
+                />
+              </FormRow>
+            )}
+            {kind === "directory" && (
+              <FormRow label="Local path" htmlFor={pathId}>
+                <PathField
+                  ariaLabel="Local path"
+                  directory={directory}
+                  id={pathId}
+                  value={pathValue}
+                  onChange={setPathValue}
+                  kind="dir"
+                  complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
+                  placeholder="/absolute/path"
+                />
+              </FormRow>
+            )}
+            {marketplaceSourceTakesRef(kind) && (
+              <FormRow
+                label="Branch or tag (optional)"
+                htmlFor={refId}
+                help="Defaults to the repository's default branch."
+              >
+                <Input
+                  id={refId}
+                  value={refValue}
+                  onChange={(event) => setRefValue(event.target.value)}
+                  placeholder="main"
+                />
+              </FormRow>
+            )}
+            <FormRow label="Name (optional)" htmlFor={nameId} help="Defaults to the marketplace's own name.">
+              <Input
+                id={nameId}
+                value={nameValue}
+                onChange={(event) => setNameValue(event.target.value)}
+                placeholder="defaults to the marketplace's own name"
+              />
+            </FormRow>
+            <div className={CLASS.formActions}>
+              <Button type="submit" disabled={hubWriteBusy || readUnavailable}>
+                Add
+              </Button>
+              <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={hubWriteBusy}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </Card>
       ) : (
         <Button variant="quiet" onClick={() => setAddOpen(true)}>
           + Add marketplace

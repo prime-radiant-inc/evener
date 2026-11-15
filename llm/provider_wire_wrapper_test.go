@@ -40,6 +40,7 @@ func (s *wrapperWireCaptureSink) snapshot() []apilog.APIAttemptRecord {
 // OpenRouter-over-Anthropic recipe) — records exactly one core attempt, under
 // the instance's own name.
 func TestVendorInstancesInheritWireCaptureExactlyOnce(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -102,6 +103,7 @@ func TestVendorInstancesInheritWireCaptureExactlyOnce(t *testing.T) {
 // half: an instance that takes the curated vendor id as its own name still
 // records its attempt under that name.
 func TestCuratedVendorInstancesPreserveWireCaptureProvenance(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"wrapper-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))

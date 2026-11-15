@@ -386,10 +386,11 @@ func (s *Session) timerWatchIsLive(watchID string) bool {
 	if jm == nil {
 		return true
 	}
-	key := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
+	keySelf := watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: watchID}
+	keyCaller := watchKey{VisibleSessionID: jm.sessionID, Target: runtimeMessageAliasCaller, Slot: watchID}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	return jm.watches[key] != nil
+	return jm.watches[keySelf] != nil || jm.watches[keyCaller] != nil
 }
 
 // classifyDurableNotifications is the pure durable-notification classification

@@ -17,6 +17,7 @@ import (
 // each session's API-log target (so process ownership is unchanged), but
 // records admitted through the sink never reach storage.
 func TestSessionOwnershipAPILoggerDiscardsRecordsButKeepsOwnership(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionOwnershipAPILogger(stateDir)
 	if err != nil {
@@ -48,6 +49,7 @@ func TestSessionOwnershipAPILoggerDiscardsRecordsButKeepsOwnership(t *testing.T)
 // discarded append path does not create session leaves at all: without a
 // reserve there is no ownership to hold, so nothing touches the filesystem.
 func TestSessionOwnershipAPILoggerNeverOpensUnreservedSessions(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionOwnershipAPILogger(stateDir)
 	if err != nil {
@@ -65,6 +67,7 @@ func TestSessionOwnershipAPILoggerNeverOpensUnreservedSessions(t *testing.T) {
 // releases cleanly. The flock is the session-ownership mechanism, so it must
 // behave identically in both modes.
 func TestSessionOwnershipAPILoggerEnforcesOwnership(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner, err := NewSessionOwnershipAPILogger(stateDir)
 	if err != nil {
@@ -96,6 +99,7 @@ func TestSessionOwnershipAPILoggerEnforcesOwnership(t *testing.T) {
 // discarded settlement path reports success to callers (the group's settlement
 // error surfacing stays quiet when nothing was supposed to be written).
 func TestSessionOwnershipAPILoggerSettlesWithoutFailureObservations(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionOwnershipAPILogger(stateDir)
 	if err != nil {
@@ -157,6 +161,7 @@ func (ownershipBindingTestAdapter) Stream(context.Context, Request) (Stream, err
 // the record would be work nobody keeps, repeated over the whole conversation
 // on every model round.
 func TestSessionOwnershipLoggerMiddlewareStampsProtocolWithoutEvidence(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionOwnershipAPILogger(stateDir)
 	if err != nil {
@@ -196,6 +201,7 @@ func TestSessionOwnershipLoggerMiddlewareStampsProtocolWithoutEvidence(t *testin
 // carries the discarding ownership logger, and a group bound to that logger
 // must not retain evidence a later persisting sink in the context can't get.
 func TestAPIAttemptContextActiveFollowsGroupBoundSink(t *testing.T) {
+	t.Parallel()
 	ownership, err := NewSessionOwnershipAPILogger(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSessionOwnershipAPILogger: %v", err)

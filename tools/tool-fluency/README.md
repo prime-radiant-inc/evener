@@ -84,6 +84,12 @@ bigger or smaller than you expected. The runner writes per-repetition
 `result.json`, `stdout.txt`, `stderr.ndjson`, plus run-level `results.jsonl` and
 `summary.json`.
 
+Probes run with `--sandbox workspace-write` by default, so a probe can write
+only inside its work dir (plus the session's temp and contained caches). Pass
+`--sandbox off` only when a probe genuinely needs the whole host; `read-only`
+and `restricted` are also accepted. An empty value (`--sandbox "$MODE"` with
+`MODE` unset) keeps the safe default rather than reading as off.
+
 To test prompt or tool-description improvements without editing the product
 prompt first, pass one or more append files:
 

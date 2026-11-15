@@ -26,6 +26,7 @@ func mustResolve(t *testing.T, r *Registry, ref string) Resolved {
 // and user overlays can arrive unsorted, and every picker renders the ladder
 // as resolved.
 func TestResolve_RanksAuthoredEffortLadder(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\neffort_values = [\"max\", \"low\", \"high\"]\n")
 	res := mustResolve(t, r, "anthropic/claude-opus-4-6")
 	if !reflect.DeepEqual(res.Caps.EffortValues, []string{"low", "high", "max"}) {
@@ -37,6 +38,7 @@ func TestResolve_RanksAuthoredEffortLadder(t *testing.T) {
 // their authored relative order ahead of the ranked tiers, the same
 // pass-through the request-side clamp gives them.
 func TestResolve_EffortLadderKeepsAuthoredOrderForUnrankableLevels(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\neffort_values = [\"max\", \"turbo\", \"low\", \"none\"]\n")
 	res := mustResolve(t, r, "anthropic/claude-opus-4-6")
 	if !reflect.DeepEqual(res.Caps.EffortValues, []string{"turbo", "none", "low", "max"}) {
@@ -47,6 +49,7 @@ func TestResolve_EffortLadderKeepsAuthoredOrderForUnrankableLevels(t *testing.T)
 // A provider-level ladder reaches the instance views the way a row's ladder
 // reaches a model resolve: rank-ordered, whatever order the config stated.
 func TestResolveInstance_RanksProviderLevelEffortLadder(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.gw]\nbase = \"openai\"\neffort_values = [\"max\", \"low\"]\n")
 	inst, err := r.ResolveInstance("gw")
 	if err != nil {
@@ -64,6 +67,7 @@ func TestResolveInstance_RanksProviderLevelEffortLadder(t *testing.T) {
 // silently reorder the stored row. The record keeps its authored order; only
 // the served copy is ranked.
 func TestResolve_RankingKeepsTheStoredLayersAuthored(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\neffort_values = [\"max\", \"low\", \"high\"]\n")
 	mustResolve(t, r, "anthropic/claude-opus-4-6")
 	for _, bucket := range []map[string]*record{r.curated, r.explicit} {
@@ -85,12 +89,14 @@ func hasWarning(res Resolved, substr string) bool {
 }
 
 func TestParseRef(t *testing.T) {
+	t.Parallel()
 	if ParseRef("groq/openai/gpt-oss-120b") != (Ref{Instance: "groq", Model: "openai/gpt-oss-120b"}) || ParseRef("gpt-5.5") != (Ref{Model: "gpt-5.5"}) {
 		t.Fatal("ParseRef splits on the first slash only")
 	}
 }
 
 func TestResolve_LookupSteps(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1", "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"}, "")
 	res := mustResolve(t, r, "anthropic/claude-opus-4-5")
 	if res.Provenance["model"] != "row:claude-opus-4-5" || res.WireID != "claude-opus-4-5" || res.ModelID != "claude-opus-4-5" {
@@ -169,6 +175,7 @@ func orderLoad(t *testing.T, config string) *Registry {
 }
 
 func TestResolve_LayerOrder(t *testing.T) {
+	t.Parallel()
 	r := orderLoad(t, "[providers.x]\nmax_output_tokens = 20\n")
 	for ref, want := range map[string]struct {
 		ctx  int
@@ -194,6 +201,7 @@ func TestResolve_LayerOrder(t *testing.T) {
 }
 
 func TestResolve_LiveSitsBetweenOverlayAndConfig(t *testing.T) {
+	t.Parallel()
 	r := orderLoad(t, "")
 	r.ApplyLive("x", []Model{{ID: "m", Caps: Caps{ContextWindow: new(5000)}}})
 	if res := mustResolve(t, r, "x/m"); *res.Caps.ContextWindow != 5000 || res.Provenance["ContextWindow"] != "live" {
@@ -207,6 +215,7 @@ func TestResolve_LiveSitsBetweenOverlayAndConfig(t *testing.T) {
 }
 
 func TestResolve_AliasSeeding(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"AZURE_RESOURCE_NAME": "contoso"}, "[providers.azure.models.\"claude-prod\"]\nalias_of = \"claude-opus-4-5\"\n")
 	res := mustResolve(t, r, "anthropic/claude-sonnet-4-5[1m]")
 	// The [1m] row is a pure alias: its 1M window arrives through the alias
@@ -248,10 +257,32 @@ func TestResolve_AliasSeeding(t *testing.T) {
 	}
 }
 
+// The web model editor hides a config-provenance figure from its "Inherited"
+// placeholders only when the reporting row authored it, so the figures an
+// alias imports from a user-configured target must keep the target's
+// provenance while the alias's own row stays unauthored (#6284). ProvenanceSource
+// is the mapping the hub applies for the wire.
+func TestResolve_AliasKeepsTargetConfigProvenance(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-5\"]\ncontext_window = 400000\ncompaction_threshold = 250000\n"+
+		"[providers.anthropic.models.\"claude-prod\"]\nalias_of = \"claude-opus-4-5\"\n")
+	res := mustResolve(t, r, "anthropic/claude-prod")
+	if *res.Caps.ContextWindow != 400000 || res.Provenance["ContextWindow"] != "config/row" {
+		t.Fatalf("alias window must keep the target's config provenance: %d %q", *res.Caps.ContextWindow, res.Provenance["ContextWindow"])
+	}
+	if *res.Caps.CompactionThreshold != 250000 || res.Provenance["CompactionThreshold"] != "config/row" {
+		t.Fatalf("alias threshold must keep the target's config provenance: %v %q", res.Caps.CompactionThreshold, res.Provenance["CompactionThreshold"])
+	}
+	if ProvenanceSource(res.Provenance["ContextWindow"]) != "config" {
+		t.Fatalf("the hub's layer mapping must report the imported window as config: %q", ProvenanceSource(res.Provenance["ContextWindow"]))
+	}
+}
+
 // An alias of a row whose effort control was derived — not catalog-recorded —
 // must not inherit that control as if it were evidence: the alias derives no
 // google thinking shape, exactly like its target (roborev round 3).
 func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.cu-alias]\nalias_of = \"gemini-2.5-computer-use-preview-10-2025\"\n")
 	target := mustResolve(t, r, "google/gemini-2.5-computer-use-preview-10-2025")
 	if target.Caps.ThinkingShape != nil {
@@ -273,6 +304,7 @@ func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
 // a protocol that has none — so it derives from the catalog controls it
 // inherited, exactly like a directly named row (roborev round 4).
 func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
+	t.Parallel()
 	// The openai-chat target carries no shape of its own, but its catalog
 	// row records budget_tokens — the alias derives from those inherited
 	// controls, not from the target's (absent) verdict.
@@ -394,6 +426,7 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 // google row handed anthropic's derived "budget" would emit a thinkingBudget
 // no catalog evidence vouches for (roborev round 6).
 func TestResolve_CrossProtocolAliasNeverInheritsShape(t *testing.T) {
+	t.Parallel()
 	// The anthropic target derives "budget" from its cataloged
 	// budget_tokens control; a google alias of it must not inherit that
 	// verdict — the shape belongs to the target's protocol.
@@ -418,6 +451,7 @@ func TestResolve_CrossProtocolAliasNeverInheritsShape(t *testing.T) {
 // inherits the target's shape: the alias resolves as the target's protocol,
 // so the verdict is already settled for it (roborev round 7).
 func TestResolve_AliasInheritsTargetProtocolShape(t *testing.T) {
+	t.Parallel()
 	// openrouter defaults to openai-chat; the target row overrides to
 	// google. The alias must inherit the target's derived google shape, not
 	// discard it by comparing against the provider default.
@@ -447,6 +481,7 @@ func TestResolve_AliasInheritsTargetProtocolShape(t *testing.T) {
 // future edit that flips Opus 4.5 to GA must fail this test until someone
 // deliberately updates it.
 func TestResolve_Opus45OneMStillBeta(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	for _, tc := range []struct{ ref, wantWireID string }{
 		{"anthropic/claude-opus-4-5[1m]", "claude-opus-4-5"},
@@ -469,6 +504,7 @@ func TestResolve_Opus45OneMStillBeta(t *testing.T) {
 }
 
 func TestResolve_TransportAssembly(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global", "AWS_REGION": "us-east-1"}, "")
 	res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5")
 	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1/projects/p/locations/global" || res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Transport.StreamEndpoint != "/publishers/anthropic/models/{model}:streamRawPredict" || res.Transport.Body["anthropic_version"] != "vertex-2023-10-16" || res.Transport.ModelsEndpoint != EndpointUnsupported {
@@ -569,6 +605,7 @@ func TestResolve_TransportAssembly(t *testing.T) {
 // location is not the endpoint's problem and must not be warned about. The
 // rule only owns the authority it derives from the location.
 func TestResolve_LiteralHostWithLocationPathDoesNotWarn(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
 		"[providers.gwpath]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gw.example.test/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n")
 	res := mustResolve(t, r, "gwpath/claude-opus-5")
@@ -585,6 +622,7 @@ func TestResolve_LiteralHostWithLocationPathDoesNotWarn(t *testing.T) {
 // front of the regional endpoint, so the rule's route is not the one taken and
 // the location is not what the request reaches.
 func TestResolve_DirectHostWithPathPrefixDoesNotWarn(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
 		"[providers.gwproxy]\nbase = \"google-vertex-anthropic\"\nbase_url = \"{GOOGLE_VERTEX_HOST}/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n[providers.gwproxy.vars]\nGOOGLE_VERTEX_HOST = \"https://europe-west1-aiplatform.googleapis.com/proxy\"\n")
 	res := mustResolve(t, r, "gwproxy/claude-opus-5")
@@ -603,6 +641,7 @@ func TestResolve_DirectHostWithPathPrefixDoesNotWarn(t *testing.T) {
 // host it would produce: a literal base URL on the location's own host, with a
 // path the rule did not build, is still the config's route.
 func TestResolve_LiteralCanonicalHostWithPathPrefixDoesNotWarn(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
 		"[providers.literalcanon]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://europe-west1-aiplatform.googleapis.com/proxy/v1/projects/{GOOGLE_VERTEX_PROJECT}/locations/{GOOGLE_VERTEX_LOCATION}\"\n")
 	res := mustResolve(t, r, "literalcanon/claude-opus-5")
@@ -618,6 +657,7 @@ func TestResolve_LiteralCanonicalHostWithPathPrefixDoesNotWarn(t *testing.T) {
 // covers gemini-3.8-flash and gemini-3-pro-preview, but a longer number is a
 // different family, not a longer member of this one.
 func TestVertexGlobalOnlyMatchesAtAnIDBoundary(t *testing.T) {
+	t.Parallel()
 	for _, id := range []string{"gemini-3", "gemini-3.8-flash", "gemini-3-pro-preview", "gemini-3-flash-preview", "claude-opus-5", "claude-opus-5@20251101"} {
 		if !IsVertexGlobalOnly(id) {
 			t.Errorf("%q is global-only", id)
@@ -634,6 +674,7 @@ func TestVertexGlobalOnlyMatchesAtAnIDBoundary(t *testing.T) {
 // anywhere else — a path or query segment — derives nothing: the request goes
 // where the template's own authority sends it.
 func TestResolve_HostPlaceholderOutsideTheAuthorityDoesNotWarn(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"},
 		"[providers.pathhost]\nbase = \"google-vertex-anthropic\"\nbase_url = \"https://gateway.example/{GOOGLE_VERTEX_HOST}/v1\"\n")
 	res := mustResolve(t, r, "pathhost/claude-opus-5")
@@ -645,6 +686,7 @@ func TestResolve_HostPlaceholderOutsideTheAuthorityDoesNotWarn(t *testing.T) {
 // A location the rule refuses derives nothing: the resolver says what is wrong
 // with the location instead of claiming a regional endpoint was reached.
 func TestResolve_InvalidLocationDoesNotWarnRegionally(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe_west1"}, "")
 	res := mustResolve(t, r, "google-vertex-anthropic/claude-opus-5")
 	if !hasWarning(res, "invalid GOOGLE_VERTEX_LOCATION") {
@@ -656,6 +698,7 @@ func TestResolve_InvalidLocationDoesNotWarnRegionally(t *testing.T) {
 }
 
 func TestResolve_HeadersAndCredential(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "sk", "OPENAI_ORG_ID": "org-1"}, "")
 	res := mustResolve(t, r, "openai/gpt-5.5")
 	if res.Headers["OpenAI-Organization"] != "org-1" || res.Credential != (Credential{Value: "sk", Source: "env:OPENAI_API_KEY"}) || hasWarning(res, "no credential") {
@@ -685,6 +728,7 @@ func TestResolve_HeadersAndCredential(t *testing.T) {
 }
 
 func TestResolve_CrossProtocolInstances(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.work]
 base = "openai"
@@ -725,6 +769,7 @@ surface = "anthropic"
 // (Endpoint/StreamEndpoint/CountTokensEndpoint), not just base_url. Each
 // case's desc states the specific rule it pins.
 func TestResolve_WebSearchEndpointGate(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.bedrock]
 base = "openai"
@@ -957,6 +1002,7 @@ base = "google-vertex-anthropic"
 // and demands the actual resolution's transport equal it componentwise.
 // Each case here is a channel a prior enumeration round missed.
 func TestResolve_WebSearchCanonicalGate(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.vertexhostnoloc]
 base = "google-vertex-anthropic"
@@ -1042,6 +1088,7 @@ base = "google-vertex-anthropic"
 // overturns a true some layer actually set. On the first-party endpoint
 // nil stays nil - no catalog opinion, none invented.
 func TestResolve_WebSearchNilCapFailsClosed(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.groqgw]
 base = "groq"
@@ -1082,6 +1129,7 @@ base_url = "https://gw.example/v1"
 // (TestCuratedBaseURLsCarryNoQueryOrFragment), so any appearance at all is
 // noncanonical and strips.
 func TestResolve_WebSearchRawDelimiterReject(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.fragbare]
 base = "openai"
@@ -1128,6 +1176,7 @@ base_url = "https://api.openai.com/v1?tenant=1"
 // never misjudge vendor data. A curated entry that ever needs one must
 // revisit sameEndpointURL first.
 func TestCuratedBaseURLsCarryNoQueryOrFragment(t *testing.T) {
+	t.Parallel()
 	for name, r := range map[string]*Registry{"embedded": embeddedLoad(t), "fixture": fixtureLoad(t, nil, "")} {
 		for _, id := range r.ProviderIDs() {
 			p, _ := r.Provider(id)
@@ -1158,6 +1207,7 @@ func TestCuratedBaseURLsCarryNoQueryOrFragment(t *testing.T) {
 // user glob) is stripped with the warning, and the instance's own explicit
 // web_search = true remains the escape hatch.
 func TestResolve_WebSearchFromScratchProviderFailsClosed(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.custom]
 protocol = "openai-responses"
@@ -1218,6 +1268,7 @@ web_search = true
 // lookup refuses to admit it, so the comparison diverges and web_search
 // strips. Label-shaped locations resolve exactly as before.
 func TestResolve_WebSearchVertexLocationValidation(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.vertexlocslash]
 base = "google-vertex-anthropic"
@@ -1283,6 +1334,7 @@ base = "google-vertex-anthropic"
 // web_search; only a genuine user-config override of that same row may
 // strip it.
 func TestResolve_WebSearchInheritedCuratedRowBaseURL(t *testing.T) {
+	t.Parallel()
 	overlay := `
 [providers.vertexmaas]
 implicit = true
@@ -1330,6 +1382,7 @@ base_url = "https://user-override-gateway.example/v1"
 }
 
 func TestFindModel(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(state, "auth"), 0o700)
 	_ = os.WriteFile(oauthRecordPath(state, "openai-codex"), []byte("{}"), 0o600)
@@ -1350,6 +1403,7 @@ func TestFindModel(t *testing.T) {
 }
 
 func TestApplyLive_FactsOnlyAndNonChatDropped(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	shape := "adaptive"
 	r.ApplyLive("openrouter", []Model{
@@ -1379,6 +1433,7 @@ func TestApplyLive_FactsOnlyAndNonChatDropped(t *testing.T) {
 // gateway's own capability (the chat lister's capabilities.vision mapping) is
 // what model selection and the native-vision decisions read.
 func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	r.ApplyLive("openrouter", []Model{{
 		ID:   "anthropic/claude-opus-4.6",
@@ -1395,6 +1450,7 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 // reader depends on; it passes before the capabilities.tools parse because
 // liveFacts already carried Tools.
 func TestResolve_LiveToolsReachCaps(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	if res := mustResolve(t, r, "openrouter/anthropic/claude-opus-4.6"); res.Caps.Tools == nil || !*res.Caps.Tools {
 		t.Fatalf("catalog row must start tools-capable: %v", res.Caps.Tools)
@@ -1421,6 +1477,7 @@ func TestResolve_LiveToolsReachCaps(t *testing.T) {
 // through the live layer, so an uncatalogued gateway model is spelled the way
 // its gateway accepts instead of falling back to the protocol default.
 func TestResolve_LiveWireFactsReachCaps(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "")
 	r.ApplyLive("openrouter", []Model{{
 		ID:   "qwen/qwen3-coder",
@@ -1442,6 +1499,7 @@ func TestResolve_LiveWireFactsReachCaps(t *testing.T) {
 // that lack it, so the live layer can only clear it with a non-nil empty list:
 // a nil slice means "inherit" to mergeCaps and the gateway's verdict is undone.
 func TestResolve_LiveToggleOnlyOverridesACuratedLadder(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
 [providers.openrouter.models."toggle/test-model"]
 reasoning = true
@@ -1465,6 +1523,7 @@ effort_values = ["low", "high"]
 // an empty ladder but not the flag that suppresses the level, so an OpenRouter
 // alias transmits an effort its provider rejects.
 func TestResolve_AliasInheritsNoEffortVerdict(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
 [providers.openrouter.models."target-model"]
 reasoning = true
@@ -1485,6 +1544,7 @@ alias_of = "target-model"
 // ladder and the derived effort control in place, so every protocol but
 // OpenRouter would still spell an effort the row says is rejected.
 func TestResolve_ConfiguredNoEffortVerdictRemovesEffortCapability(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
 [providers.openrouter.models."rejects-effort"]
 reasoning = true
@@ -1507,6 +1567,7 @@ effort_parameter_unsupported = true
 // budget-shaped row keeps its budget_tokens control, so the provider's thinking
 // budget is still sized and derived rather than silently omitted.
 func TestResolve_NoEffortVerdictKeepsBudgetCapability(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
 [providers.google.models."budget-model"]
 reasoning = true
@@ -1530,6 +1591,7 @@ effort_parameter_unsupported = true
 // listing); recording the no-effort verdict there leaves derivation free to
 // strip only the effort control and keep budget_tokens.
 func TestResolve_LiveNoEffortVerdictKeepsBudgetCapability(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
 [providers.google.models."gemini-budget"]
 reasoning = true
@@ -1556,6 +1618,7 @@ reasoning_controls = ["budget_tokens"]
 // builder sends type "enabled" with a budget_tokens object instead of the
 // adaptive body the model takes.
 func TestResolve_NoEffortVerdictKeepsAdaptiveShape(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
 [providers.anthropic.models."claude-effort-only"]
 family = "claude-opus"
@@ -1576,6 +1639,7 @@ effort_parameter_unsupported = true
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"AWS_REGION": "us-east-1"}, "[providers.groq]\ncontext_window = 9000\n")
 	for _, ref := range []string{"anthropic/claude-sonnet-4-5[1m]", "openai-codex/gpt-5.6", "amazon-bedrock/anthropic.claude-sonnet-5", "groq/llama-3.3-70b-versatile", "groq/brand-new"} {
 		res := mustResolve(t, r, ref)
@@ -1594,6 +1658,7 @@ func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {
 }
 
 func TestResolve_DefaultInstanceAndErrors(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k"}, "")
 	if res := mustResolve(t, r, "gpt-5.5"); res.Instance != "openai" {
 		t.Fatalf("bare id → default instance: %q", res.Instance)
@@ -1607,6 +1672,7 @@ func TestResolve_DefaultInstanceAndErrors(t *testing.T) {
 }
 
 func TestStripDatedSuffix(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"claude-sonnet-4-5-20250929":      "claude-sonnet-4-5",
 		"claude-3-5-sonnet-20241022-v2:0": "claude-3-5-sonnet",
@@ -1634,6 +1700,7 @@ func TestStripDatedSuffix(t *testing.T) {
 // a warning rather than silently reading the row's stock variable — the
 // user redirected that name on purpose.
 func TestResolve_RowMappedVarsEnvReadsTheEnvironment(t *testing.T) {
+	t.Parallel()
 	const remap = "[providers.mine]\nbase = \"google-vertex\"\nvars_env = { \"GOOGLE_VERTEX_ENDPOINT\" = \"MY_ENDPOINT\" }\n"
 	stock := map[string]string{
 		"GOOGLE_VERTEX_PROJECT":  "p",
@@ -1683,6 +1750,7 @@ func TestResolve_RowMappedVarsEnvReadsTheEnvironment(t *testing.T) {
 // names, exactly as the actual resolution does; the two sides agree and the
 // vendor's hosted tool survives (roborev PR #924 round 5).
 func TestResolve_WebSearchCanonicalGateRowDefault(t *testing.T) {
+	t.Parallel()
 	overlay := "[providers.rowdefault]\nimplicit = true\nprotocol = \"openai-chat\"\nbase_url = \"https://{HOST}/v1\"\nvars = { \"HOST\" = \"provider.example.test\" }\nweb_search = true\n" +
 		"[providers.rowdefault.models.\"m\"]\nbase_url = \"https://{ROW_HOST}/v1\"\nvars = { \"ROW_HOST\" = \"row.example.test\" }\n"
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(overlay)))
@@ -1700,6 +1768,7 @@ func TestResolve_WebSearchCanonicalGateRowDefault(t *testing.T) {
 // reaches the session's assumed-window path instead of a made-up size. A
 // listing that reports a window governs.
 func TestPseudoProviderModelWithoutListedWindowIsUnknown(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.gw]\nprotocol = \"openai-chat\"\nbase_url = \"http://gw.invalid/v1\"\n[providers.gw-anthropic]\nprotocol = \"anthropic\"\nbase_url = \"http://gw.invalid\"\n")
 	for _, ref := range []string{"openai-compatible/any-model", "anthropic-compatible/any-model", "google-compatible/any-model", "ollama/any-model", "gw/any-model", "gw-anthropic/any-model"} {
 		if res := mustResolve(t, r, ref); res.Caps.ContextWindow != nil {

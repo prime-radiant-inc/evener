@@ -684,9 +684,7 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
 // and Send stay, so a landscape phone spends its height on the transcript
 // and session actions stay reachable without focusing first. Focus engages
 // the full row again.
-test("a resting phone composer sheds attach and status chrome but keeps its activity line", async ({
-  onTestFinished,
-}) => {
+test("a resting phone composer sheds attach, status chrome and its activity line", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -699,26 +697,29 @@ test("a resting phone composer sheds attach and status chrome but keeps its acti
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  // At rest: no attach and no status chrome. The activity line stays below
-  // the card, outside the form; the menu-only chrome keeps the session
-  // actions reachable, and Send stays.
+  // At rest: no attach, no status chrome, and no activity line - the folded
+  // card is the phone's smallest surface and the counts return with it. The
+  // menu-only chrome keeps the session actions reachable, and Send stays.
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
+  // The pane footer keys its home-indicator padding off this marker, so a
+  // folded card must not publish it.
+  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeNull();
   expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 
-  // Focus engages the full row.
+  // Focus engages the full row, and its activity line comes back with it.
   fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
   await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
-  expect(screen.getByTestId("composer-activity-line")).toBeTruthy();
+  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
+  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
   expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
 });
 

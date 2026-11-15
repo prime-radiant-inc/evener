@@ -110,12 +110,16 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 			e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
 			return
 		}
+		target := e.Watch.Target
+		if target == "caller" {
+			target = "self"
+		}
 		rec := &WatchRecord{
 			WatchID:          e.WatchID,
 			Generation:       e.Watch.Generation,
 			OwnerSessionID:   e.Watch.OwnerSessionID,
 			VisibleSessionID: e.Watch.VisibleSessionID,
-			Target:           e.Watch.Target,
+			Target:           target,
 			SendTo:           e.Watch.SendTo,
 			ConfigHash:       e.Watch.ConfigHash,
 			Condition:        e.Watch.Condition,
@@ -132,6 +136,7 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 			rec.SourceDelegateID = e.Watch.Config.SourceDelegateID
 			rec.SourceDelegateGeneration = e.Watch.Config.SourceDelegateGeneration
 			rec.StableReceiver = e.Watch.Config.StableReceiver
+			rec.Note = e.Watch.Config.Note
 		}
 		watches[e.WatchID] = rec
 	case EventWatchCleared:
@@ -144,6 +149,17 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 		}
 		w.Active = false
 		w.EndReason = e.Watch.EndReason
+		w.EndedAt = e.TS
+		maxSeq := 0
+		for _, other := range watches {
+			if other != nil && other.EndedSeq > maxSeq {
+				maxSeq = other.EndedSeq
+			}
+		}
+		w.EndedSeq = maxSeq + 1
+		if e.Watch.Deliveries > 0 {
+			w.Deliveries = e.Watch.Deliveries
+		}
 	}
 }
 

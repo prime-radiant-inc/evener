@@ -11,6 +11,13 @@ import (
 )
 
 func registerKeybindingsHandlers(server *appserver.Server, store *hubcore.KeybindingsStore) {
+	// The store owns the post-commit notification: a patch that advanced the
+	// published revision broadcasts the canonical snapshot even when the
+	// handler sees an error. Wiring it here, once, removes the manual pairing
+	// a new handler could forget (#1634).
+	store.OnCommitted(func(overrides appwire.KeybindingsOverrides) {
+		server.BroadcastAll(appwire.NotifyEvenerSettingsKeybindingsChanged, overrides)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSettingsKeybindingsGet,
 		func(context.Context, appwire.EmptyParams) (appwire.KeybindingsOverrides, error) {
 			overrides := store.Snapshot()
@@ -40,7 +47,6 @@ func registerKeybindingsHandlers(server *appserver.Server, store *hubcore.Keybin
 				// (roborev PR #884 round 2).
 				if writeDidApply(err) {
 					snapshot := store.Snapshot()
-					server.BroadcastAll(appwire.NotifyEvenerSettingsKeybindingsChanged, snapshot)
 					return nil, appwire.WireError{
 						Code:    appwire.CodeInternalError,
 						Message: err.Error(),
@@ -51,9 +57,6 @@ func registerKeybindingsHandlers(server *appserver.Server, store *hubcore.Keybin
 					}
 				}
 				return nil, err
-			}
-			if result.Revision != params.ExpectedRevision {
-				server.BroadcastAll(appwire.NotifyEvenerSettingsKeybindingsChanged, result)
 			}
 			return result, nil
 		})

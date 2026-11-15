@@ -59,15 +59,6 @@ function recoveryCompositionFingerprint(composition: RecoveryComposition): strin
   });
 }
 type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
-export interface ComposerSubmissionSnapshot {
-  text: string;
-  attachments: PendingAttachment[];
-  skillNames: string[];
-  commandNames: string[];
-  mentions?: readonly ComposerMention[];
-  revision: number;
-  draftRevision: number;
-}
 
 export interface ComposerSourceSnapshot {
   text: string;
@@ -102,7 +93,6 @@ export interface ComposerSourceState {
     recoveryWriteVersionRef: RevisionRef<number>;
     recoveryReplacementEpochRef: RevisionRef<number>;
     recoveryOwnsLocalDraftRef: RevisionRef<boolean>;
-    lastDrainSnapshotRef: RevisionRef<ComposerSubmissionSnapshot | null>;
   };
   getSnapshot(): ComposerSourceSnapshot;
   subscribe(listener: () => void): () => void;
@@ -217,7 +207,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     recoveryWriteVersionRef: { current: 0 },
     recoveryReplacementEpochRef: { current: 0 },
     recoveryOwnsLocalDraftRef: { current: false },
-    lastDrainSnapshotRef: { current: null },
   };
   const {
     textRef,

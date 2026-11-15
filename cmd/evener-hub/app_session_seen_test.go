@@ -166,3 +166,33 @@ func TestRunMainWiresNavigationInvalidationToArchiveAndFavorite(t *testing.T) {
 		})
 	}
 }
+
+// A seen marker is durable before its receipt is built. When the forced
+// refresh exhausts its deadline with the store's rebuild still armed, the
+// handler must report the committed mark and defer the receipt instead of
+// failing a completed mutation.
+func TestSessionSeenSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
+	store := hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "index.db"))
+	navigation := newChurningNavigationService(t)
+	store.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{}) })
+	now := time.Unix(1_700_000_000, 0).UTC()
+	through := now.Add(-time.Minute)
+
+	response, err := sessionSeenSet(t.Context(), hubcore.WebConfig{SessionSeen: store}, navigation, appwire.SessionSeenSetParams{
+		Sessions: []appwire.SessionSeenMark{{Ref: "local:01A", SeenThrough: through.UnixMilli()}},
+	}, now)
+	if err != nil {
+		t.Fatalf("seen mark of a persisted decision failed: %v", err)
+	}
+	if !response.OK || !response.Changed || !response.Navigation.Deferred {
+		t.Fatalf("response = %+v, want a committed change with a deferred navigation receipt", response)
+	}
+	assertDeferredNavigationReceipt(t, navigation, response.Navigation)
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record := snapshot.Records[hubcore.SessionPinKey("", "01A")]; !record.SeenThrough.Equal(through) {
+		t.Fatalf("stored record = %+v, want seen through %v", record, through)
+	}
+}

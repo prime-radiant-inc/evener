@@ -46,6 +46,15 @@ it("round trips one typed checkpoint and recovers after recreation", () => {
 	expect(first.load()).toBeNull();
 });
 
+it("round trips a deferred receipt, which carries the live generation and no targets", () => {
+	const b = backend();
+	const actions = nativeNavigationActions("hub-a", b.store);
+	const checkpoint = actions.begin(operation);
+	const deferred = { generation_id: receipt.generation_id, targets: [], deferred: true };
+	expect(actions.acknowledge(checkpoint, deferred).receipt).toEqual(deferred);
+	expect(actions.finish({ ...checkpoint, receipt: deferred })).toBe(true);
+});
+
 it("finishes a checkpoint whose keys arrive in a different order", () => {
 	const b = backend();
 	const actions = nativeNavigationActions("hub-a", b.store);

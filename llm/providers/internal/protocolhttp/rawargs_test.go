@@ -12,6 +12,7 @@ import (
 // string (we diverge from stdlib ONLY where stdlib is lossy); for
 // invalid-UTF-8 tokens, raw bytes pass through with 0xff intact.
 func TestRawStringContent_StdlibCrossCheck(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		token []byte // a complete JSON string token, including quotes
@@ -63,6 +64,7 @@ func TestRawStringContent_StdlibCrossCheck(t *testing.T) {
 // through unchanged — the core divergence from stdlib which coerces invalid
 // UTF-8 to U+FFFD.
 func TestRawStringContent_InvalidUTF8Preserved(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		token []byte
@@ -115,6 +117,7 @@ func TestRawStringContent_InvalidUTF8Preserved(t *testing.T) {
 // TestRawStringContent_UnpairedSurrogates asserts unpaired surrogates decode
 // to U+FFFD (stdlib parity), with a one-line comment saying so.
 func TestRawStringContent_UnpairedSurrogates(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		token []byte
@@ -151,6 +154,7 @@ func TestRawStringContent_UnpairedSurrogates(t *testing.T) {
 // TestRawStringContent_SurrogatePairCombines asserts valid surrogate pairs
 // combine into the correct codepoint, not two U+FFFDs.
 func TestRawStringContent_SurrogatePairCombines(t *testing.T) {
+	t.Parallel()
 	// U+1F600 (😀) = \ud83d\ude00
 	got, err := RawStringContent([]byte(`"\ud83d\ude00"`))
 	if err != nil {
@@ -171,6 +175,7 @@ func TestRawStringContent_SurrogatePairCombines(t *testing.T) {
 // TestRawStringContent_FastPathNoEscapes verifies the fast path (no backslash)
 // preserves raw bytes, including invalid UTF-8.
 func TestRawStringContent_FastPathNoEscapes(t *testing.T) {
+	t.Parallel()
 	// A token with no backslash and a raw 0xff byte.
 	token := []byte("\"" + `{"x":"` + "\xff" + `"}` + "\"")
 	got, err := RawStringContent(token)
@@ -186,6 +191,7 @@ func TestRawStringContent_FastPathNoEscapes(t *testing.T) {
 // TestRawStringContent_ErrorsOnMalformedToken asserts structurally invalid
 // tokens return an error so the caller can fall back.
 func TestRawStringContent_ErrorsOnMalformedToken(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		token []byte
@@ -214,6 +220,7 @@ func TestRawStringContent_ErrorsOnMalformedToken(t *testing.T) {
 // TestRawStringContent_NoEscapesMatchesStdlib is a broader cross-check for
 // the fast path: a variety of valid-UTF-8 strings without escapes.
 func TestRawStringContent_NoEscapesMatchesStdlib(t *testing.T) {
+	t.Parallel()
 	strs := []string{
 		"",
 		"a",

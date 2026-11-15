@@ -110,9 +110,11 @@ func TestGlobalGitConfigNeverWidensTheWriteSurface(t *testing.T) {
 }
 
 // TestGlobalGitConfigIsRestrictedModeOnly: the other modes' spawned layer already
-// reads anywhere-minus-the-denylist, so the grant must add nothing there (a stray
-// root list would turn ReadAnywhere into a roots-only surface for a backend that
-// consults ReadRoots).
+// reads anywhere-minus-the-denylist, so this grant must add nothing there (a
+// stray root list would turn ReadAnywhere into a roots-only surface for a
+// backend that consults ReadRoots). The list is not empty by mode alone: the
+// session's InfraReadRoots (#6208) ride in Spawned.ReadRoots in these modes
+// too, but this policy configures none, so it must still resolve empty.
 func TestGlobalGitConfigIsRestrictedModeOnly(t *testing.T) {
 	t.Parallel()
 	home, dotfile, xdgFile := gitGlobalConfigFiles(t)

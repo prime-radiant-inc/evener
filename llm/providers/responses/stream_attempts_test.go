@@ -45,6 +45,7 @@ func (f idleAttemptRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 // stream's terminal event, so a caller that reacts to FINISH always finds
 // the attempt already in the log.
 func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, responseSSE)
 	sink := &captureSink{}
 	ctx := llm.WithAPIAttemptSink(
@@ -80,6 +81,7 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 // reached the provider and the response headers arrived, so neither a
 // connect nor a request-deadline classification would be honest.
 func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		client, srv := stallingSSEClient(t, twoResponsesEvents)
 		sink := &captureSink{}

@@ -95,6 +95,7 @@ func protoLive(srv *httptest.Server) registry.Resolved {
 }
 
 func TestProtocolCompleteAndHeaders(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(*http.Request) (int, string) { return 200, messagesJSON })
 	res := protoLive(srv)
 	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
@@ -111,6 +112,7 @@ func TestProtocolCompleteAndHeaders(t *testing.T) {
 }
 
 func TestProtocolStreamDecodesThroughTheSharedDecoder(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(*http.Request) (int, string) { return 200, messagesSSE })
 	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), protoReq(""), protoLive(srv))
 	if err != nil {
@@ -131,6 +133,7 @@ func TestProtocolStreamDecodesThroughTheSharedDecoder(t *testing.T) {
 }
 
 func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -170,6 +173,7 @@ func TestProtocolCompletionFinalizesOutputBudgetAfterTransportOverlay(t *testing
 }
 
 func TestProtocolCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, messagesJSON })
 	res := protoLive(srv)
 	res.Caps.Fields[registry.FieldMaxTokens] = false
@@ -191,6 +195,7 @@ func TestProtocolCompletionFinalizerDoesNotRestoreDisabledOutputField(t *testing
 // max_tokens > budget_tokens against the overlaid value — so a row-level
 // max_tokens constant must bound the effort-derived thinking budget too.
 func TestProtocolCompletionClampsEffortBudgetUnderTransportMaxTokensConstant(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -236,6 +241,7 @@ func TestProtocolCompletionClampsEffortBudgetUnderTransportMaxTokensConstant(t *
 }
 
 func TestProtocolListModelsPaginatesAndCountTokensStrips(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(r *http.Request) (int, string) {
 		switch {
 		case strings.Contains(r.URL.RawQuery, "after_id=m2"):
@@ -277,6 +283,7 @@ func TestProtocolListModelsPaginatesAndCountTokensStrips(t *testing.T) {
 }
 
 func TestProtocolCountTokensDoesNotEnforceCompletionThinkingBudget(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, `{"input_tokens":21}` })
 	req := protoReq("")
 	req.MaxTokens = new(1000)
@@ -305,6 +312,7 @@ func TestProtocolCountTokensDoesNotEnforceCompletionThinkingBudget(t *testing.T)
 // completion contract that max_tokens strictly exceeds budget_tokens, which
 // as ReasoningBudget produced it.
 func TestProtocolCountTokensKeepsEffortBudgetUnclamped(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, `{"input_tokens":21}` })
 	res := protoLive(srv)
 	res.Caps.ThinkingShape = new("budget")
@@ -323,6 +331,7 @@ func TestProtocolCountTokensKeepsEffortBudgetUnclamped(t *testing.T) {
 // TestProtocolEndpointFamilies pins the api-log endpoint_family of each
 // operation; count_tokens and models must not inherit anthropic_messages.
 func TestProtocolEndpointFamilies(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -358,6 +367,7 @@ func TestProtocolEndpointFamilies(t *testing.T) {
 }
 
 func TestProtocolClassifiesPromptTooLong(t *testing.T) {
+	t.Parallel()
 	srv, _ := protoServer(t, func(*http.Request) (int, string) {
 		return 400, `{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213462 tokens > 200000 maximum"}}`
 	})
@@ -370,6 +380,7 @@ func TestProtocolClassifiesPromptTooLong(t *testing.T) {
 // TestProtocolIncompleteStreamNamesTheInstance pins that a stream that ends
 // before message_stop reports the instance, not the protocol's own name.
 func TestProtocolIncompleteStreamNamesTheInstance(t *testing.T) {
+	t.Parallel()
 	truncated := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n"
 	srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, truncated })
 	res := protoLive(srv)

@@ -274,12 +274,6 @@ func sierPureInitHelpers(t *testing.T, r *sierReader) {
 	if !modelFallbackEligible(context.Canceled, llm.DefaultRetryPolicy()) {
 		t.Fatal("permanent cancellation was not fallback eligible")
 	}
-	if !strings.Contains(unknownHookEventWarning("plugin", "Typo"), "Typo") {
-		t.Fatal("unknown hook warning omitted event")
-	}
-	if !strings.Contains(unsupportedHookEventWarning("plugin", "Stop"), "Stop") {
-		t.Fatal("unsupported hook warning omitted event")
-	}
 	if !strings.Contains(unsupportedHandlerTypeWarning("plugin", "PreToolUse", ""), "(empty)") {
 		t.Fatal("empty handler type was not made visible")
 	}

@@ -88,6 +88,7 @@
     "web_search": true
   },
   "provenance": {
+    "AliasOf": "overlay/row",
     "ContextWindow": "overlay/row",
     "DefaultEffort": "alias",
     "EffortValues": "overlay/glob:gpt-6*",
@@ -109,6 +110,7 @@
     "ImageDetail": "overlay/glob:gpt-6*",
     "InputModalities": "overlay/glob:gpt-6*",
     "MaxTokensField": "overlay/provider",
+    "Protocol": "snapshot/provider",
     "Reasoning": "overlay/glob:gpt-6*",
     "ReasoningControls": "alias",
     "ReasoningSummary": "overlay/glob:gpt-6*",
@@ -120,6 +122,7 @@
     "ThinkingAlwaysOn": "overlay/glob:gpt-6*",
     "Tools": "overlay/glob:gpt-6*",
     "WebSearch": "overlay/provider",
+    "WireID": "overlay/row",
     "model": "row:gpt-6.1-sol-1m"
   },
   "default_model": "gpt-5.6",

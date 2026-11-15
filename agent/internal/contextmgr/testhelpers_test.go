@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/provider"
@@ -129,8 +130,15 @@ type fakeAdapter struct {
 
 	mu       sync.Mutex
 	requests []llm.Request
-	steps    []func(req llm.Request) llm.Response
-	i        int
+	script   agenttest.Script[func(req llm.Request) llm.Response]
+}
+
+// newFakeAdapter builds a scripted adapter over steps. The script owns the
+// cursor and its lock, so a test cannot hand-roll a second cursor beside it.
+func newFakeAdapter(name string, steps []func(req llm.Request) llm.Response) *fakeAdapter {
+	a := &fakeAdapter{name: name}
+	a.script.Replace(steps)
+	return a
 }
 
 func (a *fakeAdapter) Name() string { return a.name }
@@ -140,11 +148,11 @@ func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respon
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
-	if a.i >= len(a.steps) {
+	step, ok := a.script.Next()
+	if !ok {
 		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
 	}
-	resp := a.steps[a.i](req)
-	a.i++
+	resp := step(req)
 	resp.Provider = a.name
 	if resp.Model == "" {
 		resp.Model = req.Model

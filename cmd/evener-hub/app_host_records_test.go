@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +80,7 @@ func TestHubTOMLKeepsARetainedMarkWhenTheRegistryWasSeededLate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, silentLogger())
 	entry, _ := hosts.Get("alpha")
 	if entry.PresenceEpoch < 5 {
 		t.Fatalf("the live entry's presence epoch = %d, seeding did not carry it up to the mark 5", entry.PresenceEpoch)
@@ -131,7 +130,7 @@ func TestHubTOMLGenerationsMarkIsNotALiveIdentity(t *testing.T) {
 		t.Fatalf("presence epoch = %d, want one advanced past the mark's 5", loaded.PresenceEpoch)
 	}
 	// The boot write records the fresh pair in the canonical shape.
-	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, silentLogger())
 	live := liveRecord(t, path, "alpha")
 	if live.IncarnationID != loaded.IncarnationID || live.PresenceEpoch != loaded.PresenceEpoch {
 		t.Fatalf("host_records[alpha] = %+v, want the fresh pair (%s, %d)", live, loaded.IncarnationID, loaded.PresenceEpoch)
@@ -230,7 +229,7 @@ func TestHostRegistryBootMintsAboveRetainedMarks(t *testing.T) {
 		t.Fatalf("the boot minted generation %d for a host with no record, want above the retained mark 9", legacy.Generation)
 	}
 	// The boot write records exactly that generation, so the pair is durable.
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, silentLogger())
 	_ = m
 	mark := highWaterFor(t, path, "legacy")
 	if mark.Generation != legacy.Generation {
@@ -260,7 +259,7 @@ func TestHubTOMLRepairsAPartialRecordAtBoot(t *testing.T) {
 		t.Fatalf("hostreg.New: %v", err)
 	}
 	first, _ := hosts.Get("alpha")
-	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, silentLogger())
 	mark := highWaterFor(t, path, "alpha")
 	if mark.Generation != first.Generation || mark.IncarnationID != first.IncarnationID || mark.PresenceEpoch != first.PresenceEpoch {
 		t.Fatalf("the boot write did not repair generations[alpha]: %+v, want the live triple (%d, %s, %d)",
@@ -308,15 +307,13 @@ func TestHubTOMLRecordRepairLogNamesTheHost(t *testing.T) {
 		t.Fatalf("chmod %s: %v", dir, err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	var logged []string
-	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(format string, args ...any) {
-		logged = append(logged, fmt.Sprintf(format, args...))
-	})
-	if len(logged) == 0 {
+	logged := &logCapture{}
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, logged.logger())
+	if logged.len() == 0 {
 		t.Fatal("the failed boot repair logged nothing")
 	}
-	if !strings.Contains(logged[0], `"alpha"`) {
-		t.Fatalf("the repair log does not name the host: %q", logged[0])
+	if !strings.Contains(logged.all()[0].message, `"alpha"`) {
+		t.Fatalf("the repair log does not name the host: %q", logged.all()[0].message)
 	}
 }
 
@@ -725,7 +722,7 @@ func TestHubTOMLKeepsARetainedGenerationWhenTheRegistryWasSeededLate(t *testing.
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, silentLogger())
 	entry, _ := hosts.Get("alpha")
 	if entry.Generation < 7 {
 		t.Fatalf("the live entry's generation = %d, seeding did not carry it up to the mark 7", entry.Generation)

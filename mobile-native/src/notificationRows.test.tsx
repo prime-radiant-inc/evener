@@ -30,8 +30,8 @@ vi.mock("react-native-gesture-handler", async () =>
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
-const DANGER_INK = "#C51D23";
-const INK_LOW = "#62626D";
+const DANGER_INK = "#BD1B21";
+const INK_LOW = "#5C626D";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 
 function delegate(over: Partial<EvenerDelegateInfo> & { delegateId: string }): EvenerDelegateInfo {

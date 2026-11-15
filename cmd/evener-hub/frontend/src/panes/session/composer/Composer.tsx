@@ -25,6 +25,7 @@ import {
   NO_ACTIVE_TURN,
   parseSlashToken,
   SHUT_DOWN_STATUSES,
+  sessionActionError,
   slashCommandInvocation,
 } from "@evener/appwire-client";
 import {
@@ -35,6 +36,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -61,7 +63,6 @@ import {
   Button,
   ConfirmDialog,
   Dropzone,
-  IconButton,
   PromptCard,
   SendIcon,
   Tooltip,
@@ -73,7 +74,7 @@ import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome"
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
-import { AttachIcon } from "./attachments/AttachIcon";
+import { AttachImageControl } from "./attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { CurrentWork } from "./CurrentWork";
@@ -82,15 +83,25 @@ import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } f
 import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { readDraftRevision } from "./draft";
 import { useDuoCoverLayout, useNarrowComposer } from "./narrowComposer";
-import { QueueStrip } from "./queue";
-import { useBlockedMutationEntries } from "./queue/pendingTurnsStore";
+import {
+  editQueuedPendingTurn,
+  refreshPendingTurnsProjection,
+  useBlockedMutationEntries,
+} from "./queue/pendingTurnsStore";
+import {
+  consumeQueueRowRestore,
+  publishActiveRecovery,
+  publishComposerBusy,
+  useQueueRowRestoreRequest,
+} from "./queueRowInsert";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { useBuiltinSubmission } from "./useBuiltinSubmission";
+import { pushRecoveryRefusal } from "./submitProtocol";
+import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -100,7 +111,7 @@ export interface ComposerProps {
   // Whether this composer's pane is the workspace's focused one. Mount
   // autofocus keys on it: a session loading into a background tab must never
   // yank keyboard focus away from what the reader is doing.
-  focused: boolean;
+  focused?: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
   // The seat's own chrome already renders this conversation's activity counts
@@ -108,6 +119,7 @@ export interface ComposerProps {
   // not mount a second set of chips beside the status chrome.
   ownsActivityCounts?: boolean;
   source: ComposerSourceState;
+  submission?: ComposerSubmission;
   // An in-progress IME composition, reported for the floating attention
   // control's visibility. Focus alone never counts: a session open autofocuses
   // this editor, and hiding the control then would take it away before the
@@ -140,15 +152,26 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
-export function Composer({
+export function Composer(props: ComposerProps) {
+  if (props.submission !== undefined) return <ComposerWithSubmission {...props} submission={props.submission} />;
+  return <ComposerWithOwnSubmission {...props} />;
+}
+
+function ComposerWithOwnSubmission(props: ComposerProps) {
+  const submission = useBuiltinSubmission(props.source, props.paneId);
+  return <ComposerWithSubmission {...props} submission={submission} />;
+}
+
+function ComposerWithSubmission({
   ref,
   paneId,
-  focused,
+  focused = false,
   mountAutofocus = true,
   ownsActivityCounts = false,
   source,
+  submission,
   onEditingChange,
-}: ComposerProps) {
+}: ComposerProps & { submission: ComposerSubmission }) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   // Delivery-uncertain rows do NOT fence Send here: they clear the resume-only
@@ -230,12 +253,11 @@ export function Composer({
     restoredRecoveryRef.current = activeRecoveryId;
     // Automatic restoration starts without an owner. Replacing an existing
     // owner after peer consumption preserves the editor, including selection.
-    // Explicit recovery Edit restores its caret in the QueueStrip callback.
+    // Explicit recovery Edit restores its caret in the queue-row restore seam.
     if (activating && activeRecoveryId !== null) scheduleCursorRestore(source.getSnapshot().text.length);
   }, [activeRecoveryId, scheduleCursorRestore, source]);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
-    lastDrainSnapshotRef,
     ownedDraftRevisionRef,
     textRef,
     skillNamesRef,
@@ -254,7 +276,7 @@ export function Composer({
     persistDraft,
     writeDraft,
   } = source;
-  const { actions, sessionBuiltins, submitBuiltin } = useBuiltinSubmission(source, paneId);
+  const { actions, sessionBuiltins, submitBuiltin } = submission;
   const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
@@ -505,7 +527,6 @@ export function Composer({
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
     resetSlashCompletion();
-    lastDrainSnapshotRef.current = null;
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
@@ -615,7 +636,7 @@ export function Composer({
   // line twice in a row is still two separate insertions rather than a
   // no-op the second time (quoteInsert.ts's own QuoteInsertRequest doc
   // comment). mergeDraftText is the SAME merge restoreTextToComposer uses
-  // for QueueStrip's "edit a queued entry" path, now parameterized on the
+  // for the queued-row edit's restore path, now parameterized on the
   // request's own placement (mergeDraftText's own doc comment) - a quote
   // never clobbers whatever the user already typed, and a palette-inserted
   // slash command lands where it can actually parse (the draft's start)
@@ -635,6 +656,119 @@ export function Composer({
     editorRef.current?.focus();
     consumeQuoteInsert(ref);
   }, [quoteInsertRequest, ref, textEditor.write, textRef]);
+
+  // The transcript's pending rows (the live-edge trailing region, a sibling
+  // of this component) hand a queued row's text - or a refused-recovery
+  // record's editing - back through the queueRowInsert seam: the same
+  // one-shot monotonic-id shape the quote-insert effect above uses, because
+  // the pending stack cannot reach this component's restore/recovery lease
+  // any other way, and a restore must never clobber a draft the user is
+  // typing (restoreTextToComposer's merge rule).
+  const queueRowRestoreRequest = useQueueRowRestoreRequest(ref, paneId);
+  const consumedQueueRowRestoreIdRef = useRef<number | null>(null);
+  // The per-instance owner token for the seam's publications: it lets a
+  // closing pane clear its own state without touching a sibling composer's
+  // publication for the same ref.
+  const composerSeationToken = useId();
+  // The pending rows exclude the recovery record this composer is actively
+  // editing (its composition is live here), so the same message never renders
+  // both as a transcript row and as the composition under edit. Published on
+  // every activation change, including the automatic ones no seam request
+  // drives.
+  useEffect(() => {
+    publishActiveRecovery(ref, activeRecoveryId, composerSeationToken);
+  }, [ref, activeRecoveryId, composerSeationToken]);
+  // Unmount clears both publications: a pane closed mid-activation must not
+  // keep excluding its recovery row or holding the busy gate for the ref.
+  // The owner token keeps a closing pane from clearing a sibling composer's
+  // publication for the same ref (an embedded cascade column).
+  useEffect(() => {
+    return () => {
+      publishActiveRecovery(ref, null, composerSeationToken);
+      publishComposerBusy(ref, false, composerSeationToken);
+    };
+  }, [ref, composerSeationToken]);
+  // The shared busy gate, published beside it: the pending rows' Edit/Retry
+  // affordances read the composer's live in-flight state (the retired
+  // strip's busy prop).
+  useEffect(() => {
+    publishComposerBusy(ref, actionPending, composerSeationToken);
+  }, [ref, actionPending, composerSeationToken]);
+  useEffect(() => {
+    const request = queueRowRestoreRequest;
+    if (!request || request.id === consumedQueueRowRestoreIdRef.current) return;
+    consumedQueueRowRestoreIdRef.current = request.id;
+    if (request.recoveryRecord) {
+      void Promise.resolve(actions.queueRowActions.onEditRecovery?.(request.recoveryRecord))
+        .then(() => {
+          // The retired strip's callback focused the editor after its
+          // activation; an edit that restores content without focus leaves
+          // typing ineffective until the user clicks the composer. The
+          // outbox-record branch below carries the same contract.
+          editorRef.current?.focus();
+        })
+        .finally(() => consumeQueueRowRestore(ref));
+    } else if (request.outboxRecord) {
+      // A durable outbox row's Edit: the retired strip's own sequence, run
+      // where its gates live - the encoding gate and the recovery-operation
+      // lease belong to the composer's own state, so the claim (the row's
+      // move into recovery storage) only happens after both pass. The
+      // cursor-restore wrapper around activation is the Composer's own half
+      // of that contract (its restored caret lands where the edit put it).
+      const record = request.outboxRecord;
+      const id = record.clientMutationId;
+      const releaseRecoveryOperation = source.tryAcquireRecoveryOperation();
+      if (!releaseRecoveryOperation) {
+        // A refused control has to say so: the lease is held by an
+        // in-flight recovery operation, so the press landed mid-edit of
+        // another row. The row-level busy gate usually prevents this
+        // press; the toast keeps the window honest instead of swallowing
+        // the request silently.
+        toasts.push("error", "Wait for the current message to finish sending");
+        consumeQueueRowRestore(ref);
+        return;
+      }
+      if (attachments.hasPending) {
+        toasts.push("error", "Image attachment is still processing");
+        releaseRecoveryOperation();
+        consumeQueueRowRestore(ref);
+        return;
+      }
+      void (async () => {
+        try {
+          const recovery = await editQueuedPendingTurn(id, record.targetRef);
+          if (recovery) {
+            await actions.queueRowActions.onEditRecovery?.(recovery);
+            // The retired strip's callback focused the editor after its
+            // activation; an edit that restores content without focus
+            // leaves typing ineffective until the user clicks the composer.
+            editorRef.current?.focus();
+          } else {
+            // An undefined claim means the row changed under the press -
+            // the same refusal the retired handler reported, not a silent
+            // consumption.
+            pushRecoveryRefusal("changed");
+          }
+          if (record.targetRef !== ref) await refreshPendingTurnsProjection(ref);
+        } catch (error) {
+          toasts.push("error", sessionActionError("Edit failed", error));
+        } finally {
+          releaseRecoveryOperation();
+          consumeQueueRowRestore(ref);
+        }
+      })();
+    } else {
+      actions.queueRowActions.onRestoreToComposer(
+        request.text,
+        undefined,
+        request.skillNames,
+        request.commandNames,
+        request.mentions,
+      );
+      editorRef.current?.focus();
+      consumeQueueRowRestore(ref);
+    }
+  }, [queueRowRestoreRequest, ref, actions.queueRowActions, source, toasts, attachments.hasPending]);
 
   // composerFocus.ts's own seam: a global chord (owned elsewhere) asks this
   // ref's Composer to move keyboard focus into its textarea. Exactly the
@@ -762,6 +896,13 @@ export function Composer({
   // turn runs, and the resting leading never swaps while one of its own
   // controls is pressed.
   const controlsCollapsed = isMobile && resting;
+
+  // The phone's activity counts are a glance line below the card. A folded
+  // resting card is the phone's smallest surface, so it shows no line; the
+  // counts return with the expanded card. The composer publishes the line's
+  // presence so the pane footer can drop the home-indicator band the chips
+  // already fill.
+  const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
 
   function handleTextChange(value: SkillEditorValue, caret: number): void {
     editSkillNames(value.skillNames);
@@ -981,7 +1122,7 @@ export function Composer({
   );
 
   // data-testid on every control in this row: two different buttons here
-  // start with "Steer" (this one and QueueStrip's "Steer queue now"), so
+  // start with "Steer" (this one and the pending rows' "Steer now"), so
   // tests address controls by a stable hook instead of navigating by
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
@@ -1002,19 +1143,7 @@ export function Composer({
         <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" discoverActivity turnVerbs={turnVerbs} />
       ) : (
         <>
-          {!folded && (
-            <Tooltip label="Attach an image">
-              <IconButton
-                label="Attach image"
-                icon={<AttachIcon />}
-                variant="quiet"
-                size="xs"
-                type="button"
-                data-testid="composer-attach"
-                onClick={() => fileInputRef.current?.click()}
-              />
-            </Tooltip>
-          )}
+          {!folded && <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />}
           {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
         </>
       )}
@@ -1024,6 +1153,7 @@ export function Composer({
     <div
       className={CLASS.composer}
       ref={attachComposerRoot}
+      data-composer-activity-line={showActivityLine ? "true" : undefined}
       onFocusCapture={handleFollowUpFocus}
       onBlurCapture={handleFollowUpBlur}
       onPointerDown={holdComposerPress}
@@ -1055,26 +1185,11 @@ export function Composer({
           {readyAnnouncement}
         </span>
       </VisuallyHidden>
-      {/* T3: queue strip - the queue preview (model.queue) above the input
-          row; getComposerText/onRestoreToComposer/onDrainSuccess are this
-          integration's own seam implementations, see each one's own doc
-          comment above. busy/onDrainBusyChange share this component's own
-          busyAction gate both ways (BusyAction's own "drain" doc comment). */}
-      <QueueStrip
-        {...actions.queueProps}
-        onRestoreToComposer={(...args) => {
-          actions.queueProps.onRestoreToComposer(...args);
-          editorRef.current?.focus();
-        }}
-        onEditRecovery={async (record) => {
-          const epoch = source.getSnapshot().restoreEpoch;
-          await actions.queueProps.onEditRecovery?.(record);
-          if (source.alive && source.getSnapshot().restoreEpoch !== epoch) {
-            scheduleCursorRestore(source.getSnapshot().text.length);
-            editorRef.current?.focus();
-          }
-        }}
-      />
+      {/* The queue strip no longer renders here: every undelivered user
+          message renders as a transcript row in the live-edge trailing
+          region (PendingRowStack, ConversationBody's trailingRow), so the
+          composer's footer carries no message renderings. The queue count
+          pill stays a count only (StatusRow's queue depth figure). */}
       {askPending && askChrome}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
@@ -1258,8 +1373,10 @@ export function Composer({
       )}
       {/* The phone's activity counts are a glance line below the card, the
           same place the desktop status bar puts them. They are not a control
-          in the writing row. */}
-      {isMobile && !ownsActivityCounts && (!ended || showFollowUpCard) && (
+          in the writing row. A folded resting card is the phone's smallest
+          surface, so it shows no line: the counts come back with the expanded
+          card, which is also when the transcript can spare the height. */}
+      {showActivityLine && (
         <div className={CLASS.activityRow} data-testid="composer-activity-line">
           <ActivityChips sessionRef={ref} paneId={paneId} />
         </div>

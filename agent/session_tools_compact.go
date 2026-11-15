@@ -87,7 +87,8 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 			}
 			// Compaction runs at the round tail, AFTER this returns — the message is a
 			// prediction from current pressure, never past-tense.
-			out := predictionMessage(note == "", deps.pressure())
+			hasFoldable := deps.hasFoldableHistory != nil && deps.hasFoldableHistory()
+			out := predictionMessage(note == "", deps.pressure(), hasFoldable)
 			if selection.State == "invalid" {
 				out += " The reload_skills selection was invalid (" + selection.ErrorCode + ") and authorizes no reload."
 			}
@@ -102,12 +103,12 @@ func registerCompactTool(reg *tool.Registry, deps *toolDeps) {
 // checkpoint/summary may condense little — but a compaction is still scheduled.
 const lowPressurePredict = 0.30 // below this, accumulated history is small; condensation is likely minor
 
-func predictionMessage(noteCleared bool, pressure float64) string {
+func predictionMessage(noteCleared bool, pressure float64, hasFoldableTurns bool) string {
 	lead := "Note pinned."
 	if noteCleared {
 		lead = "Note cleared."
 	}
-	if pressure < lowPressurePredict {
+	if pressure < lowPressurePredict && !hasFoldableTurns {
 		return lead + " Context is light, so the compaction will run but may condense little; your note will be handed back to you right after."
 	}
 	return lead + " A compaction will run at the seam, honoring your instructions; your note will be handed back to you right after."

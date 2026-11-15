@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,15 +33,15 @@ func TestEvaluateCachesShortLivedValue(t *testing.T) {
 	t.Cleanup(func() { ResetForTest() })
 
 	runs := 0
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		return makeJWT(base.Unix() + 3600), nil // one hour of life
 	}
 
-	if _, err := evaluate("get-token"); err != nil {
+	if _, err := evaluate("get-token", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
-	if _, err := evaluate("get-token"); err != nil {
+	if _, err := evaluate("get-token", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 	if runs != 1 {
@@ -51,7 +52,7 @@ func TestEvaluateCachesShortLivedValue(t *testing.T) {
 	// serving the same one-hour token now fails the margin, because that
 	// token is dead on arrival.
 	now = base.Add(3600*time.Second - refreshMargin + time.Second)
-	if _, err := evaluate("get-token"); err == nil {
+	if _, err := evaluate("get-token", nil); err == nil {
 		t.Fatal("evaluate returned nil; a token inside its margin must fail the mint")
 	}
 	if runs != 2 {
@@ -67,12 +68,12 @@ func TestEvaluateCachesLongLivedValueWithTTL(t *testing.T) {
 	t.Cleanup(func() { ResetForTest() })
 
 	runs := 0
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "a-key-with-no-expiry-claim", nil
 	}
 	for range 3 {
-		if _, err := evaluate("get-key"); err != nil {
+		if _, err := evaluate("get-key", nil); err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
 	}
@@ -80,7 +81,7 @@ func TestEvaluateCachesLongLivedValueWithTTL(t *testing.T) {
 		t.Fatalf("executor ran %d times inside the TTL; want 1", runs)
 	}
 	now = base.Add(defaultTTL + time.Second)
-	if _, err := evaluate("get-key"); err != nil {
+	if _, err := evaluate("get-key", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 	if runs != 2 {
@@ -95,12 +96,12 @@ func TestAtMarginJWTIsAFailedMint(t *testing.T) {
 	t.Cleanup(func() { ResetForTest() })
 
 	runs := 0
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		return makeJWT(base.Unix() - 10), nil // already expired
 	}
 	for range 2 {
-		_, err := evaluate("get-token")
+		_, err := evaluate("get-token", nil)
 		cmdErr, ok := errors.AsType[*CommandError](err)
 		if !ok || cmdErr.Detail != "token at or past its refresh margin" {
 			t.Fatalf("err = %v; want the refresh-margin failure", err)
@@ -112,11 +113,11 @@ func TestAtMarginJWTIsAFailedMint(t *testing.T) {
 
 	// Inside the margin is the same failure: exp 30s out leaves nothing
 	// once the 60s margin is taken, and the caller must not receive it.
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		return makeJWT(base.Unix() + 30), nil // inside the refresh margin
 	}
-	_, err := evaluate("get-token")
+	_, err := evaluate("get-token", nil)
 	cmdErr, ok := errors.AsType[*CommandError](err)
 	if !ok || cmdErr.Detail != "token at or past its refresh margin" {
 		t.Fatalf("err = %v; want the refresh-margin failure for a token inside the margin", err)
@@ -127,12 +128,12 @@ func TestEvaluateFailureIsNotCached(t *testing.T) {
 	ResetForTest()
 	t.Cleanup(func() { ResetForTest() })
 	runs := 0
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "", errors.New("command exited with status 1: boom")
 	}
 	for range 2 {
-		if _, err := evaluate("get-token"); err == nil {
+		if _, err := evaluate("get-token", nil); err == nil {
 			t.Fatal("evaluate succeeded on a failing command")
 		}
 	}
@@ -146,7 +147,7 @@ func TestEvaluateSharesOneMintAcrossConcurrentCallers(t *testing.T) {
 	t.Cleanup(func() { ResetForTest() })
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		close(entered)
 		<-release
 		return "shared", nil
@@ -156,7 +157,7 @@ func TestEvaluateSharesOneMintAcrossConcurrentCallers(t *testing.T) {
 	errs := make([]error, 4)
 	for i := range 4 {
 		wg.Go(func() {
-			res, err := evaluate("get-token")
+			res, err := evaluate("get-token", nil)
 			results[i] = res.Value
 			errs[i] = err
 		})
@@ -188,12 +189,12 @@ func TestMintAnchorsTTLAtCompletion(t *testing.T) {
 		}
 		return base.Add(20 * time.Second) // the completion instant
 	}
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		ran = true
 		return "plain-value", nil
 	}
 
-	res, err := evaluate("get-key")
+	res, err := evaluate("get-key", nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -229,14 +230,14 @@ func TestEvaluatePrunesExpiredEntries(t *testing.T) {
 	base := time.Unix(1_800_000_000, 0)
 	now := base
 	Now = func() time.Time { return now }
-	RunCommand = func(cmd string) (string, error) {
+	RunCommand = func(cmd string, _ []string) (string, error) {
 		if cmd == "short-lived" {
 			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
 		}
 		return "plain", nil
 	}
 
-	if _, err := evaluate("short-lived"); err != nil {
+	if _, err := evaluate("short-lived", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 	evaluateMu.Lock()
@@ -247,7 +248,7 @@ func TestEvaluatePrunesExpiredEntries(t *testing.T) {
 	evaluateMu.Unlock()
 
 	now = base.Add(10 * time.Minute)
-	if _, err := evaluate("other"); err != nil {
+	if _, err := evaluate("other", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 	evaluateMu.Lock()
@@ -255,7 +256,7 @@ func TestEvaluatePrunesExpiredEntries(t *testing.T) {
 	if len(cache) != 1 {
 		t.Fatalf("cache holds %d entries after the prune; want only the fresh one", len(cache))
 	}
-	if _, ok := cache["short-lived"]; ok {
+	if _, ok := cache[cacheKey("short-lived", nil)]; ok {
 		t.Fatal("the expired entry survived the prune")
 	}
 }
@@ -269,7 +270,7 @@ func TestEvaluateFreshnessClockIsReadUnderTheLock(t *testing.T) {
 	now := base
 	Now = func() time.Time { return now }
 	runs := 0
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		if runs == 1 {
 			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
@@ -277,7 +278,7 @@ func TestEvaluateFreshnessClockIsReadUnderTheLock(t *testing.T) {
 		return "re-minted", nil
 	}
 
-	if _, err := evaluate("token"); err != nil {
+	if _, err := evaluate("token", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 
@@ -298,7 +299,7 @@ func TestEvaluateFreshnessClockIsReadUnderTheLock(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		res, err := evaluate("token")
+		res, err := evaluate("token", nil)
 		done <- outcome{res, err}
 	}()
 	runtime.Gosched()
@@ -332,7 +333,7 @@ func TestEvaluatePruneClockIsReadUnderTheLock(t *testing.T) {
 
 	minting := make(chan struct{})
 	release := make(chan struct{})
-	RunCommand = func(cmd string) (string, error) {
+	RunCommand = func(cmd string, _ []string) (string, error) {
 		if cmd != "slow" {
 			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
 		}
@@ -341,13 +342,13 @@ func TestEvaluatePruneClockIsReadUnderTheLock(t *testing.T) {
 		return "plain", nil
 	}
 
-	if _, err := evaluate("short-lived"); err != nil {
+	if _, err := evaluate("short-lived", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := evaluate("slow")
+		_, err := evaluate("slow", nil)
 		done <- err
 	}()
 	<-minting
@@ -361,7 +362,7 @@ func TestEvaluatePruneClockIsReadUnderTheLock(t *testing.T) {
 
 	evaluateMu.Lock()
 	defer evaluateMu.Unlock()
-	if _, ok := cache["short-lived"]; ok {
+	if _, ok := cache[cacheKey("short-lived", nil)]; ok {
 		t.Fatal("the prune judged the expired entry with the caller's arrival time; the clock must be read after the wait")
 	}
 }
@@ -376,7 +377,7 @@ func TestRealRunCommandRefusedWithoutGroupContainment(t *testing.T) {
 	old := procgroup.ProcessGroupsSupported
 	procgroup.ProcessGroupsSupported = false
 	t.Cleanup(func() { procgroup.ProcessGroupsSupported = old })
-	_, err := RunCommand("printf should-not-run")
+	_, err := RunCommand("printf should-not-run", nil)
 	if err == nil {
 		t.Fatal("the real executor ran a command on a build whose process groups cannot contain it")
 	}
@@ -394,7 +395,7 @@ func TestRealRunCommandRunsWhereGroupsContain(t *testing.T) {
 	if !procgroup.ProcessGroupsSupported {
 		t.Skip("this build has no group containment; the refusal test covers it")
 	}
-	out, err := RunCommand("printf ok")
+	out, err := RunCommand("printf ok", nil)
 	if err != nil || out != "ok" {
 		t.Fatalf("RunCommand = %q, %v; want ok on a contained build", out, err)
 	}
@@ -407,7 +408,7 @@ func TestExpandRunsNoCommandOnSyntaxError(t *testing.T) {
 	ResetForTest()
 	t.Cleanup(func() { ResetForTest() })
 	runs := 0
-	RunCommand = func(string) (string, error) {
+	RunCommand = func(string, []string) (string, error) {
 		runs++
 		return "x", nil
 	}
@@ -428,23 +429,145 @@ func TestFailedMintStillPrunesExpiredEntries(t *testing.T) {
 	base := time.Unix(1_800_000_000, 0)
 	now := base
 	Now = func() time.Time { return now }
-	RunCommand = func(cmd string) (string, error) {
+	RunCommand = func(cmd string, _ []string) (string, error) {
 		if cmd == "short-lived" {
 			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
 		}
 		return "", errors.New("command exited with status 1: broken")
 	}
-	if _, err := evaluate("short-lived"); err != nil {
+	if _, err := evaluate("short-lived", nil); err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
 	now = base.Add(10 * time.Minute)
-	if _, err := evaluate("broken"); err == nil {
+	if _, err := evaluate("broken", nil); err == nil {
 		t.Fatal("evaluate succeeded on a failing command")
 	}
 	evaluateMu.Lock()
-	_, ok := cache["short-lived"]
+	_, ok := cache[cacheKey("short-lived", nil)]
 	evaluateMu.Unlock()
 	if ok {
 		t.Fatal("the expired entry survived a failed mint's prune")
+	}
+}
+
+// ExpandIn executes command expressions under the environment the caller
+// supplied, not the process environment: a caller whose effective environment
+// overlays the process's (a launch layer's env) runs the command exactly
+// where a spawned consumer of the same config would run it.
+func TestExpandInRunsCommandsUnderTheSuppliedEnv(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	var gotEnv []string
+	RunCommand = func(command string, env []string) (string, error) {
+		if command != "printenv THE_VAR" {
+			return "", fmt.Errorf("unexpected command %q", command)
+		}
+		gotEnv = env
+		for _, kv := range env {
+			if value, ok := strings.CutPrefix(kv, "THE_VAR="); ok {
+				return value, nil
+			}
+		}
+		return "", &CommandError{Detail: "THE_VAR absent from the command environment"}
+	}
+
+	const value = "expanded-under-overlay"
+	expanded, unresolved, err := ExpandIn("$(printenv THE_VAR)", Env{CommandEnv: []string{"THE_VAR=" + value}})
+	if err != nil {
+		t.Fatalf("ExpandIn: %v", err)
+	}
+	if len(unresolved) != 0 || expanded != value {
+		t.Fatalf("ExpandIn = %q, unresolved %v; want %q expanded from the supplied env", expanded, unresolved, value)
+	}
+	if gotEnv == nil || !slices.Contains(gotEnv, "THE_VAR="+value) {
+		t.Fatalf("the executor saw env %v; want the supplied environment", gotEnv)
+	}
+}
+
+// A command's cached result must never cross environments: the same command
+// text under a second environment re-runs instead of being served the first
+// environment's mint, and each environment's own repeats share one mint.
+func TestEvaluateCacheDoesNotCrossEnvironments(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	runs := 0
+	RunCommand = func(_ string, env []string) (string, error) {
+		runs++
+		for _, kv := range env {
+			if value, ok := strings.CutPrefix(kv, "TOKEN="); ok {
+				return value, nil
+			}
+		}
+		return "", &CommandError{Detail: "TOKEN absent from the command environment"}
+	}
+	envA := []string{"TOKEN=a-token"}
+	envB := []string{"TOKEN=b-token"}
+
+	mustValue := func(env []string, want string) {
+		t.Helper()
+		res, err := evaluate("printenv TOKEN", env)
+		if err != nil {
+			t.Fatalf("evaluate(%v): %v", env, err)
+		}
+		if res.Value != want {
+			t.Fatalf("evaluate(%v) = %q; want %q", env, res.Value, want)
+		}
+	}
+	if runs != 0 {
+		t.Fatal("the executor ran before any evaluate")
+	}
+	mustValue(envA, "a-token")
+	mustValue(envB, "b-token") // a mint must not cross environments
+	mustValue(envA, "a-token") // each environment shares its own mint
+	mustValue(envB, "b-token")
+	if runs != 2 {
+		t.Fatalf("executor ran %d times; want 2 (one per environment, cached within each)", runs)
+	}
+}
+
+// Two env slices holding the same entries are the same environment: the cache
+// key is a canonical rendering, not the slice's identity or order.
+func TestEvaluateCacheKeysCanonicalEnvOrder(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	runs := 0
+	RunCommand = func(_ string, _ []string) (string, error) {
+		runs++
+		return "shared", nil
+	}
+	if _, err := evaluate("get-token", []string{"A=1", "B=2"}); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if _, err := evaluate("get-token", []string{"B=2", "A=1"}); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (one environment, two orderings)", runs)
+	}
+}
+
+// A nil CommandEnv is Expand's historic contract: the executor sees the
+// process environment, and a command expanded twice shares one mint.
+func TestEvaluateNilEnvKeepsProcessEnvSharing(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	runs := 0
+	sawNilEnv := false
+	RunCommand = func(_ string, env []string) (string, error) {
+		runs++
+		sawNilEnv = env == nil
+		return "minted", nil
+	}
+	for range 2 {
+		expanded, unresolved, err := Expand("$(get-token)", nil)
+		if err != nil || len(unresolved) != 0 || expanded != "minted" {
+			t.Fatalf("Expand = %q, unresolved %v, err %v", expanded, unresolved, err)
+		}
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 shared mint", runs)
+	}
+	if !sawNilEnv {
+		t.Fatal("the executor received a non-nil env; nil means the process environment")
 	}
 }

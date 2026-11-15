@@ -521,7 +521,9 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   await act(async () => {
     clientMutationId = await seedPendingSend(mutationStorage, "ref_a", { attempted: true });
   });
-  expect(screen.getByTestId("pending-chips").textContent).toContain("hello");
+  // The one-rendering rule: the in-flight send renders as the transcript's
+  // pending row in the live-edge region, carrying its text.
+  expect(document.querySelector('[data-testid="user-message-item"]')?.textContent).toContain("hello");
   await waitFor(() => expect(screen.getByTestId("cold-start-skeleton")).toBeTruthy());
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.getAllByTestId("skeleton-line").every((line) => line.getAttribute("aria-hidden") === "true")).toBe(
@@ -582,7 +584,9 @@ test("cold-start skeleton stays through optimistic send and user echo, then ends
   expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
   expect(userMessage.textContent).toContain("hello");
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(screen.queryByTestId("pending-chips")).toBeNull();
+  // One rendering per message: the delivered item replaced the pending row
+  // in place, so no second user-message row and no chip surface exists.
+  expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
 
   act(() => {
     fake.emitNotification({
@@ -661,7 +665,8 @@ test("cold-start skeleton stays through durable outbox settlement after an ident
   const userMessage = screen.getByTestId("user-message-item");
   const skeleton = screen.getByTestId("cold-start-skeleton");
   expect(userMessage.textContent).toContain("hello");
-  expect(screen.queryByTestId("pending-chips")).toBeNull();
+  // One rendering per message: the delivered item replaced the pending row.
+  expect(screen.getAllByTestId("user-message-item")).toHaveLength(1);
   expect(userMessage.compareDocumentPosition(skeleton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
   await act(async () => {
@@ -902,7 +907,7 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
   expect(screen.getByText("hi")).toBeTruthy();
 });
 
-test("shows the seen divider above the first turn that arrived after the stored watermark", async () => {
+test("places the seen divider inside the first turn that arrived after the stored watermark", async () => {
   writeSeenWatermark("ref_a", "turn_1");
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () =>
@@ -915,11 +920,14 @@ test("shows the seen divider above the first turn that arrived after the stored 
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByTestId("seen-divider")).toBeTruthy());
-  // The divider sits between the two turns' text, not before both.
-  const text = document.body.textContent ?? "";
-  expect(text.indexOf("first")).toBeLessThan(text.indexOf("New since your last visit"));
-  expect(text.indexOf("New since your last visit")).toBeLessThan(text.indexOf("second"));
+  await waitFor(() => expect(screen.getAllByTestId("seen-divider")).toHaveLength(1));
+  const divider = screen.getByTestId("seen-divider");
+  const owner = divider.closest('[data-testid="turn-block"]');
+  expect(owner?.getAttribute("data-turn-id")).toBe("turn_2");
+  const first = document.querySelector('[data-testid="turn-block"][data-turn-id="turn_1"]');
+  if (!first) throw new Error("first turn block not rendered");
+  expect(first.contains(divider)).toBe(false);
+  expect(Boolean(first.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 });
 
 // The hook's own cases (useSeenDivider.test.ts) cover every watermark

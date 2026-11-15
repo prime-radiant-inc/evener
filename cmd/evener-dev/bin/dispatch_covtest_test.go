@@ -11,7 +11,7 @@ import (
 // topLevelSubcommands are the commands dispatch routes directly, beside
 // `dev`'s own registry.
 var topLevelSubcommands = []string{
-	"dev", "module-lint", "agent-shards", "hub-shards", "cli-shards", "list-build-flags",
+	"dev", "agent-shards", "hub-shards", "cli-shards", "list-build-flags",
 	"fuzz-harvest", "fuzzcov", "fuzzregistry", "internalcheck", "tomlcheck", "transcript-v2-upgrade",
 }
 

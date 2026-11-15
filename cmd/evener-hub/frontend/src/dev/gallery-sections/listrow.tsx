@@ -43,6 +43,20 @@ export default function ListRowGallerySection() {
               />
             </li>
             <li>
+              <ListRow
+                leading={<StatusDot state="idle" />}
+                label="refused split row"
+                meta="main area refuses, trailing control stays usable"
+                onSelect={() => {}}
+                aria-disabled="true"
+                trailingAction={
+                  <Button variant="secondary" size="sm">
+                    Install
+                  </Button>
+                }
+              />
+            </li>
+            <li>
               <ListRow label="OpenRouter (offline)" onSelect={() => {}} disabled />
             </li>
             <li>
@@ -69,6 +83,10 @@ export default function ListRowGallerySection() {
           <ul className={styles.list} aria-label="plain rows">
             <li>
               <ListRow variant="plain" label="Pinned" onSelect={() => {}} />
+            </li>
+            <li>
+              {/* aria-current: the selected row of a navigation list. */}
+              <ListRow variant="plain" label="Appearance (current)" onSelect={() => {}} aria-current="page" />
             </li>
             <li>
               <ListRow

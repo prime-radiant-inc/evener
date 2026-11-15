@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mix as sharedPaletteMix, type WebPalette, webPalettes } from "@evener/appwire-client/palette";
 import { expect, test } from "vitest";
 import { blockBody } from "./cssBlock";
 
@@ -823,6 +824,63 @@ test("tokens.css dark and light blocks declare the same color token names", () =
   expect({ missingFromLight, missingFromDark }).toEqual({ missingFromLight: [], missingFromDark: [] });
 });
 
+// --- (c2) tokens.css renders the one shared palette ---------------------
+//
+// @evener/appwire-client/palette is the source. The web's custom properties are checked
+// against it from the representation the browser actually reads - tokens.css
+// on disk - so a palette change has to land in one place and a one-sided edit
+// fails instead of drifting. The phone's own contract
+// (mobile-native/src/design/tokens.test.ts) checks its palette against the
+// same source in the native gate.
+
+const SHARED_WEB_ROLES = (Object.keys(webPalettes.dark) as (keyof WebPalette)[]).sort();
+
+const THEME_BLOCKS = [
+  {
+    name: "dark",
+    block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+  },
+  {
+    name: "light",
+    block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+  },
+] as const;
+
+/** The color a declared token resolves to, with any color-mix evaluated by
+ * the shared OKLab mix. */
+function resolvedTokenColor(block: string, name: string): string {
+  const value = declaredToken(block, name);
+  if (!value) throw new Error(`token-contract test: ${name} is not declared`);
+  if (value.startsWith("#")) return value.toUpperCase();
+  const mix = /^color-mix\(in oklab, var\(--([\w-]+)\) (\d+)%, var\(--([\w-]+)\)\)$/.exec(value);
+  if (!mix) throw new Error(`token-contract test: unsupported color value for ${name}: ${value}`);
+  const hueRole = mix[1]!;
+  const percentage = mix[2]!;
+  const baseRole = mix[3]!;
+  return sharedPaletteMix(
+    resolvedTokenColor(block, `--${hueRole}`),
+    resolvedTokenColor(block, `--${baseRole}`),
+    Number(percentage) / 100,
+  ).toUpperCase();
+}
+
+test("tokens.css declares exactly the shared web palette in both themes", () => {
+  for (const theme of THEME_BLOCKS) {
+    const declared = [...colorTokenNames(theme.block)].map((name) => name.slice(2)).sort();
+    expect(declared, `${theme.name} color tokens`).toEqual(SHARED_WEB_ROLES);
+  }
+});
+
+test("every tokens.css color matches the shared palette", () => {
+  for (const theme of THEME_BLOCKS) {
+    for (const role of SHARED_WEB_ROLES) {
+      expect(resolvedTokenColor(theme.block, `--${role}`), `${theme.name} --${role}`).toBe(
+        webPalettes[theme.name][role].toUpperCase(),
+      );
+    }
+  }
+});
+
 test("the canonical dark token block directly scopes nested dark wrappers", () => {
   const darkBlock = extractBlock(TOKENS_CSS, /(?:^|\n):root\s*,\s*\[data-theme="dark"\]\s*\{/);
   expect(darkBlock).toContain("color-scheme: dark;");
@@ -839,56 +897,17 @@ test("the canonical dark token block directly scopes nested dark wrappers", () =
 // DiffBlock contrast test above, with one addition: chips, badges, and
 // toasts set -ink text on the hue's own -bg tint (`color-mix(in oklab,
 // hue 15%, --surface-1)`), so that tint is a real text ground and is
-// checked too — which requires reproducing the oklab mix here. The mix
-// implementation below follows the OKLab reference (Björn Ottosson's
-// published matrices), and is only ever asked to reproduce a 15% mix of
-// two in-gamut sRGB colors, so gamut clipping stays a plain clamp.
+// checked too — which requires reproducing the oklab mix. The mix is the
+// shared implementation in @evener/appwire-client/palette, the same one the phone derives
+// its tints with, so the contract reproduces CSS color-mix without a second
+// copy of the reference matrices.
 
-type OklabTriple = [number, number, number];
-
-function srgbChannelToLinear(channel: number): number {
-  const c = channel / 255;
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-}
-
-function linearChannelToSrgb(linear: number): number {
-  const c = linear <= 0.0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - 0.055;
-  return Math.max(0, Math.min(255, Math.round(c * 255)));
-}
-
-function rgbToOklab([red, green, blue]: RGB): OklabTriple {
-  const r = srgbChannelToLinear(red);
-  const g = srgbChannelToLinear(green);
-  const b = srgbChannelToLinear(blue);
-  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
-  return [
-    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
-    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
-    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
-  ];
-}
-
-function oklabToRgb([L, a, b]: OklabTriple): RGB {
-  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
-  return [
-    linearChannelToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
-    linearChannelToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
-    linearChannelToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
-  ] as RGB;
+function hexColor([red, green, blue]: RGB): string {
+  return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function oklabMix(colorA: RGB, colorB: RGB, fractionOfA: number): RGB {
-  const a = rgbToOklab(colorA);
-  const b = rgbToOklab(colorB);
-  return oklabToRgb([
-    a[0] * fractionOfA + b[0] * (1 - fractionOfA),
-    a[1] * fractionOfA + b[1] * (1 - fractionOfA),
-    a[2] * fractionOfA + b[2] * (1 - fractionOfA),
-  ]);
+  return parseHexColor(sharedPaletteMix(hexColor(colorA), hexColor(colorB), fractionOfA));
 }
 
 test.each(["dark", "light"])("primary button normal and hover text clear AA in %s", (theme) => {
@@ -916,7 +935,40 @@ test.each(["dark", "light"])("primary button normal and hover text clear AA in %
   const hoverBackground = oklabMix(tokenColor(mix[1]), tokenColor(mix[3]), Number(mix[2]) / 100);
   expect(contrastRatio(foreground, hoverBackground), `${theme} hover contrast`).toBeGreaterThanOrEqual(4.5);
   expect(hoverBackground).not.toEqual(background);
+
+  // Pressed is a further step from the same two tokens: still AA, and
+  // distinct from both resting and hover.
+  const pressed = declarationInRule(
+    css,
+    'primary:active:not\\(:disabled\\):not\\(\\[aria-disabled="true"\\]\\)',
+    "background",
+  );
+  const pressedMix = /^color-mix\(in oklab, (var\(--[\w-]+\)) (\d+)%, (var\(--[\w-]+\))\)$/.exec(pressed ?? "");
+  if (!pressedMix) throw new Error(`Unsupported pressed color: ${pressed}`);
+  const pressedBackground = oklabMix(tokenColor(pressedMix[1]), tokenColor(pressedMix[3]), Number(pressedMix[2]) / 100);
+  expect(contrastRatio(foreground, pressedBackground), `${theme} pressed contrast`).toBeGreaterThanOrEqual(4.5);
+  expect(pressedBackground).not.toEqual(background);
+  expect(pressedBackground).not.toEqual(hoverBackground);
 });
+
+// --on-accent is the text and glyph role on a solid --accent fill (the
+// primary button, the agent's mark). The accent turns from a deep indigo in
+// light to a pale one in dark, so the role turns with it; this pins the pair
+// itself rather than any one widget's use of it. The fill must also stand
+// off the grounds it sits on (3:1, the non-text bar) or the filled action
+// would dissolve into the page.
+test.each(THEME_BLOCKS)(
+  "--on-accent clears 4.5:1 on --accent, and the fill stands off its grounds, in $name",
+  (theme) => {
+    const accent = parseHexColor(resolvedTokenColor(theme.block, "--accent"));
+    const onAccent = parseHexColor(resolvedTokenColor(theme.block, "--on-accent"));
+    expect(contrastRatio(onAccent, accent), `${theme.name} --on-accent on --accent`).toBeGreaterThanOrEqual(4.5);
+    for (const groundName of ["--surface-0", "--surface-canvas", "--surface-1"]) {
+      const ground = parseHexColor(resolvedTokenColor(theme.block, groundName));
+      expect(contrastRatio(accent, ground), `${theme.name} --accent on ${groundName}`).toBeGreaterThanOrEqual(3);
+    }
+  },
+);
 
 test("the four -ink companions clear 4.5:1 on their theme's lightest text grounds", () => {
   const themes = [
@@ -1389,6 +1441,20 @@ test("the declared set spans module-local custom properties, not just tokens.css
   expect(DECLARED_CUSTOM_PROPERTIES.has("--sheet-inline-size")).toBe(true);
   // The shipped bug's name: referenced twice, declared nowhere, ever.
   expect(DECLARED_CUSTOM_PROPERTIES.has("--radius-sm")).toBe(false);
+});
+
+// --dock-clearance is the home-indicator band every dock keeps its content
+// clear of. The name-level scan above passes on a declaration with any value,
+// including an empty one, so a broken value would silently reduce every dock's
+// padding to its bare spacing step; several docks read the token on its own,
+// with no step to fall back to. This pins the value itself, and the keyboard
+// term in it: the band must yield to the on-screen keyboard rather than pad
+// under it.
+test("--dock-clearance is the keyboard-yielding home-indicator band", () => {
+  const declaration = TOKENS_CSS.match(/--dock-clearance:\s*([^;]+);/)?.[1]
+    ?.replace(/\s+/g, " ")
+    .trim();
+  expect(declaration).toBe("max(0px, env(safe-area-inset-bottom) - var(--keyboard-inset, 0px))");
 });
 
 test("catches a fallback-less var() naming an undeclared token", () => {

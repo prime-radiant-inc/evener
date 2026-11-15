@@ -9,7 +9,11 @@
   flex: none;
   flex-direction: column;
   gap: var(--space-1);
-  width: 200px;
+  box-sizing: border-box;
+  width: calc(200px + 2 * var(--space-1));
+  /* The scroll port clips at its padding edge: this inset is the room the
+   * selected row's ring and the filter's focus ring are drawn in. */
+  padding-inline: var(--space-1);
   overflow-y: auto;
 }
 
@@ -17,38 +21,37 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   margin-bottom: var(--space-2);
-  padding: var(--space-1);
+  padding-block: var(--space-1);
 }
 
 .clusterHeader {
   margin-top: var(--space-3);
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
 }
 
-.link {
-  display: block;
-  width: 100%;
+/* A cluster's rows on desktop: a stack with a hair of air between the
+ * pills. */
+.clusterRows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
-/* FIX 3a: var(--accent) is the raw hue (meant for glyphs/borders, not text -
- * see tokens.css's own "-ink companions" comment) - on --accent-bg's own pale
- * tint it read at borderline/failing contrast in the light theme, close
- * enough to the neutral grey .link:hover wash (--hover-1) that a real user
- * testing this read the selected item as barely-there next to a plain
- * grey-background link (FIX 3b, below). --accent-ink is the AA-derived
- * text form of the same hue, the same substitution toast.module.css already
- * makes for text sitting on this exact --accent-bg fill.
- */
-.linkActive {
-  background: var(--accent-bg);
-  color: var(--accent-ink);
-  font-weight: var(--font-weight-medium);
-  border-inline-start: 1px solid var(--accent);
+/* A cluster's rows on a phone, where the nav is the master list: one grouped
+ * surface (styles/surface.module.css) with a hairline between rows. The pane
+ * picks between the two by useIsMobile, the same 899px boundary as the phone
+ * block below. */
+.clusterRowsGrouped {
+  composes: grouped from "../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: groupedRows from "../../styles/surface.module.css";
 }
 
-.linkActive .link {
-  color: var(--accent-ink);
-  font-weight: var(--font-weight-medium);
+/* One nav row's layout box. The row itself is a ListRow, which owns the
+ * rounded hover wash and the selected lift; position: relative anchors the
+ * phone drill-in chevron to the row's edge. */
+.navRow {
+  position: relative;
 }
 
 .content {
@@ -91,23 +94,28 @@
     display: none;
   }
 
-  .link {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    justify-content: space-between;
-    min-height: var(--tap-min);
+  /* The rows sit a hair inside the grouped surface, between its hairlines. */
+  .navRow {
+    padding: var(--space-1);
   }
 
+  /* The drill-in chevron sits at the row's trailing edge, not beside the
+   * label: it is anchored to the row, and passes pointer events through to
+   * the row's button beneath it. */
   .linkChevron {
     display: inline-flex;
-    color: var(--ink-mid);
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: var(--space-3);
+    align-items: center;
+    color: var(--ink-low);
+    pointer-events: none;
   }
 
   .filterRow {
     position: sticky;
     top: 0;
     z-index: var(--z-sticky-bar);
-    background: var(--surface-1);
+    background: var(--surface-0);
   }
 }

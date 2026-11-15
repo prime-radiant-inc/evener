@@ -47,6 +47,7 @@ func countEvents(events []llm.StreamEvent) map[llm.StreamEventType]int {
 // that emitted reasoning and no text or tool call closes the reasoning segment
 // at [DONE], before the finish event.
 func TestStreamReasoningOnlyClosesAtDone(t *testing.T) {
+	t.Parallel()
 	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"only thinking\"}}]}\n\n" +
 		"data: [DONE]\n\n"
 	events, terminal := chatStreamEvents(t, sse, nil)
@@ -87,6 +88,7 @@ func TestStreamReasoningOnlyClosesAtDone(t *testing.T) {
 // encrypted reasoning items: they survive to the settled thinking part's
 // EncryptedContent, verbatim.
 func TestStreamEncryptedDetailsRideThinkingPart(t *testing.T) {
+	t.Parallel()
 	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_details\":[" +
 		`{"type":"reasoning.encrypted","id":"e1","data":"d1"}]}}]}` + "\n\n" +
 		"data: [DONE]\n\n"
@@ -122,6 +124,7 @@ func TestStreamEncryptedDetailsRideThinkingPart(t *testing.T) {
 // TestStreamMappedFinishReason pins the row's FinishReasonMap applying on the
 // streaming settle path, not only in the non-streaming decode.
 func TestStreamMappedFinishReason(t *testing.T) {
+	t.Parallel()
 	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n" +
 		"data: [DONE]\n\n"
 	events, terminal := chatStreamEvents(t, sse, func(c *registry.Caps) {
@@ -144,6 +147,7 @@ func TestStreamMappedFinishReason(t *testing.T) {
 // TestStreamToolCallThoughtSignature survives the SSE delta state machine and
 // lands on the settled response used to build the next assistant turn.
 func TestStreamToolCallThoughtSignature(t *testing.T) {
+	t.Parallel()
 	sse := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_gemini","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"x\"}"},"extra_content":{"google":{"thought_signature":"sig-1"}}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
 		"data: [DONE]\n\n"
 	events, terminal := chatStreamEvents(t, sse, nil)
@@ -169,6 +173,7 @@ func TestStreamToolCallThoughtSignature(t *testing.T) {
 // TestStreamInbandErrorWithoutMessage pins the message-less in-band error
 // chunk: with only a code, the stream still ends typed with that status.
 func TestStreamInbandErrorWithoutMessage(t *testing.T) {
+	t.Parallel()
 	sse := "data: {\"error\":{\"code\":429,\"type\":\"rate_limit_error\"}}\n\n"
 	_, terminal := chatStreamEvents(t, sse, nil)
 	if terminal == nil {
@@ -183,6 +188,7 @@ func TestStreamInbandErrorWithoutMessage(t *testing.T) {
 // TestStreamChoiceLevelUsage pins the per-choice usage fallback on the settle:
 // with no top-level usage, choices[0].usage becomes the final response usage.
 func TestStreamChoiceLevelUsage(t *testing.T) {
+	t.Parallel()
 	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}]}\n\n" +
 		"data: [DONE]\n\n"
 	events, terminal := chatStreamEvents(t, sse, nil)
@@ -204,6 +210,7 @@ func TestStreamChoiceLevelUsage(t *testing.T) {
 // transition: the reasoning segment closes before the first tool-call start,
 // and does not close a second time at [DONE].
 func TestStreamToolCallClosesReasoningOnce(t *testing.T) {
+	t.Parallel()
 	sse := "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"prelude\"}}]}\n\n" +
 		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_r","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}` + "\n\n" +
 		"data: [DONE]\n\n"

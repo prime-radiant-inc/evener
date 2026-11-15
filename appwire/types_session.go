@@ -151,11 +151,17 @@ type FavoriteSetResponse struct {
 
 // NavigationMutation is returned by hub-owned mutations after navigation
 // state has committed, so clients can converge before the matching AppWire
-// event. Targets is intentionally a plain slice so existing hubapi callers
-// can assign their named NavigationArray values to it.
+// event. Deferred reports that the mutation itself is durable but its receipt
+// could not be built before the refresh deadline: Targets is empty, the live
+// generation is carried, and the change arrives later as an invalidation.
+// Targets is intentionally a plain slice so existing hubapi callers can assign
+// their named NavigationArray values to it.
 type NavigationMutation struct {
 	GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
 	Targets      []NavigationInvalidationTarget `json:"targets"`
+	// Deferred claims a pending rebuild, so it is set only when one is
+	// actually armed. Never retry the mutation itself when it is set.
+	Deferred bool `json:"deferred,omitempty"`
 }
 
 // MarshalJSON keeps the navigation wire contract's arrays non-null even for a
@@ -168,7 +174,8 @@ func (mutation NavigationMutation) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
 		Targets      []NavigationInvalidationTarget `json:"targets"`
-	}{GenerationID: mutation.GenerationID, Targets: targets})
+		Deferred     bool                           `json:"deferred,omitempty"`
+	}{GenerationID: mutation.GenerationID, Targets: targets, Deferred: mutation.Deferred})
 }
 
 // ArchiveTargetKind identifies the hub-owned object whose explicit archive
@@ -198,9 +205,9 @@ type ArchiveParams struct {
 }
 
 // ArchiveResponse confirms the durable decision and returns its navigation
-// receipt. When NavigationDeferred is set the receipt was not built before the
-// refresh deadline: Navigation carries the live generation with no targets, and
-// the change arrives later as an invalidation.
+// receipt. NavigationDeferred mirrors Navigation.Deferred for the archive
+// response's established wire field; new callers should read the receipt's
+// flag, which every mutation response carries.
 type ArchiveResponse struct {
 	OK         bool               `json:"ok"`
 	Navigation NavigationMutation `json:"navigation"`

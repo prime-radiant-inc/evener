@@ -14,9 +14,11 @@
   gap: var(--space-1);
   padding: var(--space-1);
   background: var(--surface-2);
-  border-radius: var(--radius-control);
+  /* The floating-layer corner; with the bar's --space-1 inset it sits
+   * concentric around the control corner of the button inside. */
+  border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  animation: selectionQuoteEnter var(--motion-duration-overlay) var(--motion-easing-standard);
+  animation: selectionQuoteEnter var(--motion-duration-overlay) var(--motion-easing-pop);
 }
 
 @keyframes selectionQuoteEnter {

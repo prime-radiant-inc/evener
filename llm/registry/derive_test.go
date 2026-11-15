@@ -10,6 +10,7 @@ func anth(fam string, controls ...string) (Caps, Model, deriveInput) {
 }
 
 func TestDerive_GoogleThinkingShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		controls []string
@@ -60,6 +61,7 @@ func TestDerive_GoogleThinkingShapes(t *testing.T) {
 }
 
 func TestDerive_ThinkingShapes(t *testing.T) {
+	t.Parallel()
 	type want struct {
 		shape, display string
 		alwaysOn       bool
@@ -108,6 +110,7 @@ func TestDerive_ThinkingShapes(t *testing.T) {
 }
 
 func TestDerive_PinnedShapeAndOtherProtocolsUntouched(t *testing.T) {
+	t.Parallel()
 	shape := "budget+effort"
 	caps, m, in := anth("claude-opus", "effort", "budget_tokens")
 	caps.ThinkingShape = &shape
@@ -124,6 +127,7 @@ func TestDerive_PinnedShapeAndOtherProtocolsUntouched(t *testing.T) {
 }
 
 func TestDerive_ReasoningFalseClearsEverything(t *testing.T) {
+	t.Parallel()
 	caps, m, in := anth("claude-opus", "effort")
 	caps.Reasoning = new(false)
 	caps.EffortValues = []string{"low", "high"}
@@ -134,6 +138,7 @@ func TestDerive_ReasoningFalseClearsEverything(t *testing.T) {
 }
 
 func TestDerive_EffortControlRules(t *testing.T) {
+	t.Parallel()
 	caps := Caps{}
 	m := Model{}
 	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat}, map[string]string{})
@@ -153,6 +158,7 @@ func TestDerive_EffortControlRules(t *testing.T) {
 }
 
 func TestDerive_MaxOutputTokensJunkCap(t *testing.T) {
+	t.Parallel()
 	caps := Caps{ContextWindow: new(262144), MaxOutputTokens: new(262144)}
 	m := Model{}
 	prov := map[string]string{"MaxOutputTokens": "snapshot/row"}
@@ -175,6 +181,7 @@ func TestDerive_MaxOutputTokensJunkCap(t *testing.T) {
 }
 
 func TestDerive_SurfaceFallback(t *testing.T) {
+	t.Parallel()
 	caps := Caps{}
 	m := Model{}
 	derive(&caps, &m, deriveInput{Protocol: ProtocolOpenAIChat, ProviderSurface: SurfaceAnthropic}, map[string]string{})

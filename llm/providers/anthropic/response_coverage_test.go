@@ -7,6 +7,7 @@ import (
 // TestInbandErrorStatusAllTypes covers all the status code branches in
 // inbandErrorStatus (lines 181, 185, 187, 189).
 func TestInbandErrorStatusAllTypes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		errType string
 		want    int
@@ -29,6 +30,7 @@ func TestInbandErrorStatusAllTypes(t *testing.T) {
 // TestInbandStreamErrorEmptyMessage covers the empty message fallback
 // (line 166-167).
 func TestInbandStreamErrorEmptyMessage(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"error": map[string]any{
 			"type": "invalid_request_error",
@@ -43,6 +45,7 @@ func TestInbandStreamErrorEmptyMessage(t *testing.T) {
 // TestInbandStreamErrorNoErrorObject covers the case where the error object
 // is missing.
 func TestInbandStreamErrorNoErrorObject(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{}
 	err := inbandStreamError(payload)
 	if err == nil {

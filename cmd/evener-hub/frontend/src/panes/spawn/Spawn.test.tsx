@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LaunchOption } from "@evener/appwire-client";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { connectionStore } from "../../stores/connection";
 import { readModuleCss } from "../../styles/cssBlock";
@@ -55,7 +55,7 @@ test("the card effort control keeps a distinct accessible name with Advanced opt
   );
   await settled();
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
 
   expect(screen.getByLabelText("Prompt reasoning effort")).toBe(effortControl());
   expect(screen.getAllByLabelText(/reasoning effort/i)).toHaveLength(2);
@@ -70,8 +70,9 @@ test("the cold-start spawn pane carries the chord hints when no session is open"
 
 // --- the page's shape ------------------------------------------------------
 //
-// Prompt card first, taking the page's slack; ONE configuration row beneath it
-// (working directory, model, effort); harness in Advanced options.
+// Prompt card first, taking the page's slack; the working-directory and
+// access summaries beneath it; model and effort in the card's own control
+// row; harness in Advanced options.
 
 test("the desktop directory trigger announces the confirmed path", async () => {
   const user = setupUser();
@@ -88,14 +89,16 @@ test("the desktop directory trigger announces the confirmed path", async () => {
 // split is CSS-only), so one render covers both. The mobile row order is the
 // Treatment A list plus session-only Plugins. Model AND effort left it when
 // the card took the job.
-test("the directory and git info sit above the prompt; model and effort live in the card", async () => {
+test("the prompt card leads and the directory follows it; model and effort live in the card", async () => {
   renderSpawn(readyClient());
   await settled();
 
   const dir = screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
   const card = screen.getByTestId("spawn-prompt-card");
   const controls = screen.getByTestId("spawn-controls");
-  expect(dir.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The task is the page's first control and the directory summary comes
+  // after it, in DOM order, so keyboard focus follows the same path.
+  expect(card.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // Below-card model/effort fields are gone: the desktop field wrapper and the
   // bordered Effort select no longer render.
   expect(screen.queryByTestId("spawn-desktop-model")).toBeNull();
@@ -221,7 +224,7 @@ test("harness moved into Advanced options, and still works there", async () => {
   await settled();
 
   expect(screen.queryByLabelText("Harness")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
   await user.selectOptions(harness, "external");
   expect(harness.value).toBe("external");
@@ -281,6 +284,42 @@ test("a focused pane never focuses the prompt field on mount on mobile", async (
   renderSpawn(readyClient());
   await settled();
   expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
+});
+
+test("on Android, the prompt card's attach offers the picker and the camera", async () => {
+  const platform = vi
+    .spyOn(navigator, "userAgent", "get")
+    .mockReturnValue("Mozilla/5.0 (Linux; Android 15; Pixel 9) Chrome/141.0 Mobile");
+  onTestFinished(() => platform.mockRestore());
+  renderSpawn(readyClient());
+  await settled();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const captures: (string | null)[] = [];
+  vi.spyOn(input, "click").mockImplementation(() => {
+    captures.push(input.getAttribute("capture"));
+  });
+  const trigger = within(screen.getByTestId("spawn-attach")).getByRole("button");
+  fireEvent.click(trigger);
+  const count = screen.getAllByRole("menuitem").length;
+  for (let index = 0; index < count; index += 1) {
+    if (index > 0) fireEvent.click(trigger);
+    fireEvent.click(screen.getAllByRole("menuitem")[index] as HTMLElement);
+  }
+  expect(captures).toHaveLength(2);
+  expect(captures.filter((capture) => capture !== null)).toHaveLength(1);
+});
+
+// Runs after the Android case on purpose: a platform stubbed for one test must
+// not reach the next.
+test("the prompt card's attach opens the picker directly where the browser's picker has a camera", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const clickSpy = vi.spyOn(input, "click").mockImplementation(() => {});
+  fireEvent.click(screen.getByTestId("spawn-attach"));
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(clickSpy).toHaveBeenCalledTimes(1);
+  expect(input.hasAttribute("capture")).toBe(false);
 });
 
 // The card and the session composer are the SAME object: both render
@@ -359,7 +398,7 @@ test("Access mode moved from the top-level bar into Advanced options (9ct0)", as
   await settled();
 
   expect(screen.queryByLabelText("Access mode")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect(screen.getByLabelText("Access mode")).toBeTruthy();
 });
 
@@ -371,7 +410,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
 
   await fillPrompt(user, "do the thing");
   await setWorkingDir(user, "/tmp/project");
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.click(screen.getByTestId("spawn-submit"));
 
@@ -432,7 +471,7 @@ test("loads sticky defaults from localStorage on mount", async () => {
   await settled();
 
   await waitFor(() => expectWorkingDir("/saved/project"));
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("workspace-write");
 });
 

@@ -103,7 +103,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		return res
 	}
 	if t.Definition.Name == "ask_user" {
-		normalized, err := normalizeAskArgs(args)
+		normalized, err := tool.NormalizeAskUserArgs(args)
 		if err != nil {
 			res.PrevalErr = err.Error()
 			return res
@@ -305,6 +305,7 @@ func decodeDefaultCommunicateOutputString(encoded string) (map[string]any, error
 		return nil, err
 	}
 	decoder := json.NewDecoder(strings.NewReader(encoded))
+	decoder.UseNumber()
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, errors.New("is not valid JSON")

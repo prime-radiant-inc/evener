@@ -182,17 +182,23 @@ func TestExtendHistoricalJobFold_OlderSeqInDeltaRefoldsWholeJournal(t *testing.T
 	}
 	first := []jobstore.Event{event(5, "job_late"), event(6, "job_later")}
 	appendEvents(first...)
-	fold, offset, err := extendHistoricalJobFold(context.Background(), path, 0, historicalJobFold{})
+	fold, offset, restarted, err := extendHistoricalJobFold(context.Background(), path, 0, historicalJobFold{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if restarted {
+		t.Fatal("first fold reported a restart, want an ordinary fold from zero")
 	}
 	requireActivityJobListMatchesFold(t, fold.jobs, first)
 
 	early := event(2, "job_early")
 	appendEvents(early)
-	fold, _, err = extendHistoricalJobFold(context.Background(), path, offset, fold)
+	fold, _, restarted, err = extendHistoricalJobFold(context.Background(), path, offset, fold)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !restarted {
+		t.Fatal("out-of-order append did not report the order-restarting refold")
 	}
 	requireActivityJobListMatchesFold(t, fold.jobs, append(first, early))
 	if got := activityRecordIDs(slices.Collect(fold.jobs.all())); got[0] != "job_early" {

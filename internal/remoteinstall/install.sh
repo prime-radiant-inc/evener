@@ -74,12 +74,17 @@ if [ -z "$tmpdir" ] || [ ! -d "$tmpdir" ]; then
 	echo "mktemp did not produce a usable temporary directory." >&2
 	exit 1
 fi
+stage_bin=""
+stage_link=""
 cleanup() {
 	# Never hand rm an empty root: an unset or emptied tmpdir must make this
 	# a no-op, not a recursive delete of the current directory.
 	if [ -n "${tmpdir:-}" ]; then
 		rm -rf "$tmpdir"
 	fi
+	# A failed or interrupted publish leaves only these stages; the live names
+	# are replaced by rename(2) and are always a complete old or new file.
+	rm -f "${stage_bin:-}" "${stage_link:-}"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -166,8 +171,18 @@ for bin in $bins; do
 		echo "Release archive did not contain $bin." >&2
 		exit 1
 	fi
-	install -m 0755 "$src" "$share_bindir/$bin"
-	ln -sfn "$share_bindir/$bin" "$bindir/$bin"
+	# install(1) writes in place, so an interrupted or failed copy would leave a
+	# truncated live binary for the next reader. Stage each file beside its
+	# destination and publish it with rename(2), which is atomic on one
+	# filesystem; a failure leaves the previous complete binary and symlink in
+	# place (#2345).
+	stage_bin="$share_bindir/.$bin.install.$$"
+	stage_link="$bindir/.$bin.install.$$"
+	rm -f "$stage_bin" "$stage_link"
+	install -m 0755 "$src" "$stage_bin"
+	mv -f "$stage_bin" "$share_bindir/$bin"
+	ln -s "$share_bindir/$bin" "$stage_link"
+	mv -f "$stage_link" "$bindir/$bin"
 done
 
 echo "Installed Evener binaries to $share_bindir"

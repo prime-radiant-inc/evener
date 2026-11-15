@@ -182,8 +182,9 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_, _, _ = s.jobGet("job_1")
 }
 
-// serveDiagnostic is one parsed "[serve <instant> session=<id>] <message>" line.
-type serveDiagnostic struct{ session, message string }
+// serveDiagnostic is one parsed serve component record: its message and the
+// session and instant fields every line carries.
+type serveDiagnostic struct{ at, session, message string }
 
 // parseServeDiagnostics splits captured serve output into its diagnostics. A
 // line that is not shaped like a serve log line fails the test.
@@ -194,19 +195,8 @@ func parseServeDiagnostics(t *testing.T, output string) []serveDiagnostic {
 		if line == "" {
 			continue
 		}
-		rest, ok := strings.CutPrefix(line, "[serve ")
-		if !ok {
-			t.Fatalf("unexpected serve output %q: not a [serve] line", line)
-		}
-		header, message, ok := strings.Cut(rest, "] ")
-		if !ok {
-			t.Fatalf("unexpected serve output %q: no message separator", line)
-		}
-		_, session, ok := strings.Cut(header, " session=")
-		if !ok {
-			t.Fatalf("unexpected serve output %q: no session field", line)
-		}
-		diagnostics = append(diagnostics, serveDiagnostic{session: session, message: message})
+		parsed := parseServeLine(t, line)
+		diagnostics = append(diagnostics, serveDiagnostic{at: parsed.at, session: parsed.session, message: parsed.message})
 	}
 	return diagnostics
 }
@@ -215,8 +205,7 @@ func parseServeDiagnostics(t *testing.T, output string) []serveDiagnostic {
 // callbacks_and_input fixture provokes, all belonging to the daemon's session.
 // Each line is identified by the value the fixture owns — its injected error,
 // context.Canceled, or the fixture listener's address — not by the production
-// wording around it, which the serve log has no structured form for. A
-// missing, extra, or foreign diagnostic fails the test.
+// wording around it. A missing, extra, or foreign diagnostic fails the test.
 func assertServeDiagnostics(t *testing.T, output, sessionID, listenAddr string, injected error) {
 	t.Helper()
 	diagnostics := parseServeDiagnostics(t, output)

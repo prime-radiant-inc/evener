@@ -10,6 +10,7 @@ import (
 )
 
 func TestProviderOperationSettlementUsesBegunAttemptState(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_provider_operation_begun")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)

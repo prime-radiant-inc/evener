@@ -1,4 +1,4 @@
-import { Marked } from "marked";
+import { createGatedMarked } from "./setextGate";
 
 // The app's shared default-options lexer: the same GFM tokenizer the Markdown
 // widget parses with, minus the widget's custom renderer (lexer output never
@@ -11,4 +11,9 @@ import { Marked } from "marked";
 // panes/session/transcript/messages/reasoningFormat.ts can import it without
 // pulling the widget's browser dependencies. index.tsx re-exports it so
 // existing `widgets/markdown` import sites keep working.
-export const markdownLexer = new Marked({ gfm: true });
+//
+// Constructed through createGatedMarked so the shared tokenizer carries the
+// setext gate (#5002): without it Marked's lheading rule rescans the whole
+// remaining frame once per line inside list items, making large list-item
+// documents quadratic to lex.
+export const markdownLexer = createGatedMarked({ gfm: true });

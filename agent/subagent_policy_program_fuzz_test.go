@@ -131,13 +131,22 @@ func assertSubagentPolicyHelpers(t *testing.T, selector byte) {
 		// surface"; #1427, "delegates keep use_skill so skill-directed briefs
 		// work"; and #2645, "subagents keep their own-job supervision tools").
 		{agent: &plugin.Agent{Tools: []string{"read_file"}}, wantAllow: []string{"read_file", "task_list", "compact_context", "use_skill", "job_list", "job_status", "job_stop", "job_watch"}},
-		{canDelegate: true},
+		// A can-delegate untyped child keeps delegate and job_watch but still
+		// denies the tools no subagent may hold (#6080).
+		{canDelegate: true, wantDeny: true},
 		{wantDeny: true},
 	}
 	pc := policyCases[int(selector)%len(policyCases)]
 	all, allowed, denied := baseSubagentToolPolicy(pc.agent, pc.canDelegate)
 	if all != pc.wantAll || strings.Join(allowed, ",") != strings.Join(pc.wantAllow, ",") || (len(denied) > 0) != pc.wantDeny {
 		t.Fatalf("base policy = all:%v allow:%v deny:%v", all, allowed, denied)
+	}
+	if pc.canDelegate && !pc.wantAll {
+		for _, name := range protectedGrantTools() {
+			if !hasString(denied, name) {
+				t.Fatalf("can-delegate policy does not deny protected tool %q: %v", name, denied)
+			}
+		}
 	}
 	frozen := frozenSubagentToolNames(all, allowed, denied)
 	if all && (len(frozen) != 1 || frozen[0] != "*") {

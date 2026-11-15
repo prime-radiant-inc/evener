@@ -163,6 +163,7 @@ func checkOrUpdateConformanceGolden(t *testing.T, name string, records []conform
 // oracle drives) and snapshots the decoded result. Drift = provider wire-format
 // change or decoder regression; investigate, do not weaken.
 func TestConformanceGolden(t *testing.T) {
+	t.Parallel()
 	ps, cleanup := providers()
 	defer cleanup()
 
@@ -196,6 +197,7 @@ func TestConformanceGolden(t *testing.T) {
 // name a known provider and carry at least one frame. It keeps a malformed
 // corpus from masquerading as a decode regression.
 func TestConformanceFixturesWellFormed(t *testing.T) {
+	t.Parallel()
 	known := map[string]bool{"anthropic": true, "google": true, "responses": true, "chatcompletions": true}
 	seen := map[string]bool{}
 	for _, fix := range conformanceFixtures {

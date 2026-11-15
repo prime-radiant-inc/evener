@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -52,10 +53,12 @@ var (
 // unit-testable without spinning a real timer: construct a Manager against a
 // temp root, install fixtures, call this once, and assert on the result.
 func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr io.Writer) (updated []plugins.UpgradedPlugin, errs []string) {
+	log := componentlog.NewWriter("hub", stderr)
+	logUpgrade := func(msg string) { log.Info("plugin auto-upgrade: " + msg) }
 	mk, err := pluginListMarketplaces(ctx, mgr)
 	if err != nil {
 		msg := fmt.Sprintf("listing marketplaces: %v", err)
-		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
+		logUpgrade(msg)
 		return nil, []string{msg}
 	}
 
@@ -68,14 +71,14 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 		if err := pluginRefreshMarketplace(ctx, mgr, name); err != nil {
 			msg := fmt.Sprintf("refreshing marketplace %q: %v", name, err)
 			errs = append(errs, msg)
-			_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
+			logUpgrade(msg)
 		}
 	}
 
 	updated, err = pluginUpdateAutoUpgrade(ctx, mgr)
 	if err != nil {
 		errs = append(errs, err.Error())
-		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %v\n", err)
+		logUpgrade(err.Error())
 	}
 	return updated, errs
 }

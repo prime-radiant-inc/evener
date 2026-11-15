@@ -1452,6 +1452,68 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
   expect(model.supportsReasoning).toBe(false);
 });
 
+test("thread/model/changed updates contextUsed, contextWindow, contextPressure, contextAssumed, and compactionThreshold in both directions", () => {
+  let model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      contextUsed: 50_000,
+      contextWindow: 200_000,
+      contextPressure: 0.25,
+      contextAssumed: false,
+      compactionThreshold: 0,
+    },
+  });
+  expect(model.compactionThreshold).toBe(0);
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        modelProvider: "deepseek",
+        model: "deepseek-4.1-flash",
+        contextUsed: 200_000,
+        contextWindow: 1_000_000,
+        contextPressure: 0.2,
+        contextAssumed: true,
+        compactionThreshold: 250_000,
+      },
+    },
+    2000,
+  );
+  expect(model.contextUsed).toBe(200_000);
+  expect(model.contextWindow).toBe(1_000_000);
+  expect(model.contextPressure).toBe(0.2);
+  expect(model.contextAssumed).toBe(true);
+  expect(model.compactionThreshold).toBe(250_000);
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-5",
+        contextUsed: 200_000,
+        contextWindow: 200_000,
+        contextPressure: 1,
+      },
+    },
+    3000,
+  );
+  expect(model.contextUsed).toBe(200_000);
+  expect(model.contextWindow).toBe(200_000);
+  expect(model.contextPressure).toBe(1);
+  expect(model.contextAssumed).toBe(false);
+  expect(model.compactionThreshold).toBe(0);
+});
+
 // Warnings reach the model: the reducer's `case "warning"` (see reducer.ts
 // for the wire receipts — internal/appprojector/appwire_projection.go's
 // EventWarning and EventError's user-cancel branch) folds NotifyWarning

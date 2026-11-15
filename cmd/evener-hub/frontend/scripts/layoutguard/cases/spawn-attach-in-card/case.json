@@ -9,6 +9,7 @@
     "widgets/button/button.module.css",
     "widgets/tooltip/tooltip.module.css",
     "panes/session/chrome/modelswitch.module.css",
+    "styles/surface.module.css",
     "panes/spawn/spawn.module.css"
   ],
   "viewport": {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestGeminiStreamSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
+	t.Parallel()
 	sse := `data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}}}]}}]}` + "\n\n" +
 		`data: {"candidates":[{"finishReason":"STOP"}]}` + "\n\n"
 	ctx, cancel := context.WithCancel(context.Background())
@@ -31,6 +32,7 @@ func TestGeminiStreamSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
 }
 
 func TestGeminiSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
+	t.Parallel()
 	r := fromGeminiResponse(map[string]any{
 		"candidates": []any{map[string]any{
 			"content": map[string]any{"parts": []any{map[string]any{
@@ -52,6 +54,7 @@ func TestGeminiSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
 // only the uncached remainder and CacheReadTokens the cached count, so for
 // conformant payloads adding the two recovers promptTokenCount exactly once.
 func TestParseUsageExcludesCachedContent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		usage           map[string]any

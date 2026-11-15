@@ -104,7 +104,10 @@ func TestManagerQuestionNumberDecoderIsScoped(t *testing.T) {
 	t.Parallel()
 	root := newMessagingRoot(t, newMessagingAdapter(), func(cfg *SessionConfig) { cfg.Manager = true })
 	for _, definition := range root.reg.Definitions() {
-		want := definition.Name == "delegate_send" || definition.Name == "job_status"
+		// The manager question decoder is scoped to its two hub tools. The
+		// result tool has its own, narrower output decoder (#5325); every other
+		// tool must still use the registry's default float64 decoding.
+		want := definition.Name == "delegate_send" || definition.Name == "job_status" || definition.Name == "communicate"
 		if got := root.reg.Get(definition.Name).UnmarshalArgs != nil; got != want {
 			t.Errorf("%s opted into argument decoding=%v, want %v", definition.Name, got, want)
 		}

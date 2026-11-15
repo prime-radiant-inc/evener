@@ -12,17 +12,14 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // resolvedTempBase is a test temp dir with its symlinks resolved, so it compares
 // equal to the scratch paths minted under it on macOS (/var -> /private/var).
 func resolvedTempBase(t *testing.T) string {
 	t.Helper()
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return base
+	return testfs.CanonicalTempDir(t)
 }
 
 // A session that swaps onto a clone of its environment (a worktree enter, exit

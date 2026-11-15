@@ -40,10 +40,12 @@ func render(env []envRow, direct []directRow, hub []hubRow, removed []string) st
 Every registered environment variable, every variable a tool declares as a
 string constant or reads through a literal ` + "`os.Getenv`" + `, and every scalar
 ` + "`hub.toml`" + ` key, with the doc that explains it and the code that consumes it.
-Names built at run time or read through an injected lookup function are not
-found, consumers outside Go (scripts, the frontend) are not found, and a Go
-reference that only names a variable (in a message or a list) counts, so the
-audit catches a knob with no reference at all, not one whose reads are dead. The tables are generated from
+A name built from string literals or a same-file constant is resolved, and a
+read through an injected lookup function is found; a name computed from a
+runtime value is not. Consumers outside Go are found in the scripts, the
+frontend and the other non-Go trees the scanner reads. A reference that only
+names a variable (in a message, a comment or a list) counts, so the audit
+catches a knob with no reference at all, not one whose reads are dead. The tables are generated from
 the ` + "`envvars`" + ` registry and the decoder in ` + "`cmd/evener-hub/config.go`" + `, so
 a knob that nothing reads shows up as "none" in the Consumer column, and
 ` + "`make lint-repo-audit`" + ` fails on it. Delete such a knob, and list a
@@ -55,7 +57,7 @@ code's built-in behavior, which the doc row describes. A variable the
 models.dev catalog or the provider overlay names is read by ` + "`llm/registry`" + `
 without a Go identifier, so that is its consumer; a Go reference counts
 unless it only sets or clears the variable, and references from test-support
-packages do not count.
+packages and test files do not count.
 
 ## Environment variables in the registry
 

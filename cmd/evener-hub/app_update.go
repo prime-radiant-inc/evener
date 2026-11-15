@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/componentlog"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/selfupdate"
 )
@@ -579,10 +580,11 @@ func scheduleRestartAfterResponse(ctx context.Context, pin restartPin, binary st
 	restart := func() {
 		go func() {
 			time.Sleep(hubRestartDelay)
-			_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] %s: restarting as %s\n", label, binary)
+			log := componentlog.NewWriter("hub", hubUpdateStderr)
+			log.Info(fmt.Sprintf("%s: restarting as %s", label, binary))
 			abort := func(format string, args ...any) {
 				hubUpdateMu.Unlock()
-				_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] "+label+": "+format+"\n", args...)
+				log.Info(fmt.Sprintf(label+": "+format, args...))
 			}
 			// Re-acquire the cross-process install lock for the
 			// verify+exec critical section: the install lock released
@@ -611,7 +613,7 @@ func scheduleRestartAfterResponse(ctx context.Context, pin restartPin, binary st
 						// a live installer could swap the binary after the
 						// verify and before the exec.
 						release = func() {}
-						_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] restart: install lock unavailable (%v); verifying the digest without it\n", err)
+						log.Info(fmt.Sprintf("restart: install lock unavailable (%v); verifying the digest without it", err))
 					} else {
 						abort("restart aborted: install lock unavailable: %v", err)
 						return

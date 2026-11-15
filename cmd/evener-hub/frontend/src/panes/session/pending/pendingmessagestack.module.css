@@ -1,0 +1,23 @@
+/* The transcript's trailing pending stack. The virtual row has no TurnBlock
+ * wrapper, so the stack carries the session measure and the content column
+ * alignment itself, exactly as the old ghost stack did. */
+.stack {
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
+  min-width: 0;
+}
+
+.header {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--rhythm-line) 0 0;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}

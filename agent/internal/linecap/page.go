@@ -8,6 +8,19 @@ import (
 	"os"
 )
 
+// pageFile is the journal ReadJournalPage opens: io.ReadSeekCloser plus the
+// Stat its end-of-file check needs.
+type pageFile interface {
+	io.ReadSeekCloser
+	Stat() (os.FileInfo, error)
+}
+
+// openJournalPageFile opens a journal for paging; a test swaps it to
+// observe the reads a page issues. Production never assigns it.
+var openJournalPageFile = func(path string) (pageFile, error) {
+	return os.Open(path)
+}
+
 // JournalCursor is disposable reader state, never a journal write authority.
 // Offset includes a partial line already read; Pending carries it until complete.
 type JournalCursor struct {
@@ -34,7 +47,7 @@ func ReadJournalPage(ctx context.Context, path string, cursor *JournalCursor, by
 	if byteLimit <= 0 || lineLimit <= 0 || maxLineBytes <= 0 {
 		return nil, false, errors.New("linecap: positive page limits required")
 	}
-	file, err := os.Open(path)
+	file, err := openJournalPageFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, true, nil
 	}
@@ -51,7 +64,9 @@ func ReadJournalPage(ctx context.Context, path string, cursor *JournalCursor, by
 		return nil, false, err
 	}
 	input := &journalPageInput{Reader: io.LimitReader(file, byteLimit)}
-	reader := bufio.NewReader(input)
+	// 64 KiB matches the doctor's bounded readers; a page smaller than that
+	// needs no buffer bigger than its byte budget.
+	reader := bufio.NewReaderSize(input, min(64*1024, int(byteLimit)))
 	var lines []JournalLine
 	var used int64
 	for len(lines) < lineLimit && used < byteLimit {

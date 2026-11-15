@@ -267,6 +267,8 @@ var Methods = []MethodSpec{
 	{MethodEvenerInstanceSetDefault, InstanceSetDefaultParams{}, InstanceListResponse{}, ScopeHub, "Sets the default provider instance; returns the updated list."},
 	{MethodEvenerInstanceSetModelDisabled, InstanceSetModelDisabledParams{}, InstanceListResponse{}, ScopeHub, "Enables or disables one model row on an instance; returns the updated list."},
 	{MethodEvenerInstanceRefreshModels, InstanceRefreshModelsParams{}, InstanceListResponse{}, ScopeHub, "Fetches the instance's live model listing, then returns the updated list."},
+	{MethodEvenerInstanceModelGet, InstanceModelGetParams{}, InstanceModelDetailResponse{}, ScopeHub, "Reads one model row's effective capabilities, provenance, and authored overrides on an instance."},
+	{MethodEvenerInstanceModelEdit, InstanceModelEditParams{}, InstanceModelEditResponse{}, ScopeHub, "Creates, edits, resets, or removes per-model capability and routing overrides on an instance; returns the updated list and model detail."},
 	{MethodEvenerPluginCheckNow, EmptyParams{}, PluginCheckNowResponse{}, ScopeHub, "Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded."},
 	{MethodEvenerPluginPreview, PluginPreviewParams{}, PluginPreviewResponse{}, ScopeHub, "Previews the plugins selected for a launch without starting a session or executing plugin commands."},
 	{MethodEvenerMarketplaceList, EmptyParams{}, MarketplaceListResponse{}, ScopeHub, "Lists registered plugin marketplaces."},

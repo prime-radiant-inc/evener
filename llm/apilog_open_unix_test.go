@@ -14,6 +14,7 @@ import (
 // A target that is not a regular file is refused up front, before the open
 // locks, re-permissions or reads the device.
 func TestOpenPrivateAPILogFileRejectsANonRegularFile(t *testing.T) {
+	t.Parallel()
 	file, err := openPrivateAPILogFile("/dev/null")
 	if file != nil {
 		_ = file.Close()
@@ -31,6 +32,7 @@ func TestOpenPrivateAPILogFileRejectsANonRegularFile(t *testing.T) {
 // must report both halves — the flock unlock of a dead descriptor and the
 // double close — while the same close on a live file is clean.
 func TestClosePrivateAPILogFileReportsClosedFileErrors(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	live, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

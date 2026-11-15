@@ -75,6 +75,7 @@ func streamTerminalErrorWithClient(t *testing.T, client *http.Client, srv *httpt
 // provider, and misreading any of them as "this model has no /v1/responses"
 // sends the request to an endpoint that cannot serve it (#484).
 func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
+	t.Parallel()
 	t.Run("stall", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			req := userReq("hi")
@@ -143,6 +144,7 @@ func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 // retryable stream error. Reading it as the endpoint sentinel makes a
 // transient upstream failure permanent and the turn gets no retry.
 func TestStreamTerminalErrorsDecodeInBandErrorFrames(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		body string

@@ -16,7 +16,7 @@
 //	evener doctor mutations  <selector>
 //	evener doctor watches    <selector> [--watch <id>] [--self-loops]
 //	evener doctor tree       <selector> [--depth N] [--observers]
-//	evener doctor turnids    (no selector — sweeps every session under the state root)
+//	evener doctor turnids    [--since DUR] [--bucket B | --all] [--json]  (no selector — sweeps every session under the state root)
 //	evener doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
 //	evener doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
 //
@@ -443,6 +443,9 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 // there), so a stray argument is refused rather than silently swept past.
 func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 	fs, stateDir, asJSON := stateFlags("turnids", stderr)
+	since := fs.String("since", "", "only sessions with last activity within this duration ago (e.g. 120h); default: no filter")
+	bucketFlag := fs.String("bucket", "", "scope to one bucket (project id); default is every bucket under the state root")
+	all := fs.Bool("all", false, "explicit: sweep every bucket (already the default; mutually exclusive with --bucket)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -452,11 +455,22 @@ func cmdTurnIDs(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
+	if *bucketFlag != "" && *all {
+		return fail(stderr, "turnids", errors.New("--bucket and --all are mutually exclusive"))
+	}
+	var sinceDur time.Duration
+	if *since != "" {
+		d, err := time.ParseDuration(*since)
+		if err != nil {
+			return fail(stderr, "turnids", fmt.Errorf("invalid --since duration %q: %w", *since, err))
+		}
+		sinceDur = d
+	}
 	base, err := doctor.ResolveStateBase(*stateDir)
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	scan, err := doctor.ScanTurnIDs(base)
+	scan, err := doctor.ScanTurnIDs(context.Background(), base, doctor.TurnIDOpts{Since: sinceDur, Bucket: *bucketFlag})
 	if err != nil {
 		return fail(stderr, "turnids", err)
 	}

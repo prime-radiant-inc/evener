@@ -58,7 +58,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			return nil, false, fmt.Errorf("decode committed delegate result schema: %w", err)
 		}
 		if len(resultSchema) != 0 {
-			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
+			bound, err := provider.WithCommunicateOutputSchema(profile, resultSchema)
+			if err != nil {
+				return nil, false, fmt.Errorf("bind committed delegate result schema: %w", err)
+			}
+			profile = bound
 		}
 	}
 	childEnv, wantDir, ownsFresh, err := s.restoreDelegateEnvironmentFor(descriptor, meta, policy)

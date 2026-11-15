@@ -16,6 +16,7 @@ import (
 )
 
 func TestAPILogTargetLockRejectsSecondOwnerAndReleasesOnClose(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	owner, err := NewAPILogger(path)
 	if err != nil {
@@ -44,6 +45,7 @@ func TestAPILogTargetLockRejectsSecondOwnerAndReleasesOnClose(t *testing.T) {
 }
 
 func TestAPILogTargetLockReleasesWhenOwnerProcessExits(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestAPILogTargetLockHolderProcess$")
 	cmd.Env = append(os.Environ(), "EVENER_TEST_APILOG_LOCK_PATH="+path)
@@ -88,6 +90,7 @@ func TestAPILogTargetLockReleasesWhenOwnerProcessExits(t *testing.T) {
 }
 
 func TestAPILogTargetLockHolderProcess(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("EVENER_TEST_APILOG_LOCK_PATH")
 	if path == "" {
 		t.Skip("lock-holder subprocess only")
@@ -104,6 +107,7 @@ func TestAPILogTargetLockHolderProcess(t *testing.T) {
 }
 
 func TestAPILogTargetRejectsSymlinkAndNonRegularLeaf(t *testing.T) {
+	t.Parallel()
 	t.Run("symlink", func(t *testing.T) {
 		dir := t.TempDir()
 		target := filepath.Join(dir, "target.jsonl")

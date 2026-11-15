@@ -816,14 +816,11 @@ func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, llm.NewAbortError("user canceled", nil)
-			},
+	c.Register(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.NewAbortError("user canceled", nil)
 		},
-	})
+	}))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
@@ -1306,35 +1303,32 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 	)
 
 	callCount := 0
-	f := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			// First call succeeds with a tool call to build up history.
-			func(req llm.Request) (llm.Response, error) {
-				callCount++
-				return llm.Response{Message: llm.Message{
-					Role: "assistant",
-					Content: []llm.ContentPart{
-						{Kind: llm.ContentText, Text: "Let me read the file."},
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-							ID: "call_1", Name: "exec_command",
-							Arguments: json.RawMessage(`{"command":"echo hello","workdir":"/tmp"}`),
-						}},
-					},
-				}}, nil
-			},
-			// Second call: content filter error.
-			func(req llm.Request) (llm.Response, error) {
-				callCount++
-				return llm.Response{}, contentFilterErr
-			},
-			// Third call (after compaction): succeeds.
-			func(req llm.Request) (llm.Response, error) {
-				callCount++
-				return agenttest.FinalResponse("recovered after compaction"), nil
-			},
+	f := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		// First call succeeds with a tool call to build up history.
+		func(req llm.Request) (llm.Response, error) {
+			callCount++
+			return llm.Response{Message: llm.Message{
+				Role: "assistant",
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "Let me read the file."},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID: "call_1", Name: "exec_command",
+						Arguments: json.RawMessage(`{"command":"echo hello","workdir":"/tmp"}`),
+					}},
+				},
+			}}, nil
 		},
-	}
+		// Second call: content filter error.
+		func(req llm.Request) (llm.Response, error) {
+			callCount++
+			return llm.Response{}, contentFilterErr
+		},
+		// Third call (after compaction): succeeds.
+		func(req llm.Request) (llm.Response, error) {
+			callCount++
+			return agenttest.FinalResponse("recovered after compaction"), nil
+		},
+	})
 
 	c := llm.NewClient()
 	c.Register(f)
@@ -1397,32 +1391,29 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 		nil,
 	)
 
-	f := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) (llm.Response, error){
-			// First call succeeds with a tool call.
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{Message: llm.Message{
-					Role: "assistant",
-					Content: []llm.ContentPart{
-						{Kind: llm.ContentText, Text: "working..."},
-						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-							ID: "call_1", Name: "exec_command",
-							Arguments: json.RawMessage(`{"command":"echo hello","workdir":"/tmp"}`),
-						}},
-					},
-				}}, nil
-			},
-			// Second call: content filter error.
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, contentFilterErr
-			},
-			// Third call (after compaction): content filter AGAIN.
-			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, contentFilterErr
-			},
+	f := newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+		// First call succeeds with a tool call.
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{Message: llm.Message{
+				Role: "assistant",
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "working..."},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID: "call_1", Name: "exec_command",
+						Arguments: json.RawMessage(`{"command":"echo hello","workdir":"/tmp"}`),
+					}},
+				},
+			}}, nil
 		},
-	}
+		// Second call: content filter error.
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, contentFilterErr
+		},
+		// Third call (after compaction): content filter AGAIN.
+		func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, contentFilterErr
+		},
+	})
 
 	c := llm.NewClient()
 	c.Register(f)
@@ -2355,20 +2346,17 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 
 func TestSession_NonRetryableProviderErrorLeavesSessionIdle(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeErrAdapter{
-		name: "kimi-anthropic",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return llm.Response{}, llm.ErrorFromHTTPStatus(
-					"kimi-anthropic", http.StatusForbidden,
-					"billing-cycle quota exhausted", nil, nil,
-				)
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.ToolCallResponse(communicateCall("after_failure", "recovered")), nil
-			},
+	adapter := newFakeErrAdapter("kimi-anthropic", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus(
+				"kimi-anthropic", http.StatusForbidden,
+				"billing-cycle quota exhausted", nil, nil,
+			)
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.ToolCallResponse(communicateCall("after_failure", "recovered")), nil
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	policy := llm.RetryPolicy{MaxRetries: 0}

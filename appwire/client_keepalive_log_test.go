@@ -3,8 +3,8 @@ package appwire
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -26,9 +26,9 @@ func (s *silentPingerTransport) Ping(ctx context.Context) error {
 // runKeepaliveTearDown starts a client whose every ping is guaranteed to miss
 // its pong deadline, waits for the keepalive to tear the connection down, and
 // returns whatever that teardown wrote to the standard log package. A nil
-// logf leaves SetLogf uncalled, so a caller passing nil exercises the
+// logger leaves SetLogger uncalled, so a caller passing nil exercises the
 // untouched default rather than an explicitly installed nil sink.
-func runKeepaliveTearDown(t *testing.T, logf func(format string, args ...any)) *bytes.Buffer {
+func runKeepaliveTearDown(t *testing.T, logger *slog.Logger) *bytes.Buffer {
 	t.Helper()
 	var globalLog bytes.Buffer
 	prev := log.Writer()
@@ -36,8 +36,8 @@ func runKeepaliveTearDown(t *testing.T, logf func(format string, args ...any)) *
 	t.Cleanup(func() { log.SetOutput(prev) })
 
 	client := NewClient(&silentPingerTransport{newPingingTransport()})
-	if logf != nil {
-		client.SetLogf(logf)
+	if logger != nil {
+		client.SetLogger(logger)
 	}
 	client.startWithKeepalive(t.Context(), time.Millisecond, 5*time.Millisecond)
 
@@ -55,7 +55,7 @@ func runKeepaliveTearDown(t *testing.T, logf func(format string, args ...any)) *
 // TestClientKeepaliveLogsTearDown pins the #154 diagnostic: when the client
 // keepalive closes the connection it must emit one self-describing log line
 // naming the keepalive and the ping error, delivered through the sink
-// installed by SetLogf. The socket then presents a normal-looking failure
+// installed by SetLogger. The socket then presents a normal-looking failure
 // ("use of closed network connection" on every later write), so this line is
 // the only artifact that separates a pong-timeout teardown under load from a
 // genuinely dead hub.
@@ -66,27 +66,27 @@ func runKeepaliveTearDown(t *testing.T, logf func(format string, args ...any)) *
 // corrupting the render permanently — proven in the #779/#782 investigation.
 func TestClientKeepaliveLogsTearDown(t *testing.T) {
 	var sink bytes.Buffer
-	globalLog := runKeepaliveTearDown(t, func(format string, args ...any) {
-		fmt.Fprintf(&sink, format, args...)
-	})
+	globalLog := runKeepaliveTearDown(t, slog.New(slog.NewTextHandler(&sink, nil)))
 
 	// The log line is written before closeFn runs, and the teardown the helper
 	// waited for is what closeFn caused, so the line is already in the buffer.
 	logged := sink.String()
-	if !strings.Contains(logged, "keepalive") || !strings.Contains(logged, "ping") {
-		t.Fatalf("keepalive teardown logged no self-describing line to the injected sink; got:\n%s", logged)
+	for _, want := range []string{"keepalive", "ping_interval", "pong_timeout", "err="} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("keepalive teardown sink lacks %q; got:\n%s", want, logged)
+		}
 	}
 	if globalLog.Len() != 0 {
 		t.Fatalf("keepalive teardown wrote to the standard log package's writer (would corrupt a live TUI render, issue #783); got:\n%s", globalLog.String())
 	}
 }
 
-// TestClientKeepaliveDefaultLogfDiscards proves a Client with no SetLogf call
+// TestClientKeepaliveDefaultLoggerDiscards proves a Client with no SetLogger call
 // neither panics nor writes anywhere on keepalive teardown. appwire.Client
 // runs inside interactive TUI sessions where the standard log package's
 // default stderr destination is unsafe (issue #783), so silence has to be
-// what a caller gets for free without wiring a sink — see SetLogf.
-func TestClientKeepaliveDefaultLogfDiscards(t *testing.T) {
+// what a caller gets for free without wiring a sink — see SetLogger.
+func TestClientKeepaliveDefaultLoggerDiscards(t *testing.T) {
 	globalLog := runKeepaliveTearDown(t, nil)
 	if globalLog.Len() != 0 {
 		t.Fatalf("keepalive teardown wrote to the standard log package's writer with no sink configured; got:\n%s", globalLog.String())

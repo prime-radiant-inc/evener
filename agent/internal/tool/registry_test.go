@@ -6,8 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -303,15 +302,18 @@ func TestToolRegistry_DefinitionsOrderIsStable(t *testing.T) {
 
 func TestToolRegistry_CloneCopiesToolsWithoutSharingMap(t *testing.T) {
 	r := NewRegistry()
+	strict := true
 	mustRegister(t, r, RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        "echo",
 			Description: "echo args",
+			Strict:      &strict,
 			Parameters: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
 				"properties": map[string]any{
-					"value": map[string]any{"type": "string"},
+					"value":      map[string]any{"type": "string"},
+					"agent_type": map[string]any{"type": "string", "description": "agent kind"},
 				},
 			},
 		},
@@ -330,6 +332,26 @@ func TestToolRegistry_CloneCopiesToolsWithoutSharingMap(t *testing.T) {
 	}
 	if orig.Schema == nil || copied.Schema == nil || orig.Schema != copied.Schema {
 		t.Fatal("clone should preserve compiled schema pointer")
+	}
+	origProps := orig.Definition.Parameters["properties"].(map[string]any)
+	cloneProps := copied.Definition.Parameters["properties"].(map[string]any)
+	cloneProps["clone_only"] = map[string]any{"type": "boolean"}
+	if _, ok := origProps["clone_only"]; ok {
+		t.Fatal("clone top-level properties mutation changed original")
+	}
+	origProps["original_only"] = map[string]any{"type": "boolean"}
+	if _, ok := cloneProps["original_only"]; ok {
+		t.Fatal("original top-level properties mutation changed clone")
+	}
+	origAgentType := origProps["agent_type"].(map[string]any)
+	cloneAgentType := cloneProps["agent_type"].(map[string]any)
+	cloneAgentType["description"] = "changed by clone"
+	if got := origAgentType["description"]; got != "agent kind" {
+		t.Fatalf("clone nested properties mutation changed original: description = %v", got)
+	}
+	*copied.Definition.Strict = false
+	if !*orig.Definition.Strict {
+		t.Fatal("clone Strict mutation changed original")
 	}
 	clone.Remove("echo")
 	if clone.Get("echo") != nil {
@@ -1055,10 +1077,11 @@ func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 
 func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 	reg := NewRegistry()
-	// Capture log output.
+	// Capture the process logger the warning rides.
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	defer log.SetOutput(os.Stderr)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	err := reg.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{
@@ -1080,8 +1103,8 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 		t.Error("tool should still be registered despite empty description")
 	}
 
-	// Should have logged a warning.
-	if !strings.Contains(buf.String(), "WARNING") || !strings.Contains(buf.String(), "no_desc_tool") {
+	// Should have logged a warning naming the tool.
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "tool=no_desc_tool") {
 		t.Errorf("expected warning about empty description, got log: %q", buf.String())
 	}
 }
@@ -1546,6 +1569,36 @@ func TestToolRegistry_UseSkillHasNoDefaultTailLimit(t *testing.T) {
 	})
 	if res.IsError || res.Truncated || res.Output != body {
 		t.Fatalf("default use_skill dispatch truncated complete content: error=%v truncated=%v", res.IsError, res.Truncated)
+	}
+}
+
+func TestToolRegistry_ExecuteCall_AskUserShorthandPreservesIntent(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	var capturedIntent string
+	mustRegister(t, r, RegisteredTool{
+		Definition: DefAskUser(),
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			capturedIntent = IntentFromContext(ctx)
+			return "ok", nil
+		},
+	})
+	args := json.RawMessage(`{
+		"question": "Which option?",
+		"options": [
+			{"label": "A", "detail": "first"},
+			{"label": "B", "detail": "second"}
+		],
+		"intent": "clarify user choice"
+	}`)
+	res := r.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "c1", Name: "ask_user", Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("ExecuteCall failed: %s", res.Output)
+	}
+	if capturedIntent != "clarify user choice" {
+		t.Fatalf("captured intent = %q, want %q", capturedIntent, "clarify user choice")
 	}
 }
 

@@ -130,6 +130,182 @@ func TestCount_StructuralVsMentions(t *testing.T) {
 	}
 }
 
+func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+
+	assistant := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		assistantText("Checking status without calling delegate_send."),
+		toolCall("update_goal", `{"status":"complete"}`),
+	}})
+	results := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		toolResult("update_goal", "ok", false),
+	}})
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		assistant,
+		results,
+		schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+		schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("summary")}}),
+		foldCopy(assistant, 1),
+		foldCopy(results, 2),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	ug, err := Count(base, sid, "update_goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ug.Calls != 1 {
+		t.Errorf("update_goal calls = %d, want 1", ug.Calls)
+	}
+
+	ds, err := Count(base, sid, "delegate_send")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.MentionsAssistantText != 1 {
+		t.Errorf("delegate_send assistant-text mentions = %d, want 1", ds.MentionsAssistantText)
+	}
+}
+
+func TestCount_MatchesProviderWireAndCanonicalToolNames(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("search")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			assistantText("Skipping exec_command after grep_search."),
+			toolCall("grep_search", `{"pattern":"foo"}`),
+			toolCall("run_shell_command", `{"command":"pwd"}`),
+			toolCall("exec_command", `{"command":"ls"}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("grep", "a.go:1:foo", false),
+			toolResult("shell", "/tmp", false),
+			toolResult("shell", "a.go", false),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	for _, tc := range []struct {
+		query        string
+		wantCalls    int
+		wantMentions int
+	}{
+		{query: "grep", wantCalls: 1, wantMentions: 1},
+		{query: "grep_search", wantCalls: 1, wantMentions: 1},
+		{query: "grep_files", wantCalls: 1, wantMentions: 1},
+		{query: "shell", wantCalls: 2, wantMentions: 1},
+		{query: "run_shell_command", wantCalls: 2, wantMentions: 1},
+		{query: "exec_command", wantCalls: 2, wantMentions: 1},
+	} {
+		got, err := Count(base, sid, tc.query)
+		if err != nil {
+			t.Fatalf("Count(%q): %v", tc.query, err)
+		}
+		if got.Calls != tc.wantCalls || got.MentionsAssistantText != tc.wantMentions {
+			t.Errorf("Count(%q) = (Calls=%d, Mentions=%d), want (%d, %d)",
+				tc.query, got.Calls, got.MentionsAssistantText, tc.wantCalls, tc.wantMentions)
+		}
+	}
+}
+
+func TestCount_PreservesCustomResultToolAndCustomSameNamedTools(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidB
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("exec_command", `{"command":"pwd"}`),
+			toolCall("grep_search", `{"query":"custom"}`),
+			toolCall("run_shell_command", `{"message":"done","end_turn":true}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "tc-exec_command", Name: "shell", Content: "/tmp"}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "tc-grep_search", Name: "grep_search", Content: "hit"}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "tc-run_shell_command", Name: "run_shell_command", Content: `{"accepted":true}`}},
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{
+		Config: schema.ConfigSnapshot{ResultToolName: "run_shell_command"},
+	})
+
+	shellCount, err := Count(base, sid, "shell")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shellCount.Calls != 1 {
+		t.Errorf("Count(shell).Calls = %d, want 1 (excluding custom result tool run_shell_command)", shellCount.Calls)
+	}
+	resCount, err := Count(base, sid, "run_shell_command")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resCount.Calls != 1 {
+		t.Errorf("Count(run_shell_command).Calls = %d, want 1 (the session's result tool)", resCount.Calls)
+	}
+	grepCount, err := Count(base, sid, "grep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grepCount.Calls != 0 {
+		t.Errorf("Count(grep).Calls = %d, want 0 (grep_search executed as custom tool grep_search, not canonical grep)", grepCount.Calls)
+	}
+}
+
+// TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool covers
+// #6241: a session that invoked BOTH a tool whose resolved name stays the
+// literal wire alias (a custom tool, or a rejected call whose result echoed
+// the call name) and the built-in tool that alias canonically maps to must,
+// for a query by the alias, count only the exact resolved tool — the same
+// exact-first preference TranscriptHealth and metricSource.hasExactTool apply —
+// instead of summing both.
+func TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("grep_search", `{"query":"custom"}`),
+			toolCall("grep", `{"pattern":"built-in"}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			toolResult("grep_search", "hit", false),
+			toolResult("grep", "a.go:1:foo", false),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	got, err := Count(base, sid, "grep_search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Calls != 1 {
+		t.Errorf("Count(grep_search).Calls = %d, want 1 (the exact resolved tool, not the sum with canonical grep)", got.Calls)
+	}
+
+	builtin, err := Count(base, sid, "grep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builtin.Calls != 1 {
+		t.Errorf("Count(grep).Calls = %d, want 1 (the built-in grep, not the custom grep_search)", builtin.Calls)
+	}
+}
+
 func TestCount_RenderDisambiguates(t *testing.T) {
 	base, sid := countFixture(t)
 	ds, _ := Count(base, sid, "delegate_send")

@@ -66,6 +66,7 @@
     "InputModalities": "snapshot/row",
     "KnowledgeCutoff": "snapshot/row",
     "MaxOutputTokens": "snapshot/row",
+    "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "derived",
     "Sampling": "snapshot/row",
@@ -73,6 +74,7 @@
     "Surface": "overlay/glob:*",
     "ThinkingShape": "overlay/glob:*",
     "Tools": "snapshot/row",
+    "WireID": "snapshot/row",
     "model": "row:kimi-for-coding"
   },
   "default_model": "k3",

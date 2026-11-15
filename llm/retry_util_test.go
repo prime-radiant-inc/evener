@@ -9,6 +9,7 @@ import (
 )
 
 func TestRetry_RetriesRetryableErrors_WithExponentialBackoff(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{
 		MaxRetries:        3,
 		BaseDelay:         10 * time.Millisecond,
@@ -54,6 +55,7 @@ func TestRetry_RetriesRetryableErrors_WithExponentialBackoff(t *testing.T) {
 }
 
 func TestRetry_RetryAfterHeader_OverridesCalculatedBackoff(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{
 		MaxRetries:        1,
 		BaseDelay:         10 * time.Millisecond,
@@ -93,6 +95,7 @@ func TestRetry_RetryAfterHeader_OverridesCalculatedBackoff(t *testing.T) {
 }
 
 func TestRetry_RetryAfterHeader_TooLarge_AbortsWithoutRetry(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{
 		MaxRetries:        3,
 		BaseDelay:         10 * time.Millisecond,
@@ -125,6 +128,7 @@ func TestRetry_RetryAfterHeader_TooLarge_AbortsWithoutRetry(t *testing.T) {
 }
 
 func TestRetry_DoesNotRetry_NonRetryableErrors(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{MaxRetries: 3, BaseDelay: 1 * time.Millisecond, Jitter: false, BackoffMultiplier: 2.0, MaxDelay: 1 * time.Second}
 	sleep := func(ctx context.Context, d time.Duration) error {
 		t.Fatalf("unexpected sleep: %s", d)
@@ -150,6 +154,7 @@ func TestRetry_DoesNotRetry_NonRetryableErrors(t *testing.T) {
 }
 
 func TestRetry_MaxRetriesZero_DisablesRetry(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{MaxRetries: 0, BaseDelay: 1 * time.Millisecond, Jitter: false, BackoffMultiplier: 2.0, MaxDelay: 1 * time.Second}
 	err429 := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 
@@ -171,6 +176,7 @@ func TestRetry_MaxRetriesZero_DisablesRetry(t *testing.T) {
 }
 
 func TestRetry_JitterAppliedWhenEnabled(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{
 		MaxRetries:        1,
 		BaseDelay:         10 * time.Millisecond,
@@ -202,6 +208,7 @@ func TestRetry_JitterAppliedWhenEnabled(t *testing.T) {
 }
 
 func TestRetry_UnknownErrors_DefaultRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	policy := RetryPolicy{
 		MaxRetries:        2,
 		BaseDelay:         0,
@@ -232,6 +239,7 @@ func TestRetry_UnknownErrors_DefaultRetryable(t *testing.T) {
 }
 
 func TestDefaultRetryPolicy_Values(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	p := DefaultRetryPolicy()
 	if p.MaxRetries != 10 {
 		t.Fatalf("MaxRetries = %d, want 10", p.MaxRetries)
@@ -258,6 +266,7 @@ func TestDefaultRetryPolicy_Values(t *testing.T) {
 // saturate and honor the cap. Not reachable via DefaultRetryPolicy (MaxRetries=10),
 // but reachable from any policy with a high MaxRetries/multiplier.
 func TestRetryDelay_SaturatesInsteadOfWrappingNegative(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 429, "boom", nil, nil)
 	cases := []struct {
 		name   string
@@ -316,6 +325,7 @@ func alwaysRateLimited() (Response, error) {
 // there: with a deadline on the context, the budget error surfaces as
 // context.DeadlineExceeded rather than the provider's own error.
 func TestRetryWallBudgetExhaustedBeforeTheFirstRetrySleep(t *testing.T) {
+	t.Parallel()
 	clock := &stepClock{steps: []time.Duration{0, 5 * time.Second}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -339,6 +349,7 @@ func TestRetryWallBudgetExhaustedBeforeTheFirstRetrySleep(t *testing.T) {
 // the group without sleeping; without a context deadline the caller gets the
 // provider's own error back.
 func TestRetryWallBudgetExhaustedWhileComputingTheWait(t *testing.T) {
+	t.Parallel()
 	clock := &stepClock{steps: []time.Duration{0, 0, 30 * time.Second}}
 	slept := 0
 	attempts := 0
@@ -363,6 +374,7 @@ func TestRetryWallBudgetExhaustedWhileComputingTheWait(t *testing.T) {
 // cancellation — must surface the context error from the budget check, not
 // start another attempt.
 func TestRetryWallBudgetExhaustedAfterACancelledWait(t *testing.T) {
+	t.Parallel()
 	clock := &stepClock{steps: []time.Duration{0, 0, 0, 30 * time.Second}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -386,6 +398,7 @@ func TestRetryWallBudgetExhaustedAfterACancelledWait(t *testing.T) {
 // deadline, net of the shutdown reserve. The exhausted run reports the
 // run-budget sentinel, which unwraps to context.DeadlineExceeded.
 func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
+	t.Parallel()
 	for _, reserve := range []time.Duration{0, 200 * time.Millisecond} {
 		clock := &stepClock{steps: []time.Duration{0, 2 * time.Second}}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -405,6 +418,7 @@ func TestRetryRunBudgetExhaustionReportsTheRunBudgetSentinel(t *testing.T) {
 // TestDefaultSleepTimerAndCancel covers the timer-elapsed and context-cancelled
 // arms of DefaultSleep.
 func TestDefaultSleepTimerAndCancel(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if err := DefaultSleep(context.Background(), time.Millisecond); err != nil {
 		t.Fatalf("DefaultSleep(1ms) = %v, want nil", err)
 	}
@@ -419,6 +433,7 @@ func TestDefaultSleepTimerAndCancel(t *testing.T) {
 // TestRetryableError covers the nil-error and bare-sentinel guards plus a
 // genuinely retryable typed error.
 func TestRetryableError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if retryableError(nil) {
 		t.Fatal("retryableError(nil) = true, want false")
 	}
@@ -432,6 +447,7 @@ func TestRetryableError(t *testing.T) {
 
 // TestSaturatingDelay covers the zero-base, negative-value, and overflow/NaN arms.
 func TestSaturatingDelay(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if got := saturatingDelay(0, 100); got != 0 {
 		t.Fatalf("saturatingDelay(0, 100) = %v, want 0", got)
 	}

@@ -1,0 +1,16 @@
+{
+  "description": "A single-token env-var label (DEEPSEEK_BASE_URL) must wrap inside the settings row's fixed 104px label column instead of running into the control beside it (#6271). .rowValue already carries overflow-wrap: anywhere for the value cell; this pins the label cell to the same contract. The declaration lives on the shared .rowLabel, so the read-only facts grid (.row) is covered by class-sharing: re-scoping the rule to .settingsRow .rowLabel would re-break it unguarded.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/input/input.module.css",
+    "panes/settings/sections/credentials/ConnectionFacts.module.css"
+  ],
+  "viewport": { "width": 760, "height": 600, "deviceScaleFactor": 1 },
+  "mutation": {
+    "declaration": "panes/settings/sections/credentials/ConnectionFacts.module.css .rowLabel overflow-wrap: anywhere deleted, leaving the single-token label to run into the input",
+    "verified": "2026-11-13",
+    "expect": "fail",
+    "note": "Observed red run without the declaration (transcribed from the FAIL output): the label's glyphs run 29px past its 104px column instead of wrapping, and the label stays one line at 23.2px against a 19.2px line height. With the declaration the label wraps to two lines inside the column and the input keeps its track (right edges aligned to the row)."
+  }
+}

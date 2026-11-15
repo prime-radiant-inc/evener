@@ -254,7 +254,7 @@ func TestGrepWalkDisclosesFilesPastTheReadCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "small.txt:1:needle small"; got != want {
+	if want := filepath.Join(plain, "small.txt") + ":1:needle small"; got != want {
 		t.Fatalf("walk with no over-cap file = %q, want bare %q: the note must not appear unearned", got, want)
 	}
 }

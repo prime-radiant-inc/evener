@@ -31,7 +31,7 @@
 // ignoring any in-flight request."
 
 import type { AskUserOption } from "./askShared";
-import { parseAskUserQuestions } from "./askShared";
+import { isUserAuthoredSteer, parseAskUserQuestions } from "./askShared";
 import type { ItemModel, ThreadModel } from "./model";
 
 // AskQuestionRef is one flattened, individually-addressable question. `key` is
@@ -63,19 +63,10 @@ function isAckedAskUserItem(item: ItemModel): boolean {
   );
 }
 
-// isUserAuthoredSteer answers one wire-level question: is this steering item
-// the human speaking, as opposed to the daemon injecting one on its own
-// (SteeringSourceUser) or a human-note update recorded through the same
-// source (session_notes_selfecho.go's steeringOrigin machinery stamps a note
-// SteeringKindHumanNote even though a human wrote it - writing a note is not
-// the human speaking through the transcript). Shared with web layoutRoles.ts,
-// which asks the same wire question for its own, unrelated reason (routing
-// the item to a divider instead of a user bubble); callers add their own
-// `item.type === "steering"` gate first, since this only reads the fields a
-// non-steering item never sets.
-export function isUserAuthoredSteer(item: ItemModel): boolean {
-  return item.source === "user" && item.steeringKind !== "human-note";
-}
+// askShared's own answer-carrier rule needs the same predicate, so the shared
+// leaf owns it and this module re-exports for its existing importers. See
+// askShared.ts for the wire-level contract it answers.
+export { isUserAuthoredSteer };
 
 // An item resolves the whole pending ask set at once (spec §6.1): a plain
 // user message (type "userMessage" - the wire's literal string for both a

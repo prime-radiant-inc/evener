@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -40,7 +41,7 @@ func sbxGit(t *testing.T, dir string, args ...string) {
 
 func sbxLane(t *testing.T) (lane, home string) {
 	t.Helper()
-	base := t.TempDir()
+	base := testfs.CanonicalTempDir(t)
 	main := filepath.Join(base, "main")
 	if err := os.MkdirAll(main, 0o755); err != nil {
 		t.Fatal(err)
@@ -49,11 +50,7 @@ func sbxLane(t *testing.T) (lane, home string) {
 	sbxGit(t, main, "commit", "-q", "--allow-empty", "-m", "init")
 	lane = filepath.Join(base, "lane")
 	sbxGit(t, main, "worktree", "add", "-q", lane, "-b", "feat")
-	resolved, err := filepath.EvalSymlinks(lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return resolved, t.TempDir()
+	return lane, t.TempDir()
 }
 
 func sbxBwrapFacts(home string) sandbox.HostFacts {

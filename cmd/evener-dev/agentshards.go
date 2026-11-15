@@ -362,9 +362,8 @@ func envFlag(name string) bool {
 
 // interrupter tracks live shard process groups and, on the first signal,
 // TERMs every group so in-flight waits return. The Setpgid/Terminate pair is
-// shared with module-lint via internal/devtool/procgroup, which this file
-// adopts as its third caller; the inline duplication it used to carry is
-// retired.
+// shared through internal/devtool/procgroup, which this file
+// adopts; the inline duplication it used to carry is retired.
 type interrupter struct {
 	mu     sync.Mutex
 	pgids  []int

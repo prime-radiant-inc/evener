@@ -59,7 +59,7 @@ func delegateStatusTool(s *Session, delegateID string, maxChars int) (any, error
 		return "", fmt.Errorf("not_controllable: stable delegate %s is not visible to this session", delegateID)
 	}
 	now := s.sclock().Now()
-	out := projectDelegateStatus(now, row.snapshot)
+	out := projectDelegateStatus(now, row.snapshot, s.currentToolNameMap())
 	rendered, err := marshalBoundedJSON(out, maxChars)
 	if err != nil {
 		return "", err
@@ -295,7 +295,9 @@ var stopNestedOrLocalForJobStop = func(s *Session, jobID string) (*jobstore.JobR
 }
 
 type jobStatusResult struct {
+	ID               string  `json:"id"`
 	JobID            string  `json:"job_id"`
+	Type             string  `json:"type"`
 	Kind             string  `json:"kind"`
 	Status           string  `json:"status"`
 	Description      string  `json:"description"`
@@ -321,6 +323,7 @@ type delegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
+	Phase              string                 `json:"phase,omitempty"`
 	Name               string                 `json:"name,omitempty"`
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
@@ -344,17 +347,22 @@ type delegateStatusResult struct {
 	LastOutcome        *delegatestore.Outcome `json:"last_outcome,omitempty"`
 }
 
-func projectDelegateStatus(now time.Time, snapshot delegateSnapshot) delegateStatusResult {
+func projectDelegateStatus(now time.Time, snapshot delegateSnapshot, nameMap ...map[string]string) delegateStatusResult {
 	descriptor := snapshot.descriptor
+	tools := append([]string(nil), descriptor.ToolNameCeiling...)
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	out := delegateStatusResult{
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),
+		Phase:              string(snapshot.phase),
 		Name:               descriptor.Name,
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
-		Tools:              append([]string(nil), descriptor.ToolNameCeiling...),
+		Tools:              tools,
 		Model:              descriptor.ResolvedModel,
 		ReasoningEffort:    descriptor.Config.ReasoningEffort,
 		Resumable:          snapshot.resumable,
@@ -591,7 +599,9 @@ func projectJobStatus(now time.Time, rec *jobstore.JobRecord) jobStatusResult {
 	}
 
 	out := jobStatusResult{
+		ID:               rec.JobID,
 		JobID:            rec.JobID,
+		Type:             string(rec.Type),
 		Kind:             publicJobKind(rec.Type),
 		Status:           string(rec.Status),
 		Description:      jobRecordDisplayLabel(rec),

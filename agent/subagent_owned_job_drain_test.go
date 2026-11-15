@@ -711,27 +711,24 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 		releaseFatal := make(chan struct{})
 		var releaseFatalOnce sync.Once
 		t.Cleanup(func() { releaseFatalOnce.Do(func() { close(releaseFatal) }) })
-		adapter := &fakeErrAdapter{
-			name: "openai",
-			steps: []func(llm.Request) (llm.Response, error){
-				func(llm.Request) (llm.Response, error) {
-					return agenttest.ToolCallResponse(llm.ToolCallData{
-						ID:        "fatal-owned-shell",
-						Name:      "shell",
-						Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
-						Type:      "function",
-					}), nil
-				},
-				func(llm.Request) (llm.Response, error) {
-					close(enteredFatal)
-					<-releaseFatal
-					return llm.Response{}, fatalErr
-				},
-				func(llm.Request) (llm.Response, error) {
-					return agenttest.FinalResponse("explicit resume succeeded"), nil
-				},
+		adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "fatal-owned-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"fatal owned shell","mode":"background"}`),
+					Type:      "function",
+				}), nil
 			},
-		}
+			func(llm.Request) (llm.Response, error) {
+				close(enteredFatal)
+				<-releaseFatal
+				return llm.Response{}, fatalErr
+			},
+			func(llm.Request) (llm.Response, error) {
+				return agenttest.FinalResponse("explicit resume succeeded"), nil
+			},
+		})
 		client := llm.NewClient()
 		client.Register(adapter)
 		env := newHeldJobEnvironment(t.TempDir())
@@ -861,23 +858,20 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 	t.Parallel()
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal before watch delivery", nil, nil)
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return llm.Response{}, fatalErr
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("failed delegate notification handled"), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("dropped watch diagnostic handled"), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("explicit recovery completed"), nil
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, fatalErr
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("failed delegate notification handled"), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("dropped watch diagnostic handled"), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("explicit recovery completed"), nil
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
@@ -1017,27 +1011,24 @@ func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T)
 	releaseFatalDrive := make(chan struct{})
 	var releaseFatalDriveOnce sync.Once
 	t.Cleanup(func() { releaseFatalDriveOnce.Do(func() { close(releaseFatalDrive) }) })
-	adapter := &fakeErrAdapter{
-		name: "openai",
-		steps: []func(llm.Request) (llm.Response, error){
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.FinalResponse("idle before notification"), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "fatal-drive-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"fatal drive shell","mode":"background"}`),
-					Type:      "function",
-				}), nil
-			},
-			func(llm.Request) (llm.Response, error) {
-				close(enteredFatalDrive)
-				<-releaseFatalDrive
-				return llm.Response{}, driveErr
-			},
+	adapter := newFakeErrAdapter("openai", []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.FinalResponse("idle before notification"), nil
 		},
-	}
+		func(llm.Request) (llm.Response, error) {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "fatal-drive-shell",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"fatal drive shell","mode":"background"}`),
+				Type:      "function",
+			}), nil
+		},
+		func(llm.Request) (llm.Response, error) {
+			close(enteredFatalDrive)
+			<-releaseFatalDrive
+			return llm.Response{}, driveErr
+		},
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newHeldJobEnvironment(t.TempDir())

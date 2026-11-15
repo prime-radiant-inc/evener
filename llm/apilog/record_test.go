@@ -69,6 +69,7 @@ func validSettlement(t *testing.T) APIAttemptGroupSettlement {
 // the tag, so the "usage" key ships even when every one of its own
 // (already-omittable) pointer fields is nil. The tag was already a no-op lie.
 func TestAPIAttemptResponse_UsageAlwaysShipsOnWire(t *testing.T) {
+	t.Parallel()
 	data, err := json.Marshal(APIAttemptResponse{Body: EncodeBody([]byte("{}"))})
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +80,7 @@ func TestAPIAttemptResponse_UsageAlwaysShipsOnWire(t *testing.T) {
 }
 
 func TestAPIAttemptRecordRoundTripsExactBodies(t *testing.T) {
+	t.Parallel()
 	want := validAPIAttemptRecord(t)
 	line, err := json.Marshal(want)
 	if err != nil {
@@ -129,6 +131,7 @@ func TestAPIAttemptRecordRoundTripsExactBodies(t *testing.T) {
 }
 
 func TestMarshalRecordValidatesCanonicalAttemptAndSettlement(t *testing.T) {
+	t.Parallel()
 	for _, record := range []APILogRecord{validAPIAttemptRecord(t), validSettlement(t)} {
 		line, err := MarshalRecord(record)
 		if err != nil {
@@ -151,6 +154,7 @@ func TestMarshalRecordValidatesCanonicalAttemptAndSettlement(t *testing.T) {
 }
 
 func TestAPIAttemptNumericEvidencePreservesPresenceAcrossStrictCodec(t *testing.T) {
+	t.Parallel()
 	base, err := MarshalRecord(validAPIAttemptRecord(t))
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +222,7 @@ func TestAPIAttemptNumericEvidencePreservesPresenceAcrossStrictCodec(t *testing.
 }
 
 func TestMarshalRecordIgnoresCredentialCoincidencesInNumericMetadata(t *testing.T) {
+	t.Parallel()
 	record := validAPIAttemptRecord(t)
 	record.ProviderInstance = "provider"
 	record.RequestModel = "model"
@@ -248,6 +253,7 @@ func TestMarshalRecordIgnoresCredentialCoincidencesInNumericMetadata(t *testing.
 }
 
 func TestMarshalRecordStillRejectsCredentialInProviderEvidence(t *testing.T) {
+	t.Parallel()
 	record := validAPIAttemptRecord(t)
 	record.ProviderInstance = "provider"
 	record.RequestModel = "model"
@@ -263,6 +269,7 @@ func TestMarshalRecordStillRejectsCredentialInProviderEvidence(t *testing.T) {
 }
 
 func TestSettlementRecordRoundTripsAsDurableInterface(t *testing.T) {
+	t.Parallel()
 	want := validSettlement(t)
 	line, err := json.Marshal(want)
 	if err != nil {
@@ -285,6 +292,7 @@ func TestSettlementRecordRoundTripsAsDurableInterface(t *testing.T) {
 }
 
 func TestSettlementRecordAllowsExplicitZeroAttemptOutcome(t *testing.T) {
+	t.Parallel()
 	record := validSettlement(t)
 	record.FinalAttemptID = ""
 	record.FinalAttemptCount = 0
@@ -298,6 +306,7 @@ func TestSettlementRecordAllowsExplicitZeroAttemptOutcome(t *testing.T) {
 }
 
 func TestAPIAttemptRecordValidationRejectsInvalidDurableFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(*APIAttemptRecord)
@@ -336,6 +345,7 @@ func TestAPIAttemptRecordValidationRejectsInvalidDurableFields(t *testing.T) {
 }
 
 func TestSettlementRecordValidationRejectsInvalidDurableFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		mutate func(*APIAttemptGroupSettlement)
@@ -366,6 +376,7 @@ func TestSettlementRecordValidationRejectsInvalidDurableFields(t *testing.T) {
 }
 
 func TestAPIAttemptRecordRequiresResponseForSuccess(t *testing.T) {
+	t.Parallel()
 	record := validAPIAttemptRecord(t)
 	record.Response = nil
 	line, err := json.Marshal(record)
