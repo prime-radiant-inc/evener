@@ -114,7 +114,7 @@ output quoted; "read" means a code trace, no run.
 | 1 | **Critical** | A round pays ~7 fsyncs across four independent durable stores; 34% of CPU | executed (pprof + strace) | 3.9 ms/round | this file |
 | 2 | **High** | One output-meta persist costs 3 fsyncs (data, meta, parent dir) plus a marshal, tmp write, and rename | executed + read | 3 fsyncs per job output update | this file |
 | 3 | **High** | `jobstore.Store.Append` fsyncs per event; `AppendBatch` exists and is not used on the per-round path | executed + read | 1-3 fsyncs/round | this file |
-| 4 | **High** | Turn completion uses `DoorSynced`, forcing a transcript fsync every round | executed + read | 1 fsync/round | this file |
+| 4 | **High** | Two doors force a transcript fsync every round: turn completion (`DoorSynced`) and the assistant turn (`DoorDurable`). Changing either alone saves nothing | executed + read | 1 fsync/round | this file |
 | 5 | **High** | GC is 18% of CPU; the top five allocation sites are all JSON | executed (pprof) | ~1.8 ms/round | this file, `gc-alloc.md` |
 | 5b | **High** | GC is untuned: 157 cycles for a 4 MB live heap at default `GOGC=100` | executed (`gctrace`) | 388 ms pauses / 4.3 s run | this file |
 | 6 | **High** | Every streamed delta reprojects and sorts the full transcript | read | O(I log I) per delta | `frontend.md` |
@@ -213,34 +213,53 @@ event. **Risk:** `AppendBatch`'s documented non-crash-atomic prefix behavior,
 and callers that rely on `Append` returning a `Seq` immediately. Check the
 re-run-idempotence note in the `AppendBatch` comment before widening its use.
 
-### 1.3 Give turn completion a durability window instead of a barrier
+### 1.3 Give turn completion and the assistant turn a durability window instead of a barrier
+
+Three appends reach the transcript writer every round, and two of them force a sync.
 
 `agent/session_execution.go:104-110` records the `TurnCompletion` turn with
 `transcript.DoorSynced`. The comment is explicit: "A turn's terminal status
-must never be lost." `DoorSynced` (`agent/transcript/record.go:14-20`) forces
-`forceSync` at `agent/transcript/transcript.go:781`, one fsync per round,
-270 ms of the profile.
+must never be lost."
+
+`agent/session.go:3236` also writes the assistant turn through
+`writeTranscriptDurableLocked` (`:3048`), which is `DoorDurable`. Every door but
+`DoorBuffered` forces the sync (`agent/transcript/transcript.go:693`), and
+`forceSync` short-circuits the `SyncInterval` gate at `:781`. So the 1 s
+`SyncInterval` does not suppress either append.
+
+Consequence for the fix: switching only turn completion to a buffered door
+leaves the assistant turn paying the barrier, and the round still syncs once.
+Both call sites have to move, or the change buys nothing. Tool results are
+already buffered: `appendToolResults` (`agent/session_tools.go:788-794`) takes
+the buffered door unless the round carries delivery commits, a terminal job
+result, or a skill-state carrier.
 
 `DoorBuffered` already syncs at most once per `SyncInterval`, set to 1 s in
-`agent/session_init.go:690,1471`. So the machinery for a coalesced barrier
-already exists; turn completion just opts out of it.
+`agent/session_init.go:690,1471`, so the machinery for a coalesced barrier
+already exists and these two appends opt out of it.
 
 **Fix design.** Two options, and this needs Jesse's ruling:
 
 - (a) `DoorDurable` instead of `DoorSynced` for `TurnCompletion`. Still syncs,
   still rolls back on failure; loses the "recorded AND durable" guarantee only
-  in the window where a later sync has not run yet.
-- (b) Keep `DoorSynced` but bound it: if a sync happened within the last
-  `SyncInterval`, record through the buffered door and let the next sync cover
-  it. Bounds the crash-loss window to 1 s instead of zero, for one fsync saved
-  per round.
+  in the window where a later sync has not run yet. On its own this saves
+  nothing, because the assistant-turn append still forces a sync in the same
+  round.
+- (b) Bound both appends: if a sync happened within the last `SyncInterval`,
+  record through the buffered door and let the next sync cover it. Bounds the
+  crash-loss window to 1 s instead of zero, for one fsync saved per round. This
+  has to cover `agent/session.go:3236` as well as `session_execution.go:104`,
+  which means a new door or a policy check in `recordTranscriptLocked` rather
+  than two independent door choices.
 
 Expected: 270 ms of the 790 ms fsync budget, minus whatever the coalesced
-barrier still costs. **Risk:** this is a stated durability promise in a code
-comment, so it is a product decision, not a performance one. The delegate
-steering path (`agent/delegate_tree_steer.go:409`) and
-`writeTranscriptSyncedLocked` (`agent/session.go:3068`) make the same promise
-for other record types.
+barrier still costs. The same move also drops the assistant turn's share, which
+the profile folds into the same `appendBatchLocked` 270 ms, since both appends
+reach it. **Risk:** this is a stated durability promise in a code comment, so it
+is a product decision, not a performance one. The delegate steering path
+(`agent/delegate_tree_steer.go:409`) and `writeTranscriptSyncedLocked`
+(`agent/session.go:3068`) make the same promise for other record types, so the
+ruling should name which of those may move.
 
 ### 1.4 Stop rewriting session meta on every autosave
 
@@ -600,9 +619,10 @@ Ordered by measured payoff over risk. Nothing here is implemented yet.
    turns. Cache the encoded body when the attempt only changes headers, or
    encode into a reusable buffer. Ranked here because the fix is more delicate
    than the fsync work: preparation mutates the body per attempt.
-8. **Turn-completion durability window** (1.3). Largest single fsync item at
+8. **Transcript durability window** (1.3). The largest single fsync item at
    270 ms, and the only one that changes a promise, so it needs a ruling before
-   it ships.
+   it ships. It covers two call sites, not one: the assistant turn as well as
+   turn completion. Changing one alone saves nothing.
 9. **Tier 3 scans**, frontend delta path first, since every delta pays it.
 10. **Idle timers**, hub scheduler first.
 
@@ -616,7 +636,10 @@ of the remaining round at long history if the marshal can be reused safely.
 
 1. **Turn-completion durability.** Is "a turn's terminal status must never be
    lost" absolute, or is a 1 s bounded loss window acceptable? This is the
-   single largest item and it changes a documented guarantee.
+   single largest item and it changes a documented guarantee. The same question
+   must be answered for the assistant turn (`agent/session.go:3236`), which
+   takes `DoorDurable` and forces its own sync in the same round. Answering for
+   turn completion alone buys nothing.
 2. **Output-meta directory sync.** Is a rename over an existing directory
    entry enough without a directory barrier, on every filesystem evener
    supports (darwin APFS, linux ext4/xfs/btrfs, and whatever runs in
@@ -660,6 +683,7 @@ and confirmed, because the synthesis leans on them.
 | `NOW_TICK_MS` is 3 s | **confirmed** | `cmd/evener-hub/frontend/src/panes/session/liveness.ts:11` |
 | request JSON marshal is 2.2 ms / 5.5 MB at 800 turns | **confirmed, my own benchmark** | `BenchmarkAuditRoundAssemblyPerHistory/request-json/turns=800` |
 | fsync is ~34% of round CPU | **confirmed two ways** | pprof 790/2310 ms; strace 150 calls over 21 rounds at 459 µs each |
+| two doors, not one, force the per-round transcript sync | **confirmed** | `agent/session.go:3236` uses `DoorDurable`, `agent/session_execution.go:104` uses `DoorSynced`, and `agent/transcript/transcript.go:693` forces for both. Caught by the memory page `design/transcript-durability-doors.md` after the first draft named only turn completion |
 | SQLite is off the agent per-round path | **confirmed** | `rg -l 'modernc.org/sqlite'` finds only `cmd/evener-hub/internal/hubcore/` and the doctor CLI; the agent binary cannot import `hubcore` |
 | hub SQLite leaves `synchronous` at FULL under WAL | **confirmed** | `sqlite_dsn.go:25` sets only `busy_timeout` and `journal_mode(WAL)`; the lane's probe reports `journal=wal, synchronous=2` |
 
