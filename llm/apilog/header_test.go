@@ -8,6 +8,7 @@ import (
 )
 
 func TestEncodedHeaderValueRoundTripsUTF8AndBinaryBytes(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		want []byte
@@ -37,6 +38,7 @@ func TestEncodedHeaderValueRoundTripsUTF8AndBinaryBytes(t *testing.T) {
 }
 
 func TestEncodedHeaderRoundTripsInvalidUTF8Values(t *testing.T) {
+	t.Parallel()
 	want := EncodedHeader{
 		"X-Bytes": {string([]byte{'a', 0xff, 0x00, 'b'}), "second"},
 	}
@@ -57,6 +59,7 @@ func TestEncodedHeaderRoundTripsInvalidUTF8Values(t *testing.T) {
 }
 
 func TestEncodedHeaderValueRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
 	var value EncodedHeaderValue
 	if err := json.Unmarshal([]byte(`{"encoding":"utf8","data":"value","byte_count":5,"future":true}`), &value); err == nil {
 		t.Fatal("json.Unmarshal() accepted an unknown encoded header field")
@@ -66,6 +69,7 @@ func TestEncodedHeaderValueRejectsUnknownFields(t *testing.T) {
 // A header value that cannot decode fails the whole header decode, while a
 // well-formed value round-trips through the map.
 func TestEncodedHeaderRejectsAnUndecodableValue(t *testing.T) {
+	t.Parallel()
 	var bad EncodedHeader
 	if err := json.Unmarshal([]byte(`{"x":[{"encoding":"base64","data":"!!!!","byte_count":4}]}`), &bad); err == nil {
 		t.Fatal("an undecodable header value must fail the header decode")

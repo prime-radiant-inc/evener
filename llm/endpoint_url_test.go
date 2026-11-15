@@ -7,6 +7,7 @@ import (
 )
 
 func TestFinalResponseEndpointURLPrefersSanitizedFinalRequest(t *testing.T) {
+	t.Parallel()
 	finalURL, err := url.Parse("https://redirect-user:redirect-password@final.example.test/v2/messages?token=secret#fragment")
 	if err != nil {
 		t.Fatalf("parse final URL: %v", err)

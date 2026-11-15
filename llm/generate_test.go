@@ -64,6 +64,7 @@ func (a *blockingAdapter) Stream(ctx context.Context, req Request) (Stream, erro
 }
 
 func TestGenerate_SimplePrompt(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -93,6 +94,7 @@ func TestGenerate_SimplePrompt(t *testing.T) {
 }
 
 func TestGenerate_MessagesList(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -127,6 +129,7 @@ func TestGenerate_MessagesList(t *testing.T) {
 }
 
 func TestGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	c.Register(&scriptedAdapter{name: "openai"})
 	prompt := "hi"
@@ -145,6 +148,7 @@ func TestGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
 }
 
 func TestGenerate_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -222,6 +226,7 @@ func TestGenerate_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 }
 
 func TestGenerate_PassiveToolCall_ReturnsToolCallsWithoutLooping(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -265,6 +270,7 @@ func TestGenerate_PassiveToolCall_ReturnsToolCallsWithoutLooping(t *testing.T) {
 }
 
 func TestGenerate_ToolArgsSchemaValidationError_SentAsErrorResult_AndDoesNotExecute(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 
 	var execCalls atomic.Int32
@@ -343,6 +349,7 @@ func TestGenerate_ToolArgsSchemaValidationError_SentAsErrorResult_AndDoesNotExec
 }
 
 func TestGenerate_MaxToolRoundsZero_DisablesAutoExecution(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -384,6 +391,7 @@ func TestGenerate_MaxToolRoundsZero_DisablesAutoExecution(t *testing.T) {
 }
 
 func TestGenerate_ParallelToolCalls_ExecuteConcurrently(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -461,6 +469,7 @@ func TestGenerate_ParallelToolCalls_ExecuteConcurrently(t *testing.T) {
 }
 
 func TestGenerate_TimeoutPerStep_CancelsLLMCall(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	started := make(chan struct{}, 1)
 	c.Register(&blockingAdapter{name: "openai", started: started})
@@ -504,6 +513,7 @@ func TestGenerate_TimeoutPerStep_CancelsLLMCall(t *testing.T) {
 }
 
 func TestGenerate_TimeoutTotal_CancelsOperation(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	started := make(chan struct{}, 1)
 	c.Register(&blockingAdapter{name: "openai", started: started})
@@ -548,6 +558,7 @@ func TestGenerate_TimeoutTotal_CancelsOperation(t *testing.T) {
 }
 
 func TestGenerate_Cancellation_ReturnsAbortError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	started := make(chan struct{}, 1)
 	c.Register(&blockingAdapter{name: "openai", started: started})
@@ -590,6 +601,7 @@ func TestGenerate_Cancellation_ReturnsAbortError(t *testing.T) {
 }
 
 func TestGenerate_RetriesApplyPerStep_NotWholeOperation(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	var toolExec atomic.Int32
 
@@ -677,6 +689,7 @@ func TestGenerate_RetriesApplyPerStep_NotWholeOperation(t *testing.T) {
 }
 
 func TestGenerate_ToolCallContext_AvailableInHandler(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -729,6 +742,7 @@ func TestGenerate_ToolCallContext_AvailableInHandler(t *testing.T) {
 }
 
 func TestGenerate_RepairToolCall_FixesInvalidArgs(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -799,6 +813,7 @@ func TestGenerate_RepairToolCall_FixesInvalidArgs(t *testing.T) {
 }
 
 func TestGenerate_RepairToolCall_FailedRepair_SendsErrorToModel(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -856,6 +871,7 @@ func TestGenerate_RepairToolCall_FailedRepair_SendsErrorToModel(t *testing.T) {
 }
 
 func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	var sawErrorResult atomic.Bool
 	a := &scriptedAdapter{
@@ -908,6 +924,7 @@ func TestGenerate_UnknownToolCall_SendsErrorResultToModel(t *testing.T) {
 }
 
 func TestGenerate_StopWhen(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	callCount := 0
 	a := &scriptedAdapter{
@@ -981,6 +998,7 @@ func TestGenerate_StopWhen(t *testing.T) {
 }
 
 func TestGenerate_ToolExecuteError_SentAsIsError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	callCount := 0
 	c := NewClient()
 	a := &scriptedAdapter{
@@ -1051,6 +1069,7 @@ func TestGenerate_ToolExecuteError_SentAsIsError(t *testing.T) {
 }
 
 func TestGenerate_MultiStepToolLoop_ThreeRounds(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	callCount := 0
 	c := NewClient()
 	a := &scriptedAdapter{
@@ -1148,6 +1167,7 @@ func TestGenerate_MultiStepToolLoop_ThreeRounds(t *testing.T) {
 }
 
 func TestGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -1193,6 +1213,7 @@ func TestGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 }
 
 func TestGenerate_StepResult_ToolCallsHaveParsedArguments(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -1251,6 +1272,7 @@ func TestGenerate_StepResult_ToolCallsHaveParsedArguments(t *testing.T) {
 }
 
 func TestGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Model returns tool call content parts BUT with finish_reason="stop" (not "tool_calls").
 	// Per spec section 5.6, tools should NOT be executed.
 	c := NewClient()
@@ -1305,6 +1327,7 @@ func TestGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 }
 
 func TestGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -1342,6 +1365,7 @@ func TestGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
 }
 
 func TestGenerate_WebSearch_DefaultFalse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedAdapter{
 		name: "openai",
@@ -1373,6 +1397,7 @@ func TestGenerate_WebSearch_DefaultFalse(t *testing.T) {
 // TestParseAndValidateArgs covers the malformed-JSON, nil-schema, and
 // schema-validation-failure arms of parseAndValidateArgs.
 func TestParseAndValidateArgs(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if _, err := parseAndValidateArgs(nil, json.RawMessage("{not json")); err == nil {
 		t.Fatal("parseAndValidateArgs(bad json) error = nil, want unmarshal failure")
 	}
@@ -1404,6 +1429,7 @@ func TestParseAndValidateArgs(t *testing.T) {
 // guards using an explicit client so the DefaultClient path is skipped, and
 // that a system prompt leads the prepared history.
 func TestPrepareGenerationInputValidation(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
 	prompt := "hi"
 

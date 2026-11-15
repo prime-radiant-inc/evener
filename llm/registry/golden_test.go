@@ -156,6 +156,7 @@ func checkCodexSixLite(window int, defaultEffort string) func(t *testing.T, res 
 }
 
 func TestGoldenResolved(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		ref   string

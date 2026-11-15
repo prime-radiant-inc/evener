@@ -19,6 +19,7 @@ import (
 )
 
 func TestSessionAPILoggerCanonicalPermissionsAndRouting(t *testing.T) {
+	t.Parallel()
 	t.Run("logger creates private state and sessions directories", func(t *testing.T) {
 		root := t.TempDir()
 		stateDir := filepath.Join(root, "new-state")
@@ -117,6 +118,7 @@ func TestSessionAPILoggerCanonicalPermissionsAndRouting(t *testing.T) {
 }
 
 func TestSessionAPILoggerCanonicalRoutesPerSession(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -138,6 +140,7 @@ func TestSessionAPILoggerCanonicalRoutesPerSession(t *testing.T) {
 }
 
 func TestSessionAPILoggerReleaseSessionReleasesOnlyTarget(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -175,6 +178,7 @@ func TestSessionAPILoggerReleaseSessionReleasesOnlyTarget(t *testing.T) {
 }
 
 func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -228,6 +232,7 @@ func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
 }
 
 func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -252,6 +257,7 @@ func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
 }
 
 func TestAPILoggerRejectsInvalidCanonicalRecordBeforeWrite(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync and apiLogFileWrite seams.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -292,6 +298,7 @@ func TestAPILoggerRejectsInvalidCanonicalRecordBeforeWrite(t *testing.T) {
 }
 
 func TestAPILoggerRejectsOversizedCanonicalRecordBeforeStorage(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync, apiLogFileWrite and apiLogOpenFile seams.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -350,6 +357,7 @@ func TestAPILoggerRejectsOversizedCanonicalRecordBeforeStorage(t *testing.T) {
 }
 
 func TestSessionAPILoggerRejectsCredentialCollisionsCreatedByCanonicalEncoding(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		secret string
@@ -473,6 +481,7 @@ func TestSessionAPILoggerRejectsCredentialCollisionsCreatedByCanonicalEncoding(t
 }
 
 func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
 	if err != nil {
@@ -505,6 +514,7 @@ func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
 }
 
 func TestAPILoggerCanonicalAppendUsesOneNewlineTerminatedWrite(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync and apiLogFileWrite seams.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -547,6 +557,7 @@ func TestAPILoggerCanonicalAppendUsesOneNewlineTerminatedWrite(t *testing.T) {
 }
 
 func TestAPILoggerCanonicalShortWriteIsSticky(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync and apiLogFileWrite seams.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -585,6 +596,7 @@ func TestAPILoggerCanonicalShortWriteIsSticky(t *testing.T) {
 }
 
 func TestAPILoggerCanonicalWriteFailureIsSticky(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileWrite seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -616,6 +628,7 @@ func TestAPILoggerCanonicalWriteFailureIsSticky(t *testing.T) {
 }
 
 func TestSessionAPILoggerReserveExistingRouteHonorsStickyQuarantineWithoutOpening(t *testing.T) {
+	// Not parallel: swaps the package's apiLogOpenFile seam; quarantineSessionLogger swaps the package's apiLogFileSync seam.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -642,6 +655,7 @@ func TestSessionAPILoggerReserveExistingRouteHonorsStickyQuarantineWithoutOpenin
 }
 
 func TestSessionAPILoggerReserveNewRouteHonorsStickyQuarantineWithoutOpening(t *testing.T) {
+	// Not parallel: swaps the package's apiLogOpenFile seam; quarantineSessionLogger swaps the package's apiLogFileSync seam.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -664,6 +678,7 @@ func TestSessionAPILoggerReserveNewRouteHonorsStickyQuarantineWithoutOpening(t *
 }
 
 func TestAPILoggerFailureObserverCanCloseSynchronously(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -728,6 +743,7 @@ func assertDetachedAPILogError(t *testing.T, got, raw error) {
 }
 
 func TestAPILoggerFailureDoesNotChangeProviderResult(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -751,6 +767,7 @@ func TestAPILoggerFailureDoesNotChangeProviderResult(t *testing.T) {
 }
 
 func TestStampEndpointURL(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	StampEndpointURL(nil, "https://example.invalid/api", APILogCredentialMaterial{})
 	resp := &Response{Raw: map[string]any{"other": 1}}
 	StampEndpointURL(resp, "https://endpoint-user:endpoint-password@example.invalid/api?endpoint_token=endpoint-query#endpoint-fragment", APILogCredentialMaterial{})
@@ -777,6 +794,7 @@ func TestStampEndpointURL(t *testing.T) {
 }
 
 func TestWithAPILogContextAttributesSession(t *testing.T) {
+	t.Parallel()
 	ctx := WithAPILogContext(context.Background(), "sess-context")
 	got, ok := getAPILogContext(ctx)
 	if !ok || got.SessionID != "sess-context" {
@@ -785,6 +803,7 @@ func TestWithAPILogContextAttributesSession(t *testing.T) {
 }
 
 func TestAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	first := standaloneCanonicalAttempt("ag_reopen_first", 1)
 	writeCanonicalAttempt(t, path, first)
@@ -810,6 +829,7 @@ func TestAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
 }
 
 func TestSessionAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "sess-reopen"
 	path := filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
@@ -841,6 +861,7 @@ func TestSessionAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
 }
 
 func TestRecoverCanonicalAPILogTailSyncsTruncation(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	first := standaloneCanonicalAttempt("ag_recovery_sync", 1)
 	writeCanonicalAttempt(t, path, first)
@@ -881,6 +902,7 @@ func TestRecoverCanonicalAPILogTailSyncsTruncation(t *testing.T) {
 }
 
 func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body func(t *testing.T, path string)
@@ -959,6 +981,7 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 }
 
 func TestRecoverCanonicalAPILogTailFailsClosedOnOversizedCompleteLine(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	const maxLineBytes = 64
 	data := append([]byte(strings.Repeat("x", maxLineBytes+1)), '\n')
@@ -984,6 +1007,7 @@ func TestRecoverCanonicalAPILogTailFailsClosedOnOversizedCompleteLine(t *testing
 }
 
 func TestAPILoggerCloseWaitsForAdmittedCanonicalAppendAndRejectsLateAppend(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -1038,6 +1062,7 @@ func TestAPILoggerCloseWaitsForAdmittedCanonicalAppendAndRejectsLateAppend(t *te
 }
 
 func TestAPILoggerCanonicalSyncFailureObserved(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -1085,6 +1110,7 @@ func TestAPILoggerCanonicalSyncFailureObserved(t *testing.T) {
 }
 
 func TestAPILoggerCanonicalSyncFailureQuarantinesAllSessionRoutes(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -1127,6 +1153,7 @@ func TestAPILoggerCanonicalSyncFailureQuarantinesAllSessionRoutes(t *testing.T) 
 }
 
 func TestAPILoggerCloseDoesNotResyncAcceptedRecords(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
@@ -1153,6 +1180,7 @@ func TestAPILoggerCloseDoesNotResyncAcceptedRecords(t *testing.T) {
 }
 
 func TestAPILoggerOrdinaryMiddlewareCreatesAndSettlesCanonicalGroup(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
 	if err != nil {
@@ -1174,6 +1202,7 @@ func TestAPILoggerOrdinaryMiddlewareCreatesAndSettlesCanonicalGroup(t *testing.T
 }
 
 func TestAPILoggerOrdinaryMiddlewareSettlesZeroAttemptFailure(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
 	if err != nil {
@@ -1197,6 +1226,7 @@ func TestAPILoggerOrdinaryMiddlewareSettlesZeroAttemptFailure(t *testing.T) {
 }
 
 func TestAPILoggerStreamSettlesOnlyAfterTerminalEventAndAttemptAppend(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
 	if err != nil {

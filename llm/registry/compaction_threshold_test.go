@@ -10,6 +10,7 @@ import (
 )
 
 func TestCompactionThresholdConfigRoundTrip(t *testing.T) {
+	t.Parallel()
 	input := `
 [models."*deepseek*"]
 compaction_threshold = 200000
@@ -84,6 +85,7 @@ context_window = 128000
 }
 
 func TestCompactionThresholdAndTokenLimitValidation(t *testing.T) {
+	t.Parallel()
 	for _, invalid := range []int64{0, -1, 250, MinCompactionThreshold - 1, int64(MaxTokenLimit) + 1} {
 		tomlData := fmt.Sprintf("[providers.openai.models.\"gpt-5.6\"]\ncompaction_threshold = %d\n", invalid)
 		if _, err := ParseConfig([]byte(tomlData)); err == nil {
@@ -115,6 +117,7 @@ func TestCompactionThresholdAndTokenLimitValidation(t *testing.T) {
 }
 
 func TestInputCeiling(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		caps Caps
@@ -137,6 +140,7 @@ func TestInputCeiling(t *testing.T) {
 }
 
 func TestCompactionThresholdResolutionAndClamping(t *testing.T) {
+	t.Parallel()
 	overlayExtra := `
 [providers.anthropic.models."claude-opus-4-6"]
 compaction_threshold = 150000
@@ -264,6 +268,7 @@ compaction_threshold = 250000
 }
 
 func TestCompactionThresholdRowScalarProvenance(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.anthropic.models."custom-row"]
 protocol = "openai-chat"
@@ -302,6 +307,7 @@ alias_of = "claude-opus-4-6"
 }
 
 func TestThinkingShapes(t *testing.T) {
+	t.Parallel()
 	got := ThinkingShapes()
 	want := []string{"adaptive", "budget", "budget+effort", "level"}
 	if !reflect.DeepEqual(got, want) {
@@ -310,6 +316,7 @@ func TestThinkingShapes(t *testing.T) {
 }
 
 func TestAuthoredProviderAndModel(t *testing.T) {
+	t.Parallel()
 	emptyReg := fixtureLoad(t, nil, "")
 	if _, ok := emptyReg.AuthoredProvider("work"); ok {
 		t.Fatal("AuthoredProvider on no-user-layer registry must return false")
@@ -390,6 +397,7 @@ disabled = false
 }
 
 func TestCheckAliasTarget(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.work]
 base = "anthropic"
@@ -441,6 +449,7 @@ alias_of = "claude-opus-4-6"
 }
 
 func TestInstanceModelsSummary(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.work]
 base = "anthropic"

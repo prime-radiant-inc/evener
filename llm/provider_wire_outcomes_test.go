@@ -30,6 +30,7 @@ func (*outcomeSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSett
 }
 
 func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	binaryBody := []byte{0x00, 0xff, 0x80, '\n'}
 	responseCases := []struct {
 		name    string
@@ -168,6 +169,7 @@ func assertCompleteOutcome(ctx context.Context, t *testing.T, client *llm.Client
 // all means the model does not speak this protocol, so the stream's terminal
 // error must short-circuit the retry chain rather than burn its budget.
 func TestCoreResponsesEmptyStreamIsPermanentEndToEnd(t *testing.T) {
+	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)

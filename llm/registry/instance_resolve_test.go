@@ -25,6 +25,7 @@ func cutoverRegistry(t *testing.T, env map[string]string, instances map[string]P
 }
 
 func TestResolveInstanceCarriesTransportCredentialAndProviderCaps(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, map[string]string{"GROQ_API_KEY": "gk"}, nil)
 	res, err := r.ResolveInstance("groq")
 	if err != nil {
@@ -48,6 +49,7 @@ func TestResolveInstanceCarriesTransportCredentialAndProviderCaps(t *testing.T) 
 }
 
 func TestResolveInstanceUnknownNamesAvailableInstances(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, map[string]string{"GROQ_API_KEY": "gk"}, nil)
 	_, err := r.ResolveInstance("nope")
 	if !errors.Is(err, ErrUnknownInstance) || !strings.Contains(err.Error(), "groq") {
@@ -56,6 +58,7 @@ func TestResolveInstanceUnknownNamesAvailableInstances(t *testing.T) {
 }
 
 func TestResolveCarriesDefaultAndCheapModel(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, nil, map[string]Provider{"work": {Base: "openai", APIKey: "k", DefaultModel: "gpt-5.5", CheapModel: "gpt-4.1-nano", Transport: Transport{BaseURL: "https://gw.example.com/v1"}}})
 	res, err := r.Resolve("work/gpt-5.5")
 	if err != nil {
@@ -73,6 +76,7 @@ func TestResolveCarriesDefaultAndCheapModel(t *testing.T) {
 }
 
 func TestInstanceViewCarriesBaseURLVarsAndDefaultModel(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "tok"}, map[string]Provider{
 		"bedrock": {Base: "amazon-bedrock", Transport: Transport{Vars: map[string]string{"AWS_REGION": "us-east-1"}}},
 	})
@@ -98,6 +102,7 @@ func TestInstanceViewCarriesBaseURLVarsAndDefaultModel(t *testing.T) {
 }
 
 func TestReasoningDisabled(t *testing.T) {
+	t.Parallel()
 	if (Caps{}).ReasoningDisabled() {
 		t.Fatal("nil is not disabled")
 	}
@@ -110,6 +115,7 @@ func TestReasoningDisabled(t *testing.T) {
 }
 
 func TestStrayOAuthRecords(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "auth"), 0o700); err != nil {
 		t.Fatal(err)
@@ -148,6 +154,7 @@ func TestStrayOAuthRecords(t *testing.T) {
 // protocol to openai-chat, the same cross-protocol fixture load_test.go's
 // TestLoad_ExplicitInstances uses to pin resetFields itself.
 func TestResolveInstancePurgesFieldsProvenanceOnProtocolReset(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
 		"work": {Base: "openai", Protocol: ProtocolOpenAIChat},
 	})
@@ -167,6 +174,7 @@ func TestResolveInstancePurgesFieldsProvenanceOnProtocolReset(t *testing.T) {
 // template variable is never set) must explain itself through
 // ResolveInstance the same way a model-based Resolve already does.
 func TestResolveInstanceCarriesHiddenProviderWarning(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, nil, map[string]Provider{"nobedrockregion": {Base: "amazon-bedrock"}})
 	res, err := r.ResolveInstance("nobedrockregion")
 	if err != nil {
@@ -188,6 +196,7 @@ func TestResolveInstanceCarriesHiddenProviderWarning(t *testing.T) {
 // this file already set directly), just usually populated by the
 // converter instead of a literal.
 func TestResolveInstanceCarriesConverterNotes(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
 		"noted": {Base: "openai", notes: []string{"protocol unverified: unknown npm test-sdk"}},
 	})
@@ -214,6 +223,7 @@ func TestResolveInstanceCarriesConverterNotes(t *testing.T) {
 // profile.SupportsWebSearch's BoolValue, which happens to collapse nil and
 // false alike) must still see an unambiguous deny.
 func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
+	t.Parallel()
 	r := cutoverRegistry(t, map[string]string{"OPENAI_API_KEY": "k"}, map[string]Provider{
 		"gw":      {Base: "openai", Transport: Transport{BaseURL: "https://gw.example.com/v1"}},
 		"optedin": {Base: "openai", Transport: Transport{BaseURL: "https://gw.example.com/v1"}, Caps: Caps{WebSearch: new(true)}},
@@ -265,6 +275,7 @@ func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
 // resolve, with no wire map built and no command executed, so the depth
 // can never silently lose a field.
 func TestResolveInstancePresenceMatchesFullDepth(t *testing.T) {
+	t.Parallel()
 	// An explicit instance with an environment credential: presence keeps
 	// the source label the full resolve would report, without the value.
 	const cfgEnv = "[providers.work]\nbase = \"anthropic\"\napi_key_env = [\"WORK_KEY\"]\n"
@@ -302,6 +313,7 @@ func TestResolveInstancePresenceMatchesFullDepth(t *testing.T) {
 // included. A presence that builds the provider's model-less transport
 // instead shows setup and status a scheme the launch never uses.
 func TestPresenceTransportMatchesLaunchForDefaultRow(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -334,6 +346,7 @@ func TestPresenceTransportMatchesLaunchForDefaultRow(t *testing.T) {
 // report and gate under the same one, or the hub's views describe a
 // launch that is never made.
 func TestPresenceMatchesLaunchRowProtocol(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -362,6 +375,7 @@ func TestPresenceMatchesLaunchRowProtocol(t *testing.T) {
 // The transport the presence view shows carries its own diagnostics —
 // what the launch's transport says, warnings included.
 func TestPresenceKeepsTransportWarningsForDefaultRow(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -394,6 +408,7 @@ func TestPresenceKeepsTransportWarningsForDefaultRow(t *testing.T) {
 // and presence must keep the flag the row's resolution computed rather
 // than the provider shape's default.
 func TestPresenceKeepsHostDerivedFlagForDefaultRow(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"google-vertex-anthropic\"\n" +
 		"base_url = \"{GOOGLE_VERTEX_HOST}/v1/custom\"\n" +
@@ -420,6 +435,7 @@ func TestPresenceKeepsHostDerivedFlagForDefaultRow(t *testing.T) {
 // the launch gate's (spec §10.1), and this is the depth the gate's
 // judgment feeds.
 func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -450,6 +466,7 @@ func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
 // winner too — a status pane reading "api_key" while the wire carries the
 // header would misdescribe the launch.
 func TestHeaderOverriddenAPIKeyIsNeverEvaluated(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	var ran []string
@@ -504,6 +521,7 @@ func TestHeaderOverriddenAPIKeyIsNeverEvaluated(t *testing.T) {
 // whose default names a model the transport does not serve is the shape
 // that errors today.
 func TestResolveInstanceListingFallsBackWhenDefaultUnresolvable(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-codex\"\n" +
 		"default_model = \"gpt-not-a-real-codex-model\"\n"
@@ -532,6 +550,7 @@ func TestResolveInstanceListingFallsBackWhenDefaultUnresolvable(t *testing.T) {
 // the disabled row's own headers either: the fetch that produced the
 // cached live rows never sent them.
 func TestDisabledDefaultRowFallsBackToTheProviderShape(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, rowHeaders string) *Registry {
 		t.Helper()
 		config := "[providers.gw]\n" +
@@ -602,6 +621,7 @@ func TestDisabledDefaultRowFallsBackToTheProviderShape(t *testing.T) {
 // gate refuses it before the spawn instead of silently judging the
 // listing transport.
 func TestResolveGateCredentialRefusesAModelTheLaunchRefuses(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -626,6 +646,7 @@ func TestResolveGateCredentialRefusesAModelTheLaunchRefuses(t *testing.T) {
 // a legacy session recorded without a profile still resolves through the
 // default at facts depth, or it loses every hub-side read.
 func TestResolveInstanceModelFactsDefaultsEmptyInstance(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"anthropic\"\n" +
 		"api_key_env = [\"WORK_KEY\"]\n" +
@@ -649,6 +670,7 @@ func TestResolveInstanceModelFactsDefaultsEmptyInstance(t *testing.T) {
 // judges the credential at the instance's transport and leaves the model
 // verdict to the child. Resolve itself still refuses the unlisted id.
 func TestResolveGateCredentialLeavesAnUnlistedCodexIDToTheChild(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, nil, "[providers.subscription]\nbase = \"openai-codex\"\n")
 	const unlisted = "gpt-not-in-any-bundled-roster"
 	if _, err := r.Resolve("subscription/" + unlisted); !errors.Is(err, ErrCodexModelNotListed) {

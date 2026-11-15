@@ -11,6 +11,7 @@ import (
 )
 
 func TestParseRetryAfter_Seconds(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	now := time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC)
 	d := ParseRetryAfter("12", now)
 	if d == nil || *d != 12*time.Second {
@@ -23,6 +24,7 @@ func TestParseRetryAfter_Seconds(t *testing.T) {
 // the model, the limit it tripped, and the numbers -- without asserting the
 // sentence around them.
 func TestContextBudgetErrorRendersItsStructuredFacts(t *testing.T) {
+	t.Parallel()
 	req := Request{Provider: "groq", Model: "glm-5", InputTokensEstimate: 5_000}
 	res := registry.Resolved{Instance: "groq", ModelID: "glm-5", Caps: registry.Caps{MaxInputTokens: new(4_000)}}
 	_, _, err := ApplyTokenBudget(req, res)
@@ -45,6 +47,7 @@ func TestContextBudgetErrorRendersItsStructuredFacts(t *testing.T) {
 }
 
 func TestParseRetryAfter_HTTPDate(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	now := time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC)
 	d := ParseRetryAfter("Sat, 07 Feb 2026 00:00:10 GMT", now)
 	if d == nil || *d != 10*time.Second {
@@ -53,6 +56,7 @@ func TestParseRetryAfter_HTTPDate(t *testing.T) {
 }
 
 func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := []struct {
 		status    int
 		wantType  any
@@ -122,6 +126,7 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 }
 
 func TestErrorCode_OnHTTPErrors(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := map[string]any{"error": map[string]any{"code": "model_not_found"}}
 	err := ErrorFromHTTPStatus("openai", 404, "not found", raw, nil)
 	var e Error
@@ -134,6 +139,7 @@ func TestErrorCode_OnHTTPErrors(t *testing.T) {
 }
 
 func TestErrorCode_FallsBackToType(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := map[string]any{"error": map[string]any{"type": "invalid_request_error"}}
 	err := ErrorFromHTTPStatus("anthropic", 400, "bad request", raw, nil)
 	var e Error
@@ -146,6 +152,7 @@ func TestErrorCode_FallsBackToType(t *testing.T) {
 }
 
 func TestErrorCode_EmptyWhenNoRaw(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 500, "server error", nil, nil)
 	var e Error
 	if !errors.As(err, &e) {
@@ -157,6 +164,7 @@ func TestErrorCode_EmptyWhenNoRaw(t *testing.T) {
 }
 
 func TestRaw_ExposesRawResponse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := map[string]any{"error": "details"}
 	err := ErrorFromHTTPStatus("openai", 500, "server error", raw, nil)
 	var e Error
@@ -177,6 +185,7 @@ func TestRaw_ExposesRawResponse(t *testing.T) {
 }
 
 func TestUnwrap_ErrorChain(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cause := errors.New("underlying network problem")
 	err := &serverError{httpBaseError{
 		provider:   "openai",
@@ -191,6 +200,7 @@ func TestUnwrap_ErrorChain(t *testing.T) {
 }
 
 func TestNonHTTPError_Unwrap(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cause := errors.New("context canceled")
 	err := &AbortError{nonHTTPBaseError{
 		message: "aborted",
@@ -202,6 +212,7 @@ func TestNonHTTPError_Unwrap(t *testing.T) {
 }
 
 func TestNonHTTPError_ErrorCode_Raw(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := &AbortError{nonHTTPBaseError{message: "aborted"}}
 	var e Error
 	if !errors.As(err, &e) {
@@ -216,6 +227,7 @@ func TestNonHTTPError_ErrorCode_Raw(t *testing.T) {
 }
 
 func TestErrorFromHTTPStatus_ErrorCodeClassification(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := []struct {
 		name      string
 		status    int
@@ -257,6 +269,7 @@ func TestErrorFromHTTPStatus_ErrorCodeClassification(t *testing.T) {
 }
 
 func TestCyberPolicyViolation_403_IsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
 	err := ErrorFromHTTPStatus("openai", 403, "flagged by cyber policy", raw, nil)
 	var e Error
@@ -272,6 +285,7 @@ func TestCyberPolicyViolation_403_IsRetryable(t *testing.T) {
 }
 
 func TestCyberPolicyViolation_403_DefaultsRetryAfterTo60s(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
 	err := ErrorFromHTTPStatus("openai", 403, "flagged", raw, nil)
 	var e Error
@@ -288,6 +302,7 @@ func TestCyberPolicyViolation_403_DefaultsRetryAfterTo60s(t *testing.T) {
 }
 
 func TestCyberPolicyViolation_403_RespectsServerRetryAfter(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
 	d := 90 * time.Second
 	err := ErrorFromHTTPStatus("openai", 403, "flagged", raw, &d)
@@ -302,6 +317,7 @@ func TestCyberPolicyViolation_403_RespectsServerRetryAfter(t *testing.T) {
 }
 
 func TestRegular403_StillNonRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil)
 	var e Error
 	if !errors.As(err, &e) {
@@ -317,6 +333,7 @@ func TestRegular403_StillNonRetryable(t *testing.T) {
 // for the Kimi billing-cycle case must not over-fire on ordinary permission
 // errors.
 func TestRegular403WithBody_StillAccessDenied(t *testing.T) {
+	t.Parallel()
 	raw := map[string]any{"error": map[string]any{"type": "permission_error", "message": "insufficient permissions"}}
 	err := ErrorFromHTTPStatus("openai", 403, "insufficient permissions", raw, nil)
 
@@ -339,6 +356,7 @@ func TestRegular403WithBody_StillAccessDenied(t *testing.T) {
 // 0341i3MDP7PKYfPqGhqPWO) must classify as quota-exceeded, not access-denied,
 // so orchestrators stop re-dispatching delegate waves into a spent quota.
 func TestUsageLimit403IsQuotaExceededAndNotRetryable(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, kimiBillingCycle403Body)
 	err := ErrorFromHTTPStatus("kimi-anthropic", 403, "messages.create failed", raw, nil)
 
@@ -364,6 +382,7 @@ func TestUsageLimit403IsQuotaExceededAndNotRetryable(t *testing.T) {
 }
 
 func TestConfigurationError_Unwrap_ExposesCause(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cause := errors.New("missing API key")
 	err := &ConfigurationError{Message: "bad config", Cause: cause}
 
@@ -378,6 +397,7 @@ func TestConfigurationError_Unwrap_ExposesCause(t *testing.T) {
 }
 
 func TestConfigurationError_Unwrap_NilCause(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := &ConfigurationError{Message: "no cause"}
 	if got := errors.Unwrap(err); got != nil {
 		t.Fatalf("Unwrap() = %v, want nil", got)
@@ -385,6 +405,7 @@ func TestConfigurationError_Unwrap_NilCause(t *testing.T) {
 }
 
 func TestConfigurationError_ErrorCode_Raw(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := &ConfigurationError{Message: "bad config"}
 	var e Error
 	if !errors.As(err, &e) {
@@ -399,6 +420,7 @@ func TestConfigurationError_ErrorCode_Raw(t *testing.T) {
 }
 
 func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := NewRequestTimeoutError("openai", `Post "https://api.openai.com/v1/responses": context deadline exceeded`, nil)
 	var e Error
 	if !errors.As(err, &e) {
@@ -417,6 +439,7 @@ func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
 }
 
 func TestNewAuthenticationError_IsNotRetryable(t *testing.T) {
+	t.Parallel()
 	refused := errors.New(`oauth2: "invalid_grant" "Token has been expired or revoked."`)
 	err := NewAuthenticationError("vertex", `instance "vertex": application-default credentials were refused (invalid_grant)`, refused)
 	var e Error
@@ -438,6 +461,7 @@ func TestNewAuthenticationError_IsNotRetryable(t *testing.T) {
 }
 
 func TestResponseHeaderTimeoutError_IsRetryable(t *testing.T) {
+	t.Parallel()
 	err := newResponseHeaderTimeoutError("openai", "timed out awaiting response headers", context.DeadlineExceeded)
 
 	if got := Kind(err); got != KindTimeout {
@@ -462,6 +486,7 @@ func TestResponseHeaderTimeoutError_IsRetryable(t *testing.T) {
 }
 
 func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := []struct {
 		name      string
 		status    int
@@ -511,6 +536,7 @@ func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 // TestClassifyByMessageAuthenticationSignals covers the unauthorized/invalid-key
 // message-classification arm of a 400 response.
 func TestClassifyByMessageAuthenticationSignals(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 400, "invalid key supplied", nil, nil)
 	if Kind(err) != KindAuthentication {
 		t.Fatalf("Kind(invalid key) = %v, want authentication", Kind(err))
@@ -520,6 +546,7 @@ func TestClassifyByMessageAuthenticationSignals(t *testing.T) {
 // A non-HTTP error always renders some text, names its provider when it has
 // one, and is exactly the caller's message when it has none.
 func TestNonHTTPBaseErrorMessage(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	t.Run("message without provider", func(t *testing.T) {
 		if got := NewAbortError("cancelled by user", nil).Error(); got != "cancelled by user" {
 			t.Errorf("Error() = %q, want the caller's message alone", got)
@@ -547,6 +574,7 @@ func TestNonHTTPBaseErrorMessage(t *testing.T) {
 // An unsupported tool_choice mode is a permanent, provider-attributed error
 // that names the mode it refused.
 func TestNewUnsupportedToolChoiceError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := NewUnsupportedToolChoiceError("anthropic", "required")
 	target, ok := errors.AsType[*UnsupportedToolChoiceError](err)
 	if !ok {

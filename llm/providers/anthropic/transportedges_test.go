@@ -18,6 +18,7 @@ const streamingRequiredScheme = "anthropic-test-streaming-required"
 // A transport whose auth scheme requires streaming completion must serve
 // Complete from the SSE stream and still return the accumulated response.
 func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, streamingRequiredScheme, providertest.StreamingRequiredAuth{})
 	srv, _ := protoServer(t, func(*http.Request) (int, string) { return 200, messagesSSE })
 	res := protoLive(srv)
@@ -34,6 +35,7 @@ func TestCompleteRoutesThroughStreamWhenPreparerRequiresIt(t *testing.T) {
 // A request the builder rejects (an audio content part) must fail Complete,
 // Stream, and CountTokens before any HTTP traffic, as a configuration error.
 func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Messages = append(req.Messages, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}},
@@ -65,6 +67,7 @@ func TestBuildBodyErrorsPropagateThroughCompleteStreamCountTokens(t *testing.T) 
 // A base URL that cannot parse must fail models.list before any request goes
 // out, through withQuery's own parse error.
 func TestListModelsUnparseableURL(t *testing.T) {
+	t.Parallel()
 	res := protoRes(nil)
 	res.Transport.BaseURL = "http://h/%zz"
 	res.Transport.ModelsEndpoint = "/models"

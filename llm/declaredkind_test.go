@@ -65,6 +65,7 @@ func usageLimitRawBody() map[string]any {
 // row here is simply not checked, silently. Adding the row is the author's job;
 // the table only guarantees that every case listed in it agrees.
 func TestDeclaredKindMatchesKindForEveryConstructedError(t *testing.T) {
+	t.Parallel()
 	for _, tc := range declaredKindStatusCases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := llm.ErrorFromHTTPStatus("openai", tc.status, tc.message, tc.raw, nil)
@@ -81,6 +82,7 @@ func TestDeclaredKindMatchesKindForEveryConstructedError(t *testing.T) {
 // TestDeclaredKindCoversNonHTTPTimeouts pins the constructors that do not go
 // through ErrorFromHTTPStatus.
 func TestDeclaredKindCoversNonHTTPTimeouts(t *testing.T) {
+	t.Parallel()
 	err := llm.NewRequestTimeoutError("openai", "deadline exceeded", nil)
 	if got := llm.DeclaredKind(err); got != llm.KindTimeout {
 		t.Errorf("DeclaredKind(request timeout) = %v, want %v", got, llm.KindTimeout)
@@ -91,6 +93,7 @@ func TestDeclaredKindCoversNonHTTPTimeouts(t *testing.T) {
 // sentinel: it is KindNotFound by construction, and DeclaredKind must agree
 // with Kind for it like every other constructor-produced error.
 func TestDeclaredKindCoversUnsupportedEndpoint(t *testing.T) {
+	t.Parallel()
 	err := llm.NewUnsupportedEndpointError("gateway", "model did not speak the protocol", nil)
 	if got := llm.Kind(err); got != llm.KindNotFound {
 		t.Fatalf("Kind(unsupported endpoint) = %v, want %v", got, llm.KindNotFound)
@@ -105,6 +108,7 @@ func TestDeclaredKindCoversUnsupportedEndpoint(t *testing.T) {
 // it is why DeclaredKind can be called on an error of unverified provenance
 // without running caller-supplied Unwrap/Is/As code.
 func TestDeclaredKindStopsAtTheValueInHand(t *testing.T) {
+	t.Parallel()
 	inner := llm.ErrorFromHTTPStatus("openai", http.StatusTooManyRequests, "", usageLimitRawBody(), nil)
 	wrapped := fmt.Errorf("session namer: %w", inner)
 
@@ -119,6 +123,7 @@ func TestDeclaredKindStopsAtTheValueInHand(t *testing.T) {
 // TestDeclaredKindIgnoresForeignErrors pins that a type this package did not
 // construct reports unknown rather than being coerced into the taxonomy.
 func TestDeclaredKindIgnoresForeignErrors(t *testing.T) {
+	t.Parallel()
 	if got := llm.DeclaredKind(errors.New("some other failure")); got != llm.KindUnknown {
 		t.Errorf("DeclaredKind(foreign) = %v, want %v", got, llm.KindUnknown)
 	}

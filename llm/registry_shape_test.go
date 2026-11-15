@@ -21,6 +21,7 @@ func resolved(protocol string, caps registry.Caps) registry.Resolved {
 }
 
 func TestShapeRequest_ReasoningOffAndClamp(t *testing.T) {
+	t.Parallel()
 	req := Request{ReasoningEffort: new("high")}
 	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Reasoning: new(false)}))
 	if got.ReasoningEffort != nil {
@@ -41,6 +42,7 @@ func TestShapeRequest_ReasoningOffAndClamp(t *testing.T) {
 }
 
 func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
+	t.Parallel()
 	req := Request{Temperature: new(0.2), TopP: new(0.9), StopSequences: []string{"a", "b"}}
 	got := ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{MaxOutputTokens: new(4096)}))
 	if got.MaxTokens == nil || *got.MaxTokens != 4096 || got.Temperature == nil || got.TopP == nil || len(got.StopSequences) != 2 {
@@ -77,6 +79,7 @@ func TestShapeRequest_MaxTokensAndSampling(t *testing.T) {
 }
 
 func TestShapeRequest_PromptCacheGates(t *testing.T) {
+	t.Parallel()
 	req := Request{PromptCacheKey: "k", PromptCacheRetention: "24h"}
 	fields := registry.Baseline(registry.ProtocolOpenAIResponses)
 	fields["prompt_cache_key"] = true
@@ -87,6 +90,7 @@ func TestShapeRequest_PromptCacheGates(t *testing.T) {
 }
 
 func TestShapeRequest_DoesNotMutateInput(t *testing.T) {
+	t.Parallel()
 	req := Request{Temperature: new(0.2), ReasoningEffort: new("max")}
 	_ = ShapeRequest(req, resolved(registry.ProtocolOpenAIChat, registry.Caps{Sampling: new(false), EffortValues: []string{"low"}}))
 	if *req.Temperature != 0.2 || *req.ReasoningEffort != "max" {
@@ -99,6 +103,7 @@ func TestShapeRequest_DoesNotMutateInput(t *testing.T) {
 // is the seam that keeps the two lists honest: every level a session accepts
 // must parse as a default, and a value the session would reject must not.
 func TestDefaultEffortVocabularyMatchesTheSessionVocabulary(t *testing.T) {
+	t.Parallel()
 	for _, level := range append(ReasoningEffortVocabulary(), ReasoningEffortNone) {
 		if err := ValidateReasoningEffort(level); err != nil {
 			t.Fatalf("fixture: %q is not a session level: %v", level, err)
@@ -124,6 +129,7 @@ func TestDefaultEffortVocabularyMatchesTheSessionVocabulary(t *testing.T) {
 // rank (the off level, a tier outside the vocabulary) must keep their
 // authored relative order ahead of the ranked tiers.
 func TestResolveServesEffortLaddersInSessionRankOrder(t *testing.T) {
+	t.Parallel()
 	authored := []string{"max", "turbo", "low", "none", "high", "minimal", "medium", "xhigh"}
 	want := append([]string(nil), authored...)
 	slices.SortStableFunc(want, func(a, b string) int {

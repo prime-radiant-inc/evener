@@ -17,6 +17,7 @@ type borrowedSSEReader struct {
 func (r *borrowedSSEReader) Close() error { r.closes++; return nil }
 
 func TestParseSSEPreservesBorrowedReaderOwnership(t *testing.T) {
+	t.Parallel()
 	callbackErr := errors.New("callback stopped")
 	for _, tc := range []struct {
 		name        string

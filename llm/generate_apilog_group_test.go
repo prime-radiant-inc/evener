@@ -99,6 +99,7 @@ func logicalGroupAttemptResult(resp Response, err error, startedAt time.Time) AP
 }
 
 func TestGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		succeedLast bool
@@ -139,6 +140,7 @@ func TestGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
 }
 
 func TestStreamGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		succeedLast bool
@@ -180,6 +182,7 @@ func TestStreamGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
 }
 
 func TestAPIAttemptGroupScopeReusesCallerGroupWithoutSettlingIt(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_caller_owned")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)

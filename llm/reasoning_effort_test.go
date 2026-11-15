@@ -6,6 +6,7 @@ import (
 )
 
 func TestClampReasoningEffort(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := []struct {
 		name      string
 		requested string
@@ -55,6 +56,7 @@ func TestClampReasoningEffort(t *testing.T) {
 }
 
 func TestReasoningEffortRank(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if ReasoningEffortRank("max") <= ReasoningEffortRank("xhigh") {
 		t.Errorf("max should rank above xhigh: max=%d xhigh=%d", ReasoningEffortRank("max"), ReasoningEffortRank("xhigh"))
 	}
@@ -78,6 +80,7 @@ func TestReasoningEffortRank(t *testing.T) {
 // validate, or an advertising surface would publish a level the handler
 // rejects.
 func TestAcceptedReasoningEfforts(t *testing.T) {
+	t.Parallel()
 	want := append(ReasoningEffortVocabulary(), ReasoningEffortNone)
 	if got := AcceptedReasoningEfforts(); !slices.Equal(got, want) {
 		t.Fatalf("AcceptedReasoningEfforts() = %v, want %v", got, want)
@@ -94,6 +97,7 @@ func TestAcceptedReasoningEfforts(t *testing.T) {
 // yields "" (omit), because evener never writes an effort name the resolved
 // row cannot vouch for. Budget-shaped rows do not use it.
 func TestVouchedEffort(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		requested string
@@ -121,6 +125,7 @@ func TestVouchedEffort(t *testing.T) {
 // explicit off must stay distinguishable from "nothing configured" so the
 // session's default effort never overrides a user who turned thinking off.
 func TestNormalizeReasoningEffort(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := map[string]string{
 		"none": "none", "null": "none", "off": "none", "false": "none", "0": "none",
 		"NONE": "none", "  none  ": "none",
@@ -135,6 +140,7 @@ func TestNormalizeReasoningEffort(t *testing.T) {
 }
 
 func TestValidateReasoningEffort_AcceptsNone(t *testing.T) {
+	t.Parallel()
 	if err := ValidateReasoningEffort("none"); err != nil {
 		t.Fatalf("ValidateReasoningEffort(none) = %v, want nil (explicit off is a valid configured value)", err)
 	}
@@ -144,6 +150,7 @@ func TestValidateReasoningEffort_AcceptsNone(t *testing.T) {
 }
 
 func TestReasoningBudget_MinimalAndXHigh(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if ReasoningBudget("minimal") <= 0 {
 		t.Errorf("ReasoningBudget(minimal) = %d, want a small positive budget", ReasoningBudget("minimal"))
 	}
@@ -153,6 +160,7 @@ func TestReasoningBudget_MinimalAndXHigh(t *testing.T) {
 }
 
 func TestIsOpenAICompatEncryptedReasoning(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	cases := []struct {
 		name string
 		in   string
@@ -182,6 +190,7 @@ func TestIsOpenAICompatEncryptedReasoning(t *testing.T) {
 
 // TestReasoningBudget covers every recognized effort level and the default.
 func TestReasoningBudget(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tests := map[string]int{
 		"minimal": 1024, "low": 1024, "medium": 8192, "high": 32768,
 		"xhigh": 131072, "max": 131072, "unknown": 0, "": 0,

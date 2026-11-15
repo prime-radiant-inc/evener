@@ -26,8 +26,8 @@ func loadOverlay(t *testing.T) *Layer {
 }
 
 func TestEmbeddedOverlayReturnsIndependentCopy(t *testing.T) {
+	t.Parallel()
 	original := append([]byte(nil), embeddedOverlay...)
-	defer copy(embeddedOverlay, original)
 
 	first := EmbeddedOverlay()
 	first[0] ^= 0xff
@@ -37,6 +37,7 @@ func TestEmbeddedOverlayReturnsIndependentCopy(t *testing.T) {
 }
 
 func TestCuratedOverlay_ImplicitListIsDefaultOrder(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	if !reflect.DeepEqual(l.DefaultOrder, specImplicitOrder) {
 		t.Fatalf("default_order = %v", l.DefaultOrder)
@@ -63,6 +64,7 @@ func TestCuratedOverlay_ImplicitListIsDefaultOrder(t *testing.T) {
 }
 
 func TestCuratedOverlay_DefaultsAndTemplates(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	for _, id := range l.DefaultOrder {
 		p := l.Providers[id]
@@ -100,6 +102,7 @@ func TestCuratedOverlay_DefaultsAndTemplates(t *testing.T) {
 }
 
 func TestCuratedOverlay_Transports(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	va := l.Transports[PresetVertexAnthropic]
 	if va.Auth != AuthGCPADC || va.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || va.StreamEndpoint != "/publishers/anthropic/models/{model}:streamRawPredict" || va.ModelsEndpoint != EndpointUnsupported || va.CountTokensEndpoint != EndpointUnsupported || va.Body["anthropic_version"] != "vertex-2023-10-16" {
@@ -116,6 +119,7 @@ func TestCuratedOverlay_Transports(t *testing.T) {
 }
 
 func TestCuratedOverlay_GeminiDefaultsAre38Flash(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	for _, id := range []string{"google", "google-vertex"} {
 		p, ok := l.Providers[id]
@@ -129,6 +133,7 @@ func TestCuratedOverlay_GeminiDefaultsAre38Flash(t *testing.T) {
 }
 
 func TestCuratedOverlay_AnthropicRows(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	a := l.Providers["anthropic"]
 	// Every [1m] row aliases its base row; what each carries beyond that
@@ -177,6 +182,7 @@ func TestCuratedOverlay_AnthropicRows(t *testing.T) {
 }
 
 func TestCuratedOverlay_CodexProvider(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	c := l.Providers["openai-codex"]
 	if c.Base != "openai" || c.InheritModels == nil || *c.InheritModels || c.Transport.Auth != AuthOAuthOpenAICodex {
@@ -208,6 +214,7 @@ func TestCuratedOverlay_CodexProvider(t *testing.T) {
 // Every default_model, cheap_model, and alias_of target names a row that
 // exists upstream or in the overlay, so a typo cannot ship.
 func TestCuratedOverlay_ReferencesResolve(t *testing.T) {
+	t.Parallel()
 	l := loadOverlay(t)
 	raw, _, err := EmbeddedSnapshot()
 	if err != nil {
@@ -291,6 +298,7 @@ func TestCuratedOverlay_ReferencesResolve(t *testing.T) {
 }
 
 func TestCuratedOverlay_GoogleVertexExpress(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_API_KEY": "k-express"}, "")
 	p, ok := r.Provider("google-vertex-express")
 	if !ok {
@@ -340,6 +348,7 @@ func TestCuratedOverlay_GoogleVertexExpress(t *testing.T) {
 }
 
 func TestEmbedded_GoogleVertexExpressIsGeminiOnly(t *testing.T) {
+	t.Parallel()
 	r := embeddedLoad(t)
 	p, ok := r.Provider("google-vertex-express")
 	if !ok {
@@ -375,6 +384,7 @@ func TestEmbedded_GoogleVertexExpressIsGeminiOnly(t *testing.T) {
 }
 
 func TestGoogleVertexExpressExistsOnlyWithItsOwnKey(t *testing.T) {
+	t.Parallel()
 	if names := instanceNames(fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "g"}, "")); slices.Contains(names, "google-vertex-express") {
 		t.Fatalf("GEMINI_API_KEY alone created google-vertex-express: %v", names)
 	}

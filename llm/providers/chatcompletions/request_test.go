@@ -43,6 +43,7 @@ func jsonOf(t *testing.T, v any) string {
 }
 
 func TestBuildBody_ThinkingFormats(t *testing.T) {
+	t.Parallel()
 	high := "high"
 	type tc struct {
 		format   string
@@ -102,6 +103,7 @@ func TestBuildBody_ThinkingFormats(t *testing.T) {
 }
 
 func TestBuildBody_ReasoningGates(t *testing.T) {
+	t.Parallel()
 	high, none := "high", "none"
 	off := resolved(func(c *registry.Caps) { c.Reasoning = new(false); c.ThinkingFormat = new("zai") })
 	req := userReq("hi")
@@ -153,6 +155,7 @@ func TestBuildBody_ReasoningGates(t *testing.T) {
 }
 
 func TestBuildBody_CapsShapeStructure(t *testing.T) {
+	t.Parallel()
 	schema := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f", Description: "d", Parameters: schema}}
@@ -220,6 +223,7 @@ func TestBuildBody_CapsShapeStructure(t *testing.T) {
 }
 
 func TestBuildBody_ProviderOptionMaxTokensRespectsCapsAndFieldSelection(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		wire   int
@@ -250,6 +254,7 @@ func TestBuildBody_ProviderOptionMaxTokensRespectsCapsAndFieldSelection(t *testi
 }
 
 func TestBuildBody_ProviderOptionMaxTokensCanonicalizesCrossFieldOverlay(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		selected      string
@@ -285,6 +290,7 @@ func TestBuildBody_ProviderOptionMaxTokensCanonicalizesCrossFieldOverlay(t *test
 }
 
 func TestBuildBody_AnthropicCacheControl(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "m", Messages: []llm.Message{
 		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "sys"}}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}},
@@ -313,6 +319,7 @@ func TestBuildBody_AnthropicCacheControl(t *testing.T) {
 // applyThinkingFormat is redundant, because that object itself reaches the
 // wire through the passthrough loop.
 func TestBuildBody_ReasoningDetailsRowKeepsTheDialectControl(t *testing.T) {
+	t.Parallel()
 	res := resolved(func(c *registry.Caps) {
 		c.Reasoning = new(true)
 		c.ReasoningControls = []string{"toggle"}
@@ -350,6 +357,7 @@ func TestBuildBody_ReasoningDetailsRowKeepsTheDialectControl(t *testing.T) {
 // TestUnsupportedToolChoiceCarriesTheInstance pins the spec §7.5 rule that
 // every error stamp is res.Instance, not the protocol id.
 func TestUnsupportedToolChoiceCarriesTheInstance(t *testing.T) {
+	t.Parallel()
 	res := resolved(nil)
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}

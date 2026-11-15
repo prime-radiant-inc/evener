@@ -26,6 +26,7 @@ func chatResponseRaw(message map[string]any, finish string) map[string]any {
 // whose typed field holds the wrong JSON kind must fail the response, not be
 // silently dropped.
 func TestFromChatCompletionResponse_DetailItemDecodeError(t *testing.T) {
+	t.Parallel()
 	raw := chatResponseRaw(map[string]any{
 		"role":              "assistant",
 		"reasoning_details": []any{map[string]any{"type": float64(123)}},
@@ -39,6 +40,7 @@ func TestFromChatCompletionResponse_DetailItemDecodeError(t *testing.T) {
 // encrypted-details walk: opaque reasoning.encrypted items are re-encoded
 // verbatim onto the thinking part's EncryptedContent.
 func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
+	t.Parallel()
 	raw := chatResponseRaw(map[string]any{
 		"role":              "assistant",
 		"reasoning_details": []any{map[string]any{"type": "reasoning.encrypted", "id": "e1", "data": "d1"}},
@@ -68,6 +70,7 @@ func TestFromChatCompletionResponse_EncryptedDetailsRoundTrip(t *testing.T) {
 // TestFromChatCompletionResponse_ToolCallThoughtSignature keeps the Gemini
 // continuation token carried by OpenAI-compatible gateways such as shisa.
 func TestFromChatCompletionResponse_ToolCallThoughtSignature(t *testing.T) {
+	t.Parallel()
 	raw := chatResponseRaw(map[string]any{
 		"role":    "assistant",
 		"content": nil,
@@ -96,6 +99,7 @@ func TestFromChatCompletionResponse_ToolCallThoughtSignature(t *testing.T) {
 // TestCollectEncryptedDetailsProgrammaticFallback pins the fallback for an
 // item built without its verbatim raw JSON: the known fields still round-trip.
 func TestCollectEncryptedDetailsProgrammaticFallback(t *testing.T) {
+	t.Parallel()
 	enc := collectEncryptedDetails([]reasoningDetailItem{
 		{Type: "reasoning.encrypted", ID: "i1", Data: "d1"},
 	})
@@ -112,6 +116,7 @@ func TestCollectEncryptedDetailsProgrammaticFallback(t *testing.T) {
 // their text, joined with a newline when there are several, and report no
 // replay field.
 func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
+	t.Parallel()
 	raw := chatResponseRaw(map[string]any{
 		"role": "assistant",
 		"reasoning_details": []any{
@@ -145,6 +150,7 @@ func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
 // contract and join text pieces with newlines, even when scalar reasoning is
 // also present.
 func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		fields map[string]any
@@ -211,6 +217,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 // list is "no choices", and an unmarshalable raw value surfaces the marshal
 // error instead of panicking.
 func TestFromChatCompletionResponse_ShapeFailures(t *testing.T) {
+	t.Parallel()
 	if _, err := fromChatCompletionResponse(map[string]any{"choices": float64(5)}, nil, nil); err == nil {
 		t.Fatal("a non-array choices field must fail the decode")
 	}
@@ -225,6 +232,7 @@ func TestFromChatCompletionResponse_ShapeFailures(t *testing.T) {
 // TestFromChatCompletionResponse_FinishReasonMap pins that a row's
 // FinishReasonMap wins over the raw wire value while keeping it as Raw.
 func TestFromChatCompletionResponse_FinishReasonMap(t *testing.T) {
+	t.Parallel()
 	resp, err := fromChatCompletionResponse(chatResponseRaw(map[string]any{"role": "assistant", "content": "hi"}, "stop"), map[string]string{"stop": "end_turn"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +246,7 @@ func TestFromChatCompletionResponse_FinishReasonMap(t *testing.T) {
 // fallback: with no top-level usage, choices[0].usage becomes the response
 // usage.
 func TestFromChatCompletionResponse_ChoiceLevelUsage(t *testing.T) {
+	t.Parallel()
 	raw := map[string]any{
 		"id":    "resp_u",
 		"model": "m-wire",

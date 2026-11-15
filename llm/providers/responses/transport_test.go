@@ -106,6 +106,7 @@ func (outputOverwritingPreparer) RequiresStreamingComplete() bool { return false
 var registerOutputOverwriterOnce sync.Once
 
 func TestCompleteDecodesOutputItems(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, responseJSON)
 	res := liveRes(srv, openaiCaps)
 	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), userReq("hi"), res)
@@ -124,6 +125,7 @@ func TestCompleteDecodesOutputItems(t *testing.T) {
 }
 
 func TestCompleteReconcilesOutputAfterTransportPreparation(t *testing.T) {
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	registerOutputOverwriterOnce.Do(func() {
 		llm.RegisterAuthenticator("test-output-overwriter", outputOverwritingPreparer{})
 	})
@@ -177,6 +179,7 @@ func TestCompleteReconcilesOutputAfterTransportPreparation(t *testing.T) {
 }
 
 func TestStreamReconcilesOutputAfterTransportPreparation(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, responseSSE)
 	res := liveRes(srv, openaiCaps)
 	res.Transport.Body = map[string]any{"max_output_tokens": 1000}
@@ -197,6 +200,7 @@ func TestStreamReconcilesOutputAfterTransportPreparation(t *testing.T) {
 }
 
 func TestStreamEmitsDeltasAndFinish(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, responseSSE)
 	res := liveRes(srv, openaiCaps)
 	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), userReq("hi"), res)
@@ -224,6 +228,7 @@ func TestStreamEmitsDeltasAndFinish(t *testing.T) {
 }
 
 func TestCompleteThroughStreamWhenTheTransportRequiresIt(t *testing.T) {
+	// Not parallel: RegisterAuthenticator adds to llm's package-wide authenticators registry (no unregister, so entries persist for the process).
 	providertest.RegisterStreamingRequiredAuth(t, "test-streaming-codex", providertest.StreamingRequiredAuth{Authorization: "Bearer codex-token"})
 	srv, got := server(t, 200, responseSSE)
 	res := liveRes(srv, codexLiteCaps)
@@ -238,6 +243,7 @@ func TestCompleteThroughStreamWhenTheTransportRequiresIt(t *testing.T) {
 }
 
 func TestCompleteClassifiesFailures(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 400, `{"error":{"message":"Unknown parameter: 'store'.","type":"invalid_request_error","param":"store","code":"unknown_parameter"}}`)
 	_, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), userReq("hi"), liveRes(srv, openaiCaps))
 	if llm.Kind(err) != llm.KindInvalidRequest || !strings.Contains(llm.ErrorHint(err), "fields.store = false") || llm.ErrorProtocol(err) != registry.ProtocolOpenAIResponses {
@@ -246,6 +252,7 @@ func TestCompleteClassifiesFailures(t *testing.T) {
 }
 
 func TestCountTokens(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, `{"object":"response.input_tokens","input_tokens":42}`)
 	res := liveRes(srv, openaiCaps)
 	// metadata and temperature must reach the built body, so the assertion
@@ -276,6 +283,7 @@ func TestCountTokens(t *testing.T) {
 // TestEndpointFamilies pins the api-log endpoint_family of each operation;
 // input_tokens must not inherit the completion family.
 func TestEndpointFamilies(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body string
@@ -315,6 +323,7 @@ func TestEndpointFamilies(t *testing.T) {
 // in-band on an HTTP 200 stream must end the stream with the typed error,
 // stamped with the instance (spec §7.5) and carrying the wire status.
 func TestStreamInbandErrorEndsTheStream(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, sse string }{
 		// The flat "error" event carries the fields at the top level; only
 		// "response.failed" nests them under response.error.

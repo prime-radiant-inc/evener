@@ -19,6 +19,7 @@ func continuationClient(t *testing.T, r *registry.Registry) *llm.Client {
 }
 
 func TestPlanContinuationFromResolved(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
 		"groq": {Base: "groq", Protocol: registry.ProtocolOpenAIResponses, APIKey: "gk"},
@@ -62,6 +63,7 @@ func TestPlanContinuationFromResolved(t *testing.T) {
 }
 
 func TestPlanContinuationIsStableAcrossBuilds(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := continuationClient(t, fixtureRegistry(t, srv.URL, nil))
 	req := userRequest("openai", "gpt-5.5")
@@ -100,6 +102,7 @@ func (a *planningOverride) PlanResponsesContinuation(llm.Request) (llm.Responses
 }
 
 func TestPlanContinuationHonorsOverridePlanner(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := continuationClient(t, fixtureRegistry(t, srv.URL, nil))
 	want := llm.ResponsesContinuationPlan{EndpointFamily: llm.ResponsesEndpointFamilyOpenAIPublic, RequestFingerprint: "cont-req-v2:override"}
@@ -117,6 +120,7 @@ func TestPlanContinuationHonorsOverridePlanner(t *testing.T) {
 }
 
 func TestPlanContinuationNeedsAStateDir(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	c := llm.NewClient(llm.WithRegistry(fixtureRegistry(t, srv.URL, nil)))
 	_, err := c.PlanResponsesContinuation(context.Background(), userRequest("openai", "gpt-5.5"))
@@ -130,6 +134,7 @@ func TestPlanContinuationNeedsAStateDir(t *testing.T) {
 // authenticator's AuthScope supplies the account and workspace claims, which
 // reach the plan and the storage scope as hashes.
 func TestPlanContinuationHashesTheCodexAuthScope(t *testing.T) {
+	// Not parallel: swaps tokenauth.DefaultCodex.StateDir, a package-level seam.
 	stateRoot := t.TempDir()
 	record := authopenai.AuthRecord{Version: 1, Provider: "openai-codex", Source: authopenai.AuthSourceOAuth, TokenType: "Bearer", AccessToken: "tok", RefreshToken: "refresh", AccountID: "acct_1", WorkspaceID: "ws_1", ObtainedAt: time.Now(), Expiry: time.Now().Add(time.Hour)}
 	if err := authopenai.SaveAuth(stateRoot, "codex", record); err != nil {
@@ -188,6 +193,7 @@ func TestPlanContinuationHashesTheCodexAuthScope(t *testing.T) {
 // records the transport the way it hashes it: the base URL without its
 // trailing slash, the endpoint trimmed.
 func TestPlanContinuationNormalizesTheScopeEndpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := responsesServer(t)
 	r := fixtureRegistry(t, srv.URL, map[string]registry.Provider{
 		"padded": {Base: "openai", APIKey: "k", Transport: registry.Transport{BaseURL: srv.URL + "/", Endpoint: " /responses "}},

@@ -67,6 +67,7 @@ func assertSessionReservationBlocked(t *testing.T, stateDir, sessionID string) {
 }
 
 func TestReleaseSessionSharedOpenDescription(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -98,6 +99,7 @@ func TestReleaseSessionSharedOpenDescription(t *testing.T) {
 }
 
 func TestCloseRoutedSharedOpenDescription(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -128,6 +130,7 @@ func TestCloseRoutedSharedOpenDescription(t *testing.T) {
 }
 
 func TestCloseSingleFileSharedOpenDescription(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	owner, err := NewAPILogger(path)
 	if err != nil {
@@ -156,6 +159,7 @@ func TestCloseSingleFileSharedOpenDescription(t *testing.T) {
 }
 
 func TestOpenRecoveryFailureSharedOpenDescription(t *testing.T) {
+	// Not parallel: swaps the package's apiLogFileSync seam.
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	writeCanonicalAttempt(t, path, standaloneCanonicalAttempt("shared-recovery-failure", 1))
 	complete, err := os.ReadFile(path)

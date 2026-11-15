@@ -32,6 +32,7 @@ func (f failingReadSeeker) Seek(offset int64, whence int) (int64, error) {
 // TestDecoderReadLineMaxLineBytesZero covers the maxLineBytes <= 0 error path
 // (line 100-101).
 func TestDecoderReadLineMaxLineBytesZero(t *testing.T) {
+	t.Parallel()
 	d := NewDecoder(strings.NewReader("data"), 0)
 	_, err := d.Next()
 	if err == nil {
@@ -41,6 +42,7 @@ func TestDecoderReadLineMaxLineBytesZero(t *testing.T) {
 
 // TestDecoderReadLineReadError covers the non-EOF read error path (line 69-70).
 func TestDecoderReadLineReadError(t *testing.T) {
+	t.Parallel()
 	d := NewDecoder(&failingReadSeeker{readErr: errors.New("read fail")}, 1024)
 	_, err := d.Next()
 	if err == nil {
@@ -51,6 +53,7 @@ func TestDecoderReadLineReadError(t *testing.T) {
 // TestScanRecoveryMaxLineBytesZero covers the maxLineBytes <= 0 error path
 // (line 138-139).
 func TestScanRecoveryMaxLineBytesZero(t *testing.T) {
+	t.Parallel()
 	_, _, err := ScanRecovery(strings.NewReader("x"), 0)
 	if err == nil {
 		t.Fatal("ScanRecovery with maxLineBytes=0 should error")
@@ -59,6 +62,7 @@ func TestScanRecoveryMaxLineBytesZero(t *testing.T) {
 
 // TestScanRecoverySeekError covers the seek error path (line 142-143).
 func TestScanRecoverySeekError(t *testing.T) {
+	t.Parallel()
 	r := failingReadSeeker{seekErr: errors.New("seek fail")}
 	_, _, err := ScanRecovery(r, 1024)
 	if err == nil {
@@ -69,6 +73,7 @@ func TestScanRecoverySeekError(t *testing.T) {
 // TestScanRecoveryReadError covers the readRecoveryRange error on the final
 // byte (line 150-151).
 func TestScanRecoveryReadError(t *testing.T) {
+	t.Parallel()
 	r := &partialFailReader{data: []byte("x\n"), readErr: errors.New("read fail")}
 	_, _, err := ScanRecovery(r, 1024)
 	if err == nil {
@@ -79,6 +84,7 @@ func TestScanRecoveryReadError(t *testing.T) {
 // TestScanRecoveryPartialStartZero covers the partialStart == 0 path where
 // the entire file is a partial tail (line 168-169).
 func TestScanRecoveryPartialStartZero(t *testing.T) {
+	t.Parallel()
 	// A file with a single partial line (no trailing newline) that starts at 0.
 	data := []byte(`{"kind":"api_attempt"`)
 	_, partialTail, err := ScanRecovery(bytes.NewReader(data), 1024)
@@ -93,6 +99,7 @@ func TestScanRecoveryPartialStartZero(t *testing.T) {
 // TestScanRecoveryBoundaryRecordReadError covers the readRecoveryRange error
 // in validateRecoveryBoundaryRecord (line 188-189).
 func TestScanRecoveryBoundaryRecordReadError(t *testing.T) {
+	t.Parallel()
 	// A reader that reports a non-zero size on Seek(End) but fails on Read.
 	// This triggers the readRecoveryRange error on the final byte read.
 	r := &partialFailReader{data: []byte("x\n"), readErr: errors.New("read fail")}
@@ -136,6 +143,7 @@ func (r *partialFailReader) Seek(offset int64, whence int) (int64, error) {
 // TestReadRecoveryRangeError covers readRecoveryRangeInto error propagation
 // (lines 222-223).
 func TestReadRecoveryRangeError(t *testing.T) {
+	t.Parallel()
 	r := &failingReadSeeker{readErr: errors.New("read fail")}
 	_, err := readRecoveryRange(r, 0, 10)
 	if err == nil {
@@ -146,6 +154,7 @@ func TestReadRecoveryRangeError(t *testing.T) {
 // TestReadRecoveryRangeIntoSeekError covers the seek error path
 // (line 229-230).
 func TestReadRecoveryRangeIntoSeekError(t *testing.T) {
+	t.Parallel()
 	r := &failingReadSeeker{seekErr: errors.New("seek fail")}
 	err := readRecoveryRangeInto(r, 0, make([]byte, 10))
 	if err == nil {
@@ -156,6 +165,7 @@ func TestReadRecoveryRangeIntoSeekError(t *testing.T) {
 // TestDecodeRecordSettlementError covers the settlement decode error path
 // (line 263-264).
 func TestDecodeRecordSettlementError(t *testing.T) {
+	t.Parallel()
 	// A settlement record with invalid JSON fields.
 	line := []byte(`{"kind":"attempt_group_settlement","schema_version":"not-a-number"}`)
 	_, err := decodeRecord(line, DecodeStrict)
@@ -167,6 +177,7 @@ func TestDecodeRecordSettlementError(t *testing.T) {
 // TestMarshalRecordUnsupportedType covers the unsupported type path
 // (line 284).
 func TestMarshalRecordUnsupportedType(t *testing.T) {
+	t.Parallel()
 	_, err := MarshalRecord(unsupportedRecord{})
 	if err == nil {
 		t.Fatal("MarshalRecord with unsupported type should error")
@@ -181,6 +192,7 @@ func (unsupportedRecord) validateRecord(DecodeMode) error { return nil }
 // TestDecodeStrictMultipleJSONValues covers the multiple-JSON-values path
 // (lines 303-305).
 func TestDecodeStrictMultipleJSONValues(t *testing.T) {
+	t.Parallel()
 	// Two JSON values in one line. Use a struct that accepts any fields
 	// (settlement with minimal fields) so the first decode succeeds, then
 	// the second decode returns nil (not EOF) → "multiple JSON values".
@@ -199,6 +211,7 @@ func TestDecodeStrictMultipleJSONValues(t *testing.T) {
 // TestDecodeStrictSecondDecodeError covers the path where the second decode
 // returns a non-nil, non-EOF error (line 306).
 func TestDecodeStrictSecondDecodeError(t *testing.T) {
+	t.Parallel()
 	// A valid JSON object followed by invalid JSON.
 	data := []byte(`{"kind":"api_attempt"}{invalid}`)
 	err := decodeStrict(data, &APIAttemptRecord{})
@@ -210,6 +223,7 @@ func TestDecodeStrictSecondDecodeError(t *testing.T) {
 // TestScanRecoveryPartialTailExceedsMax covers the partial tail exceeding
 // maxLineBytes error (line 165).
 func TestScanRecoveryPartialTailExceedsMax(t *testing.T) {
+	t.Parallel()
 	// A file with content longer than maxLineBytes and no trailing newline.
 	data := []byte(strings.Repeat("x", 200))
 	_, _, err := ScanRecovery(bytes.NewReader(data), 100)
@@ -222,6 +236,7 @@ func TestScanRecoveryPartialTailExceedsMax(t *testing.T) {
 // the line is too long (line 125). This happens when the reader returns a
 // non-EOF, non-buffer-full error during a too-long read.
 func TestDecoderTooLongDefaultReadError(t *testing.T) {
+	t.Parallel()
 	// A reader that returns a non-EOF error — the default case in the switch.
 	// We need maxLineBytes > 0 but the reader fails before a newline.
 	d := NewDecoder(&failingReadSeeker{readErr: errors.New("custom error")}, 1024)
@@ -233,6 +248,7 @@ func TestDecoderTooLongDefaultReadError(t *testing.T) {
 
 // TestScanRecoveryEmptyFile covers the size == 0 path (line 145).
 func TestScanRecoveryEmptyFile(t *testing.T) {
+	t.Parallel()
 	_, partialTail, err := ScanRecovery(bytes.NewReader(nil), 1024)
 	if err != nil {
 		t.Fatalf("ScanRecovery empty: %v", err)
@@ -245,6 +261,7 @@ func TestScanRecoveryEmptyFile(t *testing.T) {
 // TestScanRecoveryCleanTrailingNewline covers the clean trailing newline path
 // where validateRecoveryBoundaryRecord succeeds (lines 152-157).
 func TestScanRecoveryCleanTrailingNewline(t *testing.T) {
+	t.Parallel()
 	// A file with one complete record followed by a newline.
 	rec := validAPIAttemptRecord(t)
 	line, _ := json.Marshal(rec)

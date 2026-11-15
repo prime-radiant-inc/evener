@@ -27,6 +27,7 @@ func instanceNames(r *Registry) []string {
 }
 
 func TestInstances_ImplicitFromEnv(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"XAI_API_KEY": "k"}, "")
 	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"xai", "ollama"}) {
 		t.Fatalf("instances = %v", got)
@@ -46,6 +47,7 @@ func TestInstances_ImplicitFromEnv(t *testing.T) {
 }
 
 func TestInstances_PseudoProviderNeedsBaseURL(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"OPENAI_COMPATIBLE_BASE_URL": "http://localhost:8080/v1"}, "")
 	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"ollama", "openai-compatible"}) {
 		t.Fatalf("instances = %v", got)
@@ -60,6 +62,7 @@ func TestInstances_PseudoProviderNeedsBaseURL(t *testing.T) {
 }
 
 func TestInstances_GCPADCAndOAuth(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	adc := filepath.Join(home, ".config", "gcloud", "application_default_credentials.json")
 	if err := os.MkdirAll(filepath.Dir(adc), 0o700); err != nil {
@@ -96,6 +99,7 @@ func TestInstances_GCPADCAndOAuth(t *testing.T) {
 }
 
 func TestInstances_RankingAndShadowing(t *testing.T) {
+	t.Parallel()
 	env := map[string]string{"ANTHROPIC_API_KEY": "a", "GROQ_API_KEY": "g"}
 	r := fixtureLoad(t, env, "[providers.groq]\nprotocol = \"openai-responses\"\n")
 	if got := instanceNames(r); !reflect.DeepEqual(got, []string{"anthropic", "groq", "ollama"}) {
@@ -124,6 +128,7 @@ func TestInstances_RankingAndShadowing(t *testing.T) {
 }
 
 func TestInstances_DefaultKey(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, map[string]string{"ANTHROPIC_API_KEY": "a"}, "default = \"groq\"\n")
 	name, warns, err := r.DefaultInstance()
 	if err != nil || name != "anthropic" || len(warns) == 0 || !strings.Contains(warns[0], "groq") {
@@ -156,6 +161,7 @@ func TestInstances_DefaultKey(t *testing.T) {
 }
 
 func TestCredential_Order(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.lit]
 base = "openai"
@@ -310,6 +316,7 @@ Authorization = "Bearer $PORTKEY_KEY"
 // is empty when nothing shadows it — including when an env source is itself
 // what wins, or when no candidate is set at all.
 func TestInstances_ShadowedEnvVar(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.lit]
 base = "openai"
@@ -382,6 +389,7 @@ api_key_env = ["APIREF_KEY"]
 // all). google-vertex resolves through gcp-adc; with no ADC file or
 // GOOGLE_APPLICATION_CREDENTIALS reachable, it stays unresolved.
 func TestInstances_ShadowedEnvVarSkipsAnUnresolvedHigherPrecedenceScheme(t *testing.T) {
+	t.Parallel()
 	cfg := `
 [providers.myvertex]
 base = "google-vertex"
@@ -402,6 +410,7 @@ api_key_env = ["FAKE_VERTEX_KEY"]
 }
 
 func TestCredential_ValueNeverSerializes(t *testing.T) {
+	t.Parallel()
 	raw, err := json.Marshal(Credential{Value: "x", Source: "store"})
 	if err != nil || strings.Contains(string(raw), "x") {
 		t.Fatalf("a serialized credential must carry the source only: %s %v", raw, err)
@@ -409,6 +418,7 @@ func TestCredential_ValueNeverSerializes(t *testing.T) {
 }
 
 func TestEnvVarName(t *testing.T) {
+	t.Parallel()
 	if envVarName("kimi-for-coding") != "KIMI_FOR_CODING" || envVarName("zai-coding-plan") != "ZAI_CODING_PLAN" || envVarName("work") != "WORK" {
 		t.Fatal("envVarName wrong")
 	}
@@ -430,6 +440,7 @@ func noADCEnv(t *testing.T) map[string]string {
 }
 
 func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
+	t.Parallel()
 	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
 	inst, ok := r.Instance("vertex")
@@ -443,6 +454,7 @@ func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
 }
 
 func TestCredential_GCPADCStoreSourceNeverReportsShadowedEnvVar(t *testing.T) {
+	t.Parallel()
 	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
 	env := noADCEnv(t)
 	env["VERTEX_API_KEY"] = "placeholder"
@@ -458,6 +470,7 @@ func TestCredential_GCPADCStoreSourceNeverReportsShadowedEnvVar(t *testing.T) {
 }
 
 func TestCredential_GCPADCWithoutStoreOrFileIsNoneAndNamesTheRemedies(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{}))
 	inst, ok := r.Instance("vertex")
 	if !ok || inst.CredentialSource != "none" {
@@ -485,6 +498,7 @@ func writeFakeADCFile(t *testing.T, env map[string]string) {
 }
 
 func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithADC(t *testing.T) {
+	t.Parallel()
 	env := noADCEnv(t)
 	writeFakeADCFile(t, env)
 	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": "AQ.legacy-key-not-json"}))
@@ -505,6 +519,7 @@ func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithADC(t *testing.T) {
 }
 
 func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithoutADC(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": "AQ.legacy-key-not-json"}))
 	inst, ok := r.Instance("vertex")
 	if !ok || inst.CredentialSource != "none" {
@@ -524,6 +539,7 @@ func TestCredential_GCPADCIgnoresNonJSONStoreValue_WithoutADC(t *testing.T) {
 // file, so it falls through to adc with a warning naming both problems
 // (roborev round 3, F1).
 func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC(t *testing.T) {
+	t.Parallel()
 	env := noADCEnv(t)
 	writeFakeADCFile(t, env)
 	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
@@ -548,6 +564,7 @@ func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithADC(t *testing.T) {
 // accepts it and fails only at the first request, so the gate refuses it here
 // and a working ADC file still wins (roborev round 6, F1).
 func TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC(t *testing.T) {
+	t.Parallel()
 	env := noADCEnv(t)
 	writeFakeADCFile(t, env)
 	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"service_account"}`}))
@@ -572,6 +589,7 @@ func TestCredential_GCPADCIgnoresTypeOnlyStoreJSON_WithADC(t *testing.T) {
 // parse: it would fail only at the first request, so the gate refuses it here
 // and a working ADC file still wins (roborev round 11, F1).
 func TestCredential_GCPADCIgnoresUnusableKeyStoreJSON_WithADC(t *testing.T) {
+	t.Parallel()
 	env := noADCEnv(t)
 	writeFakeADCFile(t, env)
 	r := fixtureLoad(t, env, vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"service_account","client_email":"sa@example.iam.gserviceaccount.com","private_key":"not-a-real-key"}`}))
@@ -592,6 +610,7 @@ func TestCredential_GCPADCIgnoresUnusableKeyStoreJSON_WithADC(t *testing.T) {
 }
 
 func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithoutADC(t *testing.T) {
+	t.Parallel()
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": `{"type":"external_account","audience":"x"}`}))
 	inst, ok := r.Instance("vertex")
 	if !ok || inst.CredentialSource != "none" {
@@ -606,6 +625,7 @@ func TestCredential_GCPADCIgnoresUnsupportedStoreJSON_WithoutADC(t *testing.T) {
 }
 
 func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
+	t.Parallel()
 	env := noADCEnv(t)
 	env["GOOGLE_VERTEX_PROJECT"], env["GOOGLE_VERTEX_LOCATION"] = "my-project", "global"
 	without := fixtureLoad(t, env, "")
@@ -623,6 +643,7 @@ func TestImplicitGoogleVertexExistsWithStoredJSONAndNoADCFile(t *testing.T) {
 // record away, old curated id still resolves an instance only when the curated
 // provider itself re-derives from what the rename cannot move.
 func TestProviderRenameLeavesInstance(t *testing.T) {
+	t.Parallel()
 	// baseEnv keeps the curated providers addressable (so none of these cases
 	// is refused as hidden) while ADC stays absent.
 	baseEnv := func(t *testing.T) map[string]string {
@@ -758,6 +779,7 @@ auth = "none"
 // it across resolutions, and a failing command behaves like an unset variable
 // — warning plus no credential, retried on the next resolution.
 func TestCredentialFromCommandExpression(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	const config = "[providers.gw]\n" +
@@ -807,6 +829,7 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 // command expression runs exactly when the wire map is built — never on the
 // presence judgment, once on the full resolution.
 func TestCredentialSourceUnderNoneAuthNamesEffectiveHeaders(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	const config = "[providers.gw]\n" +
@@ -853,6 +876,7 @@ func TestCredentialSourceUnderNoneAuthNamesEffectiveHeaders(t *testing.T) {
 // Effective material still rotates — the header that owns the slot, and
 // a slot's arrival or removal.
 func TestAuthFingerprintIgnoresInertCredentialMaterial(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, apiKey, authHeader string) (string, bool) {
 		t.Helper()
 		cfg := "[providers.gw]\n" +
@@ -895,6 +919,7 @@ func TestAuthFingerprintIgnoresInertCredentialMaterial(t *testing.T) {
 // ${VAR:-} default) is not a present credential: it resolves as none with a
 // warning, never as a credential whose value is the empty string.
 func TestCredentialEmptyExpansionIsNoCredential(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name   string
 		config string
@@ -938,6 +963,7 @@ func TestCredentialEmptyExpansionIsNoCredential(t *testing.T) {
 // reference: the header drops out of the resolution with a warning naming it,
 // so an auth failure has a local explanation.
 func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	valueexpr.RunCommand = func(string, []string) (string, error) {
@@ -965,6 +991,7 @@ func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
 // not a present header: it drops out of the map with a warning naming it,
 // never sent on the wire as an empty-valued header.
 func TestCredentialHeaderEmptyExpansionWarns(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -989,6 +1016,7 @@ func TestCredentialHeaderEmptyExpansionWarns(t *testing.T) {
 // resolution path. The listing path, which builds no header map, keeps the
 // credential-form warning (pinned in the test below).
 func TestResolveAuthHeaderFailureWarnsOnce(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct{ name, value, want string }{
 		{"unset reference", "$MISSING", `credential header "Authorization": MISSING unset`},
 		{"empty default", "${MISSING:-}", `credential header "Authorization": expands to an empty value`},
@@ -1021,6 +1049,7 @@ func TestResolveAuthHeaderFailureWarnsOnce(t *testing.T) {
 // The listing path builds no header map, so there the credential-form
 // warning is the only report of a failing Authorization header.
 func TestListingKeepsAuthHeaderCredentialWarning(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1047,6 +1076,7 @@ func TestListingKeepsAuthHeaderCredentialWarning(t *testing.T) {
 // so the two can never disagree, and a failing command is not retried (and
 // not raced) within the same resolution.
 func TestAuthorizationCommandRunsOncePerResolution(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -1076,6 +1106,7 @@ func TestAuthorizationCommandRunsOncePerResolution(t *testing.T) {
 // header map must read the same entry, and the one shared expansion must
 // reach both.
 func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -1110,6 +1141,7 @@ func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
 // the bare "${KEY:-Bearer}", or "Bearer ${KEY:-Basic}" — resolves as no
 // credential with a warning, never as a present one.
 func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{`${MISSING:-Bearer}`, `Bearer ${MISSING:-Basic}`} {
 		t.Run(value, func(t *testing.T) {
 			config := "[providers.gw]\n" +
@@ -1140,6 +1172,7 @@ func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 // no credential with a warning. A literal api_key stays a credential —
 // hand-typed text is the author's own material, exactly like any secret.
 func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1207,6 +1240,7 @@ func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 // the credential, so a working custom header resolved as no credential and
 // the probe path skipped the instance.
 func TestCustomAuthHeaderCarriesTheCredential(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	for _, tt := range []struct{ name, authHeader, mapKey string }{
 		{"exact case", "X-Api-Key", "X-Api-Key"},
 		{"case-insensitive authoring", "x-api-key", "X-Api-Key"},
@@ -1257,6 +1291,7 @@ func TestCustomAuthHeaderCarriesTheCredential(t *testing.T) {
 // listing must not report that variable as shadowed: consumedEnvVars reads
 // the entry the scheme actually sends, and the config's own header won.
 func TestCustomAuthHeaderConsumedEnvVarNotShadowed(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1289,6 +1324,7 @@ func TestCustomAuthHeaderConsumedEnvVarNotShadowed(t *testing.T) {
 // With no default row the listing stays provider-level, its long-standing
 // approximation, pinned here.
 func TestRowAuthHeaderOverrideCarriesTheCredential(t *testing.T) {
+	t.Parallel()
 	const base = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1342,6 +1378,7 @@ func TestRowAuthHeaderOverrideCarriesTheCredential(t *testing.T) {
 // quiet — optional schemes warn nothing — where the provider-level header
 // scheme would have warned.
 func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1381,6 +1418,7 @@ func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
 // back to. The resume gate judges this listing, so its credential verdict
 // must describe the default model's own resolution.
 func TestListingJudgesTheGlobResolvedDefaultModel(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1417,6 +1455,7 @@ func TestListingJudgesTheGlobResolvedDefaultModel(t *testing.T) {
 // scheme already moves the listing's Auth. Mixing the provider-level URL
 // with the row's scheme describes a launch nothing makes.
 func TestListingBaseURLFollowsTheRowOverride(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1444,6 +1483,7 @@ func TestListingBaseURLFollowsTheRowOverride(t *testing.T) {
 // transport it resolved the credential with — the provider-level one — not
 // the default row's merged shape, which may name a different header.
 func TestResolveInstanceShadowedVarFollowsRowlessTransport(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -1472,6 +1512,7 @@ func TestResolveInstanceShadowedVarFollowsRowlessTransport(t *testing.T) {
 // header loop walks the keys sorted, so the same config resolves to the
 // same warning sequence every time instead of Go's random map order.
 func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
+	t.Parallel()
 	pairs := make([]string, 0, 6)
 	for _, k := range []string{"X-C", "X-A", "X-D", "X-B", "X-F", "X-E"} {
 		pairs = append(pairs, fmt.Sprintf("%q = %q", k, "$"+strings.TrimPrefix(k, "X-")))
@@ -1509,6 +1550,7 @@ func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
 // evaluates. The resolution below evaluates only the winner — a one-shot
 // command the wire never carries must not mint or stall anywhere.
 func TestCredentialListingSkipsOverriddenKeyCommands(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	flakyRuns := 0
@@ -1559,6 +1601,7 @@ func TestCredentialListingSkipsOverriddenKeyCommands(t *testing.T) {
 // alias must not execute a credential the launch it is resolving never
 // sends.
 func TestAliasResolutionSkipsTargetCommandCredentials(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -1599,6 +1642,7 @@ func TestAliasResolutionSkipsTargetCommandCredentials(t *testing.T) {
 // instance falls through to the environment candidates, whose rotation the
 // identity has to follow.
 func TestAuthFingerprintRotatesEnvValuesWithStoreWired(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1624,6 +1668,7 @@ func TestAuthFingerprintRotatesEnvValuesWithStoreWired(t *testing.T) {
 // change the fingerprint, or the previous credential's cached live rows
 // survive the rotation.
 func TestAuthFingerprintRotatesMixedValues(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -1658,6 +1703,7 @@ func TestAuthFingerprintRotatesMixedValues(t *testing.T) {
 // a default rotation behind an identical fingerprint and churn an
 // unset-to-empty transition that changes no credential.
 func TestAuthFingerprintRotatesEmptySetDefaults(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, env map[string]string, def string) (string, bool) {
 		t.Helper()
 		config := "[providers.gw]\n" +
@@ -1686,6 +1732,7 @@ func TestAuthFingerprintRotatesEmptySetDefaults(t *testing.T) {
 // do, or cached live rows survive a change to the request that fetched
 // them.
 func TestAuthFingerprintRotatesListingRowHeaders(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, rowHeaders string) (string, bool) {
 		t.Helper()
 		config := "[providers.gw]\n" +
@@ -1713,6 +1760,7 @@ func TestAuthFingerprintRotatesListingRowHeaders(t *testing.T) {
 // row's is. The fingerprint hashes the merged request shape, not the
 // exact row alone.
 func TestAuthFingerprintRotatesGlobRowHeaders(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, globHeaders string) (string, bool) {
 		t.Helper()
 		config := "[providers.gw]\n" +
@@ -1741,6 +1789,7 @@ func TestAuthFingerprintRotatesGlobRowHeaders(t *testing.T) {
 // that same launch: a provider-level Protocol would contradict the
 // row-aware Auth and BaseURL beside it.
 func TestInstancesProtocolFollowsTheDefaultRow(t *testing.T) {
+	t.Parallel()
 	config := "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1773,6 +1822,7 @@ func TestInstancesProtocolFollowsTheDefaultRow(t *testing.T) {
 // state, or a provider-level header rotation carries cached live rows
 // forward under the old request shape.
 func TestAuthFingerprintCoversProviderHeadersWhenTheDefaultRowCannotResolve(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, providerHeaders string) (string, bool) {
 		t.Helper()
 		config := "[providers.gw]\n" +
@@ -1801,6 +1851,7 @@ func TestAuthFingerprintCoversProviderHeadersWhenTheDefaultRowCannotResolve(t *t
 // must see what the rows would execute, not only the provider-level
 // scheme, or an automatic view mints through the override.
 func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1820,6 +1871,7 @@ func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
 // consume the command credential: every row it shapes resolves terminal,
 // so it must not suppress the live discovery the predicate guards.
 func TestLaunchMintsIgnoresNeverSendGlobs(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1841,6 +1893,7 @@ func TestLaunchMintsIgnoresNeverSendGlobs(t *testing.T) {
 // discovery — the picker omits rows the fetch could have served — for a
 // command no request ever runs.
 func TestLaunchMintsIgnoresOverriddenAPIKey(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1863,6 +1916,7 @@ func TestLaunchMintsIgnoresOverriddenAPIKey(t *testing.T) {
 // the predicate must treat the provider's own scheme as reachable — the
 // known-id scan alone cannot vouch for ids that do not exist yet.
 func TestLaunchMintsCoversProviderFallbackForUnseenModels(t *testing.T) {
+	t.Parallel()
 	mk := func(providerAuth string) string {
 		return "[providers.gw]\n" +
 			"base = \"openai-compatible\"\n" +
@@ -1893,6 +1947,7 @@ func TestLaunchMintsCoversProviderFallbackForUnseenModels(t *testing.T) {
 // must cover the live ids too, or the hub's next prefetch spends the
 // mint the predicate just called safe.
 func TestLaunchMintsCoversLiveRowAuthOverride(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1914,6 +1969,7 @@ func TestLaunchMintsCoversLiveRowAuthOverride(t *testing.T) {
 // seen, so an auth-bearing glob means it cannot vouch for the listing's
 // rows: the command key must count as mintable.
 func TestLaunchMintsTreatsAuthBearingGlobsAsReachable(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1932,6 +1988,7 @@ func TestLaunchMintsTreatsAuthBearingGlobsAsReachable(t *testing.T) {
 // pins transport fields but no auth — or only caps — cannot flip a
 // scheme, so the none-scheme command key stays safe to skip.
 func TestLaunchMintsIgnoresAuthlessGlobs(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"http://127.0.0.1:9/v1\"\n" +
@@ -1954,6 +2011,7 @@ func TestLaunchMintsIgnoresAuthlessGlobs(t *testing.T) {
 // values hash alike and a header rotation keeps publishing stale rows
 // under the old value's identity.
 func TestAuthFingerprintRowHeaderWireValue(t *testing.T) {
+	t.Parallel()
 	mk := func(t *testing.T, org string) string {
 		t.Helper()
 		const config = "[providers.gw]\n" +
@@ -1978,6 +2036,7 @@ func TestAuthFingerprintRowHeaderWireValue(t *testing.T) {
 // instance does not use, and running it would spend a mint the wire never
 // carries.
 func TestAuthNoneNeverExpandsAPIKey(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	runs := 0
@@ -2006,6 +2065,7 @@ func TestAuthNoneNeverExpandsAPIKey(t *testing.T) {
 // differ only by case would collide into one header while resolution picks
 // a single entry for the credential: the load refuses the pair.
 func TestCredentialHeaderCaseVariantsRefusedAtLoad(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -2021,6 +2081,7 @@ func TestCredentialHeaderCaseVariantsRefusedAtLoad(t *testing.T) {
 // between them, so adjacent-pair comparison alone cannot be the check: the
 // guard keys on the folded name, wherever sorting puts it.
 func TestCredentialHeaderCaseVariantsWithInterveningNameRefusedAtLoad(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -2037,6 +2098,7 @@ func TestCredentialHeaderCaseVariantsWithInterveningNameRefusedAtLoad(t *testing
 // the authored pieces (literals and reference defaults), never the
 // expanded text.
 func TestMintedLettersOnlyTokenIsACredential(t *testing.T) {
+	// Not parallel: swaps valueexpr.RunCommand; valueexpr.ResetForTest resets valueexpr's package-level seams.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	valueexpr.RunCommand = func(string, []string) (string, error) { return "abcdeftoken", nil }
@@ -2062,6 +2124,7 @@ func TestMintedLettersOnlyTokenIsACredential(t *testing.T) {
 // Authorization: a gateway key whose only authored material is a bare
 // scheme word carries no credential and drops with a warning.
 func TestGenericCredentialHeaderSchemeWordDefaultDrops(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -2085,6 +2148,7 @@ func TestGenericCredentialHeaderSchemeWordDefaultDrops(t *testing.T) {
 // only reference defaults, never literals or minted output, so an
 // all-letters literal key stays on the wire.
 func TestLiteralCredentialHeaderValueStays(t *testing.T) {
+	t.Parallel()
 	const config = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +
@@ -2104,6 +2168,7 @@ func TestLiteralCredentialHeaderValueStays(t *testing.T) {
 // when a scheme that needs a credential resolved to none, on the listing,
 // the gate and the full resolution alike, so no caller parses Warnings.
 func TestCredentialMissingReasonTracksTheSlotState(t *testing.T) {
+	t.Parallel()
 	const head = "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +
 		"base_url = \"https://gw.internal.example/v1\"\n" +

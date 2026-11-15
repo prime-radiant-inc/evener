@@ -30,6 +30,7 @@ func corruptLargeBody() EncodedBody {
 // leaving EncodedBody fields in their encoded form untouched, while still
 // surfacing the attempt's scalar fields.
 func TestMetadataOnlyDecodeSkipsBodyValidation(t *testing.T) {
+	t.Parallel()
 	record := validAPIAttemptRecord(t)
 	corrupt := corruptLargeBody()
 	record.Request.Body = corrupt
@@ -82,6 +83,7 @@ func TestMetadataOnlyDecodeSkipsBodyValidation(t *testing.T) {
 // body content (kind, schema version, required fields, ...) still rejects a
 // malformed record.
 func TestMetadataOnlyDecodeStillEnforcesStructuralFields(t *testing.T) {
+	t.Parallel()
 	record := validAPIAttemptRecord(t)
 	record.Outcome = "future_outcome"
 	line, err := json.Marshal(record)

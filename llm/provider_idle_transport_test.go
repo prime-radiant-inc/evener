@@ -26,6 +26,7 @@ type idleCloseObserver struct {
 
 func (b *idleCloseObserver) Close() error { b.beforeClose(); return b.ReadCloser.Close() }
 func TestProviderIdleRealHTTPUnblocksStalledBody(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		clientConn, serverConn := net.Pipe()
 		defer serverConn.Close()
@@ -78,6 +79,7 @@ func TestProviderIdleRealHTTPUnblocksStalledBody(t *testing.T) {
 }
 
 func TestProviderIdleTracksCompressedWireBytes(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var compressed bytes.Buffer
 		payload := make([]byte, 300<<10)
@@ -133,6 +135,7 @@ func TestProviderIdleTracksCompressedWireBytes(t *testing.T) {
 }
 
 func TestProviderConnectBoundsTLSHandshake(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		clientConn, serverConn := net.Pipe()
 		defer serverConn.Close()
@@ -157,6 +160,7 @@ func TestProviderConnectBoundsTLSHandshake(t *testing.T) {
 }
 
 func TestProviderConnectPreservesShorterTLSHandshake(t *testing.T) {
+	t.Parallel()
 	tr := configuredAdapterTransport(&http.Transport{TLSHandshakeTimeout: time.Millisecond}, &AdapterTimeout{Connect: time.Second})
 	if tr.TLSHandshakeTimeout != time.Millisecond {
 		t.Fatalf("TLS timeout=%v", tr.TLSHandshakeTimeout)
@@ -167,6 +171,7 @@ func TestProviderConnectPreservesShorterTLSHandshake(t *testing.T) {
 // sentinel through the idle wrapper, not a silent substitution: the first
 // read builds the reader, and every read reports its failure.
 func TestIdleGzipBodyRejectsANonGzipPayload(t *testing.T) {
+	t.Parallel()
 	tr := &idleResponseTransport{
 		base: transporttest.RoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{

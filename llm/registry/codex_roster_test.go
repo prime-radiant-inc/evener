@@ -9,6 +9,7 @@ import (
 // refusal's valid-model list: the bundled exact rows plus the ids this
 // process listed live for that instance, and nothing from another instance.
 func TestCodexValidRowIDsIncludesLiveRoster(t *testing.T) {
+	t.Parallel()
 	r := embeddedLoad(t)
 	r.ApplyLive("openai-codex", []Model{{ID: "gpt-reserve"}})
 
