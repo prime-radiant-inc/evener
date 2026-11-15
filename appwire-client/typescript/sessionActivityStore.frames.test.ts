@@ -1356,6 +1356,42 @@ test("a legacy frame's advancing activity lands on its one row without a newer r
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads);
 });
 
+test("a legacy heartbeat from an unloaded twin does not advance the visible child", async () => {
+  const client = pushClient();
+  // The collection holds two rows under one delegate id; only the first page
+  // is loaded, so the loaded set cannot prove which child a legacy frame's
+  // heartbeat belongs to.
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+    context: pushContext(),
+    scope: scope ?? "session",
+    page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "next" },
+    delegates: cursor
+      ? [delegateRow({ childRef: "local:second", latestActivityAt: "2026-09-30T12:00:00Z" })]
+      : [delegateRow({ childRef: "local:first", latestActivityAt: "2026-09-30T12:00:00Z" })],
+  }));
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const visible = () =>
+    store.getSnapshot().delegates.rows.find((row) => row.childRef === "local:first")?.latestActivityAt;
+  expect(visible()).toBe("2026-09-30T12:00:00Z");
+  const reads = callsTo(client, "evener/thread/delegates/list");
+  // The heartbeat names an id the loaded set cannot attribute to one child:
+  // the second child is unloaded, and its frame could be the twin's.
+  client.emitNotification(
+    pushedFrame({
+      ...frameInfo({ delegateId: "delegate-1", projectionRevision: 1, latestActivityAt: "2026-09-30T12:00:09Z" }),
+      childRef: undefined,
+    }),
+  );
+  await store.settleForTests("delegates");
+  expect(visible()).toBe("2026-09-30T12:00:00Z");
+  // The id's one ladder read is still owed and still asked for; the paged
+  // answer keeps the visible child's heartbeat where the hub left it.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(reads + 1);
+  expect(store.getSnapshot().delegates.rows).toHaveLength(1);
+});
+
 test("a frame without a child ref arriving during a walk asks for its read once the walk settles", async () => {
   const client = pushClient();
   const store = owner(client);
@@ -1479,6 +1515,71 @@ test("a frame for a delegate created after a walk's membership froze is read onc
   const row = store.getSnapshot().delegates.rows.find((candidate) => candidate.delegateId === "delegate-2");
   expect(row?.status).toBe("failed");
   expect(row?.reportPreview).toBe("settled");
+});
+
+test("repeated frames for an identity no walk can admit defer one follow-up read in total", async () => {
+  const client = pushClient();
+  let hold: 0 | 1 | 2 = 0;
+  const held = deferred<SessionDelegatesResponse>();
+  const heldTwo = deferred<SessionDelegatesResponse>();
+  client.on("evener/thread/delegates/list", ({ cursor, scope }) => {
+    if (!cursor && hold === 1) return held.promise;
+    if (!cursor && hold === 2) return heldTwo.promise;
+    return {
+      context: pushContext(),
+      scope: scope ?? "session",
+      page: cursor ? { complete: true, issues: [] } : { complete: false, issues: [], nextCursor: "older" },
+      // The delegate the frames name sorts beyond the displayed boundary, so
+      // no root walk to that boundary can ever serve its row.
+      delegates: cursor ? [] : [delegateRow({ status: "running" })],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const initial = callsTo(client, "evener/thread/delegates/list");
+  // Walk one is held in flight while a frame for the beyond-boundary identity
+  // arrives; its identity's read is deferred to the walk's end.
+  hold = 1;
+  const refreshedOne = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-9", childRef: "remote:delegate-9", projectionRevision: 9, status: "running" }),
+    ),
+  );
+  hold = 0;
+  held.resolve({
+    context: pushContext(),
+    scope: "session",
+    page: { complete: false, issues: [], nextCursor: "older" },
+    delegates: [delegateRow({ status: "running" })],
+  });
+  await refreshedOne;
+  // The deferred read ran once: walk one's page plus its follow-up.
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(initial + 2);
+  // Walk two is held the same way, and the same identity frames again at a
+  // newer revision: its one deferred read is spent, so no walk after it arms
+  // another on its behalf.
+  hold = 2;
+  const refreshedTwo = store.refresh("delegates");
+  await vi.advanceTimersByTimeAsync(0);
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({ delegateId: "delegate-9", childRef: "remote:delegate-9", projectionRevision: 10, status: "running" }),
+    ),
+  );
+  hold = 0;
+  heldTwo.resolve({
+    context: pushContext(),
+    scope: "session",
+    page: { complete: false, issues: [], nextCursor: "older" },
+    delegates: [delegateRow({ status: "running" })],
+  });
+  await refreshedTwo;
+  expect(callsTo(client, "evener/thread/delegates/list")).toBe(initial + 3);
+  // The identity stays beyond the boundary: nothing was loaded for it.
+  expect(store.getSnapshot().delegates.rows).toHaveLength(1);
 });
 
 test("a frame buffered during the replacement window survives the replacement read", async () => {

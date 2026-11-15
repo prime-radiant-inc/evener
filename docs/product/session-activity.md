@@ -490,9 +490,11 @@ asks for nothing, and a terminal frame after a running one asks again, because
 only a read can land a legacy frame's other changes. The heartbeat lands
 directly: the producer's activity publications advance `latestActivityAt`
 without touching the durable revision, so a legacy frame's advancing activity
-is taken by the one loaded row its delegate id names -- latestActivityAt is
-the independent maximum every join takes -- and an ambiguous or absent id is
-left to the read. An epoch change clears the ladder. A
+is taken by the one row its delegate id names when the loaded set is the whole
+collection -- latestActivityAt is the independent maximum every join takes,
+and a paged set cannot prove which child under the id a heartbeat belongs to,
+so anything short of that is left to the read. An epoch change clears the
+ladder. A
 frame whose identity no loaded row matches
 asks for one read per identity per source epoch, and its latest frame waits for
 the read that admits its row. It reads
@@ -500,8 +502,10 @@ none of that while a fresh walk is in flight: that walk settles the frames
 it carries at its displayed boundary, so they do not restart it. A walk also
 freezes the membership it will serve before it starts, so a frame for a
 delegate created after that freeze names a row no page of the walk can carry:
-its read is remembered, coalesced across identities, and issued once the walk
-ends. A frame the
+its identity's read is marked asked -- the same one-read-per-identity bound
+any other ask spends -- coalesced across identities, and issued once the walk
+ends; later frames for that identity during any walk defer nothing further.
+A frame the
 buffer evicts before that is recovered by one read when the walk ends. It also
 reads on observe/paging/resync/reconnect, and when an epoch change retires its
 push state; a resync and a reconnect both turn the merge off until a refreshed

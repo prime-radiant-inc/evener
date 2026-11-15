@@ -926,15 +926,18 @@ export class SessionActivityStore {
   }
   /** A legacy frame cannot name its row, so its snapshot waits for the read
    * its id's revision ladder asks for. Its delegate id, when the loaded set
-   * holds exactly one row under it, still names one child -- and
-   * latestActivityAt is the independent maximum every join takes, so the
-   * heartbeat can land directly: the producer's ReportActivityPhase advances
-   * activity without touching the durable projection revision, so the
-   * equal-revision ladder would otherwise drop a streaming legacy delegate's
-   * heartbeat and leave its row reading as quiet. An ambiguous or absent id,
-   * or an ordering with no established epoch, is left to the read. */
+   * is the whole collection and holds exactly one row under it, still names
+   * one child -- and latestActivityAt is the independent maximum every join
+   * takes, so the heartbeat can land directly: the producer's
+   * ReportActivityPhase advances activity without touching the durable
+   * projection revision, so the equal-revision ladder would otherwise drop a
+   * streaming legacy delegate's heartbeat and leave its row reading as quiet.
+   * A paged set cannot prove which child under the id the heartbeat belongs
+   * to, so anything short of a complete set, an ambiguous or absent id, or an
+   * ordering with no established epoch is left to the read. */
   private mergeLegacyDelegateActivity(frame: EvenerDelegateInfo): void {
     if (this.delegateEpoch() === undefined) return;
+    if (!this.state.delegates.complete) return;
     const rows = this.state.delegates.rows;
     let at = -1;
     for (let index = 0; index < rows.length; index += 1) {
@@ -1000,10 +1003,16 @@ export class SessionActivityStore {
       // frame would restart that walk forever and never settle the promise it
       // carries. A walk also freezes its membership before it starts (the hub
       // holds one highwater per walk), so a frame for a row created after that
-      // is served by no page the walk returns: its one read is remembered
-      // here, coalesced across identities, and issued once the walk is over.
+      // is served by no page the walk returns. Its identity's one read is
+      // marked asked here -- the per-identity bound holds across walks, or an
+      // identity no walk can admit would arm a fresh follow-up on every walk
+      // it frames during -- and the read itself is coalesced across
+      // identities and issued once the walk is over.
       if (read.inFlight !== null && read.refresh !== null) {
-        this.followUpDelegateRead = true;
+        if (!this.seenUnknownDelegates.has(identity)) {
+          this.seenUnknownDelegates.add(identity);
+          this.followUpDelegateRead = true;
+        }
         return;
       }
       if (this.seenUnknownDelegates.has(identity)) return;
@@ -1091,7 +1100,12 @@ export class SessionActivityStore {
    * same read. An identity no loaded row carries keeps waiting: no other row
    * may take its place. */
   private settleBufferedFrames(): void {
-    if (this.bufferedUnknownDelegates.size === 0) return;
+    if (this.bufferedUnknownDelegates.size === 0) {
+      // No buffered frame is owed a deferred read: the walk that held them
+      // placed every one it carried.
+      this.followUpDelegateRead = false;
+      return;
+    }
     const rows = this.state.delegates.rows as readonly SessionDelegate[];
     const loadedByIdentity = new Map<string, number>();
     for (let at = 0; at < rows.length; at += 1) {
@@ -1113,6 +1127,7 @@ export class SessionActivityStore {
       this.recordAppliedDelegate(merged, this.delegateEpoch());
     }
     if (!settledRows) return;
+    if (this.bufferedUnknownDelegates.size === 0) this.followUpDelegateRead = false;
     this.publish({ delegates: { ...this.state.delegates, rows: settledRows } });
   }
   private async fetch(
