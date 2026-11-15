@@ -80,6 +80,7 @@ func newScriptedStreamClient(scripts ...func(ctx context.Context, req Request) (
 }
 
 func TestStreamGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c := NewClient()
 	c.Register(&scriptedStreamAdapter{name: "openai"})
 	prompt := "hi"
@@ -98,6 +99,7 @@ func TestStreamGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
 }
 
 func TestStreamGenerate_TimeoutPerStep_EmitsRequestTimeoutError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -154,6 +156,7 @@ func TestStreamGenerate_TimeoutPerStep_EmitsRequestTimeoutError(t *testing.T) {
 }
 
 func TestStreamGenerate_TimeoutTotal_EmitsRequestTimeoutError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -210,6 +213,7 @@ func TestStreamGenerate_TimeoutTotal_EmitsRequestTimeoutError(t *testing.T) {
 }
 
 func TestStreamGenerate_SimpleStreaming_YieldsDeltasAndFinish(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	fin := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
 	c, _ := newScriptedStreamClient(replayEvents(
 		StreamEvent{Type: StreamEventStreamStart},
@@ -271,6 +275,7 @@ func TestStreamGenerate_SimpleStreaming_YieldsDeltasAndFinish(t *testing.T) {
 }
 
 func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{"x":1}`), Type: "function"}
 	step1Resp := Response{
 		Provider: "openai",
@@ -387,6 +392,7 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 }
 
 func TestStreamGenerate_PassiveToolCall_StopsWithoutStepFinish(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
 	resp := Response{
 		Provider: "openai",
@@ -449,6 +455,7 @@ func TestStreamGenerate_PassiveToolCall_StopsWithoutStepFinish(t *testing.T) {
 }
 
 func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c, a := newScriptedStreamClient(replayEvents(
 		StreamEvent{Type: StreamEventStreamStart},
 		StreamEvent{Type: StreamEventTextStart, TextID: "text_1"},
@@ -508,6 +515,7 @@ func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
 // StreamGenerate loop retries the full open+consume cycle with exponential
 // backoff — matching the Codex run_with_retry pattern.
 func TestStreamGenerate_RetriesStreamTruncation(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c := NewClient()
 	var sleepCalls []time.Duration
 	sleepMu := sync.Mutex{}
@@ -626,6 +634,7 @@ func TestStreamGenerate_RetriesStreamTruncation(t *testing.T) {
 }
 
 func TestStreamGenerate_RetriesErrorEventWithoutForwardingAttemptError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	a := &scriptedStreamAdapter{
 		name: "openai",
 		scripts: []func(ctx context.Context, req Request) (Stream, error){
@@ -715,6 +724,7 @@ func TestStreamGenerate_RetriesErrorEventWithoutForwardingAttemptError(t *testin
 // text has been delivered to the caller, a subsequent stream truncation is
 // surfaced immediately — no retry, no second attempt.
 func TestStreamGenerate_TruncationAfterPartialOutput_NoRetry(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -786,6 +796,7 @@ func TestStreamGenerate_TruncationAfterPartialOutput_NoRetry(t *testing.T) {
 }
 
 func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	c := NewClient()
 	a := &scriptedStreamAdapter{
 		name: "openai",
@@ -850,6 +861,7 @@ func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 }
 
 func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	fin := Response{Provider: "openai", Model: "m", Message: Assistant("Hello"), Finish: FinishReason{Reason: "stop"}}
 	c, _ := newScriptedStreamClient(replayEvents(
 		StreamEvent{Type: StreamEventStreamStart},
@@ -893,6 +905,7 @@ func TestStreamResult_TextStream_FiltersToTextDeltasOnly(t *testing.T) {
 // forwarder stayed parked on its downstream send and, once drained, delivered
 // every delta still queued upstream.
 func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
+	t.Parallel()
 	const deltas = 256 // well beyond the TextStream buffer (16) and event buffer (128)
 	c := NewClient()
 	a := &scriptedStreamAdapter{
@@ -982,6 +995,7 @@ func TestStreamResult_TextStream_CloseUnblocksAbandonedConsumer(t *testing.T) {
 // The full-buffer test above only reaches the send select's close arm; this one
 // covers the check that runs before the send, so deleting that check fails here.
 func TestStreamResult_TextStream_ClosePriority(t *testing.T) {
+	t.Parallel()
 	// The send/close select picks randomly among ready cases, so a single
 	// instance cannot tell the fail-fast check apart from the select arm. Run
 	// many independent instances: with the check every one forwards nothing,
@@ -1018,6 +1032,7 @@ func TestStreamResult_TextStream_ClosePriority(t *testing.T) {
 // the stream is closed, even if Events() never closes. CloseSend releases the
 // constructed stream when the test ends.
 func TestStreamResult_TextStream_CloseUnblocksIdleForwarder(t *testing.T) {
+	t.Parallel()
 	stream := NewChanStream(nil)
 	defer stream.CloseSend()
 	res := &StreamResult{stream: stream, done: make(chan struct{})}
@@ -1036,6 +1051,7 @@ func TestStreamResult_TextStream_CloseUnblocksIdleForwarder(t *testing.T) {
 }
 
 func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	fin := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
 	c, a := newScriptedStreamClient(replayEvents(
 		StreamEvent{Type: StreamEventStreamStart},
@@ -1084,6 +1100,7 @@ func TestStreamGenerate_AdapterTimeout_FlowsToRequest(t *testing.T) {
 }
 
 func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	// Model returns tool call content parts BUT with finish_reason="stop" (not "tool_calls").
 	// Per spec section 5.6, tools should NOT be executed; response should be returned as-is.
 	executed := false
@@ -1179,6 +1196,7 @@ func TestStreamGenerate_ToolCallsWithStopFinish_DoesNotExecute(t *testing.T) {
 }
 
 func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	fin := Response{Provider: "openai", Model: "m", Message: Assistant("searched"), Finish: FinishReason{Reason: "stop"}}
 	c, a := newScriptedStreamClient(replayEvents(
 		StreamEvent{Type: StreamEventStreamStart},
@@ -1227,6 +1245,7 @@ func TestStreamGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
 }
 
 func TestStreamGenerate_TotalUsage_AggregatesAcrossSteps(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	// Two-step tool loop: step 1 (tool call) + step 2 (final response).
 	// Verify TotalUsage aggregates across both steps and Steps() returns both.
 	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{}`), Type: "function"}
@@ -1347,6 +1366,7 @@ func TestStreamGenerate_TotalUsage_AggregatesAcrossSteps(t *testing.T) {
 }
 
 func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
 	// Setup: 3 scripted rounds. StopWhen fires after 2 tool rounds.
 	// Round 1: tool call -> execute -> StopWhen([step1]) = false
 	// Round 2: tool call -> execute -> StopWhen([step1,step2]) = true -> STOP

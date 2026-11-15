@@ -2,7 +2,6 @@ package agent
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,11 +16,11 @@ func TestProjectActivitySession_ProjectsDelegateAndShell(t *testing.T) {
 	t.Parallel()
 	child := &activitySessionSnapshot{
 		SessionID: "child", Ref: "local:child", Label: "Child",
-		Jobs: []*jobstore.JobRecord{{JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusCompleted}},
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{JobID: "job_child", Type: jobstore.JobShell, OwnerSessionID: "child", Status: jobstore.StatusCompleted}}),
 	}
 	snap := activitySessionSnapshot{
 		SessionID: "root", Ref: "local:root", Label: "Root", RootID: "root",
-		Jobs: []*jobstore.JobRecord{{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning}},
+		Jobs: newActivityJobList([]*jobstore.JobRecord{{JobID: "job_root", Type: jobstore.JobShell, OwnerSessionID: "root", Status: jobstore.StatusRunning}}),
 		Delegates: map[string]delegateSnapshot{
 			"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect child"),
 		},
@@ -34,9 +33,6 @@ func TestProjectActivitySession_ProjectsDelegateAndShell(t *testing.T) {
 	delegate := got.Entries[1].Delegate
 	if delegate.DelegateID != "dlg_1" || delegate.ChildSessionID != "child" || delegate.ChildRef != "local:child" || delegate.Mandate != "inspect child" || delegate.Child == nil {
 		t.Fatalf("delegate = %+v", delegate)
-	}
-	if len(delegate.Turns) != 0 {
-		t.Fatalf("stable delegate exposed legacy JobRecord turns: %+v", delegate.Turns)
 	}
 	if delegate.Child.Entries[0].Job.OwnerSessionID != "child" {
 		t.Fatalf("child owner = %+v", delegate.Child.Entries[0].Job)
@@ -109,14 +105,12 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	job := func(id, status, outcome string, terminal bool) appwire.JobActivityJob {
 		return appwire.JobActivityJob{JobID: id, Status: status, Outcome: outcome, Terminal: terminal}
 	}
-	// Type, not Kind, is what aggregateActivity switches on to count a stable
-	// delegate as a work unit in its own right. Kind is the ENTRY discriminator;
-	// an entry whose Type is unset takes the legacy-turn branch, which iterates
-	// Turns and counts the delegate itself as nothing.
+	// Each delegate entry counts as one work unit in its own right, whatever
+	// its Type says: the activity contract is whole-delegate only.
 	entries := []appwire.JobActivityEntry{
 		{Kind: "shell", Job: new(job("job_running", "running", "", false))},
 		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
-			Type: "delegate", Outcome: "failed", Terminal: true,
+			Outcome: "failed", Terminal: true,
 			Child: &appwire.JobActivitySession{Counts: appwire.JobActivityCounts{Active: 1, Failed: 1, Completed: 2, Complete: true}},
 		}},
 	}
@@ -125,22 +119,6 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	got, aggregate := aggregateActivity(entries, appwire.JobActivityBranchState{})
 	if got.Active != 2 || got.Failed != 2 || got.Completed != 2 || !got.Complete || aggregate != "working" {
 		t.Fatalf("counts=%+v aggregate=%q", got, aggregate)
-	}
-}
-
-func TestAggregateActivity_EmptyTurnContainerDoesNotCountContainerMetadata(t *testing.T) {
-	t.Parallel()
-	entries := []appwire.JobActivityEntry{
-		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
-			Type: "agent", Status: "running", Terminal: false, Turns: []appwire.JobActivityJob{},
-		}},
-		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
-			Type: "agent", Status: "completed", Outcome: "failure", Terminal: true, Turns: []appwire.JobActivityJob{},
-		}},
-	}
-	got, aggregate := aggregateActivity(entries, appwire.JobActivityBranchState{})
-	if got != (appwire.JobActivityCounts{Complete: true}) || aggregate != "idle" {
-		t.Fatalf("counts=%+v aggregate=%q, want empty idle summary", got, aggregate)
 	}
 }
 
@@ -279,20 +257,4 @@ func activityRecordIDs(records []*jobstore.JobRecord) []string {
 		ids = append(ids, rec.JobID)
 	}
 	return ids
-}
-
-func TestActivityTreeJSONOmitsLegacyDelegateTurns(t *testing.T) {
-	t.Parallel()
-	snap := activitySessionSnapshot{
-		SessionID: "root", Ref: "local:root", RootID: "root",
-		Delegates: map[string]delegateSnapshot{"dlg_1": stableActivitySnapshot("dlg_1", "root", "child", "inspect")},
-	}
-	got := projectActivitySession(snap, newActivityBudget())
-	raw, err := json.Marshal(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), `"jobId":"job_delegate`) {
-		t.Fatalf("activity JSON exposed a legacy delegate job turn: %s", raw)
-	}
 }

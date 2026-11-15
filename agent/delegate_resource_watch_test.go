@@ -1016,7 +1016,7 @@ func TestDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new receiver transcript: %v", err)
 		}
-		receiver.attachTranscript(receiverWriter)
+		receiver.attachTranscript(receiverWriter, nil)
 		fixture.controller.mu.Lock()
 		fixture.controller.live["dlg_receiver"].runtime = receiver
 		fixture.controller.live["dlg_receiver"].binding.runtime = receiver
@@ -1297,7 +1297,7 @@ func newStableWatchRuntimeBase(t *testing.T, rootFS afero.Fs) *stableWatchRuntim
 		_ = rootJM.closeStoreOnly()
 		t.Fatalf("new root transcript: %v", err)
 	}
-	root.attachTranscript(writer)
+	root.attachTranscript(writer, nil)
 	controller.mu.Lock()
 	controller.rootRuntime = root
 	controller.live["dlg_source"].runtime = source

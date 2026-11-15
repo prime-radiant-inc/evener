@@ -1063,17 +1063,17 @@ func assertCoOccupyingUnknownOwnerTracked(t *testing.T, r *wtRepo, sess *Session
 func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	t.Parallel()
 	r, path := newForeignBareLockedLane(t)
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	sess := newSession(t, withDir(path), withEnvironmentSnapshot(), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
 	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
 
 // TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot: the
-// snapshot reporting not-a-repo (withoutGitSnapshot) must not disable the
+// snapshot reporting not-a-repo (no withEnvironmentSnapshot) must not disable the
 // occupancy lock on a real, foreign-bare-locked managed lane.
 func TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot(t *testing.T) {
 	t.Parallel()
 	r, path := newForeignBareLockedLane(t)
-	sess := newSession(t, withDir(path), withoutGitSnapshot(),
+	sess := newSession(t, withDir(path),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
 	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
@@ -1096,16 +1096,18 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testi
 	// Register the restore BEFORE newSession: a fatal inside it would otherwise
 	// leave the starved deadline in place for the rest of the package run.
 	t.Cleanup(func() { gitExecTimeout = orig })
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	sess := newSession(t, withDir(path), withEnvironmentSnapshot(),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
 	// Restore as soon as construction ends so this session's own Close runs with
 	// the real deadline; the cleanup above is idempotent.
 	gitExecTimeout = orig
 
-	// The probe really starved: without this, a probe that completed before its
-	// expired deadline was observed would let the test pass on a healthy
-	// snapshot, silently ceasing to reproduce #4132.
-	if sess.envInfo.IsGitRepo {
-		t.Fatal("the session-start git probe reported a repository; the starved-probe condition was not exercised")
+	// The probe really ran and starved: a probe that completed before its
+	// expired deadline was observed, or one that never ran, would let the test
+	// pass without reproducing #4132.
+	if sess.envInfo.IsGitRepo || !sess.envInfo.GitSnapshotFailed {
+		t.Fatalf("session-start git probe: IsGitRepo=%v GitSnapshotFailed=%v, want a probe that ran and failed",
+			sess.envInfo.IsGitRepo, sess.envInfo.GitSnapshotFailed)
 	}
 	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }

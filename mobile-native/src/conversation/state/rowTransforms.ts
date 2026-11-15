@@ -295,6 +295,14 @@ export function stripFieldsOmittedByRead(mergedTurns: TurnModel[], readTurns: re
 		const items = turn.items.map((item) => {
 			const fresh = freshItemByIdentity.get(item.transcriptKey ?? item.id) ?? freshItemByIdentity.get(item.id);
 			if (fresh === undefined || !itemIdentityMatches(item, fresh)) return item;
+			// The read is authoritative only where its copy reached the held
+			// item's version. A held item the merge kept because it is NEWER (a
+			// live frame settled while the read was in flight, or a read with no
+			// version evidence at all) carries fields this read never saw, so its
+			// omission predates them: stripping there erases the payload while the
+			// item keeps the newer version, and no later equal-version read can
+			// restore what this pass cleared.
+			if (item.version !== undefined && (fresh.version === undefined || item.version > fresh.version)) return item;
 			let stripped: ItemModel | undefined;
 			for (const field of ITEM_OMISSION_TOLERANT_FIELDS) {
 				const heldValue = (item as unknown as Record<string, unknown>)[field];

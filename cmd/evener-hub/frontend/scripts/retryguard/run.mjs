@@ -226,9 +226,14 @@ async function runLegacy(driver, scenario) {
   ]);
   assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT");
   if (scenario.mode === "refused") {
-    await driver.waitPage(`document.querySelector('button[aria-label="Edit message"]') !== null`, {
-      label: "refused continuation recovery",
-    });
+    await driver.waitPage(
+      `[...document.querySelectorAll('button')].some((button) =>
+        button.textContent.trim() === "Edit message" ||
+        (button.getAttribute("aria-label") ?? "").trim() === "Edit message")`,
+      {
+        label: "refused continuation recovery",
+      },
+    );
     assert.equal(await evaluate(driver.send, `${editor}.textContent`), "RETRY_UNSENT_DRAFT");
     await driver.selectAll(scenario.ref);
     await driver.press(scenario.ref, "Backspace");
@@ -384,7 +389,7 @@ async function runLatestOnly(driver, scenario) {
   await evaluate(
     driver.send,
     `(() => { const wire = window.__retryWire; wire.clearHolds(); wire.requests.length = 0; wire.dropped = 0;
-      wire.holdResponses("thread/read");
+      wire.holdResponses("thread/read", "evener/thread/history/read");
       wire.holdNotifications("history/updated", "overlay/upserted", "overlay/delta", "overlay/reset", "overlay/end");
       return true; })()`,
   );
@@ -398,14 +403,15 @@ async function runLatestOnly(driver, scenario) {
   await driver.waitPage(
     `(() => { const composer = ${driver.composerStateExpr(ref)};
       const buttons = ${retryButtonsExpr()};
-      const rows = [...(${driver.paneScopeExpr(ref)} ?? document).querySelectorAll("[data-testid='transcript-row']")];
+      const rows = [...(${driver.paneScopeExpr(ref)} ?? document).querySelectorAll("[data-testid='transcript-row']")]
+        .filter((row) => row.dataset.rowId !== "live-edge");
       return composer && composer.steerVisible && buttons.length === 0 &&
         rows.every((row) => !row.textContent.includes("RETRY_RUNNING_NEW")) ? true : null; })()`,
     { label: "newer running turn hides the older Retry before its items" },
   );
   driver.milestone("running-empty", {});
 
-  await evaluate(driver.send, 'window.__retryWire.releaseResponses("thread/read")');
+  await evaluate(driver.send, 'window.__retryWire.releaseResponses("thread/read", "evener/thread/history/read")');
   await evaluate(driver.send, "window.__retryWire.releaseNotifications()");
   await waitBodyIncludes(driver, "RETRY_RUNNING_DONE", { timeoutMs: 30000 });
   await waitRetry(driver, 0, { label: "completed newer turn leaves the older failure without Retry" });

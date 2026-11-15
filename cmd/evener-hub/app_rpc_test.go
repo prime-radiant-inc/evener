@@ -803,12 +803,12 @@ func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
 	}
 }
 
-// TestHubLogfForSinkIsFixedAtConstruction pins that hubLogfFor resolves its
+// TestHubLogForSinkIsFixedAtConstruction pins that hubLogFor resolves its
 // default sink once, when it builds the logger, rather than reading the
 // os.Stderr global on every call. A live server goroutine logging through a
 // per-call read races any test that redirects os.Stderr (captureHubStderr);
 // the real startup path already sets the sink before any server runs (#2783).
-func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
+func TestHubLogForSinkIsFixedAtConstruction(t *testing.T) {
 	first, err := os.CreateTemp(t.TempDir(), "hub-logf-first-")
 	if err != nil {
 		t.Fatalf("os.CreateTemp: %v", err)
@@ -818,7 +818,7 @@ func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
 	original := os.Stderr
 	t.Cleanup(func() { os.Stderr = original })
 	os.Stderr = first
-	logf := hubLogfFor(hubcore.WebConfig{})
+	log := hubLogFor(hubcore.WebConfig{})
 
 	second, err := os.CreateTemp(t.TempDir(), "hub-logf-second-")
 	if err != nil {
@@ -840,7 +840,7 @@ func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
 				return
 			default:
 			}
-			logf("sink probe")
+			log.Info("sink probe")
 		}
 	}()
 	<-started
@@ -851,7 +851,7 @@ func TestHubLogfForSinkIsFixedAtConstruction(t *testing.T) {
 	// The sink resolved at construction still receives a later line; the
 	// redirect now in effect does not, because the logger no longer reads the
 	// global per call.
-	logf("after swap")
+	log.Info("after swap")
 	os.Stderr = original
 
 	if size, err := first.Stat(); err != nil || size.Size() == 0 {
@@ -1079,6 +1079,40 @@ func TestHubRPCTestServerGivesEachTestItsOwnCredentials(t *testing.T) {
 	}
 }
 
+// TestBareHubConfigKeepsAuthStateUnderItsHubStateRoot pins the endpoint-key
+// half for a config with no provider registry: the auth controller cannot read
+// a state root off a registry, so it must use the caller's HubStateRoot instead
+// of the process-wide XDG default every such server would otherwise share. The
+// fallback credential store follows that root too (credentials.toml beside it),
+// so the whole auth footprint is the one root the caller owns.
+func TestBareHubConfigKeepsAuthStateUnderItsHubStateRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	_, _, _, _, auth, _ := newHubAppServerWithNavigationAndTrace(hubcore.WebConfig{HubStateRoot: root}, nil, nil, nil, nil)
+	if auth == nil {
+		t.Fatal("bare config server did not construct an auth controller")
+	}
+	if auth.stateDir != root {
+		t.Fatalf("auth state dir = %q, want the config's HubStateRoot %q", auth.stateDir, root)
+	}
+	if auth.creds == nil {
+		t.Fatal("bare config server has no credential store")
+	}
+	if got, want := auth.creds.Path(), filepath.Join(filepath.Dir(root), "credentials.toml"); got != want {
+		t.Fatalf("credential store = %q, want the store beside the owned auth root %q", got, want)
+	}
+	if key := endpointFingerprintKey(auth.stateDir); len(key) == 0 {
+		t.Fatal("auth state dir did not yield an endpoint fingerprint key")
+	}
+	info, err := os.Stat(filepath.Join(root, endpointFingerprintKeyFile))
+	if err != nil {
+		t.Fatalf("endpoint fingerprint key under HubStateRoot: %v", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("endpoint fingerprint key mode = %04o, want owner-only", info.Mode().Perm())
+	}
+}
+
 // TestHubRPCTestServerGivesEachTestItsOwnOAuthState pins that a fixture
 // server's auth controller and registry share that server's own state root:
 // an OAuth record under one server's root signs that server in and is
@@ -1251,6 +1285,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodHubSessionToolsInput,
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodThreadHistoryRead,
+		appwire.MethodThreadHistoryTurnsList,
 		appwire.MethodEvenerSessionImage,
 		appwire.MethodEvenerSessionDocument,
 		appwire.MethodThreadUnsubscribe,
@@ -1313,6 +1349,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerInstanceSetDefault,
 		appwire.MethodEvenerInstanceSetModelDisabled,
 		appwire.MethodEvenerInstanceRefreshModels,
+		appwire.MethodEvenerInstanceModelGet,
+		appwire.MethodEvenerInstanceModelEdit,
 		appwire.MethodEvenerLaunchResolve,
 		appwire.MethodEvenerLaunchSchema,
 		appwire.MethodEvenerLaunchGetLayer,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -35,91 +36,12 @@ func TestSessionLogStrategy_Tools_Empty(t *testing.T) {
 	}
 }
 
-func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testing.T) {
-	client := llm.NewClient()
-	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewManager(profile, client, cheapmodel.New(client))
-
-	// Set a low observation mask threshold so compaction triggers on our test data.
-	cm.ObservationMaskThreshold = 0.05
-	cm.ThinkingClearThreshold = 0.95 // high enough to not trigger
-	cm.CheckpointThreshold = 0.95    // high enough to not trigger
-	cm.SummarizeThreshold = 0.99     // high enough to not trigger
-	cm.PreserveRecentTurns = 2
-
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log.jsonl")
-	sls := &SessionLogStrategy{
-		cm:  cm,
-		log: mustNewSessionLog(t, logPath),
-	}
-
-	// Build a history with a large tool result that will exceed 5% threshold.
-	largeContent := strings.Repeat("x", 30000)
-
-	history := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User("read some files")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-					ID:        "call1",
-					Name:      "read_file",
-					Arguments: []byte(`{"file_path": "/tmp/test.txt"}`),
-				}},
-			},
-		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
-		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "Done reading"},
-		}}},
-		{Kind: schema.TurnUserInput, Message: llm.User("another task")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "working on it"},
-		}}},
-	}
-
-	var emittedLayers []string
-	emitFn := func(kind events.EventKind, data events.EventData) {
-		if kind == events.EventContextCompaction {
-			if cd, ok := data.(events.ContextCompactionData); ok {
-				emittedLayers = append(emittedLayers, cd.Layer)
-			}
-		}
-	}
-
-	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
-	if err != nil {
-		t.Fatalf("ManageContext returned error: %v", err)
-	}
-
-	// Verify observation masking occurred.
-	if len(emittedLayers) == 0 {
-		t.Fatal("expected at least one compaction event")
-	}
-	if emittedLayers[0] != "observation_mask" {
-		t.Errorf("expected first layer to be observation_mask, got %q", emittedLayers[0])
-	}
-
-	// Verify the tool result was masked.
-	toolResult := history[2].Message.Content[0].ToolResult
-	content, ok := toolResult.Content.(string)
-	if !ok {
-		t.Fatalf("expected string content, got %T", toolResult.Content)
-	}
-	if !strings.HasPrefix(content, "[") {
-		t.Errorf("expected masked content starting with '[', got: %s", content[:50])
-	}
-}
-
 func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 
 	// Set thresholds so checkpoint triggers but not summarize.
-	cm.ObservationMaskThreshold = 0.01
-	cm.ThinkingClearThreshold = 0.01
 	cm.CheckpointThreshold = 0.01
 	cm.SummarizeThreshold = 0.99 // don't trigger
 	cm.PreserveRecentTurns = 2
@@ -199,7 +121,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	if !strings.Contains(checkpointText, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 		t.Errorf("expected checkpoint header, got: %s", checkpointText[:min(200, len(checkpointText))])
 	}
-	if !strings.Contains(checkpointText, "Original prompt: fix the login bug") {
+	if !strings.Contains(checkpointText, "Original prompt:") || !strings.Contains(checkpointText, "fix the login bug") {
 		t.Errorf("expected original prompt in checkpoint, got: %s", checkpointText)
 	}
 	// Verify session log entries appear in the checkpoint.
@@ -214,6 +136,42 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	lastTurn := history[len(history)-1]
 	if lastTurn.Message.Text() != "recent answer" {
 		t.Errorf("expected last turn to be preserved recent turn, got: %s", lastTurn.Message.Text())
+	}
+}
+
+func TestSessionLogStrategy_CheckpointExcludesFailedAppend(t *testing.T) {
+	client := llm.NewClient()
+	profile := testOpenAIProfileWithContextWindow(1000)
+	cm := NewManager(profile, client, cheapmodel.New(client))
+
+	base := t.TempDir()
+	blockedDir := filepath.Join(base, "blocked")
+	if err := os.WriteFile(blockedDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failedLog, err := sessionlog.NewSessionLog(filepath.Join(blockedDir, "session.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedEntry := sessionlog.SessionLogEntry{Turn: 7, Action: "shell", Summary: "unpersisted", Outcome: "success"}
+	if err := failedLog.Append(failedEntry); err == nil {
+		t.Fatal("Append succeeded despite blocked parent directory")
+	}
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("initial task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("work")},
+		{Kind: schema.TurnUserInput, Message: llm.User("recent")},
+	}
+	failedCheckpoint := (&SessionLogStrategy{cm: cm, log: failedLog}).sessionLogCheckpoint(history, 1)
+	emptyLog, err := sessionlog.NewSessionLog(filepath.Join(base, "empty.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyCheckpoint := (&SessionLogStrategy{cm: cm, log: emptyLog}).sessionLogCheckpoint(history, 1)
+	failedCheckpoint[0].Timestamp = emptyCheckpoint[0].Timestamp
+	if !reflect.DeepEqual(failedCheckpoint, emptyCheckpoint) {
+		t.Fatalf("checkpoint built after failed append differs from the empty-log checkpoint")
 	}
 }
 
@@ -349,7 +307,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_EmptyLog(t *testing.T) {
 	if !strings.Contains(checkpointText, "[CONTEXT CHECKPOINT - SESSION LOG]") {
 		t.Errorf("expected checkpoint header in: %s", checkpointText)
 	}
-	if !strings.Contains(checkpointText, "Original prompt: do something") {
+	if !strings.Contains(checkpointText, "Original prompt:") || !strings.Contains(checkpointText, "do something") {
 		t.Errorf("expected original prompt in checkpoint, got: %s", checkpointText)
 	}
 }
@@ -360,7 +318,8 @@ func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoint
 		text string
 		want string
 	}{
-		{name: "current", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
+		{name: "fenced", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt:\n```text\nfix the login bug\n```\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
+		{name: "inline", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal prompt: fix the login bug\n\n[END CHECKPOINT]\n", want: "fix the login bug"},
 		{name: "legacy", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: fix the auth bug\n\n[END CHECKPOINT]\n", want: "fix the auth bug"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,6 +328,52 @@ func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoint
 				t.Fatalf("expected %q, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+// TestSessionLogStrategy_PromptFenceTruncationKeepsPartnerMessages covers
+// #6228: a prompt whose closing fence falls beyond the 500-byte truncation used
+// to leave the checkpoint's free-text prefix inside an open fence, so the next
+// checkpoint could not find the conversation heading and dropped the partner's
+// messages. Two checkpoints must keep the hold.
+func TestSessionLogStrategy_PromptFenceTruncationKeepsPartnerMessages(t *testing.T) {
+	cm := partnerTestManager(emptySummaryReply)
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2 // checkpoints only, no summaries
+	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}
+
+	// The fence opens after the first line and its closing fence is beyond the
+	// 500-byte truncation, so the checkpoint keeps an unmatched opener.
+	longPrompt := "Here is the plan:\n```\n" + strings.Repeat("x", 700) + "\n```\n"
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User(longPrompt)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("understood")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(partnerHold)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("holding")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
+	}
+	emit := func(events.EventKind, events.EventData) {}
+
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("first checkpoint: %v", err)
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history does not start with a session-log checkpoint: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the first checkpoint dropped the hold it folded:\n%s", history[0].Message.Text())
+	}
+
+	history = append(history, moreTurns()...)
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("second checkpoint: %v", err)
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history does not start with a session-log checkpoint: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the second checkpoint lost the hold the first carried:\n%s", history[0].Message.Text())
 	}
 }
 
@@ -501,8 +506,6 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewManager(profile, client, cheapmodel.New(client))
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 2.0 // Disable layer 4.
 	cm.PreserveRecentTurns = 2
@@ -564,8 +567,6 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	// All thresholds very low so all layers fire.
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
 	cm.PreserveRecentTurns = 2
@@ -615,8 +616,6 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 // same pass reads the partner's messages from what the checkpoint folded.
 func TestSessionLogStrategy_ManageContext_SummaryKeepsPartnerMessagesTheCheckpointFolded(t *testing.T) {
 	cm := partnerTestManager(emptySummaryReply)
-	cm.ObservationMaskThreshold = 0.0001
-	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
 	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}
@@ -627,6 +626,42 @@ func TestSessionLogStrategy_ManageContext_SummaryKeepsPartnerMessagesTheCheckpoi
 
 	if err := sls.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {}); err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
+	}
+	requirePartnerHoldInContext(t, history, schema.TurnSummary)
+}
+
+// A compaction after a session-log checkpoint must still see the permissions
+// and holds that checkpoint folded. The checkpoint now carries the partner's
+// messages verbatim in the shared conversation format, so a later summary can
+// recover them from the checkpoint itself (#4181).
+func TestSessionLogStrategy_CheckpointCarriesPartnerMessagesForLaterCompaction(t *testing.T) {
+	cm := partnerTestManager(emptySummaryReply)
+	cm.CheckpointThreshold = 0.0001
+	cm.SummarizeThreshold = 2 // checkpoint only on the first pass
+	sls := &SessionLogStrategy{cm: cm, log: mustNewSessionLog(t, filepath.Join(t.TempDir(), "test.log.jsonl"))}
+	history := partnerHoldHistory()
+	// The hold is not the first message, so the checkpoint's original-prompt
+	// line does not carry it.
+	history = append([]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("start the release notes"))}, history...)
+	emit := func(events.EventKind, events.EventData) {}
+
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("checkpoint pass: %v", err)
+	}
+	if len(history) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("history does not start with a session-log checkpoint: %v", compactionKinds(history))
+	}
+	if !strings.Contains(history[0].Message.Text(), partnerHold) {
+		t.Fatalf("the session-log checkpoint dropped the hold it folded:\n%s", history[0].Message.Text())
+	}
+
+	// A later compaction folds this checkpoint and nothing else still holds the
+	// hold verbatim: the summary must recover it from the checkpoint.
+	history = append(history, moreTurns()...)
+	cm.CheckpointThreshold = 2 // no second checkpoint
+	cm.SummarizeThreshold = 0.0001
+	if err := sls.ManageContext(context.Background(), &history, 0, emit); err != nil {
+		t.Fatalf("summary pass: %v", err)
 	}
 	requirePartnerHoldInContext(t, history, schema.TurnSummary)
 }

@@ -11,14 +11,16 @@ import (
 
 func TestCovWithSandboxInvocationGrant_NoGrantNeeded(t *testing.T) {
 	tests := []struct {
-		name string
-		env  *LocalExecutionEnvironment
-		path string
+		name   string
+		env    *LocalExecutionEnvironment
+		path   string
+		target string
 	}{
 		{
-			name: "no sandbox",
-			env:  NewLocalExecutionEnvironment(t.TempDir()),
-			path: "/some/path",
+			name:   "no sandbox",
+			env:    NewLocalExecutionEnvironment(t.TempDir()),
+			path:   "/some/path",
+			target: "/some/path",
 		},
 		{
 			name: "sandbox off",
@@ -26,7 +28,8 @@ func TestCovWithSandboxInvocationGrant_NoGrantNeeded(t *testing.T) {
 				RootDir: t.TempDir(),
 				Sandbox: &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff},
 			},
-			path: "/some/path",
+			path:   "/some/path",
+			target: "/some/path",
 		},
 		{
 			name: "empty path",
@@ -34,13 +37,23 @@ func TestCovWithSandboxInvocationGrant_NoGrantNeeded(t *testing.T) {
 				RootDir: t.TempDir(),
 				Sandbox: &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite},
 			},
-			path: "  ",
+			path:   "  ",
+			target: "/some/path",
+		},
+		{
+			name: "empty target",
+			env: &LocalExecutionEnvironment{
+				RootDir: t.TempDir(),
+				Sandbox: &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite},
+			},
+			path:   "/some/path",
+			target: "  ",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.env.WithSandboxInvocationGrant(tc.path); got != tc.env {
-				t.Fatalf("WithSandboxInvocationGrant(%q) returned %T %p, want original env %p", tc.path, got, got, tc.env)
+			if got := tc.env.WithSandboxInvocationGrant(tc.path, tc.target); got != tc.env {
+				t.Fatalf("WithSandboxInvocationGrant(%q, %q) returned %T %p, want original env %p", tc.path, tc.target, got, got, tc.env)
 			}
 		})
 	}

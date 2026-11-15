@@ -55,6 +55,23 @@ func TestW2Watch_clearWatchByIDMatchingTeardownAppendError(t *testing.T) {
 	}
 }
 
+func TestClearMissingSendKeyedWatchDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	// Clear on an empty watch map with a Send field (key.SendTo != "").
+	res, err := jm.configureWatch(watchArgs{
+		Clear:  true,
+		Target: "caller",
+		Send:   &watchSendArgs{To: "caller"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Watching {
+		t.Fatalf("res.Watching = true, want false")
+	}
+}
+
 // A durable clear for an unknown watch id loads the durable watch table to mint
 // its WatchCleared event; when that load fails the store error propagates.
 func TestW2Watch_clearWatchByIDDurableLoadError(t *testing.T) {

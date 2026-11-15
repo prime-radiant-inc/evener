@@ -11,14 +11,12 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // Only SSH is replaced. Pathname output comes from real filesystem commands.
 func TestPathConsumerBytes(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := testfs.CanonicalTempDir(t)
 	home := filepath.Join(root, "home ")
 	newlineDirectory := filepath.Join(root, "physical") + "\n"
 	for _, dir := range []string{home, filepath.Join(home, ".local", "bin"), filepath.Join(root, "physical"), filepath.Join(root, "physical "), newlineDirectory} {

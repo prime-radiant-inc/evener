@@ -239,7 +239,7 @@ func TestCovChildResumable(t *testing.T) {
 
 	// A settled direct delegate whose durable descriptor is resumable is found
 	// by child session ID, not by delegate ID.
-	s = newSession(t, withoutGitSnapshot())
+	s = newSession(t)
 	now := s.clock.Now()
 	seedStableToolDelegate(t, s, "dlg_resumable", "", now.Add(-time.Second), now)
 	if !s.childResumable("child-dlg_resumable") {

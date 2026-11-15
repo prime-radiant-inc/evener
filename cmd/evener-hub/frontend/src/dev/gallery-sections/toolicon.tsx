@@ -23,6 +23,8 @@ const KINDS: { kind: ToolIconKind; label: string }[] = [
   { kind: "cross", label: "cross (notification error)" },
   { kind: "alert", label: "alert (notification warning)" },
   { kind: "info", label: "info (notification neutral)" },
+  { kind: "mark", label: "mark (the evener mark: rail brand tile, agent avatar)" },
+  { kind: "shield", label: "shield (effective access)" },
 ];
 
 export default function ToolIconGallerySection() {

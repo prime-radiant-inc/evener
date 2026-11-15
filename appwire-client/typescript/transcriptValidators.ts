@@ -2,7 +2,9 @@
 // and generated wire types, so a stored record is never cast into the model
 // unchecked.
 
+import { HISTORY_SERVING_FACT_KEYS, validHistoryServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, ThreadModel, TurnModel } from "./model";
+import { comparePositions } from "./model";
 import type { OverlayItem, ThreadItem, ThreadItemPosition } from "./types.gen";
 import { THREAD_ITEM_EVENT_KINDS, WIRE_FIELD_KEYS } from "./types.gen";
 
@@ -26,12 +28,14 @@ export interface CachedSessionHistory {
   length: number;
   appliedGeneration: number;
   issuedGeneration: number;
+  replacementScopes?: HistoryState["replacementScopes"];
   turns: CachedSessionTurn[];
 }
 
 export type CurrentTranscriptFields = Pick<
   ThreadModel,
   | "ref"
+  | "servingFacts"
   | "parentRef"
   | "kind"
   | "threadId"
@@ -127,6 +131,8 @@ const ITEM_MODEL_KEYS = new Set([
   "position",
   "transcriptEntryIndex",
   "clientMutationId",
+  "conversationInputIds",
+  "answerToTurnIds",
   "actor",
   "type",
   "text",
@@ -196,6 +202,16 @@ export function validItem(value: unknown): value is CachedSessionItem {
   for (const key of ["transcriptEntryIndex", "exitCode", "version", "completedAtEntry"]) {
     if (value[key] !== undefined && !isFiniteNumber(value[key])) return false;
   }
+  if (
+    value.conversationInputIds !== undefined &&
+    (!Array.isArray(value.conversationInputIds) || value.conversationInputIds.some((id) => typeof id !== "string"))
+  )
+    return false;
+  if (
+    value.answerToTurnIds !== undefined &&
+    (!Array.isArray(value.answerToTurnIds) || value.answerToTurnIds.some((id) => typeof id !== "string"))
+  )
+    return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
   if (
     value.warning !== undefined &&
@@ -550,7 +566,9 @@ function validEscalation(value: unknown): boolean {
     ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath"].every(
       (key) => typeof value[key] === "string",
     ) &&
-    ["command", "outputSoFar"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    ["requestedPath", "command", "outputSoFar"].every(
+      (key) => value[key] === undefined || typeof value[key] === "string",
+    ) &&
     (value.partiallyRan === undefined || typeof value.partiallyRan === "boolean")
   );
 }
@@ -657,7 +675,10 @@ function validCurrentFieldShapes(value: Record<string, unknown>): boolean {
 function validDeferredPage(value: unknown): boolean {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, WIRE_FIELD_KEYS.ThreadTurnsListResponse) ||
+    !(
+      hasOnlyKeys(value, WIRE_FIELD_KEYS.ThreadTurnsListResponse) ||
+      (hasOnlyKeys(value, WIRE_FIELD_KEYS.ThreadHistoryTurnsListResponse) && validHistoryServingFacts(value))
+    ) ||
     !Array.isArray(value.data) ||
     !value.data.every(validWireTurn)
   )
@@ -786,6 +807,13 @@ export function validOverlayItem(value: unknown): value is OverlayItem {
 
 export function validCurrentFields(value: unknown): value is CurrentTranscriptFields {
   if (!isRecord(value)) return false;
+  if (
+    value.servingFacts !== undefined &&
+    (!isRecord(value.servingFacts) ||
+      !hasOnlyKeys(value.servingFacts, HISTORY_SERVING_FACT_KEYS) ||
+      !validHistoryServingFacts(value.servingFacts))
+  )
+    return false;
   const strings = ["ref", "threadId", "name", "modelProvider", "model", "visionModel", "humanNote", "agentNote", "cwd"];
   if (strings.some((key) => typeof value[key] !== "string")) return false;
   const numbers = ["lastFrameAt", "contextUsed", "contextWindow", "contextPressure", "workMillis"];
@@ -854,6 +882,7 @@ export function validCurrentHistory(value: unknown): value is CurrentTranscriptS
     "awaited",
     "pendingIncarnation",
     "deferredPages",
+    "replacementScopes",
     "failed",
     "turns",
   ]);
@@ -867,6 +896,18 @@ export function validCurrentHistory(value: unknown): value is CurrentTranscriptS
     isNonNegativeInteger(value.issuedGeneration) &&
     Array.isArray(value.deferredPages) &&
     value.deferredPages.every(validDeferredPage) &&
+    (value.replacementScopes === undefined ||
+      (Array.isArray(value.replacementScopes) &&
+        value.replacementScopes.every(
+          (scope) =>
+            isRecord(scope) &&
+            hasOnlyKeys(scope, ["from", "to", "representedSnapshot", "representedOrdinal"]) &&
+            validPosition(scope.from) &&
+            validPosition(scope.to) &&
+            comparePositions(scope.from, scope.to) <= 0 &&
+            isNonNegativeInteger(scope.representedSnapshot) &&
+            (scope.representedOrdinal === undefined || isNonNegativeInteger(scope.representedOrdinal)),
+        ))) &&
     Array.isArray(value.turns) &&
     value.turns.every(validTurn) &&
     (value.incarnation === undefined || typeof value.incarnation === "string") &&

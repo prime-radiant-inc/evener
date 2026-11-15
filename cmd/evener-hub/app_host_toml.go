@@ -388,6 +388,21 @@ func (m *hubHostManager) persistChange(change hostPersistChange) error {
 	return m.persistHosts(entries, entries, change)
 }
 
+// persistChangeEdited is persistChange for a caller whose live set must be
+// edited before the write: it snapshots once, applies edit, persists that exact
+// set, and installs it on success. A caller that raises live entries with its
+// change wraps here instead of snapshotting and passing the same slice to
+// persistHosts twice.
+func (m *hubHostManager) persistChangeEdited(change hostPersistChange, edit func([]hostreg.Host)) error {
+	entries := m.cfg.store.snapshot()
+	edit(entries)
+	if err := m.persistHosts(entries, entries, change); err != nil {
+		return err
+	}
+	m.cfg.store.set(entries)
+	return nil
+}
+
 // adoptSpentCounters raises the manager's marks for names with no live record to what the
 // store holds after a refused commit restored its prior family: the counters the
 // refused attempt spent stay spent in the store (keepSpentCounters), and the next

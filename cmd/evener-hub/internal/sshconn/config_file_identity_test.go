@@ -11,12 +11,13 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func TestConfigFileIdentityAssociation(t *testing.T) {
 	for _, name := range []string{"hard-link", "symlink", "distinct-same-content", "missing", "invalid-path", "invalid-canonical"} {
 		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
+			root := testfs.CanonicalTempDir(t)
 			canonical := filepath.Join(root, "selected.toml")
 			if name == "distinct-same-content" {
 				canonical += " "
@@ -133,7 +134,7 @@ func TestConfigFileIdentityStatEvidence(t *testing.T) {
 }
 
 func TestConfigFileIdentityBSDFallback(t *testing.T) {
-	root := t.TempDir()
+	root := testfs.CanonicalTempDir(t)
 	canonical, alias, log := filepath.Join(root, "canonical.toml"), filepath.Join(root, "alias.toml"), filepath.Join(root, "stat-calls")
 	if err := os.WriteFile(canonical, []byte("config\n"), 0600); err != nil {
 		t.Fatal(err)

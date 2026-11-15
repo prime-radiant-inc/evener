@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-var hubPprofLogLine = regexp.MustCompile(`pprof listening on (http://\S+/debug/pprof/)`)
+var hubPprofLogLine = regexp.MustCompile(`pprof listening url=(http://\S+/debug/pprof/)`)
 
 // TestRunMainServesLivePprofWhileRunning pins the hub's wiring of
 // EVENER_PPROF_ADDR: it logs the address it actually bound, the endpoint
@@ -106,7 +106,8 @@ func TestRunMainStartsWithoutPprofWhenItsAddressIsTaken(t *testing.T) {
 	if !served {
 		t.Fatalf("hub never reached serve:\n%s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "[hub] warning: running without pprof") {
-		t.Fatalf("hub did not warn that pprof is off:\n%s", stderr.String())
+	line := stderr.String()
+	if !strings.Contains(line, "[hub] running without pprof") || !strings.Contains(line, "env="+envvars.EVENERPprofAddr.Name) {
+		t.Fatalf("hub did not warn that pprof is off with its env field:\n%s", line)
 	}
 }

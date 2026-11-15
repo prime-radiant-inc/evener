@@ -251,8 +251,11 @@ type InstanceEntry struct {
 // listed id names a row setModelDisabled can write, and a cross-provider
 // alias toggles on this instance without touching the provider it names.
 type InstanceModelEntry struct {
-	ID       string `json:"id"`
-	Disabled bool   `json:"disabled,omitempty"`
+	ID                  string `json:"id"`
+	Disabled            bool   `json:"disabled,omitempty"`
+	Customized          bool   `json:"customized,omitempty"`
+	ContextWindow       *int   `json:"contextWindow,omitempty"`
+	CompactionThreshold *int   `json:"compactionThreshold,omitempty"`
 }
 
 // ProviderDescriptor is a registry provider the add form can build on: its
@@ -431,6 +434,113 @@ type InstanceSetModelDisabledParams struct {
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
+// InstanceModelGetParams is the params for evener/instance/modelGet.
+type InstanceModelGetParams struct {
+	Name  string `json:"name"`
+	Model string `json:"model"`
+}
+
+// InstanceModelEffective carries the effective resolved capabilities and
+// routing fields of one model row on an instance.
+type InstanceModelEffective struct {
+	ContextWindow       *int     `json:"contextWindow,omitempty"`
+	MaxInputTokens      *int     `json:"maxInputTokens,omitempty"`
+	CompactionThreshold *int     `json:"compactionThreshold,omitempty"`
+	MaxOutputTokens     *int     `json:"maxOutputTokens,omitempty"`
+	Reasoning           *bool    `json:"reasoning,omitempty"`
+	DefaultEffort       string   `json:"defaultEffort,omitempty"`
+	EffortValues        []string `json:"effortValues,omitempty"`
+	InputModalities     []string `json:"inputModalities,omitempty"`
+	Tools               *bool    `json:"tools,omitempty"`
+	Protocol            string   `json:"protocol,omitempty"`
+	Surface             string   `json:"surface,omitempty"`
+	ThinkingFormat      string   `json:"thinkingFormat,omitempty"`
+	ThinkingShape       string   `json:"thinkingShape,omitempty"`
+	WireID              string   `json:"wireId,omitempty"`
+	AliasOf             string   `json:"aliasOf,omitempty"`
+}
+
+// InstanceModelAuthored carries the exact user-authored overrides present on
+// [providers.<name>.models."<model>"] in providers.toml.
+type InstanceModelAuthored struct {
+	CompactionThreshold *int     `json:"compactionThreshold,omitempty"`
+	ContextWindow       *int     `json:"contextWindow,omitempty"`
+	MaxOutputTokens     *int     `json:"maxOutputTokens,omitempty"`
+	Reasoning           *bool    `json:"reasoning,omitempty"`
+	DefaultEffort       string   `json:"defaultEffort,omitempty"`
+	EffortValues        []string `json:"effortValues,omitempty"`
+	InputModalities     []string `json:"inputModalities,omitempty"`
+	Tools               *bool    `json:"tools,omitempty"`
+	Protocol            string   `json:"protocol,omitempty"`
+	Surface             string   `json:"surface,omitempty"`
+	ThinkingFormat      string   `json:"thinkingFormat,omitempty"`
+	ThinkingShape       string   `json:"thinkingShape,omitempty"`
+	WireID              string   `json:"wireId,omitempty"`
+	AliasOf             string   `json:"aliasOf,omitempty"`
+}
+
+// InstanceModelDetailResponse is the result of evener/instance/modelGet.
+type InstanceModelDetailResponse struct {
+	Name                   string                 `json:"name"`
+	Model                  string                 `json:"model"`
+	Disabled               bool                   `json:"disabled"`
+	DisabledLockstepTarget string                 `json:"disabledLockstepTarget,omitempty"`
+	AuthoredOnly           bool                   `json:"authoredOnly"`
+	Effective              InstanceModelEffective `json:"effective"`
+	Provenance             map[string]string      `json:"provenance"`
+	Authored               InstanceModelAuthored  `json:"authored"`
+	ThinkingFormats        []string               `json:"thinkingFormats"`
+	ThinkingShapes         []string               `json:"thinkingShapes"`
+	Warnings               []string               `json:"warnings,omitempty"`
+}
+
+// InstanceModelEditParams is the params for evener/instance/modelEdit.
+type InstanceModelEditParams struct {
+	Name                        string   `json:"name"`
+	Model                       string   `json:"model"`
+	Create                      bool     `json:"create,omitempty"`
+	RemoveCustom                bool     `json:"removeCustom,omitempty"`
+	ResetAll                    bool     `json:"resetAll,omitempty"`
+	CompactionThreshold         *int     `json:"compactionThreshold,omitempty"`
+	ClearCompactionThreshold    bool     `json:"clearCompactionThreshold,omitempty"`
+	ContextWindow               *int     `json:"contextWindow,omitempty"`
+	ClearContextWindow          bool     `json:"clearContextWindow,omitempty"`
+	MaxOutputTokens             *int     `json:"maxOutputTokens,omitempty"`
+	ClearMaxOutputTokens        bool     `json:"clearMaxOutputTokens,omitempty"`
+	Reasoning                   *bool    `json:"reasoning,omitempty"`
+	ClearReasoning              bool     `json:"clearReasoning,omitempty"`
+	DefaultEffort               string   `json:"defaultEffort,omitempty"`
+	ClearDefaultEffort          bool     `json:"clearDefaultEffort,omitempty"`
+	EffortValues                []string `json:"effortValues,omitempty"`
+	ClearEffortValues           bool     `json:"clearEffortValues,omitempty"`
+	InputModalities             []string `json:"inputModalities,omitempty"`
+	ClearInputModalities        bool     `json:"clearInputModalities,omitempty"`
+	Tools                       *bool    `json:"tools,omitempty"`
+	ClearTools                  bool     `json:"clearTools,omitempty"`
+	Protocol                    string   `json:"protocol,omitempty"`
+	ClearProtocol               bool     `json:"clearProtocol,omitempty"`
+	Surface                     string   `json:"surface,omitempty"`
+	ClearSurface                bool     `json:"clearSurface,omitempty"`
+	ThinkingFormat              string   `json:"thinkingFormat,omitempty"`
+	ClearThinkingFormat         bool     `json:"clearThinkingFormat,omitempty"`
+	ThinkingShape               string   `json:"thinkingShape,omitempty"`
+	ClearThinkingShape          bool     `json:"clearThinkingShape,omitempty"`
+	WireID                      string   `json:"wireId,omitempty"`
+	ClearWireID                 bool     `json:"clearWireId,omitempty"`
+	AliasOf                     string   `json:"aliasOf,omitempty"`
+	ClearAliasOf                bool     `json:"clearAliasOf,omitempty"`
+	ExpectedEndpointFingerprint string   `json:"expectedEndpointFingerprint,omitempty"`
+	OriginClientId              string   `json:"originClientId,omitempty"`
+}
+
+// InstanceModelEditResponse is the result of evener/instance/modelEdit: the
+// updated instance list plus the edited model's detail (nil after
+// RemoveCustom).
+type InstanceModelEditResponse struct {
+	List   InstanceListResponse         `json:"list"`
+	Detail *InstanceModelDetailResponse `json:"detail,omitempty"`
+}
+
 // CommandDescriptor describes one slash command — plugin-provided or
 // evener-wide — for catalog/autocomplete display. Name is unqualified;
 // PluginName disambiguates when more than one plugin defines the same command
@@ -460,6 +570,7 @@ type LaunchConfigLayer struct {
 	Agent                       string            `json:"agent,omitempty"`
 	ReasoningEffort             string            `json:"reasoningEffort,omitempty"`
 	ContextStrategy             string            `json:"contextStrategy,omitempty"`
+	CompactAtPercent            *int              `json:"compactAtPercent,omitempty"`
 	OpenAIResponsesContinuation string            `json:"openAIResponsesContinuation,omitempty"` //nolint:tagliatelle // codex wire spells the AI/ATIF initialisms all-caps
 	ProviderIdleTimeout         string            `json:"providerIdleTimeout,omitempty"`
 	Sandbox                     string            `json:"sandbox,omitempty"`
@@ -997,10 +1108,14 @@ type SettingsMCPServerEntry struct {
 }
 
 // SettingsMCPOverview is the Settings → MCP servers section's probed half.
-// Source: web_settings.go mcpConfigPathForSettings + discoverMCPsForSettings.
-// A missing MCP config file is the empty state (Servers empty, Error ""),
-// matching discoverMCPsForSettings; Error is populated only on a real parse
-// failure (e.g. malformed mcp.json), mirroring settingsData.McpsError.
+// Servers is the merged set a session would connect to: the same
+// mcpconfig.Discover layers session init uses (user-global, project, and the
+// resolved launch configuration's MCP files and inline servers). A missing
+// config file is the empty state. Error carries non-fatal discovery
+// diagnostics — layers skipped because they were malformed or failed
+// environment expansion — while Servers still carries the successfully
+// discovered rows; a fatal error in an explicitly supplied config file leaves
+// Servers empty.
 //
 // Each server probe (agent/mcpprobe.Probe) runs under its own bounded
 // per-server timeout in parallel with the others, so this section's total

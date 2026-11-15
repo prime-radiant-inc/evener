@@ -436,14 +436,19 @@ function InstalledPluginRow({ plugin }: { plugin: MockPlugin }) {
 }
 
 function CatalogPluginRow({ plugin }: { plugin: MockPlugin }) {
+  // The mockup persists nothing, but the smoke test needs to see the shipped
+  // row's Install control reach a handler; the count is that observable.
+  const [installClicks, setInstallClicks] = useState(0);
   return (
-    <SharedCatalogPluginRow
-      plugin={plugin}
-      installed={plugin.installed}
-      installDisabled={false}
-      onOpen={() => {}}
-      onInstall={() => {}}
-    />
+    <div data-install-clicks={installClicks}>
+      <SharedCatalogPluginRow
+        plugin={plugin}
+        installed={plugin.installed}
+        installDisabled={false}
+        onOpen={() => {}}
+        onInstall={() => setInstallClicks((clicks) => clicks + 1)}
+      />
+    </div>
   );
 }
 
@@ -672,20 +677,24 @@ function TodayBrowseNode() {
     <Disclosure open={open} onOpenChange={setOpen} summary={`superpowers-marketplace (${rows.length})`}>
       <ul aria-label="superpowers-marketplace plugins" className={mpStyles.treeChildren}>
         {rows.map((p) => (
-          <li className={mpStyles.row} key={p.name}>
-            <div className={mpStyles.rowMain}>
-              <div className={mpStyles.rowText}>{p.name}</div>
-              <div className={mpStyles.rowMeta}>{p.description}</div>
-            </div>
-            <div className={mpStyles.rowActions}>
-              {p.installed ? (
-                <Chip kind="installed">Installed</Chip>
-              ) : (
-                <Button size="sm" onClick={() => {}}>
-                  Install
-                </Button>
-              )}
-            </div>
+          <li key={p.name}>
+            <Card variant="outlined">
+              <div className={mpStyles.row}>
+                <div className={mpStyles.rowMain}>
+                  <div className={mpStyles.rowText}>{p.name}</div>
+                  <div className={mpStyles.rowMeta}>{p.description}</div>
+                </div>
+                <div className={mpStyles.rowActions}>
+                  {p.installed ? (
+                    <Chip kind="installed">Installed</Chip>
+                  ) : (
+                    <Button size="sm" onClick={() => {}}>
+                      Install
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </Card>
           </li>
         ))}
       </ul>

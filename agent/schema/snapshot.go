@@ -168,6 +168,12 @@ type SessionMeta struct {
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
+	// ContextWindow is the window the session budgets against, and
+	// ContextWindowSource where it came from ("live", "overlay", "config",
+	// "snapshot", or "assumed"). They are rewritten on every save, so a resumed
+	// session records what its restore resolved.
+	ContextWindow       int    `json:"context_window,omitempty"`
+	ContextWindowSource string `json:"context_window_source,omitempty"`
 	// Name is the generated human-readable session title, if one has been
 	// produced (see SessionDisplayName).
 	Name string `json:"name,omitempty"`

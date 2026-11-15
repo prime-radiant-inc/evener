@@ -103,6 +103,11 @@ type SessionConfig struct {
 	// sets DisableSubagents, which resolves this to zero in applyDefaults.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
+	// CompactAtPercent is the share of the context window, in percent, at which
+	// automatic compaction triggers. Zero selects the default; see
+	// ValidateCompactAtPercent for the accepted range.
+	CompactAtPercent int `json:"compact_at_percent,omitempty"`
+
 	// DisableSubagents records a launch that chose no subagents at all (the
 	// hub's max_subagent_depth=0 and the CLI's --max-subagent-depth 0). It is
 	// separate from MaxSubagentDepth's zero value, which keeps its historical
@@ -585,6 +590,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		Manager:                     c.Manager,
 		TurnEndsProcess:             c.TurnEndsProcess,
 		ContextStrategy:             c.ContextStrategy,
+		CompactAtPercent:            c.CompactAtPercent,
 		ShareTasksWithChildren:      c.ShareTasksWithChildren,
 		ResultToolName:              c.ResultToolName,
 		EnableLoopDetection:         c.EnableLoopDetection,
@@ -632,6 +638,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,
 		ContextStrategy:             s.ContextStrategy,
+		CompactAtPercent:            s.CompactAtPercent,
 		ShareTasksWithChildren:      s.ShareTasksWithChildren,
 		ResultToolName:              s.ResultToolName,
 		EnableLoopDetection:         s.EnableLoopDetection,
@@ -657,4 +664,20 @@ func ParseProviderIdleTimeout(value string) (time.Duration, error) {
 		return 0, fmt.Errorf("provider_idle_timeout must be a positive duration (for example 10m): %q", value)
 	}
 	return d, nil
+}
+
+// Accepted compact_at_percent range. The floor keeps a typo from compacting
+// on nearly every request.
+const (
+	MinCompactAtPercent = 20
+	MaxCompactAtPercent = 100
+)
+
+// ValidateCompactAtPercent checks a compact_at_percent setting: zero selects
+// the default, otherwise the percent must lie in [20, 100].
+func ValidateCompactAtPercent(percent int) error {
+	if percent == 0 || (percent >= MinCompactAtPercent && percent <= MaxCompactAtPercent) {
+		return nil
+	}
+	return fmt.Errorf("compact_at_percent must be between %d and %d: %d", MinCompactAtPercent, MaxCompactAtPercent, percent)
 }

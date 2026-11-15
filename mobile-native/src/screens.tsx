@@ -1,4 +1,4 @@
-import { canWriteSharedNotes } from "@evener/appwire-client";
+import { canWriteSharedNotes, sessionHosts } from "@evener/appwire-client";
 import { isValidTranscriptRef } from "@evener/appwire-client";
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { bindFilePath, type FileReference } from "@evener/appwire-client/docContent";
@@ -193,13 +193,7 @@ import { confirmShutDown } from "./session/confirmShutDown";
 import { createReaderCell } from "./session/ReaderCell";
 import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
-import {
-	canDeleteSavedSession,
-	canOpenModelSheet,
-	latestForkPoint,
-	modelChipLabel,
-	sessionHosts,
-} from "./session/sessionFacts";
+import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN } from "./session/sessionState";
 import { NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { hasFinishedSubagentRow } from "./session/subagentLine";

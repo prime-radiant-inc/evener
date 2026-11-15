@@ -20,6 +20,7 @@ type Layer struct {
 	Agent                       string            `toml:"agent,omitempty"`
 	ReasoningEffort             string            `toml:"reasoning_effort,omitempty"`
 	ContextStrategy             string            `toml:"context_strategy,omitempty"`
+	CompactAtPercent            *int              `toml:"compact_at_percent,omitempty"`
 	OpenAIResponsesContinuation string            `toml:"openai_responses_continuation,omitempty"`
 	ProviderIdleTimeout         string            `toml:"provider_idle_timeout,omitempty"`
 	Sandbox                     string            `toml:"sandbox,omitempty"`

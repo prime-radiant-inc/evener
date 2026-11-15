@@ -1,9 +1,8 @@
 package contextmgr
 
 import (
+	"encoding/json"
 	"errors"
-	"strconv"
-	"strings"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
@@ -91,35 +90,22 @@ func appendPreviousAttempts(failure *summaryFailureError, previous []cheapmodel.
 	}
 }
 
-// summaryFailureSignature identifies a summary failure by its safe diagnostic
-// shape: every route's provider, model, kind, reason, HTTP status and attempt
-// count, terminal first. Two failures with the same signature differ in
-// nothing the warning or its daemon-log record would say, so the second is
-// not news.
+// summaryFailureSignature identifies a summary failure by the diagnostic record
+// the warning publishes, encoded canonically. Two failures with the same
+// signature have the same record — route role, provider, model, kind, stage,
+// reason, HTTP status, attempt count, retryability, and every previous attempt
+// — so the second is not news. Deriving the key from the published shape rather
+// than a hand-listed subset keeps a newly rendered field from silently widening
+// the suppression window; the signature is in-memory only, never a wire format.
 func summaryFailureSignature(failure *diagnostic.SummaryFailure) string {
 	if failure == nil {
 		return ""
 	}
-	var b strings.Builder
-	write := func(attempt diagnostic.SummaryAttempt) {
-		b.WriteString(attempt.Provider)
-		b.WriteByte('/')
-		b.WriteString(attempt.Model)
-		b.WriteByte('|')
-		b.WriteString(attempt.Kind)
-		b.WriteByte('|')
-		b.WriteString(attempt.Reason)
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(attempt.Status))
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(attempt.Attempts))
-		b.WriteByte('|')
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		return ""
 	}
-	write(failure.Terminal)
-	for _, previous := range failure.Previous {
-		write(previous)
-	}
-	return b.String()
+	return string(encoded)
 }
 
 // shouldPublishSummaryFailure reports whether a summary failure's warning

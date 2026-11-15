@@ -43,6 +43,8 @@ type stubThreadEnvelopeSource struct {
 	parkAfterMeta func()
 }
 
+func (s *stubThreadEnvelopeSource) LatestExecutionTurnID() string { return "" }
+
 func (s *stubThreadEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
 	return s.contextMetrics, s.contextPressure
 }

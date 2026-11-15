@@ -1,8 +1,9 @@
 package skill
 
 import (
-	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // fixtureRoot is t.TempDir() with symlinks resolved, for a fixture whose
@@ -19,13 +20,9 @@ import (
 // The directories discovery takes as given -- a home, a user skills
 // directory, an extra directory, a plugin's own directory -- are reported
 // back as they were passed, and fixtures for those keep using t.TempDir().
-// Package agent has the same helper under the name skillFixtureRoot: a test
-// helper cannot be shared across packages.
+// The step itself is internal/testfs.CanonicalTempDir; this name only keeps
+// the package's existing fixtures readable.
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
-	resolved, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	return resolved
+	return testfs.CanonicalTempDir(t)
 }

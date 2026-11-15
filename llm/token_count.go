@@ -852,7 +852,7 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	case "anthropic":
 		return estimateAnthropicImageTokens(width, height)
 	case "openai":
-		return estimateOpenAIImageTokens(width, height, detail)
+		return estimateOpenAIImageTokens(width, height)
 	default:
 		return fallbackMediaTokens + len(img.MediaType)/4 + len(img.Detail)/4
 	}
@@ -980,10 +980,7 @@ func estimateAnthropicImageTokens(width, height int) int {
 	return ceilDiv(width, 28) * ceilDiv(height, 28)
 }
 
-func estimateOpenAIImageTokens(width, height int, detail string) int {
-	if strings.EqualFold(strings.TrimSpace(detail), "low") {
-		return 85
-	}
+func estimateOpenAIImageTokens(width, height int) int {
 	w, h := scaleWithin(float64(width), float64(height), 2048)
 	short := math.Min(w, h)
 	if short > 768 {

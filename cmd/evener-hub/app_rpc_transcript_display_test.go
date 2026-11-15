@@ -75,6 +75,63 @@ func TestHubRPCTranscriptDisplayPatchBroadcastsCanonicalValue(t *testing.T) {
 	}
 }
 
+// A write broadcasts exactly once: the store's OnCommitted port is the only
+// path, so the handler's former manual broadcast cannot double it, and a
+// direct store write that never passes through the handler still reaches
+// every client.
+func TestHubRPCTranscriptDisplayPatchBroadcastsExactlyOnce(t *testing.T) {
+	store, err := hubcore.NewTranscriptDisplayStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{TranscriptDisplayStore: store})
+	defer hub.Close()
+
+	clientA := dialHubRPC(t, hub)
+	defer clientA.Close()
+	clientB := dialHubRPC(t, hub)
+	defer clientB.Close()
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		mustInitializeHubClient(t, client)
+	}
+
+	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
+	config.Content.Level = appwire.TranscriptLevelActivity
+	var result appwire.TranscriptDisplayDefaultsPatchResponse
+	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+		appwire.TranscriptDisplayDefaultsPatchParams{
+			Layout:           appwire.TranscriptViewportDesktop,
+			ExpectedRevision: 0,
+			Config:           config,
+		}, &result); err != nil {
+		t.Fatal(err)
+	}
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		notification := receiveTranscriptDisplayChanged(t, client)
+		if notification.Layout != result.Layout || notification.Revision != result.Revision || notification.Config != result.Config {
+			t.Fatalf("notification = %#v, result = %#v", notification, result)
+		}
+		assertNoTranscriptDisplayNotification(t, client)
+	}
+
+	directConfig := config
+	directConfig.Content.Level = appwire.TranscriptLevelFull
+	if _, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{
+		Layout:           appwire.TranscriptViewportDesktop,
+		ExpectedRevision: 1,
+		Config:           directConfig,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		notification := receiveTranscriptDisplayChanged(t, client)
+		if notification.Layout != appwire.TranscriptViewportDesktop || notification.Revision != 2 || notification.Config != directConfig {
+			t.Fatalf("direct-write notification = %#v, want desktop revision 2", notification)
+		}
+		assertNoTranscriptDisplayNotification(t, client)
+	}
+}
+
 func TestHubRPCTranscriptDisplayPatchPostApplyErrorStillBroadcasts(t *testing.T) {
 	// A durable failure AFTER the rename means the patch applied: the store
 	// published the new revision, and the error the patching client gets back

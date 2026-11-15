@@ -283,7 +283,7 @@ func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
 	// not how long the shipped one is.
 	shortenCloseCascadeBudget(t, 20*time.Millisecond)
 
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	s.authoritativeConsumer = true
 	fillEventBuffer(s)
 
@@ -348,7 +348,7 @@ func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
 func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
 	shortenCloseCascadeBudget(t, 20*time.Millisecond)
 
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	marker := t.TempDir() + "/hook-running"
 	runner := hooks.NewRunner(nil, "test-model")
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
@@ -408,7 +408,7 @@ func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
 func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
 	t.Parallel()
 	owner, shutdown := context.WithCancel(context.Background())
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{
+	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		AgentsDocPath:    t.TempDir() + "/no-personal-AGENTS.md",
 		LifetimeContext:  owner,
@@ -454,7 +454,7 @@ func TestNotificationHookDeclinedOnceTheSessionLifetimeIsOver(t *testing.T) {
 
 func TestNotificationHookUsesCloseContextAndSkipsExpiredClose(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	runner := hooks.NewRunner(nil, "test-model")
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",

@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // SSH alone is replaced by a local shell. The generated commands execute the
@@ -164,7 +165,7 @@ func TestOwnerConfigFileIdentity(t *testing.T) {
 
 func TestSystemdConfigFileIdentity(t *testing.T) {
 	resolver := buildConfigIdentityResolver(t)
-	root := t.TempDir()
+	root := testfs.CanonicalTempDir(t)
 	cwd := filepath.Join(root, "working ")
 	if err := os.Mkdir(cwd, 0o700); err != nil {
 		t.Fatal(err)

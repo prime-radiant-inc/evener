@@ -115,8 +115,11 @@ older paths and all their companion files even when the installed registry
 points to a newer revision or no metadata was saved yet. Neither hub startup
 nor `evener plugin gc` removes published revisions, so they accumulate on disk;
 `gc` only reclaims leftover marketplace clones. Read its output before assuming
-cleanup succeeded. Automatic marketplace-name migration rekeys logical ownership
-without moving published revisions or changing valid recorded install paths.
+cleanup succeeded. Retention is independent of the managed-content state
+described below: it holds in a store the metadata migration has not yet run in
+and in one whose audit is still unverified. Automatic marketplace-name
+migration rekeys logical ownership without moving published revisions or
+changing valid recorded install paths.
 Same-source alias merges follow that rule too. Recovery of an older interrupted
 migration keeps surviving old paths, and reconciles a missing recorded path only
 when its existing marker and physical ownership prove an already-moved destination.
@@ -144,7 +147,11 @@ publishes a fresh revision on reinstall rather than reusing a single directory.
 A copied source that selects a Git administration directory is refused before
 copy, as is a relative or git-subdir path containing `.git`; in-place
 directory-marketplace sources stay user-owned and are not copied. Plugin Git
-commands ignore ambient `GIT_DIR`/`GIT_WORK_TREE` repository selection. Without
+commands ignore ambient `GIT_DIR`/`GIT_WORK_TREE` repository selection. The
+separation reaches only the managed content roots — the store's `cache` and
+`bundled` directories — and never a user-maintained skills directory or an
+explicitly configured plugin directory: those keep their own Git metadata, and
+the store neither moves nor audits them. Without
 Git, detection is signature-based (HEAD ref or object id, `[core]`, object
 layout), so a corrupt or nonstandard administrative layout may not be detected;
 an unverifiable admin-looking directory is refused.

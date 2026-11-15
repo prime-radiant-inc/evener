@@ -63,6 +63,7 @@ func toolEvent(t *testing.T, events []llm.StreamEvent, typ llm.StreamEventType) 
 // delta+done / output_item.done share — through the live decoder, asserting
 // the tool-call events each mapping must produce.
 func TestResponsesStreamToolStateMapping(t *testing.T) {
+	t.Parallel()
 	completed := `{"type":"response.completed","response":{"id":"resp_ts","status":"completed","output":[]}}`
 
 	t.Run("delta keyed by a foreign call id falls back to item state", func(t *testing.T) {
@@ -234,6 +235,7 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 // stay raw passthroughs without failing the stream, while a code-only nested
 // failure ends the stream with the typed in-band error.
 func TestResponsesInbandErrorDecoding(t *testing.T) {
+	t.Parallel()
 	drain := func(t *testing.T, sse string) (passthrough bool, streamErr error) {
 		t.Helper()
 		srv, _ := server(t, 200, sse)

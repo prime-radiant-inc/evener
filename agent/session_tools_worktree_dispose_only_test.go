@@ -85,7 +85,7 @@ func TestWorktreeAvailability_NonIsolatedCoordinatorHasFullTool(t *testing.T) {
 		t.Fatal("non-isolated coordinator (allowance>0) must have the full manage_worktree tool")
 	}
 	enum := manageWorktreeOpEnum(t, rt.Definition)
-	for _, want := range []string{"create", "list", "switch", "exit", "remove", "prune", "dispose"} {
+	for _, want := range []string{"create", "list", "switch", "exit", "remove", "prune", "unlock", "dispose"} {
 		if !slices.Contains(enum, want) {
 			t.Errorf("full tool op enum %v missing %q", enum, want)
 		}
@@ -113,7 +113,7 @@ func TestWorktreeAvailability_IsolatedCoordinatorRefusesNonDisposeOps(t *testing
 		t.Fatal("isolated coordinator must have the dispose-only surface")
 	}
 	env := s.currentEnv()
-	for _, op := range []string{"create", "list", "switch", "exit", "remove", "prune"} {
+	for _, op := range []string{"create", "list", "switch", "exit", "remove", "prune", "unlock"} {
 		_, err := rt.Exec(context.Background(), env, map[string]any{"operation": op, "name": "x"})
 		if err == nil {
 			t.Errorf("op %q on the dispose-only surface must be refused in-handler", op)

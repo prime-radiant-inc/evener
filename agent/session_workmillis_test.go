@@ -95,15 +95,12 @@ func TestWorkMillis_FailedTurnCounts(t *testing.T) {
 	const delta = 800 * time.Millisecond
 	noRetry := llm.RetryPolicy{MaxRetries: 0}
 	sess := newSession(t, withConfig(SessionConfig{clock: clk, LLMRetryPolicy: &noRetry}),
-		withAdapter(&fakeErrAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) (llm.Response, error){
-				func(req llm.Request) (llm.Response, error) {
-					clk.Advance(delta)
-					return llm.Response{}, errors.New("boom")
-				},
+		withAdapter(newFakeErrAdapter("openai", []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				clk.Advance(delta)
+				return llm.Response{}, errors.New("boom")
 			},
-		}))
+		})))
 
 	// TRIPWIRE: scripted in-process adapter with a fake clock, no real I/O;
 	// only fires on a genuine hang.

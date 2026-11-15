@@ -1,0 +1,25 @@
+{
+  "name": "rail-live-band-rows-phone",
+  "description": "rail Live band rows at a 360px touch viewport, where the max-width 899px right-slot rule (flex occupant beside always-visible actions) competes with the base shared-cell rule: the why line still never wraps, titles still align, and the why line still sits under the title text",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/tree/tree.module.css",
+    "widgets/badge/badge.module.css",
+    "shell/rail/Rail.module.css",
+    "shell/rail/RailRow.module.css"
+  ],
+  "viewport": {
+    "width": 360,
+    "height": 800,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "mutation": {
+    "declaration": "RailRow.module.css: .why { white-space: nowrap } removed",
+    "verified": "2026-11-13",
+    "expect": "fail",
+    "note": "Without nowrap the long why text wraps and the .why box grows past one caption line."
+  }
+}

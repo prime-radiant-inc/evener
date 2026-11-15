@@ -36,6 +36,7 @@
 
 .example {
   min-width: 0;
+  border-radius: var(--radius-control);
   background: var(--surface-canvas);
   padding: var(--space-3);
 }
@@ -54,6 +55,7 @@
 .inventory {
   display: grid;
   gap: var(--space-1);
+  border-radius: var(--radius-control);
   background: var(--surface-inset);
   padding: var(--space-2) var(--space-3);
 }

@@ -28,15 +28,21 @@ func registerGoalTools(reg *tool.Registry, deps *toolDeps) {
 				return nil, fmt.Errorf("update_goal: invalid status %q (must be \"complete\" or \"blocked\")", statusStr)
 			}
 
-			snap, changed := deps.goalGuard.SetTerminal(st, "", deps.now())
-			if !changed {
+			snap, res := deps.goalGuard.TransitionTerminal(st, "", deps.now())
+			switch res {
+			case goal.SetTerminalSuccess:
+				return tool.StateResult{
+					Output: "Goal marked " + statusStr + ".",
+					State:  goalStateView(snap),
+				}, nil
+			case goal.SetTerminalAlreadyTerminal:
+				return tool.StateResult{
+					Output: "The goal for this session is already terminal (" + string(snap.Status) + "); nothing recorded — this tool only updates an active goal.",
+					State:  goalStateView(snap),
+				}, nil
+			default:
 				return tool.StateResult{Output: "No goal is active for this session (none was set at launch); nothing recorded — this tool only updates a goal the harness registered."}, nil
 			}
-
-			return tool.StateResult{
-				Output: "Goal marked " + statusStr + ".",
-				State:  goalStateView(snap),
-			}, nil
 		},
 	})
 }

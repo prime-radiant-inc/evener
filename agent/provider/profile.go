@@ -18,11 +18,10 @@ type Profile struct {
 	res      registry.Resolved
 	registry *registry.Registry
 
-	toolDefs      []llm.ToolDefinition
-	toolNameMap   map[string]string // canonical → provider-specific
-	docFiles      []string
-	contextWindow int // WithContextWindow override; 0 means the row's
-	cheapModel    string
+	toolDefs    []llm.ToolDefinition
+	toolNameMap map[string]string // canonical → provider-specific
+	docFiles    []string
+	cheapModel  string
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different instance than the main model. Empty means
 	// the main model's instance. Set via WithCheapModel("instance/model").
@@ -259,13 +258,39 @@ func (p *Profile) ProjectDocFiles() []string {
 // window instead of running without one (issue #4564); callers that need the
 // fact itself still see 0 here.
 func (p *Profile) ContextWindowSize() int {
-	if p.contextWindow > 0 {
-		return p.contextWindow
-	}
 	if p.res.Caps.ContextWindow != nil {
 		return *p.res.Caps.ContextWindow
 	}
 	return 0
+}
+
+// ContextWindowSourceAssumed names the source of a window nothing supplied:
+// the session budgets against the context manager's assumed window instead.
+const ContextWindowSourceAssumed = "assumed"
+
+// ContextWindowSource says where ContextWindowSize came from: "live",
+// "overlay", "config" or "snapshot" (registry.ContextWindowSource),
+// ContextWindowSourceAssumed when the window is unknown, or "" for a profile
+// carrying a window without provenance.
+func (p *Profile) ContextWindowSource() string {
+	if p.ContextWindowSize() <= 0 {
+		return ContextWindowSourceAssumed
+	}
+	return registry.ContextWindowSource(p.res.Provenance["ContextWindow"])
+}
+
+// CompactionThreshold is the row's auto-compaction trigger in input tokens, or
+// 0 when the row sets none, the profile inherited another row's facts
+// (withModelID), or the threshold reaches or exceeds the row's hard input
+// ceiling.
+func (p *Profile) CompactionThreshold() int {
+	if p == nil || p.rowFactsInherited || p.res.Caps.CompactionThreshold == nil || *p.res.Caps.CompactionThreshold <= 0 {
+		return 0
+	}
+	if ceiling := p.res.Caps.InputCeiling(); ceiling > 0 && *p.res.Caps.CompactionThreshold >= ceiling {
+		return 0
+	}
+	return *p.res.Caps.CompactionThreshold
 }
 
 // CheapContextWindowSize is the configured cheap model's window, or 0 when no
@@ -402,38 +427,6 @@ func (p *Profile) SeesToolResultMedia(mediaType string) bool {
 // would serve.
 func (p *Profile) Registry() *registry.Registry { return p.registry }
 
-// ResolveModelFactsForRef resolves a model ref's advertised facts at facts
-// depth — every fact, no credential materialized, no credential command
-// executed — the depth a capability question about configuration needs when
-// no decision to serve has been made. The ref classification matches WithModel,
-// the runner's own rule, against this profile's registry:
-// a bare model, or a ref prefixed with this profile's own instance, names
-// this instance's row; a slashed ref may name another instance, or a
-// namespaced model id this instance serves under (gateways namespace rows
-// like "anthropic/claude-opus-4-5") — a genuine row on this instance wins,
-// exactly CrossProviderRef's rule. Disabled rows do not win the match:
-// CrossProviderRef resolves through Resolve, which refuses a row the config
-// disabled, so serving treats such a ref as naming the prefix's instance —
-// and the current-instance lookup runs at facts depth (which does not judge
-// the flag, by design for alias seeding), so the chain check applies the
-// gate itself.
-func (p *Profile) ResolveModelFactsForRef(ref string) (registry.Resolved, error) {
-	r := p.registry
-	ref = strings.TrimSpace(ref)
-	prefix, rest, ok := strings.Cut(ref, "/")
-	if !ok || prefix == "" || strings.EqualFold(prefix, p.ID()) {
-		model := ref
-		if ok {
-			model = rest
-		}
-		return r.ResolveInstanceModelFacts(p.ID(), model)
-	}
-	if res, err := r.ResolveInstanceModelFacts(p.ID(), ref); err == nil && !res.Synthesized && !registry.BoolValue(res.Model.Disabled) {
-		return res, nil
-	}
-	return r.ResolveInstanceModelFacts(prefix, rest)
-}
-
 // Warnings are the registry's notices for this reference (an uncatalogued
 // model, an unresolved variable, a hidden provider).
 func (p *Profile) Warnings() []string { return cloneStringSlice(p.res.Warnings) }
@@ -523,15 +516,14 @@ func (p *Profile) CheapModelRefString() string {
 }
 
 // WithResolved returns a copy carrying a fresh record for the same instance
-// (after a live listing was applied); the window override, the communicate
-// schema, and the cheap-model routing stay. Rebuilding from the record is what
+// (after a live listing was applied); the communicate schema and the
+// cheap-model routing stay. Rebuilding from the record is what
 // resyncs the task_list effort enum to the new ladder.
 func (p *Profile) WithResolved(res registry.Resolved) *Profile {
 	if p == nil {
 		return nil
 	}
 	next := FromResolved(res, p.registry)
-	next.contextWindow = p.contextWindow
 	return next.WithCommunicateOverridesFrom(p).withCheapModelFrom(p)
 }
 

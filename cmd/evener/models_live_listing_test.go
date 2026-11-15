@@ -1,0 +1,180 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// gatewayModelsServer serves an OpenAI-compatible /models listing: one model
+// with the given window, or a failing endpoint when window is 0.
+func gatewayModelsServer(t *testing.T, window int) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if window == 0 || r.URL.Path != "/v1/models" {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"id": "wide", "context_window": window}}})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/v1"
+}
+
+func gatewayConfig(t *testing.T, baseURL string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + baseURL + "\"\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+}
+
+func inspectGateway(t *testing.T) map[string]any {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"inspect", "gw/wide"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("inspect: %v (%s)", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("inspect must print JSON: %v\n%s", err, stdout.String())
+	}
+	return out
+}
+
+// inspect shows what a session on the instance would budget against: the
+// window its live listing reports, labelled as live and verified.
+func TestModelsInspectAppliesLiveListing(t *testing.T) {
+	modelsTestEnv(t)
+	gatewayConfig(t, gatewayModelsServer(t, 524288))
+	out := inspectGateway(t)
+	caps := out["caps"].(map[string]any)
+	if caps["context_window"] != float64(524288) {
+		t.Fatalf("caps.context_window = %v, want the listed 524288", caps["context_window"])
+	}
+	if out["provenance"].(map[string]any)["ContextWindow"] != "live" {
+		t.Fatalf("provenance = %v, want live", out["provenance"])
+	}
+	if out["live_listing"] != "applied" || out["context_window_verified"] != true {
+		t.Fatalf("live_listing=%v context_window_verified=%v, want applied and verified", out["live_listing"], out["context_window_verified"])
+	}
+}
+
+// With no listing to apply, the window is reported unverified instead of a
+// catalog or placeholder figure standing in as fact.
+func TestModelsInspectWithoutListingIsUnverified(t *testing.T) {
+	modelsTestEnv(t)
+	gatewayConfig(t, gatewayModelsServer(t, 0))
+	out := inspectGateway(t)
+	if _, ok := out["caps"].(map[string]any)["context_window"]; ok {
+		t.Fatalf("an unlisted gateway model has no window: %v", out["caps"])
+	}
+	if out["live_listing"] != "unavailable" || out["context_window_verified"] != false {
+		t.Fatalf("live_listing=%v context_window_verified=%v, want unavailable and unverified", out["live_listing"], out["context_window_verified"])
+	}
+}
+
+// list on one instance applies the same listing and labels each row's window.
+func TestModelsListInstanceAppliesLiveListing(t *testing.T) {
+	modelsTestEnv(t)
+	gatewayConfig(t, gatewayModelsServer(t, 524288))
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"list", "--provider", "gw"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list: %v (%s)", err, stderr.String())
+	}
+	// Cells are separated by at least two spaces; the columns before COST are
+	// never empty, so a header name locates its cell in the row.
+	cells := func(line string) []string { return regexp.MustCompile(`\s{2,}`).Split(strings.TrimSpace(line), -1) }
+	var header []string
+	for line := range strings.SplitSeq(stdout.String(), "\n") {
+		if strings.HasPrefix(line, "REF") {
+			header = cells(line)
+		}
+	}
+	row := cells(listedRow(stdout.String(), "gw/wide"))
+	if header == nil || len(row) < len(header)-4 {
+		t.Fatalf("live-only model missing from the listing:\n%s", stdout.String())
+	}
+	for column, want := range map[string]string{"CONTEXT": "524288", "CONTEXT SRC": "live", "VERIFIED": "yes"} {
+		i := slices.Index(header, column)
+		if i < 0 || i >= len(row) || row[i] != want {
+			t.Fatalf("column %s = %v, want %s (header %v, row %v)", column, row, want, header, row)
+		}
+	}
+}
+
+// Every row, including the hidden and disabled ones, fills the table's ten
+// columns: its note starts under the NOTES header.
+func TestModelsListNoteColumnAlignsOnEveryRowKind(t *testing.T) {
+	modelsTestEnv(t)
+	modelsFixture(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk")
+	t.Setenv("ANTHROPIC_BASE_URL", gatewayModelsServer(t, 0))
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.anthropic]\napi_key = \"sk\"\n[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	for _, tc := range []struct {
+		args []string
+		ref  string
+	}{
+		{[]string{"list", "--provider", "anthropic", "--all"}, "anthropic/claude-opus-4-6"}, // disabled row
+		{[]string{"list", "--provider", "cohere", "--all"}, "cohere/"},                      // hidden row
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := runModels(tc.args, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("%v: %v (%s)", tc.args, err, stderr.String())
+		}
+		header := ""
+		for line := range strings.SplitSeq(stdout.String(), "\n") {
+			if strings.HasPrefix(line, "REF") {
+				header = line
+			}
+		}
+		notes := strings.Index(header, "NOTES")
+		row := listedRow(stdout.String(), tc.ref)
+		if notes < 0 || row == "" {
+			t.Fatalf("%s: header or row missing:\n%s", tc.ref, stdout.String())
+		}
+		if len(row) <= notes || row[notes] == ' ' || row[notes-1] != ' ' {
+			t.Fatalf("%s: the note does not start under NOTES (col %d):\n%s", tc.ref, notes, stdout.String())
+		}
+	}
+}
+
+// A bare model id resolves on the default instance, so inspect discovers that
+// instance's live listing too: bare and qualified refs report the same window.
+func TestModelsInspectBareRefUsesDefaultInstanceListing(t *testing.T) {
+	modelsTestEnv(t)
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "default = \"gw\"\n[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + gatewayModelsServer(t, 524288) + "\"\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	window := func(ref string) any {
+		var stdout, stderr bytes.Buffer
+		if err := runModels([]string{"inspect", ref}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("inspect %s: %v (%s)", ref, err, stderr.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out["caps"].(map[string]any)["context_window"]
+	}
+	if qualified, bare := window("gw/wide"), window("wide"); qualified != float64(524288) || bare != qualified {
+		t.Fatalf("qualified window %v, bare window %v, want the listed 524288 for both", qualified, bare)
+	}
+}

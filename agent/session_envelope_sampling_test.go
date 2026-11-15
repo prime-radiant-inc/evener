@@ -10,12 +10,12 @@ import (
 
 // These tests enforce the rule stated on EnvelopeSampling
 // (session_envelope_sampling.go): a sample the daemon's authoritative event
-// consumer takes runs on the drain goroutine, so it may block on Session.mu and
-// on nothing else in this package.
+// consumer takes runs on the drain goroutine, so it may block only on Session.mu
+// and the execution-frontier leaf, whose listener never takes Session.mu.
 //
 // Session.mu is exempt because the emit path re-acquires it, which makes
 // "held across an emit" a self-deadlock rather than a convention
-// (session_emit_lock_guard_test.go). Every other mutex here is treated as
+// (session_emit_lock_guard_test.go). Apart from the frontier leaf, every mutex here is treated as
 // forbidden whether or not it is held across an emit TODAY — five of them are
 // (responseSideEffectsMu, queueEventsMu, queuePersistMu, restMu, subagent.mu), and for
 // the rest nothing would announce it if a future emit moved inside their
@@ -162,6 +162,8 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 var envelopeSamplingPermittedLocks = map[string]string{
 	"Session.mu": "the emit path re-acquires it (emit -> activeCausalProvenance), " +
 		"so holding it across an emit self-deadlocks on the first execution",
+	"Session.executionFrontierMu": "the recorded listener takes only this leaf and releases it before emitting; " +
+		"sampling takes Session.mu then this leaf, so no reverse edge can cycle",
 }
 
 // TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock runs every method the daemon's
@@ -182,6 +184,9 @@ func TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock(t *testing.T) {
 	if len(methods) == 0 {
 		t.Fatal("EnvelopeSampling declares no methods; this test has stopped checking anything")
 	}
+	// Descendant installation is not an envelope consumer, but its atomic pair
+	// accessor owes the identical Session.mu then frontier-leaf safety proof.
+	methods = append(methods, "LatestExecutionFrontier")
 
 	for _, lock := range envelopeSamplingForbiddenLocks {
 		func() {

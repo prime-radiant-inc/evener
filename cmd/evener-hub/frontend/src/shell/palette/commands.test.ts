@@ -101,6 +101,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -562,7 +563,7 @@ test.each([
 // status in), so an idle steering harness carries steer:true. The menu's
 // available set must equal the handler's rule: /steer needs a running turn,
 // /drain-as-steer a running turn or a queue a Stop parked (idle with depth >
-// 0), the same sessionControls the composer and queue strip read.
+// 0), the same sessionControls the composer and pending stack read.
 test.each([
   ["idle", 0, UNAVAILABLE_REASON, UNAVAILABLE_REASON],
   ["idle", 1, UNAVAILABLE_REASON, undefined],

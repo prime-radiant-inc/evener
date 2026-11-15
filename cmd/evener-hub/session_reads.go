@@ -83,12 +83,17 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		return appwire.ThreadTurnsListResponse{Data: read.Thread.Turns, NextCursor: read.OlderCursor, BootGeneration: read.BootGeneration, Epoch: read.Epoch, Snapshot: read.Snapshot, Authoritative: read.Authoritative, Window: read.Window}, nil
+		page := appsource.ReadHistoryIdentity(read).StampPage(appwire.ThreadTurnsListResponse{Data: read.Thread.Turns, NextCursor: read.OlderCursor})
+		// The identity stamp owns the history fields only; the windowed read's
+		// own page arrangement survives.
+		page.Window = read.Window
+		return page, nil
 	}
 	if err := appwire.ValidateThreadTurnsListParams(p); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
 	source, err := sourceForThreadWithDeletionFence(ctx, o.cfg, o.sources, p.Ref, p.ThreadID)
+	liveAttempted := err == nil
 	if err == nil {
 		if p.TurnWindow != nil {
 			page, continuationErr := continueLiveTranscriptWindowOwned(ctx, source, p, o)
@@ -120,6 +125,11 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		return appwire.ThreadTurnsListResponse{}, pastErr
 	}
 	if ok {
+		if liveAttempted && page.ServingFacts != nil {
+			facts := *page.ServingFacts
+			facts.FallbackReason = "live-read-failed"
+			page.ServingFacts = &facts
+		}
 		return page, nil
 	}
 	return appwire.ThreadTurnsListResponse{}, err

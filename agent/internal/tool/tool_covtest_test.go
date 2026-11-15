@@ -123,6 +123,24 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 		t.Fatalf("minimal shorthand normalization mutated input: got %#v, want original %#v", minimal, minimalBefore)
 	}
 
+	// Shorthand normalization must preserve extra top-level keys such as intent.
+	withExtra := map[string]any{
+		"question":    "Which?",
+		"options":     options,
+		"intent":      "clarify option choice",
+		"extra_field": "preserved",
+	}
+	out, err = normalizeAskUserArgs(withExtra)
+	if err != nil {
+		t.Fatalf("shorthand with extra fields: %v", err)
+	}
+	if out["intent"] != "clarify option choice" {
+		t.Fatalf("out[intent] = %v, want %q", out["intent"], "clarify option choice")
+	}
+	if out["extra_field"] != "preserved" {
+		t.Fatalf("out[extra_field] = %v, want %q", out["extra_field"], "preserved")
+	}
+
 	invalid := []struct {
 		name string
 		args map[string]any

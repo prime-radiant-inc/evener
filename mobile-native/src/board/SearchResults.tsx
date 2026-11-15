@@ -3,7 +3,7 @@ import { type GroupedSearchRow, countSearchMatches } from "@evener/appwire-clien
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { stateWord } from "./attention";
+import { stateWord } from "@evener/appwire-client/state/navigation";
 import { BandHeader, Hairline, spokenAge } from "./BoardRow";
 import { type SearchScope, type SearchSnapshot, searchResultMark, sessionResults } from "./boardSearch";
 import { projectName } from "./ProjectTreeRow";

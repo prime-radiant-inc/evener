@@ -5,7 +5,7 @@ import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 
 // The hover card is a floating layer of the design system, not an oversized
 // tooltip. Every other overlay (popover, menu, dialog, sheet) sits on
-// --surface-1 with --shadow-overlay supplying both the 1px strong-edge ring
+// --surface-1 with --shadow-overlay supplying both the 1px edge ring
 // and the soft shadow, and the design system forbids doubling that ring with
 // a second border (docs/web-ui/design-system.md §2). The tooltip keeps its
 // inverted mini-palette precisely because a one-line label is not a card, so
@@ -38,7 +38,7 @@ test("the bubble rides the overlay surface family, not the tooltip mini-palette"
 test("the bubble fades and scales in on the shared overlay motion budget", () => {
   const bubble = topRuleBlock(CSS, ".bubble");
   expect(bubble).toMatch(
-    /animation:\s*hovercardFadeScale\s+var\(--motion-duration-overlay\)\s+var\(--motion-easing-standard\)/,
+    /animation:\s*hovercardFadeScale\s+var\(--motion-duration-overlay\)\s+var\(--motion-easing-pop\)/,
   );
   expect(CSS).toMatch(/@keyframes hovercardFadeScale\s*\{/);
   // The same off-ramp popover carries: no motion under prefers-reduced-motion.

@@ -26,6 +26,7 @@ func applyScheme(t *testing.T, scheme string, res registry.Resolved) (*http.Requ
 }
 
 func TestTrivialAuthenticators(t *testing.T) {
+	t.Parallel()
 	withKey := registry.Resolved{Instance: "groq", Credential: registry.Credential{Value: "k-1", Source: "env:GROQ_API_KEY"}}
 	noKey := registry.Resolved{Instance: "groq", Credential: registry.Credential{Source: "none", MissingReason: "GROQ_API_KEY unset"}}
 
@@ -67,6 +68,7 @@ func TestTrivialAuthenticators(t *testing.T) {
 // wins and the scheme derives nothing from the key, so a "Bearer $KEY"
 // header is not turned into "Bearer Bearer $KEY".
 func TestCredentialHeaderWinsOverDerivedAuth(t *testing.T) {
+	t.Parallel()
 	fromHeader := registry.Resolved{
 		Instance:          "work",
 		Credential:        registry.Credential{Value: "Bearer k-1", Source: "credential_headers"},
@@ -108,6 +110,7 @@ func TestCredentialHeaderWinsOverDerivedAuth(t *testing.T) {
 // the unset variable). The diagnosis is read from the field, not recovered
 // from the wording of Warnings, whatever those say.
 func TestMissingCredentialCarriesTheAuthHeaderFailure(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		res   registry.Resolved

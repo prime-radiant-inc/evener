@@ -133,9 +133,12 @@ Check the installed model's tool-calling support in Ollama's model metadata. Mod
 
 When a live model's listing supplies no context length, Evener cannot infer
 its server-configured window. Live-only models on `ollama` and the protocol-only
-pseudo-providers use a **provider-level default of `context_window = 131072`**
-unless live metadata or a user setting supplies a window. Evener does not use
-a bundled Ollama per-model table or strip tags to find a context-window default.
+pseudo-providers then have an **unknown window**: the session budgets against
+the assumed window, says so once, and folds history when measured input passes
+the unknown-window tripwire, unless live metadata or a user setting supplies a
+window. `evener models inspect` reports the window as unverified until a live
+listing is applied. Evener does not use a bundled Ollama per-model table or
+strip tags to find a context-window default.
 
 Pin the actual server-configured window on a model row in `providers.toml`. This complete example declares 8192 tokens; change it to match your server. It changes Evener's budget, not Ollama's `num_ctx`:
 

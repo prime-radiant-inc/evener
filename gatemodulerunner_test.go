@@ -682,8 +682,11 @@ func runHubIntegrationTarget(t *testing.T, root string, extraEnv ...string) modu
 // target pass while running nothing — the exact silent no-op PR #222 shipped in
 // a Makefile copy. The positive control first proves the target can pass and
 // execute a real list member on this fixture; the same fixture with a
-// non-member test name must then fail with the refusal message instead of
-// passing.
+// non-member test name must then fail instead of passing. The exit status is
+// the oracle: the zero-match fixture holds no test the shipped regex can
+// select, and the positive control proves this target can pass and run a test,
+// so an exit 0 here means the zero-match guard did not fire. The refusal's
+// wording is copy and stays free to change.
 func TestHubIntegrationTargetRefusesAZeroMatch(t *testing.T) {
 	t.Parallel()
 	members := hubIntegrationMembers(t)
@@ -715,9 +718,6 @@ func TestUnrelated(t *testing.T) {}
 	zero := runHubIntegrationTarget(t, root)
 	if zero.exitCode == 0 {
 		t.Fatalf("test-hub-integration exit = 0 when GATE_HUB_INTEGRATION_RUN matched no test; the refusal did not fire:\n%s", zero.output)
-	}
-	if !strings.Contains(zero.output, "matched no tests") {
-		t.Fatalf("test-hub-integration failed without the zero-match refusal message:\n%s", zero.output)
 	}
 }
 
@@ -1091,6 +1091,22 @@ func TestTimed(t *testing.T) {
 	}
 }
 
+// runnerPhases returns the phases the gate's summary timed: each `TIME  <label>
+// <seconds>s` line whose seconds parse.
+func runnerPhases(output string) map[string]bool {
+	phases := map[string]bool{}
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "TIME" {
+			continue
+		}
+		if _, err := strconv.ParseFloat(strings.TrimSuffix(fields[2], "s"), 64); err == nil {
+			phases[fields[1]] = true
+		}
+	}
+	return phases
+}
+
 // TestModuleRunnerRunsAgentSubpackagesInOnePartOnly pins the split agent race
 // lane: each runner runs one AGENT_SHARD_PART of the agent package's shards,
 // and the module's subpackages, which are not sharded, run in the last part
@@ -1144,6 +1160,17 @@ func TestSubpackage(t *testing.T) {
 			_, err := os.Stat(filepath.Join(observe, "sub.ran"))
 			if ran := err == nil; ran != tc.wantSubpkgs {
 				t.Fatalf("subpackage ran = %v, want %v:\n%s", ran, tc.wantSubpkgs, result.output)
+			}
+			// A green run's output is all CI keeps, so it carries the phase
+			// summary: the runner's own phases and the gate's around them.
+			phases := runnerPhases(result.output)
+			for _, phase := range []string{"gate:check-flags", "gate:wave2", "agent:runner-build", "agent:runner", "agent:build", "agent:shards"} {
+				if !phases[phase] {
+					t.Fatalf("no %s phase in the summary:\n%s", phase, result.output)
+				}
+			}
+			if phases["agent:subpkgs"] != tc.wantSubpkgs {
+				t.Fatalf("subpackage phase reported = %v, want %v:\n%s", phases["agent:subpkgs"], tc.wantSubpkgs, result.output)
 			}
 		})
 	}

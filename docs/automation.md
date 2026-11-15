@@ -286,6 +286,17 @@ the next fetch cursor until the base64 ranges are complete. Cursors are bound to
 the exact thread, source incarnation, projection and item version. Refresh the
 window when a cursor is stale, the item changed, or compatibility recovery says
 the item is no longer reachable. In-flight items have no fetch cursor.
+
+History results include `servedFrom`, `asOf` and the serving view's
+`latestExecutionTurnId`. Saved fallback also names `live-read-empty` or
+`live-read-failed`; it does not prove the running session has no newer work.
+Compare the status read's `instanceId` and `activeTurnId` with the history
+view's live `instanceId` and execution frontier before treating an answer as
+current. Saved history has no live instance. An absent frontier, or an explicit
+`servingFactsUnavailableReason`, means evidence is missing, not that history is current
+or stale. `asOf` for saved history marks the file-stat coverage moment, not the
+end of the read. See [serving facts](product/history-content.md#serving-facts-and-status-comparison).
+
 `job_status` with `hub:{ref,jobId}` reads the job's full metadata, and
 `read_transcript` with `hub:{ref,jobId,maxBytes,beforeBytes}` pages its output
 backward in lifetime bytes. Each job handle names both its owner ref and job ID;

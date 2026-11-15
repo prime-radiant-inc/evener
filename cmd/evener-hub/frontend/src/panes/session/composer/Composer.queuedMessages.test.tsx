@@ -18,12 +18,11 @@ import {
   setMutationStorageForTests,
   threadsStore,
 } from "../../../stores/threads";
-import { PendingChips } from "../pending/PendingChips";
 import { createTestComposerSource } from "../testing/composerSource";
 import { pastePngInto, selectEditorText } from "../testing/editor";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { HeldSteerAnnouncements } from "../transcript/messages/HeldSteerAnnouncements";
-import { HeldSteerStack } from "../transcript/messages/HeldSteerStack";
+import { PendingRowStack } from "../transcript/messages/PendingRowStack";
 import { createAttachmentOperations } from "./attachments/useAttachments";
 import { Composer } from "./Composer";
 import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
@@ -103,6 +102,7 @@ function mount(fake: FakeClient, source = createTestComposerSource("root")) {
   const view = render(
     <ClientProvider client={fake}>
       <Composer ref="root" source={source} focused={false} />
+      <PendingRowStack ref="root" />
     </ClientProvider>,
   );
   return { source, ...view };
@@ -347,15 +347,20 @@ test("image encoding survives a literal-marker recovery merge while storage is p
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
 
     const deliveredInputs: InputItem[][] = [];
+    const delivered = deferred<void>();
     fake.on("turn/start", (params) => {
       deliveredInputs.push(params.input ?? []);
+      delivered.resolve();
       return {
         turn: { id: "image-merge", status: "inProgress", itemsView: "full", items: [] },
         receipt: appliedReceipt(params.clientMutationId, "thread-a"),
       };
     });
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+    await act(async () => {
+      await delivered.promise;
+    });
+    expect(deliveredInputs).toHaveLength(1);
     expect(deliveredInputs[0]).toEqual([
       { type: "text", text: "(attached image 2: new.png)\n\nliteral [image 1]" },
       { type: "image", mediaType: "image/png", data: "AQID", name: "new.png" },
@@ -676,8 +681,10 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   selectEditorText(screen.getByRole("textbox", { name: "Message" }), restored.getSnapshot().text.length);
   await user.keyboard("revised ");
   const deliveredInputs: InputItem[][] = [];
+  const delivered = deferred<void>();
   fake.on("turn/start", (params) => {
     deliveredInputs.push(params.input ?? []);
+    delivered.resolve();
     return {
       turn: { id: "revision", status: "inProgress", itemsView: "full", items: [] },
       receipt: appliedReceipt(params.clientMutationId, "thread-a"),
@@ -691,14 +698,23 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
     fake.emitStateChange("ready");
     fake.emitReady();
   });
-  await user.click(screen.getByRole("button", { name: "Send" }));
+  const send = screen.getByRole("button", { name: "Send" });
+  await user.click(send);
+  // The Send control is Tooltip-wrapped; hover/focus starts its 300ms show
+  // timer. Let it fire inside act instead of during the waits below.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
   await flushPendingTurnsProjectionForTests();
   expect(await reopened.getRecovery(first.clientMutationId)).toBeUndefined();
   await act(async () => {
     fake.emitStateChange("ready");
     fake.emitReady();
   });
-  await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+  await act(async () => {
+    await delivered.promise;
+  });
+  expect(deliveredInputs).toHaveLength(1);
   expect(deliveredInputs).toEqual([
     [
       {
@@ -748,8 +764,7 @@ test.each(["turn/start", "turn/steer", "turn/drainAsSteer", "turn/promoteQueuedA
     const view = render(
       <ClientProvider client={fake}>
         <Composer ref="root" source={createTestComposerSource("root")} focused={false} />
-        <PendingChips sessionRef="root" />
-        <HeldSteerStack ref="root" />
+        <PendingRowStack ref="root" />
         <HeldSteerAnnouncements ref="root" />
       </ClientProvider>,
     );
@@ -757,7 +772,7 @@ test.each(["turn/start", "turn/steer", "turn/drainAsSteer", "turn/promoteQueuedA
     expect(screen.getAllByRole("button", { name: "Remove from queue" })).toHaveLength(1);
     expect(view.container.querySelectorAll("li")).toHaveLength(1);
     expect(screen.queryByTestId("pending-chips")).toBeNull();
-    expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+    expect(screen.queryByTestId("pending-row-stack")).toBeTruthy();
     expect(screen.getByTestId("held-steer-announcements").getAttribute("data-outcomes")).toBeNull();
   },
 );
@@ -794,8 +809,10 @@ test("two offline edits consolidate one durable owner and preserve typing during
     expect((await storage.getRecovery(first.clientMutationId))?.composerText).toBe("first newer\n\nsecond");
     expect(await storage.listOutbox("root")).toEqual([]);
     const deliveredInputs: InputItem[][] = [];
+    const delivered = deferred<void>();
     fake.on("turn/start", (params) => {
       deliveredInputs.push(params.input ?? []);
+      delivered.resolve();
       return {
         turn: { id: "combined", status: "inProgress", itemsView: "full", items: [] },
         receipt: appliedReceipt(params.clientMutationId, "thread-a"),
@@ -807,7 +824,10 @@ test("two offline edits consolidate one durable owner and preserve typing during
     });
     await user.click(screen.getByRole("button", { name: "Send" }));
     await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+    await act(async () => {
+      await delivered.promise;
+    });
+    expect(deliveredInputs).toHaveLength(1);
     expect(deliveredInputs).toEqual([[{ type: "text", text: "first newer\n\nsecond" }]]);
     expect(await storage.listRecovery("root")).toEqual([]);
   } finally {
@@ -914,8 +934,10 @@ test("recorded literal survives Edit beside a current image and Send", async () 
     }),
   );
   const deliveredInputs: InputItem[][] = [];
+  const delivered = deferred<void>();
   fake.on("turn/start", (params) => {
     deliveredInputs.push(params.input ?? []);
+    delivered.resolve();
     expect(params.clientMutationId).not.toBe(record.clientMutationId);
     return {
       turn: { id: "literal-revision", status: "inProgress", itemsView: "full", items: [] },
@@ -928,7 +950,10 @@ test("recorded literal survives Edit beside a current image and Send", async () 
   });
   await user.click(screen.getByRole("button", { name: "Send" }));
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(deliveredInputs).toHaveLength(1));
+  await act(async () => {
+    await delivered.promise;
+  });
+  expect(deliveredInputs).toHaveLength(1);
   expect(deliveredInputs).toEqual([
     [
       { type: "text", text: "current (attached image 2: current.png)\n\nliteral [image 1]" },
@@ -1349,7 +1374,9 @@ test("Send cannot race an unobserved secondary recovery consolidation", async ()
     const send = screen.getByRole("button", { name: "Send" });
     expect(send.getAttribute("aria-disabled") === "true" || (send as HTMLButtonElement).disabled).toBe(true);
     await user.click(send);
-    expect(await storage.listOutbox("root")).toEqual([]);
+    await act(async () => {
+      expect(await storage.listOutbox("root")).toEqual([]);
+    });
     await act(async () => hold.release());
     await flushPendingTurnsProjectionForTests();
     expect(source.getSnapshot().text).toBe("first\n\nsecond");

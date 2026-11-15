@@ -1,7 +1,7 @@
 import { AppwireClient } from "@evener/appwire-client";
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
-import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { LegacyHistorySocket } from "@evener/appwire-client/testing/legacyHistorySocket";
 import { describe, expect, test, vi } from "vitest";
 import { DEFAULT_BACKGROUND_TRANSCRIPT_OPTIONS } from "./backgroundTranscriptOptions";
 import { createTranscriptResidency } from "./transcriptResidency";
@@ -172,7 +172,7 @@ describe("transcript residency: hydration scheduling", () => {
 
   test("queued foreground hydration wins the next real Appwire request slot", async () => {
     const { residency } = setup();
-    const socket = new FakeSocket({ autoInitialize: true });
+    const socket = new LegacyHistorySocket({ autoInitialize: true });
     const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
     const connected = client.connect();
     socket.open();

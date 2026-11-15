@@ -2,9 +2,16 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { type ComposerVerb, composerVerb } from "./composerMethods";
-import { effectiveWireId, type MutationOptimisticRecord, type MutationOutboxRecord } from "./records";
+import type { ConsumedQueueEntry } from "./pendingMessages";
+import {
+  effectiveWireId,
+  type MutationOptimisticRecord,
+  type MutationOutboxRecord,
+  type MutationRecord,
+} from "./records";
 
 export type PendingMethod = ComposerVerb;
+export type { ConsumedQueueEntry } from "./pendingMessages";
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -33,8 +40,9 @@ export interface PendingTurnEntry {
   // sends, never the daemon's session-wide projection of every client's), and
   // that answer cannot change when a hydrate lands.
   fromThisClient: boolean;
-  // The queued message a promote steers with, while a durable record of
-  // the promote is unsettled: the queue row it will replace.
+  // A queue entry a confirmed receipt or pending projection says this
+  // command's message owns. A promotion's expected entry is only a
+  // precondition and never appears here.
   queueEntryId?: string;
   // The queue revision a drain steers with, likewise: the queue it takes.
   queueRevision?: number;
@@ -54,6 +62,16 @@ export function imagePlaceholder(count: number): string {
   return "";
 }
 
+// The inverse of imagePlaceholder for a daemon queue preview. The preview is a
+// wire string, so its grammar stays next to the composer that writes it.
+export function parseImagePlaceholder(preview: string | undefined): number {
+  if (!preview) return 0;
+  const normalized = preview.trim();
+  if (normalized === imagePlaceholder(1)) return 1;
+  const match = /^\[(\d+) images\]$/.exec(normalized);
+  return match ? Number(match[1]) : 0;
+}
+
 // queueEntryPreviewText is the one label computation used for BOTH a real
 // queue row's fallback text and a pending entry's display/matching text:
 // normalized text wins whenever non-blank; only a blank (or whitespace-only)
@@ -70,19 +88,19 @@ export function queueEntryPreviewText(text: string, imageCount: number): string 
 // an entry that is distinct from its typed text. Without it a skill-only entry
 // previews blank and copies as an empty string.
 //
-// One definition shared by QueueStrip's durable/daemon/pending rows and
-// PendingChips' in-flight chips, so every surface of the same submission names
-// a selection identically - the split that let a skill-only pending chip
-// render an empty body while the queue row named it.
+// One definition shared by the projection's durable, daemon and pending rows,
+// so every representation of the same submission names a selection
+// identically.
 export function skillMarkers(names: readonly string[]): string {
   return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
-// The one entry-body composition every in-flight surface renders - the
-// chips for sends, the held-steer ghost stack for steer/drain/promote:
-// the matching text-plus-markers preview PendingChips used to compose inline, extracted so the ghost is not a
-// second copy of the chip's composition. Contentless input still composes
-// to "" - the matching-key contract queueEntryPreviewText carries above.
+// The one entry-body composition the pending stack renders. The bubble body
+// keeps the entry's own line structure: an indented code block renders
+// flattened by neither this nor the delivered form, and the daemon's queue
+// preview is a label, not the body. Only the ends trim; interior whitespace
+// survives. Contentless input still composes to "" - the matching-key
+// contract queueEntryPreviewText carries above.
 export function pendingEntryPreview(entry: {
   text: string;
   imageCount: number;
@@ -90,12 +108,53 @@ export function pendingEntryPreview(entry: {
   commandNames?: readonly string[];
 }): string {
   return [
-    queueEntryPreviewText(entry.text, entry.imageCount),
+    entry.text.trim() || imagePlaceholder(entry.imageCount),
     skillMarkers(entry.skillNames),
     commandMarkers(entry.commandNames ?? []),
   ]
     .filter((part) => part !== "")
     .join(" ");
+}
+
+// One index of the daemon's queue arrays, canonicalized. Both the pending
+// projection and the web store's carried-row registry read the wire shape
+// through here so the two cannot disagree about text, previews, or selections.
+export function queueEntryAt(
+  queue: {
+    ids?: readonly string[];
+    clientMutationIds?: readonly string[];
+    texts?: readonly string[];
+    preview?: readonly string[];
+    skillNames?: readonly (readonly string[])[];
+    commandNames?: readonly (readonly string[])[];
+  },
+  index: number,
+): {
+  entryId: string | undefined;
+  clientMutationId: string | undefined;
+  fullText: string | undefined;
+  text: string;
+  preview: string | undefined;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
+  const fullText = queue.texts?.[index];
+  const preview = queue.preview?.[index];
+  // A preview is the daemon's compact label, so a literal text message whose
+  // own text IS "[image]" must not classify its row as image-bearing: the
+  // placeholder grammar speaks only when no full text says otherwise.
+  const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
+  return {
+    entryId: queue.ids?.[index],
+    clientMutationId: queue.clientMutationIds?.[index],
+    fullText,
+    text: fullText ?? preview ?? "",
+    preview,
+    imageCount,
+    skillNames: canonicalSkillNames(queue.skillNames?.[index] ?? []),
+    commandNames: canonicalSkillNames(queue.commandNames?.[index] ?? []),
+  };
 }
 
 // Whether THIS client has a turn/start of its own that the session has not
@@ -158,38 +217,115 @@ export function commandMarkers(names: readonly string[]): string {
   return names.map((name) => `[command: ${name}]`).join(" ");
 }
 
-function inputPreview(input: InputItem[] | undefined): {
+// Known values sort first, ascending; undefined sorts last. Shared by the
+// durable-entry sort and the pending projection's final ordering.
+export function compareKnownNumber(left: number | undefined, right: number | undefined): number {
+  if (left === undefined && right === undefined) return 0;
+  if (left === undefined) return 1;
+  if (right === undefined) return -1;
+  return left - right;
+}
+
+interface TextualInput {
   text: string;
-  imageCount: number;
   skillNames: string[];
   commandNames: string[];
-} {
-  const text = input
-    ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
-    .map((item) => item.text)
-    .join("\n");
+}
+
+export function textualInput(input: readonly InputItem[] | undefined): TextualInput {
+  return {
+    text:
+      input
+        ?.filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("\n") ?? "",
+    skillNames: canonicalSkillNames(
+      input
+        ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
+        .map((item) => item.name),
+    ),
+    commandNames: canonicalSkillNames(
+      input
+        ?.filter(
+          (item): item is InputItem & { name: string } => item.type === "command" && typeof item.name === "string",
+        )
+        .map((item) => item.name),
+    ),
+  };
+}
+
+function inputPreview(input: InputItem[] | undefined): TextualInput & { imageCount: number } {
+  const content = textualInput(input);
   const imageCount = input?.filter((item) => item.type === "image").length ?? 0;
-  const skillNames = canonicalSkillNames(
-    input
-      ?.filter((item): item is InputItem & { name: string } => item.type === "skill" && typeof item.name === "string")
-      .map((item) => item.name),
-  );
-  const commandNames = canonicalSkillNames(
-    input
-      ?.filter((item): item is InputItem & { name: string } => item.type === "command" && typeof item.name === "string")
-      .map((item) => item.name),
-  );
-  return { text: text ?? "", imageCount, skillNames, commandNames };
+  return { ...content, imageCount };
 }
 
 type PendingRecord = MutationOutboxRecord | MutationOptimisticRecord;
 
-function outboxInput(record: PendingRecord): InputItem[] | undefined {
+export function outboxInput(record: MutationRecord): InputItem[] | undefined {
   const display = record.optimisticDisplay;
   if (display && typeof display === "object" && "input" in display && Array.isArray(display.input)) {
     return display.input as InputItem[];
   }
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : undefined;
+}
+
+// A durable record's display parts, through the same extraction every
+// projected pending entry uses: the optimisticDisplay.input carries a
+// promoted row's composed content (its wire params carry only the queue
+// position), so it is preferred over the payload input every other method
+// populates. The surfaces that render or copy a durable row directly read
+// this, so a durable row and its optimistic twin can never compose the same
+// message differently.
+export function outboxRecordPreview(record: PendingRecord): {
+  text: string;
+  imageCount: number;
+  skillNames: string[];
+  commandNames: string[];
+} {
+  return inputPreview(outboxInput(record));
+}
+
+// The transcript-item half of the reflected-identity rule, shared by the
+// reflected set below and the pending projection's retirement check.
+// A fresh set every call, deliberately: callers that need to test membership
+// against extra identities add to the result (settleConsumedFromModel), so a
+// shared instance would corrupt every later read of the same model. The
+// pending store memoizes its own copy in transcriptIdsFor when it needs one.
+export function transcriptMutationIds(model: ThreadModel | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const turn of model?.turns ?? []) {
+    for (const item of turn.items) {
+      const clientMutationId = (item as typeof item & { clientMutationId?: string }).clientMutationId;
+      if (clientMutationId) ids.add(clientMutationId);
+    }
+  }
+  return ids;
+}
+
+// The conversation input ids a recorded user item speaks for. A promotion or
+// drain records its own client mutation id but inherits the consumed queue
+// entry's input ids, so this is what ties a delivered message back to the
+// queue entry another client consumed. A daemon that does not send the field
+// yields nothing, and callers fall back to identity matching.
+export function recordedInputLineage(model: ThreadModel | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const turn of model?.turns ?? []) {
+    for (const item of turn.items) {
+      // Only an item that RENDERS as the user's own message is a replacement
+      // the reader can see. A promotion or drain records type "steering" with
+      // source "user", and SteeringItem draws that through UserMessageView, so
+      // it counts. An agent or system steering item does not: it renders
+      // inside the turn it steered, and retiring a carried row on it would drop
+      // the only visible copy of the message.
+      const rendersAsUserMessage = item.type === "userMessage" || (item.type === "steering" && item.source === "user");
+      if (!rendersAsUserMessage) continue;
+      for (const id of item.conversationInputIds ?? []) {
+        ids.add(id);
+      }
+    }
+  }
+  return ids;
 }
 
 // The ONE home of the reflected-identity rule - which client mutation ids
@@ -199,12 +335,7 @@ function outboxInput(record: PendingRecord): InputItem[] | undefined {
 // from reconcile's own settle rule.
 export function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   const ids = new Set(model?.queue?.clientMutationIds ?? []);
-  for (const turn of model?.turns ?? []) {
-    for (const item of turn.items) {
-      const clientMutationId = (item as typeof item & { clientMutationId?: string }).clientMutationId;
-      if (clientMutationId) ids.add(clientMutationId);
-    }
-  }
+  for (const id of transcriptMutationIds(model)) ids.add(id);
   return ids;
 }
 
@@ -220,7 +351,13 @@ function outboxEntry(
   // any state.
   if (record.state === "superseded") return undefined;
   const preview = inputPreview(outboxInput(record));
-  const queueEntryId = method === "promote" ? record.payload.expectedEntryId : undefined;
+  // A receipt or pending projection names the entry a command owns. An active
+  // promotion also names the entry it is replacing so the queue row hides
+  // behind it while the command is in flight. A canceled promotion never
+  // consumed the entry and must keep its own row.
+  const queueEntryId =
+    record.queueEntryIds?.[0] ??
+    (method === "promote" && record.state !== "canceled" ? record.payload.expectedEntryId : undefined);
   const queueRevision = method === "drain" ? record.payload.expectedQueueRevision : undefined;
   return {
     id: record.clientMutationId,
@@ -289,6 +426,7 @@ export function reconcilePendingEntries(
   model: ThreadModel | undefined,
   submittedHere: ReadonlyMap<string, number>,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
+  consumedQueueEntries?: readonly ConsumedQueueEntry[],
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
   const entries = new Map<string, PendingTurnEntry>();
@@ -301,9 +439,46 @@ export function reconcilePendingEntries(
     // keying projects the one composition twice. The entry's own id stays
     // the storage key; only the projection's identity is the wire id.
     const wireId = effectiveWireId(record);
-    if (record.targetRef !== ref || reflected.has(wireId)) continue;
+    // A retargeted resend targets the destination a peer chose while the
+    // pane that authored it stays its displayedRef: presentation follows
+    // the displayed ref (the same association the blocked, canceled and
+    // recovery selectors carry), so the author keeps seeing their
+    // in-flight work. Submission routing reads the record's own targetRef
+    // and never this filter. displayedRef is an outbox-record field - an
+    // optimistic (accepted) snapshot never carries it, so the read narrows.
+    const displayedHere = "displayedRef" in record ? record.displayedRef : undefined;
+    if ((record.targetRef !== ref && displayedHere !== ref) || reflected.has(wireId)) continue;
     const entry = outboxEntry(record, isOwnMutationRecord);
     if (entry) entries.set(wireId, entry);
+  }
+
+  // A consumed queue row still awaiting its authoritative replacement: the
+  // registry (consumedQueueEntriesFor) keeps it after thread/queueChanged
+  // removes the queue row and before hydration supplies the pending mutation
+  // or transcript item, so the message never vanishes for that window. A row
+  // the model reflects, or that the queue still names, retires here exactly
+  // as the pending-message projection retires it.
+  const queuedEntryIds = new Set(model?.queue?.ids ?? []);
+  for (const carried of consumedQueueEntries ?? []) {
+    if (queuedEntryIds.has(carried.entryId)) continue;
+    if (entries.has(carried.entryId)) continue;
+    if (entries.has(carried.clientMutationId)) continue;
+    if (reflected.has(carried.clientMutationId)) continue;
+    entries.set(carried.entryId, {
+      id: carried.entryId,
+      ref,
+      method: "queue",
+      text: carried.text,
+      imageCount: carried.imageCount,
+      skillNames: [...carried.skillNames],
+      commandNames: [...carried.commandNames],
+      createdAt: submittedHere.get(carried.clientMutationId),
+      state: "submitting",
+      source: "authoritative",
+      // The daemon accepted this entry into a mutation this client may not
+      // have submitted; provenance stays the registry's own answer.
+      fromThisClient: submittedHere.has(carried.clientMutationId),
+    });
   }
 
   for (const mutation of model?.pendingMutations ?? []) {
@@ -324,12 +499,6 @@ export function reconcilePendingEntries(
   // relative order is stable within a snapshot only). The stable sort keeps
   // array order for equal createdAt - a same-millisecond double-submit
   // keeps submission order in-session, an accepted corner. This is
-  // the ONE home of the rule: queue rows, chips, and the held-steer ghost
-  // stack all render this order.
-  return [...entries.values()].sort((left, right) => {
-    if (left.createdAt === undefined && right.createdAt === undefined) return 0;
-    if (left.createdAt === undefined) return 1;
-    if (right.createdAt === undefined) return -1;
-    return left.createdAt - right.createdAt;
-  });
+  // the ONE home of the rule: the pending stack renders this order.
+  return [...entries.values()].sort((left, right) => compareKnownNumber(left.createdAt, right.createdAt));
 }

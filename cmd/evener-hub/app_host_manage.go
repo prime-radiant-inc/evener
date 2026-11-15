@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync/atomic"
 
@@ -84,11 +85,12 @@ type hubHostManager struct {
 	testOnlyFailCompensationStep func(host, step string) error
 }
 
-// logf emits through the hub logging path when one is wired (tests may pass
-// nil).
+// logf emits one diagnostic through the hub logger when one is wired (tests
+// may pass nil). The injected sink is a *slog.Logger; this adapter keeps the
+// printf-shaped call sites and their message content.
 func (m *hubHostManager) logf(format string, args ...any) {
-	if m.cfg.logf != nil {
-		m.cfg.logf(format, args...)
+	if m.cfg.log != nil {
+		m.cfg.log.Info(fmt.Sprintf(format, args...))
 	}
 }
 
@@ -128,8 +130,8 @@ func hostManageHandler[Req, Resp any](h func(context.Context, Req) (Resp, error)
 // add/remove/update commits so the manifest's sources converge without waiting
 // for the next refresh tick. It returns the manager so tests can drive it
 // directly.
-func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, hosts *hostreg.Registry, navigation *NavigationService, logf func(format string, args ...any)) *hubHostManager {
-	m := newHubHostManager(sources, cfg.RemoteHostSSHManager, cfg, cfg.RemoteHostConfigPath, hosts, logf)
+func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, hosts *hostreg.Registry, navigation *NavigationService, log *slog.Logger) *hubHostManager {
+	m := newHubHostManager(sources, cfg.RemoteHostSSHManager, cfg, cfg.RemoteHostConfigPath, hosts, log)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAdd, hostManageHandler(func(ctx context.Context, params appwire.HostAddParams) (appwire.HostMutationResult, error) {
 		row, err := m.AddResult(ctx, params)
 		if err == nil && navigation != nil {

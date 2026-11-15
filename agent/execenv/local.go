@@ -111,13 +111,14 @@ type LocalExecutionEnvironment struct {
 	// session swapping onto a clone carries it there with AdoptSessionScratch.
 	scratchRoot, scratchSession string
 
-	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
-	// escalation approve), threaded onto a short-lived clone by
+	// sandboxGrant, when its path is non-empty, is a single per-invocation grant
+	// (M7 escalation approve), threaded onto a short-lived clone by
 	// WithSandboxInvocationGrant. The clone's lazily-built sandboxFS widens
-	// root-containment for EXACTLY this one path; masking, git-protection, and
-	// symlink refusal are unaffected. It is never set on a durable env and never
-	// copied by WithWorkingDirectory, so the grant cannot outlive the one re-dispatch.
-	sandboxGrant string
+	// root-containment for EXACTLY this one path, landing at its approved target;
+	// masking, git-protection, and symlink refusal are unaffected. It is never set
+	// on a durable env and never copied by WithWorkingDirectory, so the grant
+	// cannot outlive the one re-dispatch.
+	sandboxGrant invocationGrant
 
 	// LoginPATH, when non-empty, overrides the inherited process PATH for the
 	// PATH variable ONLY in commandEnvironment — every other variable still

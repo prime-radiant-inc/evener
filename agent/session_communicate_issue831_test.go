@@ -232,7 +232,7 @@ func TestPrepareToolCall_SameKeysStricterCommunicateOutputSchemaIsNotHealedIssue
 
 func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	repairedCh := drainRepairedEvents(sess)
 
@@ -261,7 +261,7 @@ func TestSession_DefaultCommunicateEnvelopeRepairsEmitBoundedTelemetryIssue831(t
 
 func TestSession_FailedCommunicateOutputPromotionDoesNotEmitUnappliedJSONRepairIssue831(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	observed := make(chan struct {
 		repaired []events.ToolCallRepairedData
@@ -350,7 +350,7 @@ func TestCommitPreparedRepairs_MarshalFailureDoesNotPartiallyCommitIssue831(t *t
 
 func TestSession_NonFiniteNumericRepairDoesNotEmitUnappliedChangesIssue831(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	def := issue831NumericRepairDefinition()
 	if err := sess.reg.Register(regTool(def)); err != nil {
@@ -476,7 +476,7 @@ func TestSession_InvalidRawCommunicateArgumentsDoNotHealOrEmitTelemetryIssue831(
 			},
 		} {
 			t.Run(output.name+"/"+tc.name, func(t *testing.T) {
-				sess := newSession(t, withoutGitSnapshot())
+				sess := newSession(t)
 				sess.stateDir = t.TempDir()
 				repairedCh := drainRepairedEvents(sess)
 				args := tc.args(output.tail)
@@ -524,7 +524,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sess := newSession(t, withoutGitSnapshot())
+			sess := newSession(t)
 			sess.stateDir = t.TempDir()
 			var mu sync.Mutex
 			var prompts []string
@@ -609,7 +609,7 @@ func TestSession_PreToolUseHookDoesNotDecodeOrMergeInvalidRawArgumentsIssue831(t
 
 func TestSession_PreToolUseHookDenialCannotOverrideInvalidRawArgumentsIssue831(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	var mu sync.Mutex
 	var prompts []string
@@ -662,7 +662,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sess := newSession(t, withoutGitSnapshot())
+			sess := newSession(t)
 			sess.stateDir = t.TempDir()
 			var mu sync.Mutex
 			var prompts []string
@@ -714,7 +714,7 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 
 func TestSession_PreToolUseHookStillReceivesValidSchemaInvalidArgumentsIssue831(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	var mu sync.Mutex
 	var prompts []string
@@ -767,7 +767,7 @@ func TestPrepareToolCall_WhitespaceOutputMessageDoesNotBecomeTopLevelMessageIssu
 
 func TestSession_WhitespaceOutputMessageDoesNotEmitRepairIssue831(t *testing.T) {
 	t.Parallel()
-	sess := newSession(t, withoutGitSnapshot())
+	sess := newSession(t)
 	sess.stateDir = t.TempDir()
 	repairedCh := drainRepairedEvents(sess)
 	raw := json.RawMessage(`{"end_turn":true,"output":"{\"message\":\"   \",\"data\":{},\"artifacts\":[]}"}`)

@@ -109,8 +109,9 @@ function validateOperation(value: unknown): NavigationOperation {
 function validateReceipt(value: unknown): NavigationMutation | null {
 	if (value === null) return null;
 	const receipt = record(value);
-	keys(receipt, ["generation_id", "targets"]);
+	keys(receipt, ["generation_id", "targets"], ["deferred"]);
 	valid(text(receipt.generation_id) && Array.isArray(receipt.targets));
+	if (Object.hasOwn(receipt, "deferred")) valid(typeof receipt.deferred === "boolean");
 	for (const raw of receipt.targets) {
 		const target = record(raw);
 		keys(target, ["kind"], ["section", "sectionId", "catalog", "projectKey", "revision"]);

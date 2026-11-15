@@ -58,7 +58,7 @@ func TestTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 	)
 
 	// The writer arrives, exactly as session_init.go attaches it.
-	sess.attachTranscript(w)
+	sess.attachTranscript(w, nil)
 	sess.Close()
 
 	var found int
@@ -95,7 +95,7 @@ func TestDurableTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testin
 	if err := sess.appendTurnWithDurableTranscriptMessage(schema.TurnSteering, msg, msg); err != nil {
 		t.Fatalf("durable append before the writer exists: %v, want nil", err)
 	}
-	sess.attachTranscript(w)
+	sess.attachTranscript(w, nil)
 	sess.Close()
 
 	var found int
@@ -154,7 +154,7 @@ func TestAttachTranscriptWithNilWriterDrainsWithoutPanic(t *testing.T) {
 	sess.pendingTranscriptTurns = []schema.Turn{schema.NewTurn(schema.TurnSteering, llm.User("orphan"))}
 	sess.mu.Unlock()
 
-	sess.attachTranscript(nil)
+	sess.attachTranscript(nil, nil)
 
 	sess.mu.Lock()
 	held := len(sess.pendingTranscriptTurns)

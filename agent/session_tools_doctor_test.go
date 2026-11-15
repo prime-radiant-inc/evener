@@ -36,6 +36,126 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
+func TestDoctorTurnIDsToolAppliesSinceAndBucket(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucketA := newBucketUnder(t, stateHome)
+	bucketB := newBucketUnder(t, stateHome)
+
+	sidA := writeDoctorFixtureSession(t, bucketA)
+	sidB := writeDoctorFixtureSession(t, bucketB)
+
+	// Write a reserved turn into sidA's transcript
+	turnA := schema.NewTurn(schema.TurnUserInput, llm.User("ask"))
+	turnA.ClientMutationID = "cm-turn_11"
+	turnA.StableTurnID = "turn_11"
+	twA, err := transcript.NewWriter(schema.SessionTranscriptPath(bucketA, sidA), transcript.Header{SessionID: sidA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := twA.Append(turnA); err != nil {
+		t.Fatal(err)
+	}
+	if err := twA.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a reserved turn into sidB's transcript
+	turnB := schema.NewTurn(schema.TurnUserInput, llm.User("ask"))
+	turnB.ClientMutationID = "cm-turn_12"
+	turnB.StableTurnID = "turn_12"
+	twB, err := transcript.NewWriter(schema.SessionTranscriptPath(bucketB, sidB), transcript.Header{SessionID: sidB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := twB.Append(turnB); err != nil {
+		t.Fatal(err)
+	}
+	if err := twB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set sidA's transcript mtime to 10 days ago
+	oldTime := time.Now().Add(-10 * 24 * time.Hour)
+	if err := os.Chtimes(schema.SessionTranscriptPath(bucketA, sidA), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := doctorToolForTest(t, stateHome)
+
+	// Scoped to bucketA
+	outBucketA, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "turnids",
+		"bucket":  filepath.Base(bucketA),
+	})
+	if err != nil {
+		t.Fatalf("turnids bucket: %v", err)
+	}
+	scanA, ok := outBucketA.(doctor.TurnIDScan)
+	if !ok {
+		t.Fatalf("result = %T, want doctor.TurnIDScan", outBucketA)
+	}
+	if scanA.SessionsScanned != 1 || len(scanA.Sessions) != 1 || scanA.Sessions[0].SessionID != sidA {
+		t.Errorf("bucket filter: scanned = %d, sessions = %+v, want only sidA", scanA.SessionsScanned, scanA.Sessions)
+	}
+
+	// Filtered by since (24h)
+	outSince, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "turnids",
+		"since":   "24h",
+	})
+	if err != nil {
+		t.Fatalf("turnids since: %v", err)
+	}
+	scanSince, ok := outSince.(doctor.TurnIDScan)
+	if !ok {
+		t.Fatalf("result = %T, want doctor.TurnIDScan", outSince)
+	}
+	if scanSince.SessionsScanned != 1 || len(scanSince.Sessions) != 1 || scanSince.Sessions[0].SessionID != sidB {
+		t.Errorf("since filter: scanned = %d, sessions = %+v, want only sidB", scanSince.SessionsScanned, scanSince.Sessions)
+	}
+
+	// Cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = rt.Exec(ctx, nil, map[string]any{"command": "turnids"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled ctx error = %v, want context.Canceled", err)
+	}
+}
+
+func TestDoctorAPILogToolSurfacesUnrecordedHealth(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	sid := writeDoctorFixtureSession(t, bucket)
+
+	// Empty 0-byte .api.jsonl file
+	apiPath := filepath.Join(bucket, "sessions", sid+".api.jsonl")
+	if err := os.WriteFile(apiPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Meta has TurnCount: 2
+	if err := schema.SaveSessionMeta(bucket, schema.SessionMeta{ID: sid, TurnCount: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := doctorToolForTest(t, stateHome)
+	out, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command":  "apilog",
+		"selector": sid,
+		"health":   true,
+	})
+	if err != nil {
+		t.Fatalf("apilog health: %v", err)
+	}
+	res, ok := out.(doctor.APIHealthResult)
+	if !ok {
+		t.Fatalf("result = %T, want doctor.APIHealthResult", out)
+	}
+	if res.APILogEnabled || !res.Unrecorded || res.Status != "not_recorded" {
+		t.Errorf("unrecorded health: api_log_enabled=%t, unrecorded=%t, status=%q; want false/true/not_recorded", res.APILogEnabled, res.Unrecorded, res.Status)
+	}
+}
+
 // doctorToolForTest builds a session with a real state dir (one bucket, one
 // session fixture written by the caller) and returns its doctor_evener
 // registered tool plus the state root to pass.

@@ -10,4 +10,11 @@ type ContextMetrics struct {
 	// declared, cataloged, or listed size, so a renderer can present the
 	// figure as an estimate instead of fact.
 	Assumed bool
+	// WindowSource says where Window came from: the registry layer that
+	// supplied it ("live", "overlay", "config", or "snapshot", which also
+	// covers the refreshed catalog cache) or "assumed".
+	WindowSource string
+	// CompactionThreshold is the active per-model compaction trigger in tokens,
+	// or 0 when the model has no custom compaction threshold.
+	CompactionThreshold int
 }

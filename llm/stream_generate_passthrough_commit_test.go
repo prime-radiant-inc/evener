@@ -38,6 +38,7 @@ func passthroughCommitOptions(client *Client) GenerateOptions {
 // passthrough, then the stream truncates. A retry would resend the refusal to
 // the caller, so the high-level stream must stop after one attempt.
 func TestStreamGenerate_ContentBearingProviderEventBlocksRetry(t *testing.T) {
+	t.Parallel()
 	c, a := newScriptedStreamClient(
 		// Attempt 1: a content-bearing passthrough, then truncation.
 		replayEvents(StreamEvent{
@@ -79,6 +80,7 @@ func TestStreamGenerate_ContentBearingProviderEventBlocksRetry(t *testing.T) {
 // of the classification: a passthrough the adapter does NOT mark carries no
 // content, so a truncation after it still recovers through the retry budget.
 func TestStreamGenerate_ControlOnlyProviderEventStillRetries(t *testing.T) {
+	t.Parallel()
 	c, a := newScriptedStreamClient(
 		replayEvents(
 			StreamEvent{Type: StreamEventStreamStart},

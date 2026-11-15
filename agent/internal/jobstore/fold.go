@@ -32,7 +32,7 @@ func FoldOrdered(events []Event) []*JobRecord {
 	recs := make(map[string]*JobRecord)
 	order := make([]string, 0, len(sorted))
 	for _, e := range sorted {
-		if !isJobRecordEventKind(e.Kind) {
+		if !IsJobRecordEvent(e.Kind) {
 			continue
 		}
 		if recs[e.JobID] == nil {
@@ -47,7 +47,9 @@ func FoldOrdered(events []Event) []*JobRecord {
 	return ordered
 }
 
-func isJobRecordEventKind(kind EventKind) bool {
+// IsJobRecordEvent reports whether an event of kind folds into a job's
+// record. Every other kind leaves job records untouched.
+func IsJobRecordEvent(kind EventKind) bool {
 	switch kind {
 	case EventJobStarted,
 		EventJobFinished,
@@ -80,15 +82,22 @@ func Apply(jobs map[string]*JobRecord, watches map[string]*WatchRecord, event Ev
 }
 
 func applyJobEvent(recs map[string]*JobRecord, event Event) {
-	if !isJobRecordEventKind(event.Kind) {
+	if !IsJobRecordEvent(event.Kind) {
 		return
 	}
-	record := recs[event.JobID]
+	recs[event.JobID] = ApplyJob(recs[event.JobID], event)
+}
+
+// ApplyJob folds one job-record event (see IsJobRecordEvent) into record in
+// place, with the same terminal and notification authority as Fold, and
+// returns it. A nil record starts the job's record. Events must arrive in seq
+// order, as Fold sorts them.
+func ApplyJob(record *JobRecord, event Event) *JobRecord {
 	if record == nil {
 		record = &JobRecord{JobID: event.JobID, NotifyState: NotifyNotArmed}
-		recs[event.JobID] = record
 	}
 	applyEvent(record, event)
+	return record
 }
 
 func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
@@ -101,12 +110,16 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 			e.Watch.VisibleSessionID == "" || e.Watch.Target == "" || e.Watch.ConfigHash == "" {
 			return
 		}
+		target := e.Watch.Target
+		if target == "caller" {
+			target = "self"
+		}
 		rec := &WatchRecord{
 			WatchID:          e.WatchID,
 			Generation:       e.Watch.Generation,
 			OwnerSessionID:   e.Watch.OwnerSessionID,
 			VisibleSessionID: e.Watch.VisibleSessionID,
-			Target:           e.Watch.Target,
+			Target:           target,
 			SendTo:           e.Watch.SendTo,
 			ConfigHash:       e.Watch.ConfigHash,
 			Condition:        e.Watch.Condition,
@@ -123,6 +136,7 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 			rec.SourceDelegateID = e.Watch.Config.SourceDelegateID
 			rec.SourceDelegateGeneration = e.Watch.Config.SourceDelegateGeneration
 			rec.StableReceiver = e.Watch.Config.StableReceiver
+			rec.Note = e.Watch.Config.Note
 		}
 		watches[e.WatchID] = rec
 	case EventWatchCleared:
@@ -135,6 +149,17 @@ func applyWatchEvent(watches map[string]*WatchRecord, e Event) {
 		}
 		w.Active = false
 		w.EndReason = e.Watch.EndReason
+		w.EndedAt = e.TS
+		maxSeq := 0
+		for _, other := range watches {
+			if other != nil && other.EndedSeq > maxSeq {
+				maxSeq = other.EndedSeq
+			}
+		}
+		w.EndedSeq = maxSeq + 1
+		if e.Watch.Deliveries > 0 {
+			w.Deliveries = e.Watch.Deliveries
+		}
 	}
 }
 

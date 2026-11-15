@@ -109,10 +109,11 @@ func TestExtFromContentType(t *testing.T) {
 }
 
 func TestWebFetchTool_Integration(t *testing.T) {
+	const titleSentinel = "WFTITLE9B4E21"
 	// Serve HTML via httptest.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, `<html><body><h1>Test Page</h1><p>This is a test document about Go programming.</p></body></html>`)
+		_, _ = fmt.Fprintf(w, `<html><head><title>%s</title></head><body><h1>Test Page</h1><p>This is a test document about Go programming.</p></body></html>`, titleSentinel)
 	}))
 	defer srv.Close()
 
@@ -195,6 +196,9 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	if !strings.Contains(userText, "Test Page") {
 		t.Fatalf("cheap model user message missing page content: %s", userText)
 	}
+	if !strings.Contains(userText, titleSentinel) {
+		t.Fatalf("cheap model user message missing <title> %s: %s", titleSentinel, userText)
+	}
 
 	// Verify cache files use date-bucketed directory structure under XDG cache.
 	// Try both dates to tolerate a midnight boundary crossing during the fetch.
@@ -224,6 +228,9 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	}
 	if !strings.Contains(string(mdContent), "Test Page") {
 		t.Fatalf("rendered.md missing page content")
+	}
+	if !strings.Contains(string(mdContent), titleSentinel) {
+		t.Fatalf("rendered.md missing <title> %s: %s", titleSentinel, string(mdContent))
 	}
 }
 
@@ -761,4 +768,175 @@ func TestWebFetch_ModelContentTruncationNeverSplitsRune(t *testing.T) {
 			t.Fatalf("cheap-model request contains invalid UTF-8: the content cap split a rune")
 		}
 	}
+}
+
+func TestWebFetchHTMLToMarkdown_PreservesTitleWhenAbsentFromBody(t *testing.T) {
+	t.Parallel()
+	const (
+		jsTitleSentinel     = "WFJSTITLE8C14A2"
+		entityTitlePartA    = "WFENTITYA21F"
+		entityTitlePartB    = "WFENTITYB32E"
+		svgTitleSentinel    = "WFSVGTITLE77D1"
+		scriptTitleSentinel = "WFSCRIPTTITLE55B9"
+		matchedHeading      = "WFMATCHHEAD44C8"
+	)
+
+	t.Run("empty_or_js_body_keeps_title", func(t *testing.T) {
+		t.Parallel()
+		raw := fmt.Sprintf(`<!doctype html><html><head><title>%s</title></head><body><div><script src="/s.js"></script></div></body></html>`, jsTitleSentinel)
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if md != "# "+jsTitleSentinel {
+			t.Fatalf("htmlToMarkdown(js shell) = %q, want %q", md, "# "+jsTitleSentinel)
+		}
+	})
+
+	t.Run("short_title_not_suppressed_by_body_substring", func(t *testing.T) {
+		t.Parallel()
+		raw := `<html><head><title>Go</title></head><body><p>Supported by Google.</p></body></html>`
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if md != "# Go\n\nSupported by Google." {
+			t.Fatalf("htmlToMarkdown(short title) = %q, want title heading plus body", md)
+		}
+	})
+
+	t.Run("collapses_whitespace_and_unescapes_entities", func(t *testing.T) {
+		t.Parallel()
+		raw := fmt.Sprintf("<html><head><title>\n  %s &amp;\t%s  </title></head><body><p>Body42.</p></body></html>", entityTitlePartA, entityTitlePartB)
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		wantPrefix := fmt.Sprintf("# %s & %s\n\n", entityTitlePartA, entityTitlePartB)
+		if !strings.HasPrefix(md, wantPrefix) {
+			t.Fatalf("htmlToMarkdown = %q, want prefix %q", md, wantPrefix)
+		}
+	})
+
+	t.Run("ignores_svg_template_comment_and_script_titles", func(t *testing.T) {
+		t.Parallel()
+		const templateTitleSentinel = "WFTEMPLATETITLE66E2"
+		raw := fmt.Sprintf(`<html><head><!-- <title>%s</title> --><script>var x = "<title>%s</title>";</script><template><title>%s</title></template></head><body><svg><title>%s</title></svg><p>Body99.</p></body></html>`,
+			scriptTitleSentinel, scriptTitleSentinel, templateTitleSentinel, svgTitleSentinel)
+		md, err := htmlToMarkdown(raw)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown: %v", err)
+		}
+		if strings.Contains(md, scriptTitleSentinel) || strings.Contains(md, templateTitleSentinel) {
+			t.Fatalf("comment/script/template title leaked into markdown: %q", md)
+		}
+		if strings.HasPrefix(md, "# "+svgTitleSentinel) {
+			t.Fatalf("SVG <title> was promoted to document heading: %q", md)
+		}
+	})
+
+	t.Run("does_not_duplicate_matching_heading", func(t *testing.T) {
+		t.Parallel()
+		for _, bodyHeading := range []string{
+			fmt.Sprintf("<h1>%s</h1>", strings.ToLower(matchedHeading)),
+			"<h1>WFBR44A<br>WFBR44B</h1>",
+			"<h1><div>WFBR44A</div><div>WFBR44B</div></h1>",
+			"<h1>WFBR44A <textarea>WFIGNORE99</textarea> WFBR44B</h1>",
+			`<h1>WFBR44A WFBR44B <a href="#anchor" aria-hidden="true">#</a></h1>`,
+			`<h1>WFBR44A WFBR44B<a href="#anchor">¶</a></h1>`,
+			"<h1><code>WFBR44A WFBR44B</code></h1>",
+			"<h1><em>WFBR44A</em> WFBR44B</h1>",
+		} {
+			title := "WFBR44A WFBR44B"
+			needle := "WFBR44A WFBR44B"
+			if strings.Contains(bodyHeading, strings.ToLower(matchedHeading)) {
+				title = matchedHeading
+				needle = matchedHeading
+			}
+			raw := fmt.Sprintf(`<html><head><title>%s</title></head><body>%s<p>Body88.</p></body></html>`, title, bodyHeading)
+			md, err := htmlToMarkdown(raw)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown(%s): %v", bodyHeading, err)
+			}
+			plain := strings.NewReplacer("*", "", "`", "").Replace(strings.ToUpper(md))
+			if got := strings.Count(plain, needle); got != 1 {
+				t.Fatalf("matching <title> and %s emitted %d occurrences of %s, want 1:\n%s", bodyHeading, got, needle, md)
+			}
+		}
+	})
+
+	t.Run("fenced_code_comment_or_partial_link_heading_keeps_title", func(t *testing.T) {
+		t.Parallel()
+		const (
+			codeTitle    = "WFCODEINSTALL91"
+			partialTitle = "WFPARTIAL77"
+		)
+		for _, raw := range []string{
+			fmt.Sprintf("<html><head><title>%s</title></head><body><pre><code># %s\necho ok</code></pre></body></html>", codeTitle, codeTitle),
+			fmt.Sprintf("<html><head><title>%s</title></head><body><ul><li><p>Step:</p><pre><code># %s</code></pre></li></ul></body></html>", codeTitle, codeTitle),
+		} {
+			md, err := htmlToMarkdown(raw)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown: %v", err)
+			}
+			if !strings.HasPrefix(md, "# "+codeTitle+"\n\n") {
+				t.Fatalf("fenced code comment suppressed <title>: %q", md)
+			}
+		}
+
+		partial := fmt.Sprintf(`<html><head><title>%s</title></head><body><h1>%s <a href="#a">Part 1</a> extra (note)</h1></body></html>`, partialTitle, partialTitle)
+		mdPartial, err := htmlToMarkdown(partial)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown(partial): %v", err)
+		}
+		if !strings.HasPrefix(mdPartial, "# "+partialTitle+"\n\n") {
+			t.Fatalf("non-trailing fragment link falsely suppressed <title>: %q", mdPartial)
+		}
+	})
+
+	t.Run("escapes_markdown_atx_and_rcdata_html_in_title", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			title    string
+			wantHead string
+		}{
+			{title: "WFTRAIL11 #", wantHead: `# WFTRAIL11 \#`},
+			{title: "###", wantHead: `# ##\#`},
+			{title: "WFRCDATA22 <script>alert(1)</script> [x](https://x.invalid)", wantHead: `# WFRCDATA22 &lt;script&gt;alert(1)&lt;/script&gt; \[x](https://x.invalid)`},
+		} {
+			raw := fmt.Sprintf("<html><head><title>%s</title></head><body><p>Body77.</p></body></html>", tc.title)
+			md, err := htmlToMarkdown(raw)
+			if err != nil {
+				t.Fatalf("htmlToMarkdown(%q): %v", tc.title, err)
+			}
+			if !strings.HasPrefix(md, tc.wantHead+"\n\n") {
+				t.Fatalf("htmlToMarkdown(%q) = %q, want heading %q", tc.title, md, tc.wantHead)
+			}
+		}
+	})
+
+	t.Run("scopes_to_first_head_title_only", func(t *testing.T) {
+		t.Parallel()
+		const (
+			secondTitle = "WFSECONDTITLE31A"
+			bodyTitle   = "WFBODYTITLE52B"
+		)
+		emptyFirst := fmt.Sprintf("<html><head><title>   </title><title>%s</title></head><body><p>Body66.</p></body></html>", secondTitle)
+		md, err := htmlToMarkdown(emptyFirst)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown(empty first): %v", err)
+		}
+		if strings.Contains(md, secondTitle) {
+			t.Fatalf("second <title> promoted past empty first <title>: %q", md)
+		}
+
+		inBody := fmt.Sprintf("<html><head></head><body><title>%s</title><p>Body55.</p></body></html>", bodyTitle)
+		mdBody, err := htmlToMarkdown(inBody)
+		if err != nil {
+			t.Fatalf("htmlToMarkdown(body title): %v", err)
+		}
+		if strings.HasPrefix(mdBody, "# "+bodyTitle) {
+			t.Fatalf("<body> <title> was promoted to document heading: %q", mdBody)
+		}
+	})
 }

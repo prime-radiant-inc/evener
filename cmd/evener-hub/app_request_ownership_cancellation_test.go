@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,10 +56,8 @@ func TestHubRPCCanceledActionDoesNotWaitForExplicitResume(t *testing.T) {
 					t.Fatal(err)
 				}
 				resumed := make(chan error, 1)
-				var lifecycleLog bytes.Buffer
-				resumeCtx, _ := withThreadLifecycleLog(t.Context(), "resume", id, &lifecycleLog)
 				go func() {
-					_, err := server.Router().Dispatch(resumeCtx, appwire.Request{Method: appwire.MethodThreadResume, Params: params})
+					_, err := server.Router().Dispatch(t.Context(), appwire.Request{Method: appwire.MethodThreadResume, Params: params})
 					resumed <- err
 				}()
 				req := <-entered
@@ -111,17 +108,6 @@ func TestHubRPCCanceledActionDoesNotWaitForExplicitResume(t *testing.T) {
 				releaseResume()
 				<-resumed
 				synctest.Wait()
-				records := assertThreadLifecycleRecords(t, lifecycleLog.String())
-				for _, record := range records {
-					if record["state"] != "complete" {
-						continue
-					}
-					result, class := "success", "none"
-					if record["stage"] == "request" || record["stage"] == "spawner_resume" {
-						result, class = "error", "failed"
-					}
-					assertThreadLifecycleOutcome(t, records, record["stage"], result, class)
-				}
 			})
 		})
 	}

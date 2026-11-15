@@ -56,6 +56,20 @@ func TestCompareMetric(t *testing.T) {
 	}
 }
 
+// TestMetricSourceResolveAnswersEveryAPIHealthMetricName guards the coupling
+// the API-health switch deliberately lacks a default for: every path routed to
+// APIHealthResult by needsAPIHealth must have its own case in resolve. A new
+// name added without one falls through to the totals path, which this test
+// catches by leaving haveAPILog false.
+func TestMetricSourceResolveAnswersEveryAPIHealthMetricName(t *testing.T) {
+	src := metricSource{haveAPIHealth: true}
+	for path := range apiHealthMetricNames {
+		if got, err := src.resolve(path); err != nil {
+			t.Errorf("resolve(%q) = (%v, %v); every apiHealthMetricNames key needs an API-health case", path, got, err)
+		}
+	}
+}
+
 func TestToFloat(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

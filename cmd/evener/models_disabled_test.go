@@ -12,6 +12,7 @@ func TestModelsListDisabled(t *testing.T) {
 	modelsTestEnv(t)
 	modelsFixture(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk")
+	t.Setenv("ANTHROPIC_BASE_URL", gatewayModelsServer(t, 0))
 	path := filepath.Join(t.TempDir(), "providers.toml")
 	cfg := "[providers.anthropic]\napi_key = \"sk\"\n[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n"
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {

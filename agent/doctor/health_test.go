@@ -316,6 +316,7 @@ func TestTranscriptHealth_JSONFields(t *testing.T) {
 	for _, key := range []string{
 		"session_id", "tool_calls", "tool_errors", "longest_identical_run",
 		"truncation_warnings", "steering", "jobs", "stale_notifications", "user_corrections",
+		"assistant_fabrications",
 	} {
 		if _, ok := m[key]; !ok {
 			t.Errorf("HealthResult JSON missing field %q: %s", key, string(b))
@@ -334,10 +335,56 @@ func TestRenderHealth_CompactTable(t *testing.T) {
 		sid, "shell", "denied=4", "timeout=1", "longest_identical_run: tool=shell length=4 all_errors=true",
 		"truncation_warnings: 1", "loop-detected=1", "notification=1",
 		"run_timeout=1", "zero_output_terminal=1", "stale_notifications: 1", "user_corrections (proxy): 2",
+		"assistant_fabrications: 0 (-)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered health missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestTranscriptHealth_AssistantFabrications(t *testing.T) {
+	t.Parallel()
+
+	// 1. Clean + fenced-code discussion reports 0 and nil map.
+	fencedTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("explain tags")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("In fenced code:\n```xml\n<delegate-notification delegate_id=\"dlg_1\">ok</delegate-notification>\n<｜DSML｜ parameter name=\"x\">\n```\nInline `<job-notification>` too.")),
+	}
+	cleanBase, cleanSID := rejectedSignatureFixture(t, fencedTurns)
+	cleanHealth, err := TranscriptHealth(context.Background(), cleanBase, cleanSID)
+	if err != nil {
+		t.Fatalf("TranscriptHealth(clean): %v", err)
+	}
+	if cleanHealth.AssistantFabrications != 0 || cleanHealth.AssistantFabricationsByKind != nil {
+		t.Fatalf("clean health = (%d, %v), want (0, nil)", cleanHealth.AssistantFabrications, cleanHealth.AssistantFabricationsByKind)
+	}
+	if rendered := RenderHealth(cleanHealth); !strings.Contains(rendered, "assistant_fabrications: 0 (-)") {
+		t.Fatalf("clean RenderHealth missing 0 (-):\n%s", rendered)
+	}
+
+	// 2. 1 multi-tag harness_envelope turn + 1 tool_markup turn + 1 compaction fold copy of the envelope turn -> total 2 (1 each).
+	envelopeTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>\n[answers]\n1. [q] -> \"yes\""))
+	markupTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi"))
+	fabTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("go")),
+		envelopeTurn,
+		markupTurn,
+		schema.NewTurn(schema.TurnCheckpoint, llm.User("checkpoint")),
+		foldCopy(envelopeTurn, 1),
+	}
+	fabBase, fabSID := rejectedSignatureFixture(t, fabTurns)
+	fabHealth, err := TranscriptHealth(context.Background(), fabBase, fabSID)
+	if err != nil {
+		t.Fatalf("TranscriptHealth(fab): %v", err)
+	}
+	if fabHealth.AssistantFabrications != 2 ||
+		fabHealth.AssistantFabricationsByKind[fabricationKindHarnessEnvelope] != 1 ||
+		fabHealth.AssistantFabricationsByKind[fabricationKindToolMarkup] != 1 {
+		t.Fatalf("fab health = (%d, %v), want (2, harness_envelope=1 tool_markup=1)", fabHealth.AssistantFabrications, fabHealth.AssistantFabricationsByKind)
+	}
+	if rendered := RenderHealth(fabHealth); !strings.Contains(rendered, "assistant_fabrications: 2 (harness_envelope=1 tool_markup=1)") {
+		t.Fatalf("fab RenderHealth missing expected counts:\n%s", rendered)
 	}
 }
 
@@ -441,6 +488,145 @@ func rejectedSignatureFixture(t *testing.T, turns []schema.Turn) (base, sid stri
 	return base, sid
 }
 
+func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
+	t.Parallel()
+
+	t.Run("retained_tail_metrics", func(t *testing.T) {
+		t.Parallel()
+		readCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", "read_file", `{"path":"huge.log"}`),
+		}})
+		readRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", "read_file", truncationBanner+" truncated body", false),
+		}})
+		loopSteer := steeringTurn("loop warning", events.SteeringKindLoopDetected)
+		doneCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			communicateCall(true, ""),
+		}})
+		staleNotif := steeringTurn("job finished", events.SteeringKindNotification)
+		postDoneUser := schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			assistantText("one more check"),
+		}})
+		shellCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c2", "shell", `{"cmd":"cat /root/secret"}`),
+		}})
+		shellRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c2", "shell", "permission denied: /root/secret", true),
+		}})
+
+		turns := []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("start")}}),
+			readCall,     // 1
+			readRes,      // 2
+			loopSteer,    // 3
+			doneCall,     // 4
+			staleNotif,   // 5
+			postDoneUser, // 6
+			shellCall,    // 7
+			shellRes,     // 8
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			schema.NewTurn(schema.TurnSummary, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("summary")}}),
+			foldCopy(readCall, 1),
+			foldCopy(readRes, 2),
+			foldCopy(loopSteer, 3),
+			foldCopy(staleNotif, 5),
+			foldCopy(postDoneUser, 6),
+			foldCopy(shellCall, 7),
+			foldCopy(shellRes, 8),
+		}
+		base, sid := rejectedSignatureFixture(t, turns)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if got := h.ToolCalls["read_file"]; got != 1 {
+			t.Errorf("ToolCalls[read_file] = %d, want 1", got)
+		}
+		if got := h.ToolCalls["shell"]; got != 1 {
+			t.Errorf("ToolCalls[shell] = %d, want 1", got)
+		}
+		if got := h.ToolErrors["shell"]["denied"]; got != 1 {
+			t.Errorf("ToolErrors[shell][denied] = %d, want 1", got)
+		}
+		if h.LongestIdenticalRun.Length != 1 {
+			t.Errorf("LongestIdenticalRun = %+v, want Length 1", h.LongestIdenticalRun)
+		}
+		if h.TruncationWarnings != 1 {
+			t.Errorf("TruncationWarnings = %d, want 1", h.TruncationWarnings)
+		}
+		if got := h.Steering[events.SteeringKindLoopDetected]; got != 1 {
+			t.Errorf("Steering[loop-detected] = %d, want 1", got)
+		}
+		if got := h.Steering[events.SteeringKindNotification]; got != 1 {
+			t.Errorf("Steering[notification] = %d, want 1", got)
+		}
+		if h.StaleNotifications != 1 {
+			t.Errorf("StaleNotifications = %d, want 1", h.StaleNotifications)
+		}
+		if h.UserCorrections != 2 {
+			t.Errorf("UserCorrections = %d, want 2", h.UserCorrections)
+		}
+	})
+
+	t.Run("pre_done_copy_after_done_not_counted_as_post_done", func(t *testing.T) {
+		t.Parallel()
+		userBeforeDone := schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			assistantText("initial task"),
+		}})
+		notifBeforeDone := steeringTurn("delegate finished", events.SteeringKindNotification)
+		doneCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			communicateCall(true, ""),
+		}})
+
+		turns := []schema.Turn{
+			userBeforeDone,
+			notifBeforeDone,
+			doneCall,
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			foldCopy(userBeforeDone, 0),
+			foldCopy(notifBeforeDone, 1),
+		}
+		base, sid := rejectedSignatureFixture(t, turns)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if h.StaleNotifications != 0 {
+			t.Errorf("StaleNotifications = %d, want 0", h.StaleNotifications)
+		}
+		if h.UserCorrections != 0 {
+			t.Errorf("UserCorrections = %d, want 0", h.UserCorrections)
+		}
+	})
+
+	t.Run("single_replayed_call_is_not_identical_run_of_two", func(t *testing.T) {
+		t.Parallel()
+		shellCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", "shell", `{"cmd":"false"}`),
+		}})
+		shellRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", "shell", "exit 1", true),
+		}})
+
+		turns := []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("run")}}),
+			shellCall,
+			shellRes,
+			schema.NewTurn(schema.TurnCheckpoint, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("checkpoint")}}),
+			foldCopy(shellCall, 1),
+			foldCopy(shellRes, 2),
+		}
+		base, sid := rejectedSignatureFixture(t, turns)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if h.LongestIdenticalRun.Length != 1 {
+			t.Errorf("LongestIdenticalRun = %+v, want Length 1", h.LongestIdenticalRun)
+		}
+	})
+}
+
 // A result call's end_turn counts only when its arguments parse and say so.
 func TestCallArgsEndTurn(t *testing.T) {
 	if callArgsEndTurn(json.RawMessage(`{not json`)) {
@@ -535,5 +721,126 @@ func TestTranscriptHealth_JobsTerminalReasons(t *testing.T) {
 	}
 	if r.Jobs.ZeroOutputTerminal != 1 {
 		t.Errorf("ZeroOutputTerminal = %d, want 1 (the running job is not terminal)", r.Jobs.ZeroOutputTerminal)
+	}
+}
+
+func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("check")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("g1", "grep_search", `{"pattern":"x"}`),
+			healthToolCall("s1", "run_shell_command", `{"command":"rm /etc/hosts"}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("g1", "grep", "no matches", false),
+			healthToolResult("s1", "shell", "permission denied", true),
+		}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("s2", "run_shell_command", `{"command":"rm /etc/hosts"}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("s2", "shell", "permission denied", true),
+			healthToolResult("l1", "list_dir", "permission denied", true),
+		}}),
+	}
+	writeSessionsFixtureSession(t, bucket, sidA,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		turns,
+		schema.SessionMeta{TurnCount: len(turns)},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+
+	h, err := TranscriptHealth(context.Background(), base, sidA)
+	if err != nil {
+		t.Fatalf("TranscriptHealth: %v", err)
+	}
+	if h.ToolCalls["grep"] != 1 {
+		t.Errorf("ToolCalls[grep] = %d, want 1 (all: %+v)", h.ToolCalls["grep"], h.ToolCalls)
+	}
+	if _, split := h.ToolCalls["grep_search"]; split {
+		t.Errorf("ToolCalls retained wire alias grep_search separately: %+v", h.ToolCalls)
+	}
+	if h.ToolCalls["shell"] != 2 || h.ToolErrors["shell"]["denied"] != 2 {
+		t.Errorf("shell calls=%d denied=%d, want 2 and 2 (calls=%+v errors=%+v)",
+			h.ToolCalls["shell"], h.ToolErrors["shell"]["denied"], h.ToolCalls, h.ToolErrors)
+	}
+	if h.LongestIdenticalRun.Tool != "shell" || h.LongestIdenticalRun.Length != 2 {
+		t.Errorf("LongestIdenticalRun = %+v, want {Tool:shell Length:2}", h.LongestIdenticalRun)
+	}
+	rendered := RenderHealth(h)
+	if !strings.Contains(rendered, "denied=2") || !strings.Contains(rendered, "list_dir") {
+		t.Errorf("RenderHealth omitted unified shell error counts or orphaned list_dir error:\n%s", rendered)
+	}
+
+	m := metricSource{health: h}
+	for _, metric := range []struct {
+		path string
+		want int
+	}{
+		{"tool_calls.shell", 2},
+		{"tool_calls.run_shell_command", 2},
+		{"tool_errors.shell.denied", 2},
+		{"tool_errors.run_shell_command.denied", 2},
+	} {
+		val, err := m.resolve(metric.path)
+		if err != nil {
+			t.Fatalf("resolve(%q): %v", metric.path, err)
+		}
+		if val != metric.want {
+			t.Errorf("resolve(%q) = %v, want %d", metric.path, val, metric.want)
+		}
+	}
+
+	chk := AuditCheck{Conditions: []auditCondition{{Metric: "longest_identical_run.tool", Op: "==", Value: "run_shell_command"}}}
+	if matched, err := chk.evaluate(m); err != nil || !matched {
+		t.Errorf("AuditCheck(longest_identical_run.tool == run_shell_command) = (%t, %v), want (true, nil)", matched, err)
+	}
+
+	customTurns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("custom")}}),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", "exec_command", `{"command":"pwd"}`),
+			healthToolCall("c2", "grep_search", `{"query":"custom"}`),
+			healthToolCall("c2b", "grep_search", `{"query":"custom"}`),
+			healthToolCall("c3", "run_shell_command", `{"message":"done","end_turn":true}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", "shell", "permission denied", true),
+			healthToolResult("c2", "grep_search", "bad query", true),
+			healthToolResult("c2b", "grep_search", "bad query", true),
+			healthToolResult("c3", "run_shell_command", `{"accepted":true}`, false),
+		}}),
+	}
+	writeSessionsFixtureSession(t, bucket, sidB,
+		transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+		customTurns,
+		schema.SessionMeta{
+			TurnCount: len(customTurns),
+			Config:    schema.ConfigSnapshot{ResultToolName: "run_shell_command"},
+		},
+		nil,
+		time.Unix(2, 0).UTC(),
+	)
+	hc, err := TranscriptHealth(context.Background(), base, sidB)
+	if err != nil {
+		t.Fatalf("TranscriptHealth(custom): %v", err)
+	}
+	if hc.ToolCalls["shell"] != 1 || hc.ToolCalls["run_shell_command"] != 1 || hc.ToolCalls["grep_search"] != 2 || hc.ToolCalls["grep"] != 0 {
+		t.Errorf("custom session ToolCalls = %+v, want shell=1 run_shell_command=1 grep_search=2 grep=0", hc.ToolCalls)
+	}
+	if hc.ToolErrors["grep_search"]["other"] != 2 || len(hc.ToolErrors["grep"]) != 0 {
+		t.Errorf("custom session ToolErrors = %+v, want grep_search[other]=2 and grep empty", hc.ToolErrors)
+	}
+	mc := metricSource{health: hc}
+	if got, err := mc.resolve("tool_errors.run_shell_command.denied"); err != nil || got != 0 {
+		t.Errorf("resolve(tool_errors.run_shell_command.denied) = (%v, %v), want (0, nil)", got, err)
+	}
+	grepRunChk := AuditCheck{Conditions: []auditCondition{{Metric: "longest_identical_run.tool", Op: "==", Value: "grep"}}}
+	if matched, err := grepRunChk.evaluate(mc); err != nil || matched {
+		t.Errorf("custom grep_search run matched canonical grep = (%t, %v), want (false, nil)", matched, err)
 	}
 }

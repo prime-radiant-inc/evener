@@ -260,7 +260,7 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	s.contextMgr.CheckpointThreshold = 2
 	s.contextMgr.SummarizeThreshold = 0.5
 	s.contextMgr.PreserveRecentTurns = 0
-	forcePressureAbove(t, s, 0.85)
+	forcePressureAbove(t, s, 0.92)
 	if _, err := s.SetHumanNote("note-73", "note-content-73"); err != nil {
 		t.Fatal(err)
 	}

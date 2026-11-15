@@ -166,7 +166,7 @@ func TestSkillCompaction_CheckpointOnly(t *testing.T) {
 		return "keep the token OPAQUE-77\n<skill-reload-selection>{\"reload_skills\":[\"scope:probe\"]}</skill-reload-selection>", nil
 	}
 	seedNumberedSessionHistory(t, s, 20)
-	forcePressureAbove(t, s, 0.85) // > CheckpointThreshold(0.80), < SummarizeThreshold(0.95): Layer 1 only
+	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90), < SummarizeThreshold(0.95): Layer 1 only
 
 	var rt events.RoundTimings
 	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &rt); err != nil {
@@ -280,7 +280,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 
 		// The next actual (checkpoint-only) compaction claims the deferred
 		// operation and consumes it.
-		forcePressureAbove(t, s, 0.85)
+		forcePressureAbove(t, s, 0.92)
 		if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &rt); err != nil {
 			t.Fatalf("prepareModelRequestWithError (actual): %v", err)
 		}
@@ -326,7 +326,7 @@ func TestSkillCompaction_DeferredAutomatic(t *testing.T) {
 				<-release
 			}
 			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSUMMARY_f1e9\n[END SUMMARY]")}
-		}, withoutGitSnapshot(), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
+		}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: stateDir}))
 		id := s.Meta().ID
 		disableSessionNaming(s)
 		seedNumberedSessionHistory(t, s, 20)

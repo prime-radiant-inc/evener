@@ -110,6 +110,30 @@ func TestMarshalWatchResult_TimerFieldsSurviveConfigToToolResult(t *testing.T) {
 	}
 }
 
+func TestMarshalWatchResult_EventEverySurvivesConfigToToolResult(t *testing.T) {
+	t.Parallel()
+	cfg := &watchConfig{
+		watchID:      "watch_every",
+		sourcePublic: "self",
+		events:       []string{"communicate"},
+		triggerEvery: 2,
+	}
+	value, err := marshalWatchResult(watchResultFromConfig(cfg, false), 0)
+	if err != nil {
+		t.Fatalf("marshalWatchResult: %v", err)
+	}
+	out, ok := value.(tool.StateResult).State.(jobWatchToolResult)
+	if !ok {
+		t.Fatalf("state = %T, want jobWatchToolResult", value)
+	}
+	if out.Every != 2 {
+		t.Fatalf("every = %d, want 2", out.Every)
+	}
+	if got := formatJobWatch(out); !strings.Contains(got, "events: communicate every 2") {
+		t.Fatalf("create text = %q, want the every echo", got)
+	}
+}
+
 func TestJobWatchTool_TimerRefusedWhenTurnEndsProcess(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)

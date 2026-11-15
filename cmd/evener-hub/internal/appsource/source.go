@@ -73,20 +73,22 @@ type ItemCandidateResult struct {
 // client merges a page by or replaces its history with. The hub's own cursor
 // identity is separate and rotates by its own rule.
 type HistoryIdentity struct {
-	BootGeneration string
-	Epoch          uint64
-	Snapshot       *appwire.SnapshotIdentity
-	Authoritative  bool
+	BootGeneration        string
+	Epoch                 uint64
+	Snapshot              *appwire.SnapshotIdentity
+	Authoritative         bool
+	ServingFacts          *appwire.HistoryServingFacts
+	LatestExecutionTurnID string
 }
 
 // ReadHistoryIdentity is the history identity a thread/read response carries.
 func ReadHistoryIdentity(response appwire.ThreadReadResponse) HistoryIdentity {
-	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative}
+	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative, ServingFacts: response.ServingFacts, LatestExecutionTurnID: response.LatestExecutionTurnID}
 }
 
 // PageHistoryIdentity is the history identity a thread/turns/list page carries.
 func PageHistoryIdentity(response appwire.ThreadTurnsListResponse) HistoryIdentity {
-	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative}
+	return HistoryIdentity{BootGeneration: response.BootGeneration, Epoch: response.Epoch, Snapshot: response.Snapshot, Authoritative: response.Authoritative, ServingFacts: response.ServingFacts, LatestExecutionTurnID: response.LatestExecutionTurnID}
 }
 
 // StampPage gives a page the hub packed the history identity it came from.
@@ -95,6 +97,8 @@ func (h HistoryIdentity) StampPage(response appwire.ThreadTurnsListResponse) app
 	response.Epoch = h.Epoch
 	response.Snapshot = h.Snapshot
 	response.Authoritative = h.Authoritative
+	response.ServingFacts = h.ServingFacts
+	response.LatestExecutionTurnID = h.LatestExecutionTurnID
 	return response
 }
 

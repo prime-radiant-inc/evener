@@ -119,7 +119,7 @@ func newDelegateLifecycleHarness(t *testing.T, legacyBinding bool) *delegateLife
 	}
 	t.Cleanup(func() { _ = rootWriter.Close() })
 	h.root = &Session{id: "root-session", stateDir: c.stateDir, delegateController: c}
-	h.root.attachTranscript(rootWriter)
+	h.root.attachTranscript(rootWriter, nil)
 	c.mu.Lock()
 	c.rootRuntime = h.root
 	c.mu.Unlock()

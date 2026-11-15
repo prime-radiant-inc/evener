@@ -45,9 +45,6 @@ export interface RepoLocationProps {
   // unrelated local repository that merely shares the path; those sessions get
   // the working dir alone.
   local: boolean;
-  // Whether the repo reference links to its forge. False where the line is a
-  // caption row on a phone, below the touch floor.
-  link?: boolean;
 }
 
 const CLASS = {
@@ -116,7 +113,7 @@ function MiddleTruncated({ text, cutOf }: { text: string; cutOf: (chars: string[
 
 // Memoized to keep the line stable in the pane footer while the
 // session's cwd and locality are unchanged.
-export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true }: RepoLocationProps) {
+export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocationProps) {
   const client = useClient();
   const location = useGitLocation(client, cwd, local);
 
@@ -132,7 +129,7 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true
         <MiddleTruncated text={cwd} cutOf={proportionalCut} />
       </span>
       {branch !== "" &&
-        (link && remote !== null ? (
+        (remote !== null ? (
           <a
             className={CLASS.link}
             href={remote.repoUrl}
@@ -152,13 +149,6 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local, link = true
               <MiddleTruncated text={reference} cutOf={branchMarkerCut} />
             </span>
           </a>
-        ) : !link ? (
-          // The phone footer's caption line keeps the shrinkable,
-          // middle-truncating layout whatever the remote: the branch must
-          // yield to the working directory rather than squeeze it to nothing.
-          <span className={CLASS.ref} title={branch} data-testid="composer-repo-branch">
-            <MiddleTruncated text={branch} cutOf={proportionalCut} />
-          </span>
         ) : (
           <span className={CLASS.branch} title={branch} data-testid="composer-repo-branch">
             {branch}

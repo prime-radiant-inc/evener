@@ -337,7 +337,7 @@ export function SessionChrome({
       >
         {placement === "composer" ? (
           <div className={CLASS.body} data-testid="session-chrome-inline-status">
-            <StatusRow sessionRef={sessionRef} model={model} now={now} />
+            <StatusRow sessionRef={sessionRef} model={model} now={now} align={compactRung ? "end" : undefined} />
             {/* The goal chip is gone entirely (Jesse's 2026-09-28 ruling,
                 "drop goal inline in the composer"): the composer row is
                 status and menu alone, and the goal objective stays visible

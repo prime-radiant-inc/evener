@@ -17,7 +17,7 @@ import (
 // signature has already failed twice.
 func TestRerunToolWithGrant_HumanApprovedRetryIsNotParked(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	s := newSession(t, withDir(t.TempDir()))
 	calls := 0
 	s.registerTool("denied_probe", "always fails identically", map[string]any{"type": "object"},
 		func(context.Context, any) (any, error) {
@@ -71,16 +71,17 @@ func approveNextEscalation(t *testing.T, s *Session) {
 // human approve it a third time.
 func TestRerunToolWithGrant_RepeatedApprovalsKeepTheCallDispatchable(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	s := newSession(t, withDir(t.TempDir()))
 	s.SetSubscriberCountFunc(func() int { return 1 })
 
 	const secret = "TOP-SECRET-PAYLOAD"
 	denied := &sandbox.DeniedError{
-		Mode:       sandbox.ModeRestricted,
-		Tool:       "read_file",
-		Path:       "/outside/secret.txt",
-		Reason:     "outside the readable roots",
-		ReasonKind: sandbox.DenialOutsideReadRoots,
+		Mode:        sandbox.ModeRestricted,
+		Tool:        "read_file",
+		Path:        "/outside/secret.txt",
+		Reason:      "outside the readable roots",
+		ReasonKind:  sandbox.DenialOutsideReadRoots,
+		GrantTarget: "/outside/secret.txt",
 	}
 	dispatches := 0
 	s.registerTool("read_file", "denied unless this one invocation was granted", map[string]any{"type": "object"},

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -893,13 +894,35 @@ func (p *delegateArrivalProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
 // captureHubLog redirects the hub's log output for one test and returns what it
 // wrote. A refusal the hub logs is behaviour, so a test that triggers one
 // asserts the line rather than letting it leak into the suite's output.
-func captureHubLog(t *testing.T) *bytes.Buffer {
+// capturedHubLog holds both destinations the hub's diagnostics used across the
+// logger migration: the standard log package (for code not migrated yet) and
+// the component logger a test config injects. String returns the standard
+// output followed by the component records' messages, so a test can assert
+// what the hub said without depending on either sink's formatting.
+type capturedHubLog struct {
+	bytes.Buffer
+	records *logCapture
+}
+
+func (c *capturedHubLog) logger() *slog.Logger { return c.records.logger() }
+
+func (c *capturedHubLog) String() string {
+	var out strings.Builder
+	out.WriteString(c.Buffer.String())
+	for _, record := range c.records.all() {
+		out.WriteString(record.message)
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func captureHubLog(t *testing.T) *capturedHubLog {
 	t.Helper()
-	var logged bytes.Buffer
+	logged := &capturedHubLog{records: &logCapture{}}
 	previous := log.Writer()
-	log.SetOutput(&logged)
+	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	return &logged
+	return logged
 }
 
 // liveClaimController verifies every rendezvous claim it is asked about, which
@@ -1662,6 +1685,7 @@ func TestHubForkRefusesAnAliasTwoDaemonsClaim(t *testing.T) {
 				DaemonProcesses: targetKeyedController(live, errors.New(verificationFailure)),
 			}
 			logged := captureHubLog(t)
+			cfg.Log = logged.logger()
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
 				t.Fatal(listErr)
@@ -2281,6 +2305,7 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 				}),
 			}
 			logged := captureHubLog(t)
+			cfg.Log = logged.logger()
 			// One claim, and the roster agrees with it, so nothing but that
 			// claim's own verification can decide this fork.
 			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
@@ -2382,6 +2407,7 @@ func TestHubForkResolvesAnAliasFromWhicheverSourceIsConfigured(t *testing.T) {
 				})
 			}
 			logged := captureHubLog(t)
+			cfg.Log = logged.logger()
 			if tc.rosterOnly {
 				// Ownership known only through the roster: no run dir to read,
 				// and the roster is maintained by something other than a scan

@@ -23,7 +23,9 @@ func modelsTestEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("EVENER_OFFLINE", "1")
-	for _, v := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "OPENAI_BASE_URL", "OLLAMA_HOST", "OLLAMA_BASE_URL"} {
+	// No provider credential or endpoint variable of the developer's shell may
+	// reach a fixture: a configured instance would make list/inspect dial it.
+	for _, v := range curatedProviderEnvVars(t) {
 		t.Setenv(v, "")
 		os.Unsetenv(v)
 	}
@@ -186,7 +188,7 @@ func TestModelsInspectMasksLiteralAuthHeaders(t *testing.T) {
 	modelsTestEnv(t)
 	modelsFixture(t)
 	path := filepath.Join(t.TempDir(), "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"https://gw.example/v1\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
+	cfg := "[providers.gw]\nbase = \"openai\"\nbase_url = \"" + gatewayModelsServer(t, 0) + "\"\nheaders = { \"Authorization\" = \"Bearer literal\", \"x-api-key\" = \"literal2\" }\n"
 	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -319,5 +321,43 @@ func TestModelsReadOnlyCommandsNeedNoStateHome(t *testing.T) {
 	}
 	if err := runModelsRefresh(nil, &stdout, &stderr); !errors.Is(err, userdirs.ErrNoStateHome) {
 		t.Fatalf("refresh error = %v, want ErrNoStateHome", err)
+	}
+}
+
+func TestModelsCompactionThreshold(t *testing.T) {
+	modelsTestEnv(t)
+	modelsFixture(t)
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.anthropic]\n[providers.anthropic.models.\"claude-opus-5\"]\ncompaction_threshold = 250000\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+
+	var stdout, stderr bytes.Buffer
+	if err := runModels([]string{"list", "--provider", "anthropic"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("list --provider anthropic: %v (%s)", err, stderr.String())
+	}
+	row := listedRow(stdout.String(), "anthropic/claude-opus-5")
+	if !strings.Contains(row, "compact=250000; ") {
+		t.Fatalf("expected NOTES column to prepend compact=250000 before warnings, got row:\n%s", row)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := runModels([]string{"inspect", "anthropic/claude-opus-5"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("inspect anthropic/claude-opus-5: %v (%s)", err, stderr.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("inspect JSON unmarshal: %v\n%s", err, stdout.String())
+	}
+	caps, _ := out["caps"].(map[string]any)
+	if caps["compaction_threshold"] != float64(250000) {
+		t.Fatalf("inspect caps.compaction_threshold = %v, want 250000", caps["compaction_threshold"])
+	}
+	prov, _ := out["provenance"].(map[string]any)
+	if prov["CompactionThreshold"] != "config/row" {
+		t.Fatalf("inspect provenance.CompactionThreshold = %v, want config/row", prov["CompactionThreshold"])
 	}
 }

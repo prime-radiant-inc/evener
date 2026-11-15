@@ -68,6 +68,7 @@ func assertLocalTokenBudgetFailure(t *testing.T, err error) {
 }
 
 func TestClientCompleteTokenBudgetPreventsAdapterDispatch(t *testing.T) {
+	t.Parallel()
 	c, adapter := tokenBudgetClient(t)
 	req := userRequest("budgeted", "model")
 	req.InputTokensEstimate = 9_000
@@ -80,6 +81,7 @@ func TestClientCompleteTokenBudgetPreventsAdapterDispatch(t *testing.T) {
 }
 
 func TestClientStreamTokenBudgetPreventsAdapterDispatch(t *testing.T) {
+	t.Parallel()
 	c, adapter := tokenBudgetClient(t)
 	req := userRequest("budgeted", "model")
 	req.InputTokensEstimate = 9_000
@@ -92,6 +94,7 @@ func TestClientStreamTokenBudgetPreventsAdapterDispatch(t *testing.T) {
 }
 
 func TestClientMiddlewareTokenBudgetMutationCannotBypassGuard(t *testing.T) {
+	t.Parallel()
 	c, adapter := tokenBudgetClient(t)
 	c.Use(llm.MiddlewareFunc{Complete: func(ctx context.Context, req llm.Request, next llm.CompleteFunc) (llm.Response, error) {
 		req.InputTokensEstimate = 9_000
@@ -102,5 +105,32 @@ func TestClientMiddlewareTokenBudgetMutationCannotBypassGuard(t *testing.T) {
 	assertLocalTokenBudgetFailure(t, err)
 	if got := adapter.callCount(); got != 0 {
 		t.Fatalf("adapter calls = %d, want 0", got)
+	}
+}
+
+func TestCompactionThresholdDoesNotClampTokenBudget(t *testing.T) {
+	t.Parallel()
+	res := registry.Resolved{
+		Instance:   "work",
+		ProviderID: "work",
+		ModelID:    "deepseek/deepseek-4.1-flash",
+		Caps: registry.Caps{
+			ContextWindow:       new(1_000_000),
+			CompactionThreshold: new(250_000),
+			MaxOutputTokens:     new(64_000),
+		},
+	}
+	req := userRequest("work", "deepseek/deepseek-4.1-flash")
+	req.InputTokensEstimate = 300_000
+
+	shaped, budget, err := llm.ApplyTokenBudget(req, res)
+	if err != nil {
+		t.Fatalf("ApplyTokenBudget error = %v, want nil (compaction_threshold must not reject wire requests)", err)
+	}
+	if budget.AdmittedOutput != 64_000 {
+		t.Fatalf("budget.AdmittedOutput = %d, want 64000 (unclamped by compaction_threshold)", budget.AdmittedOutput)
+	}
+	if shaped.MaxTokens == nil || *shaped.MaxTokens != 64_000 {
+		t.Fatalf("shaped.MaxTokens = %v, want 64000", shaped.MaxTokens)
 	}
 }

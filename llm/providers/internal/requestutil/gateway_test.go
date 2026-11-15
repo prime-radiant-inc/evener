@@ -8,6 +8,7 @@ import (
 )
 
 func TestGatewayInputModalities(t *testing.T) {
+	t.Parallel()
 	yes, no := true, false
 	cases := []struct {
 		name string
@@ -36,6 +37,7 @@ func TestGatewayInputModalities(t *testing.T) {
 }
 
 func TestDedupStrings(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   []string
@@ -59,6 +61,7 @@ func TestDedupStrings(t *testing.T) {
 // gateway's own fact, so it overrides a provider-wide inference in both
 // directions, and silence leaves what the caller inferred in place.
 func TestApplyGatewayFacts_Tools(t *testing.T) {
+	t.Parallel()
 	yes, no := true, false
 	cases := []struct {
 		name   string
@@ -85,6 +88,7 @@ func TestApplyGatewayFacts_Tools(t *testing.T) {
 }
 
 func TestGatewayEffortLadder(t *testing.T) {
+	t.Parallel()
 	levels := func(m map[string]string) GatewayClientCompat {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
 	}
@@ -187,6 +191,7 @@ func TestGatewayEffortLadder(t *testing.T) {
 // reasoning control at all, so passing one through would silently disable
 // thinking on that row.
 func TestApplyGatewayFacts_Dialect(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		compat     GatewayClientCompat
@@ -234,6 +239,7 @@ func TestApplyGatewayFacts_Dialect(t *testing.T) {
 // published beside the verdict cannot reach the wire, so neither the ladder nor
 // the effort name survives.
 func TestApplyGatewayFacts_EffortUnsupported(t *testing.T) {
+	t.Parallel()
 	no := false
 	cases := []struct {
 		name   string
@@ -279,6 +285,7 @@ func TestApplyGatewayFacts_EffortUnsupported(t *testing.T) {
 // field says. Controls on a Reasoning=false row are a shape derivation exists
 // to forbid.
 func TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict(t *testing.T) {
+	t.Parallel()
 	no := false
 	caps := registry.Caps{}
 	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{Reasoning: &no}, GatewayClientCompat{
@@ -301,6 +308,7 @@ func TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict(t *testing.T) {
 // parameter; keeping the weaker inferred verdict would make derivation clear
 // the controls and request shaping drop reasoning entirely.
 func TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning(t *testing.T) {
+	t.Parallel()
 	no := false
 	caps := registry.Caps{}
 	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
@@ -322,6 +330,7 @@ func TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning(t *testing.T) {
 // effort control, and is not proof the model reasons at all. Raising the
 // verdict for it would open a thinking-enable object on a non-reasoning model.
 func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
+	t.Parallel()
 	no := false
 	for name, levels := range map[string]map[string]string{
 		"empty":   {},
@@ -345,6 +354,7 @@ func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
 // leaving the stale rejection would make derivation discard the ladder the
 // gateway just advertised.
 func TestApplyGatewayFacts_PositiveVerdictClearsInheritedRejection(t *testing.T) {
+	t.Parallel()
 	yes := true
 	caps := registry.Caps{
 		Reasoning:                  new(true),
@@ -367,6 +377,7 @@ func TestApplyGatewayFacts_PositiveVerdictClearsInheritedRejection(t *testing.T)
 }
 
 func TestApplyGatewayFacts_Reasoning(t *testing.T) {
+	t.Parallel()
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}

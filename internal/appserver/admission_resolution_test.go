@@ -10,76 +10,107 @@ import (
 )
 
 func TestSubscriptionAdmissionResolverPanicIsContained(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
-		panic("resolver boom")
-	}})
-	c := s.NewConnection("panic")
-	c.setInitialized()
-	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf("resolver panic escaped ordered dispatch: %v", recovered)
-		}
-	}()
-	c.executeOrdered(context.Background(), msg)
-	response := <-c.send
-	if response.Error == nil || response.Error.Error.Code != appwire.CodeInternalError {
-		t.Fatalf("resolver panic response = %+v, want internal error", response)
-	}
-	if len(c.pendingAdmissions) != 0 || len(s.subs.byConn[c.id]) != 0 {
-		t.Fatal("resolver panic caused admission or subscription side effects")
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodThreadHistoryRead} {
+		t.Run(method, func(t *testing.T) {
+			var panicValue any = errors.New("resolver fault")
+			var panicLogs [][]any
+			s := NewServer(ServerConfig{
+				Logf: func(_ string, args ...any) { panicLogs = append(panicLogs, args) },
+				SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+					panic(panicValue)
+				},
+			})
+			c := s.NewConnection("panic")
+			c.setInitialized()
+			msg := appwire.RequestMessage(appwire.NewIntID(1), method, json.RawMessage(`{"subscribe":true}`))
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("resolver panic escaped ordered dispatch: %v", recovered)
+				}
+			}()
+			c.executeOrdered(context.Background(), msg)
+			response := <-c.send
+			if response.Error == nil || response.Error.Error.Code != appwire.CodeInternalError {
+				t.Fatalf("resolver panic response = %+v, want internal error", response)
+			}
+			if len(c.pendingAdmissions) != 0 || len(s.subs.byConn[c.id]) != 0 {
+				t.Fatal("resolver panic caused admission or subscription side effects")
+			}
+			if len(panicLogs) != 1 || len(panicLogs[0]) != 3 || panicLogs[0][0] != method || panicLogs[0][1] != panicValue {
+				t.Fatalf("resolver panic was not captured with its method and cause: %+v", panicLogs)
+			}
+			if stack, ok := panicLogs[0][2].([]byte); !ok || len(stack) == 0 {
+				t.Fatal("resolver panic log omitted its stack")
+			}
+		})
 	}
 }
 
 func TestUnresolvedSubscribingReadFailsClosed(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
-		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
-	}})
-	c := s.NewConnection("unresolved")
-	c.setInitialized()
-	HandleTyped(s.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		Subscribe(ctx, "thread")
-		return appwire.ThreadReadResponse{}, nil
-	})
-	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
-	c.executeOrdered(context.Background(), msg)
-	response := <-c.send
-	if response.Error == nil || response.Error.Error.Code != appwire.CodeUnavailable {
-		t.Fatalf("unresolved subscribe response = %+v, want unavailable", response)
-	}
-	if s.subs.IsSubscribed(c.id, "thread") {
-		t.Fatal("unresolved subscribe installed a subscription")
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodThreadHistoryRead} {
+		t.Run(method, func(t *testing.T) {
+			s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+				return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
+			}})
+			c := s.NewConnection("unresolved")
+			c.setInitialized()
+			HandleTyped(s.Router(), method, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				Subscribe(ctx, "thread")
+				return appwire.ThreadReadResponse{}, nil
+			})
+			msg := appwire.RequestMessage(appwire.NewIntID(1), method, json.RawMessage(`{"subscribe":true}`))
+			c.executeOrdered(context.Background(), msg)
+			response := <-c.send
+			if response.Error == nil || response.Error.Error.Code != appwire.CodeUnavailable {
+				t.Fatalf("unresolved subscribe response = %+v, want unavailable", response)
+			}
+			if s.subs.IsSubscribed(c.id, "thread") {
+				t.Fatal("unresolved subscribe installed a subscription")
+			}
+		})
 	}
 }
 
 func TestInvalidSubscribingReadPreservesInvalidParams(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
-		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
-	}})
-	c := s.NewConnection("invalid")
-	c.setInitialized()
-	HandleTyped(s.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		return appwire.ThreadReadResponse{}, nil
-	})
-	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true,"threadId":123}`))
-	c.executeOrdered(context.Background(), msg)
-	response := <-c.send
-	if response.Error == nil || response.Error.Error.Code != appwire.CodeInvalidParams {
-		t.Fatalf("invalid subscribing read response = %+v, want invalid params", response)
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodThreadHistoryRead} {
+		t.Run(method, func(t *testing.T) {
+			s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+				return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
+			}})
+			c := s.NewConnection("invalid")
+			c.setInitialized()
+			HandleTyped(s.Router(), method, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{}, nil
+			})
+			msg := appwire.RequestMessage(appwire.NewIntID(1), method, json.RawMessage(`{"subscribe":true,"threadId":123}`))
+			c.executeOrdered(context.Background(), msg)
+			response := <-c.send
+			if response.Error == nil || response.Error.Error.Code != appwire.CodeInvalidParams {
+				t.Fatalf("invalid subscribing read response = %+v, want invalid params", response)
+			}
+		})
 	}
 }
 
 func TestUnresolvedSubscriptionUsesSessionUnavailableMetadata(t *testing.T) {
-	s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
-		return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
-	}})
-	c := s.NewConnection("metadata")
-	c.setInitialized()
-	msg := appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodThreadRead, json.RawMessage(`{"subscribe":true}`))
-	c.executeOrdered(context.Background(), msg)
-	response := <-c.send
-	if response.Error == nil || response.Error.Error.Data.(appwire.ErrorData).EvenerErrorInfo != appwire.ErrorSessionUnavailable {
-		t.Fatalf("unresolved metadata = %+v, want session unavailable", response)
+	for _, method := range []string{appwire.MethodThreadRead, appwire.MethodThreadHistoryRead} {
+		t.Run(method, func(t *testing.T) {
+			s := NewServer(ServerConfig{SubscriptionAdmissionResolver: func(appwire.Message) SubscriptionAdmissionResolution {
+				return SubscriptionAdmissionResolution{Intent: SubscriptionAdmissionUnresolved}
+			}})
+			c := s.NewConnection("metadata")
+			c.setInitialized()
+			msg := appwire.RequestMessage(appwire.NewIntID(1), method, json.RawMessage(`{"subscribe":true}`))
+			c.executeOrdered(context.Background(), msg)
+			response := <-c.send
+			if response.Error == nil {
+				t.Fatal("unresolved subscription did not return an error")
+			}
+			data, ok := response.Error.Error.Data.(appwire.ErrorData)
+			if !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+				t.Fatalf("unresolved metadata = %+v, want session unavailable", response)
+			}
+		})
 	}
 }
 

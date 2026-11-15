@@ -112,11 +112,13 @@ func TestCovIsRootOnlySubagentTool(t *testing.T) {
 func TestCovProtectedGrantTools(t *testing.T) {
 	t.Parallel()
 	tools := protectedGrantTools()
-	if want := []string{"ask_user"}; !slices.Equal(tools, want) {
+	if want := []string{"ask_user", "urls_add", "urls_remove"}; !slices.Equal(tools, want) {
 		t.Fatalf("protected grant tools = %v, want exact ordered list %v", tools, want)
 	}
-	if !isProtectedGrantTool("ask_user") {
-		t.Fatal("ask_user should be protected")
+	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !isProtectedGrantTool(name) {
+			t.Fatalf("%s should be protected", name)
+		}
 	}
 	if isProtectedGrantTool("exec_command") {
 		t.Fatal("exec_command should not be protected")

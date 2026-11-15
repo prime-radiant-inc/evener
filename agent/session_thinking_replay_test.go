@@ -360,7 +360,7 @@ func TestFallbackThinkingProjectionRepricesTheBudget(t *testing.T) {
 		Instance: "gwb", ModelID: "chat-fallback", WireID: "chat-fallback",
 		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
 	}, nil)
-	fallback = WithContextWindow(fallback, 50000)
+	fallback = withContextWindow(fallback, 50000)
 	permErr := llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
 	primaryAdapter := &agenttest.ScriptedAdapter{
 		Provider:       "gw",

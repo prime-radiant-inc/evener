@@ -22,6 +22,12 @@ import (
 // however large the surrounding file legitimately is.
 const DefaultMaxLineBytes = 128 << 20
 
+// openScanEventsFile opens a journal for scanning; a test swaps it to
+// observe the reads a scan issues. Production never assigns it.
+var openScanEventsFile = func(path string) (io.ReadSeekCloser, error) {
+	return os.Open(path)
+}
+
 // ScanLimits bounds a context-aware journal scan. A zero value performs an
 // unbounded scan (matching ReadEvents' behavior), except for MaxLineBytes,
 // which always applies (defaulting to DefaultMaxLineBytes) — a single line's
@@ -112,7 +118,7 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 // corruption serious enough that there is nothing safe to salvage from
 // this scan.
 func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, error) {
-	f, err := os.Open(path)
+	f, err := openScanEventsFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, 0, nil
@@ -130,7 +136,8 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 	if maxLineBytes <= 0 {
 		maxLineBytes = DefaultMaxLineBytes
 	}
-	reader := bufio.NewReader(f)
+	// 64 KiB matches the doctor's bounded readers.
+	reader := bufio.NewReaderSize(f, 64*1024)
 	events := make([]Event, 0)
 	totalBytes := fromOffset
 	offset := fromOffset

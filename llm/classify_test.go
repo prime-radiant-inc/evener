@@ -8,6 +8,7 @@ import (
 )
 
 func TestClassifyTimeoutIsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if got := Classify(context.DeadlineExceeded); got != ErrorClassRetryable {
 		t.Fatalf("Classify(DeadlineExceeded) = %v, want Retryable", got)
 	}
@@ -19,6 +20,7 @@ func TestClassifyTimeoutIsRetryable(t *testing.T) {
 }
 
 func TestClassify429IsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 	if got := Classify(err); got != ErrorClassRetryable {
 		t.Fatalf("Classify(429) = %v, want Retryable", got)
@@ -26,6 +28,7 @@ func TestClassify429IsRetryable(t *testing.T) {
 }
 
 func TestClassify503IsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 503, "service unavailable", nil, nil)
 	if got := Classify(err); got != ErrorClassRetryable {
 		t.Fatalf("Classify(503) = %v, want Retryable", got)
@@ -33,6 +36,7 @@ func TestClassify503IsRetryable(t *testing.T) {
 }
 
 func TestClassify403IsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(403) = %v, want Permanent", got)
@@ -40,6 +44,7 @@ func TestClassify403IsPermanent(t *testing.T) {
 }
 
 func TestClassify403CyberPolicyIsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// A 403 that the provider marks as retryable (cyber_policy_violation)
 	// must classify as Retryable so we don't lose the existing exemption.
 	raw := map[string]any{"error": map[string]any{"code": "cyber_policy_violation"}}
@@ -50,6 +55,7 @@ func TestClassify403CyberPolicyIsRetryable(t *testing.T) {
 }
 
 func TestClassify404IsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// 404 model-not-found / endpoint-not-found is permanent for the retry
 	// budget.
 	err := ErrorFromHTTPStatus("openai", 404, "model not found", nil, nil)
@@ -63,6 +69,7 @@ func TestClassify404IsPermanent(t *testing.T) {
 // Responses->ChatCompletions handoff is gone, so it short-circuits the retry
 // chain and feeds the model-fallback chain like any other permanent failure.
 func TestClassifyOpenAIResponses404IsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(openai responses 404) = %v, want Permanent", got)
@@ -75,6 +82,7 @@ func TestClassifyOpenAIResponses404IsPermanent(t *testing.T) {
 // chain must short-circuit and the caller's model-fallback chain must run —
 // which needs both a permanent class and a kind the fallback routes act on.
 func TestClassifyOpenAIResponsesEmptyStreamIsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := NewUnsupportedEndpointError("openai", "responses stream closed with no events", nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(openai responses empty stream) = %v, want Permanent", got)
@@ -92,6 +100,7 @@ func TestClassifyOpenAIResponsesEmptyStreamIsPermanent(t *testing.T) {
 }
 
 func TestClassify400IsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 400, "bad request", nil, nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(400) = %v, want Permanent", got)
@@ -99,6 +108,7 @@ func TestClassify400IsPermanent(t *testing.T) {
 }
 
 func TestClassify401IsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := ErrorFromHTTPStatus("openai", 401, "bad key", nil, nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(401) = %v, want Permanent", got)
@@ -106,6 +116,7 @@ func TestClassify401IsPermanent(t *testing.T) {
 }
 
 func TestClassifyStreamEndedIsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := NewStreamError("openai", "stream ended without finish event", nil)
 	if got := Classify(err); got != ErrorClassRetryable {
 		t.Fatalf("Classify(StreamError) = %v, want Retryable", got)
@@ -113,6 +124,7 @@ func TestClassifyStreamEndedIsRetryable(t *testing.T) {
 }
 
 func TestClassifyDefaultRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// Unknown / unwrapped errors fall through to Retryable (conservative).
 	err := errors.New("some random transport hiccup")
 	if got := Classify(err); got != ErrorClassRetryable {
@@ -121,6 +133,7 @@ func TestClassifyDefaultRetryable(t *testing.T) {
 }
 
 func TestClassifyNilIsRetryable(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// nil sentinel: Classify on nil shouldn't panic. Default to Retryable
 	// (callers should check err != nil before calling Classify anyway).
 	if got := Classify(nil); got != ErrorClassRetryable {
@@ -129,6 +142,7 @@ func TestClassifyNilIsRetryable(t *testing.T) {
 }
 
 func TestClassifyContextCanceledIsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// User-initiated cancellation: permanent (do not retry). The existing
 	// retryableError helper also bails on context.Canceled.
 	if got := Classify(context.Canceled); got != ErrorClassPermanent {
@@ -137,6 +151,7 @@ func TestClassifyContextCanceledIsPermanent(t *testing.T) {
 }
 
 func TestClassifyAbortErrorIsPermanent(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	err := NewAbortError("user canceled", nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(AbortError) = %v, want Permanent", got)
@@ -147,6 +162,7 @@ func TestClassifyAbortErrorIsPermanent(t *testing.T) {
 // does not key on provider identity at all: with the endpoint handoff
 // deleted, a Responses 404 is Permanent whichever instance it arrives from.
 func TestClassify_ProviderIdentityNeverChangesTheClass(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	for _, instance := range []string{"work", "openai", "anthropic"} {
 		err := ErrorFromHTTPStatus(instance, 404, "responses.create(stream) failed: model not found", nil, nil)
 		if got := Classify(err); got != ErrorClassPermanent {
@@ -156,6 +172,7 @@ func TestClassify_ProviderIdentityNeverChangesTheClass(t *testing.T) {
 }
 
 func TestClassifyStringerHasName(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	// ErrorClass should stringify legibly for logs.
 	got := fmt.Sprintf("%s/%s", ErrorClassRetryable, ErrorClassPermanent)
 	want := "retryable/permanent"
@@ -165,6 +182,7 @@ func TestClassifyStringerHasName(t *testing.T) {
 }
 
 func TestErrorClassStringExhaustive(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tests := []struct {
 		class ErrorClass
 		want  string

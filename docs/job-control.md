@@ -138,10 +138,11 @@ comes from a human or a Manager. It never follows unrelated later work or
 infers a link from an older record that lacks one. For a different terminal
 execution, the watch asks the existing history reader for a single-cut verdict;
 it keeps no continuation graph or terminal backlog. The existing subscription
-consumer retains the original candidate and held history cut while retrying a
-transient read-call failure. That answer-continuation retry reads with a
-two-second budget per call, two seconds between retries, and at most five
-consecutive failed calls. An operation timeout while the watch remains alive, transport
+consumer retains the original candidate while retrying a transient read-call
+failure; if the retry finds the held cut stale after a rebuild, it reads the
+fresh cut and re-asks the same candidate against it. That answer-continuation
+retry reads with a two-second budget per call, two seconds between retries,
+and at most five consecutive failed calls. An operation timeout while the watch remains alive, transport
 unavailability, index contention or rebuilding, and an unclassified internal
 read error can recover without re-registration. The watch keeps its ID and
 pending-send identities and emits one interruption notice for that episode.
@@ -152,14 +153,15 @@ or generation, and history truncation end observation immediately. A
 same-target history discontinuity — a new epoch or incarnation for the same
 ref, instance and generation — re-anchors the observation when it arrives as
 the fresh cut a re-read serves. The re-anchor replays the rebuilt history's
-latest window; unlike a continuing thread's re-read it does not page further
-back, so recorded evidence older than that window is not replayed to the
-watcher. One surfacing mid-read — while a continuing
-gap is still paging, or against a held cut a live continuation verdict still
-needs — ends the observation with re-registration guidance instead. Permanent
-request refusals and typed history failures also end it;
-none is a negative verdict. Exhausted retries end the watch with one durable
-end notice and re-registration guidance, never inferred completion. Index
+latest window and pages further back to the oldest position the pre-rebuild
+held window sampled, so recorded evidence older than the latest page still
+reaches the watcher. One surfacing mid-read — while a continuing gap is still
+paging, or against a held cut a live continuation verdict still needs —
+re-reads the authoritative latest cut and re-anchors; the continuation verdict
+is re-asked against that cut rather than discarding its candidate. Permanent
+request refusals and typed history failures also end it; none is a negative
+verdict. Exhausted retries end the watch with one durable end notice and
+re-registration guidance, never inferred completion. Index
 traversal checks cancellation between reads; existing catch-up and OS I/O may
 still finish after the caller stops waiting, so the operation budget is not a
 hard wall-clock bound on underlying I/O.
@@ -195,7 +197,11 @@ interruption notice for it: the notice belongs to observation loss, not to the
 re-read that follows it. The re-read rebuilds recorded evidence only. Status
 events are stream signals, not recorded history, so a watch waiting on status
 events can miss the ones that fired during the relay gap, and the re-read
-carries no separate sign of them. Each Manager and human client keeps
+carries no separate sign of them. That is the chosen rule, not a defect to
+repair with replay: status-event delivery converges on the latest frame, and
+Evener has no per-event at-least-once mode for status events, because
+duplicates and out-of-order replays read worse than a skipped intermediate
+state. Each Manager and human client keeps
 its own subscription lifetime. Remote question/answer/completion is qualified;
 sandbox approval caused by a live remote prompt remains unexercised end to end.
 Manager schemas come from session configuration and remain present during a
@@ -333,10 +339,11 @@ Several tools can wait, but they wait on different things. Pick by intent, and d
 | Re-observe progress on a long job | `job_watch(operation="create", source=<job_id>, progress_interval_ms=N)` (running targets only) |
 | Wake yourself later | `job_watch(operation="create", after_seconds=N)` or `repeat_seconds=N`, with a `note`; source defaults to `self` |
 | Resume an idle delegate and wait for its answer | `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` |
-| Steer a running delegate | `delegate_send(to=<delegate_id>, message=...)` — returns on delivery; `max_wait_ms` is ignored and reported as `wait_ignored_reason` |
+| Steer a running delegate | `delegate_send(to=<delegate_id>, message=...)` with `max_wait_ms` unset or `0` — returns on delivery; a positive `max_wait_ms` on a still-running delegate is refused as `target_busy`, while one that finishes before admission is started and the wait is honored |
 
 There is no "steer a running delegate and wait for its next reply" primitive: a
-live steer returns on delivery. Let the run finish and read the delegate's
+live steer with `max_wait_ms` unset or `0` returns on delivery, and a positive
+value is refused as `target_busy`. Let the run finish and read the delegate's
 session `transcript_ref`, or resume its next run with
 `delegate_send(to=<delegate_id>, message=..., max_wait_ms=N)` once it is idle.
 
@@ -679,6 +686,23 @@ Defaults:
 - An observer that installs watches reports readiness through its terminal packet;
   the stable watch remains active and later frames resume the same `dlg_...`.
 
+Model choices come from a snapshot that a session able to delegate captures once
+at startup, listing the configured providers within fixed time and size bounds.
+A complete snapshot that fits is listed in the `model` parameter's description;
+otherwise the read-only `model_list` tool pages it. The first page's `status`
+maps each captured provider to `success`, `empty-success` (the provider
+listed no models), `failure`, `timeout`, or `limited` (capture bounds
+dropped some models), so a failed listing stays distinct from an empty one
+and healthy providers' choices remain listed. Continuation pages omit
+`status`, so keep the first page's statuses while paging. Paging never lists a
+provider again: a `failure` or `timeout` entry keeps that status for the rest
+of the session. The
+snapshot is not a gate on the `model` override. To use a model from a provider
+whose listing failed, once the problem clears, pass it as `provider/model`. The
+spawn lists that provider again and refuses a model the listing does not offer,
+naming the ones it does. If that listing fails too, the spawn proceeds with the
+requested model. A resumed session captures a new snapshot.
+
 Create return shape:
 
 ```json
@@ -724,9 +748,11 @@ legacy aliases such as `main` or `watched`.
 
 Semantics:
 
-- If `to` identifies a running or currently-driven delegate, Evener injects the
-  message into that exact generation. The return `action` is `steered`.
-  The injected steering turn has source `parent`, and the delegate's model reads
+- If `to` identifies a running delegate and `max_wait_ms` is unset or `0`,
+  Evener injects the message into that exact generation. The return `action` is
+  `steered`. A delegate already being driven or otherwise busy is refused
+  `target_busy`. The injected steering turn has source `parent`, and the
+  delegate's model reads
   it after the line `Message from your parent agent:`; clients label it "From
   parent". A message that starts an idle delegate opens its next generation as
   user input, as the original brief does.
@@ -740,8 +766,12 @@ Semantics:
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
 - `max_wait_ms` unset (or `0`) on an idle start returns after admission. A
   positive value waits for that newly started generation's terminal packet up
-  to the bounded wait. A live steer always returns on delivery; a supplied wait
-  is ignored explicitly through `wait_ignored_reason`.
+  to the bounded wait. A live steer returns on delivery with `max_wait_ms` unset
+  or `0`; a positive value on a still-running delegate is refused as
+  `target_busy`, while a delegate that becomes idle before admission is started
+  and the wait is honored. The call-scoped `wait_ignored_reason` field is
+  retained in the result shape for compatibility; `delegate_send` no longer
+  emits it.
 - `max_wait_ms` applies to concrete delegate targets.
 
 Watch-origin observer completion uses `communicate(end_turn=true)`. A delegate sends a non-terminal update without ending its turn with `communicate(end_turn=false)`; an update does not replace the observer callback or final result.
@@ -810,6 +840,17 @@ including shell `job_id` handles, return the bare tool error
   `running_in_background: false`, `output`, and `structured_result`. If the wait
   expires first, the result keeps `action: "started"` and adds `timed_out: true`
   without reply content. Only the wait has ended; the delegate is still running.
+- A reply collected by a positive wait is delivered whole while its complete
+  formatted text — the report plus any `earlier_results` — fits 50,000
+  characters (`delegateReportWholeMaxChars`). Past that budget the delivered
+  text is the registry's tail cut, keeping the last 50,000 characters, and the
+  complete reply is retained as an `artifact:<id>` capability the result names
+  with its `read_transcript(transcript_ref=...)` recovery line; the earlier
+  results lost to the cut are searchable there too. When retention is
+  unavailable the result keeps the tail with a `retention_failed` marker
+  instead, and the delegate's own session `transcript_ref` remains the recovery
+  route. This bounds only the synchronous waited reply; asynchronous
+  notifications keep their own bounds.
 - `max_wait_ms` is silently capped at 60000 ms. Delegate creation accepts no
   wait argument and rejects it with
   `invalid_request: delegate creation does not accept max_wait_ms`.
@@ -1085,7 +1126,9 @@ Canonical return shape:
 
 ```json
 {
+  "id": "job_...",
   "job_id": "job_...",
+  "type": "shell",
   "kind": "shell",
   "status": "running",
   "phase": "process_running",
@@ -1103,10 +1146,10 @@ Canonical return shape:
 
 Canonical behavior:
 
-- A shell returns `kind="shell"`, observable process `phase`,
+- A shell returns `id="job_..."`, `type="shell"`, `job_id="job_..."`, `kind="shell"`, observable process `phase`,
   `job:<job_id>`, output/exit metadata, and the shell status/reason model.
-- A delegate returns `id="dlg_..."`, `type="delegate"`, public lifecycle status,
-  descriptor metadata, run/latest-activity timing, resumability, and its child
+- A delegate returns `id="dlg_..."`, `type="delegate"`, public lifecycle status, observable `phase`,
+  descriptor metadata (`description` is omitted when identical to `task`), run/latest-activity timing, resumability, and its child
   session `transcript_ref`. `last_outcome` carries the latest terminal metadata.
 - Quiet/running timing is a supervision hint, not proof of a stall.
 - Completion is notification-driven. `job_status` is for orientation and recovery, not for waiting: it never blocks, and calling it in a loop is the polling anti-pattern.
@@ -1124,6 +1167,7 @@ Stable delegate example:
   "id": "dlg_...",
   "type": "delegate",
   "status": "running",
+  "phase": "running",
   "task": "Investigate parser failures",
   "agent_type": "explorer",
   "resumable": true,
@@ -1293,9 +1337,9 @@ ref (`job:` for shell, session ref for delegate).
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
 - `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match: <regex>`, `progress_interval_ms`, `after_seconds: N` or `repeat_seconds: N`, or `events` with an optional `every N`, plus a `note:` part for any watch that carries one; `inspect` and `list` render the note through that summary, which bounds the note at the same 2,048 characters storage keeps, so a stored note always shows in full), `deliveries` (model-facing deliveries so far; the budget counts the condition fires among them), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
-- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
+- `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log; cleared and completed watches in `jobs.jsonl` rehydrate into the bounded ring across session restore (`runtime_lost` excluded).
 
-`description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task.
+`description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task; `description` is omitted when identical to `task` (when omitted, `job_list` label preview falls back to `task`).
 
 `last_activity` is the most recent parent-observable activity timestamp. A
 running delegate that is working silently stays at its run start until it emits
@@ -1308,7 +1352,7 @@ fresh activity, which is the signal the quiet watchdog acts on. A per-action
 
 `exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`command_exited_nonzero`). A `command_killed`, `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a job that did not exit on its own from its `status` + `reason`, never from `exit_code`.
 
-`job_list` returns a collection. Status/stop operate on one typed `target`.
+`job_list` returns a collection. Status/stop operate on one typed `target` (`job_...` or `dlg_...`). Both shell and delegate `job_status` results provide consistent top-level `id` and `type` fields (alongside legacy `job_id` and `kind` on shell targets), plus observable `phase` on delegates.
 
 ### `job_stop`
 
@@ -1332,8 +1376,12 @@ Semantics:
 - `max_wait_ms` is the caller-visible wait budget after Evener sends the stop request. It is not a runtime limit and does not delete the job if it expires. A positive `max_wait_ms` is clamped to 1000–60000 ms. Zero or omission means return promptly; negative values fail `invalid_request`.
 - For shell jobs, signal the process/process group where supported.
 - For a delegate, fence the whole stable subtree, cancel its active run and
-  descendant model/shell work, and discard queued deliveries that cannot commit
-  below the stop fence.
+  descendant model/shell work, and preserve an accepted notification already
+  pending at stop across restart: it is neither re-armed as a new stop nor
+  dropped. Stop-bound attention and covered shell notifications that cannot
+  commit below the stop fence are discarded, as are queued deliveries that
+  cannot commit below it. This is distinct from the persistent client Stop
+  hold, which parks execution until the client accepts a new start.
 - If graceful stop needs internal forceful cleanup after timeout, that is an implementation detail of `job_stop`; there is no separate model-facing `job_kill`.
 - Implementations may continue escalation asynchronously after returning `running/stop_pending`; terminal notification remains armed and must report the eventual final state. If an implementation completes escalation before returning, it must still stay within the caller-visible wait budget or return `running/stop_pending`.
 - `job_stop` must actually signal/abort the runtime before finalizing as stopped/cancelled.
@@ -1496,7 +1544,7 @@ Replacement mapping:
 | --- | --- | --- |
 | `spawn_agent(blocking=false)` | `delegate` | starts a new delegate conversation and returns its stable `delegate_id` |
 | `spawn_agent(blocking=true)` | `delegate`, then await its automatic completion notification | creation has no inline-wait option |
-| `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=...)` | steers if running; starts or resumes the delegate's next job automatically when idle |
+| `resume_agent` / `send_input` | `delegate_send(to=<delegate_id>, message=...)` | steers if running; starts or resumes the delegate's next job automatically when idle; model-facing footer elides status when equal to action (e.g. `[delegate_id <id> · completed]`) |
 | `wait` / `wait_job` | no direct replacement; wait for the automatic terminal notification | no read blocks; `job_watch` is the only way to be told about a condition |
 | `cancel_agent` / `job_kill` | `job_stop(target=<delegate_id>)` | recursively stops current work while retaining the delegate resource |
 | `close_agent` | none | retention automatic; transcript remains accessible |
@@ -1647,6 +1695,10 @@ decode exactly `&lt;` and `&amp;` once, preserving literal sender text such as
 `&lt;`; job output excerpts use the same body contract. Accepted breakage:
 pre-`6adc500868` frames render `&quot;`/`&gt;` literally and their entity-escaped
 JSON-envelope extraction fails. No migration or legacy fallback is applied.
+Attribute values are a separate codec — `escapeNotificationText` paired with
+the client's `decodeNotificationAttributeEntities` — and keep the full entity
+set; only bodies use the two-entity pair. A notification producer escapes body
+text with `escapeNotificationBody`, never the attribute encoder.
 The `name` attribute appears
 only for a named delegate. The quiet watchdog's frame carries neither `name` nor `kind`. A
 delegate frame never carries `job_id` or `job_type="delegate"`. The full
@@ -1709,6 +1761,20 @@ Rules:
 - Attention renders only in its owner's turns. A parent drives an idle child so
   that child processes its own shell/watch attention; the parent renders only
   its own shells and direct delegates. There is no forwarded delegate JobRecord.
+- Every delegate, observer, watch and job notification is a message delivered
+  into the session it notifies, over one delivery path, and the target wakes on
+  it like any other notification. The frame's `kind` (report, update, watch
+  event) describes the payload; it never decides whether the target wakes.
+  There is no report-specific wake predicate and no drain-only delivery path.
+- A terminal report never creates a human-attention entry. Only a pending
+  `ask_user` question or a `needs_response` rest puts a session in the
+  awaiting state; a delegate's report reaches its parent as owner attention so
+  the parent continues autonomously.
+- A delegate's terminal packet becomes durable before it is visible: the
+  generation writes its prepared-terminal event to the root `delegates.jsonl`
+  journal first, and acceptance, dedupe and integrity diagnostics key off that
+  durable record, not an in-memory packet. A crash loses at most an unaccepted
+  report and never shows a phantom one.
 - A delegate whose turn has ended while its generation waits on its own
   delegates is idle, and an update from one of them wakes it: the wait runs a
   turn that presents the update and consumes it, so no further generation
@@ -1732,7 +1798,30 @@ Rules:
   This holds whether the attention was armed before the turn began or during
   it. Attention appended after the turn's last request was built keeps its own
   wake.
+- Delivery distinguishes same-run finalization from a post-idle successor
+  wake: a child report already pending while the receiving run is still
+  finalizing is processed within that run, while one arriving after the
+  receiver rests idle gets its own successor-run wake. An accepted terminal
+  communicate is not the completed-run boundary. A draining delegate
+  coordinator is the exception: its pending terminal reports wait for an
+  update that triggers a turn, as they do for any other wake source — a drain
+  with no update leaves them for the next attention generation.
+- A completion whose reminder a settled request already carried counts as
+  observed even when writing its resolution later fails: the retry re-reads
+  the transcript, finds the reminder already injected, and repairs the delivery
+  record without writing the reminder again or presenting the completion to
+  the model a second time — a wake that finds nothing else pending stands down
+  with no model request. A presentation that failed before any settled request
+  still owes its full retry.
+- The code producing a completion owns the exact messages it produced through
+  its delivery attempt: an in-flight delivery keeps its claim until it
+  finishes, competing senders stand down for those messages, and the existing
+  recovery paths take over after delivery failure. Unrelated messages and
+  receivers stay independent; there is no global transport lock.
 - Duplicate terminal attention is suppressed by its durable source identity.
+- An attention-resolution wake with nothing to deliver — no new input, no
+  pending steering, no deliverable notification, no pending attention — stands
+  down without a model request; an empty notification turn is a true no-op.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
@@ -1755,6 +1844,32 @@ Shell terminal delivery keeps its existing durable pending/delivered/consumed
 state and dedupe key. Stable delegate packet delivery is ordered in the
 delegate aggregate, while the exact receiver-transcript ID prevents duplicate
 model input if a crash lands between receiver commit and source acknowledgement.
+
+All of these producers — shell completions, delegate packets, updates, watch
+frames — share one delivery path. When the common path replaces a delivery,
+wake, polling-wait or purge route, the displaced route is deleted rather than
+kept in parallel; storage readers and execution/resource safety boundaries
+survive as such, never as parallel notification policy.
+
+A stable delegate stop persists its accepted notification with the stop
+generation in the root journal, so a hub restart preserves it once: the stop is
+neither re-armed as a new notification nor dropped. One stop event produces one
+notification.
+
+Sessions deliberately configured without persistence (an empty StateDir)
+remain supported. Their job and notification state lives under the
+Evener-owned temp base (`SessionWorkDir`), so notifications use the same
+delivery path with session-local state. Persistence disabled by configuration
+is distinct from a persistence failure: a session configured to persist must
+never silently switch its failed disk writer for memory.
+
+Healthy recovered delivery settles at restore rather than staying
+transport-pending: a restore replays prepared delegate deliveries into the
+receiver transcript before the session is returned to its caller, and a
+watch's pending sends rehydrate from the journal and deliver on the next
+drain. Restored delivery keeps exactly-once settlement — no duplicate model
+input, no lost retired history — and an empty pending inventory alone is not
+evidence of it.
 
 ```mermaid
 stateDiagram-v2

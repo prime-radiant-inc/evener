@@ -146,7 +146,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
 		},
 	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -381,7 +381,7 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 		},
 	})
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -457,7 +457,7 @@ func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&firstCompleteThenBlockAdapter{})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",
@@ -499,7 +499,7 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("drive done") },
 		},
 	})
-	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}), withoutGitSnapshot())
+	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
 		Task: "coordinate",

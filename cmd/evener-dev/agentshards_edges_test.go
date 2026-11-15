@@ -197,3 +197,37 @@ type fakeSignal struct{}
 
 func (fakeSignal) String() string { return "FAKE" }
 func (fakeSignal) Signal()        {}
+
+// TestTopLevelSkipMatchesGoSkipSemantics pins topLevelSkip to Go's own -skip
+// matching: Go splits the pattern on '|' outside brackets and parentheses and
+// compiles each alternative alone, so a flag group stays with its alternative.
+// A pattern with a subtest level, or one Go would reject, is not applied.
+func TestTopLevelSkipMatchesGoSkipSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		pattern string
+		ok      bool
+		skipped map[string]bool
+	}{
+		{pattern: "^TestBeta$", ok: true, skipped: map[string]bool{"TestBeta": true, "TestBetaMax": false}},
+		// (?i) scopes to its own alternative: Go runs TestBeta here.
+		{pattern: "(?i)testalpha|testbeta", ok: true, skipped: map[string]bool{"TestAlpha": true, "TestBeta": false, "testbeta": true}},
+		// The gate's composed shape: a group, then an alternative group.
+		{pattern: "(Seq|Fuzz)|(^TestHub$)", ok: true, skipped: map[string]bool{"TestSeqX": true, "TestHub": true, "TestHubby": false}},
+		// '|' inside a bracket is a literal, not a split.
+		{pattern: "Test[|]Pipe", ok: true, skipped: map[string]bool{"Test|Pipe": true, "TestPipe": false}},
+		{pattern: "TestGamma/never", ok: false},
+		// Go splits off "[]", which does not compile, and refuses the run.
+		{pattern: "[]|]", ok: false},
+		{pattern: "", ok: false},
+	} {
+		skip, ok := topLevelSkip(tc.pattern)
+		if ok != tc.ok {
+			t.Fatalf("topLevelSkip(%q) ok = %v, want %v", tc.pattern, ok, tc.ok)
+		}
+		for name, want := range tc.skipped {
+			if got := skip(name); got != want {
+				t.Errorf("topLevelSkip(%q) skips %s = %v, want %v", tc.pattern, name, got, want)
+			}
+		}
+	}
+}

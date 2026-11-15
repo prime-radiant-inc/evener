@@ -896,6 +896,7 @@ export interface EvenerSubagentPreviewResponse {
 export interface EvenerThread {
   conversationProvenance?: ConversationProvenanceState;
   pendingAsk?: PendingAskState;
+  latestExecutionTurnId?: string;
   /**
    * Manager is the session's start-time Manager property, reported by the
    * session itself. It is not a runtime setting: nothing can turn it on or
@@ -944,8 +945,14 @@ export interface EvenerThread {
   contextWindow?: number;
   contextRemaining?: number;
   contextAssumed?: boolean;
+  compactionThreshold?: number;
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
+  /**
+   * ContextWindowSource says where contextWindow came from: "live",
+   * "overlay", "config", "snapshot" or "assumed".
+   */
+  contextWindowSource?: string;
   /**
    * Queue carries authoritative queue depth + preview for the per-session
    * input queue. Both UIs derive their queue-preview chrome
@@ -1961,9 +1968,109 @@ export interface InstanceListResponse {
   writesRefused?: boolean;
 }
 
+export interface InstanceModelAuthored {
+  compactionThreshold?: number;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  effortValues?: string[];
+  inputModalities?: string[];
+  tools?: boolean;
+  protocol?: string;
+  surface?: string;
+  thinkingFormat?: string;
+  thinkingShape?: string;
+  wireId?: string;
+  aliasOf?: string;
+}
+
+export interface InstanceModelDetailResponse {
+  name: string;
+  model: string;
+  disabled: boolean;
+  disabledLockstepTarget?: string;
+  authoredOnly: boolean;
+  effective: InstanceModelEffective;
+  provenance: Record<string, string>;
+  authored: InstanceModelAuthored;
+  thinkingFormats: string[];
+  thinkingShapes: string[];
+  warnings?: string[];
+}
+
+export interface InstanceModelEditParams {
+  name: string;
+  model: string;
+  create?: boolean;
+  removeCustom?: boolean;
+  resetAll?: boolean;
+  compactionThreshold?: number;
+  clearCompactionThreshold?: boolean;
+  contextWindow?: number;
+  clearContextWindow?: boolean;
+  maxOutputTokens?: number;
+  clearMaxOutputTokens?: boolean;
+  reasoning?: boolean;
+  clearReasoning?: boolean;
+  defaultEffort?: string;
+  clearDefaultEffort?: boolean;
+  effortValues?: string[];
+  clearEffortValues?: boolean;
+  inputModalities?: string[];
+  clearInputModalities?: boolean;
+  tools?: boolean;
+  clearTools?: boolean;
+  protocol?: string;
+  clearProtocol?: boolean;
+  surface?: string;
+  clearSurface?: boolean;
+  thinkingFormat?: string;
+  clearThinkingFormat?: boolean;
+  thinkingShape?: string;
+  clearThinkingShape?: boolean;
+  wireId?: string;
+  clearWireId?: boolean;
+  aliasOf?: string;
+  clearAliasOf?: boolean;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
+}
+
+export interface InstanceModelEditResponse {
+  list: InstanceListResponse;
+  detail?: InstanceModelDetailResponse;
+}
+
+export interface InstanceModelEffective {
+  contextWindow?: number;
+  maxInputTokens?: number;
+  compactionThreshold?: number;
+  maxOutputTokens?: number;
+  reasoning?: boolean;
+  defaultEffort?: string;
+  effortValues?: string[];
+  inputModalities?: string[];
+  tools?: boolean;
+  protocol?: string;
+  surface?: string;
+  thinkingFormat?: string;
+  thinkingShape?: string;
+  wireId?: string;
+  aliasOf?: string;
+}
+
 export interface InstanceModelEntry {
   id: string;
   disabled?: boolean;
+  customized?: boolean;
+  contextWindow?: number;
+  compactionThreshold?: number;
+}
+
+export interface InstanceModelGetParams {
+  name: string;
+  model: string;
 }
 
 export interface InstanceRefreshModelsParams {
@@ -2092,7 +2199,6 @@ export interface JobActivityDelegate {
   delegationAllowance?: number;
   parentWatchGranted?: boolean;
   worktree?: JobActivityWorktree;
-  turns: JobActivityJob[];
   child?: JobActivitySession;
   branch: JobActivityBranchState;
   /**
@@ -2251,6 +2357,7 @@ export interface LaunchConfigLayer {
   agent?: string;
   reasoningEffort?: string;
   contextStrategy?: string;
+  compactAtPercent?: number;
   openAIResponsesContinuation?: string;
   providerIdleTimeout?: string;
   sandbox?: string;
@@ -2431,6 +2538,7 @@ export interface ModelDescriptor {
   displayName?: string;
   contextWindow?: number;
   maxInputTokens?: number;
+  compactionThreshold?: number;
   supportsTools?: boolean;
   supportsVision?: boolean;
   maxOutputTokens?: number;
@@ -2574,6 +2682,11 @@ export interface NavigationManifest {
 export interface NavigationMutation {
   generation_id: string;
   targets: NavigationInvalidationTarget[];
+  /**
+   * Deferred claims a pending rebuild, so it is set only when one is
+   * actually armed. Never retry the mutation itself when it is set.
+   */
+  deferred?: boolean;
 }
 
 export interface NavigationOrderContainer {
@@ -3414,6 +3527,7 @@ export interface SandboxEscalationRequested {
   tool: string;
   kind: string;
   deniedPath: string;
+  requestedPath?: string;
   command?: string;
   outputSoFar?: string;
   partiallyRan?: boolean;
@@ -3945,8 +4059,8 @@ export interface SessionOperationRequest {
 export interface SessionOperationResponse {
   actor: SessionActor;
   discover?: SessionDiscovery;
-  read?: ThreadReadResponse;
-  turns?: ThreadTurnsListResponse;
+  read?: ThreadHistoryReadResponse;
+  turns?: ThreadHistoryTurnsListResponse;
   fetch?: SessionFetchResponse;
   activity?: SessionActivityResponse;
   tasks?: SessionTasksResponse;
@@ -4630,6 +4744,103 @@ export interface ThreadForkResponse {
   originalInput?: string;
 }
 
+export interface ThreadHistoryReadResponse {
+  thread: Thread;
+  pendingAskPage?: PendingAskPage;
+  window?: ThreadWindowResult;
+  fetch?: SessionFetchResponse;
+  /**
+   * TargetSessionToolsSupported reports whether the daemon serving this thread
+   * negotiated session tools. Omission means the serving hub cannot attest it.
+   */
+  targetSessionToolsSupported?: boolean;
+  /**
+   * LatestExecutionTurnID is the newest recorded execution span at Snapshot,
+   * regardless of later non-execution history turns.
+   */
+  latestExecutionTurnId?: string;
+  answerContinuation?: AnswerContinuationVerdict;
+  /**
+   * OlderCursor is set when itemLimit truncated the returned items; pass it
+   * to thread/turns/list to fetch the page just before the window. Empty means
+   * the response already includes the oldest item.
+   */
+  olderCursor?: string;
+  /**
+   * RequestGeneration echoes ThreadReadParams.RequestGeneration.
+   */
+  requestGeneration?: number;
+  /**
+   * BootGeneration is the serving daemon's boot generation for this thread:
+   * its counter for its root thread, "<n>@<rootSessionID>" for a descendant
+   * (DescendantBootGeneration), or DaemonlessBootGeneration for the hub's
+   * own read. See CompareBootGeneration.
+   */
+  bootGeneration?: string;
+  /**
+   * Epoch is the history epoch this response was projected under; it
+   * advances on a replacement (a new incarnation, a resync epoch, or an
+   * authoritative daemonless read).
+   */
+  epoch?: number;
+  /**
+   * Snapshot names what this read was projected from.
+   */
+  snapshot?: SnapshotIdentity;
+  /**
+   * Overlay carries the live, not-yet-recorded state (streams, previews,
+   * running tools, notices) alongside the recorded thread.
+   */
+  overlay?: OverlayItem[];
+  /**
+   * Authoritative is a frozen legacy merge stamp and may be true even for
+   * saved transcripts. ThreadHistoryReadResponse corrects it to true only for
+   * live-daemon serves; its serving facts own the new range merge policy.
+   */
+  authoritative?: boolean;
+  /**
+   * Changes carries items and turns outside the client's held window whose
+   * version grew since HeldSnapshot, in place of a full re-read.
+   */
+  changes?: HistoryChanges;
+  servedFrom?: string;
+  fallbackReason?: string;
+  asOf?: string;
+  instanceId?: string;
+  servingFactsUnavailableReason?: string;
+}
+
+export interface ThreadHistoryTurnsListResponse {
+  data: Turn[];
+  nextCursor?: string;
+  window?: ThreadWindowResult;
+  /**
+   * BootGeneration is the serving daemon's boot generation for this thread,
+   * as on ThreadReadResponse. See CompareBootGeneration.
+   */
+  bootGeneration?: string;
+  /**
+   * Epoch is the history epoch this page was projected under; see
+   * ThreadReadResponse.Epoch.
+   */
+  epoch?: number;
+  /**
+   * Snapshot names what this page was projected from.
+   */
+  snapshot?: SnapshotIdentity;
+  /**
+   * Authoritative retains the legacy page stamp, including true on saved
+   * pages. ThreadHistoryTurnsListResponse corrects it as on the versioned read.
+   */
+  authoritative?: boolean;
+  servedFrom?: string;
+  fallbackReason?: string;
+  asOf?: string;
+  instanceId?: string;
+  servingFactsUnavailableReason?: string;
+  latestExecutionTurnId?: string;
+}
+
 export interface ThreadItem {
   conversationProvenance?: ConversationOutputProvenance;
   actor?: SessionActor;
@@ -4721,6 +4932,13 @@ export interface ThreadItem {
   steeringKind?: string;
   clientMutationId?: string;
   /**
+   * ConversationInputIDs names the conversation inputs this recorded item
+   * speaks for. A promotion or drain records ITS OWN clientMutationId but
+   * inherits the consumed entry's input ids, so this is the lineage that ties
+   * a recorded message back to the queue entry another client consumed.
+   */
+  conversationInputIds?: string[];
+  /**
    * Version is the highest entry ordinal (below) among the entries that
    * contributed to this item, stored and sent as ordinal + 1 so 0 means "no
    * history version" (an overlay item). The higher version wins.
@@ -4779,6 +4997,11 @@ export interface ThreadModelChangedParams {
   model: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  contextUsed?: number;
+  contextWindow?: number;
+  contextPressure?: number;
+  contextAssumed?: boolean;
+  compactionThreshold?: number;
 }
 
 export interface ThreadModelRetryParams {
@@ -4942,8 +5165,9 @@ export interface ThreadReadResponse {
    */
   overlay?: OverlayItem[];
   /**
-   * Authoritative is true when this response can settle uncertain state
-   * (a live daemon read), false for a saved-transcript read that cannot.
+   * Authoritative is a frozen legacy merge stamp and may be true even for
+   * saved transcripts. ThreadHistoryReadResponse corrects it to true only for
+   * live-daemon serves; its serving facts own the new range merge policy.
    */
   authoritative?: boolean;
   /**
@@ -5220,8 +5444,8 @@ export interface ThreadTurnsListResponse {
    */
   snapshot?: SnapshotIdentity;
   /**
-   * Authoritative is true when this page can settle uncertain state; see
-   * ThreadReadResponse.Authoritative.
+   * Authoritative retains the legacy page stamp, including true on saved
+   * pages. ThreadHistoryTurnsListResponse corrects it as on the versioned read.
    */
   authoritative?: boolean;
 }
@@ -5605,8 +5829,10 @@ export const METHOD_NAMES = [
   "evener/hub/session-tools/input",
   "thread/list",
   "thread/read",
+  "evener/thread/history/read",
   "thread/unsubscribe",
   "thread/turns/list",
+  "evener/thread/history/turns/list",
   "thread/turns/items/list",
   "thread/start",
   "thread/resume",
@@ -5697,6 +5923,8 @@ export const METHOD_NAMES = [
   "evener/instance/setDefault",
   "evener/instance/setModelDisabled",
   "evener/instance/refreshModels",
+  "evener/instance/modelGet",
+  "evener/instance/modelEdit",
   "evener/plugin/checkNow",
   "evener/plugin/preview",
   "evener/marketplace/list",
@@ -6245,7 +6473,7 @@ export const WIRE_FIELD_KEYS = {
   ThreadItemPosition: ["entry", "item", "sub"],
   TurnError: ["message", "additionalDetails", "codexErrorInfo", "source", "title", "hint", "cause"],
   DiagnosticCause: ["kind", "provider", "model", "status"],
-  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "version", "roundId", "completedAtEntry"],
+  ThreadItem: ["conversationProvenance", "actor", "observation", "authorship", "type", "id", "transcriptKey", "position", "turnId", "transcriptEntryIndex", "text", "delta", "images", "toolName", "callId", "argumentsJson", "description", "output", "error", "truncated", "truncatedBytes", "inFlight", "fetchCursor", "outputImages", "status", "prevalOnly", "startedAt", "completedAt", "durationMs", "exitCode", "raw", "eventKind", "source", "steeringKind", "clientMutationId", "conversationInputIds", "version", "roundId", "completedAtEntry"],
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
@@ -6255,7 +6483,7 @@ export const WIRE_FIELD_KEYS = {
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],
-  SandboxEscalationRequested: ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "command", "outputSoFar", "partiallyRan"],
+  SandboxEscalationRequested: ["threadId", "ref", "escalationId", "mode", "tool", "kind", "deniedPath", "requestedPath", "command", "outputSoFar", "partiallyRan"],
   SessionURL: ["id", "url", "label", "addedBy", "addedAt"],
   ThreadStatus: ["type", "activeFlags"],
   TaskAggregate: ["total", "done", "cancelled", "remaining", "current"],
@@ -6264,6 +6492,8 @@ export const WIRE_FIELD_KEYS = {
   GoalState: ["objective", "status", "iterations"],
   EvenerTurnSlots: ["inUse", "cap", "jobs", "driveTurns"],
   ThreadTurnsListResponse: ["data", "nextCursor", "window", "bootGeneration", "epoch", "snapshot", "authoritative"],
+  ThreadHistoryReadResponse: ["thread", "pendingAskPage", "window", "fetch", "targetSessionToolsSupported", "latestExecutionTurnId", "answerContinuation", "olderCursor", "requestGeneration", "bootGeneration", "epoch", "snapshot", "overlay", "authoritative", "changes", "servedFrom", "fallbackReason", "asOf", "instanceId", "servingFactsUnavailableReason"],
+  ThreadHistoryTurnsListResponse: ["data", "nextCursor", "window", "bootGeneration", "epoch", "snapshot", "authoritative", "servedFrom", "fallbackReason", "asOf", "instanceId", "servingFactsUnavailableReason", "latestExecutionTurnId"],
   SnapshotIdentity: ["incarnation", "length"],
   Turn: ["id", "items", "itemsView", "elision", "status", "error", "version", "hasEarlierItems", "hasLaterItems", "startedAt", "completedAt", "durationMs", "usage", "cost"],
 } as const;
@@ -6281,8 +6511,10 @@ export interface MethodTypes {
   "evener/hub/session-tools/input": { params: SessionToolsInput; result: Value };
   "thread/list": { params: ThreadListParams; result: ThreadListResponse };
   "thread/read": { params: ThreadReadParams; result: ThreadReadResponse };
+  "evener/thread/history/read": { params: ThreadReadParams; result: ThreadHistoryReadResponse };
   "thread/unsubscribe": { params: ThreadUnsubscribeParams; result: EmptyResponse };
   "thread/turns/list": { params: ThreadTurnsListParams; result: ThreadTurnsListResponse };
+  "evener/thread/history/turns/list": { params: ThreadTurnsListParams; result: ThreadHistoryTurnsListResponse };
   "thread/turns/items/list": { params: ThreadTurnItemsListParams; result: ThreadTurnItemsListResponse };
   "thread/start": { params: ThreadStartParams; result: ThreadStartResponse };
   "thread/resume": { params: ThreadResumeParams; result: ThreadResumeResponse };
@@ -6373,6 +6605,8 @@ export interface MethodTypes {
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
   "evener/instance/setModelDisabled": { params: InstanceSetModelDisabledParams; result: InstanceListResponse };
   "evener/instance/refreshModels": { params: InstanceRefreshModelsParams; result: InstanceListResponse };
+  "evener/instance/modelGet": { params: InstanceModelGetParams; result: InstanceModelDetailResponse };
+  "evener/instance/modelEdit": { params: InstanceModelEditParams; result: InstanceModelEditResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
   "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };

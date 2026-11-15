@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
@@ -21,7 +22,7 @@ func TestRetainedDiscoveredSymlinkDeployment(t *testing.T) {
 			dangling := strings.HasPrefix(mode, "dangling-")
 			restart := mode == "retained-reinstall-restart" || dangling
 			refuseDangling := mode == "dangling-other-target" || mode == "dangling-cycle" || mode == "dangling-retarget-at-write"
-			root := t.TempDir()
+			root := testfs.CanonicalTempDir(t)
 			target, alias := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener")
 			for _, dir := range []string{filepath.Dir(target), filepath.Dir(alias)} {
 				if err := os.Mkdir(dir, 0o755); err != nil {

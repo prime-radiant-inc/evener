@@ -171,7 +171,7 @@ export function setupUser() {
  * it renders unconditionally. */
 export async function settled(): Promise<void> {
   await act(async () => {});
-  screen.getByRole("button", { name: "Advanced options" });
+  screen.getByText("Advanced options");
 }
 
 export async function visitSpawnURL(url: string): Promise<void> {

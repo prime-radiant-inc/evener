@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -46,6 +48,101 @@ func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T
 	}
 	if got := c.live["dlg_blocked"].runtime; got != blocked {
 		t.Fatalf("blocked subtree runtime changed during claim: got %p want %p", got, blocked)
+	}
+}
+
+func TestDelegateRuntimeReclaim_RefusesSubtreeUnderLaneHandoff(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 2
+	seedDelegateReclaimRuntime(t, c, "dlg_fenced", "", time.Unix(10, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_free", "", time.Unix(9, 0).UTC(), false, false)
+	if admission := c.beginSubtreeLaneHandoff("dlg_fenced"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired", admission)
+	}
+	defer c.endSubtreeLaneHandoff("dlg_fenced")
+
+	claim, err := c.ClaimRuntimeReclamation(1)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("capacity reclamation claimed nothing with one free candidate")
+	}
+	defer func() { _ = c.AbortRuntimeReclamation(claim) }()
+	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, []string{"dlg_free"}) {
+		t.Fatalf("claimed runtimes = %v, want only the unfenced dlg_free", got)
+	}
+}
+
+// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: a
+// capacity reclamation keeps c.reclaiming set across its terminal teardowns,
+// and the evicted coordinator's own close-time lane cleanup must still acquire
+// the handoff for its child lanes. Independent handoffs are refused later by
+// the quiescence snapshot, which still sees the claim as active.
+func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	seedDelegateReclaimRuntime(t, c, "dlg_coordinator", "", time.Unix(10, 0).UTC(), false, false)
+	c.mu.Lock()
+	c.reclaiming["dlg_coordinator"] = 1
+	active := c.runtimeReclamationIntersectsProcessWorkLocked(c.subtreeMembersLocked("dlg_coordinator"))
+	c.mu.Unlock()
+	if !active {
+		t.Fatal("reclaiming subtree does not read as active")
+	}
+	if admission := c.beginSubtreeLaneHandoff("dlg_coordinator"); admission != laneHandoffAcquired {
+		t.Fatalf("begin handoff admission = %v, want acquired for the reclaiming close", admission)
+	}
+	c.endSubtreeLaneHandoff("dlg_coordinator")
+	c.mu.Lock()
+	delete(c.reclaiming, "dlg_coordinator")
+	c.mu.Unlock()
+}
+
+// TestCapacityReclaimUnlocksKeptChildLane covers the full path the fence
+// exception exists for: capacity eviction tears down a coordinator whose
+// close-time lane cleanup must still unlock a dirty child lane while the
+// subtree is marked reclaiming.
+func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
+	r := newWorktreeRepo(t)
+	childID, lanePath, _ := r.seedIsolationLane(t)
+	const parentID = "dlg_parent_reclaim"
+	parentSess := newSession(t)
+	childSess := newSession(t)
+	c := r.s.delegateController
+	parentSess.delegateController = c
+	parentSess.owningDelegateID = parentID
+	childSess.delegateController = c
+
+	c.mu.Lock()
+	childAggregate := c.durable[childID]
+	if childAggregate == nil {
+		c.mu.Unlock()
+		t.Fatalf("child aggregate %s is missing", childID)
+	}
+	childAggregate.Descriptor.ParentDelegateID = parentID
+	childAggregate.Phase = delegatestore.PhaseIdle
+	if c.delegateChildren[parentID] == nil {
+		c.delegateChildren[parentID] = make(map[string]struct{})
+	}
+	c.delegateChildren[parentID][childID] = struct{}{}
+	childLive := c.live[childID]
+	childLive.binding = nil
+	childLive.runtime = childSess
+	c.mu.Unlock()
+	if err := os.WriteFile(filepath.Join(lanePath, "keep-me.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty child lane: %v", err)
+	}
+	seedDelegateReclaimRuntimeSession(t, c, parentID, "", time.Unix(20, 0).UTC(), false, false, parentSess)
+	c.maxRetainedTerminal = 1
+
+	if err := r.s.reclaimDelegateRuntimeCapacity(1); err != nil {
+		t.Fatalf("reclaim capacity: %v", err)
+	}
+	if _, locked, reason := r.laneLocked(t, lanePath); locked {
+		t.Fatalf("kept child lane stayed locked with %q after the coordinator's close-time cleanup", reason)
+	}
+	if _, err := os.Stat(lanePath); err != nil {
+		t.Fatalf("dirty child lane was removed instead of kept: %v", err)
 	}
 }
 
@@ -1248,6 +1345,39 @@ func TestDelegateIdleRelease_CrossSessionArmReplacesPriorWindow(t *testing.T) {
 	session().scheduleIdleRuntimeRelease(2)
 	if got := fake.BlockedCount() - timersBefore; got != 1 {
 		t.Fatalf("cross-session arm parked %d grace timers, want the single replaced one", got)
+	}
+}
+
+// TestDelegateIdleRelease_TestOverrideSetsArmedDelay pins the test-only grace
+// override at the arm site. The integration waits that rely on the override
+// share testwait's 30s ceiling with the production default, so an arm that
+// ignored the override would still pass them once the real default fired; the
+// fake clock makes the armed delay itself observable. The callback must stay
+// armed just short of the override and fire at it, which only holds when the
+// arm reads the override rather than delegateIdleReleaseDelayDefault.
+func TestDelegateIdleRelease_TestOverrideSetsArmedDelay(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	override := 250 * time.Millisecond
+	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.delegateIdleReleaseDelay = &override
+	})
+
+	callbacksBefore := fake.PendingCallbacks()
+	s.scheduleIdleRuntimeRelease(1)
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 1 {
+		t.Fatalf("arm parked %d grace callbacks, want 1", got)
+	}
+	fake.Advance(override - time.Millisecond)
+	fake.Drain()
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 1 {
+		t.Fatalf("grace callback fired %s before the override; want it still armed", time.Millisecond)
+	}
+	fake.Advance(time.Millisecond)
+	fake.Drain()
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 0 {
+		t.Fatalf("grace callback still armed at the override; the arm did not use the override delay")
 	}
 }
 

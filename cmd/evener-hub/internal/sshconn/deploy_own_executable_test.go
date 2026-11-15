@@ -439,14 +439,15 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
-	modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", dirtyControllerVersion)
+	fixture := modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", dirtyControllerVersion)
+	fixture.darwin = runtime.GOOS == "darwin"
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1}, true, nil, nil)
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, LaunchCheckKnown: true, HubEndpointSchema: 1, UID: "1000"}, true, nil, nil)
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}

@@ -3,11 +3,10 @@ package responses
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/internal/transporttest"
 )
 
 // rejectingUserReq builds a request whose body cannot be built: an audio part
@@ -21,24 +20,13 @@ func rejectingUserReq() llm.Request {
 	return req
 }
 
-// noHTTPServer stands up a server that fails the test the moment any request
-// reaches it, so a test proving "the error is returned before the wire" cannot
-// silently start doing network I/O.
-func noHTTPServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("no HTTP exchange was expected: the build error must short-circuit the call")
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // TestEntrypointsPropagateBuildErrors pins that Complete, Stream and
 // CountTokens return the structured build error before any HTTP exchange when
 // the request cannot be shaped at all — each entrypoint has its own early
 // return the wire plumbing can hide behind.
 func TestEntrypointsPropagateBuildErrors(t *testing.T) {
-	srv := noHTTPServer(t)
+	t.Parallel()
+	srv := transporttest.NoHTTPServer(t)
 	res := liveRes(srv, openaiCaps)
 	p := &Protocol{Client: srv.Client()}
 
@@ -65,6 +53,7 @@ func TestEntrypointsPropagateBuildErrors(t *testing.T) {
 // stampResponseIDHash: a response whose Raw map is still nil gets one so the
 // id_hash can be recorded.
 func TestStampResponseIDHashOnRawlessResponse(t *testing.T) {
+	t.Parallel()
 	hasher := llm.NewContinuationHasher([]byte("fuzz-secret"))
 	want, err := hasher.HashContinuationHandle("response_id", "resp_x")
 	if err != nil {
@@ -85,6 +74,7 @@ func TestStampResponseIDHashOnRawlessResponse(t *testing.T) {
 // identifier under any of its three keys is skipped, a row with an id but no
 // reasoning levels advertises none, and the surviving rows come back sorted.
 func TestListModelsCodexRowShapes(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `{"models":[{"context_window":1000},{"slug":"gpt-b","supported_reasoning_levels":[]},{"slug":"gpt-a","supported_reasoning_levels":[{"effort":"low"}]}]}`)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err != nil {
@@ -105,6 +95,7 @@ func TestListModelsCodexRowShapes(t *testing.T) {
 // is not the models JSON shape fails the listing rather than yielding empty
 // rows silently.
 func TestListModelsDecodeFailure(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `not json at all`)
 	_, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err == nil {

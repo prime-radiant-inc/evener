@@ -1,7 +1,7 @@
-/* Two columns: chords right-aligned against their descriptions, so a
-   column of mixed-length chords reads as one edge. Each item is
-   display: contents so its dt/dd pair joins the list's grid. */
-.list {
+/* The table layout: two columns, chords right-aligned against their
+   descriptions, so a column of mixed-length chords reads as one edge. Each
+   item is display: contents so its dt/dd pair joins the list's grid. */
+.table {
   display: grid;
   grid-template-columns: max-content 1fr;
   column-gap: var(--space-3);
@@ -10,11 +10,11 @@
   margin: 0;
 }
 
-.item {
+.table .item {
   display: contents;
 }
 
-.keys {
+.table .keys {
   justify-self: end;
 }
 
@@ -24,4 +24,26 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
+}
+
+/* The inline layout: one centred row of chord-and-description pairs that
+   wraps between pairs, never inside one, at caption size. */
+.inline {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+
+.inline .item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.inline .label {
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-ui);
 }

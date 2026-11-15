@@ -16,6 +16,7 @@ import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { StatusRow } from "./StatusRow";
+import statusRowStyles from "./statusrow.module.css";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -60,6 +61,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextWindow: 0,
     contextPressure: 0,
     contextAssumed: false,
+    compactionThreshold: 0,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -101,6 +103,18 @@ beforeEach(() => {
 test("no state dot: the pane header already carries this session's cadence", () => {
   render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} />);
   expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
+});
+
+// The composer's inline mount places the whole fact run beside the verbs;
+// the footer keeps it at the leading edge.
+test("align end packs the facts to the far end", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} align="end" />);
+  expect(screen.getByTestId("status-row").className.split(" ")).toContain(statusRowStyles.rowEnd);
+});
+
+test("the default row keeps its leading edge", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} />);
+  expect(screen.getByTestId("status-row").className.split(" ")).not.toContain(statusRowStyles.rowEnd);
 });
 
 // cwd / branch / project can't change mid-session, so they are reference
@@ -704,6 +718,50 @@ test("context has one meter semantic with wide and compact visual variants", () 
   expect(screen.getByTestId("status-row-context-percent").textContent).toBe("50%");
   expect(screen.getByTestId("status-row-context-percent").getAttribute("aria-hidden")).toBeNull();
   expect(screen.getAllByRole("meter")).toHaveLength(1);
+});
+
+test("uses compactionThreshold as the gauge ceiling, percentage, and tone when compactionThreshold > 0", () => {
+  const { rerender } = render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({
+        contextUsed: 200_000,
+        contextWindow: 1_000_000,
+        contextPressure: 0.2,
+        contextAssumed: false,
+        compactionThreshold: 250_000,
+      })}
+      now={1_000_000}
+    />,
+  );
+  const hiddenMeter = screen.getByRole("meter");
+  expect(hiddenMeter.getAttribute("value")).toBe("200000");
+  expect(hiddenMeter.getAttribute("max")).toBe("250000");
+  const visualMeter = screen.getByTestId("status-row-context-meter").querySelector('[role="meter"]');
+  expect(visualMeter?.getAttribute("aria-valuenow")).toBe("200000");
+  expect(visualMeter?.getAttribute("aria-valuemax")).toBe("250000");
+  expect(screen.getByTestId("status-row-context-percent").textContent).toBe("80%");
+  expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass.attention)).toBe(true);
+  expect(hiddenMeter.getAttribute("aria-label") ?? "").toContain("1000000");
+
+  rerender(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({
+        contextUsed: 200_000,
+        contextWindow: 277_778,
+        contextPressure: 200_000 / 277_778,
+        contextAssumed: true,
+        compactionThreshold: 250_000,
+      })}
+      now={1_000_000}
+    />,
+  );
+  const assumedLabel = screen.getByRole("meter").getAttribute("aria-label") ?? "";
+  expect(assumedLabel).toContain("200000");
+  expect(assumedLabel).toContain("250000");
+  expect(assumedLabel).not.toContain("277778");
+  expect(assumedLabel).not.toContain("~");
 });
 
 test.each(["ended", "closed", "notLoaded"] as const)(

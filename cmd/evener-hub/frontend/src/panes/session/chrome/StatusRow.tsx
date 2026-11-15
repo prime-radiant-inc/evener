@@ -20,17 +20,28 @@ import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
-import { assumedWindowMark, contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
+import {
+  assumedWindowMark,
+  contextTone,
+  effectiveContextStatus,
+  formatWorkDuration,
+  totalWorkMillis,
+} from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
   sessionRef: string;
   model: ThreadModel;
   now: number;
+  /** Pack the facts against the row's far end instead of its leading edge.
+   * The composer's inline mount uses it so the model pair sits beside the
+   * verbs rather than immediately after the paperclip. */
+  align?: "start" | "end";
 }
 
 const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
+  rowEnd: requireClass(styles.rowEnd, "statusrow.module.css", "rowEnd"),
   identity: requireClass(styles.identity, "statusrow.module.css", "identity"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
   figure: requireClass(styles.figure, "statusrow.module.css", "figure"),
@@ -126,20 +137,23 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   );
 }
 
-export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
+export function StatusRow({ sessionRef, model, now, align = "start" }: StatusRowProps) {
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
-  const hasContext = model.contextWindow > 0;
+  const status = effectiveContextStatus(model);
+  const hasContext = status.ceiling > 0;
   // The clock reports an in-flight turn's elapsed time, so it has nothing to
   // say when no turn is running - and a strip that keeps showing a frozen
   // number implies otherwise. The banked total is still one click away in
   // Session details.
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
-  const contextPercent = Math.round(model.contextPressure * 100);
-  const contextLabel = `Context: ${model.contextUsed} of ${assumedWindowMark(model.contextAssumed)}${model.contextWindow} tokens used, ${contextPercent} percent`;
+  const contextPercent = Math.round(status.pressure * 100);
+  const capacityMark = status.hasCustomThreshold ? "" : assumedWindowMark(model.contextAssumed);
+  const windowSuffix = status.hasCustomThreshold && !model.contextAssumed ? ` (${model.contextWindow} window)` : "";
+  const contextLabel = `Context: ${model.contextUsed} of ${capacityMark}${status.ceiling} tokens used${windowSuffix}, ${contextPercent} percent`;
 
   return (
-    <div className={CLASS.row} data-testid="status-row">
+    <div className={align === "end" ? `${CLASS.row} ${CLASS.rowEnd}` : CLASS.row} data-testid="status-row">
       <span className={CLASS.identity} data-testid="status-row-identity">
         <ModelSwitch sessionRef={sessionRef} model={model} />
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
@@ -150,8 +164,8 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
             <meter
               aria-label={contextLabel}
               min={0}
-              value={Math.min(model.contextWindow, Math.max(0, model.contextUsed))}
-              max={model.contextWindow}
+              value={Math.min(status.ceiling, Math.max(0, model.contextUsed))}
+              max={status.ceiling}
             />
           </VisuallyHidden>
           <span className={CLASS.context} data-testid="status-row-context" aria-hidden="true" title={contextLabel}>
@@ -159,8 +173,8 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
               <Meter
                 label={contextLabel}
                 value={model.contextUsed}
-                max={model.contextWindow}
-                tone={contextTone(model.contextPressure)}
+                max={status.ceiling}
+                tone={contextTone(status.pressure)}
               />
             </span>
             <span className={`${CLASS.contextPercent} ${CLASS.figure}`} data-testid="status-row-context-percent">

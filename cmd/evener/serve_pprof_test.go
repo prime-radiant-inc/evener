@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -18,8 +19,8 @@ func TestServeKeepsLivePprofUpWhileServing(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
 
 	var pprofURL string
-	deps.startLivePprof = func(logf func(string, ...any)) (string, func(), error) {
-		addr, stop, err := cmdutil.StartLivePprof(logf)
+	deps.startLivePprof = func(log *slog.Logger) (string, func(), error) {
+		addr, stop, err := cmdutil.StartLivePprof(log)
 		pprofURL = addr
 		return addr, stop, err
 	}

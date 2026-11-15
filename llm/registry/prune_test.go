@@ -8,6 +8,7 @@ import (
 )
 
 func TestPrunableTable_MatchesSpec(t *testing.T) {
+	t.Parallel()
 	want := map[string]map[string]bool{
 		ProtocolOpenAIChat: {
 			"temperature": true, "top_p": true, "stop": true, "stream_options": true, "max_tokens": true,
@@ -52,6 +53,7 @@ func TestPrunableTable_MatchesSpec(t *testing.T) {
 }
 
 func TestValidateFields(t *testing.T) {
+	t.Parallel()
 	if err := ValidateFields(map[string]bool{"store": true, "text.verbosity": false}, ProtocolOpenAIResponses, "providers.x"); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +69,7 @@ func TestValidateFields(t *testing.T) {
 }
 
 func TestSeedFields(t *testing.T) {
+	t.Parallel()
 	c := Caps{Fields: map[string]bool{"store": true}}
 	seedFields(&c, ProtocolOpenAIResponses)
 	if !c.Fields["store"] || c.Fields["include"] || !c.Fields["temperature"] || len(c.Fields) != len(PrunablePaths(ProtocolOpenAIResponses)) {
@@ -86,6 +89,7 @@ func fullBody(proto string) map[string]any {
 }
 
 func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
+	t.Parallel()
 	for _, proto := range []string{ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolAnthropic, ProtocolGoogle} {
 		allFalse := Caps{Fields: map[string]bool{}}
 		for _, p := range PrunablePaths(proto) {
@@ -122,6 +126,7 @@ func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
 // rest of generationConfig standing; it is how a row declares a model that
 // takes no thinking fields at all.
 func TestPrune_GoogleThinkingConfig(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{"generationConfig": map[string]any{"temperature": 0.2, "thinkingConfig": map[string]any{"thinkingLevel": "high"}}}
 	pruned := Prune(body, Caps{Fields: map[string]bool{"generationConfig.thinkingConfig": false}}, ProtocolGoogle)
 	if !reflect.DeepEqual(pruned, []string{"generationConfig.thinkingConfig"}) {
@@ -137,6 +142,7 @@ func TestPrune_GoogleThinkingConfig(t *testing.T) {
 }
 
 func TestPrune_NestedLeafKeepsSiblingAndDropsEmptyParent(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{"text": map[string]any{"verbosity": "low", "format": map[string]any{"type": "text"}}, "reasoning": map[string]any{"context": "all_turns"}}
 	pruned := Prune(body, Caps{Fields: map[string]bool{"text.verbosity": false, "reasoning.context": false}}, ProtocolOpenAIResponses)
 	if !reflect.DeepEqual(pruned, []string{"reasoning.context", "text.verbosity"}) {
@@ -151,6 +157,7 @@ func TestPrune_NestedLeafKeepsSiblingAndDropsEmptyParent(t *testing.T) {
 }
 
 func TestPrune_MaxTokensSpelling(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{"max_completion_tokens": 10}
 	spelling := "max_completion_tokens"
 	pruned := Prune(body, Caps{MaxTokensField: &spelling, Fields: map[string]bool{"max_tokens": false}}, ProtocolOpenAIChat)
@@ -170,6 +177,7 @@ func TestPrune_MaxTokensSpelling(t *testing.T) {
 // fields.max_tokens = false pruning nothing, so the field reaches a provider
 // that rejects it.
 func TestPrune_MaxTokensFieldIsAChatSpelling(t *testing.T) {
+	t.Parallel()
 	spelling := "max_completion_tokens"
 	body := map[string]any{"max_tokens": 10}
 	pruned := Prune(body, Caps{MaxTokensField: &spelling, Fields: map[string]bool{"max_tokens": false}}, ProtocolAnthropic)
@@ -179,6 +187,7 @@ func TestPrune_MaxTokensFieldIsAChatSpelling(t *testing.T) {
 }
 
 func TestPrune_DeveloperRoleIsPseudoAndAbsentPathsAreNotReported(t *testing.T) {
+	t.Parallel()
 	body := map[string]any{"messages": []any{map[string]any{"role": "developer"}}}
 	if pruned := Prune(body, Caps{Fields: map[string]bool{"developer_role": false, "store": false}}, ProtocolOpenAIChat); len(pruned) != 0 {
 		t.Fatalf("pseudo path and absent paths must not be reported: %v", pruned)
@@ -189,6 +198,7 @@ func TestPrune_DeveloperRoleIsPseudoAndAbsentPathsAreNotReported(t *testing.T) {
 }
 
 func TestTemperaturePath(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		protocol string
 		want     string
@@ -208,6 +218,7 @@ func TestTemperaturePath(t *testing.T) {
 }
 
 func TestTemperatureSupported(t *testing.T) {
+	t.Parallel()
 	boolPtr := func(v bool) *bool { return &v }
 	row := func(step, model string) map[string]string {
 		if model == "" {

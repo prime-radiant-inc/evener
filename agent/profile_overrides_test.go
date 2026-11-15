@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -232,6 +233,43 @@ func TestWithCommunicateOutputSchema_NilOrEmpty_NoOp(t *testing.T) {
 	}
 }
 
+// TestWithCommunicateOutputSchema_RejectsInvalidSchema pins the chokepoint
+// for issue #6298: every binder of a caller-supplied output schema goes
+// through this validation, because an invalid schema spliced into the
+// communicate tool ships on the child's first model call and providers that
+// validate tool parameters reject the request before the delegate works.
+func TestWithCommunicateOutputSchema_RejectsInvalidSchema(t *testing.T) {
+	t.Parallel()
+	base := NewOpenAIProfile("gpt-5.2")
+
+	// A properties value that is a bare type string — the exact rejected shape
+	// from lunaroute's draft-2020-12 tool validation in issue #6298.
+	bound, err := provider.WithCommunicateOutputSchema(base, map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"rows": "array"},
+	})
+	if err == nil {
+		t.Fatal("invalid output schema should fail to bind")
+	}
+	if bound != nil {
+		t.Fatalf("invalid output schema should bind nothing, got a profile")
+	}
+	// The base profile is untouched: its communicate output stays the default
+	// envelope.
+	for _, td := range base.ToolDefinitions() {
+		if td.Name != "communicate" {
+			continue
+		}
+		props, _ := td.Parameters["properties"].(map[string]any)
+		output, _ := props["output"].(map[string]any)
+		if _, isEnvelope := output["properties"].(map[string]any)["message"]; !isEnvelope {
+			t.Fatal("the base profile's communicate output schema was mutated by the rejected bind")
+		}
+		return
+	}
+	t.Fatal("communicate tool not found")
+}
+
 func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
 	t.Parallel()
 	base := newAnthropicProfile("claude-opus-4-6")
@@ -321,44 +359,4 @@ func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
 		return
 	}
 	t.Fatal("communicate tool not found")
-}
-
-func TestWithContextWindow_OverridesWhenPositive(t *testing.T) {
-	t.Parallel()
-	base := newOpenAICompatProfile("kimi", "kimi-k2", 0)
-	original := base.ContextWindowSize()
-
-	p := WithContextWindow(base, 262_144)
-	if got := p.ContextWindowSize(); got != 262_144 {
-		t.Fatalf("ContextWindowSize() = %d, want 262144", got)
-	}
-	// Original profile must be unchanged (clone semantics).
-	if got := base.ContextWindowSize(); got != original {
-		t.Fatalf("original profile mutated: ContextWindowSize() = %d, want %d", got, original)
-	}
-}
-
-func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
-	t.Parallel()
-	base := newOpenAICompatProfile("kimi", "kimi-k2", 0)
-	want := base.ContextWindowSize()
-
-	for _, n := range []int{0, -1, -100} {
-		p := WithContextWindow(base, n)
-		if got := p.ContextWindowSize(); got != want {
-			t.Fatalf("WithContextWindow(base, %d).ContextWindowSize() = %d, want %d (no-op)", n, got, want)
-		}
-	}
-}
-
-func TestWithContextWindow_PreservesAnthropicIdentity(t *testing.T) {
-	t.Parallel()
-	base := newAnthropicProfile("claude-opus-4-6")
-	p := WithContextWindow(base, 500_000)
-	if p.Surface() != registry.SurfaceAnthropic || p.ID() != "anthropic" {
-		t.Fatalf("WithContextWindow changed identity to %s/%s, want anthropic/anthropic", p.ID(), p.Surface())
-	}
-	if got := p.ContextWindowSize(); got != 500_000 {
-		t.Fatalf("ContextWindowSize() = %d, want 500000", got)
-	}
 }

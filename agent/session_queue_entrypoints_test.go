@@ -298,7 +298,7 @@ func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
 // history exclusively from the transcript JSONL. If no transcript exists,
 // the session starts with empty history (no snapshot fallback).
 func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, stateDir string) (*Session, error) {
-	return RestoreSessionFromMetaWithConfig(client, profile, env, meta, RestoreSessionConfig{StateDir: stateDir})
+	return RestoreSessionFromMetaWithConfig(client, profile, env, meta, RestoreSessionConfig{StateDir: stateDir, testOnly: sharingHostProbe(testConfig{})})
 }
 
 func clientMutationInput(text string, images []ImageAttachment, skillNames []string, commandNames ...[]string) []appwire.InputItem {

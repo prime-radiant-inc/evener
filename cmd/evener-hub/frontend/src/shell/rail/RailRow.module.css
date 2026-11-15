@@ -1,10 +1,9 @@
 /* Row content (RailRow.tsx).
- * The outer role=treeitem div itself, incl. its own :focus-visible ring, is
- * owned by widgets/tree/tree.module.css; these classes only style what
- * renderRow puts inside it. The nested-level guide rail (.section
- * [role="group"]) lives in Rail.module.css: it selects through Rail.tsx's
- * own .section, and a CSS Modules class only resolves to the same scoped
- * name inside the stylesheet that declares it.
+ * The outer role=treeitem div - its inset, rounded hover/pressed/selected
+ * states, press, focus ring and the nested levels' guide rails - is owned by
+ * widgets/tree/tree.module.css; these classes only style what renderRow puts
+ * inside it, and read the treeitem's focus from the data-row-focused the row
+ * sets from Tree's own row info.
  *
  * The content wrapper is `.railRow`, NOT `.row`: tree.module.css already
  * owns a bare `.row` (the treeitem), and CSS Modules only keeps the two
@@ -27,9 +26,10 @@
   padding-left: 14px;
 }
 
-.railRow:hover {
-  background: var(--hover-1);
-}
+/* No wash and no press of its own: the treeitem around it (tree.module.css)
+ * owns the rounded hover and selected fills and gives under the pointer, and
+ * a second rectangle painted here would square that pill's corners from the
+ * inside. */
 
 /* Touch target (UX fix): a coarse pointer (phone/tablet touch) needs the
  * platform's 44px tap floor, the same treatment modelswitch.module.css's own
@@ -87,11 +87,11 @@
  * transparent, borderless, invisible - revealed on row hover/focus so the
  * rail reads as dense and quiet (design bar: Linear/VS Code-quality sidebar)
  * instead of every row showing a permanently-loud bordered button. `.railRow` is
- * a child of the Tree widget's own role=treeitem element (tree.module.css),
- * which is what actually receives roving-tabindex focus - hence the
- * [role="treeitem"]:focus selector below, rather than :focus-within on
- * `.railRow` itself (a descendant-focus check would never match the ANCESTOR
- * treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
+ * a child of the Tree widget's own role=treeitem element, which is what
+ * actually receives roving-tabindex focus - so the row carries that focus as
+ * data-row-focused (from Tree's row info) and the reveal keys on it, rather
+ * than on :focus-within (a descendant-focus check would never match the
+ * ANCESTOR treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
  * revealed while ITS OWN menu is open (closing on blur/Escape already
  * reverts it via Menu's own isOpen state); an ancestor selector is scoped
  * to `.actions` so an open menu on one row never reveals another's.
@@ -111,7 +111,7 @@
     visibility 0s var(--motion-duration-hover);
 }
 
-[role="treeitem"]:focus .actions,
+.railRow[data-row-focused="true"] .actions,
 .actions:has(button[aria-expanded="true"]),
 .railRow:hover .actions {
   opacity: 1;
@@ -132,7 +132,7 @@
       visibility 0s 0s;
   }
 
-  [role="treeitem"]:focus .rightSlot > :not(.actions),
+  .railRow[data-row-focused="true"] .rightSlot > :not(.actions),
   .rightSlot:has(button[aria-expanded="true"]) > :not(.actions),
   .railRow:hover .rightSlot > :not(.actions) {
     opacity: 0;
@@ -315,6 +315,43 @@
   text-overflow: ellipsis;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
+}
+
+/* A Live row's second line: why it sits in its band, then its host where the
+ * band names it. The same quiet sentence as .quotaWait, and it truncates the
+ * same way so a row is never taller than two lines. Only the word naming a
+ * Needs-you row's attention takes a hue, matching the row's own dot. */
+.why {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.whyReason[data-hue="attention"] {
+  color: var(--attention-ink);
+}
+
+.whyReason[data-hue="danger"] {
+  color: var(--danger-ink);
+}
+
+/* A band header is a label over its rows, not a row to open: medium ink and
+ * medium weight set it apart from the session titles under it without a
+ * second heading style competing with the section's eyebrow. */
+.bandLabel {
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-medium);
+}
+
+/* A band's count sits where a row's right slot would, but it is not one: a
+ * band has no actions to swap in on hover, so the count never hides. */
+.bandCount {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot

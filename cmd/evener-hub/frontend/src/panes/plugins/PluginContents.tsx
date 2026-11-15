@@ -1,5 +1,6 @@
 // Loaded inventories retain their healthy components beside load diagnostics.
-// Target and request failures belong to the sheet. This block never fetches.
+// Target and request failures belong to the detail body that hosts this block.
+// This block never fetches.
 
 import type { PluginComponents } from "@evener/appwire-client";
 import type { PluginComponentsEntry } from "@evener/appwire-client/state/extensions";
@@ -46,13 +47,15 @@ function ContentsRow({
   count: number;
 }): ReactElement {
   const [showAll, setShowAll] = useState(false);
-  // Expansion removes its own focused control without rerendering the sheet.
+  // Expansion removes its own focused control at this row's commit, with no
+  // rerender above it - the row itself is the catch, so the keyboard stays
+  // put instead of dropping to <body>.
   const focusRoot = useRef<HTMLDivElement>(null);
   useFocusRehome(focusRoot);
   const visible = showAll ? names : names.slice(0, MAX_NAMES);
   const rest = names.length - visible.length;
   return (
-    <div ref={focusRoot} className={CLASS.row} data-kind={kind}>
+    <div ref={focusRoot} className={CLASS.row} data-kind={kind} tabIndex={-1}>
       <span className={CLASS.kindLabel}>{label}</span>
       <Badge count={count} />
       <span className={CLASS.names}>
@@ -97,12 +100,13 @@ interface PluginContentsBlockProps {
 }
 
 export function PluginContentsBlock(props: PluginContentsBlockProps): ReactElement {
-  // Both sheets replace Retry with loading content. Own recovery here so
-  // callers need no sheet-level rerender to keep the keyboard in its modal.
+  // A retry swaps Retry for loading content at this block's own commit, with
+  // no rerender above it - the block wrapper is the catch, so callers need no
+  // body-level rerender to keep the keyboard.
   const focusRoot = useRef<HTMLDivElement>(null);
   useFocusRehome(focusRoot);
   return (
-    <div ref={focusRoot}>
+    <div ref={focusRoot} tabIndex={-1}>
       <ContentsBlockBody {...props} />
     </div>
   );

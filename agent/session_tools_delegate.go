@@ -70,12 +70,10 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 		}
 		wait = n
 	}
-	requestedWait := wait
 	if wait > 0 {
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
 	}
 	outcome := (delegateRuntime{owner: s}).send(ctx, target, message, wait)
-	outcome.result.WaitIgnoredReason = liveSteerWaitIgnoredReason(requestedWait, outcome.result.Status, outcome.result.Action)
 	if outcome.result.Err != nil && outcome.result.DelegateID == "" {
 		return nil, outcome.result.Err
 	}
@@ -92,7 +90,10 @@ func delegateSendTool(ctx context.Context, s *Session, args map[string]any, maxC
 			s.queueDelegateDeliveryCommit(callID, commit)
 		}
 	}
-	return marshalDelegateSendResult(outcome.result, maxChars)
+	if len(outcome.result.Tools) > 0 {
+		outcome.result.Tools = providerVisibleToolNames(outcome.result.Tools, s.currentToolNameMap())
+	}
+	return marshalDelegateSendResult(outcome.result, maxChars, s.currentToolNameMap())
 }
 
 func delegateCreateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -114,7 +115,7 @@ func delegateCreateTool(ctx context.Context, s *Session, args map[string]any, ma
 		Status:         string(result.Status),
 		Name:           result.Name,
 		AgentType:      result.AgentType,
-		Tools:          append([]string(nil), result.Tools...),
+		Tools:          providerVisibleToolNames(result.Tools, s.currentToolNameMap()),
 		Reason:         result.Reason,
 		Resumable:      result.Resumable,
 		TranscriptRef:  result.TranscriptRef,

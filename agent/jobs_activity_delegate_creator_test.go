@@ -258,7 +258,6 @@ func TestLiveActivityTreeKeepsNestedDelegatesWhenFirstHistoricalChildMetaMissing
 	s := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir}),
-		withoutGitSnapshot(),
 	)
 	rootID := s.ID()
 	middleID := "childlivemiddle"
@@ -315,7 +314,7 @@ func TestLiveActivityTreeKeepsNestedDelegatesWhenFirstHistoricalChildMetaMissing
 		t.Fatal("nested leaf session did not load under the degraded child")
 	}
 	found := false
-	for _, record := range leafChild.Jobs {
+	for record := range leafChild.Jobs.all() {
 		if record != nil && record.JobID == "job_live_leaf" {
 			found = true
 		}
@@ -376,8 +375,8 @@ func TestHistoricalActivityContinuationRejectsPositionAfterJobsJournalRecovers(t
 	if target == nil {
 		t.Fatalf("degraded target %q is absent from the resumed page", middleID)
 	}
-	if len(target.Jobs) != 0 || !target.JobsJournalUnreadable {
-		t.Fatalf("degraded target jobs=%d unreadable=%t, want an empty job list marked unreadable", len(target.Jobs), target.JobsJournalUnreadable)
+	if target.Jobs.len() != 0 || !target.JobsJournalUnreadable {
+		t.Fatalf("degraded target jobs=%d unreadable=%t, want an empty job list marked unreadable", target.Jobs.len(), target.JobsJournalUnreadable)
 	}
 	if _, ok := target.Delegates["dlg_"+strings.TrimPrefix(leafID, "child")]; !ok {
 		t.Fatalf("degraded target delegates = %v, want the nested delegate row", delegateIDs(target.Delegates))

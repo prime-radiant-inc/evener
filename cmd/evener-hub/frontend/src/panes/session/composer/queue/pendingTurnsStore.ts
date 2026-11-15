@@ -1,6 +1,8 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import {
   awaitingFirstFrameSend,
+  blockedEntriesIncludingDisplayed,
+  type ConsumedQueueEntry,
   canceledEntries,
   createMutationProjectionFence,
   createPendingTurnsStore,
@@ -10,9 +12,12 @@ import {
   type MutationProjectionRefresh,
   outboxEntriesByState,
   ownPendingTurnInput,
+  type PendingMessage,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
+  projectPendingMessages,
   recoveryEntries,
+  transcriptMutationIds,
   wireMutationCommitFeed,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
@@ -31,6 +36,7 @@ import type {
 import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
+  consumedQueueEntriesFor,
   discardRecoveryMutation,
   editQueuedMutation,
   type InputAttachment,
@@ -59,7 +65,7 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 // Presentation ownership only. The durable selector includes Remove-only
 // promotion and empty drain commands, not just messages with editable input.
 // Do not filter the underlying pending projection used by submission routing.
-export function useQueueStripMutationIds(ref: string): ReadonlySet<string> {
+export function useEditablePendingMutationIds(ref: string): ReadonlySet<string> {
   const records = useEditableQueuedMutationEntries(ref);
   return useMemo(() => new Set(records.map((record) => record.clientMutationId)), [records]);
 }
@@ -84,6 +90,10 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   threads: threadsPort,
   draft: draftPort,
   identity: { isOwnMutationRecord },
+  // A consumed queue row stays a pending entry until an authoritative
+  // replacement retires it, so the hydration window never vanishes the
+  // message (consumedQueueEntriesFor's own registry contract).
+  consumedQueueEntries: consumedQueueEntriesFor,
 });
 
 // The direct fallback's provenance seam: see pendingTurns' recordDirectSend.
@@ -109,6 +119,11 @@ installQueuedMutationProjection({
 // flight, so the stale projection cannot answer for it. Cleared by the test
 // reset hook too.
 const loadedRefs = new Set<string>();
+
+// Identities this page has already seen as recorded transcript items. A later
+// bounded read can drop the item from the model; the delivered fact must not
+// resurrect the pending row. Page-lifetime only, like submittedHere.
+const deliveredHere = new Set<string>();
 
 // The ref's standing delivery-uncertain rows in one pass, unsorted: the fence
 // predicate needs only WHETHER any stand, so this never pays the sorted
@@ -365,8 +380,38 @@ export function submitWithPendingTracking(
 const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
+const NO_PENDING_MESSAGES: PendingMessage[] = [];
+const NO_TRANSCRIPT_IDS: ReadonlySet<string> = new Set();
+const transcriptIdsByModel = new WeakMap<object, Set<string>>();
 
 type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
+
+function transcriptIdsFor(model: ThreadsPortModel): ReadonlySet<string> {
+  if (!model) return NO_TRANSCRIPT_IDS;
+  let ids = transcriptIdsByModel.get(model);
+  if (ids === undefined) {
+    ids = transcriptMutationIds(model);
+    transcriptIdsByModel.set(model, ids);
+  }
+  return ids;
+}
+
+// Both pending projections read the same two stores.
+function subscribePendingInputs(ref: string, onStoreChange: () => void): () => void {
+  const unsubscribePending = pendingTurnsStore.subscribe(() => onStoreChange());
+  const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
+    if (
+      state.threads.get(ref) !== previous.threads.get(ref) ||
+      state.mutationAuthorityRefs !== previous.mutationAuthorityRefs ||
+      state.mutationSnapshotRefs !== previous.mutationSnapshotRefs
+    )
+      onStoreChange();
+  });
+  return () => {
+    unsubscribePending();
+    unsubscribeThreads();
+  };
+}
 
 // pendingTurnEntries() reads both pendingTurnsStore's own state and, through
 // the threads port, the live thread model - a turn moving from queued to
@@ -393,19 +438,7 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
 
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => {
-      const unsubscribePending = pendingTurnsStore.subscribe(onStoreChange);
-      const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
-        if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
-      });
-      return () => {
-        unsubscribePending();
-        unsubscribeThreads();
-      };
-    },
-    [ref],
-  );
+  const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange), [ref]);
 
   const cacheRef = useRef<{
     outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
@@ -461,6 +494,86 @@ export function useRetryPendingState(ref: string): { loaded: boolean; unresolved
   return { loaded, unresolved: ownPendingTurnInput(entries) };
 }
 
+// The session's one pending-message stack: every undelivered user message,
+// keyed by clientMutationId, with queue rows and pending executions merged into
+// the same row. A row leaves only when a recorded transcript item with that
+// identity is visible; queue consumption and pendingMutations disappearance
+// update the row, never delete it.
+export function usePendingMessages(ref: string): PendingMessage[] {
+  const model = useThreadsStore((state) => state.threads.get(ref));
+  const mutationStateAuthoritative = useThreadsStore((state) => state.mutationAuthorityRefs.has(ref));
+  const mutationSnapshotCurrent = useThreadsStore((state) => state.mutationSnapshotRefs.has(ref));
+  useEffect(() => {
+    for (const id of transcriptIdsFor(model)) deliveredHere.add(id);
+  }, [model]);
+
+  const subscribe = useCallback((onStoreChange: () => void) => subscribePendingInputs(ref, onStoreChange), [ref]);
+
+  const cacheRef = useRef<{
+    outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
+    optimistic: ReturnType<typeof pendingTurnsStore.getState>["optimistic"];
+    recovery: ReturnType<typeof pendingTurnsStore.getState>["recovery"];
+    submittedHere: ReturnType<typeof pendingTurnsStore.getState>["submittedHere"];
+    model: ThreadsPortModel;
+    ref: string;
+    mutationStateAuthoritative: boolean;
+    mutationSnapshotCurrent: boolean;
+    consumedQueueEntries: readonly ConsumedQueueEntry[];
+    rows: PendingMessage[];
+  } | null>(null);
+  const getSnapshot = useCallback((): PendingMessage[] => {
+    const { outbox, optimistic, recovery, submittedHere } = pendingTurnsStore.getState();
+    const model = threadsPort.getThreadModel(ref);
+    const consumedQueueEntries = consumedQueueEntriesFor(ref);
+    const cached = cacheRef.current;
+    if (
+      cached &&
+      cached.outbox === outbox &&
+      cached.optimistic === optimistic &&
+      cached.recovery === recovery &&
+      cached.submittedHere === submittedHere &&
+      cached.model === model &&
+      cached.ref === ref &&
+      cached.mutationStateAuthoritative === mutationStateAuthoritative &&
+      cached.mutationSnapshotCurrent === mutationSnapshotCurrent &&
+      cached.consumedQueueEntries === consumedQueueEntries
+    ) {
+      return cached.rows;
+    }
+    const transcriptIds = transcriptIdsFor(model);
+    const rows = projectPendingMessages({
+      ref,
+      outbox: [...outbox.values()],
+      optimistic: [...optimistic.values()],
+      recovery: [...recovery.values()],
+      consumedQueueEntries,
+      model,
+      deliveredHere,
+      transcriptIds,
+      mutationStateAuthoritative,
+      mutationSnapshotCurrent,
+      submittedHere,
+      isOwnMutationRecord,
+    });
+    const result = rows.length > 0 ? rows : NO_PENDING_MESSAGES;
+    cacheRef.current = {
+      outbox,
+      optimistic,
+      recovery,
+      submittedHere,
+      model,
+      ref,
+      mutationStateAuthoritative,
+      mutationSnapshotCurrent,
+      consumedQueueEntries,
+      rows: result,
+    };
+    return result;
+  }, [ref, mutationStateAuthoritative, mutationSnapshotCurrent]);
+
+  return useSyncExternalStore(subscribe, getSnapshot);
+}
+
 // The same projection read from the stores as they are now, not as a component
 // rendered them: for the press handlers that re-derive their verdict at the
 // press (stores/liveControls.ts is the rule; this is its pending-send input).
@@ -493,7 +606,7 @@ function useOutboxRecordsByState(ref: string, state: "blockedUnknown" | "cancele
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
   return useMemo(() => {
-    const records = outboxEntriesByState(outbox, ref, state);
+    const records = state === "canceled" ? canceledEntries(outbox, ref) : outboxEntriesByState(outbox, ref, state);
     return records.length > 0 ? records : NO_BLOCKED;
   }, [outbox, ref, state]);
 }
@@ -505,21 +618,45 @@ export function useBlockedMutationEntries(ref: string): MutationOutboxRecord[] {
   return useOutboxRecordsByState(ref, "blockedUnknown");
 }
 
-// Stop-canceled rows (stop-cancellation-outbox §6): QueueStrip surfaces them
+// Stop-canceled rows (stop-cancellation-outbox §6): the pending rows surface them
 // in the same durable-rows slot as blocked ones, where their explicit Retry
 // affordance lives. The canceled state is the one projected by displayedRef
 // too (canceledEntries): a retargeted resend's born-canceled row is the
 // composition's only durable copy, and the session the user is looking at
 // must still show it.
 export function useCanceledMutationEntries(ref: string): MutationOutboxRecord[] {
+  return useOutboxRecordsByState(ref, "canceled");
+}
+
+// The notes panel's own writes never count as undelivered user messages:
+// a notes/human/set row is panel state with its own failure surface
+// (TopNotesPanel), not a message the transcript's pending rows render. The
+// message-row variants below bake the exclusion in; the unfiltered
+// selectors above stay for the consumers that read the whole families (the
+// announcements region, the composer's fences and notices).
+function isMessageRowRecord(record: { method: string }): boolean {
+  return record.method !== "notes/human/set";
+}
+
+export function useBlockedMessageEntries(ref: string): MutationOutboxRecord[] {
   const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
-  return useMemo(() => {
-    const records = canceledEntries(outbox, ref);
-    return records.length > 0 ? records : NO_BLOCKED;
-  }, [outbox, ref]);
+  // Displayed-ref aware by design (blockedEntriesIncludingDisplayed's own
+  // comment): a retargeted resend's blocked row stays visible in the pane it
+  // was authored in. The routing tiers keep the targetRef-only read.
+  return useMemo(() => blockedEntriesIncludingDisplayed(outbox, ref).filter(isMessageRowRecord), [outbox, ref]);
+}
+
+export function useCanceledMessageEntries(ref: string): MutationOutboxRecord[] {
+  const canceled = useCanceledMutationEntries(ref);
+  return useMemo(() => canceled.filter(isMessageRowRecord), [canceled]);
+}
+
+export function useRecoveryMessageEntries(ref: string): MutationRecoveryRecord[] {
+  const recovery = useRecoveryEntries(ref);
+  return useMemo(() => recovery.filter(isMessageRowRecord), [recovery]);
 }
 
 // A durable mutation and the projection refresh that publishes it are one
@@ -689,6 +826,7 @@ export function resetPendingTurnsStoreForTests(): void {
   clearProjectionWorkForTests();
   for (const ref of loadedRefs) setPendingProjectionLoaded(ref, false);
   loadedRefs.clear();
+  deliveredHere.clear();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

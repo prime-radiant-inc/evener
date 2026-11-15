@@ -166,7 +166,7 @@ test("a /model prompt wins over a matching Advanced Options model override on th
 
   // An Advanced Options model override loses to the typed slash value: the
   // user typed the value as the submit itself, the most specific intent.
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.type(screen.getByLabelText("Model"), "anthropic/other-model");
 
   await user.type(promptField(), "/model openai/gpt-5");
@@ -471,7 +471,7 @@ test("a /goal prompt on a non-evener harness spawns verbatim with no goal/set ca
   renderSpawn(fake);
   await settled();
 
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByText("Advanced options"));
   await user.selectOptions(screen.getByLabelText("Harness"), "external");
 
   await user.type(promptField(), "/goal x");

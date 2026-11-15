@@ -7,6 +7,7 @@ import (
 )
 
 func TestShapeRequestForcesStoreForPlannedContinuation(t *testing.T) {
+	t.Parallel()
 	res := registry.Resolved{Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{Fields: map[string]bool{"store": true, "previous_response_id": true}}}
 	req := Request{HistoryMode: HistoryModeResponsesDelta, PreviousResponseID: "resp_1"}
 	if got := ShapeRequest(req, res); got.Store == nil || !*got.Store {
@@ -26,6 +27,7 @@ func TestShapeRequestForcesStoreForPlannedContinuation(t *testing.T) {
 // definition of a planned continuation: the Responses protocol on a row that
 // sends both store and previous_response_id. Nothing else is forced to store.
 func TestShapeRequestStoreOverrideFollowsTheRowsContinuationSupport(t *testing.T) {
+	t.Parallel()
 	req := Request{HistoryMode: HistoryModeResponsesDelta, PreviousResponseID: "resp_1"}
 	for _, tc := range []struct {
 		name string

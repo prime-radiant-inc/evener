@@ -3,8 +3,10 @@
 // shape; components should only ever read this model, never the wire types
 // directly.
 
+import type { HistoryServingFacts } from "./historyServing";
 import type {
   CommandDescriptor,
+  ConversationProvenanceState,
   EvenerDelegateInfo,
   EvenerSkillInfo,
   EvenerTurnSlots,
@@ -63,6 +65,20 @@ export interface ItemModel {
   // guess (see UserMessageItem.tsx).
   transcriptEntryIndex?: number;
   clientMutationId?: string;
+  // Wire ThreadItem.conversationInputIds: the conversation inputs a recorded
+  // user item speaks for. A promotion or drain records its own
+  // clientMutationId but inherits the consumed entry's input ids, so this is
+  // what ties a delivered message back to the queue entry another client
+  // consumed (see recordedInputLineage).
+  conversationInputIds?: string[];
+  // Wire ThreadItem.observation.answerToTurnIds: the pending question
+  // executions (by turn id) this accepted input resolved — the server-stamped
+  // link naming the ask round a reply answers (issue #5836). Undefined for
+  // ordinary messages, for answers from a daemon that predates the
+  // observation, and for any item whose wire carried no observation; a
+  // consumer must fall back to the composed "[answers]" text shape there.
+  // Names the QUESTION's turn, not the reply's own turn.
+  answerToTurnIds?: string[];
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
@@ -279,6 +295,19 @@ export interface HistoryState {
   pendingIncarnation?: string;
   /** Pages of `pendingIncarnation`, merged after its latest window replaces. */
   deferredPages: ThreadTurnsListResponse[];
+  /** Closed ranges observed by normal serving-fact pages under this history
+   * identity. Their snapshot lengths fence older omissions and additions,
+   * independently of the latest-window completeness in `length`. Absence
+   * records no page authority. */
+  replacementScopes?: {
+    from: ThreadItemPosition;
+    to: ThreadItemPosition;
+    representedSnapshot: number;
+    /** The highest entry ordinal the observation returned: the boundary of
+     * what it can have omitted. Row versions use this same ordinal scale;
+     * `representedSnapshot` counts transcript bytes and never bounds them. */
+    representedOrdinal?: number;
+  }[];
   /** The one diagnostic to show while the thread's history failed
    * (ErrorTranscriptHistoryFailed). History is held unchanged and nothing
    * merges until a latest-window read succeeds; the overlay keeps updating. */
@@ -288,12 +317,20 @@ export interface HistoryState {
   turns: TurnModel[];
 }
 
+// Orders by (entry, item, sub). An item with no position sorts after every
+// positioned one. History merges and persisted range validation share it.
+export function comparePositions(left: ThreadItemPosition | undefined, right: ThreadItemPosition | undefined): number {
+  if (!left || !right) return left ? -1 : right ? 1 : 0;
+  return left.entry - right.entry || left.item - right.item || (left.sub ?? 0) - (right.sub ?? 0);
+}
+
 /** Older-history frontier provenance (#5585). A cursor is opaque, so
  * `"unknown"` and `"none"` are sentinels the source never returns. */
 export type OlderFrontier = "unknown" | "none" | (string & {});
 
 export interface ThreadModel {
   ref: string;
+  servingFacts?: HistoryServingFacts;
   parentRef?: string;
   // The wire's EvenerThread.kind. Fork children must not charge their
   // inherited prefix to their own token total (threadUsage.ts's sessionTokens).
@@ -363,6 +400,11 @@ export interface ThreadModel {
   runningTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
+  // The daemon's materialized conversation provenance. `retiredInputs` names
+  // inputs that ended before reaching canonical history (a canceled or
+  // failed-before-recording message), which is the only durable evidence a
+  // pending row has that its message will never arrive.
+  conversationProvenance?: ConversationProvenanceState;
   tasks: TaskAggregate | null;
   // Snapshot-only catalogs from the owning thread/read. Live completion uses
   // commands directly, the separate palette still scopes its global plugins.
@@ -461,6 +503,11 @@ export interface ThreadModel {
   // vouches for - the meters mark the capacity as an estimate ("~") when it
   // is set. Absent means the window is real.
   contextAssumed: boolean;
+  // CompactionThreshold is the active token threshold at which automatic
+  // context compaction triggers for this session's model (wire:
+  // EvenerThread.CompactionThreshold, omitempty), or 0 when the default
+  // window-percentage threshold governs.
+  compactionThreshold: number;
   // Usage is null (not a zero-valued object) when the daemon has no token
   // data at all (an old daemon or a source-backed thread that omits the field) -
   // EvenerThread.Usage uses nil to signal "no token data" rather than rendering

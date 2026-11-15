@@ -290,6 +290,73 @@ func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 	}
 }
 
+func TestWatches_HistoricalCallerTargetNormalizedToSelf(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	writeSession(t, bucket, sid)
+	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
+
+	writeJobsEvents(t, jobsPath, []jobstore.Event{
+		{Kind: jobstore.EventWatchRegistered, WatchID: "w_caller", Watch: &jobstore.WatchEvent{
+			Generation: "g1", OwnerSessionID: sid, VisibleSessionID: sid,
+			Target: "caller", Condition: "assistant.message", ConfigHash: "cfg1"}},
+	})
+
+	r, err := Watches(base, sid, WatchOpts{})
+	if err != nil {
+		t.Fatalf("Watches: %v", err)
+	}
+	w := findWatch(r, "w_caller")
+	if w == nil {
+		t.Fatal("w_caller missing from report")
+	}
+	if w.Target != "self" {
+		t.Errorf("w.Target = %q, want %q", w.Target, "self")
+	}
+	out := RenderWatches(r)
+	if !strings.Contains(out, "target=self") || strings.Contains(out, "target=caller") {
+		t.Errorf("render output must contain target=self and not target=caller; got:\n%s", out)
+	}
+}
+
+func TestWatches_TerminalCatchupRecordedInLog(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidA
+	writeSession(t, bucket, sid)
+	jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
+
+	wKey := key("worker", "w_catchup", "job_term", "", "g1")
+	writeJobsEvents(t, jobsPath, []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, JobID: "job_term", Type: jobstore.JobShell, OwnerSessionID: sid},
+		{Kind: jobstore.EventJobFinished, JobID: "job_term", Status: jobstore.StatusCompleted, Reason: "done"},
+		{Kind: jobstore.EventWatchRegistered, WatchID: "w_catchup", Watch: &jobstore.WatchEvent{
+			Generation: "g1", OwnerSessionID: sid, VisibleSessionID: sid,
+			Target: "job_term", Condition: "output_match:ready", ConfigHash: "cfg1", Deliveries: 1}},
+		{Kind: jobstore.EventWatchSendPending, WatchID: "w_catchup", WatchSend: &jobstore.WatchSendState{
+			Key: wKey, DeliveryID: "d_catchup", TriggerIdentity: "job_term", TriggerReason: "output_match: ready"}},
+		{Kind: jobstore.EventWatchSendDelivered, WatchID: "w_catchup", WatchSend: &jobstore.WatchSendState{
+			Key: wKey, DeliveryID: "d_catchup", TriggerIdentity: "job_term", TriggerReason: "output_match: ready"}},
+		{Kind: jobstore.EventWatchCleared, WatchID: "w_catchup", Watch: &jobstore.WatchEvent{
+			Generation: "g1", EndReason: "completed"}},
+	})
+
+	r, err := Watches(base, sid, WatchOpts{WatchID: "w_catchup"})
+	if err != nil {
+		t.Fatalf("Watches: %v", err)
+	}
+	w := findWatch(r, "w_catchup")
+	if w == nil {
+		t.Fatal("w_catchup missing from report")
+	}
+	if w.DistinctDeliveries != 1 || w.Delivered != 1 {
+		t.Errorf("w.DistinctDeliveries = %d, w.Delivered = %d, want 1/1", w.DistinctDeliveries, w.Delivered)
+	}
+}
+
 // A terminal event kind with no short label is reported by its raw kind.
 func TestTerminalKind_Default(t *testing.T) {
 	if got := terminalKind(jobstore.EventKind("something_else")); got != "something_else" {

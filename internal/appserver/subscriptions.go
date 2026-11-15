@@ -21,6 +21,7 @@ type subscription struct {
 	generation uint64
 	cut        uint64
 	buffer     []SequencedNotification
+	mustResync bool
 	// withdrawn marks a buffering entry whose connection unsubscribed the
 	// thread mid-capture. The client's unsubscribe already succeeded on the
 	// wire, so the entry is capture bookkeeping, not a live interest:
@@ -31,6 +32,8 @@ type subscription struct {
 	// of it for free.
 	withdrawn bool
 }
+
+const maxBufferedNotifications = 1024
 
 type connectionSubscriptionSnapshot struct {
 	subscriptions []subscription
@@ -200,7 +203,12 @@ func (s *Subscriptions) Route(record SequencedNotification) []string {
 	var live []string
 	for connID, sub := range s.byThread[record.ThreadID] {
 		if sub.buffering {
-			if !sub.withdrawn {
+			if !sub.withdrawn && !sub.mustResync {
+				if len(sub.buffer) == maxBufferedNotifications {
+					sub.buffer = nil
+					sub.mustResync = true
+					continue
+				}
 				sub.buffer = append(sub.buffer, record)
 			}
 			continue
@@ -210,29 +218,32 @@ func (s *Subscriptions) Route(record SequencedNotification) []string {
 	return live
 }
 
-func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]SequencedNotification, bool) {
+func (s *Subscriptions) Release(connID, threadID string, generation uint64) ([]SequencedNotification, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sub := s.byConn[connID][threadID]
 	if sub == nil || !sub.buffering || sub.generation != generation {
-		return nil, false
+		return nil, false, false
 	}
 	if sub.withdrawn {
 		// The client unsubscribed mid-capture (see subscription.withdrawn):
 		// drop the entry instead of committing it live.
 		s.removeThreadLocked(connID, threadID)
-		return nil, true
+		return nil, true, false
 	}
+	mustResync := sub.mustResync
 	release := make([]SequencedNotification, 0, len(sub.buffer))
-	for _, record := range sub.buffer {
-		if record.Seq > sub.cut {
-			release = append(release, record)
+	if !mustResync {
+		for _, record := range sub.buffer {
+			if record.Seq > sub.cut {
+				release = append(release, record)
+			}
 		}
 	}
 	sub.rollback = nil
 	sub.buffering = false
 	sub.buffer = nil
-	return release, true
+	return release, true, mustResync
 }
 
 // Threads lists the threads the connection holds a live interest in; a

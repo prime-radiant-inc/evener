@@ -12,6 +12,7 @@ import (
 // contract: a nil override means "no override", so it must return the
 // context unchanged rather than panicking in context.WithValue.
 func TestWithAuthenticatorOverrideNilKeepsTheLookup(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	got := WithAuthenticatorOverride(ctx, nil)
 	if got != ctx {
@@ -34,6 +35,7 @@ func (a *recordingAuthenticator) Apply(context.Context, *http.Request, registry.
 // invisible to every other scheme, which keeps resolving from the record
 // alone. A bearer transport must never receive a Codex-bound override.
 func TestAuthenticatorOverrideOnlyAnswersForTheCodexScheme(t *testing.T) {
+	t.Parallel()
 	auth := &recordingAuthenticator{}
 	ctx := WithAuthenticatorOverride(context.Background(), auth)
 

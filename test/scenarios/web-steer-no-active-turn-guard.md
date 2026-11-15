@@ -68,7 +68,7 @@ HUB=http://127.0.0.1:$PORT
        steerButton: !!document.querySelector('[data-testid="composer-steer"]'),
        toast: document.querySelector('[aria-label="Notifications"]')?.textContent,
        textAfter: ta.value,
-       chips: document.querySelectorAll('[data-testid="pending-chips"] li').length,
+      pendingRows: document.querySelectorAll('[data-testid="pending-row-stack"] li').length,
        steersBefore: before,
        steersAfter: document.querySelectorAll(
          '[data-testid="user-message-item"]:not([data-opens-exchange])').length,
@@ -83,7 +83,7 @@ HUB=http://127.0.0.1:$PORT
   itself accepts an idle steer through its carrier-turn path.
 - **Steps 2-3**: no `[data-testid="composer-steer"]` button exists; the
   toast region contains `Steer failed: no active turn`; the composer text is
-  unchanged; `pending-chips` is empty; and the steer count is identical before
+  unchanged; the pending stack is empty; and the steer count is identical before
   and after. The Composer returns before `submitAction`, so no RPC is sent.
 
 ## Cleanup

@@ -20,29 +20,33 @@ import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
 import {
+  useBlockedMessageEntries,
   useBlockedMutationEntries,
+  useCanceledMessageEntries,
+  useEditablePendingMutationIds,
   usePendingTurnEntries,
-  useQueueStripMutationIds,
+  useRecoveryMessageEntries,
 } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import type { ComposerSourceState } from "./composer/sourceState";
+import { type ComposerSubmission, useBuiltinSubmission } from "./composer/useBuiltinSubmission";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { NextNeedsYou, useNextNeedsYouMount } from "./NextNeedsYou";
-import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill, newContentPillVisible } from "./transcript/flow/NewContentPill";
-import { useSeenDivider } from "./transcript/flow/useSeenDivider";
+import { unseenOpeningTurnId, useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
 import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
-import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
+import { PendingRowStack, useHeldSteerEpoch } from "./transcript/messages/PendingRowStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import {
   TranscriptBody,
   transcriptAnchorEntriesForRows,
+  transcriptFirstRowIndexForTurn,
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
@@ -136,7 +140,7 @@ export function ConversationBody({
   useThreadClaim(ref, seat.readView ?? undefined);
 
   // Opening a conversation marks its session seen on the hub, so the
-  // session's blue dot clears on the phone too.
+  // session's unseen dot clears on the phone too.
   useMarkSessionSeenOnOpen(ref);
 
   // Identity follow-up for a store-driven resume: the transcript is already
@@ -188,14 +192,38 @@ function UnavailablePresentationControl() {
   );
 }
 
-function StandardConversationBody({
-  ref,
-  seat,
-  render,
+function StandardConversationBody(props: {
+  ref: string;
+  seat: ConversationSeat;
+  render(parts: ConversationParts): React.ReactNode;
+}) {
+  if (props.seat.composerSource === null) return <LiveConversationBody {...props} />;
+  return <WithComposerSubmission {...props} source={props.seat.composerSource} />;
+}
+
+function WithComposerSubmission({
+  source,
+  ...props
 }: {
   ref: string;
   seat: ConversationSeat;
   render(parts: ConversationParts): React.ReactNode;
+  source: ComposerSourceState;
+}) {
+  const submission = useBuiltinSubmission(source, props.seat.viewFallbackId);
+  return <LiveConversationBody {...props} submission={submission} />;
+}
+
+function LiveConversationBody({
+  ref,
+  seat,
+  render,
+  submission,
+}: {
+  ref: string;
+  seat: ConversationSeat;
+  render(parts: ConversationParts): React.ReactNode;
+  submission?: ComposerSubmission;
 }) {
   const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
     ref,
@@ -243,8 +271,14 @@ function StandardConversationBody({
   // the small control, not this whole pane.
   const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
   const pendingEntries = usePendingTurnEntries(ref);
-  const queueStripIds = useQueueStripMutationIds(ref);
-  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries, queueStripIds), [pendingEntries, queueStripIds]);
+  const blockedRows = useBlockedMessageEntries(ref);
+  const canceledRows = useCanceledMessageEntries(ref);
+  const recoveryRows = useRecoveryMessageEntries(ref);
+  // The waiting family's own fact: a Send that queued while the session
+  // needs recovery is settled undelivered work, not a live composition - it
+  // mounts the trailing row through the read-only states, or its Edit and
+  // Remove controls would be reachable from nowhere if the resume stalls.
+  const editableRows = useEditablePendingMutationIds(ref);
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle.
@@ -253,16 +287,33 @@ function StandardConversationBody({
     model.resumeRequired !== true &&
     !restartPending &&
     !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
-  const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
-  const heldVisible = heldSurfaceLive && heldSteers.length > 0;
+  const heldEpoch = useHeldSteerEpoch(ref, pendingEntries, heldSurfaceLive);
+  // The full pending set decides the trailing row: held steers, in-flight
+  // sends, queued rows, and the durable failure families all render as
+  // transcript rows now (the one-rendering rule), so the row mounts for any
+  // of them. The live gate applies to the live-composition families only -
+  // the steering-ghost spec's §1 rule for steers and the in-flight sends
+  // that share its surface. The durable families (blocked, canceled,
+  // refused recovery, the daemon's queue) render regardless of session
+  // status: they are settled facts about the user's undelivered work, and
+  // the retired footer strip showed them through ended/closed/notLoaded
+  // and restartRequired sessions - hiding their Retry/Edit on those states
+  // would leave the work reachable from nowhere.
+  const pendingRowsVisible =
+    (heldSurfaceLive && pendingEntries.length > 0) ||
+    blockedRows.length > 0 ||
+    canceledRows.length > 0 ||
+    recoveryRows.length > 0 ||
+    editableRows.size > 0 ||
+    (model?.queue?.depth ?? 0) > 0;
   const trailingRow =
-    askPending || heldVisible || overlayHeight > 0
+    askPending || pendingRowsVisible || overlayHeight > 0
       ? {
           id: "live-edge",
           content: (
             <>
               {askPending && <AskDock ref={ref} paneId={seat.viewFallbackId} />}
-              {heldVisible && <HeldSteerStack ref={ref} />}
+              {pendingRowsVisible && <PendingRowStack ref={ref} paneId={seat.viewFallbackId} />}
               {overlayHeight > 0 && (
                 <div data-testid="transcript-end-clearance" aria-hidden="true" style={{ height: overlayHeight }} />
               )}
@@ -287,6 +338,21 @@ function StandardConversationBody({
     [projection, renderRows, anchorEntries],
   );
 
+  const seenBoundary = useSeenDivider(ref, model);
+  const retainedCapture = seat.readView?.getCapture();
+  const openingTurnId = unseenOpeningTurnId(seenBoundary, {
+    thread: model,
+    askDockPending: askPending,
+    retained: retainedCapture,
+  });
+  const openAtRow = useMemo(
+    () => (openingTurnId === null ? -1 : transcriptFirstRowIndexForTurn(renderRows, openingTurnId)),
+    [renderRows, openingTurnId],
+  );
+  // A capture that was following the end asks for the end again; the unseen
+  // reply replaces that request, so the two never both place the reader.
+  const initialViewCapture = openAtRow >= 0 ? undefined : retainedCapture;
+
   const virtualListRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
@@ -297,7 +363,8 @@ function StandardConversationBody({
     keepViewRemount: seat.keepViewRemount,
     model,
     listRef: virtualListRef,
-    initialViewCapture: seat.readView?.getCapture(),
+    initialViewCapture,
+    openAtRow: openAtRow >= 0 ? openAtRow : undefined,
     onReaderIntent: seat.readView?.supersedePositioning,
     onReaderMovement: seat.readView?.syncPositioningMovement,
     loadOlder,
@@ -312,7 +379,7 @@ function StandardConversationBody({
     // signal a scrolled-away reader would get no new-content pill.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
-    heldVisible,
+    pendingRowsVisible,
     heldEpoch,
   });
   // Per-pane keyboard scroll registers against the shared registry and
@@ -355,17 +422,17 @@ function StandardConversationBody({
   }, [attentionMounted, attentionOwner, attentionController]);
 
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
-  const seenDividerTurnId = useSeenDivider(ref, model);
 
   // A deleted ref never hydrates a fresh model and its cached snapshot is
   // stale: the seat's deleted face outranks anything this body could render.
   if (deletedRef) return render({ state: "deleted", content: null, footer: null, cadence: null });
   if (!model) return render({ state: "loading", content: null, footer: null, cadence: null });
 
-  // A held ghost is mounted content even on a turnless transcript: the
-  // dormant empty surface yields to the transcript subtree so the ghost
-  // stack and its announcements mount (steering-ghost spec §2).
-  const showDormantSurface = isDormantTranscript(model.turns) && !heldVisible;
+  // A pending row is mounted content even on a turnless transcript: the
+  // dormant empty surface yields to the transcript subtree so the pending
+  // stack and its announcements mount (the steering-ghost spec §2 rule,
+  // extended to every pending family).
+  const showDormantSurface = isDormantTranscript(model.turns) && !pendingRowsVisible;
   const dormantSurface = showColdStartSkeleton ? (
     <ColdStartSkeleton />
   ) : (
@@ -411,13 +478,14 @@ function StandardConversationBody({
         sessionRef={ref}
         sourcePaneId={seat.viewFallbackId}
         viewId={seat.readView?.id}
-        initialViewCapture={seat.readView?.getCapture()}
+        initialViewCapture={initialViewCapture}
         readView={seat.readView ?? undefined}
+        followingBottom={flow.isFollowingBottom}
         onAnnounceViewChange={(summary) => {
           announcementSequence.current += 1;
           setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
         }}
-        showSeenDividerTurnId={seenDividerTurnId ?? undefined}
+        showSeenDividerTurnId={seenBoundary.dividerTurnId ?? undefined}
         loadOlderRow={
           hasOlder && (
             <LoadOlderRow
@@ -514,12 +582,16 @@ function StandardConversationBody({
           seat.sessionMenu && (
             <SessionChrome ref={ref} paneId={seat.viewFallbackId} placement="menu" discoverActivity />
           )}
-        <PendingChips sessionRef={ref} />
+        {/* The pending chips no longer render here: an in-flight send is a
+            transcript row in the live-edge trailing region (the
+            one-rendering rule), so the composer's measure row carries no
+            message renderings. */}
         {seat.composerSource && (
           <Composer
             ref={ref}
             paneId={seat.viewFallbackId}
             source={seat.composerSource}
+            submission={submission}
             focused={seat.focused}
             mountAutofocus={seat.mountAutofocus}
             ownsActivityCounts={seat.ownsActivityCounts}

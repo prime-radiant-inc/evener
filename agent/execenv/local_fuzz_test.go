@@ -242,11 +242,14 @@ func FuzzReadFileWindow(f *testing.F) {
 }
 
 // referenceWindow re-derives ReadFile's text-window output from first
-// principles: CRLF→LF normalize, split on '\n', clamp start/limit exactly as the
-// production code does, and emit "%4d\t<line>\n" per row. It is the reference
-// implementation the window oracle compares against.
+// principles: CRLF→LF normalize, drop the terminator-only final segment a
+// trailing newline leaves behind (a file ending in "\n" has exactly as many
+// rows as newline characters, #6202), split on '\n', clamp start/limit
+// exactly as the production code does, and emit "%4d\t<line>\n" per row. It
+// is the reference implementation the window oracle compares against.
 func referenceWindow(content string, offsetLine, limitLines *int) string {
 	s := strings.ReplaceAll(content, "\r\n", "\n")
+	s = strings.TrimSuffix(s, "\n")
 	lines := strings.Split(s, "\n")
 
 	start := 1

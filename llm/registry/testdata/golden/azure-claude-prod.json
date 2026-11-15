@@ -75,13 +75,15 @@
     "web_search": false
   },
   "provenance": {
-    "ContextWindow": "alias",
+    "AliasOf": "config/row",
+    "ContextWindow": "snapshot/row",
     "Cost": "alias",
     "EffortValues": "alias",
     "Family": "alias",
     "InputModalities": "alias",
     "KnowledgeCutoff": "alias",
     "MaxOutputTokens": "alias",
+    "Protocol": "alias",
     "Reasoning": "alias",
     "ReasoningControls": "alias",
     "Surface": "alias",

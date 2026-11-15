@@ -430,7 +430,7 @@ func assertWorktreeDecisionAndVersionPrograms(t *testing.T, target string) {
 	events := []LockEvent{
 		EvCreate, EvLeave, EvEnter, EvEnterCurrent, EvRestoreLand, EvInitInside,
 		EvResumeReenter, EvRemoveTarget, EvRemoveCurrent, EvDelegateCreate,
-		EvDelegateRevive, EvDisposeUnchanged, EvDisposeChanged, EvPruneCandidate,
+		EvDelegateRevive, EvDisposeUnchanged, EvDisposeChanged, EvUnlockDelegate, EvPruneCandidate,
 	}
 	states := []LockState{Unlocked, OwnSession, OwnDelegate, Foreign}
 	for _, event := range events {

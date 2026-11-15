@@ -17,7 +17,7 @@ import (
 
 func TestSessionActivityReportPreviewFollowsSettledGeneration(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	id := "dlg_report"
 	descriptor := stableToolDescriptor(s, id, "")
@@ -148,7 +148,7 @@ func TestSessionActivityOpenGenerationOmitsPriorOutcome(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+			s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 			at := time.Unix(100, 0).UTC()
 			id := "dlg_generation_ending"
 			descriptor := stableToolDescriptor(s, id, "")
@@ -318,7 +318,7 @@ func mustReportJSON(t *testing.T, text string) json.RawMessage {
 
 func TestSessionActivityReportPreviewPreservesPageMembership(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withoutGitSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}))
 	at := time.Unix(100, 0).UTC()
 	report := strings.Repeat("\x01", activityMaxDelegateProseRunes+1)
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported, Message: mustReportJSON(t, report)}

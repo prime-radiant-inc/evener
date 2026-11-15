@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/remoteinstall"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // Target resolution, short-transfer rejection and atomic push writes use the real
@@ -30,7 +31,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 	buildinfo.Channel, buildinfo.GitDirty, buildinfo.ReleaseTag = "snapshot", "", ""
 	for _, mode := range []string{"honest-push", "redirected-recorded-target", "installer-alias", "installer-regular-target", "alias-during-build", "destination-during-build", "stopped-honest-push", "stopped-alias-retarget", "endpoint-transport", "endpoint-cancelled", "endpoint-schema"} {
 		t.Run(mode, func(t *testing.T) {
-			root := t.TempDir()
+			root := testfs.CanonicalTempDir(t)
 			target, alias, other := filepath.Join(root, "installed", "evener"), filepath.Join(root, "bin", "evener"), filepath.Join(root, "other", "evener")
 			for _, name := range []string{target, alias, other} {
 				if err := os.Mkdir(filepath.Dir(name), 0o755); err != nil {
@@ -271,7 +272,7 @@ func TestRetainedDeploymentInstallTargetBoundary(t *testing.T) {
 func TestOrdinaryPushTargetDuringBuild(t *testing.T) {
 	for _, mode := range []string{"honest-push", "alias-during-build", "destination-during-build"} {
 		t.Run(mode, func(t *testing.T) {
-			root := t.TempDir()
+			root := testfs.CanonicalTempDir(t)
 			target, alias, other := filepath.Join(root, "evener"), filepath.Join(root, "launch", "evener"), filepath.Join(root, "other")
 			if err := os.Mkdir(filepath.Dir(alias), 0o755); err != nil {
 				t.Fatal(err)

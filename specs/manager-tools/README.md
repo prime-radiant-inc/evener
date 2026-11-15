@@ -821,6 +821,21 @@ the base commit:
 A round that comes back clean across fresh reviewers gates the
 implementer lanes.
 
+- Implementation amendment 1 (lane 3's implementation-phase PAR,
+  chair-approved): two competing reviewers found — and the lane
+  reproduced through the retained-runtime reclamation and
+  cold-restore seams, re-verified by the chair in both generation
+  modes — a same-registration ordering hole in the descendant
+  frontier's install fence: a late route holding an older sample
+  of the SAME registration can regress a newer installed
+  frontier, because the fence compares identity and generation
+  only. This commit amends spec 3: the frontier field family is a
+  (turn id, stamp sequence) pair minted under the leaf, the
+  registry entry records its last successful install, and the row
+  write is newest-wins within a registration. Journey 8 gains
+  the SAME-REGISTRATION STALE-INSTALL case; the lane's preserved
+  witness is its red.
+
 ## Spike evidence (tested, not traced)
 
 Two mechanisms were too load-bearing to leave on citations, so red-test

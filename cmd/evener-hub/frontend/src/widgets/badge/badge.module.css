@@ -5,7 +5,7 @@
   min-width: var(--space-5);
   height: var(--space-5);
   padding: 0 var(--space-2);
-  border-radius: var(--radius-chip);
+  border-radius: var(--radius-pill);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
@@ -16,8 +16,10 @@
  * badge is allowlisted (src/styles/token-contract.test.ts) for its tone
  * prop - a count badge's whole purpose is to carry a status hue.
  */
+/* Neutral sinks into --field: --surface-2 equals --surface-1, so a neutral
+ * count on a card would have no pill at all. */
 .badgeNeutral {
-  background: var(--surface-2);
+  background: var(--field);
   color: var(--ink-mid);
 }
 

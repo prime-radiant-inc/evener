@@ -423,7 +423,7 @@ The phone follows the same rule over its SQLite outbox. A composer send whose
 durable write fails because SQLite reports the storage itself failing (a full
 disk, an I/O error, a database that cannot be opened or written) is dispatched
 as a plain request on the target's ready connection, and a failed request
-rejects so the draft stays. It makes one attempt; the web retries once. The send is remembered as this phone's for coordinator messages, and a direct drain settles the queued messages it consumed once a write succeeds. The consumed ids are held in memory, because the drain has no row to replay its receipt from, so quitting the app before storage accepts a write leaves those queued rows displayed as pending. A direct send has no row, and the composer's pending projection and send routing read durable records for provenance, so the composer shows no pending ghost for it and treats it as another client's: the turn appears when the daemon applies it, and a second message sent before then can go out as a start the daemon refuses (the draft stays). The web's fallback has the same gap. Constraint violations, a missing table, syntax errors and the outbox's own
+rejects so the draft stays. It makes one attempt; the web retries once. The send is remembered as this phone's for coordinator messages, and a direct drain settles the queued messages it consumed once a write succeeds. The consumed ids are also retained durably (#4674) - re-attempted from the drain's receipt through every authoritative read, reloaded and settled at start, so a restart reconciles the consumed rows instead of leaving them pending - but quitting before storage accepts any write since the drain still loses them, because their only durable seat is the storage that is failing. A direct send has no row, and the composer's pending projection and send routing read durable records for provenance, so the composer shows no pending ghost for it and treats it as another client's: the turn appears when the daemon applies it, and a second message sent before then can go out as a start the daemon refuses (the draft stays). The web's fallback has the same gap. Constraint violations, a missing table, syntax errors and the outbox's own
 validation stay ordinary send failures, as do Stop and promote. The phone has
 no in-memory ordering guard, so the per-ref ordering gap applies without
 a refusal, and its dispatch gate does not apply to the fallback. With no
@@ -1268,9 +1268,9 @@ delegates cannot escalate to the parent through it. Repeated approved file work
 can require repeated decisions. A batch patch applies operations sequentially,
 so a permission error on a later operation can follow successful earlier edits.
 
-**Evidence.** [Invocation grant](../../agent/session_escalation.go#L58),
-[eligibility/tool gates](../../agent/session_escalation.go#L103), and
-[rerun](../../agent/session_escalation.go#L206) define the limit.
+**Evidence.** [Invocation grant](../../agent/session_escalation.go#L60),
+[eligibility/tool gates](../../agent/session_escalation.go#L107), and
+[rerun](../../agent/session_escalation.go#L231) define the limit.
 The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L18) applies each
 operation before checking the next and returns on the first error.
 This is a scoped mechanism, not a claim that every Evener permission flow has

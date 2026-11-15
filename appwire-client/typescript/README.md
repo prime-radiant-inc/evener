@@ -324,6 +324,12 @@ nothing — lineage is the hub's, and an older hub's response must render
 unchanged. The web command palette and the native Board search both render
 from this one implementation.
 
+The root also exports the facts a session-details surface reads off a thread
+(`sessionFacts.ts`): `hostIdOf(ref)`, `sessionHosts(sources, hubName,
+hubConnected)` for a host's name and connection, `accessFacts(session)` for the
+sandbox mode and network setting, and `loadedPluginNames(session)`, which
+returns `null` for an unknown inventory and an empty array for an empty one.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach
@@ -503,6 +509,11 @@ an activity view cannot unsubscribe a transcript that holds its own lease.
 
 Besides the root, `package.json` `exports` publishes these subpaths:
 
+- `@evener/appwire-client/palette` - the one color palette the web and the
+  phone render: `webPalettes` (the roles `tokens.css` declares),
+  `NativeExtras`/`ThemePalette` (the full phone palette), and the OKLab
+  `mix` both clients derive tints with. `webPalettes` and `palettes` are
+  `Record<Scheme, …>` for `"light" | "dark"`.
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`, and the path helpers both apps'
   document surfaces share (`filenameOf`, `isMarkdownPath`, `isImagePath`,
@@ -552,9 +563,12 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   adoptable by native if it ever gains a store, and host grouping
   (`hostGrouping`): where a row, and a project whose rows live on several
   hosts, sit when a client organizes sessions by host (the web rail's
-  Organize by and the phone Board's Hosts section). The subpath
-  resolves to `state/navigation/index.ts`, a barrel that re-exports the nine
-  modules whole.
+  Organize by and the phone Board's Hosts section), and the live attention
+  model (`liveAttention`): Live's Needs you, Working and Idle bands with each
+  band's order (`liveBands`), and the line that says why a row sits in its
+  band (`whyLine`), shared by the phone Board and the web rail. The subpath
+  resolves to `state/navigation/index.ts`, a barrel that names each module's
+  exports.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client, gate)`, a framework-free store over a

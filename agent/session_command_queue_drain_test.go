@@ -62,7 +62,7 @@ func TestProcessInputCompletedTurnDrainsCommandOnlyQueuedInput(t *testing.T) {
 		return agenttest.ToolCallResponse(communicateCall("queued-3660", "QUEUED_OUTPUT_3660"))
 	}}
 	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")),
-		withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
+		withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}))
 	if _, ok := s.pluginCommands["pkg:probe"]; !ok {
 		t.Fatal("fixture canonical command pkg:probe was not discovered")
 	}

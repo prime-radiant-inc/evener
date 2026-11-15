@@ -1,6 +1,7 @@
 package appprojector
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -18,6 +19,41 @@ func TestProjectSessionStartWorkingDirectory(t *testing.T) {
 		started := out[0].Params.(appwire.ThreadStartedParams)
 		if started.Thread.ID != "child" || started.Thread.CWD != "/installed/child" {
 			t.Fatalf("restored=%v start = %+v", restored, started)
+		}
+	}
+}
+
+func TestProjectSessionStartFrontierProjectsOnlyTurnID(t *testing.T) {
+	t.Parallel()
+	var baseline []byte
+	for _, sequence := range []uint64{0, 42} {
+		p := NewAppEventProjector("child", "local:child")
+		out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+			LatestExecutionTurnID: "turn_child", LatestExecutionSequence: sequence,
+		}})
+		started := out[0].Params.(appwire.ThreadStartedParams)
+		if started.Thread.Evener.LatestExecutionTurnID != "turn_child" {
+			t.Fatalf("bootstrap lost turn ID: %+v", started.Thread.Evener)
+		}
+		wire, err := json.Marshal(started.Thread.Evener)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(wire, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if len(fields) != 4 || fields["latestExecutionTurnId"] == nil || fields["ref"] == nil || fields["capabilities"] == nil || fields["queue"] == nil {
+			t.Fatalf("sequence=%d changed bootstrap wire keys: %s", sequence, wire)
+		}
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if baseline == nil {
+			baseline = encoded
+		} else if !bytes.Equal(encoded, baseline) {
+			t.Fatalf("internal sequence changed wire projection: zero=%s nonzero=%s", baseline, encoded)
 		}
 	}
 }

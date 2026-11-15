@@ -965,7 +965,7 @@ func TestShellToolCwdRelativeResolvesUnderSandboxRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pwd is POSIX-only")
 	}
-	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	s := newSession(t, withDir(t.TempDir()))
 	root := s.env.WorkingDirectory()
 	sub := filepath.Join(root, "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
@@ -996,7 +996,7 @@ func TestShellToolCwdAbsoluteInsideSandboxRootAccepted(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pwd is POSIX-only")
 	}
-	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	s := newSession(t, withDir(t.TempDir()))
 	root := s.env.WorkingDirectory()
 	sub := filepath.Join(root, "sub")
 	if err := os.Mkdir(sub, 0o755); err != nil {
@@ -1552,7 +1552,7 @@ func TestShellToolSandboxOffCwdOutsideWorkingDirectory(t *testing.T) {
 		if err := os.Mkdir(root, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		s := newSession(t, withDir(root), withoutGitSnapshot())
+		s := newSession(t, withDir(root))
 		if explicit {
 			s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeOff}
 		}
@@ -1593,7 +1593,7 @@ func TestShellToolConfinedCwdRefusalPreservesWorkViaCd(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("pwd is POSIX-only")
 	}
-	s := newSession(t, withDir(t.TempDir()), withoutGitSnapshot())
+	s := newSession(t, withDir(t.TempDir()))
 	s.env.(*execenv.LocalExecutionEnvironment).Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeRestricted}
 
 	// A space and a quote in the path pin the suggested command's shell quoting;

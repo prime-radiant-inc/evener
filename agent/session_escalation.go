@@ -16,11 +16,12 @@ import (
 )
 
 // sandboxGranter is the execution environment's ability to produce a short-lived
-// clone that permits EXACTLY one extra path for a single re-dispatch (the M7 grant).
-// Only the real LocalExecutionEnvironment implements it; a test/other env that does
-// not simply re-runs unchanged (and re-denies — safe).
+// clone that permits EXACTLY one extra path for a single re-dispatch (the M7 grant),
+// landing at the target the human approved. Only the real LocalExecutionEnvironment
+// implements it; a test/other env that does not simply re-runs unchanged (and
+// re-denies — safe).
 type sandboxGranter interface {
-	WithSandboxInvocationGrant(path string) execenv.ExecutionEnvironment
+	WithSandboxInvocationGrant(path, target string) execenv.ExecutionEnvironment
 }
 
 // M7 — in-UI sandbox-exemption escalation.
@@ -56,23 +57,29 @@ type escalationWaiter struct {
 	seq uint64
 }
 
-// ctxEscalationGrantKey carries a single granted absolute path on the context of
-// one approved re-dispatch. It is a per-invocation grant: it lives only on that
-// one call's context, never on the session and never on the resolved policy, so it
+// ctxEscalationGrantKey carries a single approved grant on the context of one
+// approved re-dispatch. It is a per-invocation grant: it lives only on that one
+// call's context, never on the session and never on the resolved policy, so it
 // cannot leak to any later call.
 type ctxEscalationGrantKey struct{}
 
-// withInvocationGrant returns ctx carrying a single granted path for one tool
-// re-dispatch. The execenv layer consults it for exactly that call.
-func withInvocationGrant(ctx context.Context, path string) context.Context {
-	return context.WithValue(ctx, ctxEscalationGrantKey{}, path)
+// escalationGrant is one approved grant: the path the denied call named, and
+// the target the approval card showed, where the re-dispatch lands.
+type escalationGrant struct {
+	path, target string
 }
 
-// invocationGrant returns the path granted on ctx for the current re-dispatch, if
-// any. A grant is present only inside an approved re-run.
-func invocationGrant(ctx context.Context) (string, bool) {
-	p, ok := ctx.Value(ctxEscalationGrantKey{}).(string)
-	return p, ok && p != ""
+// withInvocationGrant returns ctx carrying a single grant for one tool
+// re-dispatch. The execenv layer consults it for exactly that call.
+func withInvocationGrant(ctx context.Context, grant escalationGrant) context.Context {
+	return context.WithValue(ctx, ctxEscalationGrantKey{}, grant)
+}
+
+// invocationGrant returns the grant on ctx for the current re-dispatch, if any.
+// A grant is present only inside an approved re-run.
+func invocationGrant(ctx context.Context) (escalationGrant, bool) {
+	g, ok := ctx.Value(ctxEscalationGrantKey{}).(escalationGrant)
+	return g, ok && g.path != ""
 }
 
 // SetSubscriberCountFunc injects the "is a human actually watching this thread"
@@ -127,7 +134,10 @@ var escalatableTools = map[string]bool{
 // while the model still gets a denial; those stay final. The reason is a TYPED kind
 // (denied.ReasonKind.Curable()), never a match on display text, and it fails closed
 // for an unclassified kind. Curable() excludes DenialMasked, so it subsumes the old
-// Sensitive check.
+// Sensitive check. A containment denial also needs a GrantTarget: the file-tool
+// layer leaves it empty when the grant would refuse at the resolved location (a
+// missing parent, a symlinked final component, a masked or git-protected
+// spelling), and that denial stays final too.
 //
 // callName is the tool the MODEL invoked (apply_patch's underlying writes carry
 // Tool=="write_file" on the denial, so the allowlist keys on the call, not the
@@ -140,7 +150,7 @@ func (s *Session) escalationAllowed(callName string, denied *sandbox.DeniedError
 	if !escalatableTools[callName] {
 		return false
 	}
-	if !denied.ReasonKind.Curable() {
+	if !denied.ReasonKind.Curable() || denied.GrantTarget == "" {
 		return false
 	}
 	if s.subscriberCount() == 0 {
@@ -221,7 +231,7 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 			return res
 		}
 		if d.Approve {
-			return rerun(withInvocationGrant(ctx, denied.Path))
+			return rerun(withInvocationGrant(ctx, escalationGrant{path: denied.Path, target: denied.GrantTarget}))
 		}
 		return res
 	case <-ctx.Done():
@@ -322,14 +332,15 @@ func (s *Session) cancelAllEscalations() {
 // projector reads.
 func escalationRequestedData(req sandbox.EscalationRequest) events.SandboxEscalationRequestedData {
 	return events.SandboxEscalationRequestedData{
-		EscalationID: req.ID,
-		Mode:         req.Mode.String(),
-		Tool:         req.Tool,
-		Kind:         string(req.Kind),
-		DeniedPath:   req.DeniedPath,
-		Command:      req.Command,
-		OutputSoFar:  req.OutputSoFar,
-		PartiallyRan: req.PartiallyRan,
+		EscalationID:  req.ID,
+		Mode:          req.Mode.String(),
+		Tool:          req.Tool,
+		Kind:          string(req.Kind),
+		DeniedPath:    req.DeniedPath,
+		RequestedPath: req.RequestedPath,
+		Command:       req.Command,
+		OutputSoFar:   req.OutputSoFar,
+		PartiallyRan:  req.PartiallyRan,
 	}
 }
 

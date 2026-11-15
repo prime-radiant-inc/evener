@@ -1004,11 +1004,15 @@ func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMil
 		}
 	}
 	var delRefusal struct {
-		RoutePresent  bool `json:"routePresent"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routePresent.
-		RowsAfterOpen int  `json:"rowsAfterOpen"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rowsAfterOpen.
+		RouteBeforePresent bool `json:"routeBeforePresent"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routeBeforePresent.
+		RoutePresent       bool `json:"routePresent"`       //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routePresent.
+		RowsAfterOpen      int  `json:"rowsAfterOpen"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rowsAfterOpen.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-refusal", &delRefusal) {
-		if delRefusal.RoutePresent {
+		// Only a route the acquisition OPENED is a resurrection. A sibling that
+		// already held the session's route before the open retains it; that is
+		// why the driver records the pre-open state and this comparison uses it.
+		if !delRefusal.RouteBeforePresent && delRefusal.RoutePresent {
 			t.Error("two-tab-delete-refusal: the sibling's fresh acquisition opened an entry route for a deleted ref")
 		}
 		if delRefusal.RowsAfterOpen != 0 {
@@ -1580,8 +1584,12 @@ func traceWindowBytes(t *testing.T, trace []byte, before, after int64) []byte {
 	return trace[start:end]
 }
 
+func isHistoryPageTraceMethod(method string) bool {
+	return method == appwire.MethodThreadTurnsList || method == appwire.MethodThreadHistoryTurnsList
+}
+
 // targetPageRequestCursorsInWindow decodes a raw trace window and returns the
-// cursor of every TARGET thread/turns/list request frame, so the Go owner can
+// cursor of every TARGET history page request frame, so the Go owner can
 // see which content a reopened pane asked for.
 func targetPageRequestCursorsInWindow(data []byte, ref string) ([]string, error) {
 	frames, err := decodeTraceFrames(data)
@@ -1591,7 +1599,7 @@ func targetPageRequestCursorsInWindow(data []byte, ref string) ([]string, error)
 	threadID := strings.TrimPrefix(ref, "local:")
 	var cursors []string
 	for _, f := range frames {
-		if f.Method != "thread/turns/list" || len(f.Params) == 0 {
+		if !isHistoryPageTraceMethod(f.Method) || len(f.Params) == 0 {
 			continue
 		}
 		var params struct {
@@ -2211,8 +2219,8 @@ func targetTraceEvidenceFor(frames []traceFrame, ref string) (targetTraceEvidenc
 		if params.Ref != ref && params.ThreadID != threadID {
 			continue
 		}
-		switch req.Method {
-		case "thread/read":
+		switch {
+		case appserver.IsThreadReadMethod(req.Method):
 			ev.ReadResponses++
 			if params.Subscribe || params.Replace {
 				ev.Subscribed = true
@@ -2226,7 +2234,7 @@ func targetTraceEvidenceFor(frames []traceFrame, ref string) (targetTraceEvidenc
 			if result.OlderCursor != nil && ev.InitialOlderCursor == "" {
 				ev.InitialOlderCursor = *result.OlderCursor
 			}
-		case "thread/turns/list":
+		case isHistoryPageTraceMethod(req.Method):
 			var result struct {
 				NextCursor *string `json:"nextCursor"` //nolint:tagliatelle // Matches the AppWire JSON field nextCursor.
 			}
@@ -2239,16 +2247,16 @@ func targetTraceEvidenceFor(frames []traceFrame, ref string) (targetTraceEvidenc
 			} else {
 				ev.LastNextCursor = ""
 			}
-		case "thread/subscribe":
+		case req.Method == "thread/subscribe":
 			ev.Subscribed = true
 		}
 	}
 	return ev, nil
 }
 
-// countTargetPageRequestsInWindow counts the target's thread/turns/list REQUEST
+// countTargetPageRequestsInWindow counts the target's history page REQUEST
 // frames in a raw trace window, so a local-restoration interval can reject
-// older-page fetches as well as thread/read activations.
+// older-page fetches as well as history read activations.
 func countTargetPageRequestsInWindow(window, targetRef string) (int, error) {
 	frames, err := decodeTraceFrames([]byte(window))
 	if err != nil {
@@ -2257,7 +2265,7 @@ func countTargetPageRequestsInWindow(window, targetRef string) (int, error) {
 	threadID := strings.TrimPrefix(targetRef, "local:")
 	count := 0
 	for _, f := range frames {
-		if f.Method != "thread/turns/list" || len(f.Params) == 0 {
+		if !isHistoryPageTraceMethod(f.Method) || len(f.Params) == 0 {
 			continue
 		}
 		var params struct {
@@ -2302,7 +2310,7 @@ func countTargetThreadReads(window, targetRef string) (int, error) {
 		if err := json.Unmarshal([]byte(*record.Frame), &frame); err != nil {
 			return 0, fmt.Errorf("malformed trace frame %q: %w", *record.Frame, err)
 		}
-		if frame.Method != "thread/read" {
+		if !appserver.IsThreadReadMethod(frame.Method) {
 			continue
 		}
 		var params readParams

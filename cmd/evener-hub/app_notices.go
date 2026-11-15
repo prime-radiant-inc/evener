@@ -33,6 +33,52 @@ type hubNotices struct {
 	// mu guards last, the notices read last answered with.
 	mu   sync.Mutex
 	last []appwire.HubNotice
+
+	commitMu    sync.Mutex
+	onCommitted func(noticeCommitted)
+}
+
+// noticeCommitted is one derived-state change the sweep observed: the notice
+// list moved, and/or the set of providers needing sign-in moved. Both flags
+// ride one event so the sink broadcasts auth/updated before notices/changed,
+// the order the watcher has always used.
+type noticeCommitted struct {
+	AuthChanged    bool
+	NoticesChanged bool
+	Notices        []appwire.HubNotice
+}
+
+// OnCommitted registers the notices owner's one post-commit sink. It runs when
+// a sweep observes a derived-state change, so neither the server-lifetime
+// watcher nor the startup provider observation broadcasts by itself.
+func (n *hubNotices) OnCommitted(fn func(noticeCommitted)) {
+	if n == nil {
+		return
+	}
+	n.commitMu.Lock()
+	defer n.commitMu.Unlock()
+	n.onCommitted = fn
+}
+
+func (n *hubNotices) committed(change noticeCommitted) {
+	n.commitMu.Lock()
+	onCommitted := n.onCommitted
+	n.commitMu.Unlock()
+	if onCommitted != nil {
+		onCommitted(change)
+	}
+}
+
+// dispatchNoticeCommitted is the one sink that turns a notice commit into the
+// wire broadcasts: auth/updated first, so a providers pane refreshes a sign-in
+// whose state changed, then notices/changed with the whole new list.
+func dispatchNoticeCommitted(broadcaster hostNotificationBroadcaster, change noticeCommitted) {
+	if change.AuthChanged {
+		broadcaster.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
+	}
+	if change.NoticesChanged {
+		broadcaster.BroadcastAll(appwire.NotifyEvenerNoticesChanged, appwire.NoticesListResponse{Notices: change.Notices})
+	}
 }
 
 // read is the hub's notices now, as both evener/notices/list and the watcher
@@ -190,18 +236,23 @@ func (n *hubNotices) pluginNotices(ctx context.Context) ([]appwire.HubNotice, er
 }
 
 func registerNoticesHandler(server *appserver.Server, notices *hubNotices) {
+	// The notices owner owns the post-commit notification (#6224): a sweep that
+	// observed a derived-state change broadcasts through this one sink.
+	notices.OnCommitted(func(change noticeCommitted) {
+		dispatchNoticeCommitted(server, change)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerNoticesList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.NoticesListResponse, error) {
 		return appwire.NoticesListResponse{Notices: notices.read(ctx)}, nil
 	})
 }
 
 // runNoticeWatcher announces every change in the hub's notices: on each tick it
-// reads them again and, when they differ from the last announced set,
-// broadcasts evener/notices/changed with the new list. When the sign-in
-// notices change it first broadcasts the no-data evener/auth/updated, so a
-// providers pane refreshes a sign-in whose state changed with no write through
-// this hub.
-func runNoticeWatcher(ctx context.Context, ticks <-chan time.Time, read func(context.Context) []appwire.HubNotice, broadcaster hostNotificationBroadcaster) {
+// reads them again and, when they differ from the last announced set, commits
+// the new list through the owner's sink (which broadcasts
+// evener/notices/changed). When the sign-in notices change the event also asks
+// the sink to broadcast the no-data evener/auth/updated first, so a providers
+// pane refreshes a sign-in whose state changed with no write through this hub.
+func (n *hubNotices) runNoticeWatcher(ctx context.Context, ticks <-chan time.Time, read func(context.Context) []appwire.HubNotice) {
 	announced := read(ctx)
 	for {
 		select {
@@ -212,11 +263,9 @@ func runNoticeWatcher(ctx context.Context, ticks <-chan time.Time, read func(con
 			if slices.Equal(next, announced) {
 				continue
 			}
-			if !slices.Equal(signInSubjects(next), signInSubjects(announced)) {
-				broadcaster.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
-			}
+			authChanged := !slices.Equal(signInSubjects(next), signInSubjects(announced))
 			announced = next
-			broadcaster.BroadcastAll(appwire.NotifyEvenerNoticesChanged, appwire.NoticesListResponse{Notices: next})
+			n.committed(noticeCommitted{AuthChanged: authChanged, NoticesChanged: true, Notices: next})
 		}
 	}
 }
@@ -255,9 +304,11 @@ func signInSubjects(notices []appwire.HubNotice) []string {
 
 // watchRead observes user provider edits on the existing server-lifetime notice
 // watcher, including while no browser is subscribed or the file cannot load.
-func (n *hubNotices) watchRead(ctx context.Context, broadcaster hostNotificationBroadcaster) []appwire.HubNotice {
+// The observation commits an auth change through the owner's sink; the read
+// itself is returned for the caller's announcement.
+func (n *hubNotices) watchRead(ctx context.Context) []appwire.HubNotice {
 	if n.refreshProviders != nil && n.refreshProviders() {
-		broadcaster.BroadcastAll(appwire.NotifyEvenerAuthUpdated, appwire.EvenerAuthUpdatedParams{})
+		n.committed(noticeCommitted{AuthChanged: true})
 	}
 	return n.read(ctx)
 }

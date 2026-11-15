@@ -1,0 +1,322 @@
+// Command evener-go-deps compares the Go module graph of a pull request with
+// its base and lists added, removed, and version-changed modules with their
+// licenses. The CI job fails an unacknowledged change so a reviewer must sign
+// off on every new or changed Go dependency (issue #614).
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// module is the subset of `go list -m -json all` this check needs.
+type module struct {
+	Path    string
+	Version string
+	Main    bool
+	Dir     string
+	Replace *module
+}
+
+// change is one module whose presence or version differs between base and head.
+type change struct {
+	Path    string
+	Base    string
+	Head    string
+	License licenseInfo
+}
+
+// licenseInfo is the structured result of reading a module's license. Name is
+// the recognized license, File is the file that was read, and Downloaded says
+// whether the module directory was available at all.
+type licenseInfo struct {
+	Name       string
+	File       string
+	Downloaded bool
+}
+
+// String renders the reviewer-facing label without being the only assertion
+// surface: tests assert Name, File, and Downloaded directly.
+func (l licenseInfo) String() string {
+	switch {
+	case !l.Downloaded:
+		return "unknown (module not downloaded)"
+	case l.Name != "":
+		return l.Name
+	case l.File != "":
+		return "unrecognized (" + l.File + ")"
+	default:
+		return "no license file"
+	}
+}
+
+func main() {
+	event := flag.String("event", "", "GitHub event name; pull_request and workflow_dispatch are checked")
+	base := flag.String("base", "", "base git revision to compare against")
+	acknowledged := flag.Bool("acknowledged", false, "a reviewer acknowledged the dependency change")
+	download := flag.Bool("download", false, "download the module graph first so license files are available")
+	flag.Parse()
+
+	baseRevision, compare, err := comparisonBase(*event, *base)
+	if err != nil {
+		fail("%v", err)
+	}
+	if !compare {
+		fmt.Printf("event %q is not a pull request; no dependency review needed\n", *event)
+		return
+	}
+	if *download {
+		downloadModules(".")
+	}
+	head, err := listModules(".")
+	if err != nil {
+		fail("list the head module graph: %v", err)
+	}
+	baseModules, err := listModulesAt(baseRevision, *download)
+	if err != nil {
+		fail("list the base module graph at %s: %v", baseRevision, err)
+	}
+	changes := diffModules(baseModules, head)
+	if len(changes) == 0 {
+		fmt.Println("no Go module changes against the base")
+		return
+	}
+	summary := renderChanges(baseRevision, changes)
+	fmt.Println(summary)
+	if summaryPath := os.Getenv("GITHUB_STEP_SUMMARY"); summaryPath != "" {
+		if file, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			_, _ = file.WriteString(summary)
+			_ = file.Close()
+		}
+	}
+	if !*acknowledged {
+		fmt.Println("\nA reviewer must sign off on these Go dependency changes. Ask a reviewer to approve the pull request after reviewing the modules and licenses above; adding the `go-dependency-reviewed` label also acknowledges. Adding either re-runs CI; if it does not, re-run the failed job.")
+		os.Exit(1)
+	}
+	fmt.Println("\nGo dependency changes acknowledged by a reviewer label or approval.")
+}
+
+// comparisonBase decides whether this event reviews the module graph, and
+// against what. A pull request and a manual dispatch both need a base: a
+// dispatch without one is refused rather than silently skipping the check. The
+// push and merge_group events are already covered by the PR checks.
+func comparisonBase(event, base string) (string, bool, error) {
+	base = strings.TrimSpace(base)
+	switch event {
+	case "pull_request":
+		if base == "" {
+			return "", false, errors.New("--base is required on a pull request")
+		}
+		return base, true, nil
+	case "workflow_dispatch":
+		if base == "" {
+			return "", false, errors.New("--base is required for workflow_dispatch; pass the base input")
+		}
+		return base, true, nil
+	default:
+		return "", false, nil
+	}
+}
+
+func fail(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
+}
+
+// downloadModules fills the module cache so every module in the graph has a
+// license file. It is a seam so tests can prove the default path does not
+// download.
+var downloadModules = func(dir string) {
+	// A module that no package imports is still in the graph but not in the
+	// module cache, so its license file would be unavailable. Downloading the
+	// graph is best-effort: a failure leaves those licenses "unknown" while the
+	// version diff still decides the check.
+	download := exec.CommandContext(context.Background(), "go", "mod", "download", "all")
+	download.Dir = dir
+	download.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+	_ = download.Run()
+}
+
+// listModules reads the module graph in dir. It downloads nothing: the default
+// test path is deterministic and offline once the module cache holds go.mod's
+// graph.
+func listModules(dir string) ([]module, error) {
+	cmd := exec.CommandContext(context.Background(), "go", "list", "-m", "-json", "all")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, err
+	}
+	return decodeModules(bytes.NewReader(out))
+}
+
+// decodeModules decodes the stream of JSON objects `go list -m -json all`
+// prints.
+func decodeModules(reader io.Reader) ([]module, error) {
+	var modules []module
+	decoder := json.NewDecoder(reader)
+	for {
+		var m module
+		if err := decoder.Decode(&m); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("decode go list output: %w", err)
+		}
+		modules = append(modules, m)
+	}
+	return modules, nil
+}
+
+// listModulesAt builds a detached worktree at revision and reads its graph.
+func listModulesAt(revision string, download bool) ([]module, error) {
+	dir, err := os.MkdirTemp("", "evener-go-deps-base-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	add := exec.CommandContext(context.Background(), "git", "worktree", "add", "--detach", dir, revision)
+	if out, err := add.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git worktree add %s: %w: %s", revision, err, strings.TrimSpace(string(out)))
+	}
+	defer func() {
+		_ = exec.CommandContext(context.Background(), "git", "worktree", "remove", "--force", dir).Run()
+	}()
+	if download {
+		downloadModules(dir)
+	}
+	return listModules(dir)
+}
+
+// diffModules reports modules added, removed, or changed in identity between
+// base and head. A main module (the workspace's local modules) is identified by
+// its path alone.
+func diffModules(base, head []module) []change {
+	baseByPath := make(map[string]module, len(base))
+	for _, m := range base {
+		baseByPath[m.Path] = m
+	}
+	headByPath := make(map[string]module, len(head))
+	for _, m := range head {
+		headByPath[m.Path] = m
+	}
+	paths := make(map[string]bool, len(baseByPath)+len(headByPath))
+	for path := range baseByPath {
+		paths[path] = true
+	}
+	for path := range headByPath {
+		paths[path] = true
+	}
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
+	}
+	sort.Strings(ordered)
+
+	var changes []change
+	for _, path := range ordered {
+		before, hadBefore := baseByPath[path]
+		after, hadAfter := headByPath[path]
+		switch {
+		case !hadBefore:
+			changes = append(changes, change{Path: path, Head: moduleIdentity(after), License: licenseFor(after)})
+		case !hadAfter:
+			changes = append(changes, change{Path: path, Base: moduleIdentity(before), License: licenseFor(before)})
+		case moduleIdentity(before) != moduleIdentity(after):
+			changes = append(changes, change{Path: path, Base: moduleIdentity(before), Head: moduleIdentity(after), License: licenseFor(after)})
+		}
+	}
+	return changes
+}
+
+// moduleIdentity is the version a reviewer is signing off on, including a
+// replacement target because that is the code actually built.
+func moduleIdentity(m module) string {
+	version := m.Version
+	if version == "" {
+		version = "(main module)"
+	}
+	if m.Replace == nil {
+		return version
+	}
+	replacement := m.Replace.Version
+	if replacement == "" {
+		replacement = m.Replace.Path
+	} else {
+		replacement = m.Replace.Path + " " + replacement
+	}
+	return version + " => " + replacement
+}
+
+// renderChanges writes a stable, human-readable list for the job log and
+// summary.
+func renderChanges(base string, changes []change) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Go module graph changed against %s:\n\n", base)
+	b.WriteString("| module | base | head | license |\n")
+	b.WriteString("| --- | --- | --- | --- |\n")
+	for _, c := range changes {
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", c.Path, displayVersion(c.Base), displayVersion(c.Head), c.License.String())
+	}
+	return b.String()
+}
+
+func displayVersion(version string) string {
+	if version == "" {
+		return "—"
+	}
+	return version
+}
+
+// licenseFor finds the module's license name from its LICENSE/COPYING file.
+// The module cache is read-only, so this only reads. An unrecognized or absent
+// file is reported as such rather than guessed.
+func licenseFor(m module) licenseInfo {
+	if m.Dir == "" {
+		return licenseInfo{}
+	}
+	for _, filename := range []string{"LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING", "COPYING.md"} {
+		path := filepath.Join(m.Dir, filename)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		return licenseInfo{Name: licenseName(string(data)), File: filename, Downloaded: true}
+	}
+	return licenseInfo{Downloaded: true}
+}
+
+// licenseName recognizes the common licenses by their text. It is a coarse
+// label for the reviewer's list, not a legal determination.
+func licenseName(text string) string {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "apache license"):
+		return "Apache-2.0"
+	case strings.Contains(lower, "mit license"), strings.Contains(lower, "permission is hereby granted, free of charge"):
+		return "MIT"
+	case strings.Contains(lower, "mozilla public license"):
+		return "MPL-2.0"
+	case strings.Contains(lower, "gnu general public license"):
+		return "GPL"
+	case strings.Contains(lower, "redistribution and use in source and binary forms"):
+		return "BSD"
+	case strings.Contains(lower, "permission to use, copy, modify, and/or distribute"):
+		return "ISC"
+	default:
+		return ""
+	}
+}

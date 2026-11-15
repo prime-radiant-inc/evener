@@ -35,6 +35,7 @@ const chatGPTUsageLimitBody = `{"error":{"type":"usage_limit_reached","message":
 const kimiBillingCycle403Body = `{"error":{"type":"permission_error","message":"You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing"},"type":"error"}`
 
 func TestParseUsageLimit_MessageOnlyFallback(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, kimiBillingCycle403Body)
 	limit, ok := parseUsageLimit(raw, time.Unix(1785000000, 0))
 	if !ok {
@@ -51,6 +52,7 @@ func TestParseUsageLimit_MessageOnlyFallback(t *testing.T) {
 // Same error.type ("permission_error") but an unrelated message must not
 // match — proves the substring match keys on the phrase, not the error type.
 func TestParseUsageLimit_PermissionErrorWithoutUsageLimitPhraseDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, `{"error":{"type":"permission_error","message":"you do not have access to this resource"}}`)
 	if _, ok := parseUsageLimit(raw, time.Unix(1785000000, 0)); ok {
 		t.Fatal("parseUsageLimit matched an unrelated permission_error, want no match")
@@ -58,6 +60,7 @@ func TestParseUsageLimit_PermissionErrorWithoutUsageLimitPhraseDoesNotMatch(t *t
 }
 
 func TestUsageLimit429IsQuotaExceededAndNotRetryable(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
@@ -83,6 +86,7 @@ func TestUsageLimit429IsQuotaExceededAndNotRetryable(t *testing.T) {
 // maps 429 to Retryable, so a non-retryable usage limit must be recognized
 // ahead of that switch or the retry budget burns anyway.
 func TestClassifyUsageLimitIsPermanent(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 	if got := Classify(err); got != ErrorClassPermanent {
@@ -91,6 +95,7 @@ func TestClassifyUsageLimitIsPermanent(t *testing.T) {
 }
 
 func TestUsageLimitDoesNotRetry(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	quotaErr := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
@@ -109,6 +114,7 @@ func TestUsageLimitDoesNotRetry(t *testing.T) {
 
 // A plain 429 with no usage-limit marker is still a transient rate limit.
 func TestPlainRateLimit429StaysRetryable(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, `{"error":{"type":"rate_limit_exceeded","message":"Slow down"}}`)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
@@ -125,6 +131,7 @@ func TestPlainRateLimit429StaysRetryable(t *testing.T) {
 
 // OpenAI's standard-API billing wall uses error.code instead of error.type.
 func TestInsufficientQuota429IsQuotaExceeded(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, `{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`)
 	err := ErrorFromHTTPStatus("openai", 429, "chat.completions(stream) failed", raw, nil)
 
@@ -137,6 +144,7 @@ func TestInsufficientQuota429IsQuotaExceeded(t *testing.T) {
 }
 
 func TestUsageLimitResetAt(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
@@ -150,6 +158,7 @@ func TestUsageLimitResetAt(t *testing.T) {
 }
 
 func TestUsageLimitResetAtAbsentForOtherErrors(t *testing.T) {
+	t.Parallel()
 	for _, err := range []error{
 		nil,
 		errors.New("boom"),
@@ -165,6 +174,7 @@ func TestUsageLimitResetAtAbsentForOtherErrors(t *testing.T) {
 // resets_in_seconds is the fallback when resets_at is missing, and is relative
 // to the moment the response was received.
 func TestUsageLimitFallsBackToResetsInSeconds(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":3600}}`)
 	now := time.Unix(1785000000, 0)
 
@@ -180,6 +190,7 @@ func TestUsageLimitFallsBackToResetsInSeconds(t *testing.T) {
 // A usage limit with no reset information at all is still a usage limit: the
 // classification must not depend on the provider volunteering a reset time.
 func TestUsageLimitWithoutResetTime(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 
@@ -196,6 +207,7 @@ func TestUsageLimitWithoutResetTime(t *testing.T) {
 
 // Nonsense reset values must not produce a bogus timestamp.
 func TestUsageLimitIgnoresUnusableResetValues(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		body string
@@ -220,6 +232,7 @@ func TestUsageLimitIgnoresUnusableResetValues(t *testing.T) {
 }
 
 func TestFormatResetWindow(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, time.July, 25, 0, 6, 0, 0, time.UTC)
 	cases := []struct {
 		name     string
@@ -251,6 +264,7 @@ func TestFormatResetWindow(t *testing.T) {
 }
 
 func TestUsageLimitMessageCarriesBothTimeForms(t *testing.T) {
+	t.Parallel()
 	raw := rawBody(t, chatGPTUsageLimitBody)
 	err := ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed", raw, nil)
 	msg := err.Error()
@@ -274,6 +288,7 @@ func TestUsageLimitMessageCarriesBothTimeForms(t *testing.T) {
 // Duration: integral and fractional forms in every decoded type, and nothing
 // past ±MaxInt64 nanoseconds.
 func TestJSONInt64(t *testing.T) {
+	t.Parallel()
 	maxSecs := int64(math.MaxInt64) / int64(time.Second)
 	for _, tc := range []struct {
 		name   string
@@ -307,6 +322,7 @@ func TestJSONInt64(t *testing.T) {
 // With no provider message the rendered limit still leads with a headline
 // before its plan and reset details.
 func TestUsagelimitMessageEmpty(t *testing.T) {
+	t.Parallel()
 	msg := usageLimitMessage(usageLimit{planType: "pro", resetsAt: time.Now().Add(time.Hour)}, time.Now())
 	lead, _, found := strings.Cut(msg, "pro")
 	if !found {

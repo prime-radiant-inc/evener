@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,7 @@ type hubRelay struct {
 	// started them and fence against the lookup captured at construction.
 	idleInterval time.Duration
 	targetState  deletionTargetLookup
-	logf         func(format string, args ...any)
+	log          *slog.Logger
 	retryClock   relayRetryClock
 
 	mu          sync.Mutex
@@ -45,7 +46,7 @@ func newHubRelay(server *appserver.Server, cfg hubcore.WebConfig, sources *appso
 		sources:      sources,
 		idleInterval: hubRelayIdleInterval,
 		targetState:  deletionTargetState,
-		logf:         hubLogfFor(cfg),
+		log:          hubLogFor(cfg),
 		retryClock:   retryClock,
 		relayed:      map[string]*hubRelayHandle{},
 		pending:      map[string]map[*relayKeyState]*hubRelayHandle{},

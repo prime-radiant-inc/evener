@@ -20,6 +20,9 @@ const (
 	EventSessionStart EventKind = "SESSION_START"
 	// EventSessionEnd marks the end of a session.
 	EventSessionEnd EventKind = "SESSION_END"
+	// EventExecutionFirstRecorded announces an execution's first recorded entry,
+	// independently of whether its durability barrier has completed.
+	EventExecutionFirstRecorded EventKind = "EXECUTION_FIRST_RECORDED"
 	// EventUserInput carries a user input turn.
 	EventUserInput EventKind = "USER_INPUT"
 	// EventEnvironment carries a persisted environment-context update.

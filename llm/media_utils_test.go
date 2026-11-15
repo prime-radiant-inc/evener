@@ -17,6 +17,7 @@ import (
 )
 
 func TestRasterMediaTypeDecodesFullyAndRejectsTruncatedImages(t *testing.T) {
+	t.Parallel()
 	var png bytes.Buffer
 	if err := pngenc.Encode(&png, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatal(err)
@@ -48,6 +49,8 @@ func TestRasterMediaTypeDecodesFullyAndRejectsTruncatedImages(t *testing.T) {
 // four payload-sized buffers, so a 12 MB document made ~64 MB of transient
 // garbage (#5488). Pin both the encoded output and the allocation count.
 func TestDataURISinglePayloadAllocation(t *testing.T) {
+	// Not parallel: testing.AllocsPerRun runs with GOMAXPROCS pinned to 1
+	// and panics when called from a parallel test.
 	payload := bytes.Repeat([]byte{0xAB}, 1<<20)
 	got := DataURI("application/pdf", payload)
 	want := "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(payload)
@@ -69,6 +72,7 @@ func BenchmarkDataURI(b *testing.B) {
 }
 
 func TestIsImageFile(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tests := []struct {
 		path string
 		want bool
@@ -101,6 +105,7 @@ func TestIsImageFile(t *testing.T) {
 // that are not a decodable raster. The Anthropic and OpenAI builders both rely
 // on it (#4464).
 func TestNormalizeImageBlock(t *testing.T) {
+	t.Parallel()
 	var png bytes.Buffer
 	if err := pngenc.Encode(&png, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatal(err)
@@ -149,6 +154,7 @@ func grayPNG(t *testing.T, width, height int) []byte {
 // name a huge image and exhaust process memory. 16 MP matches
 // llm/internal/imagerepair's existing JPEG budget.
 func TestNormalizeImageDecodedPixelBudget(t *testing.T) {
+	t.Parallel()
 	atBudget := grayPNG(t, 4000, 4000) // exactly 16,000,000 pixels
 	got, mt, err := NormalizeImage(atBudget, ImageBlockMediaType)
 	if err != nil || mt != "image/png" || !bytes.Equal(got, atBudget) {
@@ -168,6 +174,7 @@ func TestNormalizeImageDecodedPixelBudget(t *testing.T) {
 // never silently switches sources. A document without bytes carries no
 // shared payload — whether its URL rides the wire is per protocol.
 func TestDocumentFileData(t *testing.T) {
+	t.Parallel()
 	const pdfDataURI = "data:application/pdf;base64,JVBERi0xLjcgc3R1Yg=="
 	cases := []struct {
 		name string
@@ -191,6 +198,7 @@ func TestDocumentFileData(t *testing.T) {
 
 // Each decodable raster format reports the media type its bytes establish.
 func TestRasterMediaTypeOfEachDecodedFormat(t *testing.T) {
+	t.Parallel()
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{R: 255, A: 255})
 	var jpg, gifData bytes.Buffer
@@ -219,6 +227,7 @@ func TestRasterMediaTypeOfEachDecodedFormat(t *testing.T) {
 // A multi-frame GIF whose first frame decodes but whose later frame is cut
 // short is rejected: every frame must decode.
 func TestRasterMediaTypeRejectsAGIFWithATruncatedFrame(t *testing.T) {
+	t.Parallel()
 	frame := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black})
 	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, &gif.GIF{Image: []*image.Paletted{frame, frame}, Delay: []int{0, 0}}); err != nil {
@@ -237,6 +246,8 @@ func TestRasterMediaTypeRejectsAGIFWithATruncatedFrame(t *testing.T) {
 }
 
 func TestExpandTilde(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a
+	// shared t, and its subtests call t.Setenv.
 	t.Run("no tilde prefix returns trimmed input", func(t *testing.T) {
 		if got := ExpandTilde("  relative/path  "); got != "relative/path" {
 			t.Errorf("ExpandTilde = %q, want %q", got, "relative/path")
@@ -264,6 +275,8 @@ func TestExpandTilde(t *testing.T) {
 }
 
 func TestInferMimeTypeFromPath(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a
+	// shared t, and it mutates the process-wide mime registry.
 	// Register a deterministic charset-bearing type so the charset-strip branch
 	// is exercised regardless of the host's /etc/mime.types.
 	if err := mime.AddExtensionType(".charsettxt", "text/plain; charset=utf-8"); err != nil {
@@ -289,6 +302,7 @@ func TestInferMimeTypeFromPath(t *testing.T) {
 }
 
 func TestDataURI(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	tests := []struct {
 		name     string
 		mimeType string

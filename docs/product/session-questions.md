@@ -112,14 +112,17 @@ different units; mixed sets also require locating the reported number of
 call-less questions in history. The hub checks the live daemon's `AskFence`
 before forwarding a page or fenced answer to it.
 
-The normalized maximum is 3,244 composites per page. The
-[`pending_ask_page_measurement_test.go`](../../server/pending_ask_page_measurement_test.go)
-fixture measures the whole Manager response with 4,000 backing composites, the
-ten-call row, maximum escaped excerpt content, actor and follow-up metadata.
-At that maximum it encodes 262,089 bytes with fresh 24-character turn IDs and
-216,519 with mutation turn IDs, below the 262,144-byte cap. One more composite
-exceeds the cap for fresh IDs. Larger ordinary metadata can still cause a typed
-whole-read refusal; the page never silently truncates JSON.
+The normalized maximum is 3,139 composites per page. The
+[hub measurement](../../cmd/evener-hub/pending_ask_page_measurement_test.go)
+shares the [daemon fixture](../../server/pending_ask_page_measurement_test.go)
+with 4,000 backing composites, the ten-call row and maximal escaped excerpt.
+It measures the complete final Manager response, including serving facts,
+project identity, capabilities, directories, actor and follow-up metadata.
+The finite fixture covers fresh and mutation turn IDs, maximal uint64 counters
+and fixed-width paths. Its widest response measures 262,106 bytes at 3,139
+composites; one more measures 262,187, above the 262,144-byte cap.
+Larger ordinary metadata can still cause a typed whole-read refusal; the page
+never silently truncates JSON.
 
 Voice resolves beyond-prefix membership through these same pair-fenced pages
 in its network-work stage, before selecting speech. A clamped row cannot turn a

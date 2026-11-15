@@ -65,6 +65,7 @@ func requirePNGInlineData(t *testing.T, inline map[string]any) {
 // inline set is png/jpeg/webp/heic/heif, so the builder must re-encode them as
 // PNG instead of writing the claimed type verbatim (#4584).
 func TestBuildBodyNormalizesUnsupportedInlineImageMediaType(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		data      []byte
 		mediaType string
@@ -88,6 +89,7 @@ func TestBuildBodyNormalizesUnsupportedInlineImageMediaType(t *testing.T) {
 // every image on the hot path. HEIC and HEIF are accepted by the wire but not
 // readable by the local decoder, so the pass-through is their only path.
 func TestBuildBodyKeepsAcceptedInlineImageMediaType(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		claimed string
@@ -118,6 +120,7 @@ func TestBuildBodyKeepsAcceptedInlineImageMediaType(t *testing.T) {
 // client that sends no media type must still get the bytes' real type, not a
 // fabricated image/png that bypasses normalization (#4584).
 func TestBuildBodyDerivesInlineMediaTypeFromBytes(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		data      []byte
 		unchanged bool
@@ -143,6 +146,7 @@ func TestBuildBodyDerivesInlineMediaTypeFromBytes(t *testing.T) {
 // tool-result arm: a BMP read result on a multimodal Gemini row must re-encode
 // to PNG inside the functionResponse instead of carrying image/bmp.
 func TestBuildBodyNormalizesUnsupportedToolResultImageMediaType(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "shot", Arguments: []byte(`{}`)}}}},
 		{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c1", Name: "shot", Content: "ok", ImageData: testBMP(t), ImageMediaType: "image/bmp"}}}},
@@ -161,6 +165,7 @@ func TestBuildBodyNormalizesUnsupportedToolResultImageMediaType(t *testing.T) {
 // unsupported raster whose bytes are not decodable must fail the build as a
 // configuration error, not reach the provider for an opaque 400.
 func TestBuildBodyRefusesUndecodableClaimedRaster(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("not an image"), MediaType: "image/bmp"}}}},
 	}}

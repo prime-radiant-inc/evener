@@ -18,7 +18,7 @@ type historyContentRequest struct {
 // boundary. The underlying handlers keep full producer snapshots and shared
 // relays; each downstream subscription owns its own projection.
 func HandleThreadHistory(router *Router, read apphistory.ReadFunc, list apphistory.ListFunc) {
-	HandleTyped(router, appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	readSelected := func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		filter := apphistory.NewFilter(params.Selection())
 		ctx = context.WithValue(ctx, historyContentContextKey{}, historyContentRequest{filter: filter, preserve: !params.IncludeTurns})
 		response, err := RetrySubscription(ctx, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
@@ -28,9 +28,22 @@ func HandleThreadHistory(router *Router, read apphistory.ReadFunc, list apphisto
 			filter.Seed(response.Overlay)
 		}
 		return response, err
+	}
+	HandleTyped(router, appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		response, err := readSelected(ctx, params)
+		response.Thread.Evener.LatestExecutionTurnID = ""
+		return response, err
 	})
 	HandleTyped(router, appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		return apphistory.List(ctx, params, list)
+	})
+	HandleTyped(router, appwire.MethodThreadHistoryRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadHistoryReadResponse, error) {
+		response, err := readSelected(appwire.WithHistoryServingFacts(ctx), params)
+		return appwire.HistoryReadResponse(response), err
+	})
+	HandleTyped(router, appwire.MethodThreadHistoryTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadHistoryTurnsListResponse, error) {
+		response, err := apphistory.List(appwire.WithHistoryServingFacts(ctx), params, list)
+		return appwire.HistoryTurnsResponse(response), err
 	})
 }
 

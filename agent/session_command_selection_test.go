@@ -92,7 +92,7 @@ func TestClientMutationCommandSelection(t *testing.T) {
 			adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 			}}
-			s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
+			s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{PluginDirs: []string{pluginDir}}))
 			_, stop := captureEvents(s)
 			defer stop()
 			const original = "REQUEST_318 /pkg:probe tail /nested"
@@ -165,7 +165,7 @@ func TestClientMutationCommandSelectionUnavailableThenRecovery(t *testing.T) {
 	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 		return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 	}}
-	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
+	s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{PluginDirs: []string{pluginDir}}))
 	_, stop := captureEvents(s)
 	defer stop()
 	for index, name := range []string{"probe", "pkg:probe"} {
@@ -230,7 +230,7 @@ func TestClientMutationCommandPreparationAdmissionRetry(t *testing.T) {
 				adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
 					return agenttest.ToolCallResponse(communicateCall("done-1", "ok"))
 				}}
-				s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}), withoutGitSnapshot())
+				s := newSession(t, withAdapter(adapter), withDir(root), withProfile(newAnthropicProfile("claude-test")), withConfig(SessionConfig{StateDir: root, PluginDirs: []string{pluginDir}}))
 				_, stop := captureEvents(s)
 				defer stop()
 				const original = "ORIGINAL_RETRY_318 /pkg:probe prose"

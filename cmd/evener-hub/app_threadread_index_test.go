@@ -28,6 +28,14 @@ import (
 // entries, and returns the hub config that finds it and the transcript path.
 func seedIndexedPastSession(t *testing.T, entries ...schema.Turn) (hubcore.WebConfig, hubcore.PastEntry, string) {
 	t.Helper()
+	return seedIndexedPastSessionWithSystemPrompt(t, "", entries...)
+}
+
+// seedIndexedPastSessionWithSystemPrompt is seedIndexedPastSession with a
+// system prompt in the transcript header, so a read can exercise the
+// header-derived prelude turn.
+func seedIndexedPastSessionWithSystemPrompt(t *testing.T, systemPrompt string, entries ...schema.Turn) (hubcore.WebConfig, hubcore.PastEntry, string) {
+	t.Helper()
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-indexed-0000000000")
 	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
@@ -42,7 +50,7 @@ func seedIndexedPastSession(t *testing.T, entries ...schema.Turn) (hubcore.WebCo
 		t.Fatal(err)
 	}
 	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
-	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5"})
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5", SystemPrompt: systemPrompt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,13 +318,62 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 	}
 
 	cursor := items[0].FetchCursor
+	got := fetchAllItemBytes(t, operations, ref, cursor)
+	if !slices.Equal(got, want) {
+		t.Fatalf("fetched canonical bytes differ: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// A budget-elided system prompt must settle and be fetchable. The prelude is
+// immutable, so its item carries a stable nonzero version instead of reading
+// as in flight forever, which used to leave every re-read with no fetch cursor.
+func TestPreludeSystemPromptElisionIsFetchable(t *testing.T) {
+	prompt := strings.Repeat("system guidance ", 2_000)
+	cfg, entry, _ := seedIndexedPastSessionWithSystemPrompt(t, prompt,
+		execution("turn_m1", schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))),
+		completedExecution("turn_m1"),
+	)
+	operations := &sessionOperations{cfg: cfg, sources: newExitedLocalRegistry()}
+	ref := "local:" + entry.Meta.ID
+	response, err := operations.turns(t.Context(), appwire.ThreadTurnsListParams{
+		Ref:               ref,
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: appwire.SystemPreludeTurnID},
+		WindowBudgetBytes: 16 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("windowed prelude read: %v", err)
+	}
+	items := flattenTestItems(response.Data)
+	if len(items) != 1 {
+		t.Fatalf("prelude window items = %+v, want the one system prompt", items)
+	}
+	item := items[0]
+	if item.InFlight || item.FetchCursor == "" || item.TruncatedBytes == 0 || len(item.Text) >= len(prompt) {
+		t.Fatalf("elided prelude item = %+v, want a settled item with withheld bytes and a fetch cursor", item)
+	}
+	fetched := fetchAllItemBytes(t, operations, ref, item.FetchCursor)
+	var restored appwire.ThreadItem
+	if err := json.Unmarshal(fetched, &restored); err != nil {
+		t.Fatalf("fetched prelude bytes are not an item: %v", err)
+	}
+	// PreludeTurn projects the header's system prompt after trimming space.
+	if want := strings.TrimSpace(prompt); restored.Text != want {
+		t.Fatalf("fetched system prompt = %d bytes, want the %d withheld bytes", len(restored.Text), len(want))
+	}
+}
+
+// fetchAllItemBytes drains the FETCH pages for cursor and returns the
+// reassembled canonical bytes, checking each page's offset and the Manager
+// response cap.
+func fetchAllItemBytes(t *testing.T, operations *sessionOperations, ref, cursor string) []byte {
+	t.Helper()
 	var got []byte
 	for cursor != "" {
 		response, err := operations.Invoke(t.Context(), appwire.ManagerView{Ref: "local:manager", Manager: true}, appwire.SessionOperationRequest{
 			Fetch: &appwire.SessionFetchRequest{Ref: ref, FetchCursor: cursor},
 		})
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("fetch %s: %v", ref, err)
 		}
 		if response.Fetch == nil {
 			t.Fatal("FETCH response omitted fetch payload")
@@ -338,9 +395,7 @@ func TestSessionOperationsFetchesSavedItemCanonicalRanges(t *testing.T) {
 		got = append(got, fragment...)
 		cursor = response.Fetch.FetchCursor
 	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("fetched canonical bytes differ: got %d bytes, want %d", len(got), len(want))
-	}
+	return got
 }
 
 func TestDaemonlessThreadTurnsContinuesInsideWindowedTurn(t *testing.T) {

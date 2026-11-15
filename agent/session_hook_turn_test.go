@@ -17,16 +17,13 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
 func hookPluginDirForEvent(t *testing.T, event, command string) string {
 	t.Helper()
-	dir := t.TempDir()
-	dir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
+	dir := testfs.CanonicalTempDir(t)
 	metaDir := filepath.Join(dir, ".claude-plugin")
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir .claude-plugin: %v", err)

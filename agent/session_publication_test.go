@@ -25,7 +25,7 @@ func TestTranscriptPublicationRetainedUnsyncedRecord(t *testing.T) {
 	}
 	defer w.Close()
 	s := &Session{id: "retained-owner"}
-	s.attachTranscript(w)
+	s.attachTranscript(w, nil)
 	var boundary int64
 	var state *appwire.ConversationProvenanceState
 	s.SetTranscriptPublishedFunc(func(length int64, next *appwire.ConversationProvenanceState) { boundary, state = length, next })

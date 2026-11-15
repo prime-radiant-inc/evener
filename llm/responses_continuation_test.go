@@ -7,6 +7,7 @@ import (
 )
 
 func TestDefaultResponsesContinuationSupportRegistryPublicEnabledCodexDisabled(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	registry := DefaultResponsesContinuationSupportRegistry()
 
 	public, ok := registry[ResponsesEndpointFamilyOpenAIPublic]
@@ -45,6 +46,7 @@ func TestDefaultResponsesContinuationSupportRegistryPublicEnabledCodexDisabled(t
 }
 
 func TestResponsesContinuationSupportForUnknownFamilyDisabled(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	support := ResponsesContinuationSupportFor(
 		DefaultResponsesContinuationSupportRegistry(),
 		ResponsesEndpointFamily("unknown_endpoint"),
@@ -59,6 +61,7 @@ func TestResponsesContinuationSupportForUnknownFamilyDisabled(t *testing.T) {
 }
 
 func TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	enabled := enabledResponsesContinuationSupport()
 
 	tests := []struct {
@@ -136,6 +139,7 @@ func TestDecideResponsesContinuationRequiresAutoEnabledAndAnchorAge(t *testing.T
 }
 
 func TestDecideResponsesContinuationForRequestDisablesExplicitConversationID(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	enabled := enabledResponsesContinuationSupport()
 
 	got := DecideResponsesContinuationForRequest(ResponsesContinuationAuto, enabled, Request{
@@ -153,6 +157,7 @@ func TestDecideResponsesContinuationForRequestDisablesExplicitConversationID(t *
 }
 
 func TestDecideResponsesContinuationForRequestAllowsNoConversationID(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	enabled := enabledResponsesContinuationSupport()
 
 	got := DecideResponsesContinuationForRequest(ResponsesContinuationAuto, enabled, Request{
@@ -169,6 +174,7 @@ func TestDecideResponsesContinuationForRequestAllowsNoConversationID(t *testing.
 }
 
 func TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	inputType := reflect.TypeFor[ResponsesContinuationPlanInput]()
 	for field := range inputType.Fields() {
 		name := field.Name
@@ -186,6 +192,7 @@ func TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields(t *testing.T)
 }
 
 func TestPlanResponsesContinuationCopiesSanitizedScopeOnly(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	input := ResponsesContinuationPlanInput{
 		EndpointFamily: ResponsesEndpointFamilyOpenAIPublic,
 		AuthScopeIdentity: AuthScopeIdentity{
@@ -220,6 +227,7 @@ func TestPlanResponsesContinuationCopiesSanitizedScopeOnly(t *testing.T) {
 }
 
 func TestContinuationStorageScopeDoesNotExposeRawScopeFields(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	typ := reflect.TypeFor[ContinuationStorageScope]()
 	for field := range typ.Fields() {
 		name := field.Name
@@ -237,6 +245,7 @@ func TestContinuationStorageScopeDoesNotExposeRawScopeFields(t *testing.T) {
 }
 
 func TestContinuationStoreOverrideSetsAndClearsNilStore(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	base := Request{Model: "gpt-5.4"}
 
 	owned, override := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAIStore)
@@ -260,6 +269,7 @@ func TestContinuationStoreOverrideSetsAndClearsNilStore(t *testing.T) {
 }
 
 func TestContinuationStoreOverrideRestoresExplicitFalse(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	explicitFalse := false
 	base := Request{Model: "gpt-5.4", Store: &explicitFalse}
 
@@ -281,6 +291,7 @@ func TestContinuationStoreOverrideRestoresExplicitFalse(t *testing.T) {
 }
 
 func TestContinuationStoreOverridePreservesExplicitTrue(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	explicitTrue := true
 	base := Request{Model: "gpt-5.4", Store: &explicitTrue}
 
@@ -299,6 +310,7 @@ func TestContinuationStoreOverridePreservesExplicitTrue(t *testing.T) {
 }
 
 func TestContinuationStoreOverrideClonesProviderOptions(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	base := Request{
 		Model: "gpt-5.4",
 		ProviderOptions: map[string]any{
@@ -321,6 +333,7 @@ func TestContinuationStoreOverrideClonesProviderOptions(t *testing.T) {
 }
 
 func TestContinuationStoreOverrideIgnoresNonStoragePolicy(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	base := Request{Model: "gpt-5.4"}
 
 	owned, override := ApplyResponsesContinuationStoreOverride(base, ResponsesStoragePolicyPublicOpenAINoStore)
@@ -348,6 +361,7 @@ func enabledResponsesContinuationSupport() ResponsesContinuationSupport {
 }
 
 func TestCloneProviderOptions_DeepIndependence(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	if got := cloneProviderOptions(nil); got != nil {
 		t.Fatalf("cloneProviderOptions(nil) = %v, want nil", got)
 	}

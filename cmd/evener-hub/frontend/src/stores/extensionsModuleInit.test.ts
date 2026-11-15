@@ -1,7 +1,19 @@
 // @vitest-environment node
 
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
+
+// The module graph's first transform is a setup cost, not the scenario: under
+// host load it can exceed the test's 5s deadline even though the import is
+// awaited (#5870). Warm it in a hook under the configured 60s hook ceiling
+// (a hang tripwire, not a performance budget); the test's own resetModules
+// then makes it evaluate both modules fresh against an already-ready client.
+let warmedConnectionStore: typeof import("./connection").connectionStore;
+let warmedExtensionsStore: typeof import("./extensions").extensionsStore;
+beforeAll(async () => {
+  warmedConnectionStore = (await import("./connection")).connectionStore;
+  warmedExtensionsStore = (await import("./extensions")).extensionsStore;
+});
 
 afterEach(() => {
   vi.resetModules();
@@ -13,11 +25,13 @@ afterEach(() => {
 test("importing the module with a ready client already connected does not throw", async () => {
   vi.resetModules();
   const { connectionStore } = await import("./connection");
+  expect(connectionStore).not.toBe(warmedConnectionStore);
   const fake = new FakeClient("ready");
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
   connectionStore.getState().connect(fake);
 
   const extensions = await import("./extensions");
+  expect(extensions.extensionsStore).not.toBe(warmedExtensionsStore);
   expect(extensions.extensionsStore.getState().plugins).toBeNull();
 });

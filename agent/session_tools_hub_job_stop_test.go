@@ -86,7 +86,7 @@ func TestManagerStopJobOwner(t *testing.T) {
 }
 
 func TestManagerStopOwnedDelegateOwner(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	seedStableToolRunningDelegate(t, s, "dlg_manager_parent", "", time.Unix(10, 0).UTC())
 	seedStableToolRunningDelegate(t, s, "dlg_manager_child", "dlg_manager_parent", time.Unix(11, 0).UTC())
 	result, err := s.StopOwnedDelegateForManager(t.Context(), appwire.SessionOwnedDelegateStopParams{DelegateID: "dlg_manager_parent"})
@@ -109,8 +109,8 @@ func TestManagerStopOwnedDelegateOwner(t *testing.T) {
 
 func TestManagerStopJobOwnedDelegateSession(t *testing.T) {
 	for _, includeChildren := range []bool{false, true} {
-		root := newSession(t, withoutGitSnapshot())
-		child := newSession(t, withoutGitSnapshot())
+		root := newSession(t)
+		child := newSession(t)
 		child.owningDelegateID = "dlg_owned_child"
 		child.jobManager.parentDelegateID = child.owningDelegateID
 		root.subagents.subs[child.ID()] = &subagent{id: child.ID(), sess: child, running: true}
@@ -144,7 +144,7 @@ func TestManagerStopJobOwnedDelegateSession(t *testing.T) {
 }
 
 func TestManagerStopOwnedDelegateAlreadySettled(t *testing.T) {
-	s := newSession(t, withoutGitSnapshot())
+	s := newSession(t)
 	const id = "dlg_already_settled"
 	descriptor := stableReadonlyDescriptor(s, id)
 	started := time.Unix(10, 0).UTC()

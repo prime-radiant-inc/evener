@@ -9,6 +9,7 @@ import (
 )
 
 func TestProviderIdleDefaults(t *testing.T) {
+	t.Parallel()
 	at := DefaultAdapterTimeout()
 	if at.Request != 0 {
 		t.Errorf("default total deadline = %v, want disabled", at.Request)
@@ -26,6 +27,7 @@ func TestProviderIdleDefaults(t *testing.T) {
 }
 
 func TestSSEIdleResetsOnPartialHeartbeatBytes(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		r, w := io.Pipe()
 		done := make(chan struct{})
@@ -52,6 +54,7 @@ func TestSSEIdleResetsOnPartialHeartbeatBytes(t *testing.T) {
 }
 
 func TestProviderIdleDefaultBoundsHeadersWithoutTotalDeadline(t *testing.T) {
+	t.Parallel()
 	at := DefaultAdapterTimeout()
 	tr := AdapterTransport(&at)
 	if tr == nil || tr.ResponseHeaderTimeout != 10*time.Minute {
@@ -71,6 +74,7 @@ func TestProviderIdleDefaultBoundsHeadersWithoutTotalDeadline(t *testing.T) {
 }
 
 func TestSSELateReaderCannotRearmStoppedTimer(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		timer := &sseReadTimer{timer: time.NewTimer(time.Minute), timeout: time.Minute}
 		timer.stop()

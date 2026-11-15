@@ -15,8 +15,8 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// This file is WS9 Task 5's fixture set for the four standing runbooks
-// (error-loop, stale-notification, run-timeout-waste, truncation-waste)
+// This file is the fixture set for the standing runbooks
+// (error-loop, stale-notification, run-timeout-waste, truncation-waste, assistant-fabrication)
 // bundled under internal/bundled/skills/doctoring-evener/runbooks/. Unlike
 // audit_test.go's tests, none of these substitute bundledSkills -- they run
 // evener-doctor audit against the REAL embedded runbook files, the first
@@ -463,6 +463,64 @@ func TestRun_AuditTruncationWasteBundledRunbook_HealthyEmitsZero(t *testing.T) {
 	writeStudySession(t, base, healthySID, truncationWasteHealthyTurns())
 
 	res := studyAuditJSON(t, base, "truncation-waste", healthySID)
+	if len(res.Findings) != 0 {
+		t.Errorf("Findings = %+v, want none — a healthy run emits zero findings", res.Findings)
+	}
+}
+
+// --- assistant-fabrication ---
+
+func TestRun_AuditAssistantFabricationBundledRunbook(t *testing.T) {
+	base := t.TempDir()
+	envSID := "02wLIRxqmq3AUo6vl2OW63"
+	markupSID := "02wLIRxqmq3AUo6vl2OW64"
+	healthySID := "02wLIRxqmq3AUo6vl2OW65"
+
+	writeStudySession(t, base, envSID, []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Status.\n\n<delegate-notification delegate_id=\"dlg_1\">merged</delegate-notification>")),
+	})
+	writeStudySession(t, base, markupSID, []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Sending.\n<delegate_send>\n<｜DSML｜ parameter name=\"message\">hi")),
+	})
+	writeStudySession(t, base, healthySID, []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Discussing tags in code:\n```\n<delegate-notification>\n<｜DSML｜>\n```")),
+	})
+
+	res := studyAuditJSON(t, base, "assistant-fabrication", envSID, markupSID, healthySID)
+	if res.SessionsChecked != 3 {
+		t.Fatalf("SessionsChecked = %d, want 3", res.SessionsChecked)
+	}
+	if len(res.Findings) != 2 {
+		t.Fatalf("Findings = %+v, want 2 (high envelope + medium tool_markup)", res.Findings)
+	}
+
+	var sawHighEnv, sawMediumMarkup bool
+	for _, f := range res.Findings {
+		if f.Category != "assistant_fabrication" {
+			t.Errorf("finding category = %q, want assistant_fabrication", f.Category)
+		}
+		switch f.Severity {
+		case "high":
+			if len(f.Evidence.SessionRefs) == 1 && strings.Contains(f.Evidence.SessionRefs[0], envSID) {
+				sawHighEnv = true
+			}
+		case "medium":
+			if len(f.Evidence.SessionRefs) == 1 && strings.Contains(f.Evidence.SessionRefs[0], markupSID) {
+				sawMediumMarkup = true
+			}
+		}
+	}
+	if !sawHighEnv || !sawMediumMarkup {
+		t.Fatalf("findings = %+v, want high for %s and medium for %s", res.Findings, envSID, markupSID)
+	}
+}
+
+func TestRun_AuditAssistantFabricationBundledRunbook_HealthyEmitsZero(t *testing.T) {
+	base := t.TempDir()
+	healthySID := "02wLIRxqmq3AUo6vl2OW66"
+	writeStudySession(t, base, healthySID, studyHealthyTurns())
+
+	res := studyAuditJSON(t, base, "assistant-fabrication", healthySID)
 	if len(res.Findings) != 0 {
 		t.Errorf("Findings = %+v, want none — a healthy run emits zero findings", res.Findings)
 	}

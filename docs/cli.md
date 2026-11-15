@@ -183,6 +183,11 @@ not necessarily the value the session uses. For a new one-shot session:
   Explicit `0` also selects the default; it does not mean unlimited or disabled.
 - `--max-retained-terminal`: omitted `-1` or explicit `0` selects **2048**
   retained terminal delegate records per session.
+- `--compact-at-percent`: omitted `0` selects **90**. Values below 20 or above
+  100 are refused before the session starts. A resumed session keeps the
+  percent persisted in its metadata unless the flag is given again. The
+  self-compact nudge fires at 75% of the window, or 5 points below a lower
+  trigger; the LLM-summary backstop sits at 95%, or at a higher trigger.
 - `--vision-model`: omitted `""` uses the **active session model** for image
   descriptions. It does not disable vision; use `off` to disable that side channel.
 
@@ -212,6 +217,7 @@ runtime meaning across flags.
 | `--export-atif` | `""` | export ATIF v1.7 trajectory to this path on session close |
 | `--export-atif-provider-handles` | `""` | ATIF provider handle export mode: redacted\|raw-local (default: redacted) |
 | `--context-strategy` | `""` | context management strategy: compact\|session-log\|ooda (default: compact) |
+| `--compact-at-percent` | `0` | context-window percent at which automatic compaction triggers, 20-100 (default: 90) |
 | `--output-schema` | `""` | inline JSON Schema document applied to the communicate tool's output field (replaces the default schema) |
 | `--verbose` | `false` | emit NDJSON events to stderr |
 | `--agent` | `""` | agent persona name: default (default), explorer, or another available agent name |

@@ -117,7 +117,9 @@ func TestLoginShellPATHProbeDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testin
 func TestLoginShellPATHProbePreservesAnswerWhenDeadlineFiresDuringDrain(t *testing.T) {
 	h := orphanpipetest.New(t)
 	pidFile := filepath.Join(t.TempDir(), "shell.pid")
-	shell := h.WriteScript(t, "fake-shell", h.Spawn()+"\necho /from/login/shell\necho $$ > "+strconv.Quote(pidFile)+"\n")
+	// The pid lands by rename, so readShellPID never reads the file between
+	// the shell creating it and writing the pid.
+	shell := h.WriteScript(t, "fake-shell", h.Spawn()+"\necho /from/login/shell\necho $$ > "+strconv.Quote(pidFile+".tmp")+" && mv "+strconv.Quote(pidFile+".tmp")+" "+strconv.Quote(pidFile)+"\n")
 	armed := make(chan func(), 1)
 	prevAfterFunc := loginShellPATHAfterFunc
 	loginShellPATHAfterFunc = func(_ time.Duration, fire func()) func() bool {

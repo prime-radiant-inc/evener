@@ -69,6 +69,7 @@ JSON and TOML now agree, only the CLI's hyphens differ.
 | Extra plugin directory | `--plugin-dir` (repeatable) | `plugin_dirs` (array) |
 | Extra skills directory | `--skills-dir` (repeatable) | `skills_dirs` (array) |
 | Path to `.mcp.json` | `--mcp-config` (repeatable) | `mcp_configs` (array) |
+| Automatic compaction trigger | `--compact-at-percent` | `compact_at_percent` |
 | Max tool rounds per input | `--max-rounds` | `max_rounds` |
 | Max subagent nesting depth | `--max-subagent-depth` | `max_subagent_depth` |
 | Max concurrent delegate turns | `--max-concurrent-delegates` | `max_concurrent_delegate_turns` |

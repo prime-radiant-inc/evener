@@ -173,6 +173,7 @@ func (s *Session) endOwnedCurrentScratch() {
 // distinction close() makes before retaining a child's scratch, read here so an
 // aborted candidate never deletes a scratch dir out from under its parent.
 func (s *Session) discardRestoredCandidate() {
+	s.releaseTranscriptFrontier()
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -207,6 +208,7 @@ func (s *Session) discardRestoredCandidate() {
 			s.mcpMgr.Close()
 		}
 		_ = s.closeAttachedTranscript()
+		s.stopFrontierEmitter()
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
@@ -297,10 +299,11 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls lets notification acknowledgements finish idle. After a
-// terminal communicate, notification silence must not resurrect the run (#329).
-func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
-	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
+// routeNoToolCalls lets single-turn notification acknowledgements finish idle
+// before any tool batch has executed in the wake. After a terminal communicate,
+// notification silence must not resurrect the run (#329).
+func routeNoToolCalls(kind EntryKind, priorToolActivity bool, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (afterTerminalCommunicate || (!noContent && !priorToolActivity)) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -1511,8 +1514,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	var toolSigs []string
 	var toolSigFailed []bool
-	var lastText string // accumulated assistant text for round-limit return
-	ctxWarned := false
+	var lastText string            // accumulated assistant text for round-limit return
 	contentFilterRetried := false  // track whether we've already tried recovering from a content filter error
 	documentRejectRetried := false // track whether we've already retried without a provider-rejected tool-result document
 	localAdmissionCompacted := false
@@ -1526,6 +1528,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
 	admittedToRounds = true
+	s.beginAttentionCoverageRounds()
+	defer s.endAttentionCoverageRounds()
+	priorToolActivity := false
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		// The same admission rule the drain loop applies before a turn, applied
 		// before every round after the first: an input does not stop being
@@ -1733,16 +1738,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Accumulate usage and record exact input token count for pressure calculation.
 		s.recordResponseUsage(resp, req, usedProfile)
 
-		// Context window awareness: emit a warning when we exceed ~80% of the
-		// context window. A fallback that answered owns the round's window: the
-		// context accounting already switched to it, and the warning must not
-		// report the primary's window for a request the fallback served.
-		if !ctxWarned {
-			if sessionLifecycleFault(ctx, "warn") != nil || s.maybeWarnContextUsage(usedProfile, req) {
-				ctxWarned = true
-			}
-		}
-
 		// Best-effort nudge: when pressure crosses WarnThreshold, steer the agent to
 		// self-compact at its next clean seam. recordResponseUsage above just refreshed
 		// lastInputTokens, so pressure reflects the round that completed. The latch keeps
@@ -1806,7 +1801,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if len(calls) == 0 {
-			// A bare-text (non-empty) response to a notification turn
+			// A bare-text (non-empty) response to a notification turn before any tool batch runs
 			// is the agent acknowledging a frame it has nothing to act on (it often
 			// already read the job's output itself). Finish idle instead of scolding it
 			// toward a no-op communicate — the text is already in the transcript, and a
@@ -1827,7 +1822,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					}
 				}
 			}
-			route := routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate())
+			route := routeNoToolCalls(kind, priorToolActivity, noContent, s.hasAcceptedTerminalCommunicate())
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
@@ -1859,6 +1854,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// --- Phase: ToolExec ---
 		tPhaseStart = s.sclock().Now()
+		priorToolActivity = true
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		s.noteParentJobActivity(jobPhaseToolRunning)
@@ -2417,11 +2413,11 @@ func (s *Session) acceptContinuationInput(_ context.Context, input, stableTurnID
 	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
 		marker = "Continuing toward: " + snap.Objective
 	}
-	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 	turn := schema.NewTurn(schema.TurnSteering, llm.User(input))
 	turn.GoalContinuation = &schema.GoalContinuationInfo{Text: marker}
 	turn.StableTurnID = stableTurnID
 	s.recordTurn(turn, turn)
+	s.emit(events.GoalContinuationData{Text: marker, StableTurnID: stableTurnID})
 
 	// On resume the agent re-reads the current notes beside the continuation
 	// prompt, so a human edit that landed while the goal loop ran is visible.

@@ -11,12 +11,14 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
+import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 import {
   acquireBackgroundThread,
   installHydrationRetrySchedulerForTests,
   resetThreadsStoreForTests,
+  setMutationStorageForTests,
   settleBackgroundTranscriptsForTests,
   threadsStore,
 } from "./threads";
@@ -279,6 +281,202 @@ describe("background transcript recovery", () => {
         request.onsuccess = () => resolve();
         request.onerror = () => resolve();
       });
+    }
+  });
+});
+
+describe("accepted-copy journal replay", () => {
+  // RoboRev on 1973ead74e: the end-disposition read caches the replay key
+  // BEFORE the journal ask resolves. A transient failure must not leave the
+  // memo claimed, or every later read with the same identities skips the
+  // journal forever and an off-line-delivered copy stays a Delivering row.
+  test("a failed journal ask does not block the next end-disposition read's re-ask", { timeout: 30_000 }, async () => {
+    resetThreadsStoreForTests();
+    const selected = "local:replay-retry";
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+    await storage.enqueueIntent({
+      targetRef: selected,
+      method: "turn/queue",
+      payload: { ref: selected, input: [{ type: "text", text: "offline send" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "offline send" }] },
+    });
+    await storage.markAttempted("m1");
+    await storage.settleReceipt("m1", "pending");
+    setMutationStorageForTests(storage);
+    const cache = new SessionEntryCache({
+      indexedDB: new IDBFactory(),
+      keyRange: IDBKeyRange,
+      databaseName: "replay-retry",
+    });
+    setProductionEntryCacheForTests(cache);
+    const fixture = observeProductionEntryForTests(cache, selected);
+    try {
+      const fake = new FakeClient("ready");
+      fake.on("thread/read", ({ ref: requested }) => {
+        const response = currentRead(requested ?? selected);
+        response.snapshot = { incarnation: "inc-1", length: 1 };
+        response.thread.evener.mutationStateAuthoritative = true;
+        response.thread.turns = [
+          {
+            id: "turn_recipient",
+            itemsView: "full",
+            status: "completed",
+            version: 1,
+            items: [
+              {
+                type: "userMessage",
+                id: "item-other",
+                turnId: "turn_recipient",
+                clientMutationId: "m-other",
+                version: 1,
+                text: "delivered elsewhere",
+              },
+            ],
+          },
+        ];
+        return { ...response };
+      });
+      fake.on("thread/unsubscribe", () => ({}));
+      let queueCalls = 0;
+      let heldThreadId = "";
+      const listOptimistic = storage.listOptimistic.bind(storage);
+      let wedgeStorage = false;
+      vi.spyOn(storage, "listOptimistic").mockImplementation(async (ref) => {
+        if (wedgeStorage) throw new Error("the database is busy");
+        return listOptimistic(ref);
+      });
+      fake.on("turn/queue", () => {
+        queueCalls += 1;
+        if (queueCalls <= 2) throw new Error("journal busy");
+        return {
+          receipt: {
+            clientMutationId: "m1",
+            disposition: "replayed",
+            threadId: heldThreadId,
+            projectionState: "reflected",
+          },
+        };
+      });
+      connectionStore.getState().connect(fake);
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+      const threadId = threadsStore.getState().threads.get(selected)?.threadId;
+      if (!threadId) throw new Error("expected the held model");
+      heldThreadId = threadId;
+
+      // The end disposition is the repository read that consults the replay
+      // memo: its ask fails under transient backpressure, so the memo it
+      // claimed must be reopened for the next read.
+      fake.emitNotification({ method: "overlay/end", params: { ref: selected, threadId, roundId: "first" } });
+      await vi.waitFor(() => expect(queueCalls).toBe(2));
+      await fixture.settled();
+      expect(await storage.getOptimistic("m1")).toBeDefined();
+
+      // A storage read that fails during the end-disposition replay proves
+      // nothing: the memo it claimed must reopen for the next read too, or
+      // the copy stays stuck once storage recovers.
+      wedgeStorage = true;
+      fake.emitNotification({ method: "overlay/end", params: { ref: selected, threadId, roundId: "wedged" } });
+      await vi.waitFor(() => expect(queueCalls).toBe(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      wedgeStorage = false;
+      expect(await storage.getOptimistic("m1")).toBeDefined();
+
+      // A second end disposition with the SAME authoritative identities must
+      // ask the journal again, not skip on the memo the failed pass claimed.
+      fake.emitNotification({ method: "overlay/end", params: { ref: selected, threadId, roundId: "second" } });
+      await vi.waitFor(() => expect(queueCalls).toBe(3), { timeout: 10_000 });
+      await vi.waitFor(
+        async () => {
+          expect(await storage.getOptimistic("m1")).toBeUndefined();
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      fixture.dispose();
+      storage.close();
+      cache.close();
+      resetThreadsStoreForTests();
+    }
+  });
+
+  test("an authoritative read retires an accepted copy whose session instance was replaced", {
+    timeout: 30_000,
+  }, async () => {
+    resetThreadsStoreForTests();
+    const selected = "local:replaced-instance";
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
+    await storage.enqueueIntent({
+      targetRef: selected,
+      // Enqueued against the ORIGINAL instance; another client's clear
+      // replaced it before this client came back online.
+      instanceId: "instance-original",
+      threadId: "thr_replaced",
+      method: "turn/queue",
+      payload: { ref: selected, input: [{ type: "text", text: "offline send" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "offline send" }] },
+    });
+    await storage.markAttempted("m1");
+    await storage.settleReceipt("m1", "pending");
+    setMutationStorageForTests(storage);
+    const cache = new SessionEntryCache({
+      indexedDB: new IDBFactory(),
+      keyRange: IDBKeyRange,
+      databaseName: "replaced-instance",
+    });
+    setProductionEntryCacheForTests(cache);
+    const fixture = observeProductionEntryForTests(cache, selected);
+    try {
+      const fake = new FakeClient("ready");
+      fake.on("thread/read", ({ ref: requested }) => {
+        const response = currentRead(requested ?? selected);
+        response.snapshot = { incarnation: "inc-1", length: 1 };
+        response.thread.evener.mutationStateAuthoritative = true;
+        // The daemon now presents the REPLACEMENT instance.
+        response.thread.evener.instanceId = "instance-replacement";
+        response.thread.turns = [
+          {
+            id: "turn_recipient",
+            itemsView: "full",
+            status: "completed",
+            version: 1,
+            items: [
+              {
+                type: "userMessage",
+                id: "item-other",
+                turnId: "turn_recipient",
+                clientMutationId: "m-other",
+                version: 1,
+                text: "delivered elsewhere",
+              },
+            ],
+          },
+        ];
+        return { ...response };
+      });
+      fake.on("thread/unsubscribe", () => ({}));
+      connectionStore.getState().connect(fake);
+      await threadsStore.getState().ensureThread(selected);
+      await fixture.settled();
+
+      // The authoritative read proves the session this copy was enqueued
+      // against no longer exists, so the copy retires rather than waiting
+      // for a replay the replacement's fence will always reject.
+      await vi.waitFor(
+        async () => {
+          expect(await storage.getOptimistic("m1")).toBeUndefined();
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      threadsStore.getState().releaseThread(selected);
+      fixture.dispose();
+      storage.close();
+      cache.close();
+      resetThreadsStoreForTests();
     }
   });
 });

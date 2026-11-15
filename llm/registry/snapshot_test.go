@@ -6,6 +6,7 @@ import (
 )
 
 func TestEmbeddedSnapshot_ConvertsAndCarriesMeta(t *testing.T) {
+	t.Parallel()
 	raw, meta, err := EmbeddedSnapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +36,7 @@ func TestEmbeddedSnapshot_ConvertsAndCarriesMeta(t *testing.T) {
 }
 
 func TestParseMeta(t *testing.T) {
+	t.Parallel()
 	m, err := ParseMeta([]byte(`{"fetched_at":"2026-08-28T22:03:00Z","etag":"W/\"abc\"","source":"https://models.dev/api.json"}`))
 	if err != nil {
 		t.Fatal(err)

@@ -106,6 +106,11 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
 export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {
   version: 1;
   clientMutationId: string;
+  // The daemon queue entries a confirmed receipt or pending projection says
+  // this command's message owns. Never populated from a local promotion's
+  // expected-entry precondition: that names a different message until the
+  // daemon confirms consumption.
+  queueEntryIds?: readonly string[];
   // Which client (page, app instance) submitted this mutation. Storage is
   // shared per origin, so without it every reader claims every other reader's
   // records as its own — see isOwnMutationRecord. Optional because records
@@ -227,6 +232,7 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     // thread id is invisible to.
     instanceId: source.instanceId,
     method: source.method,
+    ...(source.queueEntryIds ? { queueEntryIds: source.queueEntryIds } : {}),
     payload: source.payload,
     attachments: source.attachments,
     optimisticDisplay: source.optimisticDisplay,

@@ -682,7 +682,7 @@ func FuzzRootParentObserverLifecycleProgram(f *testing.F) {
 			_ = parentJM.closeStoreOnly()
 			t.Fatalf("new child observer transcript: %v", err)
 		}
-		child.attachTranscript(writer)
+		child.attachTranscript(writer, nil)
 		t.Cleanup(func() {
 			_ = child.closeAttachedTranscript()
 			_ = childJM.closeStoreOnly()

@@ -418,6 +418,24 @@ export function olderTranscriptPageKey(ref: string): string | null | undefined {
   const model = store().getState().threads.get(ref);
   if (!model) return undefined;
   const route = entryTranscriptRoute(ref);
+  // A saved view pages from its own oldest row while the live cursor is kept
+  // for recovery, so progress must key off that boundary, not the cursor.
+  if (
+    model.servingFacts?.servedFrom === "saved-index" &&
+    model.servingFacts.fallbackReason !== undefined &&
+    route?.repository !== undefined
+  ) {
+    if (route.repository.savedViewExhausted()) return null;
+    const before = route.repository.oldestPosition();
+    if (before === undefined) return null;
+    return JSON.stringify([
+      "saved",
+      route.repository.getBaselineIdentity(),
+      before.entry,
+      before.item,
+      before.sub ?? 0,
+    ]);
+  }
   const local = route?.repository?.localOlderPosition();
   // This is a scheduling identity only. The wire path reads model.olderCursor,
   // never this key. Tag both kinds so an opaque server cursor cannot collide.
@@ -850,7 +868,10 @@ export async function openEntryTranscript(
             // replaced the view is followed by the local re-open that
             // promotes its restored bodies into the display.
             if (!stillOwnsLateResult()) return;
-            await openEntryTranscript(ref);
+            // A re-open that misses its own window leaves the route's
+            // stranding markers set; only the paced chain clears them, the
+            // same handoff the claim's certification open makes below.
+            if (!(await openEntryTranscript(ref))) scheduleEntryOpeningRecovery(ref);
           })
           .catch(() => {
             // A failed recovery read keeps the ordinary owner-scoped retry.

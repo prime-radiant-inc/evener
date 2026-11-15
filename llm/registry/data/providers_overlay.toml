@@ -597,7 +597,6 @@ base_url = "{OLLAMA_HOST}"
 host_rule = "ollama-host"
 vars = { "OLLAMA_HOST" = "localhost" }
 vars_env = { "OLLAMA_HOST" = "OLLAMA_HOST" }
-context_window = 131072
 
 [providers."openai-compatible"]
 implicit = true
@@ -608,7 +607,6 @@ auth = "optional-bearer"
 api_key_env = ["OPENAI_COMPATIBLE_API_KEY"]
 base_url = "{BASE_URL}"
 vars_env = { "BASE_URL" = "OPENAI_COMPATIBLE_BASE_URL" }
-context_window = 131072
 
 [providers."anthropic-compatible"]
 implicit = true
@@ -619,7 +617,6 @@ auth = "optional-bearer"
 api_key_env = ["ANTHROPIC_COMPATIBLE_API_KEY"]
 base_url = "{BASE_URL}"
 vars_env = { "BASE_URL" = "ANTHROPIC_COMPATIBLE_BASE_URL" }
-context_window = 131072
 
 [providers."google-compatible"]
 implicit = true
@@ -630,4 +627,3 @@ auth = "optional-bearer"
 api_key_env = ["GOOGLE_COMPATIBLE_API_KEY"]
 base_url = "{BASE_URL}"
 vars_env = { "BASE_URL" = "GOOGLE_COMPATIBLE_BASE_URL" }
-context_window = 131072

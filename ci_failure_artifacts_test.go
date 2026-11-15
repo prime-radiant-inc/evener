@@ -114,7 +114,6 @@ func TestCIFailureArtifactsSelectOnlyDiagnosticLogs(t *testing.T) {
 			{"json/shards/hub/hub-shard11.v", "tests-parts"},
 			{"json/shards/agent/agent-shard0.v", "tests-parts"},
 			{"json/shards/agent/agent-shard11.v", "tests-parts"},
-			{"retire-overlap-phases.tsv", "tests-parts"},
 			{"tmp/_/hub-test-shards.103/shard0.log", "race-root-parts"},
 			{"tmp/_/hub-test-shards.103/shard11.log", "race-root-parts"},
 			{"agent.log", "race-module-shards"},

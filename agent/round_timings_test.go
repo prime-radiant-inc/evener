@@ -3,7 +3,6 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,21 +18,16 @@ type benchAdapter struct {
 	name    string
 	latency time.Duration
 
-	mu    sync.Mutex
-	calls int
-	steps []func(req llm.Request) llm.Response
+	script agenttest.Script[func(req llm.Request) llm.Response]
 }
 
 func (a *benchAdapter) Name() string { return a.name }
 
 func (a *benchAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	time.Sleep(a.latency)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	idx := a.calls
-	a.calls++
-	if idx < len(a.steps) {
-		resp := a.steps[idx](req)
+	step, ok := a.script.Next()
+	if ok {
+		resp := step(req)
 		resp.Provider = a.name
 		if resp.Model == "" {
 			resp.Model = req.Model
@@ -183,17 +177,13 @@ func BenchmarkRoundOverhead(b *testing.B) {
 	adapter := &benchAdapter{
 		name:    "openai",
 		latency: mockLatency,
-		steps:   makeSteps(),
 	}
 	c.Register(adapter)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Reset adapter for each iteration.
-		adapter.mu.Lock()
-		adapter.calls = 0
-		adapter.steps = makeSteps()
-		adapter.mu.Unlock()
+		adapter.script.Reset(makeSteps())
 
 		sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 		if err != nil {

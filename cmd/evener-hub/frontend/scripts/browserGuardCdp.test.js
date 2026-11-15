@@ -22,6 +22,7 @@ import { afterEach, test, vi } from "vitest";
 import {
   applyViewport,
   BOOT_RETRY_LIMIT,
+  BOOT_NETWORK_RETRY_LIMIT,
   CDP_EVALUATE_TRIPWIRE_MS,
   clearViewportOverride,
   collectFontStatusInPage,
@@ -785,6 +786,8 @@ test("navigateTo re-navigates an unbooted harness page and recovers when the ret
       bootExpression: "typeof window.settledShell !== 'undefined'",
       bootLabel: "the shellguard entry global window.settledShell",
       retryDelayMs: 0,
+      networkRetryLimit: BOOT_RETRY_LIMIT,
+      networkRetryDelayMs: 0,
     });
   } finally {
     noteError.mockRestore();
@@ -848,6 +851,7 @@ test("navigateTo fails with the boot cause - never the font check - when the ret
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /environment problem, not a test case failure/);
@@ -866,9 +870,132 @@ test("navigateTo fails with the boot cause - never the font check - when the ret
     noteError.mockRestore();
   }
 
-  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT, "the retry budget must be bounded");
+  assert.equal(
+    navigations,
+    1 + BOOT_NETWORK_RETRY_LIMIT,
+    "a boot death whose only evidence is a host network change gets the wider backed-off budget, still bounded",
+  );
   assert.equal(socket.listenerCount("message"), 0);
   assert.ok(liveTimers() <= before, "the exhausted retries must not leave a timer holding the event loop");
+});
+
+test("navigateTo retries a sustained network-change boot death past the deterministic budget", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  // Boot on the third network retry: past the deterministic budget
+  // (BOOT_RETRY_LIMIT re-navigations), inside the network budget.
+  const bootsOn = 1 + BOOT_RETRY_LIMIT + 1;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        const attempt = navigations;
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${attempt}` } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          if (attempt < bootsOn) {
+            // The measured burst shape: more than one failed request, one of
+            // them the entry burst's script.
+            for (const type of ["Script", "Script"]) {
+              socket.dispatch("message", {
+                data: JSON.stringify({
+                  method: "Network.loadingFailed",
+                  params: { type, errorText: "net::ERR_NETWORK_CHANGED" },
+                }),
+              });
+            }
+          }
+        }, 0);
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: navigations >= bootsOn } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  const before = liveTimers();
+  try {
+    await navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+      bootExpression: "typeof window.settled !== 'undefined'",
+      bootLabel: "the overflowharness entry global window.settled",
+      retryDelayMs: 0,
+      networkRetryDelayMs: 0,
+    });
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(
+    navigations,
+    bootsOn,
+    "a network-change-only death must be retried past the deterministic budget until the burst settles",
+  );
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.ok(liveTimers() <= before, "the recovery must not leave a timer holding the event loop");
+});
+
+test("a mixed network-change and deterministic boot death keeps the deterministic budget by default", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        const attempt = navigations;
+        setTimeout(() => {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Page.frameNavigated",
+              params: { frame: { loaderId: `loader-${attempt}` } },
+            }),
+          });
+          socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+          // One network-change failure beside a deterministic one: the final
+          // attempt's window cannot name the cause, so it must keep the
+          // deterministic bound rather than borrow the network budget.
+          for (const errorText of ["net::ERR_NETWORK_CHANGED", "net::ERR_FAILED"]) {
+            socket.dispatch("message", {
+              data: JSON.stringify({
+                method: "Network.loadingFailed",
+                params: { type: "Script", errorText },
+              }),
+            });
+          }
+        }, 0);
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /inconclusive boot failure/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT, "mixed evidence must keep the deterministic bound");
+  assert.equal(socket.listenerCount("message"), 0);
 });
 
 test("a booted page is not re-navigated and its empty font set still fails the fonts check", async () => {
@@ -895,6 +1022,8 @@ test("a booted page is not re-navigated and its empty font set still fails the f
     bootExpression: "typeof window.measure !== 'undefined'",
     bootLabel: "the case harness global window.measure",
     retryDelayMs: 0,
+    networkRetryLimit: BOOT_RETRY_LIMIT,
+    networkRetryDelayMs: 0,
   });
   assert.equal(navigations, 1, "a booted page must not be re-navigated");
 
@@ -935,6 +1064,8 @@ test("navigateTo blames the harness entry, not the environment, when no request 
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -999,6 +1130,8 @@ test("evidence from an earlier attempt does not outlive it: only the final attem
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1060,6 +1193,8 @@ test("a canceled or aborted request is never counted as wire evidence", async ()
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1126,6 +1261,8 @@ test("a deterministic request failure is reported but never flips the attributio
         bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
         bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1192,6 +1329,8 @@ test("a mixed final window is inconclusive and reports both kinds of evidence", 
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1273,6 +1412,8 @@ test("a late failure for an earlier attempt's request does not flip the final at
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1331,6 +1472,8 @@ test("a loadingFailed whose send was never seen counts for the navigation that i
         bootExpression: "typeof window.settledShell !== 'undefined'",
         bootLabel: "the shellguard entry global window.settledShell",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /environment problem, not a test case failure/);
@@ -1409,6 +1552,8 @@ test("an old document's request emitted in the navigate gap is not filed under t
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1478,6 +1623,8 @@ test("an unseen failure arriving in the navigate gap belongs to the previous nav
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1566,6 +1713,8 @@ test("a delayed load event from the previous document does not commit the incomi
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1646,6 +1795,8 @@ test("a commit that arrives after a stale load still names the final attempt's d
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1712,6 +1863,8 @@ test("an uncommitted navigation's loaderId failure stays with its send-time atte
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1807,6 +1960,8 @@ test("a commit delivered after the counter advanced still names its own navigati
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1870,6 +2025,8 @@ test("a loaderless navigation commits against the attempt in flight, not an earl
         bootExpression: "typeof window.settledShell !== 'undefined'",
         bootLabel: "the shellguard entry global window.settledShell",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -1958,6 +2115,8 @@ test("a delayed subframe commit keeps the send-time attempt, not the current ret
         bootExpression: "window.measurementAfterStylesheetsLoaded",
         bootLabel: "the layoutharness boot global window.measurementAfterStylesheetsLoaded",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2036,6 +2195,8 @@ test("a pending commit is awaited before the final verdict is read", async () =>
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2117,6 +2278,8 @@ test("a stale top commit does not release the commit wait", async () => {
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2177,6 +2340,8 @@ test("a loaderless navigation's commit is awaited before the verdict", async () 
         bootExpression: "typeof window.settledShell !== 'undefined'",
         bootLabel: "the shellguard entry global window.settledShell",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2240,6 +2405,8 @@ test("a never-committing loaderless navigation does not consume the next retry's
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2303,6 +2470,8 @@ test("a loaderless commit arriving before its response is reconciled", async () 
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2367,6 +2536,8 @@ test("a redirected request re-emitted in a later window stays owned by its first
         bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
         bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2419,6 +2590,8 @@ test("without a reported loaderId, attribution degrades to the arrival counter",
         bootExpression: "typeof window.settledShell !== 'undefined'",
         bootLabel: "the shellguard entry global window.settledShell",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /environment problem, not a test case failure/);
@@ -2496,6 +2669,8 @@ test("a first-seen loaderId emitted before the load event belongs to the documen
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2576,6 +2751,8 @@ test("an iframe loaderId resolves to the attempt whose document committed the fr
         bootExpression: "window.measurementAfterStylesheetsLoaded",
         bootLabel: "the layoutharness boot global window.measurementAfterStylesheetsLoaded",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2640,6 +2817,8 @@ test("a request that reported no loaderId anchors to the document live at send t
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2707,6 +2886,8 @@ test("a loaderless request sent before any document commits owns its send-time a
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2786,6 +2967,8 @@ test("an old-document request emitted between the navigate response and the comm
         bootExpression: "typeof window.settledShell !== 'undefined'",
         bootLabel: "the shellguard entry global window.settledShell",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2854,6 +3037,8 @@ test("a main-resource failure carrying the new loaderId before the commit still 
         bootExpression: "typeof window.settled !== 'undefined'",
         bootLabel: "the overflowharness entry global window.settled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -2922,6 +3107,8 @@ test("a loaderless committed document's still-live request does not bleed into t
         bootExpression: "typeof window.settledSpawn !== 'undefined'",
         bootLabel: "the spawnguard entry global window.settledSpawn",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         assert.match(error.message, /never booted/);
@@ -3028,6 +3215,8 @@ test("a CDP frame the boot listener cannot parse cannot break the navigation", a
       bootExpression: "typeof window.settledShell !== 'undefined'",
       bootLabel: "the shellguard entry global window.settledShell",
       retryDelayMs: 0,
+      networkRetryLimit: BOOT_RETRY_LIMIT,
+      networkRetryDelayMs: 0,
     });
   } finally {
     noteError.mockRestore();
@@ -3066,6 +3255,8 @@ test("a loadingFailed event without params is survived and never miscounts as ca
         bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
         bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
         retryDelayMs: 0,
+        networkRetryLimit: BOOT_RETRY_LIMIT,
+        networkRetryDelayMs: 0,
       }),
       (error) => {
         // The event carried nothing usable, so it is not evidence: the
@@ -3112,6 +3303,8 @@ test("an inner navigation failure with boot options propagates without a retry",
       bootExpression: "typeof window.settledShell !== 'undefined'",
       bootLabel: "the shellguard entry global window.settledShell",
       retryDelayMs: 0,
+      networkRetryLimit: BOOT_RETRY_LIMIT,
+      networkRetryDelayMs: 0,
     }),
     /Cannot navigate to invalid URL/,
   );
@@ -3143,6 +3336,8 @@ test("a Network.enable that never answers still tears the Network domain down", 
       bootExpression: "typeof window.settledShell !== 'undefined'",
       bootLabel: "the shellguard entry global window.settledShell",
       retryDelayMs: 0,
+      networkRetryLimit: BOOT_RETRY_LIMIT,
+      networkRetryDelayMs: 0,
     }),
     /timeout calling Network\.enable after 30000ms/,
   );

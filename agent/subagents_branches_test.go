@@ -223,15 +223,19 @@ func TestIsRootOnlySubagentTool(t *testing.T) {
 func TestProtectedGrantTools(t *testing.T) {
 	t.Parallel()
 	tools := protectedGrantTools()
-	if len(tools) != 1 || tools[0] != "ask_user" {
-		t.Fatalf("expected ['ask_user'], got %v", tools)
+	for _, want := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !hasString(tools, want) {
+			t.Fatalf("expected %q in protected grant tools, got %v", want, tools)
+		}
 	}
 }
 
 func TestIsProtectedGrantTool(t *testing.T) {
 	t.Parallel()
-	if !isProtectedGrantTool("ask_user") {
-		t.Fatalf("expected ask_user to be protected")
+	for _, name := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !isProtectedGrantTool(name) {
+			t.Fatalf("expected %s to be protected", name)
+		}
 	}
 	if isProtectedGrantTool("read_file") {
 		t.Fatalf("expected read_file to not be protected")
@@ -307,8 +311,15 @@ func TestBaseSubagentToolPolicyCanDelegate(t *testing.T) {
 	if allowed != nil {
 		t.Fatalf("expected nil allowed for can-delegate untyped")
 	}
-	if denied != nil {
-		t.Fatalf("expected nil denied for can-delegate untyped")
+	for _, kept := range []string{"delegate", "job_watch"} {
+		if hasString(denied, kept) {
+			t.Fatalf("%s must not be denied for can-delegate untyped (got %v)", kept, denied)
+		}
+	}
+	for _, forbidden := range []string{"ask_user", "urls_add", "urls_remove"} {
+		if !hasString(denied, forbidden) {
+			t.Fatalf("%s must be denied for every subagent (got %v)", forbidden, denied)
+		}
 	}
 }
 

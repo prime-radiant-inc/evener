@@ -42,7 +42,8 @@ func (s *Session) maybeElicitNoteBeforeCompaction(ctx context.Context, history [
 	if s.pendingSkillCompactionSnapshot() != nil {
 		return // an operation already owns this compaction cycle — its response is recorded
 	}
-	if s.contextMgr.Pressure(history, sysPromptChars) < s.contextMgr.CheckpointThreshold {
+	_, pressure, prof := s.contextMgr.EstimateStatusFor(history, sysPromptChars)
+	if pressure < s.contextMgr.CheckpointThresholdFor(prof) {
 		return // no compaction imminent — nothing to capture yet
 	}
 	// Elicit only over the prefix the compaction will fold into a lossy summary;
@@ -102,6 +103,22 @@ func (s *Session) pinnedNote() string {
 	return s.pinnedNoteText
 }
 
+// hasFoldableHistory reports whether s.history holds turns older than
+// PreserveRecentTurns that a compaction would fold. It simulates the
+// in-flight TurnToolResults turn that persistToolResults is guaranteed to
+// append before applyPendingForceCompact runs at the round seam.
+func (s *Session) hasFoldableHistory() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	preserve := 6
+	if s.contextMgr != nil {
+		preserve = s.contextMgr.PreserveRecentTurns
+	}
+	simulated := append(slices.Clip(s.history), schema.Turn{Kind: schema.TurnToolResults})
+	_, foldable := attentionTransparentRecentCutoff(simulated, preserve)
+	return foldable
+}
+
 // pinnedNoteSnapshot returns the current note together with its generation,
 // so a fold capturing the note for handoff can later claim exactly what it
 // captured (claimPinnedNoteLocked) instead of blindly clearing whatever is
@@ -123,6 +140,22 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 	}
 	s.pinnedNoteText = ""
 	s.pinnedNoteGen++
+}
+
+// restorePinnedNoteLocked puts back the note a fold captured for handoff when
+// that fold's transcript commit was withheld: the handoff steering turn the
+// claim was spending never landed, so the note must stay durably pending for
+// the next cycle, or the metadata save would persist the claim's cleared
+// note and a restart would lose it with no surviving record. The rewind is
+// guarded exactly like the claim: only the claim's own generation bump may
+// be undone — anything else that moved the generation (or a note set since)
+// belongs to whoever wrote it and stays theirs. Callers hold s.mu.
+func (s *Session) restorePinnedNoteLocked(note string, gen uint64) {
+	if s.pinnedNoteGen != gen+1 || s.pinnedNoteText != "" {
+		return
+	}
+	s.pinnedNoteText = note
+	s.pinnedNoteGen = gen
 }
 
 // selfCompactNudge is the low-headroom warning. The pressure is real either
@@ -190,7 +223,8 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	hist := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 
-	if s.contextMgr.Pressure(hist, sysPromptChars) < s.contextMgr.WarnThreshold {
+	_, pressure, prof := s.contextMgr.EstimateStatusFor(hist, sysPromptChars)
+	if pressure < s.contextMgr.WarnThresholdFor(prof) {
 		return false
 	}
 	s.mu.Lock()

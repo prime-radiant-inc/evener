@@ -26,6 +26,7 @@ func geminiBuild(t *testing.T, req llm.Request, res registry.Resolved) map[strin
 }
 
 func TestBuildBodyToolChoiceNoneAndUnnamed(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "none"}
@@ -48,6 +49,7 @@ func TestBuildBodyToolChoiceNoneAndUnnamed(t *testing.T) {
 // levels) must send no thinkingConfig on a budget-shaped row, and an effort a
 // level-shaped row's ladder cannot vouch for must send none either.
 func TestBuildBodyThinkingEffortWithoutBudgetOrVouchedLevel(t *testing.T) {
+	t.Parallel()
 	weird := "bizarre"
 	req := protoReq("")
 	req.ReasoningEffort = &weird
@@ -67,6 +69,7 @@ func TestBuildBodyThinkingEffortWithoutBudgetOrVouchedLevel(t *testing.T) {
 }
 
 func TestSanitizeGeminiSchemaAdversarialTypeShapes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		in   map[string]any
@@ -99,6 +102,7 @@ func TestSanitizeGeminiSchemaAdversarialTypeShapes(t *testing.T) {
 // results carrying a map / a non-string non-map payload / no call id, a tool
 // message with a non-result part (dropped), and an unknown role (ignored).
 func TestBuildBodyAssistantAndToolResultContents(t *testing.T) {
+	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hi"}}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: nil}}},
@@ -148,6 +152,7 @@ func TestBuildBodyAssistantAndToolResultContents(t *testing.T) {
 }
 
 func TestBuildBodyAssistantDocumentAndAudioRejected(t *testing.T) {
+	t.Parallel()
 	for name, part := range map[string]llm.ContentPart{
 		"document": {Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.4")}},
 		"audio":    {Kind: llm.ContentAudio, Audio: &llm.AudioData{Data: []byte{1}}},
@@ -170,6 +175,7 @@ func TestBuildBodyAssistantDocumentAndAudioRejected(t *testing.T) {
 // media type by extension, the image/png default for an unknown extension),
 // and the read-failure arm against a missing TempDir sibling.
 func TestBuildBodyImageParts(t *testing.T) {
+	t.Parallel()
 	png := testPNG(t)
 	dir := t.TempDir()
 	localPNG := filepath.Join(dir, "shot.png")
@@ -234,6 +240,7 @@ func TestBuildBodyImageParts(t *testing.T) {
 }
 
 func TestToolNameFromCallIDBlankAndUnknown(t *testing.T) {
+	t.Parallel()
 	msgs := []llm.Message{{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{

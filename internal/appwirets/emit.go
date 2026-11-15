@@ -75,6 +75,8 @@ var keyedWireTypes = []string{
 	"GoalState",
 	"EvenerTurnSlots",
 	"ThreadTurnsListResponse",
+	"ThreadHistoryReadResponse",
+	"ThreadHistoryTurnsListResponse",
 	"SnapshotIdentity",
 	"Turn",
 }

@@ -3,8 +3,8 @@
 // fell through to toolRenderers.ts's DEFAULT_DESCRIPTOR, whose summary is
 // `item.toolName`. The whole transcript row read `manage_worktree`.
 //
-// That is worse for this tool than for most. manage_worktree carries eight
-// operations (create/list/switch/adopt/exit/remove/prune/dispose) plus `force` and
+// That is worse for this tool than for most. manage_worktree carries nine
+// operations (create/list/switch/adopt/exit/remove/prune/unlock/dispose) plus `force` and
 // `force_dirty`, and the Go docs describe force_dirty as overriding "the
 // refusal to discard uncommitted changes" — so a read-only listing and a
 // removal that throws away someone's work rendered as the same single word,
@@ -13,7 +13,7 @@
 //
 // Ground truth, verified against agent/session_tools_worktree.go: every
 // operation returns a map with a `status` string, and the statuses are
-// created/listed/switched/unchanged/exited/removed/pruned/already_disposed.
+// created/listed/switched/unchanged/exited/removed/pruned/unlocked/already_disposed.
 // Because Exec returns a plain map (not a tool.StateResult), the registry's
 // toolValueToString json.MarshalIndents it, so item.output here is real
 // parseable JSON — same situation web_fetch is in, and unlike the

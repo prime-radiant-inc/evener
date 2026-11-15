@@ -1,6 +1,7 @@
 package contextmgr
 
 import (
+	"math"
 	"slices"
 
 	"primeradiant.com/evener/agent/provider"
@@ -48,6 +49,8 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 		// The unknown-window disclosure names the model it assumed for, so
 		// it belongs to the outgoing target: a different model — still
 		// unknown — discloses its own assumption on its first fold.
+		cm.assumedWindowDisclosed = false
+	} else if (cm.profile.CompactionThreshold() > 0) != (profile.CompactionThreshold() > 0) {
 		cm.assumedWindowDisclosed = false
 	}
 	cm.profile = profile
@@ -137,24 +140,86 @@ func contextWindowOf(prof *provider.Profile) int {
 	return prof.ContextWindowSize()
 }
 
-// effectiveWindowOf is the window the budget sites read: the profile's real
-// window when it has one, and AssumedContextWindow when the window is
-// unknown. A nil profile — a manager without a model, as test harnesses
-// build — has nothing to assume against and stays (0, false).
-func effectiveWindowOf(prof *provider.Profile) (window int, assumed bool) {
-	if cw := contextWindowOf(prof); cw > 0 {
-		return cw, false
-	}
+// EffectiveWindow is the window the budget sites read: the profile's real
+// window when it has one, and an assumed window when the model's window is
+// unknown (expanding to at least ceil(CompactionThreshold / DefaultCompactAt)
+// when the profile declares a compaction threshold). A nil profile — a manager
+// without a model, as test harnesses build — has nothing to assume against and
+// stays (0, false).
+func EffectiveWindow(prof *provider.Profile) (window int, assumed bool) {
 	if prof == nil {
 		return 0, false
 	}
+	if cw := contextWindowOf(prof); cw > 0 {
+		return cw, false
+	}
+	if ct := prof.CompactionThreshold(); ct > 0 {
+		return max(AssumedContextWindow, int(math.Ceil(float64(ct)/DefaultCompactAt))), true
+	}
 	return AssumedContextWindow, true
+}
+
+func effectiveWindowOf(prof *provider.Profile) (window int, assumed bool) {
+	return EffectiveWindow(prof)
+}
+
+type layerThresholds struct {
+	warn       float64
+	checkpoint float64
+	summarize  float64
+}
+
+func (cm *Manager) thresholdsFor(prof *provider.Profile) layerThresholds {
+	ct := prof.CompactionThreshold()
+	if ct <= 0 {
+		return layerThresholds{
+			warn:       cm.WarnThreshold,
+			checkpoint: cm.CheckpointThreshold,
+			summarize:  cm.SummarizeThreshold,
+		}
+	}
+	cw, _ := EffectiveWindow(prof)
+	if cw <= 0 || ct >= cw {
+		return layerThresholds{
+			warn:       cm.WarnThreshold,
+			checkpoint: cm.CheckpointThreshold,
+			summarize:  cm.SummarizeThreshold,
+		}
+	}
+	fraction := float64(ct) / float64(cw)
+	if cm.explicitCompactAt > 0 && cm.explicitCompactAt < fraction {
+		fraction = cm.explicitCompactAt
+	}
+	lead := min(nudgeLead, fraction*0.20)
+	warn := min(selfCompactNudgeAt, max(0, fraction-lead))
+	checkpoint := fraction
+	summarize := max(fraction, min(fraction*(summarizeBackstopAt/DefaultCompactAt), summarizeBackstopAt))
+	if cm.thresholdScale > 0 && cm.thresholdScale != 1.0 {
+		warn = max(0.20, warn*cm.thresholdScale)
+		checkpoint = max(0.20, checkpoint*cm.thresholdScale)
+		summarize = max(0.20, summarize*cm.thresholdScale)
+	}
+	return layerThresholds{
+		warn:       warn,
+		checkpoint: checkpoint,
+		summarize:  summarize,
+	}
+}
+
+// WarnThresholdFor returns the active self-compact nudge threshold fraction for prof.
+func (cm *Manager) WarnThresholdFor(prof *provider.Profile) float64 {
+	return cm.thresholdsFor(prof).warn
+}
+
+// CheckpointThresholdFor returns the active Layer 1 checkpoint threshold fraction for prof.
+func (cm *Manager) CheckpointThresholdFor(prof *provider.Profile) float64 {
+	return cm.thresholdsFor(prof).checkpoint
 }
 
 // AssumedContextWindow is the window the manager budgets against when the
 // model's real one is unknown — no user row declares it, the catalog has no
 // row, and no live listing supplied one (issue #4564). A zero window used to
-// mean "no limit": compaction and the usage warning went dead, and every
+// mean "no limit": compaction went dead, and every
 // round resent the full accumulated history. Unknown instead assumes a
 // window small enough that compaction errs toward folding too early. 128K is
 // the floor of current frontier text models' advertised windows, so the
@@ -225,18 +290,8 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 // EstimateStatus returns the estimated context usage and pressure from one
 // (profile, measurement) snapshot and one pass over history.
 func (cm *Manager) EstimateStatus(history []schema.Turn, sysPromptChars int) (schema.ContextMetrics, float64) {
-	prof, lastTokens, measuredLen := cm.profileSnapshot()
-	window, assumed := effectiveWindowOf(prof)
-	if window <= 0 {
-		return schema.ContextMetrics{}, 0
-	}
-	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
-	return schema.ContextMetrics{
-		Used:      used,
-		Window:    window,
-		Remaining: max(window-used, 0),
-		Assumed:   assumed,
-	}, pressureOf(used, window)
+	metrics, pressure, _ := cm.EstimateStatusFor(history, sysPromptChars)
+	return metrics, pressure
 }
 
 // pressureOf reports used as a fraction of window. A zero or negative window
@@ -264,6 +319,7 @@ func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) sche
 // Thresholds are clamped to a minimum of 0.20 so that aggressive scaling
 // doesn't collapse all layers into a narrow band.
 func ApplyThresholdScale(cm *Manager, scale float64) {
+	cm.thresholdScale = scale
 	if scale > 0 && scale != 1.0 {
 		clamp := func(v float64) float64 {
 			if v < 0.20 {
@@ -271,8 +327,6 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 			}
 			return v
 		}
-		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
-		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
 		cm.WarnThreshold = clamp(cm.WarnThreshold * scale)
 		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
 		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)

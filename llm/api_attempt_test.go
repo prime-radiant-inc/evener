@@ -17,6 +17,7 @@ import (
 )
 
 func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.T) {
+	t.Parallel()
 	const (
 		secret           = "alpha/beta \"value\"\n"
 		modelSecret      = "private-model-sentinel"
@@ -115,6 +116,7 @@ func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.
 }
 
 func TestBuildAPIAttemptRecordOmitsInvalidAndOpaqueEndpoints(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		endpoint string
@@ -156,6 +158,7 @@ func TestBuildAPIAttemptRecordOmitsInvalidAndOpaqueEndpoints(t *testing.T) {
 }
 
 func TestMarshalRecordRejectsCredentialInsertedAfterRecordBuild(t *testing.T) {
+	t.Parallel()
 	const secret = "post-build-credential-sentinel"
 	record := validBuiltAPIAttemptRecord(t, NewAPILogCredentialMaterial(nil, nil, secret))
 	record.Response.Model = secret
@@ -165,6 +168,7 @@ func TestMarshalRecordRejectsCredentialInsertedAfterRecordBuild(t *testing.T) {
 }
 
 func TestBuildAPIAttemptRecordOmitsCustomCredentialNamesCaseInsensitively(t *testing.T) {
+	t.Parallel()
 	const (
 		customHeader = "X-Custom-Credential-Name"
 		customQuery  = "private_query_name"
@@ -217,6 +221,7 @@ func TestBuildAPIAttemptRecordOmitsCustomCredentialNamesCaseInsensitively(t *tes
 }
 
 func TestBuildAPIAttemptRecordOmitsEncodedCustomCredentialNamesCaseInsensitively(t *testing.T) {
+	t.Parallel()
 	const literalValue = "CaseSensitiveCredentialValue"
 	material := NewAPILogCredentialMaterial(nil, []string{
 		"private/name",
@@ -270,6 +275,7 @@ func TestBuildAPIAttemptRecordOmitsEncodedCustomCredentialNamesCaseInsensitively
 }
 
 func TestMarshalRecordRejectsMixedCaseCustomCredentialNameInsertedAfterBuild(t *testing.T) {
+	t.Parallel()
 	material := NewAPILogCredentialMaterial([]string{"X-Custom-Credential-Name"}, []string{"private_query_name"})
 	for _, tt := range []struct {
 		name   string
@@ -311,6 +317,7 @@ func TestMarshalRecordRejectsMixedCaseCustomCredentialNameInsertedAfterBuild(t *
 }
 
 func TestMarshalRecordRejectsEncodedMixedCaseCustomCredentialNamesInsertedAfterBuild(t *testing.T) {
+	t.Parallel()
 	const literalValue = "CaseSensitiveCredentialValue"
 	material := NewAPILogCredentialMaterial(nil, []string{
 		"private/name",
@@ -366,6 +373,7 @@ func TestMarshalRecordRejectsEncodedMixedCaseCustomCredentialNamesInsertedAfterB
 }
 
 func TestMarshalRecordIgnoresCredentialOverlapWithClosedStructuralFields(t *testing.T) {
+	t.Parallel()
 	record := validBuiltAPIAttemptRecord(t, APILogCredentialMaterial{})
 	tests := []struct {
 		name   string
@@ -402,6 +410,7 @@ func TestMarshalRecordIgnoresCredentialOverlapWithClosedStructuralFields(t *test
 }
 
 func TestBuildAPIAttemptRecordPreservesNumericCredentialCoincidences(t *testing.T) {
+	t.Parallel()
 	one := 1
 	startedAt := time.Unix(25, 0).UTC()
 	record := buildAPIAttemptRecord("ag_numeric_coincidence", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
@@ -471,6 +480,7 @@ func TestBuildAPIAttemptRecordPreservesNumericCredentialCoincidences(t *testing.
 }
 
 func TestBuildAPIAttemptRecordOmitsCredentialCollisionsCreatedByCanonicalEncoding(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Unix(28, 0).UTC()
 	material := NewAPILogCredentialMaterial(nil, nil, "/w==", `\u003c`)
 	record := buildAPIAttemptRecord("ag_encoded_omission", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
@@ -513,6 +523,7 @@ func TestBuildAPIAttemptRecordOmitsCredentialCollisionsCreatedByCanonicalEncodin
 }
 
 func TestBuildAPIAttemptRecordRendersErrorsOnceAndContainsPanic(t *testing.T) {
+	t.Parallel()
 	err := &countingAPILogError{text: "provider failure"}
 	record := builtAPIAttemptRecordWithError(t, err)
 	if err.calls != 1 {
@@ -533,6 +544,7 @@ func TestBuildAPIAttemptRecordRendersErrorsOnceAndContainsPanic(t *testing.T) {
 }
 
 func TestBuildAPIAttemptRecordReplacesOversizedErrorText(t *testing.T) {
+	t.Parallel()
 	const (
 		maxErrorTextBytes = 64 << 10
 		omittedErrorText  = "API-log error details omitted because they exceed the size limit"
@@ -557,6 +569,7 @@ func TestBuildAPIAttemptRecordReplacesOversizedErrorText(t *testing.T) {
 }
 
 func TestBuildAPIAttemptRecordClassifiesExplicitAndUnknownResults(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name    string
 		outcome apilog.AttemptOutcomeClass
@@ -589,6 +602,7 @@ func TestBuildAPIAttemptRecordClassifiesExplicitAndUnknownResults(t *testing.T) 
 }
 
 func TestSettleResultUsesOwningContextInsteadOfErrorGraph(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_explicit_context")
 	ctx := WithAPIAttemptSink(context.Background(), sink)
@@ -684,6 +698,7 @@ func builtAPIAttemptRecordWithError(t *testing.T, err error) apilog.APIAttemptRe
 // the transport wrote, and its credential material both scrubs this attempt's
 // record and carries into later attempts of the group.
 func TestSetWireRequestMetadataOnActiveAttempt(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_wire_meta")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -720,6 +735,7 @@ func TestSetWireRequestMetadataOnActiveAttempt(t *testing.T) {
 // An attempt without both a group and a sink is inert: it ignores every
 // update a transport would make to an active one.
 func TestInertAPIAttemptIgnoresUpdates(t *testing.T) {
+	t.Parallel()
 	t.Run("credential material", func(t *testing.T) {
 		a := &APIAttempt{meta: APIAttemptMeta{CredentialMaterial: NewAPILogCredentialMaterial([]string{"X-Key"}, nil, "secret")}}
 		if got := a.CredentialMaterial(); !reflect.DeepEqual(got, APILogCredentialMaterial{}) {
@@ -754,6 +770,7 @@ func TestInertAPIAttemptIgnoresUpdates(t *testing.T) {
 // The attempt helpers are called on every provider path, coordinated or not,
 // so each tolerates a missing context, group or error.
 func TestAPIAttemptHelpersTolerateMissingCoordination(t *testing.T) {
+	t.Parallel()
 	var noContext context.Context
 	t.Run("context active without a context", func(t *testing.T) {
 		if APIAttemptContextActive(noContext) {
@@ -797,6 +814,7 @@ func TestAPIAttemptHelpersTolerateMissingCoordination(t *testing.T) {
 // TestBeginAPIAttemptAfterSettlingReturnsInert covers the branch where
 // group.settling is true, so BeginAPIAttempt returns an inert attempt.
 func TestBeginAPIAttemptAfterSettlingReturnsInert(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	group := NewAPIAttemptGroup("ag_settling")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
@@ -822,6 +840,7 @@ func TestBeginAPIAttemptAfterSettlingReturnsInert(t *testing.T) {
 // TestCanonicalAPIAttemptOutcomeDefaultSuccess covers the default branch where
 // the outcome is empty, there is no error, and the function returns AttemptSuccess.
 func TestCanonicalAPIAttemptOutcomeDefaultSuccess(t *testing.T) {
+	t.Parallel()
 	if got := canonicalAPIAttemptOutcome(APIAttemptResult{}); got != apilog.AttemptSuccess {
 		t.Fatalf("canonicalAPIAttemptOutcome(empty) = %q, want %q", got, apilog.AttemptSuccess)
 	}
@@ -830,6 +849,7 @@ func TestCanonicalAPIAttemptOutcomeDefaultSuccess(t *testing.T) {
 // TestRecordFailureWithNilErr covers the branch in recordFailure where
 // failure.Err is nil, so the observer is never invoked.
 func TestRecordFailureWithNilErr(t *testing.T) {
+	t.Parallel()
 	sink := &recordingAPIAttemptSink{}
 	observerCalled := false
 	sink.failureObserverFn = func(APILogFailure) { observerCalled = true }
@@ -846,6 +866,7 @@ func TestRecordFailureWithNilErr(t *testing.T) {
 // TestMergeCredentialMaterialCoversBothSides exercises APILogCredentialMaterial.Merge
 // with non-empty left and right to cover the merge loops.
 func TestMergeCredentialMaterialCoversBothSides(t *testing.T) {
+	t.Parallel()
 	left := NewAPILogCredentialMaterial([]string{"X-Left"}, []string{"left_q"}, "left-secret")
 	right := NewAPILogCredentialMaterial([]string{"X-Right"}, []string{"right_q"}, "right-secret")
 	merged := left.Merge(right)
@@ -871,6 +892,7 @@ func TestMergeCredentialMaterialCoversBothSides(t *testing.T) {
 // A header whose name itself carries a credential value is dropped from the
 // credential-free clone.
 func TestCloneCredentialFreeHTTPHeaderDropsACredentialName(t *testing.T) {
+	t.Parallel()
 	material := NewAPILogCredentialMaterial(nil, nil, "secret")
 	header := http.Header{
 		"X-Safe":          []string{"ok"},

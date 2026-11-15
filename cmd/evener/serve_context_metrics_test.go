@@ -27,10 +27,10 @@ func (s assumedWindowSampling) ContextStatus() (schema.ContextMetrics, float64) 
 // assumption as fact.
 func TestLiveEnvelopeSourceCarriesAssumedWindow(t *testing.T) {
 	src := liveThreadEnvelopeSource{session: func() agent.EnvelopeSampling {
-		return assumedWindowSampling{metrics: schema.ContextMetrics{Used: 75, Window: 100, Remaining: 25, Assumed: true}}
+		return assumedWindowSampling{metrics: schema.ContextMetrics{Used: 75, Window: 100, Remaining: 25, Assumed: true, WindowSource: "assumed"}}
 	}}
 	got, pressure := src.ContextStatus()
-	if !got.Assumed || got.Window != 100 || got.Used != 75 {
+	if !got.Assumed || got.WindowSource != "assumed" || got.Window != 100 || got.Used != 75 {
 		t.Fatalf("ContextStatus() metrics = %+v, want the figures with the assumed flag carried", got)
 	}
 	if pressure != 0.75 {

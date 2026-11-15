@@ -40,6 +40,7 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { isHistoryPageMethod, isHistoryReadMethod } from "../lib/historyMethods.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PROFILE_PREFIX = "backgroundtranscriptguard-chrome-";
@@ -217,7 +218,7 @@ const EVIDENCE_EXPR = `(async () => {
 })()`;
 
 // countTargetRequestsInWindow decodes a raw trace byte window and counts the
-// TARGET session's request frames: thread/read and thread/turns/list. It is used
+// TARGET session's request frames: both history read and page aliases. It is used
 // to forbid fetches during a local-restoration interval.
 function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH) {
   // before/after are BYTE offsets (from statSync/traceBytes), so the window is
@@ -273,7 +274,7 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
     if (!frame.method) continue;
     const params = frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
-    if (frame.method === "thread/read") {
+    if (isHistoryReadMethod(frame.method)) {
       reads += 1;
       // A foreground subscription read is the load the zero-read promise
       // forbids; the entry route's honest recovery read is non-subscribing and
@@ -282,7 +283,7 @@ function countTargetRequestsInWindow(ref, before, after, tracePath = TRACE_PATH)
       if (params.subscribe === true) subscribeReads += 1;
       else if (params.heldSnapshot !== undefined) recoveryReads += 1;
       else plainReads += 1;
-    } else if (frame.method === "thread/turns/list") pages += 1;
+    } else if (isHistoryPageMethod(frame.method)) pages += 1;
   }
   return { reads, pages, subscribeReads, recoveryReads, plainReads };
 }
@@ -328,7 +329,7 @@ function targetPageRequestCursorsInWindow(ref, before, after, tracePath = TRACE_
     } catch (error) {
       throw new Error(`trace ${tracePath} has a malformed frame in the window: ${error.message}`);
     }
-    if (frame.method !== "thread/turns/list") continue;
+    if (!isHistoryPageMethod(frame.method)) continue;
     const params = frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
     cursors.push(params.cursor ?? "");
@@ -1876,15 +1877,9 @@ async function runEntryProductionJourney(driver, harnessUrl) {
 
   // ---- a real WebSocket gap, a turn completing during it, reconnect ----
   const reconnectTraceBefore = traceBytes();
-  await driver.send("Network.emulateNetworkConditions", {
-    offline: true,
-    latency: 0,
-    downloadThroughput: 0,
-    uploadThroughput: 0,
-  });
-  // CDP offline does not close the live socket, so close the app's real hub
-  // /rpc WebSocket(s) at the transport level; the offline emulation then keeps
-  // the app from reconnecting until the network is restored below.
+  // Let Chrome consume the peer's close frame before offline emulation blocks
+  // incoming traffic. Otherwise a native socket can stay CLOSING and the app
+  // never observes its loss. Offline then holds the gap until the turn completes.
   const closedSockets = await evaluate(
     driver.send,
     `(() => {
@@ -1896,6 +1891,12 @@ async function runEntryProductionJourney(driver, harnessUrl) {
      })()`,
   ).catch(() => -1);
   const disconnected = await waitForDisconnected(driver);
+  await driver.send("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: 0,
+    uploadThroughput: 0,
+  });
   const offlineSample = await observedConnection(driver);
   driver.milestone("ws-broken", {
     disconnected,
@@ -2469,35 +2470,51 @@ async function runTwoTabFencing(driver, endpoint, harnessUrl) {
       throw new Error("two-tab delete: the target remains readable on the source after deletion");
     }
     // The sibling's fresh acquisition must not resurrect the deleted session:
-    // the deletion fence refuses the hydration and no route or durable row
-    // appears. Poll the real condition (the ref acquired no route) rather than
-    // sleeping a fixed interval.
+    // the deletion fence refuses the hydration, so a ref with no route before
+    // the open still has none after it and no durable row appears. Record that
+    // pre-open route: a sibling that had the ref mounted already holds one,
+    // and retention is not evidence that this acquisition opened it (#4794).
+    // Only a genuinely fresh acquisition is polled toward the refusal; a
+    // retained route is read once and recorded as such.
+    const routeBefore = await evaluate(
+      tab.send,
+      `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+    );
     await call(tab.send, "open", ref);
-    const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
     let routePresent = await evaluate(
       tab.send,
       `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
     );
-    while (routePresent !== false && Date.now() < refusalDeadline) {
-      await delay(100);
-      routePresent = await evaluate(
-        tab.send,
-        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
-      );
+    if (routeBefore.present === false) {
+      const refusalDeadline = Date.now() + driver.reactions.deadline(15000);
+      while (routePresent !== false && Date.now() < refusalDeadline) {
+        await delay(100);
+        routePresent = await evaluate(
+          tab.send,
+          `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).present`,
+        );
+      }
     }
     const resurrected = await durable(tab.send, ref);
     const resurrectedRows = resurrected === null ? 0 : resurrected.rows.length;
-    driver.milestone("two-tab-delete-refusal", { ref, routePresent, rowsAfterOpen: resurrectedRows });
-    if (routePresent === true) {
+    const route = await evaluate(
+      tab.send,
+      `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
+    );
+    driver.milestone("two-tab-delete-refusal", {
+      ref,
+      routeBeforePresent: routeBefore.present,
+      routeBeforeHistoryKey: routeBefore.historyKey,
+      routePresent,
+      routeHistoryKey: route.historyKey,
+      rowsAfterOpen: resurrectedRows,
+    });
+    if (routeBefore.present === false && routePresent === true) {
       // Name the route state that survived the refusal: which open status it
       // reported, whether a store model exists, and its history key distinguish
       // a resurrected repository from a route object that never had one.
-      const route = await evaluate(
-        tab.send,
-        `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)})`,
-      );
       throw new Error(
-        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ route, rowsAfterOpen: resurrectedRows })}`,
+        `two-tab delete: the sibling's fresh acquisition opened a route for a deleted ref: ${JSON.stringify({ routeBefore, route, rowsAfterOpen: resurrectedRows })}`,
       );
     }
     if (resurrectedRows !== 0) {
@@ -2749,7 +2766,7 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
     if (held.direction === direction) continue;
     const params = held.frame.params ?? {};
     if (params.ref !== ref && params.threadId !== threadID) continue;
-    if (held.frame.method === "thread/read") {
+    if (isHistoryReadMethod(held.frame.method)) {
       readResponses += 1;
       if (params.subscribe === true || params.replaceSubscription === true) subscribedRead = true;
       const cursor = frame.result.olderCursor ?? "";
@@ -2760,7 +2777,7 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
       readResponseWindows.push(normalizeWindowFromWire(frame.result.thread?.turns));
       readResponseSnapshotLengths.push(frame.result.snapshot?.length ?? null);
       readResponseGenerations.push(frame.result.requestGeneration ?? null);
-    } else if (held.frame.method === "thread/turns/list") {
+    } else if (isHistoryPageMethod(held.frame.method)) {
       pageCursors.push(frame.result.nextCursor ?? "");
     }
   }
@@ -2781,7 +2798,7 @@ function targetPagingEvidence(ref, tracePath = TRACE_PATH) {
 }
 
 // scrollToTopAndWaitPage scrolls the real port to the top and waits until a NEW
-// target thread/turns/list page has been issued, returning updated evidence.
+// target history page has been issued, returning updated evidence.
 async function scrollToTopAndWaitPage(driver, ref, beforePages, timeoutMs = 60000) {
   await scrollTranscriptToTop(driver, ref);
   const deadline = Date.now() + timeoutMs;

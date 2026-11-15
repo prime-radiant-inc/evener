@@ -44,8 +44,7 @@ func warningEvents(capturedEvents []events.SessionEvent) []events.WarningData {
 // standingRequestTokens measures one input's standing request -- the system
 // prompt, the tool schemas, and that input -- by running it through a throwaway
 // session whose context window is wide enough that no warning or compaction
-// interferes, then estimating the captured request's input tokens the way
-// maybeWarnContextUsage does. Warning tests size their window or their history
+// interferes, then estimating the captured request's input tokens. Warning tests size their window or their history
 // from this measurement, so a prompt rewrite cannot move the request across a
 // threshold a hardcoded constant pinned. cfg is the measured session's
 // configuration, since settings such as StateDir add prompt sections. The probe
@@ -62,7 +61,7 @@ func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, 
 	client := llm.NewClient()
 	client.Register(adapter)
 	registerTestSessionNamer(client)
-	sess, err := NewSession(client, WithContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), cfg)
+	sess, err := NewSession(client, withContextWindow(profile, 8_000_000), execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {
 		t.Fatalf("probe NewSession: %v", err)
 	}
@@ -251,11 +250,11 @@ func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {
 func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "warning-primary", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("warning-primary", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("warning-primary", 403, "primary rejected", nil, nil)
 		},
-	}})
+	}))
 	fallbackAdapter := &fakeAdapter{name: "warning-fallback", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			if req.MaxTokens == nil || *req.MaxTokens != 976 {
@@ -367,14 +366,14 @@ func TestSessionLocalAdmissionWithoutContextManagerEmitsNoRecoveryWarning(t *tes
 func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "local-post-dispatch", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("local-post-dispatch", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, &llm.ContextBudgetError{Provider: "local-post-dispatch", Model: "local-model", Limit: "context_window", InputTokens: 101, Maximum: 100}
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, &llm.ContextBudgetError{Provider: "local-post-dispatch", Model: "local-model", Limit: "context_window", InputTokens: 101, Maximum: 100}
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("local-post-dispatch", "local-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -399,14 +398,14 @@ func TestSessionPostDispatchLocalBudgetWithoutContextManagerDoesNotRetry(t *test
 func TestSessionProviderContextWithoutContextManagerDoesNotRetry(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "provider-no-manager", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("provider-no-manager", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-no-manager", 413, "context length exceeded", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-no-manager", 413, "context length exceeded", nil, nil)
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("provider-no-manager", "provider-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -436,14 +435,14 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 	client := llm.NewClient()
 	// The provider's body echoes the user's request, as real ones can.
 	const body = "context length exceeded: messages[1].content began \"user-private-prompt\""
-	adapter := &fakeErrAdapter{name: "provider-warning", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("provider-warning", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, body, nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("provider-warning", 413, body, nil, nil)
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("provider-warning", "provider-model", 0)
 	resolved := profile.Resolved()
@@ -483,7 +482,7 @@ func TestSessionProviderContextRecoveryEmitsOneWarningBeforeCompaction(t *testin
 func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeErrAdapter{name: "output-budget", steps: []func(llm.Request) (llm.Response, error){
+	adapter := newFakeErrAdapter("output-budget", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, &llm.ContextBudgetError{
 				Provider:     "output-budget",
@@ -493,7 +492,7 @@ func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 				Maximum:      1_000,
 			}
 		},
-	}}
+	})
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("output-budget", "output-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -517,11 +516,11 @@ func TestSessionOutputOnlyBudgetErrorDoesNotCompact(t *testing.T) {
 func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "local-primary", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("local-primary", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("local-primary", 403, "rejected", nil, nil)
 		},
-	}})
+	}))
 	primary := testOpenAICompatProfile("local-primary", "primary-model", 0)
 	primaryResolved := primary.Resolved()
 	primaryResolved.Caps.ContextWindow = new(524_288)
@@ -558,22 +557,22 @@ func TestSessionFallbackBudgetAfterLocalRecoveryEmitsOneWarning(t *testing.T) {
 func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "identity-primary", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("identity-primary", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-primary", 403, "rejected", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-primary", 403, "rejected", nil, nil)
 		},
-	}})
-	fallbackAdapter := &fakeErrAdapter{name: "identity-fallback", steps: []func(llm.Request) (llm.Response, error){
+	}))
+	fallbackAdapter := newFakeErrAdapter("identity-fallback", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-fallback", 413, "context length exceeded", nil, nil)
 		},
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("identity-fallback", 413, "context length exceeded", nil, nil)
 		},
-	}}
+	})
 	client.Register(fallbackAdapter)
 	primary := testOpenAICompatProfile("identity-primary", "primary-model", 0)
 	fallback := testOpenAICompatProfile("identity-fallback", "fallback-model", 0)
@@ -605,11 +604,11 @@ func TestSessionFallbackProviderContextWarningUsesFallbackIdentity(t *testing.T)
 func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeErrAdapter{name: "unrelated-warning", steps: []func(llm.Request) (llm.Response, error){
+	client.Register(newFakeErrAdapter("unrelated-warning", []func(llm.Request) (llm.Response, error){
 		func(llm.Request) (llm.Response, error) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("unrelated-warning", 401, "unauthorized", nil, nil)
 		},
-	}})
+	}))
 	profile := testOpenAICompatProfile("unrelated-warning", "unrelated-model", 0)
 	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
@@ -627,77 +626,5 @@ func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 			strings.Contains(warning.Message, "Provider context disagreement") {
 			t.Fatalf("unrelated error emitted token-budget recovery warning: %+v", warning)
 		}
-	}
-}
-
-// A fallback that answers owns the round's context warning: the window must
-// describe the model that handled the request, not the primary the round
-// started on. The primary's window here is wide enough that nothing warns; the
-// fallback's is small enough that the same round must warn, so the reported
-// window proves which model the warning was computed against.
-func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	client := llm.NewClient()
-	permErr := llm.ErrorFromHTTPStatus("ctxwarn-primary", 403, "primary rejected", nil, nil)
-	client.Register(&agenttest.ModelTrackingAdapter{
-		Provider: "ctxwarn-primary",
-		Respond: func(req llm.Request) (llm.Response, error) {
-			return llm.Response{}, permErr
-		},
-	})
-	client.Register(&agenttest.ModelTrackingAdapter{
-		Provider: "ctxwarn-fallback",
-		Respond: func(req llm.Request) (llm.Response, error) {
-			return agenttest.CommunicateResponse(true, "fallback"), nil
-		},
-	})
-
-	policy := llm.RetryPolicy{MaxRetries: 0}
-	primary := WithContextWindow(testOpenAICompatProfile("ctxwarn-primary", "primary-model", 0), 2_000_000)
-	fallbackWindow := 120_000
-	fallback := WithContextWindow(testOpenAICompatProfile("ctxwarn-fallback", "fallback-model", 0), fallbackWindow)
-	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:       dir,
-		LLMRetryPolicy: &policy,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	eventsDone := captureSessionEvents(sess)
-	// The synthetic fallback row is wired after construction, as the other
-	// fallback tests do: NewSession's own validation resolves through the real
-	// registry, which has no row for it.
-	sess.cfg.ModelFallbacks = []string{"ctxwarn-fallback/fallback-model"}
-	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
-	// Size the history from this test's own standing request so the round lands
-	// between the fallback's 80% threshold and its window: a hardcoded history
-	// length drops under the threshold when the prompt shrinks. The midpoint of
-	// the band leaves margin on both sides.
-	standing := standingRequestTokens(t, dir, primary, SessionConfig{}, "task")
-	threshold := fallbackWindow * 8 / 10
-	target := (threshold + fallbackWindow) / 2
-	historyChars := (target - standing) * 4
-	if historyChars <= 0 {
-		t.Fatalf("standing request %d tokens leaves no room under the %d-token target for fallback window %d", standing, target, fallbackWindow)
-	}
-	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", historyChars)))}
-	if _, err := sess.ProcessInput(context.Background(), "task", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	sess.Close()
-	warnings := warningEvents(<-eventsDone)
-	var ctxWarn *events.WarningData
-	for i := range warnings {
-		if strings.Contains(warnings[i].Message, "Context usage at") {
-			ctxWarn = &warnings[i]
-			break
-		}
-	}
-	if ctxWarn == nil {
-		t.Fatalf("no context-usage warning: the fallback's window is near, not the primary's: %+v", warnings)
-	}
-	if ctxWarn.ContextWindowSize != fallbackWindow {
-		t.Fatalf("warning window = %d, want the fallback's %d: %+v", ctxWarn.ContextWindowSize, fallbackWindow, *ctxWarn)
 	}
 }

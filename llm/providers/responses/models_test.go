@@ -13,6 +13,7 @@ import (
 // Codex advertises ultra alongside API efforts, but it is a client-side
 // delegation preset. Evener must offer only the actual reasoning efforts.
 func TestListModelsCodexOmitsDelegationPreset(t *testing.T) {
+	t.Parallel()
 	for _, defaultEffort := range []string{"medium", "ultra"} {
 		t.Run(defaultEffort, func(t *testing.T) {
 			srv, _ := server(t, 200, `{"models":[{"slug":"gpt-6-astra","context_window":272000,"max_context_window":872000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"default_reasoning_level":"`+defaultEffort+`"}]}`)
@@ -39,6 +40,7 @@ func TestListModelsCodexOmitsDelegationPreset(t *testing.T) {
 }
 
 func TestListModelsPlatformAndCodexShapes(t *testing.T) {
+	t.Parallel()
 	srv, got := server(t, 200, `{"data":[{"id":"gpt-5.5","context_window":1050000,"max_input_tokens":922000,"max_output_tokens":128000},{"id":"text-embedding-3-large"}]}`)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err != nil || got.path != "/v1/models" {
@@ -79,6 +81,7 @@ func TestListModelsPlatformAndCodexShapes(t *testing.T) {
 // empty: the picker falls back to low/medium/high and the request builder drops
 // the effort name.
 func TestListModelsReadsGatewayReasoningLadder(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `{"data":[{"id":"deepseek-4.1-flash","context_window":1048576,"max_output_tokens":262144,"capabilities":{"reasoning":true,"tools":true,"vision":true},"client_compat":{"pi":{"thinkingFormat":"openai","thinkingLevelMap":{"high":"high","low":"low","max":"max","medium":"medium","minimal":null,"off":null,"xhigh":"xhigh"}}}}]}`)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err != nil {
@@ -103,6 +106,7 @@ func TestListModelsReadsGatewayReasoningLadder(t *testing.T) {
 // stating reasoning = false leaves its row non-reasoning even when a stale map
 // rides along.
 func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
+	t.Parallel()
 	srv, _ := server(t, 200, `{"data":[{"id":"no-reasoning","capabilities":{"reasoning":false},"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}]}`)
 	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
 	if err != nil {
@@ -119,6 +123,7 @@ func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
 // this a Responses-recorded gateway that publishes vision under capabilities
 // resolves image-blind (#4508).
 func TestListModelsPlatformVisionCapability(t *testing.T) {
+	t.Parallel()
 	if c := capsOf(t, `"capabilities":{"vision":true}`); !c.AcceptsModality("image") {
 		t.Fatalf("capabilities.vision must advertise image input: %+v", c.InputModalities)
 	}
@@ -152,6 +157,7 @@ func capsOf(t *testing.T, facts string) registry.Caps {
 // supported_parameters list to infer tools from, so without this read a
 // gateway's tools verdict never reaches the resolved row.
 func TestListModelsReadsGatewayToolsCapability(t *testing.T) {
+	t.Parallel()
 	if c := capsOf(t, `"capabilities":{"tools":true}`); c.Tools == nil || !*c.Tools {
 		t.Fatalf("capabilities.tools must advertise tool support: %+v", c.Tools)
 	}

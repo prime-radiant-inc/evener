@@ -118,7 +118,7 @@ race window RoboRev keeps finding. The durable write should happen **first**:
   `stopEpoch` (riding the `sequences` store's row for that ref, so no schema
   change), the enqueueing tab reads the epoch at click time, and the enqueue's
   own transaction compares the two — a Stop that landed in between makes the
-  record commit born-`canceled`: announced for the canceled queue strip, never
+  record commit born-`canceled`: announced in the pending stack, never
   dispatched, released only by explicit Retry, exactly like any other canceled
   row. The Stop's own interrupt record passes no barrier (it *is* the click the
   epoch records), and explicit Retry / recovery resends are equally exempt — they
@@ -250,7 +250,7 @@ barrier compares against — so the scan and the fence commit as one durable fac
   instance while retaining the thread id, and every durable row carries its
   enqueue-time instance so the cleanup (and Retry's press-time refusal, §6's
   release fence) compares the identity the daemon would actually fence with.
-- **Note rows are the exception with a third exit.** QueueStrip deliberately
+- **Note rows are the exception with a third exit.** The pending stack deliberately
   leaves `notes/human/set` rows to the note editor, whose only retry branch is
   gated on `blockedUnknown` - a canceled note row would otherwise sit pinned
   (with its note text) until the thread goes away. The user's next save is the

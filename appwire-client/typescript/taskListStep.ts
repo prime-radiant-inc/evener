@@ -189,7 +189,8 @@ function appendRows(tasks: Record<string, unknown>[], legacy: boolean): TouchedR
   return tasks.map((task, i) => ({
     key: `append_${i}`,
     touch: "added",
-    label: str(task, "description") ?? (legacy ? str(task, "prompt") : undefined) ?? "(untitled task)",
+    label:
+      str(task, "description") ?? str(task, "title") ?? (legacy ? str(task, "prompt") : undefined) ?? "(untitled task)",
   }));
 }
 

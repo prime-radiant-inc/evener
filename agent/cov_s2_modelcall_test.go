@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/llm"
 )
 
@@ -33,53 +31,4 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 		Message: llm.Assistant("done"),
 	}
 	sess.recordResponseUsage(normalResp, llm.Request{FullHistoryInputTokensEstimate: 9000}, sess.currentProfile())
-}
-
-// TestS2Cov_MaybeWarnContextUsage covers both the under-threshold no-op and the
-// over-threshold warning emission.
-func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
-	t.Parallel()
-	sess := newSession(t)
-	col := newChanCollector()
-	go col.drain(sess)
-
-	// A tiny context window makes even a small request cross the 80% threshold.
-	small := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 4)
-	bigReq := llm.Request{Messages: []llm.Message{llm.User(strings.Repeat("token ", 200))}}
-	if !sess.maybeWarnContextUsage(small, bigReq) {
-		t.Fatal("expected a context-usage warning over threshold")
-	}
-
-	// A huge window with a tiny request stays under the threshold.
-	big := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 1_000_000)
-	if sess.maybeWarnContextUsage(big, llm.Request{Messages: []llm.Message{llm.User("hi")}}) {
-		t.Fatal("did not expect a warning under threshold")
-	}
-	// Guard: nil profile and zero window return false.
-	if sess.maybeWarnContextUsage(nil, bigReq) {
-		t.Fatal("nil profile should not warn")
-	}
-
-	sess.Close()
-	<-col.done // wait for the drain goroutine to consume every event before asserting
-	if !col.contains("Context usage at") {
-		t.Fatalf("no context-usage warning emitted; got %v", col.messages())
-	}
-	// The informational notice must not carry the diagnostic classifier's
-	// generic error title/hint (final_fix_warning_test.go's output-reduction
-	// test covers the same contract for the clamp warning): the Web UI renders
-	// the title on the warning chip, and "Evener error" there reads as a
-	// failure for what is routine context accounting.
-	for _, w := range col.warnings() {
-		if strings.Contains(w.Message, "Context usage at") {
-			if w.Title == "Evener error" || strings.Contains(strings.ToLower(w.Hint), "session log") {
-				t.Fatalf("context-usage warning classified as an error: title=%q hint=%q", w.Title, w.Hint)
-			}
-			// Same quiet-notice contract as the output-reduction warning: the
-			// code is what clients gate on, not the prose.
-			if w.Code != events.WarningCodeContextBudget {
-				t.Fatalf("context-usage warning code = %q, want %q", w.Code, events.WarningCodeContextBudget)
-			}
-		}
-	}
 }

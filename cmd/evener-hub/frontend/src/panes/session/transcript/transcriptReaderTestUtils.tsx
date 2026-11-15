@@ -80,6 +80,7 @@ export function mountReaderScene(
       listRef,
       renderedRowCount: model.turns.length,
       anchorEntries,
+      followingBottom: flow.isFollowingBottom,
       initialViewCapture: initial,
     });
     return (
@@ -132,6 +133,7 @@ export function mountReaderScene(
             readView={view}
             initialViewCapture={initial}
             listRef={listRef}
+            followingBottom={flow.isFollowingBottom}
             onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
           />
         )}

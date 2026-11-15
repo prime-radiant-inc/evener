@@ -22,7 +22,6 @@ func FuzzSessionEngineCoverage(f *testing.F) {
 			{"accessors", TestS2Cov_SessionAccessors},
 			{"closed_mutators", TestS2Cov_MutatorsAfterClose},
 			{"model_usage", TestS2Cov_RecordResponseUsage},
-			{"context_warning", TestS2Cov_MaybeWarnContextUsage},
 			{"prepare_request", TestS2Cov_PrepareModelRequest_RepairsOrphan},
 			{"continuation_recovery", TestFallbackChain_ContinuationRejectionRetriesFullHistoryBeforeModelFallback},
 			{"continuation_fallback", TestFallbackChain_ContinuationRecoveryFailureThenModelFallback},

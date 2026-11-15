@@ -97,9 +97,9 @@ func FuzzSessionLogFaultLifecycle(f *testing.F) {
 			if !errors.Is(err, fault.err) {
 				t.Fatalf("%s append error = %v, want wrapped %v", fault.name, err, fault.err)
 			}
-			// Append's documented ordering makes an accepted in-memory action
-			// immediately observable even when best-effort persistence fails.
-			requireSessionlogEntriesEqual(t, log.Entries(), entries[:1])
+			// A failed persistence attempt must not expose an entry that cannot
+			// survive reload or safely enter a compaction checkpoint.
+			requireSessionlogPublicView(t, log, []SessionLogEntry{})
 			if got := sessionlogFaultReadOptional(fault.fs, path); len(got) != 0 {
 				t.Fatalf("%s append persisted unexpected bytes %q", fault.name, got)
 			}

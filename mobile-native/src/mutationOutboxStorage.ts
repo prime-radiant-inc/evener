@@ -83,6 +83,14 @@ export const TABLES = {
 	recovery: "mutation_recovery",
 } as const;
 
+// The direct fallback's cross-quit memory (#4674): a direct drain has no
+// outbox row to replay its receipt from, so the ids it consumed are retained
+// here until a settle deletes the rows they name, and a restart loads them to
+// settle rows no authoritative read can name again. Unlike the record tables,
+// a retained id names no record of its own - it is only the durable fact that
+// the daemon consumed whatever carries the id.
+const RETAINED_CONSUMED_TABLE = "mutation_retained_consumed";
+
 const COLUMNS = [
 	"client_mutation_id",
 	"version",
@@ -104,6 +112,7 @@ const COLUMNS = [
 	"stop_epoch_at_enqueue",
 	"recovery_kind",
 	"recovery_reason",
+	"queue_entry_ids",
 ] as const;
 
 const insertSQL = (table: string): string =>
@@ -136,6 +145,7 @@ export interface Row {
 	unresolved_attempts: number;
 	recovery_kind: string | null;
 	recovery_reason: string | null;
+	queue_entry_ids: string | null;
 }
 
 export function fromRow<A extends MutationAttachmentRef, T extends MutationRecord<A>>(row: Row): T {
@@ -165,6 +175,7 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 					stopEpochAtEnqueue: row.stop_epoch_at_enqueue,
 				}),
 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
+		...(row.queue_entry_ids ? { queueEntryIds: JSON.parse(row.queue_entry_ids) as string[] } : {}),
 	} as unknown as T;
 }
 
@@ -196,68 +207,84 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0,
 			accepted_at INTEGER NOT NULL DEFAULT 0,
 			recovery_kind TEXT, recovery_reason TEXT)`;
-		for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
-		this.db.execSync(
-			`CREATE UNIQUE INDEX IF NOT EXISTS mutation_outbox_target_sequence
-			 ON ${TABLES.outbox} (target_ref, intent_sequence)`,
-		);
-		this.db.execSync(
-			`CREATE UNIQUE INDEX IF NOT EXISTS mutation_optimistic_target_sequence
-			 ON ${TABLES.optimistic} (target_ref, intent_sequence)`,
-		);
-		this.db.execSync(
-			`CREATE INDEX IF NOT EXISTS mutation_recovery_target_sequence
-			 ON ${TABLES.recovery} (target_ref, intent_sequence)`,
-		);
-		this.db.execSync(
-			`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
-			 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
-		);
-		// Each additive column below is the whole migration for databases from
-		// before it existed: ALTER TABLE has no IF NOT EXISTS, so
-		// addColumnIfMissing checks the table's columns first, and rows written
-		// earlier read as the column's default.
-		//
-		// The ref's durable stop epoch (§4's stop barrier) rides the sequence
-		// row - the same seat the web adapter's sequences store gives it;
-		// existing rows read as "never stopped".
-		this.addColumnIfMissing("mutation_sequence", "stop_epoch", "INTEGER NOT NULL DEFAULT 0");
-		this.addColumnIfMissing("mutation_sequence", "recovery_resends", "TEXT NOT NULL DEFAULT '[]'");
-		for (const table of Object.values(TABLES)) {
-			// The enqueue-time instance (the web's fused identity fix,
-			// 4059723ab4): cleanup and Retry compare the identity the daemon
-			// actually fences with (instanceId ?? threadId). Rows written before
-			// it read as instanceId-undefined, falling back to the threadId.
-			this.addColumnIfMissing(table, "instance_id", "TEXT");
-			this.addColumnIfMissing(table, "composer_mentions", "TEXT");
-			this.addColumnIfMissing(table, "draft_capture_token", "TEXT");
-			// #4342: the ref's stop epoch at enqueue time - the barrier's own
-			// read, stored, so a refusal can fence its rollback: a Stop whose
-			// cancel scan skipped the attempted row must not be outrun by the
-			// refusal's redelivery. Part of the shared insert shape, so every
-			// record table needs it. Rows written before it read as
-			// captured-at-zero, the conservative direction.
-			this.addColumnIfMissing(table, "stop_epoch_at_enqueue", "INTEGER NOT NULL DEFAULT 0");
-			// When a record was accepted. The prune asks "accepted before this
-			// read began", which enqueue time cannot answer: a replacement
-			// client's read can be out when an earlier request's receipt lands.
-			// A row written before the column existed is backfilled from its
-			// enqueue time (it was accepted before the upgrade, and leaving it
-			// at 0 would exclude exactly the records the prune exists to heal).
-			// The ALTER and its backfill commit together: a process that died
-			// between them would leave the column present and the rows
-			// unstamped, and no later start would retry the backfill.
-			this.addColumnIfMissing(
-				table,
-				"accepted_at",
-				"INTEGER NOT NULL DEFAULT 0",
-				`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
+		// One transaction for the whole bootstrap: a fresh database used to
+		// commit each CREATE and migration separately, so every app start (and
+		// every test fixture) paid one durable write per statement. On a host
+		// with a slow or contended disk that burst is what a 5s test timeout
+		// sees first (#5917); one savepoint makes the schema cost one commit.
+		withSavepoint(this.db, "mutation_outbox_schema", () => {
+			for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
+			this.db.execSync(
+				`CREATE UNIQUE INDEX IF NOT EXISTS mutation_outbox_target_sequence
+				 ON ${TABLES.outbox} (target_ref, intent_sequence)`,
 			);
-		}
-		// #4342: unresolved attempt counts live beside the attempted flag on
-		// the outbox table; rows written before it read as zero unresolved
-		// attempts.
-		this.addColumnIfMissing(TABLES.outbox, "unresolved_attempts", "INTEGER NOT NULL DEFAULT 0");
+			this.db.execSync(
+				`CREATE UNIQUE INDEX IF NOT EXISTS mutation_optimistic_target_sequence
+				 ON ${TABLES.optimistic} (target_ref, intent_sequence)`,
+			);
+			this.db.execSync(
+				`CREATE INDEX IF NOT EXISTS mutation_recovery_target_sequence
+				 ON ${TABLES.recovery} (target_ref, intent_sequence)`,
+			);
+			this.db.execSync(
+				`CREATE TABLE IF NOT EXISTS mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL,
+				 stop_epoch INTEGER NOT NULL DEFAULT 0, recovery_resends TEXT NOT NULL DEFAULT '[]')`,
+			);
+			this.db.execSync(
+				`CREATE TABLE IF NOT EXISTS ${RETAINED_CONSUMED_TABLE} (
+				 client_mutation_id TEXT PRIMARY KEY)`,
+			);
+			// Each additive column below is the whole migration for databases from
+			// before it existed: ALTER TABLE has no IF NOT EXISTS, so
+			// addColumnIfMissing checks the table's columns first, and rows written
+			// earlier read as the column's default.
+			//
+			// The ref's durable stop epoch (§4's stop barrier) rides the sequence
+			// row - the same seat the web adapter's sequences store gives it;
+			// existing rows read as "never stopped".
+			this.addColumnIfMissing("mutation_sequence", "stop_epoch", "INTEGER NOT NULL DEFAULT 0");
+			this.addColumnIfMissing("mutation_sequence", "recovery_resends", "TEXT NOT NULL DEFAULT '[]'");
+			for (const table of Object.values(TABLES)) {
+				// The enqueue-time instance (the web's fused identity fix,
+				// 4059723ab4): cleanup and Retry compare the identity the daemon
+				// actually fences with (instanceId ?? threadId). Rows written before
+				// it read as instanceId-undefined, falling back to the threadId.
+				this.addColumnIfMissing(table, "instance_id", "TEXT");
+				this.addColumnIfMissing(table, "composer_mentions", "TEXT");
+				this.addColumnIfMissing(table, "draft_capture_token", "TEXT");
+				// #4342: the ref's stop epoch at enqueue time - the barrier's own
+				// read, stored, so a refusal can fence its rollback: a Stop whose
+				// cancel scan skipped the attempted row must not be outrun by the
+				// refusal's redelivery. Part of the shared insert shape, so every
+				// record table needs it. Rows written before it read as
+				// captured-at-zero, the conservative direction.
+				this.addColumnIfMissing(table, "stop_epoch_at_enqueue", "INTEGER NOT NULL DEFAULT 0");
+				// When a record was accepted. The prune asks "accepted before this
+				// read began", which enqueue time cannot answer: a replacement
+				// client's read can be out when an earlier request's receipt lands.
+				// A row written before the column existed is backfilled from its
+				// enqueue time (it was accepted before the upgrade, and leaving it
+				// at 0 would exclude exactly the records the prune exists to heal).
+				// The ALTER and its backfill commit together: a process that died
+				// between them would leave the column present and the rows
+				// unstamped, and no later start would retry the backfill.
+				this.addColumnIfMissing(
+					table,
+					"accepted_at",
+					"INTEGER NOT NULL DEFAULT 0",
+					`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`,
+				);
+				// A receipt's queue-entry lineage, the web adapter's fused
+				// identity: the accepted copy retires when the consuming
+				// mutation settles, so the entries it came from must survive the
+				// round trip. Rows written before it read as lineage-unknown.
+				this.addColumnIfMissing(table, "queue_entry_ids", "TEXT");
+			}
+			// #4342: unresolved attempt counts live beside the attempted flag on
+			// the outbox table; rows written before it read as zero unresolved
+			// attempts.
+			this.addColumnIfMissing(TABLES.outbox, "unresolved_attempts", "INTEGER NOT NULL DEFAULT 0");
+		});
 	}
 
 	// Adds `column` to `table` when a database from before it existed lacks it.
@@ -520,7 +547,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// record (the daemon has not reflected it yet); any other pending receipt
 	// (a receipt-only control) or projection state has nothing worth carrying
 	// forward, so the record is simply retired everywhere it lives.
-	async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+	async settleReceipt(
+		clientMutationId: string,
+		projectionState: string,
+		queueEntryIds?: readonly string[],
+	): Promise<boolean> {
 		return this.transaction("mutation_outbox_settle_receipt", () => {
 			const outboxRecord = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			const recoveryRecord = this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
@@ -533,7 +564,10 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// build: it never spreads, so a recovery-sourced receipt
 				// (source.recoveryKind/recoveryReason) and attempted evidence do
 				// not leak into the optimistic row.
-				this.replace(TABLES.optimistic, acceptedRecord(source));
+				this.replace(
+					TABLES.optimistic,
+					acceptedRecord(queueEntryIds && queueEntryIds.length > 0 ? { ...source, queueEntryIds } : source),
+				);
 				// Acceptance is its own moment. A read already in flight when this
 				// receipt lands never saw the record, so its absence must not retire
 				// it; the prune compares against this stamp, never enqueue time.
@@ -830,6 +864,41 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		});
 	}
 
+	// The direct fallback's retained consumed ids (#4674), a receipt
+	// ownership independent of outbox/optimistic settlement like the resends
+	// above. Idempotent by primary key, so a retry after a refused write
+	// re-inserts nothing.
+	async retainConsumed(clientMutationIds: readonly string[]): Promise<void> {
+		if (clientMutationIds.length === 0) return;
+		this.transaction("mutation_retained_consumed_retain", () => {
+			this.db.runSync(
+				`INSERT OR IGNORE INTO ${RETAINED_CONSUMED_TABLE} (client_mutation_id)
+				 VALUES ${clientMutationIds.map(() => "(?)").join(", ")}`,
+				...clientMutationIds,
+			);
+		});
+	}
+
+	async listRetainedConsumed(): Promise<string[]> {
+		const rows = this.db.getAllSync<{ client_mutation_id: string }>(
+			`SELECT client_mutation_id FROM ${RETAINED_CONSUMED_TABLE} ORDER BY client_mutation_id`,
+		);
+		return rows.map((row) => row.client_mutation_id);
+	}
+
+	// Retires the durable record once the settle succeeded; the ids name
+	// records that no longer exist, so a record a failed clear leaves behind
+	// is a no-op the next load settles again and clears.
+	async clearRetainedConsumed(clientMutationIds: readonly string[]): Promise<void> {
+		if (clientMutationIds.length === 0) return;
+		this.db.runSync(
+			`DELETE FROM ${RETAINED_CONSUMED_TABLE} WHERE client_mutation_id IN (${clientMutationIds
+				.map(() => "?")
+				.join(", ")})`,
+			...clientMutationIds,
+		);
+	}
+
 	private recoveryResendsOf(targetRef: string): RecoveryResendCommit[] {
 		const row = this.db.getFirstSync<{ recovery_resends: string }>(
 			"SELECT recovery_resends FROM mutation_sequence WHERE target_ref = ?",
@@ -1090,6 +1159,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				throw new Error(`clientMutationId is already active in the mutation outbox: ${clientMutationId}`);
 			}
 		}
+		// A retained consumed id stays spoken for until its clear settles: a
+		// fresh record repeating it would let the retained record's next
+		// settle delete the new row as though the daemon had consumed it
+		// (#4674). It has none of the record tables' columns, so the lookup
+		// is its own.
+		if (
+			this.db.getFirstSync(`SELECT 1 FROM ${RETAINED_CONSUMED_TABLE} WHERE client_mutation_id = ?`, clientMutationId)
+		) {
+			throw new Error(`clientMutationId is already active in the mutation outbox: ${clientMutationId}`);
+		}
 	}
 
 	protected insertNew(
@@ -1137,6 +1216,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			"stopEpochAtEnqueue" in record ? (record.stopEpochAtEnqueue ?? 0) : 0,
 			recovery.recoveryKind ?? null,
 			recovery.recoveryReason ?? null,
+			JSON.stringify(record.queueEntryIds ?? null),
 		];
 	}
 

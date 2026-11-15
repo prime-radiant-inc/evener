@@ -98,7 +98,11 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				profile = provider.WithCommunicateOutputSchema(profile, voiceReferenceLiveOutputSchema())
+				bound, err := provider.WithCommunicateOutputSchema(profile, voiceReferenceLiveOutputSchema())
+				if err != nil {
+					t.Fatalf("bind voice reference output schema: %v", err)
+				}
+				profile = bound
 				sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
 					StateDir: stateDir, AgentsDocPath: filepath.Join(workspace, "absent-personal-instructions.md"),
 					DisableMemory: true, MaxToolRoundsPerInput: 1, MaxTurns: 1,

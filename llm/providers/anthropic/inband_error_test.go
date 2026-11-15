@@ -34,6 +34,7 @@ func collectStream(t *testing.T, body string) (text string, streamErr error) {
 // HTTP 200 stream. It must surface as a typed provider error carrying the
 // documented 529 status, not as the generic incomplete-stream error.
 func TestInbandError_Overloaded_TypedError(t *testing.T) {
+	t.Parallel()
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n"
 	_, streamErr := collectStream(t, body)
@@ -64,6 +65,7 @@ func TestInbandError_Overloaded_TypedError(t *testing.T) {
 // A rate_limit_error event maps to the 429 class so retry logic sees a rate
 // limit rather than an opaque stream failure.
 func TestInbandError_RateLimit_TypedRateLimit(t *testing.T) {
+	t.Parallel()
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of requests has exceeded your rate limit\"}}\n\n"
 	_, streamErr := collectStream(t, body)
@@ -85,6 +87,7 @@ func TestInbandError_RateLimit_TypedRateLimit(t *testing.T) {
 // An authentication_error event maps to the permanent 401 class: retrying a
 // rejected credential just burns the retry budget.
 func TestInbandError_Authentication_TypedAuth(t *testing.T) {
+	t.Parallel()
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}\n\n"
 	_, streamErr := collectStream(t, body)
@@ -106,6 +109,7 @@ func TestInbandError_Authentication_TypedAuth(t *testing.T) {
 // An error event arriving after real content must still terminate with the
 // typed error; the already-delivered deltas stay delivered.
 func TestInbandError_AfterContent(t *testing.T) {
+	t.Parallel()
 	body := "event: message_start\n" +
 		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1}}}\n\n" +
 		"event: content_block_start\n" +
@@ -136,6 +140,7 @@ func TestInbandError_AfterContent(t *testing.T) {
 // than the generic stream error: the unknown class is retryable and the
 // provider's own error type rides along as the error code.
 func TestInbandError_UnknownType_TypedUnknown(t *testing.T) {
+	t.Parallel()
 	body := "event: error\n" +
 		"data: {\"type\":\"error\",\"error\":{\"type\":\"tenant_quarantined_error\",\"message\":\"tenant quarantined\"}}\n\n"
 	_, streamErr := collectStream(t, body)
@@ -160,6 +165,7 @@ func TestInbandError_UnknownType_TypedUnknown(t *testing.T) {
 // Unparseable line noise keeps today's behavior: forwarded raw, and a stream
 // that then ends without message_stop still reports the generic error.
 func TestInbandError_LineNoiseStillSkipped(t *testing.T) {
+	t.Parallel()
 	body := "event: content_block_delta\n" +
 		"data: this is not json\n\n" +
 		"event: content_block_delta\n" +

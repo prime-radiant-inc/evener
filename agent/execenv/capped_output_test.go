@@ -14,7 +14,7 @@ func TestOutputCaptureCapRidesSandboxInvocationGrant(t *testing.T) {
 		Sandbox:          &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite},
 		outputCaptureCap: &small,
 	}
-	granted, ok := env.WithSandboxInvocationGrant("/granted/path").(*LocalExecutionEnvironment)
+	granted, ok := env.WithSandboxInvocationGrant("/granted/path", "/granted/path").(*LocalExecutionEnvironment)
 	if !ok {
 		t.Fatalf("WithSandboxInvocationGrant returned %T, want *LocalExecutionEnvironment", granted)
 	}

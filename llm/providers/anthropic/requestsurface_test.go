@@ -20,6 +20,7 @@ import (
 
 // tool_choice mode "none" must drop the tools and emit no tool_choice at all.
 func TestBuildBodyToolChoiceNoneDropsTools(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "none"}
@@ -36,6 +37,7 @@ func TestBuildBodyToolChoiceNoneDropsTools(t *testing.T) {
 }
 
 func TestBuildBodyNamedToolChoiceRequiresName(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.Tools = []llm.ToolDefinition{{Name: "f"}}
 	req.ToolChoice = &llm.ToolChoice{Mode: "named"}
@@ -74,6 +76,7 @@ func checkPromptGolden(t *testing.T, name, got string) {
 }
 
 func TestApplyAnthropicResponseFormat(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		rf   *llm.ResponseFormat
@@ -141,6 +144,7 @@ func TestApplyAnthropicResponseFormat(t *testing.T) {
 // beta_headers ride the HTTP header, never the request body: the ProviderOptions
 // overlay must skip the key while still merging its siblings.
 func TestBuildBodySkipsBetaHeadersKeyInBody(t *testing.T) {
+	t.Parallel()
 	req := protoReq("")
 	req.ProviderOptions = map[string]any{registry.ProtocolAnthropic: map[string]any{
 		"beta_headers": "context-1m-2025-08-07",
@@ -161,6 +165,7 @@ func TestBuildBodySkipsBetaHeadersKeyInBody(t *testing.T) {
 // A provider_options.anthropic value that is not an object contributes no beta
 // header and must not break the call.
 func TestCompleteBetaHeaderFromNonObjectProviderOptions(t *testing.T) {
+	t.Parallel()
 	srv, got := protoServer(t, func(*http.Request) (int, string) { return 200, messagesJSON })
 	res := protoLive(srv)
 	res.Headers = nil // no ambient anthropic-beta from the resolved headers
@@ -178,6 +183,7 @@ func TestCompleteBetaHeaderFromNonObjectProviderOptions(t *testing.T) {
 // JSON-decoded numeric shape; int64 and json.Number must both size the
 // ContextBudgetError the same way.
 func TestBuildBodyThinkingBudgetNumericTypes(t *testing.T) {
+	t.Parallel()
 	for name, budget := range map[string]any{
 		"int64":       int64(2000),
 		"json.Number": json.Number("2000"),
@@ -201,6 +207,7 @@ func TestBuildBodyThinkingBudgetNumericTypes(t *testing.T) {
 }
 
 func TestAnthropicImageBlockLocalAndRefusalArms(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	noExt := filepath.Join(dir, "shot")
 	if err := os.WriteFile(noExt, []byte("\x89PNG\r\n\x1a\nbytes"), 0o600); err != nil {
@@ -255,6 +262,7 @@ func TestAnthropicImageBlockLocalAndRefusalArms(t *testing.T) {
 }
 
 func TestToAnthropicMessagesDroppedAndRefusedParts(t *testing.T) {
+	t.Parallel()
 	t.Run("document parts with no document or no payload are dropped", func(t *testing.T) {
 		_, messages, err := toAnthropicMessages([]llm.Message{{
 			Role: llm.RoleUser,
