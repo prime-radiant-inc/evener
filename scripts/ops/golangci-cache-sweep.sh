@@ -132,6 +132,9 @@ if ! field_keys="$(xargs -0 sh -c '
 		case "$field" in
 		"worktree "*)
 			root=${field#worktree }
+			# The helper reads this path through command substitution, which
+			# strips trailing newlines while preserving embedded newlines.
+			root=$(printf "%s" "$root")
 			if [ -z "$root" ]; then
 				echo "golangci-cache-sweep: empty worktree root in porcelain; refusing to sweep" >&2
 				exit 1

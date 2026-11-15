@@ -174,7 +174,7 @@ lint-cache-clean:
 ##   untouched.
 ## trigger: Local cleanup after disposing worktree lanes; safe to run
 ##   periodically (cron) on machines with a churning worktree fleet.
-## requires: git >= 2.31 (run from any registered worktree of this repository).
+## requires: git >= 2.36 (run from any registered worktree of this repository).
 ## fails-when: Not inside a workable git repository — the live worktree set
 ##   is unknown, and the sweep refuses to run rather than treat unknown as
 ##   empty.

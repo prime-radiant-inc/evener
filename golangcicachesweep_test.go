@@ -479,32 +479,48 @@ printf '%s' "$root" | "$SWEEP_REAL_SHASUM" -a 256
 		t.Errorf("a bare-backed orphan cache was not swept: %v\n%s", err, bareOut)
 	}
 
-	// A newline in a registered root must not truncate its protected key,
-	// even when the truncated prefix exists as a directory.
-	newlineName := "registered" + "\n" + "odd"
-	newlineWorktree := filepath.Join(fixture, newlineName)
-	gittest.Run(t, repo, "worktree", "add", "-q", "--detach", newlineWorktree)
+	// Registered roots with embedded or trailing newlines must protect the
+	// cache key the real helper creates, while unrelated old caches are swept.
 	if err := os.Mkdir(filepath.Join(fixture, "registered"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	newlineWorktreeHome := filepath.Join(fixture, "worktree-newline-cache")
-	newlineWorktreeBucket := filepath.Join(newlineWorktreeHome, "evener", "golangci-lint", sweepRepoHash(commonA))
-	newlineLive := makeSweepCacheDir(t, newlineWorktreeBucket, sweepCacheHash(newlineWorktree))
-	newlineOrphan := makeSweepCacheDir(t, newlineWorktreeBucket, sweepCacheHash(filepath.Join(fixture, "newline-orphan")))
-	for _, dir := range []string{newlineLive, newlineOrphan} {
-		if err := os.Chtimes(dir, stale, stale); err != nil {
-			t.Fatal(err)
-		}
-	}
-	worktreeOut, worktreeStatus := runSweep(t, repo, newlineWorktreeHome)
-	if worktreeStatus != 0 {
-		t.Errorf("sweeper refused a registered newline-containing worktree root: exit %d\n%s", worktreeStatus, worktreeOut)
-	}
-	if _, err := os.Stat(newlineLive); err != nil {
-		t.Errorf("sweeper deleted a registered newline-containing worktree's cache: %v\n%s", err, worktreeOut)
-	}
-	if _, err := os.Stat(newlineOrphan); !os.IsNotExist(err) {
-		t.Errorf("sweeper kept an orphan despite a complete live worktree set: %v\n%s", err, worktreeOut)
+	for _, tc := range []struct {
+		name string
+		root string
+	}{
+		{name: "embedded-newline", root: "registered" + "\n" + "odd"},
+		{name: "trailing-newline", root: "registered-trailing" + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newlineWorktree := filepath.Join(fixture, tc.root)
+			gittest.Run(t, repo, "worktree", "add", "-q", "--detach", newlineWorktree)
+			newlineWorktreeHome := filepath.Join(fixture, "worktree-newline-cache-"+tc.name)
+			newlineWorktreeBucket := filepath.Join(newlineWorktreeHome, "evener", "golangci-lint", sweepRepoHash(commonA))
+			cacheCmd := exec.Command("bash", filepath.Join(selfDir, "scripts", "lib", "golangci-lint-cache.sh"))
+			cacheCmd.Dir = newlineWorktree
+			cacheCmd.Env = sweepEnv(newlineWorktreeHome)
+			cacheOut, err := cacheCmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("helper failed inside the registered newline worktree: %v\n%s", err, cacheOut)
+			}
+			newlineLive := makeSweepCacheDir(t, newlineWorktreeBucket, filepath.Base(strings.TrimSpace(string(cacheOut))))
+			newlineOrphan := makeSweepCacheDir(t, newlineWorktreeBucket, sweepCacheHash(filepath.Join(fixture, "newline-orphan-"+tc.name)))
+			for _, dir := range []string{newlineLive, newlineOrphan} {
+				if err := os.Chtimes(dir, stale, stale); err != nil {
+					t.Fatal(err)
+				}
+			}
+			worktreeOut, worktreeStatus := runSweep(t, repo, newlineWorktreeHome)
+			if worktreeStatus != 0 {
+				t.Errorf("sweeper refused a registered newline-containing worktree root: exit %d\n%s", worktreeStatus, worktreeOut)
+			}
+			if _, err := os.Stat(newlineLive); err != nil {
+				t.Errorf("sweeper deleted a registered newline-containing worktree's cache: %v\n%s", err, worktreeOut)
+			}
+			if _, err := os.Stat(newlineOrphan); !os.IsNotExist(err) {
+				t.Errorf("sweeper kept an orphan despite a complete live worktree set: %v\n%s", err, worktreeOut)
+			}
+		})
 	}
 
 	// An unavailable registered root still has a known cache key. Its
