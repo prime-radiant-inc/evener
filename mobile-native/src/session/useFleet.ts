@@ -5,7 +5,7 @@
 import type { NavigationManifest } from "@evener/appwire-client";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ConversationClientLike } from "../conversation/services/conversation";
-import { type LiveBands, liveBands } from "../board/attention";
+import { type LiveBands, liveBands } from "@evener/appwire-client/state/navigation";
 import { createBoardController } from "../board/boardData";
 import type { BoardSeen } from "../board/hubSeen";
 import { useBoardSeen } from "../board/nativeBoardMemory";
