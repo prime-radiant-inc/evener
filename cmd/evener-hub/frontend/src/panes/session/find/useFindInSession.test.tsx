@@ -31,6 +31,7 @@ import { useFindInSession } from "./useFindInSession";
 
 const REF = "ref_a";
 const CONFIG = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+const rangeRect = Object.getOwnPropertyDescriptor(Range.prototype, "getBoundingClientRect");
 
 function turn(id: string, text: string): Turn {
   return {
@@ -170,6 +171,14 @@ const older = () => fireEvent.keyDown(field(), { key: "Enter" });
 const newer = () => fireEvent.keyDown(field(), { key: "Enter", shiftKey: true });
 
 beforeEach(() => {
+  // jsdom has no Range geometry; a match in these plain rows occupies its
+  // enclosing entry's test geometry.
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value: function (this: Range) {
+      return this.startContainer.parentElement?.getBoundingClientRect() ?? new DOMRect();
+    },
+  });
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
@@ -184,6 +193,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  if (rangeRect) Object.defineProperty(Range.prototype, "getBoundingClientRect", rangeRect);
+  else Reflect.deleteProperty(Range.prototype, "getBoundingClientRect");
 });
 
 test("typing searches what is loaded, lands on the newest match, and reads no older history", async () => {
@@ -505,6 +517,35 @@ test("Find chord opens in a popout and Escape restores focus in that same window
   expect(chord.defaultPrevented).toBe(true);
   expect(field).not.toBeNull();
   expect(popdoc.activeElement).toBe(field);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  vi.spyOn(popup, "requestAnimationFrame").mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  const port = popdoc.querySelector('[data-testid="port"]') as HTMLElement;
+  const entry = popdoc.querySelector('[data-view-anchor-id="t1-item"]') as HTMLElement;
+  port.getBoundingClientRect = () => ({ top: 0, bottom: 500, height: 500 }) as DOMRect;
+  entry.getBoundingClientRect = () =>
+    ({ top: 2000 - port.scrollTop, bottom: 2100 - port.scrollTop, height: 100 }) as DOMRect;
+  Object.defineProperty((popup as Window & { Range: typeof Range }).Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value: () => entry.getBoundingClientRect(),
+  });
+  if (field) fireEvent.change(field, { target: { value: "needle" } });
+  act(() => {
+    for (const callback of frames.splice(0)) callback(performance.now());
+  });
+  expect(port.scrollTop).toBeGreaterThan(1000);
+  entry.removeAttribute(FIND_CURRENT_ATTRIBUTE);
+  entry.textContent = "needle extended";
+  await act(async () => {
+    await Promise.resolve();
+  });
+  act(() => {
+    for (const callback of frames.splice(0)) callback(performance.now());
+  });
+  expect(entry.hasAttribute(FIND_CURRENT_ATTRIBUTE)).toBe(true);
   if (field) fireEvent.keyDown(field, { key: "Escape" });
   expect(popdoc.activeElement).toBe(elsewhere);
   mounted.unmount();

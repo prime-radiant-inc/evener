@@ -195,7 +195,7 @@ function register(view: HighlightView, registry: HighlightRegistry): void {
 interface MarkedTranscript {
   /** The current hit's entry, when mounted. */
   current: HTMLElement | null;
-  /** Where the current hit's first painted match sits, when it has one. */
+  /** Where the current hit's first matched word sits, with or without painting. */
   focus: Range | null;
 }
 
@@ -213,6 +213,7 @@ export function markTranscript(
   let current: HTMLElement | null = null;
   const all: Range[] = [];
   const mine: Range[] = [];
+  let focus: Range | null = null;
   if (port && needle !== "") {
     const mounted = readMounted(port);
     const markHit = (hit: FindHit): HTMLElement | null => {
@@ -221,12 +222,13 @@ export function markTranscript(
       const entry = mounted.entries.get(hit.key);
       if (entry === undefined) return null;
       const isCurrent = hit.key === currentKey;
-      if (!registry) return entry;
+      if (!registry && !isCurrent) return entry;
       // A message row also carries its speaker and time; only what the
       // message says is searched, so only that is painted and scrolled to.
       const body = entry.querySelector<HTMLElement>(`[${FIND_BODY_ATTRIBUTE}]`) ?? entry;
-      const found = rangesIn(body, needle, MAX_RANGES - all.length - mine.length);
-      (isCurrent ? mine : all).push(...found);
+      const found = rangesIn(body, needle, registry ? MAX_RANGES - all.length - mine.length : 1);
+      if (isCurrent) focus = found[0] ?? null;
+      if (registry) (isCurrent ? mine : all).push(...found);
       return entry;
     };
     // Paint the current hit first: preceding hits must not spend its focus
@@ -246,7 +248,7 @@ export function markTranscript(
     else painted.delete(port);
     if (view) register(view, registry);
   }
-  return { current, focus: mine[0] ?? null };
+  return { current, focus };
 }
 
 /** Where the scroll port should sit so the current hit reads comfortably: a

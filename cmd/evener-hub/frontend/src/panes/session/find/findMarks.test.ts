@@ -168,6 +168,13 @@ test("words are painted in what the message says, not in the row's speaker heade
   expect(marks.focus?.startContainer.nodeValue).toBe("the agent replied");
   // The outline stays on the whole row.
   expect(marks.current?.getAttribute("data-view-anchor-id")).toBe("a");
+
+  vi.stubGlobal("Highlight", undefined);
+  vi.stubGlobal("CSS", undefined);
+  const withoutHighlights = markTranscript(el, [hit("a")], "a", "agent");
+  expect(withoutHighlights.current).toBe(marks.current);
+  expect(withoutHighlights.focus).not.toBeNull();
+  expect(withoutHighlights.focus?.startOffset).toBe(4);
 });
 
 test("a landing leaves the reader off the live end, wherever the match sits", () => {

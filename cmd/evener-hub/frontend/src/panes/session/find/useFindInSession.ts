@@ -335,7 +335,7 @@ export function useFindInSession({
   // owner for the row again (while the entry is not mounted) or settles the
   // mounted entry into view. The reader's own scroll ends the window.
   const settle = useRef<{ key: string; until: number; jumpedAt: number } | null>(null);
-  const settleFrame = useRef<number | null>(null);
+  const settleFrame = useRef<{ id: number; view: Window } | null>(null);
   const lastFindGeometry = useRef<{ top: number; height: number; viewport: number } | null>(null);
   const currentKey = current?.key ?? null;
 
@@ -404,9 +404,15 @@ export function useFindInSession({
     const tick = () => {
       settleFrame.current = null;
       sync.current();
-      if (settle.current !== null) settleFrame.current = requestAnimationFrame(tick);
+      if (settle.current !== null) {
+        const view = listRef.current?.getScrollElement()?.ownerDocument.defaultView ?? window;
+        settleFrame.current = { id: view.requestAnimationFrame(tick), view };
+      }
     };
-    if (settleFrame.current === null) settleFrame.current = requestAnimationFrame(tick);
+    if (settleFrame.current === null) {
+      const view = listRef.current?.getScrollElement()?.ownerDocument.defaultView ?? window;
+      settleFrame.current = { id: view.requestAnimationFrame(tick), view };
+    }
   }, [currentKey, current?.itemId, jumpEpoch, needle]);
   // Marks are document state, not React output, so they follow what is
   // mounted: the virtual list mounting a row, a fold opening, a streamed
@@ -419,10 +425,11 @@ export function useFindInSession({
     if (!isOpen) return;
     const port = listRef.current?.getScrollElement();
     if (!port) return;
+    const view = port.ownerDocument.defaultView ?? window;
     let frame: number | null = null;
     const observer = new MutationObserver(() => {
       if (frame !== null) return;
-      frame = requestAnimationFrame(() => {
+      frame = view.requestAnimationFrame(() => {
         frame = null;
         sync.current();
       });
@@ -463,8 +470,8 @@ export function useFindInSession({
       port.removeEventListener("pointerdown", readerMoved);
       port.removeEventListener("scroll", readerScrolled);
       port.removeEventListener("keydown", readerPressed);
-      if (frame !== null) cancelAnimationFrame(frame);
-      if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current);
+      if (frame !== null) view.cancelAnimationFrame(frame);
+      if (settleFrame.current !== null) settleFrame.current.view.cancelAnimationFrame(settleFrame.current.id);
       settleFrame.current = null;
       settle.current = null;
       markTranscript(port, [], null, "");
