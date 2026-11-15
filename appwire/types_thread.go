@@ -123,13 +123,14 @@ type EvenerThread struct {
 	// value (Depth==0, Preview==nil) means "no queued messages".
 	Queue            QueueState        `json:"queue"`
 	PendingMutations []PendingMutation `json:"pendingMutations,omitempty"`
-	// AcceptedModelPick names the newest model pick this session accepted, by
-	// the client mutation id that pick carried, whether it is still queued for a
-	// turn boundary or has committed already. A pick that repeats the model in
-	// force commits no change and rejects nothing, so a client that missed the
-	// commit's own notification has no other way to learn its own pick no longer
-	// owns the outcome. Empty when the session accepted no identified pick.
-	AcceptedModelPick string `json:"acceptedModelPick,omitempty"`
+	// ModelPick reports the newest model pick this session admitted, with the
+	// server's acceptance order and its outcome. It is snapshot state rather
+	// than a notice, so a rejected pick stays knowable after the bounded notice
+	// ring evicts the rejection warning. A pick that repeats the model in force
+	// changes no model identity, so a client that missed the commit's own
+	// notification has no other way to learn its own pick no longer owns the
+	// outcome. Nil when the session admitted no pick.
+	ModelPick *ModelPickState `json:"modelPick,omitempty"`
 	// MutationStateAuthoritative identifies a daemon snapshot that can settle
 	// uncertain sends. Saved transcript data cannot prove a mutation absent.
 	MutationStateAuthoritative bool `json:"mutationStateAuthoritative,omitempty"`
@@ -427,6 +428,40 @@ type EvenerUsage struct {
 // entry — the preview line alone would silently truncate multi-line
 // messages. Absent on old daemons; clients must treat a missing Texts as
 // "edit unavailable" rather than falling back to the truncated preview.
+// ModelPickOutcome is the fate of one admitted model pick. A pick is admitted
+// before it is validated or applied, so a client can always see that its pick
+// was received even when the application never happens.
+type ModelPickOutcome string
+
+const (
+	// ModelPickPending is an admitted pick still waiting for a turn boundary or
+	// for its validation to finish.
+	ModelPickPending ModelPickOutcome = "pending"
+	// ModelPickApplied is an admitted pick whose model is in force.
+	ModelPickApplied ModelPickOutcome = "applied"
+	// ModelPickRejected is an admitted pick that never became the model: its
+	// validation failed, or a newer pick superseded it.
+	ModelPickRejected ModelPickOutcome = "rejected"
+)
+
+// ModelPickState is the newest admitted model pick, ordered by the server.
+//
+// Sequence is the authority, not ClientMutationID. Sequence is issued by the
+// session for every admission, including a pick that carries no client
+// mutation id, so it orders picks from every client that can make one.
+// ClientMutationID is correlation only: the picker that issued the pick
+// matches its own request by it, and it is empty for a client that sends none.
+// A client that treats an older Sequence as current, or that requires a
+// ClientMutationID to recognise a pick at all, loses evidence of what the
+// session actually accepted.
+type ModelPickState struct {
+	Sequence         uint64           `json:"sequence"`
+	Outcome          ModelPickOutcome `json:"outcome"`
+	ClientMutationID string           `json:"clientMutationId,omitempty"`
+	ModelProvider    string           `json:"modelProvider,omitempty"`
+	Model            string           `json:"model,omitempty"`
+}
+
 type QueueState struct {
 	Depth             int      `json:"depth,omitempty"`
 	Revision          uint64   `json:"revision"`

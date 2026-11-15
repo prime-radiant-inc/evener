@@ -238,8 +238,8 @@ func (l liveThreadEnvelopeSource) VisionModel() string {
 	return l.session().VisionModel()
 }
 
-func (l liveThreadEnvelopeSource) AcceptedModelPick() (string, uint64) {
-	return l.session().AcceptedModelPick()
+func (l liveThreadEnvelopeSource) ModelPickState() (appwire.ModelPickState, bool) {
+	return l.session().ModelPickState()
 }
 
 func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {

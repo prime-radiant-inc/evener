@@ -40,10 +40,10 @@ type stubThreadEnvelopeSource struct {
 	// is in flight. A race test samples, parks inside that sample, and moves
 	// the pick from another goroutine; the lock keeps that ordering the test
 	// proves rather than a data race the detector reports.
-	acceptedPickMu    sync.Mutex
-	acceptedModelPick string
-	acceptedPickSeq   uint64
-	meta              schema.SessionMeta
+	acceptedPickMu sync.Mutex
+	modelPick      appwire.ModelPickState
+	modelPickSet   bool
+	meta           schema.SessionMeta
 	// parkOnMeta runs at the start of SessionMeta(), the last facet
 	// refreshFacets samples. Parking there holds a fully-populated sample open.
 	parkOnMeta func()
@@ -122,11 +122,11 @@ func (s *stubThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 
 func (s *stubThreadEnvelopeSource) VisionModel() string { return s.visionModel }
 
-func (s *stubThreadEnvelopeSource) AcceptedModelPick() (string, uint64) {
+func (s *stubThreadEnvelopeSource) ModelPickState() (appwire.ModelPickState, bool) {
 	// Read before parking: a parked sample holds the value it observed, which is
 	// what makes it the older one when a newer refresh installs meanwhile.
 	s.acceptedPickMu.Lock()
-	id, seq := s.acceptedModelPick, s.acceptedPickSeq
+	state, ok := s.modelPick, s.modelPickSet
 	park := s.parkOnAcceptedPick
 	if s.acceptedPickParked {
 		park = nil
@@ -136,15 +136,15 @@ func (s *stubThreadEnvelopeSource) AcceptedModelPick() (string, uint64) {
 	if park != nil {
 		park()
 	}
-	return id, seq
+	return state, ok
 }
 
-// setAcceptedModelPick moves the accepted pick a test's next sample observes.
-func (s *stubThreadEnvelopeSource) setAcceptedModelPick(id string, seq uint64) {
+// setModelPick moves the pick a test's next sample observes.
+func (s *stubThreadEnvelopeSource) setModelPick(state appwire.ModelPickState) {
 	s.acceptedPickMu.Lock()
 	defer s.acceptedPickMu.Unlock()
-	s.acceptedModelPick = id
-	s.acceptedPickSeq = seq
+	s.modelPick = state
+	s.modelPickSet = true
 }
 
 // parkNextAcceptedPick arms the park hook and reclaims it, so the next sample

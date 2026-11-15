@@ -532,6 +532,51 @@ test("reconnect hydration preserves a queued model selected after a live model c
 // reconnect snapshot is the only place that says which pick the session
 // accepted, and without reconciling it the picker keeps showing B while the
 // next turn runs on A.
+// The native conversation service sends thread/model/set with no client
+// mutation id, so the pick it produces has none to correlate with. The
+// acceptance order is what identifies it as newer than this tab's queued pick;
+// keying supersession on the correlation id alone leaves the display showing a
+// choice the session replaced.
+test("reconnect hydration clears a queued pick superseded by a pick that carried no id", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+
+  // A phone picked the model already in force and sent no id at all.
+  const baseThread = testThread("ref_a", { id: "thr_a", modelProvider: "claude-sonnet-4-5" });
+  const snapshotThread = testThread("ref_a", {
+    id: "thr_a",
+    modelProvider: "claude-sonnet-4-5",
+    evener: {
+      ...baseThread.evener,
+      profile: "anthropic",
+      modelPick: { sequence: 2, outcome: "applied" },
+    },
+  });
+  const hydratedModel = hydrateThread(
+    {
+      thread: snapshotThread,
+      requestGeneration: 1,
+      bootGeneration: "1@ref_a",
+      epoch: 1,
+      snapshot: { incarnation: "inc_a", length: 0 },
+      overlay: [],
+    },
+    "ref_a",
+    Date.now(),
+  );
+  act(() => putThreadModel("ref_a", hydratedModel));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={hydratedModel} />);
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
 test("reconnect hydration clears a queued pick another client superseded with the model already in force", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
@@ -550,7 +595,11 @@ test("reconnect hydration clears a queued pick another client superseded with th
   const snapshotThread = testThread("ref_a", {
     id: "thr_a",
     modelProvider: "claude-sonnet-4-5",
-    evener: { ...baseThread.evener, profile: "anthropic", acceptedModelPick: "another-tab-pick" },
+    evener: {
+      ...baseThread.evener,
+      profile: "anthropic",
+      modelPick: { sequence: 2, outcome: "applied", clientMutationId: "another-tab-pick" },
+    },
   });
   const hydratedModel = hydrateThread(
     {
@@ -568,6 +617,132 @@ test("reconnect hydration clears a queued pick another client superseded with th
   view.rerender(<ModelSwitch sessionRef="ref_a" model={hydratedModel} />);
 
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+// Another client supersedes this tab's queued pick, and its notification
+// reaches this tab before this tab's own set response does. At that moment
+// there is no display entry yet, so the request is the only record of the
+// choice. If the evidence does not retire that request, the delayed success
+// installs a choice the session already moved past.
+test("a supersession notification before this tab's set response fences that pending request", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  const resolvers = new Map<string, () => void>();
+  fake.on(
+    "thread/model/set",
+    ({ model }) =>
+      new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+        resolvers.set(model, () => resolve(codedModelSetResponse()));
+      }),
+  );
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(resolvers.has("gpt-5.5")).toBe(true));
+
+  // The other client's pick repeats the model already in force, so it commits
+  // no change of its own; this notification is the only evidence it happened.
+  act(() => {
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+    });
+  });
+  await act(async () => {
+    resolvers.get("gpt-5.5")?.();
+  });
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")).toBeUndefined();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+// A pick can be rejected after the tab that made it disconnected, and the
+// notice that announced the rejection is evictable from the session's bounded
+// ring. The snapshot's own outcome is therefore the only durable record: a
+// reconnect that sees it must stop showing the pick even though no notice
+// survives and the running model never changed.
+test("a reconnect snapshot's rejected outcome clears the pick after its notice is evicted", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const acceptedPick = threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId;
+  expect(acceptedPick).toBeTruthy();
+
+  // The reconnect snapshot names this tab's own pick as rejected. No overlay
+  // notice accompanies it - that notice was evicted while this tab was away.
+  const baseThread = testThread("ref_a", { id: "thr_a", modelProvider: "claude-sonnet-4-5" });
+  const snapshotThread = testThread("ref_a", {
+    id: "thr_a",
+    modelProvider: "claude-sonnet-4-5",
+    evener: {
+      ...baseThread.evener,
+      profile: "anthropic",
+      modelPick: { sequence: 1, outcome: "rejected", clientMutationId: acceptedPick as string },
+    },
+  });
+  const hydratedModel = hydrateThread(
+    {
+      thread: snapshotThread,
+      requestGeneration: 1,
+      bootGeneration: "1@ref_a",
+      epoch: 1,
+      snapshot: { incarnation: "inc_a", length: 0 },
+      overlay: [],
+    },
+    "ref_a",
+    Date.now(),
+  );
+  act(() => putThreadModel("ref_a", hydratedModel));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={hydratedModel} />);
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")).toBeUndefined();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+// Publications arrive long after the state they describe was sampled, so a
+// later publication can carry an older pick. Retiring an accepted choice on the
+// mere presence of a different identity would let such a cached sample cancel
+// the newer pick this tab is still queued behind.
+test("a cached republication of an older pick does not cancel a newer accepted pick", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  // Hydration named pick 1, and this tab then accepted a queued pick.
+  act(() => putThreadModel("ref_a", { ...activeModel, modelPick: { sequence: 1, outcome: "applied" } }));
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const queued = threadsStore.getState().acceptedModelSwitches.get("ref_a");
+  expect(queued).toBeTruthy();
+
+  // The next publication still carries pick 1: it was sampled before the queued
+  // pick was accepted.
+  act(() => putThreadModel("ref_a", { ...activeModel, modelPick: { sequence: 1, outcome: "applied" } }));
+  view.rerender(
+    <ModelSwitch sessionRef="ref_a" model={{ ...activeModel, modelPick: { sequence: 1, outcome: "applied" } }} />,
+  );
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId).toBe(queued?.clientMutationId);
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
 });
 
 test("accepted model display follows pick order when responses arrive out of order", async () => {
@@ -700,7 +875,10 @@ test("an unchanged model publication does not retire the pick the snapshot names
 
   // The daemon still names the queued pick it accepted, and the running model
   // is unchanged because the re-pick never landed.
-  const snapshot = { ...activeModel, acceptedModelPick: queuedPick };
+  const snapshot = {
+    ...activeModel,
+    modelPick: { sequence: 1, outcome: "applied", clientMutationId: queuedPick as string },
+  };
   act(() => putThreadModel("ref_a", snapshot));
   view.rerender(<ModelSwitch sessionRef="ref_a" model={snapshot} />);
 

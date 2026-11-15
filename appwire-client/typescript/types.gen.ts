@@ -963,14 +963,15 @@ export interface EvenerThread {
   queue: QueueState;
   pendingMutations?: PendingMutation[];
   /**
-   * AcceptedModelPick names the newest model pick this session accepted, by
-   * the client mutation id that pick carried, whether it is still queued for a
-   * turn boundary or has committed already. A pick that repeats the model in
-   * force commits no change and rejects nothing, so a client that missed the
-   * commit's own notification has no other way to learn its own pick no longer
-   * owns the outcome. Empty when the session accepted no identified pick.
+   * ModelPick reports the newest model pick this session admitted, with the
+   * server's acceptance order and its outcome. It is snapshot state rather
+   * than a notice, so a rejected pick stays knowable after the bounded notice
+   * ring evicts the rejection warning. A pick that repeats the model in force
+   * changes no model identity, so a client that missed the commit's own
+   * notification has no other way to learn its own pick no longer owns the
+   * outcome. Nil when the session admitted no pick.
    */
-  acceptedModelPick?: string;
+  modelPick?: ModelPickState;
   /**
    * MutationStateAuthoritative identifies a daemon snapshot that can settle
    * uncertain sends. Saved transcript data cannot prove a mutation absent.
@@ -2600,6 +2601,14 @@ export interface ModelListResponse {
    * appwire method — no dual-router catalog change required.
    */
   recent?: ModelDescriptor[];
+}
+
+export interface ModelPickState {
+  sequence: number;
+  outcome: string;
+  clientMutationId?: string;
+  modelProvider?: string;
+  model?: string;
 }
 
 export interface MutationReceipt {

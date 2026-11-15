@@ -205,7 +205,9 @@ func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { re
 func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
 func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
 func (s sessionTaskEnvelopeSource) VisionModel() string                     { return "" }
-func (s sessionTaskEnvelopeSource) AcceptedModelPick() (string, uint64)     { return "", 0 }
+func (s sessionTaskEnvelopeSource) ModelPickState() (appwire.ModelPickState, bool) {
+	return appwire.ModelPickState{}, false
+}
 func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }

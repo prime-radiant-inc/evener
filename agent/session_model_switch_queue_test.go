@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appoverlay"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -470,6 +471,58 @@ func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 	}
 }
 
+// TestRejectedQueuedPickLeavesADurableOutcome pins where a rejection's recovery
+// lives. The warning that announces it is one notice in a bounded ring, so a
+// client that reconnects after that notice was evicted can only learn the
+// outcome from the session's own snapshot state. The queued pick here fails the
+// boundary's deferred history check, which is the path that rejects a pick the
+// picker already accepted.
+func TestRejectedQueuedPickLeavesADurableOutcome(t *testing.T) {
+	dir := t.TempDir()
+	openaiAdapter := &fakeAdapter{name: "openai"}
+	s := newSession(t, withAdapter(openaiAdapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		ResolveProfile:   testResolver,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	// Pre-condition: the queued pick's target must fail the deferred history
+	// check. OpenAIChat carries USER documents as file parts but still drops
+	// non-user ones, so the seeded history carries an assistant-role document.
+	doc := documentTurn()
+	doc.Message.Role = llm.RoleAssistant
+	if len(unrepresentableHistoryKinds([]schema.Turn{doc}, registry.ProtocolOpenAIChat)) == 0 {
+		t.Fatal("pre-condition: a non-user document must be unrepresentable for the queued pick's OpenAIChat target")
+	}
+	s.appendTurn(schema.TurnAssistant, doc.Message)
+
+	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "first turn done") },
+	})
+	serveSessionWithMutationStore(t, s)
+	queueOneMutation(t, s, "cm-rejected-at-boundary", "the queued message")
+
+	// The pick is accepted while the turn runs and applied at the boundary,
+	// where the seeded history makes it unrepresentable.
+	if err := s.SetModelWithMutationID("glm/glm-test", "cm-queued-rejected"); err != nil {
+		t.Fatalf("the picker accepted the pick, so admission must succeed: %v", err)
+	}
+	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	state, ok := s.ModelPickState()
+	if !ok {
+		t.Fatal("no model pick recorded after the queued pick was rejected; a reconnecting client would show it forever")
+	}
+	if state.Outcome != appwire.ModelPickRejected {
+		t.Fatalf("outcome = %q, want %q: the snapshot must carry the rejection itself, not only the evictable warning", state.Outcome, appwire.ModelPickRejected)
+	}
+	if state.ClientMutationID != "cm-queued-rejected" {
+		t.Fatalf("clientMutationId = %q, want %q", state.ClientMutationID, "cm-queued-rejected")
+	}
+}
+
 // TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick pins the loop's
 // re-drain: when the pending application the loop popped is superseded while
 // it refetches, the newer pick queued in the meantime must still apply before
@@ -550,15 +603,15 @@ func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 
-	if got, _ := s.AcceptedModelPick(); got != "" {
-		t.Fatalf("accepted pick before any pick = %q, want empty", got)
+	if got, _ := s.ModelPickState(); got.ClientMutationID != "" {
+		t.Fatalf("accepted pick before any pick = %+v, want empty", got)
 	}
 	// An at-rest pick commits immediately and names itself.
 	if err := s.SetModelWithMutationID("gpt-5.4", "pick-at-rest"); err != nil {
 		t.Fatalf("at-rest pick: %v", err)
 	}
-	if got, _ := s.AcceptedModelPick(); got != "pick-at-rest" {
-		t.Fatalf("accepted pick after an at-rest commit = %q, want %q", got, "pick-at-rest")
+	if got, _ := s.ModelPickState(); got.ClientMutationID != "pick-at-rest" {
+		t.Fatalf("accepted pick after an at-rest commit = %+v, want %q", got, "pick-at-rest")
 	}
 
 	// A mid-turn pick queues for the boundary and names itself straight away,
@@ -575,8 +628,8 @@ func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
 	if _, err := s.ProcessInput(context.Background(), "the only turn", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
 	}
-	if got, _ := s.AcceptedModelPick(); got != "pick-queued" {
-		t.Fatalf("accepted pick after the queued pick committed = %q, want %q", got, "pick-queued")
+	if got, _ := s.ModelPickState(); got.ClientMutationID != "pick-queued" {
+		t.Fatalf("accepted pick after the queued pick committed = %+v, want %q", got, "pick-queued")
 	}
 
 	// A pick repeating the model in force commits a switch to the same model.
@@ -585,8 +638,48 @@ func TestAcceptedModelPickNamesTheNewestAcceptedPick(t *testing.T) {
 	if err := s.SetModelWithMutationID("gpt-5.2", "pick-same-model"); err != nil {
 		t.Fatalf("same-model pick: %v", err)
 	}
-	if got, _ := s.AcceptedModelPick(); got != "pick-same-model" {
-		t.Fatalf("accepted pick after a same-model commit = %q, want %q; a superseding pick that repeats the model in force is invisible to a client without this identity", got, "pick-same-model")
+	if got, _ := s.ModelPickState(); got.ClientMutationID != "pick-same-model" {
+		t.Fatalf("accepted pick after a same-model commit = %+v, want %q; a superseding pick that repeats the model in force is invisible to a client without this identity", got, "pick-same-model")
+	}
+}
+
+// TestUnidentifiedModelPickIsRecorded pins the pick a client sends without a
+// client mutation id - the phone's conversation service sends none.
+//
+// The identity cannot be the record's authority: a pick with no id would be
+// indistinguishable from no pick at all, so a phone superseding a browser's
+// queued choice would reset the snapshot to "nothing accepted" and leave the
+// browser showing a pick the session had already replaced. The server issues
+// the order, so every admission is recorded whether or not it carried an id.
+func TestUnidentifiedModelPickIsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+	adapter := &fakeAdapter{
+		name:       "openai",
+		liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+	}
+	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+
+	// No client mutation id: the phone's model pick.
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatalf("unidentified pick: %v", err)
+	}
+	state, ok := s.ModelPickState()
+	if !ok {
+		t.Fatal("no model pick recorded for an unidentified pick: a client that sent no id is invisible in the snapshot")
+	}
+	if state.Sequence == 0 {
+		t.Fatalf("model pick sequence = 0, want the server's issued order")
+	}
+	if state.Outcome != appwire.ModelPickApplied {
+		t.Fatalf("model pick outcome = %q, want applied", state.Outcome)
+	}
+	if state.Model != "gpt-5.4" {
+		t.Fatalf("model pick model = %q, want gpt-5.4", state.Model)
 	}
 }
 

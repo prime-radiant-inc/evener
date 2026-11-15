@@ -1172,12 +1172,12 @@ type Session struct {
 	// failures never advance it, so a rejected pick cannot cancel an earlier
 	// accepted one. Guarded by s.mu.
 	modelPickAccepted uint64
-	// modelPickAcceptedID is the client mutation id of the pick
-	// modelPickAccepted names, empty when that pick carried none. The issue and
-	// the identity always move together: a snapshot reports the identity of the
-	// pick that owns the model outcome, so another client can tell its own pick
-	// apart from one that superseded it without a model change. Guarded by s.mu.
-	modelPickAcceptedID string
+	// modelPickState is the newest admitted pick with its outcome, reported on
+	// the thread snapshot. It is snapshot state rather than a correction event
+	// because a rejected pick's warning can be evicted from the bounded notice
+	// ring, and a client that reconnects afterwards must still learn its pick
+	// did not become the model. Guarded by s.mu.
+	modelPickState appwire.ModelPickState
 	// modelSwitchPublishMu serializes a switch application's commit through
 	// its publication - the profile swap, the marker record, and the
 	// EventModelChanged emit - so publications land in the order their swaps
@@ -1943,6 +1943,15 @@ func (s *Session) SetModelWithMutationID(model, clientMutationID string) error {
 	}
 	s.modelPickSeq++
 	pickSeq := s.modelPickSeq
+	// Every admission names itself, including one that carried no client
+	// mutation id: the sequence is what orders picks from every client, and an
+	// unidentified pick that is never recorded cannot be reported at all.
+	s.modelPickState = appwire.ModelPickState{
+		Sequence:         pickSeq,
+		Outcome:          appwire.ModelPickPending,
+		ClientMutationID: clientMutationID,
+		Model:            model,
+	}
 	if !s.turnInFlightLocked() {
 		s.mu.Unlock()
 		return s.applyModelSwitch(model, "", nil, modelSwitchFence{
@@ -2022,7 +2031,12 @@ func (s *Session) queueModelSwitch(model, clientMutationID string, pickSeq uint6
 			seq:              pickSeq,
 		}
 		s.modelPickAccepted = pickSeq
-		s.modelPickAcceptedID = clientMutationID
+		s.modelPickState = appwire.ModelPickState{
+			Sequence:         pickSeq,
+			Outcome:          appwire.ModelPickPending,
+			ClientMutationID: clientMutationID,
+			Model:            model,
+		}
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
 		s.wakeQuotaWaitLocked()
@@ -2075,6 +2089,20 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 		})
 		release()
 		if err != nil {
+			// The outcome belongs to snapshot state, not only to this warning:
+			// the notice ring is bounded, so a client that reconnects after the
+			// rejection is evicted would otherwise keep showing a pick the
+			// session never made current.
+			s.mu.Lock()
+			if pending.seq >= s.modelPickState.Sequence {
+				s.modelPickState = appwire.ModelPickState{
+					Sequence:         pending.seq,
+					Outcome:          appwire.ModelPickRejected,
+					ClientMutationID: pending.clientMutationID,
+					Model:            pending.model,
+				}
+			}
+			s.mu.Unlock()
 			warning := warningDataFromErrorCode(
 				events.WarningCodeModelSwitchRejected,
 				"queued model switch to "+pending.model+" did not apply",
@@ -2178,7 +2206,12 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		}
 		if s.modelPickAccepted < fence.pickSeq {
 			s.modelPickAccepted = fence.pickSeq
-			s.modelPickAcceptedID = fence.clientMutationID
+			s.modelPickState = appwire.ModelPickState{
+				Sequence:         fence.pickSeq,
+				Outcome:          appwire.ModelPickPending,
+				ClientMutationID: fence.clientMutationID,
+				Model:            model,
+			}
 		}
 		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
@@ -2187,7 +2220,12 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// Committing accepts the pick.
 	if fence.pickSeq > s.modelPickAccepted {
 		s.modelPickAccepted = fence.pickSeq
-		s.modelPickAcceptedID = fence.clientMutationID
+		s.modelPickState = appwire.ModelPickState{
+			Sequence:         fence.pickSeq,
+			Outcome:          appwire.ModelPickApplied,
+			ClientMutationID: fence.clientMutationID,
+			Model:            model,
+		}
 	}
 	// The profile this commit actually replaces is the one the session runs
 	// right now: an earlier pick's application may have moved the session
@@ -2420,17 +2458,18 @@ func (s *Session) VisionModel() string {
 	return s.cfg.VisionModel
 }
 
-// AcceptedModelPick returns the client mutation id of the newest model pick the
-// session accepted, empty when that pick carried none. A client uses it to tell
-// its own accepted pick apart from one another client made: a pick that repeats
-// the model already in force commits no change and rejects nothing, so only
-// this identity distinguishes the two. seq is the acceptance order that pick
-// was admitted at, which never decreases, so a reader can tell an older sample
-// from a newer one.
-func (s *Session) AcceptedModelPick() (string, uint64) {
+// ModelPickState returns the newest admitted model pick with its outcome and
+// the server's acceptance order. A client uses the order to tell its own pick
+// apart from one another client made, and the outcome to learn what became of a
+// pick whose application never published: a pick that repeats the model in
+// force commits no change, and a rejected one emits only an evictable notice.
+func (s *Session) ModelPickState() (appwire.ModelPickState, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.modelPickAcceptedID, s.modelPickAccepted
+	if s.modelPickState.Sequence == 0 {
+		return appwire.ModelPickState{}, false
+	}
+	return s.modelPickState, true
 }
 
 // buildModelSwitchMarkerText renders the persisted model-switch marker text:

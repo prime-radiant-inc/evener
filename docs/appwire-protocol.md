@@ -1313,7 +1313,7 @@ Underlying Go kind: `string` (no struct fields).
 | `contextWindowSource` | string | yes |  |
 | `queue` | [appwire.QueueState](#queuestate) |  |  |
 | `pendingMutations` | [][appwire.PendingMutation](#pendingmutation) | yes |  |
-| `acceptedModelPick` | string | yes |  |
+| `modelPick` | \*[appwire.ModelPickState](#modelpickstate) | yes |  |
 | `mutationStateAuthoritative` | bool | yes |  |
 | `tasks` | \*[appwire.TaskAggregate](#taskaggregate) | yes |  |
 | `goal` | \*[appwire.GoalState](#goalstate) | yes |  |
@@ -2898,6 +2898,22 @@ Underlying Go kind: `struct` (no struct fields).
 | `data` | [][appwire.ModelDescriptor](#modeldescriptor) |  |  |
 | `diagnostics` | [][appwire.ModelListDiagnostic](#modellistdiagnostic) | yes |  |
 | `recent` | [][appwire.ModelDescriptor](#modeldescriptor) | yes |  |
+
+
+### `ModelPickOutcome`
+
+Underlying Go kind: `string` (no struct fields).
+
+
+### `ModelPickState`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sequence` | uint64 |  |  |
+| `outcome` | [appwire.ModelPickOutcome](#modelpickoutcome) |  |  |
+| `clientMutationId` | string | yes |  |
+| `modelProvider` | string | yes |  |
+| `model` | string | yes |  |
 
 
 ### `MutationDisposition`

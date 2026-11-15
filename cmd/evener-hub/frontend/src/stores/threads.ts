@@ -24,6 +24,7 @@ import type {
   MethodName,
   MethodTypes,
   ModelListResponse,
+  ModelPickState,
   SnapshotIdentity,
   TaskListResponse,
   ThreadClearResponse,
@@ -267,6 +268,11 @@ export interface PromoteDisplayInput {
 
 export interface AcceptedModelSwitch {
   sequence: number;
+  // authoritySequence is the session's own acceptance order for this pick, once
+  // a snapshot or notification has reported it; zero while only this page's
+  // request knows the pick. It fences supersession: a pick carrying an older
+  // order cannot retire this entry.
+  authoritySequence: number;
   clientMutationId: string;
   modelProvider: string;
   model: string;
@@ -642,6 +648,43 @@ interface ModelSwitchTarget extends ModelSwitchIdentity {
 
 const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
 
+// The newest session acceptance order this page has applied, per ref, and the
+// thread identity that order belongs to. A session stamps its own monotonic
+// order, so order compares across clients while this page's issue sequence does
+// not. A new instance or boot starts a fresh order namespace, so the recorded
+// order resets with the identity rather than rejecting the new session's lower
+// numbers as stale.
+const modelPickOrders = new Map<string, { identity: string; order: number }>();
+const MODEL_PICK_REJECTED = "rejected";
+
+function modelPickOrder(ref: string): number {
+  return modelPickOrders.get(ref)?.order ?? 0;
+}
+
+function noteModelPickOrder(ref: string, pick: ModelPickState | undefined, model: ThreadModel): void {
+  const identity = `${threadInstanceID(model) ?? ""}|${model.history?.bootGeneration ?? ""}`;
+  const recorded = modelPickOrders.get(ref);
+  if (recorded && recorded.identity !== identity) {
+    // The order namespace restarted with the identity.
+    modelPickOrders.set(ref, { identity, order: pick?.sequence ?? 0 });
+    return;
+  }
+  const order = Math.max(recorded?.order ?? 0, pick?.sequence ?? 0);
+  modelPickOrders.set(ref, { identity, order });
+}
+
+// Retire every request still in flight for a ref. Authoritative evidence that a
+// pick this page did not issue owns the outcome also outranks any request this
+// page had not yet seen accepted: a delayed success for it must not install a
+// choice the session has already moved past.
+function supersedeAllModelSwitches(ref: string): void {
+  const requests = modelSwitchRequests.get(ref);
+  if (!requests) return;
+  for (const clientMutationId of requests.pending.keys()) requests.settledPending.add(clientMutationId);
+  requests.pending.clear();
+  requests.unsettled.clear();
+}
+
 function supersedeModelSwitchDisplayThrough(requests: ModelSwitchRequestState, sequence: number): void {
   requests.displayedThrough = Math.max(requests.displayedThrough, sequence);
   for (const [clientMutationId, target] of requests.pending) {
@@ -719,22 +762,71 @@ function reconcileAcceptedModelSwitchAuthority(
   current: ReadonlyMap<string, AcceptedModelSwitch>,
   source: "modelPublication" | "modelChangedNotification",
   clientMutationId?: string,
-  authorityPick?: string,
+  authorityPick?: ModelPickState,
 ): ReadonlyMap<string, AcceptedModelSwitch> {
   const accepted = current.get(ref);
-  // A snapshot names the pick the session accepted last. When that names a
-  // different pick than this client's own accepted one, another client's pick
-  // owns the model outcome: a pick repeating the model already in force
-  // commits no change and rejects nothing, so the snapshot is the only place
-  // that says so. An unnamed pick is not evidence, which keeps an older daemon
-  // and this client's own pick intact.
-  const namedPick = authorityPick !== undefined && authorityPick !== "";
-  if (accepted && namedPick && authorityPick !== accepted.clientMutationId) {
-    const requests = modelSwitchRequests.get(ref);
-    if (requests) settleModelSwitchThrough(requests, accepted.sequence);
+  const appliedOrder = modelPickOrder(ref);
+  const pickOrder = authorityPick?.sequence ?? 0;
+  // The session stamps an order on every acceptance, identified or not, so a
+  // sample carrying an order older than the newest one this page applied is a
+  // cached republication and never a supersession.
+  if (authorityPick !== undefined && pickOrder > 0 && pickOrder < appliedOrder) return current;
+  for (const model of authorityModels) noteModelPickOrder(ref, authorityPick, model);
+  const requests = modelSwitchRequests.get(ref);
+  const correlated =
+    clientMutationId !== undefined &&
+    clientMutationId !== "" &&
+    modelSwitchTargetByMutationID(requests, clientMutationId) !== undefined;
+  // A request that already settled leaves the pending maps, so the accepted
+  // entry itself is the second record of which pick this page issued.
+  const pickOurs =
+    authorityPick !== undefined &&
+    authorityPick.clientMutationId !== "" &&
+    (modelSwitchTargetByMutationID(requests, authorityPick.clientMutationId) !== undefined ||
+      accepted?.clientMutationId === authorityPick.clientMutationId);
+  if (authorityPick !== undefined && pickOurs) {
+    // This page's own pick. Record the order the session assigned it, which is
+    // what lets a later sample be ordered against it; an accepted entry only
+    // moves with a pick that is already the displayed one.
+    settleModelSwitchAuthority(ref, [], authorityPick.clientMutationId);
+    if (!accepted || accepted.clientMutationId !== authorityPick.clientMutationId) return current;
+    if (accepted.authoritySequence === pickOrder) return current;
+    return new Map(current).set(ref, { ...accepted, authoritySequence: pickOrder });
+  }
+  // Evidence this page did not issue retires every request still in flight: a
+  // live notification is the session's final authority the moment it is
+  // emitted, so a request issued before it whose response has not arrived must
+  // not install a choice the session already moved past.
+  const foreign = authorityPick !== undefined ? true : source === "modelChangedNotification" && !correlated;
+  if (foreign) {
+    supersedeAllModelSwitches(ref);
+    if (!accepted) return current;
+    // The displayed pick outranks evidence that is not newer than it. A pick
+    // this page accepted carries the session's order once one has been
+    // reported, and an accepted pick still awaiting that order is outranked
+    // only by evidence newer than everything already applied: the bare
+    // presence of some other identity is not proof of a later acceptance.
+    if (accepted.authoritySequence > 0) {
+      if (pickOrder > 0 && pickOrder <= accepted.authoritySequence) return current;
+    } else if (authorityPick !== undefined && pickOrder > 0 && pickOrder <= appliedOrder) {
+      return current;
+    }
     const next = new Map(current);
     next.delete(ref);
     return next;
+  }
+  // A rejection is durable session state, so it settles the pick even when the
+  // notice that announced it was evicted from the session's bounded ring. It
+  // clears the display only when it names that pick: a rejected pick belonging
+  // to another client says nothing about this page's accepted one.
+  if (authorityPick !== undefined && authorityPick.outcome === MODEL_PICK_REJECTED) {
+    if (accepted && accepted.clientMutationId === authorityPick.clientMutationId) {
+      supersedeAllModelSwitches(ref);
+      const next = new Map(current);
+      next.delete(ref);
+      return next;
+    }
+    return current;
   }
   // A named pick settles by identity alone. An unchanged running model is not
   // proof a pending request was accepted: a pick of the model already in force
@@ -743,7 +835,7 @@ function reconcileAcceptedModelSwitchAuthority(
   // name no pick, where an observed model change is the only evidence there is.
   const authority = settleModelSwitchAuthority(
     ref,
-    namedPick ? [] : authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
+    authorityPick !== undefined ? [] : authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
     clientMutationId,
   );
   if (!accepted) return current;
@@ -1771,7 +1863,7 @@ function putThreadModels(
     state.acceptedModelSwitches,
     "modelPublication",
     undefined,
-    threadModel?.acceptedModelPick,
+    threadModel?.modelPick,
   );
   if (acceptedModelSwitches !== state.acceptedModelSwitches) patch.acceptedModelSwitches = acceptedModelSwitches;
   if (!threadModel && !watchedModel) return;
@@ -9287,6 +9379,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const acceptedModelSwitches = new Map(state.acceptedModelSwitches);
       acceptedModelSwitches.set(ref, {
         sequence,
+        // The set response carries no order, so a pick this page just accepted
+        // stays unordered until a snapshot or notification reports the session's
+        // own sequence for it. An unordered entry yields to any foreign pick,
+        // which is the safe direction: dropping a display is recoverable, and
+        // keeping a superseded one is the defect.
+        authoritySequence: 0,
         clientMutationId,
         modelProvider,
         model,

@@ -223,16 +223,17 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			// snapshot can report about it.
 			name: "accepted pick on MODEL_CHANGED",
 			move: func(e *stubThreadEnvelopeSource) {
-				e.acceptedModelPick = "another-tab-pick"
+				e.setModelPick(appwire.ModelPickState{
+					Sequence: 7, Outcome: appwire.ModelPickApplied, ClientMutationID: "another-tab-pick",
+				})
 			},
 			event: events.SessionEvent{
 				Kind: events.EventModelChanged, SessionID: "th_1",
 				Data: events.ModelChangedData{NewModel: "m1", ClientMutationID: "another-tab-pick"},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
-				if thread.Evener.AcceptedModelPick != "another-tab-pick" {
-					t.Fatalf("acceptedModelPick = %q, want the pick the session accepted last",
-						thread.Evener.AcceptedModelPick)
+				if thread.Evener.ModelPick == nil || thread.Evener.ModelPick.ClientMutationID != "another-tab-pick" {
+					t.Fatalf("modelPick = %+v, want the pick the session accepted last", thread.Evener.ModelPick)
 				}
 			},
 		},
@@ -950,9 +951,12 @@ func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) 
 	return "", nil, false
 }
 
-func (c *countingThreadEnvelopeSource) LatestExecutionTurnID() string       { c.hit(); return "" }
-func (c *countingThreadEnvelopeSource) VisionModel() string                 { c.hit(); return "" }
-func (c *countingThreadEnvelopeSource) AcceptedModelPick() (string, uint64) { c.hit(); return "", 0 }
+func (c *countingThreadEnvelopeSource) LatestExecutionTurnID() string { c.hit(); return "" }
+func (c *countingThreadEnvelopeSource) VisionModel() string           { c.hit(); return "" }
+func (c *countingThreadEnvelopeSource) ModelPickState() (appwire.ModelPickState, bool) {
+	c.hit()
+	return appwire.ModelPickState{}, false
+}
 func (c *countingThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	c.hit()
 	return 0, nil, 0
@@ -1099,7 +1103,7 @@ func TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne(t *testing.T) {
 
 	src := &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "th_1"}}
 	srv.SetThreadEnvelopeSource(src)
-	src.setAcceptedModelPick("pick-a", 1)
+	src.setModelPick(appwire.ModelPickState{Sequence: 1, Outcome: appwire.ModelPickApplied, ClientMutationID: "pick-a"})
 	srv.RefreshThreadEnvelope()
 
 	parked := make(chan struct{})
@@ -1120,13 +1124,13 @@ func TestOlderAcceptedPickSampleDoesNotOverwriteANewerOne(t *testing.T) {
 	<-parked
 
 	// A newer acceptance samples and installs while the older one is parked.
-	src.setAcceptedModelPick("pick-b", 2)
+	src.setModelPick(appwire.ModelPickState{Sequence: 2, Outcome: appwire.ModelPickPending, ClientMutationID: "pick-b"})
 	srv.RefreshAcceptedModelPick()
 	close(release)
 	<-older
 
-	if got := readThreadOverWire(t, srv, "local:th_1").Evener.AcceptedModelPick; got != "pick-b" {
-		t.Fatalf("acceptedModelPick = %q, want pick-b: an older sample reinstated the pick the session had already replaced", got)
+	if got := readThreadOverWire(t, srv, "local:th_1").Evener.ModelPick; got == nil || got.ClientMutationID != "pick-b" {
+		t.Fatalf("modelPick = %+v, want pick-b: an older sample reinstated the pick the session had already replaced", got)
 	}
 }
 

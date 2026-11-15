@@ -83,11 +83,11 @@ type EnvelopeSampling interface {
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string
 	VisionModel() string
-	// AcceptedModelPick names the newest model pick the session accepted, by its
-	// client mutation id, empty when the newest accepted pick carried none. seq
-	// is the acceptance order it was admitted at, which never decreases, so a
-	// reader holding an older sample can recognise it as older.
-	AcceptedModelPick() (string, uint64)
+	// ModelPickState reports the newest admitted model pick with its outcome and
+	// the acceptance order it was admitted at, which never decreases, so a
+	// reader holding an older sample can recognise it as older. ok is false
+	// when the session admitted no pick.
+	ModelPickState() (appwire.ModelPickState, bool)
 	Profile() *provider.Profile
 	Meta() schema.SessionMeta
 }

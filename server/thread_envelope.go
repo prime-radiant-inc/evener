@@ -50,13 +50,12 @@ type threadEnvelope struct {
 	Detailed               *DetailedStatus
 	Queue                  appwire.QueueState
 	PendingMutations       []appwire.PendingMutation
-	// AcceptedModelPick is the identity of the newest model pick the session
-	// accepted. It rides facetQueue because it is model-switch bookkeeping the
-	// session keeps beside its client-mutation store, and every event that can
-	// accept a pick already re-samples that facet.
-	AcceptedModelPick string
-	// acceptedPickSeq is the session's acceptance sequence that
-	// AcceptedModelPick was sampled at. Sampling runs outside s.mu, so two
+	// ModelPick is the newest admitted model pick with its outcome and the
+	// server's acceptance order. Snapshot state, not a notice, so a rejected
+	// pick stays knowable after the bounded notice ring drops its warning.
+	ModelPick *appwire.ModelPickState
+	// acceptedPickSeq is the session's acceptance order that ModelPick was
+	// sampled at. Sampling runs outside s.mu, so two
 	// refreshes can interleave and the older one can reach install last; a
 	// queued pick emits nothing until the turn boundary, so nothing would
 	// correct the reinstated older identity. The installed sequence therefore
@@ -175,11 +174,11 @@ type ThreadEnvelopeSource interface {
 	PendingEscalations() []appwire.SandboxEscalationRequested
 	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
 	VisionModel() string
-	// AcceptedModelPick names the newest model pick the session accepted, by the
-	// client mutation id that pick carried, empty when that pick carried none.
-	// seq is the session's monotonically advancing acceptance order for that
-	// pick, which lets a sample that lost a race be recognised as older.
-	AcceptedModelPick() (id string, seq uint64)
+	// ModelPickState reports the newest admitted model pick with its outcome
+	// and the session's monotonically advancing acceptance order, which lets a
+	// sample that lost a race be recognised as older. ok is false when the
+	// session admitted no pick.
+	ModelPickState() (state appwire.ModelPickState, ok bool)
 	SessionMeta() schema.SessionMeta
 }
 
@@ -488,7 +487,10 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		next.VisionModel = src.VisionModel()
 	}
 	if facets&facetModelPick != 0 {
-		next.AcceptedModelPick, next.acceptedPickSeq = src.AcceptedModelPick()
+		if state, ok := src.ModelPickState(); ok {
+			next.ModelPick = &state
+			next.acceptedPickSeq = state.Sequence
+		}
 	}
 	if facets&(facetMeta|facetGoal) != 0 {
 		meta := src.SessionMeta()
@@ -644,7 +646,7 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		// the pick the session has already replaced. Acceptance order never
 		// moves backwards, so an older sample is not the installed truth.
 		if next.acceptedPickSeq >= e.acceptedPickSeq {
-			e.AcceptedModelPick = next.AcceptedModelPick
+			e.ModelPick = next.ModelPick
 			e.acceptedPickSeq = next.acceptedPickSeq
 		}
 	}
