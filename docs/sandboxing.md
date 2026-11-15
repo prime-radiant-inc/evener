@@ -366,6 +366,43 @@ blocks unprivileged user namespaces (for example Ubuntu 24.04 with
 `apparmor_restrict_unprivileged_userns=1`) reports *not capable* and refuses a
 sandboxed mode rather than half-enforcing it.
 
+That probe can also end without an answer: it hits its time bound on a loaded
+host, or the host cannot start it for lack of resources. Evener retries it once.
+If it still has no answer, the session (fresh or resumed) starts with its sandbox
+**unconfirmed**. The startup line reads
+`sandbox: bwrap unconfirmed (check timed out); will recheck on first use`, and
+nothing runs unconfirmed. Every spawn that needs the sandbox (the shell, `rg`,
+hooks, stdio MCP servers) reruns the check first:
+
+- **It passes.** The command runs confined, and every later command under the
+  same probe runs without rechecking. A delegate's box comes from its parent
+  session's own probe and settles that probe's check the same way.
+- **It still has no answer.** Only that command is refused, with a retryable
+  reason (`sandbox not yet confirmed: the host check timed out; retry the
+  command`), and the next command checks again. The session recovers on its own
+  once load drops. Spawns waiting on the check share one run of it, and a
+  caller that is stopped stops waiting.
+- **It answers no.** That command and every later one are refused, and the host
+  is treated exactly as one that answered no at startup.
+
+Two spawns get special handling. A `PreToolUse` hook that its sandbox refuses
+to spawn, whether the check has not answered or answered no, refuses the tool
+call it guards, so the call never proceeds without its guard. A stdio MCP server starts once, at session start, so its start keeps
+rechecking within its connect time bound. If the check still has no answer
+then, the server fails to start, like any server that cannot start, and is
+absent for that session.
+
+File tools are confined in process and keep working throughout. A delegate on
+such a host keeps the sandbox modes on offer, and a derived read-only delegate
+keeps its real read-only box, which waits for the same check. The weaker
+fallback, confined file tools with an unconfined shell, is reserved for a host
+that answered that it has no backend, and only for an unsandboxed parent: a
+sandboxed parent's read-only delegate refuses rather than receive a shell wider
+than the parent's own box.
+
+On macOS the floor's check is whether `/usr/bin/sandbox-exec` exists, which
+always answers, so a Mac never starts unconfirmed.
+
 When the host cannot satisfy a requested mode, the refusal is a legible start-time
 error naming the mode and the reason — the session never silently runs unconfined.
 This holds on resume too: a session persisted with a sandbox mode re-resolves its
