@@ -417,9 +417,22 @@ func (s *Session) appendDelegateSteeringDurably(message, stableTurnID string, au
 }
 
 func (s *Session) delegateModelHistorySnapshot() []schema.Turn {
+	turns, _ := s.delegateModelHistorySnapshotWithCoverage()
+	return turns
+}
+
+// delegateModelHistorySnapshotWithCoverage copies the transcript a leased
+// delegate request projects together with the conversation coverage of those
+// exact turns. Both are taken under one attentionMu-then-mu hold, so a fold
+// committing between them cannot pair the request's turns with a frontier they
+// never projected.
+func (s *Session) delegateModelHistorySnapshotWithCoverage() ([]schema.Turn, map[string][]string) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]schema.Turn(nil), s.history...)
+	turns := append([]schema.Turn(nil), s.history...)
+	return turns, s.snapshotConversationCoverageLocked(turns)
 }
 
 // liveGenerationOwesSteering reports whether any admission belongs to a

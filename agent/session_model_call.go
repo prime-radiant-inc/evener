@@ -261,7 +261,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
-		snapshot := s.delegateModelHistorySnapshot()
+		// The delegate projects its own snapshot, which can hold turns appended
+		// after historyTurns was taken, so its coverage must come from that
+		// same snapshot rather than the earlier one.
+		snapshot, coverage := s.delegateModelHistorySnapshotWithCoverage()
+		historyCoverage = coverage
 		presentedBoundary = len(snapshot)
 		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
 			// An automatic attention drive projects the resident history,

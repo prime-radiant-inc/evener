@@ -562,6 +562,12 @@ func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 			close(inWindow)
 			select {
 			case <-releaseFold:
+			// TRIPWIRE: the park is released by the request goroutine, and a
+			// snapshot that waits on the transcript door is exactly what this
+			// bound exists to break: no completion signal can arrive while the
+			// fold holds the door, so a hang here is the finding, not a slow
+			// machine. Generous only to keep a real deadlock from consuming
+			// the whole test binary timeout.
 			case <-time.After(2 * time.Second):
 				// A snapshot that holds the door cannot pass this park while
 				// the fold holds it, so the timeout ends the park for both.
