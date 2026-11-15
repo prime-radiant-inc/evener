@@ -5,6 +5,7 @@ package agent
 // EventModelChanged, EventReasoningEffortChanged).
 
 import (
+	"encoding/json"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -102,6 +103,9 @@ func TestSetModelWithMutationID_RefusedAtRestLeavesADurableOutcome(t *testing.T)
 		}),
 	)
 
+	if err := sess.SetModelWithMutationID("gpt-4.1-mini", "cm-accepted-at-rest"); err != nil {
+		t.Fatalf("SetModelWithMutationID accepted pick: %v", err)
+	}
 	if err := sess.SetModelWithMutationID("bogus/some-model", "cm-refused-at-rest"); err == nil {
 		t.Fatal("expected error from unknown instance ref")
 	}
@@ -115,6 +119,17 @@ func TestSetModelWithMutationID_RefusedAtRestLeavesADurableOutcome(t *testing.T)
 	}
 	if state.ClientMutationID != "cm-refused-at-rest" {
 		t.Fatalf("clientMutationId = %q, want %q", state.ClientMutationID, "cm-refused-at-rest")
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal model pick state: %v", err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(encoded, &snapshot); err != nil {
+		t.Fatalf("decode model pick state: %v", err)
+	}
+	if got := snapshot["acceptedSequence"]; got != float64(1) {
+		t.Fatalf("acceptedSequence = %v, want 1: the later refusal must not claim it superseded the accepted pick", got)
 	}
 }
 

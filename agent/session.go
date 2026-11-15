@@ -2494,17 +2494,21 @@ func (s *Session) VisionModel() string {
 }
 
 // ModelPickState returns the newest admitted model pick with its outcome and
-// the server's acceptance order. A client uses the order to tell its own pick
-// apart from one another client made, and the outcome to learn what became of a
-// pick whose application never published: a pick that repeats the model in
-// force commits no change, and a rejected one emits only an evictable notice.
+// the latest sequence that reached acceptance. A client uses the admission
+// order to tell its own pick apart from one another client made, and the
+// acceptance watermark to distinguish an initial refusal from a later failure.
+// A pick that repeats the model in force commits no change, and a rejected one
+// emits only an evictable notice.
 func (s *Session) ModelPickState() (appwire.ModelPickState, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.modelPickState.Sequence == 0 {
 		return appwire.ModelPickState{}, false
 	}
-	return s.modelPickState, true
+	state := s.modelPickState
+	acceptedSequence := s.modelPickAccepted
+	state.AcceptedSequence = &acceptedSequence
+	return state, true
 }
 
 // buildModelSwitchMarkerText renders the persisted model-switch marker text:

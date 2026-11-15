@@ -675,7 +675,7 @@ function reconcileModelPickOrderIdentity(ref: string, model: ThreadModel): strin
 function noteModelPickOrder(ref: string, pick: ModelPickState | undefined, model: ThreadModel): void {
   const identity = reconcileModelPickOrderIdentity(ref, model);
   const recorded = modelPickOrders.get(ref);
-  const order = Math.max(recorded?.order ?? 0, pick?.sequence ?? 0);
+  const order = Math.max(recorded?.order ?? 0, pick?.acceptedSequence ?? pick?.sequence ?? 0);
   modelPickOrders.set(ref, { identity, order });
 }
 
@@ -799,9 +799,10 @@ function reconcileAcceptedModelSwitchAuthority(
   if (authorityPick !== undefined && pickOurs) {
     // Pending is an observation, not an outcome. Keep the exact request
     // correlation so a later applied or rejected publication can settle it,
-    // while fencing delayed responses for this and earlier displayed picks.
+    // while fencing delayed responses for earlier displayed picks. This pick's
+    // own successful response is still what makes its accepted label visible.
     if (authorityPick.outcome === MODEL_PICK_PENDING) {
-      if (pickTarget && requests) supersedeModelSwitchDisplayThrough(requests, pickTarget.sequence);
+      if (pickTarget && requests) supersedeModelSwitchDisplayThrough(requests, pickTarget.sequence - 1);
     } else {
       settleModelSwitchAuthority(ref, [], pickMutationId);
     }
@@ -823,10 +824,20 @@ function reconcileAcceptedModelSwitchAuthority(
     return new Map(current).set(ref, { ...accepted, authoritySequence: pickOrder });
   }
   // A pick this page did not issue owns the model outcome only when it reached
-  // the server's acceptance publication. A newer rejection did not become model
-  // authority, but its admission still superseded every older queued pick.
+  // the server's acceptance point. Before that, its admission cannot supersede
+  // an older queued pick.
   if (authorityPick !== undefined) {
+    if (accepted && authorityModels.some((model) => modelIdentityInvalidatesAcceptedSwitch(model, accepted))) {
+      supersedeAllModelSwitches(ref);
+      const next = new Map(current);
+      next.delete(ref);
+      return next;
+    }
     if (authorityPick.outcome === MODEL_PICK_REJECTED && pickOrder === 0) return current;
+    // The session's acceptance watermark distinguishes a pick that superseded
+    // the queue from one still validating or refused during initial validation.
+    // Older daemons omit it, preserving their conservative ordering behavior.
+    if (authorityPick.acceptedSequence !== undefined && authorityPick.acceptedSequence < pickOrder) return current;
     supersedeAllModelSwitches(ref);
     if (accepted) {
       const displayedOrder = accepted.authoritySequence > 0 ? accepted.authoritySequence : appliedOrder;

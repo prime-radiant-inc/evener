@@ -449,6 +449,9 @@ const (
 // Sequence is the authority, not ClientMutationID. Sequence is issued by the
 // session for every admission, including a pick that carries no client
 // mutation id, so it orders picks from every client that can make one.
+// AcceptedSequence is the newest Sequence that reached an acceptance point.
+// It can trail Sequence when the newest pick failed initial validation, which
+// tells clients that the refusal did not supersede an older accepted pick.
 // ClientMutationID is correlation only: the picker that issued the pick
 // matches its own request by it, and it is empty for a client that sends none.
 // A client that treats an older Sequence as current, or that requires a
@@ -456,6 +459,7 @@ const (
 // session actually accepted.
 type ModelPickState struct {
 	Sequence         uint64           `json:"sequence"`
+	AcceptedSequence *uint64          `json:"acceptedSequence,omitempty"`
 	Outcome          ModelPickOutcome `json:"outcome"`
 	ClientMutationID string           `json:"clientMutationId,omitempty"`
 	ModelProvider    string           `json:"modelProvider,omitempty"`

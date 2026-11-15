@@ -2605,6 +2605,7 @@ export interface ModelListResponse {
 
 export interface ModelPickState {
   sequence: number;
+  acceptedSequence?: number;
   outcome: string;
   clientMutationId?: string;
   modelProvider?: string;

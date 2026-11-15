@@ -740,6 +740,45 @@ test("a pending reconnect snapshot preserves the pick's later rejection correlat
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
+test("a pending snapshot before the set response still lets that response display the pick", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  let resolveSet: (() => void) | undefined;
+  fake.on(
+    "thread/model/set",
+    () =>
+      new Promise<ReturnType<typeof codedModelSetResponse>>((resolve) => {
+        resolveSet = () => resolve(codedModelSetResponse());
+      }),
+  );
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  const setModel = threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+  await waitFor(() => expect(resolveSet).toBeTypeOf("function"));
+  const clientMutationId = latestModelSetMutationId(fake);
+  expect(clientMutationId).toBeTruthy();
+
+  const pendingSnapshot = {
+    ...activeModel,
+    modelPick: {
+      sequence: 1,
+      acceptedSequence: 1,
+      outcome: "pending" as const,
+      clientMutationId: clientMutationId as string,
+    },
+  };
+  act(() => putThreadModel("ref_a", pendingSnapshot));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={pendingSnapshot} />);
+  await act(async () => {
+    resolveSet?.();
+    await setModel;
+  });
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId).toBe(clientMutationId);
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
+});
+
 // Publications arrive long after the state they describe was sampled, so a
 // later publication can carry an older pick. Retiring an accepted choice on the
 // mere presence of a different identity would let such a cached sample cancel
@@ -817,13 +856,63 @@ test("a newer other-client rejection clears the older pick it superseded", async
   );
   const newerRejection = {
     ...activeModel,
-    modelPick: { sequence: 2, outcome: "rejected" as const, clientMutationId: "newer-other-tab-pick" },
+    modelPick: {
+      sequence: 2,
+      acceptedSequence: 2,
+      outcome: "rejected" as const,
+      clientMutationId: "newer-other-tab-pick",
+    },
   };
   act(() => putThreadModel("ref_a", newerRejection));
   view.rerender(<ModelSwitch sessionRef="ref_a" model={newerRejection} />);
 
   expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")).toBeUndefined();
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
+test("an initially refused newer pick preserves the older queued choice", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", ({ model }) => {
+    if (model === "claude-opus-5") throw new Error("model refused");
+    return codedModelSetResponse();
+  });
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const queuedPick = latestModelSetMutationId(fake);
+  expect(queuedPick).toBeTruthy();
+  const queuedSnapshot = {
+    ...activeModel,
+    modelPick: {
+      sequence: 1,
+      acceptedSequence: 1,
+      outcome: "pending" as const,
+      clientMutationId: queuedPick as string,
+    },
+  };
+  act(() => putThreadModel("ref_a", queuedSnapshot));
+
+  await expect(threadsStore.getState().setModel("ref_a", "anthropic", "claude-opus-5")).rejects.toThrow();
+  const refusedPick = latestModelSetMutationId(fake);
+  expect(refusedPick).toBeTruthy();
+  const refusedSnapshot = {
+    ...activeModel,
+    modelPick: {
+      sequence: 2,
+      acceptedSequence: 1,
+      outcome: "rejected" as const,
+      clientMutationId: refusedPick as string,
+    },
+  };
+  act(() => putThreadModel("ref_a", refusedSnapshot));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={refusedSnapshot} />);
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId).toBe(queuedPick);
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
 });
 
 test("a replacement session resets pick order before reconciling its rejection", async () => {
@@ -834,13 +923,31 @@ test("a replacement session resets pick order before reconciling its rejection",
 
   const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
   const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
-  act(() => putThreadModel("ref_a", { ...activeModel, modelPick: { sequence: 5, outcome: "applied" } }));
   await pickModel(user, "gpt", /gpt-5\.5/i);
   await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const acceptedPick = latestModelSetMutationId(fake);
+  expect(acceptedPick).toBeTruthy();
+  act(() =>
+    putThreadModel("ref_a", {
+      ...activeModel,
+      modelPick: {
+        sequence: 5,
+        acceptedSequence: 5,
+        outcome: "pending",
+        clientMutationId: acceptedPick as string,
+      },
+    }),
+  );
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")?.authoritySequence).toBe(5);
 
   const replacement = testModel({
     threadId: "thr_replacement",
-    modelPick: { sequence: 1, outcome: "rejected", clientMutationId: "replacement-session-pick" },
+    modelPick: {
+      sequence: 1,
+      acceptedSequence: 1,
+      outcome: "rejected",
+      clientMutationId: "replacement-session-pick",
+    },
   });
   act(() => putThreadModel("ref_a", replacement));
   view.rerender(<ModelSwitch sessionRef="ref_a" model={replacement} />);

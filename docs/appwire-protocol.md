@@ -2910,6 +2910,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `sequence` | uint64 |  |  |
+| `acceptedSequence` | \*uint64 | yes |  |
 | `outcome` | [appwire.ModelPickOutcome](#modelpickoutcome) |  |  |
 | `clientMutationId` | string | yes |  |
 | `modelProvider` | string | yes |  |
