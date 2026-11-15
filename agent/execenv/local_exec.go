@@ -39,6 +39,9 @@ func (e *LocalExecutionEnvironment) ExecArgv(ctx context.Context, name string, a
 }
 
 func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) (string, error) {
+	if e.sandboxReRootErr != nil {
+		return "", e.sandboxReRootErr
+	}
 	dir := strings.TrimSpace(workingDir)
 	if dir == "" {
 		dir = e.RootDir

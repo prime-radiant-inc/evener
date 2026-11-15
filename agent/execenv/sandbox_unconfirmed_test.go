@@ -101,3 +101,42 @@ func TestUnconfirmedSandboxKeepsADefinitiveNo(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedWorktreeStartupRefusesCommandsAfterDefinitiveRecheckFailure(t *testing.T) {
+	t.Parallel()
+	lane, _, home := twoLanes(t)
+	main := filepath.Join(filepath.Dir(lane), "main")
+	recheck := sandbox.NewBackendRecheck(func() sandbox.CheckOutcome { return sandbox.CheckFailed })
+	host := sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: passThroughBwrap(t), BwrapRecheck: recheck}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, lane)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(lane)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+
+	// Session startup's git snapshot triggers the definitive recheck while the
+	// environment is still rooted in the managed worktree.
+	_, err = env.ExecArgv(context.Background(), "git", []string{"status", "--short"}, 10_000, "", nil)
+	if refusalKind(t, err) != sandbox.RefusalDefinitive {
+		t.Fatalf("the startup git command must be refused after a definitive check, got %v", err)
+	}
+
+	// The occupancy-lock path re-roots to the main checkout to run Git. A
+	// failed re-root must not turn that control environment into an off env.
+	control := env.WithWorkingDirectory(main)
+	if refusalKind(t, control.SandboxReRootError()) != sandbox.RefusalDefinitive {
+		t.Fatalf("the control re-root must retain the definitive refusal, got %v", control.SandboxReRootError())
+	}
+	marker := filepath.Join(t.TempDir(), "spawned")
+	_, err = control.ExecArgv(context.Background(), "touch", []string{marker}, 10_000, "", nil)
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Errorf("refused command ran outside the worktree: marker stat = %v", statErr)
+	}
+	if refusalKind(t, err) != sandbox.RefusalDefinitive {
+		t.Errorf("the control environment must refuse an unconfined spawn, got %v", err)
+	}
+}
