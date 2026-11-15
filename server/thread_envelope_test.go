@@ -1167,6 +1167,32 @@ func TestRejectedPickSurvivesAStalePendingSample(t *testing.T) {
 	}
 }
 
+func TestModelSwitchRejectionWarningRefreshesPickAfterFinalCheckpoint(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	src := &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "th_1"}}
+	src.setModelPick(appwire.ModelPickState{
+		Sequence: 8, Outcome: appwire.ModelPickPending, ClientMutationID: "pick-refused-at-idle-tail",
+	})
+	publishEnvelope(srv, src)
+	feedBridge(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_1", Data: events.TurnEndedData{}})
+
+	// The idle tail rejects the queued pick after the turn's final checkpoint.
+	// Its warning is the last event that can refresh the durable snapshot state.
+	src.setModelPick(appwire.ModelPickState{
+		Sequence: 8, Outcome: appwire.ModelPickRejected, ClientMutationID: "pick-refused-at-idle-tail",
+	})
+	feedBridge(srv, events.SessionEvent{Kind: events.EventWarning, SessionID: "th_1", Data: events.WarningData{
+		Code: events.WarningCodeModelSwitchRejected, ClientMutationID: "pick-refused-at-idle-tail",
+	}})
+
+	got := readThreadOverWire(t, srv, "local:th_1").Evener.ModelPick
+	if got == nil || got.Outcome != appwire.ModelPickRejected {
+		t.Fatalf("modelPick = %+v, want the rejected outcome after the final turn checkpoint", got)
+	}
+}
+
 // TestEveryMutationHandlerPublishesItsQueueChange pins the change points that
 // reach the daemon through a HANDLER rather than through the event stream.
 //

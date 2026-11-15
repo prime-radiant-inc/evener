@@ -715,6 +715,31 @@ test("a reconnect snapshot's rejected outcome clears the pick after its notice i
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
+test("a pending reconnect snapshot preserves the pick's later rejection correlation", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const queuedPick = threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId;
+  expect(queuedPick).toBeTruthy();
+
+  const pendingSnapshot = {
+    ...activeModel,
+    modelPick: { sequence: 1, outcome: "pending" as const, clientMutationId: queuedPick as string },
+  };
+  act(() => putThreadModel("ref_a", pendingSnapshot));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={pendingSnapshot} />);
+  act(() => emitModelSwitchRejection(fake, queuedPick));
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")).toBeUndefined();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+});
+
 // Publications arrive long after the state they describe was sampled, so a
 // later publication can carry an older pick. Retiring an accepted choice on the
 // mere presence of a different identity would let such a cached sample cancel
@@ -743,6 +768,32 @@ test("a cached republication of an older pick does not cancel a newer accepted p
 
   expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId).toBe(queued?.clientMutationId);
   expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
+});
+
+test("a cached older rejection does not erase a newer pick's rejection correlation", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => codedModelSetResponse());
+
+  const activeModel = testModel({ status: { type: "active" }, activeTurnId: "turn_1" });
+  const view = render(<ModelSwitch sessionRef="ref_a" model={activeModel} />);
+  act(() => putThreadModel("ref_a", { ...activeModel, modelPick: { sequence: 2, outcome: "applied" } }));
+  await pickModel(user, "gpt", /gpt-5\.5/i);
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5"));
+  const queuedPick = threadsStore.getState().acceptedModelSwitches.get("ref_a")?.clientMutationId;
+  expect(queuedPick).toBeTruthy();
+
+  const cachedRejection = {
+    ...activeModel,
+    modelPick: { sequence: 1, outcome: "rejected" as const, clientMutationId: "older-other-tab-pick" },
+  };
+  act(() => putThreadModel("ref_a", cachedRejection));
+  view.rerender(<ModelSwitch sessionRef="ref_a" model={cachedRejection} />);
+  act(() => emitModelSwitchRejection(fake, queuedPick));
+
+  expect(threadsStore.getState().acceptedModelSwitches.get("ref_a")).toBeUndefined();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
 test("accepted model display follows pick order when responses arrive out of order", async () => {

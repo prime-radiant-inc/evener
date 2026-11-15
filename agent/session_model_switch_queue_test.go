@@ -191,6 +191,10 @@ func TestQueuedMidTurnSwitchEnumeratesTheLiveListingOnce(t *testing.T) {
 	if got := listings.Load() - baseline; got != 1 {
 		t.Fatalf("live model enumerations for the queued switch = %d, want exactly one (the pick-time preflight; the application must reuse it)", got)
 	}
+	pick, ok := s.ModelPickState()
+	if !ok || pick.Outcome != appwire.ModelPickApplied || pick.Model != "gpt-5.4" {
+		t.Fatalf("model pick = %+v, present = %t; a queued pick that committed must report applied", pick, ok)
+	}
 }
 
 // TestAtRestPickDoesNotSwapUnderATurnThatStartedWhileItValidated pins the
@@ -351,6 +355,10 @@ func TestSupersededPendingApplicationDoesNotOverwriteANewerPick(t *testing.T) {
 	// older application has had its say: the newer pick must have won.
 	if got := s.Profile().Model(); got != "gpt-4.1-mini" {
 		t.Fatalf("profile model = %q after the queued pick resumed past a newer at-rest pick; the newer choice must win (%q)", got, "gpt-4.1-mini")
+	}
+	pick, ok := s.ModelPickState()
+	if !ok || pick.Outcome != appwire.ModelPickApplied || pick.Model != "gpt-4.1-mini" {
+		t.Fatalf("model pick = %+v, present = %t; the superseded queued pick must not overwrite the newer applied outcome", pick, ok)
 	}
 }
 

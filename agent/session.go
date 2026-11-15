@@ -2253,6 +2253,8 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	// Committing accepts the pick.
 	if fence.pickSeq > s.modelPickAccepted {
 		s.modelPickAccepted = fence.pickSeq
+	}
+	if fence.pickSeq != 0 && fence.pickSeq >= s.modelPickState.Sequence {
 		s.modelPickState = appwire.ModelPickState{
 			Sequence:         fence.pickSeq,
 			Outcome:          appwire.ModelPickApplied,

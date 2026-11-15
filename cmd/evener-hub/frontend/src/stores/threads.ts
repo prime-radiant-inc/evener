@@ -655,6 +655,7 @@ const modelSwitchRequests = new Map<string, ModelSwitchRequestState>();
 // order resets with the identity rather than rejecting the new session's lower
 // numbers as stale.
 const modelPickOrders = new Map<string, { identity: string; order: number }>();
+const MODEL_PICK_PENDING = "pending";
 const MODEL_PICK_REJECTED = "rejected";
 
 function modelPickOrder(ref: string): number {
@@ -777,28 +778,32 @@ function reconcileAcceptedModelSwitchAuthority(
   // A request that already settled leaves the pending maps, so the accepted
   // entry itself is the second record of which pick this page issued.
   const pickMutationId = authorityPick?.clientMutationId;
+  const pickTarget = pickMutationId ? modelSwitchTargetByMutationID(requests, pickMutationId) : undefined;
   const pickOurs =
     pickMutationId !== undefined &&
     pickMutationId !== "" &&
-    (modelSwitchTargetByMutationID(requests, pickMutationId) !== undefined ||
-      accepted?.clientMutationId === pickMutationId);
+    (pickTarget !== undefined || accepted?.clientMutationId === pickMutationId);
   // The session stamps an order on every acceptance, identified or not, so any
   // sample this page has already accounted for is a cached republication and
-  // never a supersession. A rejection is the one thing that still needs
-  // acting on: it may arrive for a pick whose pending acceptance was already
-  // reported, and it is durable session state that the display has to obey.
+  // never a supersession. This page's own terminal outcome still needs acting
+  // on, so its exact identity bypasses this freshness check.
   const accounted = pickOrder > 0 && pickOrder <= appliedOrder;
-  if (authorityPick !== undefined && accounted && authorityPick.outcome !== MODEL_PICK_REJECTED && !pickOurs)
-    return current;
+  if (authorityPick !== undefined && accounted && !pickOurs) return current;
   for (const model of authorityModels) noteModelPickOrder(ref, authorityPick, model);
   if (authorityPick !== undefined && pickOurs) {
-    settleModelSwitchAuthority(ref, [], pickMutationId);
+    // Pending is an observation, not an outcome. Keep the exact request
+    // correlation so a later applied or rejected publication can settle it,
+    // while fencing delayed responses for this and earlier displayed picks.
+    if (authorityPick.outcome === MODEL_PICK_PENDING) {
+      if (pickTarget && requests) supersedeModelSwitchDisplayThrough(requests, pickTarget.sequence);
+    } else {
+      settleModelSwitchAuthority(ref, [], pickMutationId);
+    }
     // A rejection is durable session state, so the snapshot still carries it
     // after the notice that announced it was evicted from the session's
     // bounded ring. It clears the display it names whether or not that notice
     // ever reached this page.
     if (authorityPick.outcome === MODEL_PICK_REJECTED) {
-      supersedeAllModelSwitches(ref);
       if (!accepted || accepted.clientMutationId !== authorityPick.clientMutationId) return current;
       const next = new Map(current);
       next.delete(ref);
@@ -811,6 +816,20 @@ function reconcileAcceptedModelSwitchAuthority(
     if (accepted.authoritySequence === pickOrder) return current;
     return new Map(current).set(ref, { ...accepted, authoritySequence: pickOrder });
   }
+  // A pick this page did not issue owns the model outcome only when it reached
+  // the server's acceptance publication. A rejection never became authority.
+  if (authorityPick !== undefined) {
+    if (authorityPick.outcome === MODEL_PICK_REJECTED) return current;
+    supersedeAllModelSwitches(ref);
+    if (accepted) {
+      const displayedOrder = accepted.authoritySequence > 0 ? accepted.authoritySequence : appliedOrder;
+      if (pickOrder > 0 && pickOrder <= displayedOrder) return current;
+      const next = new Map(current);
+      next.delete(ref);
+      return next;
+    }
+    return current;
+  }
   // A pick this page did not issue owns the model outcome: it retires the
   // displayed entry and every request still in flight. A live notification no
   // request of this page answers is that same authority, so a request issued
@@ -820,23 +839,8 @@ function reconcileAcceptedModelSwitchAuthority(
     requests,
     authorityModels.map(({ modelProvider, model }) => ({ modelProvider, model })),
   );
-  if (authorityPick !== undefined || (source === "modelChangedNotification" && !correlated && !answer)) {
+  if (source === "modelChangedNotification" && !correlated && !answer) {
     supersedeAllModelSwitches(ref);
-  }
-  // A pick this page did not issue retires the display only when it is newer
-  // than the order already applied: a sample this page accounted for is a
-  // cached republication and never a supersession.
-  if (authorityPick !== undefined && !pickOurs) {
-    if (accepted) {
-      const displayedOrder = accepted.authoritySequence > 0 ? accepted.authoritySequence : appliedOrder;
-      if (pickOrder > 0 && pickOrder <= displayedOrder) return current;
-      const next = new Map(current);
-      next.delete(ref);
-      return next;
-    }
-    // A rejected pick is durable session state and settles any request behind
-    // it, but it names no display this page holds.
-    return current;
   }
   // A named pick settles by identity alone. An unchanged running model is not
   // proof a pending request was accepted: a pick of the model already in force

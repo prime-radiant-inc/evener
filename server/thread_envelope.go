@@ -320,6 +320,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics | facetTurnFailure | facetModelPick,
 	events.EventReasoningEffortChanged: facetReasoning,
 	events.EventVisionModelChanged:     facetVision,
+	events.EventWarning:                facetModelPick,
 
 	// Goal state. GOAL_UPDATED is the direct structured carrier for every mutation.
 	// The older lifecycle events remain refresh triggers for compatibility with
