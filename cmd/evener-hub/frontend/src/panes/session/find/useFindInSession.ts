@@ -56,6 +56,7 @@ interface FindInSessionOptions {
   paneId: string;
   rows: readonly TranscriptBodyRow[];
   listRef: RefObject<VirtualListHandle | null>;
+  ownerDocument: Document;
   jumpToRow(index: number): void;
   holdPosition(): void;
   /** Gives back the place a landing held, once no match is current. */
@@ -148,6 +149,7 @@ export function useFindInSession({
   paneId,
   rows,
   listRef,
+  ownerDocument,
   jumpToRow,
   holdPosition,
   releaseHold,
@@ -425,7 +427,7 @@ export function useFindInSession({
     if (!isOpen) return;
     const port = listRef.current?.getScrollElement();
     if (!port) return;
-    const view = port.ownerDocument.defaultView ?? window;
+    const view = ownerDocument.defaultView ?? window;
     let frame: number | null = null;
     const observer = new MutationObserver(() => {
       if (frame !== null) return;
@@ -476,19 +478,19 @@ export function useFindInSession({
       settle.current = null;
       markTranscript(port, [], null, "");
     };
-  }, [isOpen, listRef, hasRows]);
+  }, [isOpen, listRef, hasRows, ownerDocument]);
   // Marking is safe inside a commit; only the scroll waits for a frame.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: moving the port changes its highlight registry even when hits do not change
   useLayoutEffect(() => {
     if (!isOpen) return;
     markTranscript(listRef.current?.getScrollElement() ?? null, hits, currentKey, needle);
-  }, [isOpen, listRef, hits, currentKey, needle]);
+  }, [isOpen, listRef, hits, currentKey, needle, ownerDocument]);
 
   // The app's find chord. Declining leaves the keydown to the browser, which
   // is how its own find stays available outside a transcript, and inside the
   // bar itself for a reader who wants it.
   const ownsKeyboardRef = useRef(ownsKeyboard);
   ownsKeyboardRef.current = ownsKeyboard;
-  const keyboardDocument = listRef.current?.getScrollElement()?.ownerDocument;
   // biome-ignore lint/correctness/useExhaustiveDependencies: hasRows signals that the scroll port mounted after the render
   useEffect(() => {
     installKeybindings();
@@ -501,14 +503,14 @@ export function useFindInSession({
     });
     // The shell dispatcher lives in the opener window. A Dockview popout's
     // keydowns never reach it; give the popout the same binding registry.
-    const view = listRef.current?.getScrollElement()?.ownerDocument.defaultView;
+    const view = ownerDocument.defaultView;
     if (!view || view === window) return unregister;
     const detach = attachPopoutDispatcher(view);
     return () => {
       detach();
       unregister();
     };
-  }, [open, keyboardDocument, hasRows, listRef]);
+  }, [open, ownerDocument, hasRows, listRef]);
 
   const leaveHistory = useCallback(() => {
     settle.current = null;

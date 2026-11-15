@@ -55,17 +55,22 @@ import { adoptRemovedConsumers, cancelRemovedConsumers } from "./workspaceTransc
 export type { TranscriptReader } from "./transcriptPaging";
 export { resetTranscriptPagingForTests };
 
-export function useTranscript(ref: string, reader: string | TranscriptReadView | null = ref): UseTranscriptResult {
-  return useTranscriptInternal(ref, reader);
+export function useTranscript(
+  ref: string,
+  reader: string | TranscriptReadView | null = ref,
+  ownerDocument: Document = document,
+): UseTranscriptResult {
+  return useTranscriptInternal(ref, reader, ownerDocument);
 }
 
 export function useTranscriptReader(ref: string, reader: TranscriptReader): UseTranscriptResult {
-  return useTranscriptInternal(ref, reader);
+  return useTranscriptInternal(ref, reader, document);
 }
 
 function useTranscriptInternal(
   ref: string,
   reader: string | TranscriptReadView | TranscriptReader | null,
+  ownerDocument: Document,
 ): UseTranscriptResult {
   const typedReader = typeof reader === "object" && reader !== null && "membership" in reader ? reader : undefined;
   const standalone = typedReader?.membership === "standalone" ? typedReader : undefined;
@@ -119,7 +124,11 @@ function useTranscriptInternal(
     } else if (pagingByRef.get(ref) !== entry) return;
     let release: (() => void) | undefined;
     const sync = () => {
-      if (document.visibilityState === "hidden" || (view && !view.readable) || (typedReader && !typedReader.readable)) {
+      if (
+        ownerDocument.visibilityState === "hidden" ||
+        (view && !view.readable) ||
+        (typedReader && !typedReader.readable)
+      ) {
         release?.();
         release = undefined;
       } else if (!release) {
@@ -133,13 +142,13 @@ function useTranscriptInternal(
     };
     sync();
     const unsubscribe = (typedReader ?? view)?.subscribe(sync);
-    document.addEventListener("visibilitychange", sync);
+    ownerDocument.addEventListener("visibilitychange", sync);
     return () => {
-      document.removeEventListener("visibilitychange", sync);
+      ownerDocument.removeEventListener("visibilitychange", sync);
       unsubscribe?.();
       release?.();
     };
-  }, [paging, ready, ref, entry, binding, viewId, findConsumer, view, typedReader]);
+  }, [paging, ready, ref, entry, binding, viewId, findConsumer, view, typedReader, ownerDocument]);
 
   useEffect(() => {
     if (!standalone) return;

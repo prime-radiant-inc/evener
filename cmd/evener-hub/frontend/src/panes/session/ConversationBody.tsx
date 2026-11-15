@@ -13,6 +13,7 @@ import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
 import { useThreadClaim } from "../../stores/useThreadModel";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import { useOwnedDocument } from "../../widgets/internal/useOwnedDocument";
 import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
@@ -241,6 +242,9 @@ function LiveConversationBody({
   render(parts: ConversationParts): React.ReactNode;
   submission?: ComposerSubmission;
 }) {
+  const virtualListRef = useRef<VirtualListHandle>(null);
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
+  const ownerDocument = useOwnedDocument(transcriptContainerRef);
   const {
     model,
     hasOlder,
@@ -253,7 +257,7 @@ function LiveConversationBody({
     cancelOlder,
     findOlder,
     cancelFindOlder,
-  } = useTranscript(ref, seat.readView);
+  } = useTranscript(ref, seat.readView, ownerDocument);
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
@@ -373,10 +377,8 @@ function LiveConversationBody({
   // reply replaces that request, so the two never both place the reader.
   const initialViewCapture = openAtRow >= 0 ? undefined : retainedCapture;
 
-  const virtualListRef = useRef<VirtualListHandle>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
-  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const flow = useTranscriptScroll({
     ref,
     viewId: seat.readView?.id ?? seat.viewFallbackId,
@@ -418,6 +420,7 @@ function LiveConversationBody({
     paneId: seat.viewFallbackId,
     rows: renderRows,
     listRef: virtualListRef,
+    ownerDocument,
     jumpToRow: flow.jumpToRow,
     holdPosition: flow.holdPosition,
     releaseHold: flow.releaseHold,

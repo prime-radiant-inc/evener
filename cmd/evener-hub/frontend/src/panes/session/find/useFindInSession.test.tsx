@@ -21,6 +21,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { testThread } from "../../../threadTestUtils";
 import type { VirtualListHandle } from "../../../widgets";
+import { useOwnedDocument } from "../../../widgets/internal/useOwnedDocument";
 import { transcriptRowsForProjection } from "../transcript/TranscriptBody";
 import { resetTranscriptPagingForTests, useTranscript } from "../transcript/useTranscript";
 import "../index";
@@ -77,9 +78,6 @@ let releases = 0;
 let ownsKeyboard = true;
 
 function Harness() {
-  const transcript = useTranscript(REF, "pane_a");
-  const { model } = transcript;
-  const rows = useMemo(() => (model ? transcriptRowsForProjection(projectThread(model, CONFIG)) : []), [model]);
   const port = useRef<HTMLDivElement>(null);
   const list = useRef<VirtualListHandle>({
     scrollToIndex: () => {},
@@ -87,11 +85,16 @@ function Harness() {
     isLayoutCurrent: () => true,
     getVisibleRange: () => null,
   });
+  const ownerDocument = useOwnedDocument(port);
+  const transcript = useTranscript(REF, "pane_a", ownerDocument);
+  const { model } = transcript;
+  const rows = useMemo(() => (model ? transcriptRowsForProjection(projectThread(model, CONFIG)) : []), [model]);
   const find = useFindInSession({
     ref: REF,
     paneId: "pane_a",
     rows,
     listRef: list,
+    ownerDocument,
     jumpToRow: (index) => jumps.push(index),
     holdPosition: () => {
       holds += 1;
@@ -619,6 +622,51 @@ test("moving an existing conversation into a popout moves its Find shortcut too"
   });
   expect(event.defaultPrevented).toBe(true);
   expect(popdoc.querySelector('[data-testid="find-bar"]')).not.toBeNull();
+  mounted.unmount();
+  frame.remove();
+});
+
+test("moving an open Find into a popout marks newly mounted text while the opener frames pause", async () => {
+  const client = connectReadyFakeClient();
+  scriptHistory(client, [turn("t1", "needle")], []);
+  await act(async () => {
+    await threadsStore.getState().ensureThread(REF);
+  });
+  const mounted = render(<Harness />);
+  openFind();
+  type("needle");
+  expect(currentAnchor()).toBe("t1-item");
+
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popup = frame.contentWindow;
+  const popdoc = frame.contentDocument;
+  if (!popup || !popdoc) throw new Error("missing popout window");
+  // The mounted React tree moves without remounting or rerendering Find.
+  // The owner-document watcher must rebind the observer itself.
+  popdoc.body.append(popdoc.adoptNode(mounted.container));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  vi.spyOn(popdoc, "visibilityState", "get").mockReturnValue("visible");
+  // The opener's frame queue is intentionally not drained.
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(popup, "requestAnimationFrame").mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  const entry = popdoc.querySelector('[data-view-anchor-id="t1-item"]') as HTMLElement;
+  entry.removeAttribute(FIND_CURRENT_ATTRIBUTE);
+  entry.textContent = "a new needle appears";
+  await act(async () => {
+    await Promise.resolve();
+  });
+  act(() => {
+    for (const callback of frames.splice(0)) callback(performance.now());
+  });
+  expect(entry.hasAttribute(FIND_CURRENT_ATTRIBUTE)).toBe(true);
   mounted.unmount();
   frame.remove();
 });
