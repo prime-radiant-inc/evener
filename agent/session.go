@@ -2992,11 +2992,11 @@ func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 
 // recordTranscriptLocked is the one door every session write to its transcript
 // goes through, with attentionMu held: it stamps the entry with the session's
-// configured model, holds a buffered or durable write made before the writer
-// is attached (see holdTurnUntilTranscriptReady; the synced door refuses one
-// instead), and otherwise appends through door with the given placement,
-// reporting whether the entry was recorded. A held turn reports not recorded,
-// with no error.
+// configured model, holds a write through any door but the synced one made
+// before the writer is attached (see holdTurnUntilTranscriptReady; the synced
+// door refuses one instead), and otherwise appends through door with the given
+// placement, reporting whether the entry was recorded. A held turn reports not
+// recorded, with no error.
 func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, place transcript.Placement) (transcript.Record, error) {
 	t = s.withEntryModel(t)
 	if door == transcript.DoorSynced {
@@ -3052,6 +3052,23 @@ func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 // (appendTurnAfterTranscriptWrite) or the fold publication transaction.
 func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	_, err := s.recordTranscriptLocked(t, transcript.DoorDurable, transcript.PlaceSession)
+	return err
+}
+
+// writeTranscriptDeferredLocked records a turn whose fsync is left to the
+// writer's SyncInterval gate: a failed write still rolls back and reports, so
+// the turn is recorded or not recorded exactly as through the durable door,
+// but a recorded turn is not fsynced on its own. It is the per-round door —
+// the assistant turn — because a turn with many tool rounds would otherwise
+// pay one fsync per round. The debt is settled by the next append that passes
+// the interval, a synced write (the turn's completion, a delivered message, a
+// terminal job result), or Close. A power crash can drop what the interval
+// still covers; a process crash drops nothing handed to the OS.
+//
+// A turn whose loss a reader would see needs the durable or synced door
+// instead: this one promises recorded, not durable.
+func (s *Session) writeTranscriptDeferredLocked(t schema.Turn) error {
+	_, err := s.recordTranscriptLocked(t, transcript.DoorDeferred, transcript.PlaceSession)
 	return err
 }
 
@@ -3238,7 +3255,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		}
 		return s.appendTurnAfterTranscriptWriteLocked(
 			t,
-			func() error { return s.writeTranscriptDurableLocked(t) },
+			func() error { return s.writeTranscriptDeferredLocked(t) },
 			func() {
 				s.history = append(s.history, t)
 				// The round's entry is recorded: the next model call is a new
