@@ -330,6 +330,14 @@ hubConnected)` for a host's name and connection, `accessFacts(session)` for the
 sandbox mode and network setting, and `loadedPluginNames(session)`, which
 returns `null` for an unknown inventory and an empty array for an empty one.
 
+## Find in session
+
+`findInSession.ts` holds what every client's Find agrees on: `findNeedle` and
+`textMatchesFind` (case and whitespace never decide a match), and
+`findMatches`, `stepMatch` and `matchPosition` for stepping through matching
+rows. Each client supplies the
+text of its own rows and its own older-history demand.
+
 ## Older-history demand
 
 `HistoryPaging` retains a requested older page until history advances. Attach

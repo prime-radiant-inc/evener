@@ -1,6 +1,6 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import { isAttentionWorthy } from "./scrollPredicates";
+import { isAttentionWorthy, verticalInputCanMovePort } from "./scrollPredicates";
 
 function model(status: string, askPending = false): ThreadModel {
   return {
@@ -26,4 +26,25 @@ test("a pending question is attention-worthy independently of the status", () =>
 test("warnings and restart needs remain attention-worthy", () => {
   expect(isAttentionWorthy(model("warning"))).toBe(true);
   expect(isAttentionWorthy(model("restartRequired"))).toBe(true);
+});
+
+test("a popout's nested scroller consumes its own wheel before the transcript", () => {
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  try {
+    const popdoc = frame.contentDocument;
+    if (!popdoc) throw new Error("missing popout document");
+    const port = popdoc.createElement("div");
+    const inner = popdoc.createElement("div");
+    inner.style.overflowY = "auto";
+    Object.defineProperty(inner, "scrollHeight", { value: 300 });
+    Object.defineProperty(inner, "clientHeight", { value: 100 });
+    port.append(inner);
+    popdoc.body.append(port);
+    expect(verticalInputCanMovePort(port, { scrollTop: 100, scrollHeight: 500, clientHeight: 100 }, inner, 1)).toBe(
+      false,
+    );
+  } finally {
+    frame.remove();
+  }
 });

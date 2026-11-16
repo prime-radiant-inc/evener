@@ -1,0 +1,64 @@
+/* The find bar docks at the top of the conversation column, above the
+ * transcript and inside the reading measure, so it never floats over
+ * transcript text or the composer. */
+.dock {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: var(--session-measure);
+  margin-inline: auto;
+  padding: var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--edge);
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* A one-track grid stretches the field's control to the room the bar has
+ * left, and lets it shrink below its intrinsic width on a phone. */
+.field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin-right: var(--space-1);
+}
+
+/* Tabular figures keep "9 of 12" from shifting the buttons as it counts. */
+.status {
+  flex: 0 0 auto;
+  padding-inline: var(--space-1);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Find's marks on the transcript (findMarks.ts). The current entry carries
+ * an attribute; matching words are CSS highlight ranges, which paint without
+ * changing the DOM. A fold standing in for a still-hidden entry gets the
+ * same outline. It borrows the focus ring's width in the muted accent, so it
+ * reads as "here" without claiming focus. The outline sits inside the entry's own box: a tool call lives
+ * in a card that clips anything drawn outside it. */
+:global([data-find-current]) {
+  outline: var(--focus-ring-width) solid var(--accent-edge);
+  outline-offset: calc(-1 * var(--focus-ring-width));
+  border-radius: var(--radius-control);
+}
+
+::highlight(evener-find) {
+  background-color: var(--accent-bg);
+  color: var(--ink-hi);
+}
+
+::highlight(evener-find-current) {
+  background-color: var(--selection-bg);
+  color: var(--ink-hi);
+}

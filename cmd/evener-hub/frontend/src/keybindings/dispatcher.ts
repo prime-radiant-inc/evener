@@ -63,13 +63,15 @@ export function isIMECompositionKeydown(event: KeyboardEvent): boolean {
  * the property at all (it is undefined there), so the attribute walk stands
  * in for it. Everything else doesn't count. */
 export const isEditableTarget: EditableTargetPredicate = (target) => {
-  if (!(target instanceof HTMLElement)) return false;
+  // A popout's elements are not instances of the opener's HTMLElement.
+  if (target === null || typeof target !== "object" || (target as Node).nodeType !== 1) return false;
+  const element = target as HTMLElement;
   return (
-    target.isContentEditable ||
-    hasEditableContentEditableAncestor(target) ||
-    target.tagName === "INPUT" ||
-    target.tagName === "TEXTAREA" ||
-    target.tagName === "SELECT"
+    element.isContentEditable ||
+    hasEditableContentEditableAncestor(element) ||
+    element.tagName === "INPUT" ||
+    element.tagName === "TEXTAREA" ||
+    element.tagName === "SELECT"
   );
 };
 
