@@ -178,7 +178,7 @@ func TestSessionAPILoggerReleaseSessionReleasesOnlyTarget(t *testing.T) {
 }
 
 func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
-	// Not parallel: swaps the package's apiLogFileSync seam.
+	// Not parallel: swaps the package's apiLogFileWrite seam.
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -186,17 +186,17 @@ func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = logger.Close() })
 
-	oldSync := apiLogFileSync
-	t.Cleanup(func() { apiLogFileSync = oldSync })
-	syncEntered := make(chan struct{})
-	releaseSync := make(chan struct{})
+	oldWrite := apiLogFileWrite
+	t.Cleanup(func() { apiLogFileWrite = oldWrite })
+	writeEntered := make(chan struct{})
+	releaseWrite := make(chan struct{})
 	var blockOnce sync.Once
-	apiLogFileSync = func(file *os.File) error {
+	apiLogFileWrite = func(file *os.File, data []byte) (int, error) {
 		blockOnce.Do(func() {
-			close(syncEntered)
-			<-releaseSync
+			close(writeEntered)
+			<-releaseWrite
 		})
-		return file.Sync()
+		return oldWrite(file, data)
 	}
 
 	appendDone := make(chan error, 1)
@@ -204,7 +204,7 @@ func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
 	go func() {
 		appendDone <- logger.AppendAttempt(ctx, standaloneCanonicalAttempt("ag_release", 1))
 	}()
-	<-syncEntered
+	<-writeEntered
 
 	releaseDone := make(chan error, 1)
 	go func() { releaseDone <- logger.ReleaseSession("sess-a") }()
@@ -213,7 +213,7 @@ func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
 		t.Fatalf("ReleaseSession returned before admitted append synced: %v", err)
 	default:
 	}
-	close(releaseSync)
+	close(releaseWrite)
 	if err := <-appendDone; err != nil {
 		t.Fatalf("AppendAttempt: %v", err)
 	}
@@ -480,7 +480,13 @@ func TestSessionAPILoggerRejectsCredentialCollisionsCreatedByCanonicalEncoding(t
 	}
 }
 
-func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
+// The durability ruling of 2026-11-16 retired "sync before every append
+// succeeds" in favour of a batched bound: a power crash may lose the tail, and
+// one barrier per logical request is the batch. What this asserts is what the
+// ruling kept — the sync count stays inside the bound the batching window
+// implies, Close syncs whatever is still dirty, and every accepted record is on
+// disk after Close.
+func TestAPILoggerCanonicalSyncsAtSettlementBoundary(t *testing.T) {
 	// Not parallel: swaps the package's apiLogFileSync seam.
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
@@ -494,22 +500,31 @@ func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
 		syncCount++
 		return oldSync(file)
 	}
-	for index := 1; index <= 2; index++ {
-		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_sync_each", index)); err != nil {
+	const attempts = 3
+	for index := 1; index <= attempts; index++ {
+		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_sync_batch", index)); err != nil {
 			t.Fatalf("AppendAttempt %d: %v", index, err)
 		}
-		if syncCount != index {
-			t.Fatalf("sync calls after append %d = %d, want %d", index, syncCount, index)
+		// An attempt record rides the next settlement boundary: appending it
+		// must not pay a barrier of its own.
+		if syncCount != 0 {
+			t.Fatalf("attempt append %d synced: %d calls, want 0 before settlement", index, syncCount)
 		}
+	}
+	if err := logger.AppendSettlement(context.Background(), standaloneCanonicalSettlement("ag_sync_batch")); err != nil {
+		t.Fatalf("AppendSettlement: %v", err)
+	}
+	if syncCount != 1 {
+		t.Fatalf("sync calls at settlement = %d, want 1 for the whole group", syncCount)
 	}
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if syncCount != 2 {
-		t.Fatalf("Close added a deferred sync: got %d total calls, want 2", syncCount)
+	if syncCount != 1 {
+		t.Fatalf("Close added a sync for already-synced records: got %d calls, want 1", syncCount)
 	}
-	if got := canonicalRecordCount(t, path); got != 2 {
-		t.Fatalf("record count after close = %d, want 2", got)
+	if got := canonicalRecordCount(t, path); got != attempts+1 {
+		t.Fatalf("record count after close = %d, want %d", got, attempts+1)
 	}
 }
 
@@ -548,11 +563,17 @@ func TestAPILoggerCanonicalAppendUsesOneNewlineTerminatedWrite(t *testing.T) {
 	if _, err := apilog.DecodeRecord(bytes.TrimSuffix(writes[0], []byte{'\n'})); err != nil {
 		t.Fatalf("written record is not canonical: %v", err)
 	}
-	if syncCount != 1 {
-		t.Fatalf("sync calls = %d, want 1", syncCount)
+	// One record is one write and one newline, which is the corruption-freedom
+	// half. When the barrier lands is the batched bound the durability ruling
+	// allows, so an attempt rides the next boundary rather than forcing one.
+	if syncCount != 0 {
+		t.Fatalf("attempt append synced: %d calls, want 0 before a boundary", syncCount)
 	}
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if syncCount != 1 {
+		t.Fatalf("Close sync calls = %d, want 1", syncCount)
 	}
 }
 
@@ -694,7 +715,9 @@ func TestAPILoggerFailureObserverCanCloseSynchronously(t *testing.T) {
 		observerCalls++
 		observerCloseErr = logger.Close()
 	})
-	appendErr := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_observer_close", 1))
+	// The settlement is the boundary that syncs, so its failure is what the
+	// observer sees.
+	appendErr := logger.AppendSettlement(context.Background(), standaloneCanonicalSettlement("ag_observer_close"))
 	assertDetachedAPILogError(t, appendErr, syncErr)
 	if observerCalls != 1 {
 		t.Fatalf("observer calls = %d, want 1", observerCalls)
@@ -712,7 +735,9 @@ func quarantineSessionLogger(t *testing.T, logger *APILogger, sessionID string) 
 	oldSync := apiLogFileSync
 	apiLogFileSync = func(*os.File) error { return syncErr }
 	t.Cleanup(func() { apiLogFileSync = oldSync })
-	err := logger.AppendAttempt(WithAPILogContext(context.Background(), sessionID), standaloneCanonicalAttempt("ag_quarantine_reserve", 1))
+	// The sync happens at the settlement boundary, so the quarantine is induced
+	// by a settlement whose sync fails, not by an attempt append.
+	err := logger.AppendSettlement(WithAPILogContext(context.Background(), sessionID), standaloneCanonicalSettlement("ag_quarantine_reserve"))
 	assertDetachedAPILogError(t, err, syncErr)
 	apiLogFileSync = oldSync
 	return syncErr
@@ -1007,29 +1032,29 @@ func TestRecoverCanonicalAPILogTailFailsClosedOnOversizedCompleteLine(t *testing
 }
 
 func TestAPILoggerCloseWaitsForAdmittedCanonicalAppendAndRejectsLateAppend(t *testing.T) {
-	// Not parallel: swaps the package's apiLogFileSync seam.
+	// Not parallel: swaps the package's apiLogFileWrite seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
 	}
-	oldSync := apiLogFileSync
-	t.Cleanup(func() { apiLogFileSync = oldSync })
-	syncEntered := make(chan struct{})
-	releaseSync := make(chan struct{})
+	oldWrite := apiLogFileWrite
+	t.Cleanup(func() { apiLogFileWrite = oldWrite })
+	writeEntered := make(chan struct{})
+	releaseWrite := make(chan struct{})
 	var blockOnce sync.Once
-	apiLogFileSync = func(file *os.File) error {
+	apiLogFileWrite = func(file *os.File, data []byte) (int, error) {
 		blockOnce.Do(func() {
-			close(syncEntered)
-			<-releaseSync
+			close(writeEntered)
+			<-releaseWrite
 		})
-		return file.Sync()
+		return oldWrite(file, data)
 	}
 
 	appendDone := make(chan error, 1)
 	go func() {
 		appendDone <- logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_close", 1))
 	}()
-	<-syncEntered
+	<-writeEntered
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- logger.Close() }()
 	select {
@@ -1037,7 +1062,7 @@ func TestAPILoggerCloseWaitsForAdmittedCanonicalAppendAndRejectsLateAppend(t *te
 		t.Fatalf("Close returned before admitted append/sync: %v", err)
 	default:
 	}
-	close(releaseSync)
+	close(releaseWrite)
 	if err := <-appendDone; err != nil {
 		t.Fatalf("AppendAttempt: %v", err)
 	}
@@ -1077,11 +1102,16 @@ func TestAPILoggerCanonicalSyncFailureObserved(t *testing.T) {
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), logger)
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+	// The settlement is the batch boundary that syncs, so it is where the
+	// injected sync failure surfaces.
+	group.SettleResult(ctx, nil)
 	if len(failures) != 1 {
 		t.Fatalf("sync failure observations = %d, want 1: %+v", len(failures), failures)
 	}
 	failure := failures[0]
-	if failure.Operation != "append_attempt" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
+	// The barrier lands at the settlement boundary under the batched bound, so
+	// the observation is attributed to the settlement rather than the attempt.
+	if failure.Operation != "append_settlement" || failure.AttemptGroupID != group.ID {
 		t.Fatalf("sync failure = %+v", failure)
 	}
 	if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
@@ -1144,15 +1174,20 @@ func TestAPILoggerCanonicalSyncFailureQuarantinesAllSessionRoutes(t *testing.T) 
 			t.Fatalf("sync failure retained raw error graph: %+v", failure)
 		}
 	}
-	if failures[0].Operation != "append_attempt" || failures[0].AttemptID == "" {
-		t.Fatalf("attempt sync failure identity = %+v", failures[0])
+	// The batched barrier runs at the settlement boundary, so the quarantining
+	// failure carries the settlement's identity.
+	if failures[0].Operation != "append_settlement" {
+		t.Fatalf("settlement sync failure identity = %+v", failures[0])
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-b.api.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("quarantined logger accessed session B target: %v", err)
 	}
 }
 
-func TestAPILoggerCloseDoesNotResyncAcceptedRecords(t *testing.T) {
+// Close is the last batch boundary, so it syncs records no settlement covered.
+// The ruling retired the mirror-image guarantee (a Close that never re-syncs);
+// what it keeps is that an orderly shutdown loses nothing a crash would.
+func TestAPILoggerCloseSyncsRecordsNoSettlementCovered(t *testing.T) {
 	// Not parallel: swaps the package's apiLogFileSync seam.
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
@@ -1165,17 +1200,18 @@ func TestAPILoggerCloseDoesNotResyncAcceptedRecords(t *testing.T) {
 		return oldSync(file)
 	}
 	t.Cleanup(func() { apiLogFileSync = oldSync })
-	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_close_no_sync", 1)); err != nil {
+	// An attempt whose group never settles: Close is the only boundary it gets.
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_close_sync", 1)); err != nil {
 		t.Fatalf("AppendAttempt: %v", err)
 	}
-	if syncCount != 1 {
-		t.Fatalf("sync calls after append = %d, want 1", syncCount)
+	if syncCount != 0 {
+		t.Fatalf("sync calls after append = %d, want 0 before Close", syncCount)
 	}
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if syncCount != 1 {
-		t.Fatalf("Close added a sync: got %d total calls, want 1", syncCount)
+		t.Fatalf("Close sync calls = %d, want 1 for the unsynced record", syncCount)
 	}
 }
 
@@ -1371,6 +1407,20 @@ func appendCanonicalTestRecords(t *testing.T, logger *APILogger, sessionID strin
 		SettledAt:         time.Unix(1_700_000_001, 0).UTC(),
 	}); err != nil {
 		t.Fatalf("AppendSettlement: %v", err)
+	}
+}
+
+// standaloneCanonicalSettlement builds the terminal record for a group whose
+// only attempt is the one standaloneCanonicalAttempt produced.
+func standaloneCanonicalSettlement(groupID string) apilog.APIAttemptGroupSettlement {
+	return apilog.APIAttemptGroupSettlement{
+		Kind:              "attempt_group_settlement",
+		SchemaVersion:     1,
+		AttemptGroupID:    groupID,
+		FinalAttemptID:    identifier.MustNewAPIAttemptID(),
+		FinalAttemptCount: 1,
+		Outcome:           apilog.AttemptSuccess,
+		SettledAt:         time.Unix(1_700_000_001, 0).UTC(),
 	}
 }
 

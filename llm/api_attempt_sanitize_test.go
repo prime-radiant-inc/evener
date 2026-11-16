@@ -243,6 +243,9 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 	meta := testAPIAttemptMeta(startedAt)
 	meta.CredentialMaterial = NewAPILogCredentialMaterial(nil, nil, secret)
 	BeginAPIAttempt(ctx, meta).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+	// The settlement is the batch boundary that syncs, so it is where the
+	// injected sync failure surfaces.
+	apiAttemptGroupFromContext(ctx).SettleResult(ctx, nil)
 
 	if len(observed) != 1 {
 		t.Fatalf("sync failure observer calls = %d, want exactly 1: %+v", len(observed), observed)

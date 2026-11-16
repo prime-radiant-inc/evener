@@ -88,7 +88,9 @@ func FuzzCanonicalAPILoggerAppendPrograms(f *testing.F) {
 		case 3:
 			oldSync := apiLogFileSync
 			apiLogFileSync = func(*os.File) error { return errors.New("scripted sync failure") }
-			err := logger.AppendAttempt(ctx, standaloneCanonicalAttempt("ag_fuzz_sync", 1))
+			// The settlement is the batch boundary that syncs, so a scripted sync
+			// failure surfaces there rather than on the attempt append.
+			err := logger.AppendSettlement(ctx, standaloneCanonicalSettlement("ag_fuzz_sync"))
 			apiLogFileSync = oldSync
 			if err == nil {
 				t.Fatal("sync failure was accepted")
