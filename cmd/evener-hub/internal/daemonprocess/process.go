@@ -143,6 +143,21 @@ type processHandle interface {
 	close() error
 }
 
+// exitWaiter is the optional capability a handle has when the OS can report its
+// exit as a signal rather than as a repeated question. Linux's pidfd is one:
+// it becomes readable the moment the process exits, so a waiter can park until
+// then instead of asking again every tick.
+//
+// It is optional on purpose. Darwin identifies an exit by re-reading the
+// process's audit token and BSD info, which is an inspection and not a signal,
+// so a handle without this capability keeps the polling fallback. A platform is
+// only allowed to omit polling when it can prove exit.
+type exitWaiter interface {
+	// waitExit blocks until the process has exited or ctx is done. It returns
+	// the same errors exited does.
+	waitExit(context.Context) error
+}
+
 type controller struct {
 	bind func(int) (processHandle, error)
 }
@@ -152,6 +167,9 @@ type process struct {
 	target     Target
 	generation string
 	closed     bool
+	// closedCh is closed by Close, so a parked Wait is woken rather than left
+	// polling a descriptor Close is about to release.
+	closedCh chan struct{}
 }
 
 // validate refuses a target no inspection could be bound to.
@@ -250,6 +268,51 @@ func (p *process) Kill() error {
 func (p *process) Wait(ctx context.Context) error {
 	// pidfd readiness (Linux) or unique process identity (Darwin) confirms exit;
 	// signal delivery and a missing rendezvous file do not.
+	//
+	// Where the OS can report the exit itself, park on it: a waiter that already
+	// knows the process is gone should not poll for it. Everywhere else the
+	// ticker stays, because re-reading identity is the only exit proof there is
+	// and it cannot block.
+	// A wait belongs to this handle, so Close ends it. Without that, a Close
+	// that lands while the waiter is parked releases the descriptor underneath
+	// it, and a later open reusing that number leaves the waiter polling a
+	// descriptor that is not the daemon's.
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return os.ErrClosed
+	}
+	handle := p.handle
+	if p.closedCh == nil {
+		p.closedCh = make(chan struct{})
+	}
+	closedCh := p.closedCh
+	p.mu.Unlock()
+	waitCtx, stopWait := context.WithCancel(ctx)
+	defer stopWait()
+	go func() {
+		select {
+		case <-closedCh:
+			stopWait()
+		case <-waitCtx.Done():
+		}
+	}()
+	ctx = waitCtx
+	if waiter, ok := handle.(exitWaiter); ok {
+		if err := waiter.waitExit(ctx); err != nil && !errors.Is(err, ErrExited) {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Re-check under the lock so a Close that raced the exit still reports.
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.closed {
+			return os.ErrClosed
+		}
+		return nil
+	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -281,5 +344,9 @@ func (p *process) Close() error {
 		return nil
 	}
 	p.closed = true
+	if p.closedCh != nil {
+		close(p.closedCh)
+		p.closedCh = nil
+	}
 	return p.handle.close()
 }
