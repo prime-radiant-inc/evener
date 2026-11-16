@@ -30,7 +30,7 @@ type Source interface {
 	CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
 	CompactThread(context.Context, appwire.ThreadCompactStartParams) error
 	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
-	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error
+	SetThreadModel(context.Context, appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error)
 	SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error
 	SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error
 	SetThreadName(context.Context, appwire.ThreadNameSetParams) error

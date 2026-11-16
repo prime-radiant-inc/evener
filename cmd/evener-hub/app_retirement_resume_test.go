@@ -897,7 +897,7 @@ func TestRetirementResumeFences(t *testing.T) {
 			ExpectedInstanceID: f.sessionID,
 			Input:              []appwire.InputItem{{Type: "text", Text: "must not run"}},
 		})
-		_ = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: f.ref, Model: "gpt-5.2"})
+		_, _ = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: f.ref, Model: "gpt-5.2"})
 
 		if got := f.launches.Load(); got != 0 {
 			t.Fatalf("launches = %d, want 0", got)

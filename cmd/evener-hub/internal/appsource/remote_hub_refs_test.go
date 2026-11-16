@@ -16,6 +16,7 @@ import (
 // spelled out field by field so a fixture cannot silently stop covering a field.
 func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
+		ModelControlVersion:        appwire.ModelControlVersion1,
 		AskFence:                   true,
 		VoicePresentationContextV1: true,
 		Send:                       true,
@@ -172,6 +173,10 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		field   string
 		methods map[string]func() error
 	}{
+		{"ModelControlVersion", map[string]func() error{
+			"SetThreadModel": func() error { _, err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{}); return err },
+			"ReadThread":     func() error { _, err := source.ReadThread(ctx, appwire.ThreadReadParams{}); return err },
+		}},
 		{"AskFence", map[string]func() error{
 			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
 			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
@@ -208,7 +213,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			"ShutdownThread": func() error { return source.ShutdownThread(ctx, appwire.ThreadShutdownParams{}) },
 		}},
 		{"ChangeModel", map[string]func() error{
-			"SetThreadModel": func() error { return source.SetThreadModel(ctx, appwire.ThreadModelSetParams{}) },
+			"SetThreadModel": func() error { _, err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{}); return err },
 			"SetThreadReasoningEffort": func() error {
 				return source.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{})
 			},
@@ -322,13 +327,20 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 	}
 }
 
-// capabilityFieldValue reads one named bool field of a capability set.
+// capabilityFieldValue reports whether one named capability field is enabled.
 func capabilityFieldValue(caps appwire.ThreadCapabilities, field string) (bool, bool) {
 	value := reflect.ValueOf(caps).FieldByName(field)
-	if !value.IsValid() || value.Kind() != reflect.Bool {
+	if !value.IsValid() {
 		return false, false
 	}
-	return value.Bool(), true
+	switch value.Kind() {
+	case reflect.Bool:
+		return value.Bool(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return value.Uint() != 0, true
+	default:
+		return false, false
+	}
 }
 
 func TestRemoteHubRefRoundTrip(t *testing.T) {

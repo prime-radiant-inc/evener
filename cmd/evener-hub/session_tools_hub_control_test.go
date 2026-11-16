@@ -233,6 +233,34 @@ func TestManagerHumanControlsParity(t *testing.T) {
 		}
 	}
 }
+
+func TestManagerThreadModelControlReturnsTypedResponse(t *testing.T) {
+	const ref = "peer:model-response"
+	want := modelControlResponseForHubTest()
+	source := &controlPayloadRecordingSource{
+		scriptedAppSource: &scriptedAppSource{
+			id: "peer",
+			thread: appwire.Thread{ID: "model-response", Evener: appwire.EvenerThread{
+				Ref: ref, Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
+			}},
+		},
+		modelResponse: want,
+	}
+	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{}))
+	web.sources.Add(source)
+	owner := &sessionOperations{cfg: web.cfg, sources: web.sources, navigation: web.navigation, resolve: web.resolveTopLevelSessionRef}
+
+	got, err := owner.Control(t.Context(), appwire.SessionControlRequest{
+		Action: "model",
+		Model:  &appwire.ThreadModelSetParams{Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol"},
+	})
+	if err != nil {
+		t.Fatalf("Control(model): %v", err)
+	}
+	if got.Model == nil || !reflect.DeepEqual(*got.Model, want) {
+		t.Fatalf("Manager model response = %+v, want %+v", got.Model, want)
+	}
+}
 func controlStoresSnapshot(t *testing.T, w *WebServer) any {
 	t.Helper()
 	archive, err := w.cfg.Archive.Decisions()

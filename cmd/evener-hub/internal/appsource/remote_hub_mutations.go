@@ -279,9 +279,9 @@ func (s *RemoteHubSource) ForceStopThread(ctx context.Context, params appwire.Th
 	return remoteForwardVoid(ctx, s, appwire.MethodEvenerThreadForceStop, &remote, &remote.Ref)
 }
 
-func (s *RemoteHubSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) error {
+func (s *RemoteHubSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 	remote := params
-	return remoteForwardVoid(ctx, s, appwire.MethodThreadModelSet, &remote, &remote.Ref)
+	return remoteForward[appwire.ThreadModelSetResponse](ctx, s, appwire.MethodThreadModelSet, &remote, &remote.Ref)
 }
 
 func (s *RemoteHubSource) SetThreadReasoningEffort(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) error {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,7 +30,10 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, emptyHandler[appwire.TurnDrainAsSteerParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, emptyHandler[appwire.ThreadCompactStartParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadShutdown, emptyHandler[appwire.ThreadShutdownParams])
-	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, emptyHandler[appwire.ThreadModelSetParams])
+	wantModelControl := modelControlResponseForAppSourceTest()
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(context.Context, appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		return wantModelControl, nil
+	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadReasoningEffortSet, emptyHandler[appwire.ThreadReasoningEffortSetParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadNameSet, emptyHandler[appwire.ThreadNameSetParams])
 	appserver.HandleTyped(app.Router(), appwire.MethodGoalSet, func(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
@@ -90,8 +94,12 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	if err := source.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}); err != nil {
+	modelControl, err := source.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(modelControl, wantModelControl) {
+		t.Fatalf("model response = %+v, want %+v", modelControl, wantModelControl)
 	}
 	if err := source.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}); err != nil {
 		t.Fatal(err)
@@ -119,6 +127,31 @@ func fuzzScenarioLocalDaemonSourceRPCSurface(t *testing.T) {
 	}
 	if _, err := source.JobGet(ctx, appwire.JobsGetParams{Ref: ref, JobID: "job_1"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func modelControlResponseForAppSourceTest() appwire.ThreadModelSetResponse {
+	snapshot := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: "instance-7", BootGeneration: "boot-11"},
+		Revision:  13,
+		Active: appwire.ModelControlActive{
+			ModelProvider:         "openai",
+			Model:                 "gpt-5.6-sol",
+			ReasoningEffortLevels: []string{"medium", "high"},
+			SupportsReasoning:     true,
+		},
+		Desired: &appwire.ModelControlDesired{
+			RequestSequence:  17,
+			ClientMutationID: "model-mutation-19",
+			ModelProvider:    "anthropic",
+			Model:            "claude-opus-4-6",
+			Lifecycle:        appwire.ModelControlLifecyclePending,
+		},
+	}
+	return appwire.ThreadModelSetResponse{
+		ModelControlVersion: appwire.ModelControlVersion1,
+		Disposition:         appwire.ModelControlDispositionAccepted,
+		ModelControl:        &snapshot,
 	}
 }
 
@@ -170,7 +203,7 @@ func fuzzScenarioLocalDaemonSourceRejectsUnknownReferenceAcrossRPCSurface(t *tes
 		},
 		"compact":  func() error { return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: ref}) },
 		"shutdown": func() error { return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: ref}) },
-		"model":    func() error { return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}) },
+		"model":    func() error { _, err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: ref}); return err },
 		"effort":   func() error { return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: ref}) },
 		"name":     func() error { return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: ref}) },
 		"goal":     func() error { _, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: ref}); return err },

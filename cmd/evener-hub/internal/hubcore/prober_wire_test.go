@@ -149,6 +149,9 @@ func (s wireProbeEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion,
 	}
 	return nil, nil
 }
+func (s wireProbeEnvelopeSource) ModelControlSnapshot() appwire.ModelControlSnapshot {
+	return appwire.ModelControlSnapshot{}
+}
 func (s wireProbeEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return s.escalations

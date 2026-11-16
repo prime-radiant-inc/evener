@@ -214,6 +214,9 @@ func (s sessionTaskEnvelopeSource) PendingEscalations() []appwire.SandboxEscalat
 func (s sessionTaskEnvelopeSource) PendingAskSnapshot() (*appwire.PendingQuestion, *appwire.PendingAskState) {
 	return nil, nil
 }
+func (s sessionTaskEnvelopeSource) ModelControlSnapshot() appwire.ModelControlSnapshot {
+	return appwire.ModelControlSnapshot{}
+}
 func (s sessionTaskEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
 	return nil
 }

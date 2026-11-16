@@ -131,12 +131,16 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	}
 	modelChanged, resynced := subscribeThreadNotifications(client)
 
-	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+	modelControl, err := clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "fake",
 		Model:         fakellm.SwitchTargetID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("thread/model/set on the cold session: %v", err)
+	}
+	if modelControl.ModelControlVersion != appwire.ModelControlVersion1 || modelControl.ModelControl == nil || modelControl.ModelControl.Active.Model != fakellm.SwitchTargetID {
+		t.Fatalf("cold-session model response = %+v, want version 1 active %q", modelControl, fakellm.SwitchTargetID)
 	}
 
 	// A pick on a cold session resumes the daemon behind the set, and the
@@ -203,6 +207,10 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	if ref == "" {
 		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
 	}
+	initialModelControl := started.Thread.Evener.ModelControl
+	if initialModelControl == nil {
+		t.Fatalf("thread/start returned no model control snapshot: %+v", started.Thread.Evener)
+	}
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -224,12 +232,20 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 
 	// The mid-turn pick. This used to answer Conflict "session is processing"
 	// through the hub; it must now be accepted and queued for the boundary.
-	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "fake",
-		Model:         fakellm.SwitchTargetID,
-	}); err != nil {
+	mutationID := newMutationID(t)
+	midTurnControl, err := clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:                    ref,
+		ModelProvider:          "fake",
+		Model:                  fakellm.SwitchTargetID,
+		ClientMutationID:       mutationID,
+		ExpectedInstanceID:     initialModelControl.Authority.InstanceID,
+		ExpectedBootGeneration: initialModelControl.Authority.BootGeneration,
+	})
+	if err != nil {
 		t.Fatalf("mid-turn thread/model/set: %v", err)
+	}
+	if midTurnControl.ModelControlVersion != appwire.ModelControlVersion1 || midTurnControl.Disposition != appwire.ModelControlDispositionAccepted || midTurnControl.ModelControl == nil || midTurnControl.ModelControl.Desired == nil || midTurnControl.ModelControl.Desired.ClientMutationID != mutationID || midTurnControl.ModelControl.Desired.Model != fakellm.SwitchTargetID || midTurnControl.ModelControl.Desired.Lifecycle != appwire.ModelControlLifecyclePending {
+		t.Fatalf("mid-turn model response = %+v, want the exact pending accepted intent", midTurnControl)
 	}
 
 	// The composer's send-while-busy: the typed message queues behind the turn.
@@ -273,14 +289,21 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 	}
 
 	round2.RespondToolCall("communicate", communicateArgs("second turn done"))
+	awaitThread(ctx, t, client, ref, "the queued turn to settle before the at-rest model pick", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != appwire.ThreadStatusActive
+	})
 
 	// AT REST: a further pick applies immediately and pushes the same way.
-	if _, err := clientRequest[appwire.EmptyResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+	atRestControl, err := clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "fake",
 		Model:         fakellm.ModelID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("at-rest thread/model/set: %v", err)
+	}
+	if atRestControl.ModelControlVersion != appwire.ModelControlVersion1 || atRestControl.ModelControl == nil || atRestControl.ModelControl.Active.Model != fakellm.ModelID {
+		t.Fatalf("at-rest model response = %+v, want version 1 active %q", atRestControl, fakellm.ModelID)
 	}
 	if params := awaitModelChanged(ctx, t, modelChanged, fakellm.ModelID); params.ModelProvider != "fake" {
 		t.Fatalf("at-rest thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "fake")

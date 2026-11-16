@@ -17,7 +17,8 @@ type controlOwnerCall struct {
 
 type controlPayloadRecordingSource struct {
 	*scriptedAppSource
-	calls []controlOwnerCall
+	calls         []controlOwnerCall
+	modelResponse appwire.ThreadModelSetResponse
 }
 
 func (s *controlPayloadRecordingSource) record(method string, params any) {
@@ -36,9 +37,9 @@ func (s *controlPayloadRecordingSource) ClearThread(_ context.Context, p appwire
 	s.record(appwire.MethodThreadClear, p)
 	return appwire.ThreadClearResponse{}, nil
 }
-func (s *controlPayloadRecordingSource) SetThreadModel(_ context.Context, p appwire.ThreadModelSetParams) error {
+func (s *controlPayloadRecordingSource) SetThreadModel(_ context.Context, p appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 	s.record(appwire.MethodThreadModelSet, p)
-	return nil
+	return s.modelResponse, nil
 }
 func (s *controlPayloadRecordingSource) SetThreadVisionModel(_ context.Context, p appwire.ThreadVisionModelSetParams) error {
 	s.record(appwire.MethodThreadVisionModelSet, p)

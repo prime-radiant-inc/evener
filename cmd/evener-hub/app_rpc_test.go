@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -255,12 +256,13 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 		compactCalled = true
 		return appwire.EmptyResponse{}, nil
 	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	wantModelControl := modelControlResponseForHubTest()
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 		if params.Ref != "local:th_1" {
 			t.Fatalf("model ref=%q", params.Ref)
 		}
 		modelCalled = params.ModelProvider + "/" + params.Model
-		return appwire.EmptyResponse{}, nil
+		return wantModelControl, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadShutdown, func(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
 		if params.Ref != "local:th_1" {
@@ -287,12 +289,16 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	if !compactCalled {
 		t.Fatal("compact was not routed")
 	}
-	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+	modelControl, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		Ref:           "local:th_1",
 		ModelProvider: "openai",
 		Model:         "gpt-5",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)
+	}
+	if !reflect.DeepEqual(modelControl, wantModelControl) {
+		t.Fatalf("ThreadModelSet response = %+v, want %+v", modelControl, wantModelControl)
 	}
 	if modelCalled != "openai/gpt-5" {
 		t.Fatalf("modelCalled=%q", modelCalled)
@@ -315,6 +321,31 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	}
 	if !shutdownCalled {
 		t.Fatal("shutdown was not routed")
+	}
+}
+
+func modelControlResponseForHubTest() appwire.ThreadModelSetResponse {
+	snapshot := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: "sess_1", BootGeneration: "boot-2"},
+		Revision:  23,
+		Active: appwire.ModelControlActive{
+			ModelProvider:         "openai",
+			Model:                 "gpt-5.6-sol",
+			ReasoningEffortLevels: []string{"low", "medium", "high"},
+			SupportsReasoning:     true,
+		},
+		Desired: &appwire.ModelControlDesired{
+			RequestSequence:  29,
+			ClientMutationID: "model-mutation-31",
+			ModelProvider:    "anthropic",
+			Model:            "claude-opus-4-6",
+			Lifecycle:        appwire.ModelControlLifecyclePending,
+		},
+	}
+	return appwire.ThreadModelSetResponse{
+		ModelControlVersion: appwire.ModelControlVersion1,
+		Disposition:         appwire.ModelControlDispositionAccepted,
+		ModelControl:        &snapshot,
 	}
 }
 
@@ -629,7 +660,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPCInitialized(t, hub)
-	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+	if _, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		Ref:           "local:" + sessionID,
 		ModelProvider: "openai",
 		Model:         "gpt-5.6-sol",

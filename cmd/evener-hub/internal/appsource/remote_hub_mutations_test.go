@@ -119,7 +119,8 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 			return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: testControllerRef})
 		}},
 		{"SetThreadModel", appwire.MethodThreadModelSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
-			return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef})
+			_, err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef})
+			return err
 		}},
 		{"SetThreadReasoningEffort", appwire.MethodThreadReasoningEffortSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: testControllerRef})
@@ -188,6 +189,73 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 				t.Errorf("%s harness = %q, want %q", tc.name, env.Harness, want)
 			}
 		})
+	}
+}
+
+func TestRemoteHubSetThreadModelPreservesTypedResponse(t *testing.T) {
+	want := modelControlResponseForAppSourceTest()
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		switch method {
+		case appwire.MethodThreadModelSet:
+			return scriptedReply{result: want}
+		case appwire.MethodThreadRead:
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "S", Evener: appwire.EvenerThread{
+					Ref:          testRemoteRef,
+					Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+					ModelControl: want.ModelControl,
+				},
+			}}}
+		default:
+			t.Fatalf("unexpected method %s", method)
+			return scriptedReply{}
+		}
+	})
+
+	got, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("SetThreadModel: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("response = %+v, want %+v", got, want)
+	}
+	read, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	if read.Thread.Evener.Capabilities.ModelControlVersion != appwire.ModelControlVersion1 || !reflect.DeepEqual(read.Thread.Evener.ModelControl, want.ModelControl) {
+		t.Fatalf("read model control = capability %d snapshot %+v, want capability %d snapshot %+v", read.Thread.Evener.Capabilities.ModelControlVersion, read.Thread.Evener.ModelControl, appwire.ModelControlVersion1, want.ModelControl)
+	}
+}
+
+func TestRemoteHubSetThreadModelAcceptsVersionZeroFromOldHub(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		switch method {
+		case appwire.MethodThreadModelSet:
+			return scriptedReply{result: map[string]any{}}
+		case appwire.MethodThreadRead:
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "S", Evener: appwire.EvenerThread{Ref: testRemoteRef, Capabilities: appwire.ThreadCapabilities{ChangeModel: true}},
+			}}}
+		default:
+			t.Fatalf("unexpected method %s", method)
+			return scriptedReply{}
+		}
+	})
+
+	got, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("SetThreadModel: %v", err)
+	}
+	if got.ModelControlVersion != 0 || got.ModelControl != nil {
+		t.Fatalf("old-hub response = %+v, want successful version 0", got)
+	}
+	read, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	if read.Thread.Evener.Capabilities.ModelControlVersion != 0 || read.Thread.Evener.ModelControl != nil {
+		t.Fatalf("old-hub read advertised model control: %+v", read.Thread.Evener)
 	}
 }
 

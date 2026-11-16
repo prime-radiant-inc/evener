@@ -220,7 +220,7 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 
 	// The model pick resumes the session. Its own frame is not what this test
 	// follows; the point is that it leaves a live daemon without a relay.
-	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+	if _, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		Ref:           "local:" + sessionID,
 		ModelProvider: "openai",
 		Model:         "gpt-5.6-sol",
@@ -338,7 +338,7 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 		}
 	}()
 
-	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+	if _, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		Ref:           "local:" + sessionID,
 		ModelProvider: "openai-codex",
 		Model:         "gpt-6-luna",
