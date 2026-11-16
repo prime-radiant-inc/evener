@@ -321,7 +321,7 @@ func buildMultimodalParts(parts []llm.ContentPart, caps registry.Caps) ([]map[st
 				if err != nil {
 					return nil, err
 				}
-				imgURL = llm.DataURI(normalizedType, data)
+				imgURL = llm.CachedDataURI(normalizedType, data)
 			}
 			if imgURL == "" {
 				continue
