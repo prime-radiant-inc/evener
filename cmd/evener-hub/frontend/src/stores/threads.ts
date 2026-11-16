@@ -159,6 +159,7 @@ import { isRecoveryFenced, isResumeOnly, isSendResumes, type ResumeOnlySignals }
 import { createSecureUUID } from "./secureUUID";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import type { SessionEntryCache } from "./sessionEntryCache";
+import { ShardedMap, shardedMap } from "./shardedMap";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import {
   backgroundHeldRefs,
@@ -264,7 +265,7 @@ export interface PromoteDisplayInput {
 }
 
 export interface ThreadsStoreState {
-  threads: Map<string, ThreadModel>;
+  threads: ReadonlyMap<string, ThreadModel>;
   mutationWriteStalled: boolean;
   // Refs whose durable reconcile failed for a reason other than storage: the
   // ref waits for discovery's retry before anything is dispatched.
@@ -353,7 +354,7 @@ export interface ThreadsStoreState {
   // settles.
   localOpenings: Map<string, number>;
   // Lean child subscriptions are independent from real pane ownership.
-  watchedThreads: Map<string, ThreadModel>;
+  watchedThreads: ReadonlyMap<string, ThreadModel>;
   // Refs whose hydration has been durably rejected by the hub's own
   // deletion fence (data.mutationOutcome === "targetDeleted" - see
   // readThreadHydration's catch below and cmd/evener-hub/app_sources.go's
@@ -1441,7 +1442,7 @@ function removeThreadModelIndex(index: ThreadModelIndex, model: ThreadModel): vo
 // resolved through the map. `skippedRefs` mirrors the scan's own exclusion
 // set (a pending hydration owns the ref for this frame).
 function routeByNotificationKey(
-  map: Map<string, ThreadModel>,
+  map: ReadonlyMap<string, ThreadModel>,
   index: ThreadModelIndex,
   n: AnyNotification,
   skippedRefs: ReadonlySet<string> | undefined,
@@ -1543,11 +1544,11 @@ function putThreadModels(
   const patch: Partial<ThreadsStoreState> = {};
   if (threadModel) {
     putThreadModelIndex(threadsIndex, previousThread, threadModel);
-    patch.threads = new Map(state.threads).set(ref, threadModel);
+    patch.threads = shardedMap(state.threads).with(ref, threadModel);
   }
   if (watchedModel) {
     putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
-    patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
+    patch.watchedThreads = shardedMap(state.watchedThreads).with(ref, watchedModel);
   }
   if (!threadModel && !watchedModel) return;
   threadsStore.setState(patch);
@@ -1637,8 +1638,7 @@ function removeThreadModel(ref: string): void {
   });
   threadsStore.setState((s) => {
     if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
-    const nextThreads = new Map(s.threads);
-    nextThreads.delete(ref);
+    const nextThreads = shardedMap(s.threads).without(ref);
     const nextFrameTimes = new Map(s.frameTimes);
     nextFrameTimes.delete(ref);
     const nextDeletedRefs = new Set(s.deletedRefs);
@@ -1656,9 +1656,7 @@ function removeWatchedThreadModel(ref: string): void {
   if (removed) removeThreadModelIndex(watchedThreadsIndex, removed);
   threadsStore.setState((s) => {
     if (!s.watchedThreads.has(ref)) return s;
-    const nextWatchedThreads = new Map(s.watchedThreads);
-    nextWatchedThreads.delete(ref);
-    return { watchedThreads: nextWatchedThreads };
+    return { watchedThreads: shardedMap(s.watchedThreads).without(ref) };
   });
 }
 
@@ -2364,8 +2362,7 @@ function dropUnpinnedModel(ref: string, flush = true): void {
       !state.cacheLifetimes.has(ref)
     )
       return state;
-    const threads = new Map(state.threads);
-    threads.delete(ref);
+    const threads = shardedMap(state.threads).without(ref);
     const frameTimes = new Map(state.frameTimes);
     frameTimes.delete(ref);
     const hydrations = new Map(state.hydrations);
@@ -6585,15 +6582,22 @@ function publishWatchedHydration(
 // array); changedRefs order differs from the scan's map-iteration order, but
 // its only consumer (handleNotification's frameTimes loop) is
 // order-insensitive, and applyToMap is module-private.
+//
+// The result names the entries the frame changed rather than a rewritten map.
+// The caller applies them to the published map one entry at a time, so a frame
+// that changes one model never copies the entries it did not touch.
 function applyToMap(
-  map: Map<string, ThreadModel>,
+  map: ReadonlyMap<string, ThreadModel>,
   index: ThreadModelIndex,
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
   previousModels: ReadonlyMap<string, ThreadModel> = map,
 ): {
-  next: Map<string, ThreadModel> | null;
+  // The models this frame rewrote, keyed by ref, in fold order. Empty when the
+  // frame changed nothing; the caller then publishes no new map at all. The
+  // caller owns this bag and may project an entry before publishing it.
+  updated: Map<string, ThreadModel>;
   changedRefs: string[];
   acceptedRefs: string[];
   // Refs whose thread/status/changed fold moved them OFF the shut-down set: the
@@ -6601,38 +6605,37 @@ function applyToMap(
   // recovery obligation is the caller's to clear (see handleNotification).
   endedResumeOnlyRefs: string[];
 } {
-  let next: Map<string, ThreadModel> | null = null;
+  const updates = new Map<string, ThreadModel>();
   const changedRefs: string[] = [];
   const acceptedRefs: string[] = [];
   const endedResumeOnlyRefs: string[] = [];
   const routed = routeByNotificationKey(map, index, n, skippedRefs);
-  if (!routed) return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
-  const accept = (model: ThreadModel): void => {
+  if (!routed) return { updated: updates, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+  for (const model of Array.isArray(routed) ? routed : [routed]) {
     acceptedRefs.push(model.ref);
-  };
-  if (Array.isArray(routed)) {
-    for (const model of routed) {
-      accept(model);
-      const folded = foldCanonicalNotification(model, n, now, previousModels.get(model.ref));
-      const updated = folded.model;
-      if (updated === model) continue;
-      next ??= new Map(map);
-      next.set(model.ref, updated);
-      if (folded.endedResumeOnly) endedResumeOnlyRefs.push(model.ref);
-      changedRefs.push(model.ref);
-    }
-    return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+    const folded = foldCanonicalNotification(model, n, now, previousModels.get(model.ref));
+    if (folded.model === model) continue;
+    updates.set(model.ref, folded.model);
+    if (folded.endedResumeOnly) endedResumeOnlyRefs.push(model.ref);
+    changedRefs.push(model.ref);
   }
-  accept(routed);
-  const folded = foldCanonicalNotification(routed, n, now, previousModels.get(routed.ref));
-  const updated = folded.model;
-  if (updated !== routed) {
-    next = new Map(map);
-    next.set(routed.ref, updated);
-    if (folded.endedResumeOnly) endedResumeOnlyRefs.push(routed.ref);
-    changedRefs.push(routed.ref);
-  }
-  return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+  return { updated: updates, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+}
+
+// applyThreadUpdates publishes `updates` over `map`, sharing every entry the
+// frame did not rewrite. `project` may replace a rewritten model with the
+// surface this map publishes for it. Returns null when there is nothing to
+// publish, so a no-op frame keeps the published instance and its subscribers
+// never run.
+function applyThreadUpdates(
+  map: ReadonlyMap<string, ThreadModel>,
+  updates: ReadonlyMap<string, ThreadModel>,
+  project?: (ref: string, model: ThreadModel) => ThreadModel,
+): ReadonlyMap<string, ThreadModel> | null {
+  if (updates.size === 0) return null;
+  let next = shardedMap(map);
+  for (const [ref, model] of updates) next = next.with(ref, project ? project(ref, model) : model);
+  return next;
 }
 
 // A folded notification that moved a ref OFF the shut-down set ends the
@@ -6938,39 +6941,26 @@ function handleNotification(n: AnyNotification): void {
       ? new Set("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])])
       : EMPTY_PENDING_REFS;
   const {
-    next: reducedThreads,
+    updated: threadUpdates,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
     endedResumeOnlyRefs: endedThreadsResumeOnly,
   } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...fixtureRecordedRefs]), previousThreads);
   const {
-    next: reducedWatchedThreads,
+    updated: watchedUpdates,
     changedRefs: changedWatchedThreads,
     acceptedRefs: acceptedWatchedThreads,
     endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
-  let nextThreads = reducedThreads;
-  if (nextThreads) {
-    let projected: Map<string, ThreadModel> | undefined;
-    for (const ref of changedThreads) {
-      const model = nextThreads.get(ref);
-      if (!model || !isEntryTranscriptBackgroundOnly(ref)) continue;
-      projected ??= new Map(nextThreads);
-      projected.set(ref, pruneBackgroundHistoryBodies(model));
-    }
-    if (projected) nextThreads = projected;
-  }
-  let nextWatchedThreads = reducedWatchedThreads;
-  if (nextWatchedThreads) {
-    let projected: Map<string, ThreadModel> | undefined;
-    for (const ref of changedWatchedThreads) {
-      const model = nextWatchedThreads.get(ref);
-      if (!model || watchIncludeTurns.get(ref)) continue;
-      projected ??= new Map(nextWatchedThreads);
-      projected.set(ref, pruneBackgroundHistoryBodies(model));
-    }
-    if (projected) nextWatchedThreads = projected;
-  }
+  // The background-only projection belongs to the entry the frame rewrote, so
+  // it is folded into that entry as it is published rather than into a second
+  // whole-map pass.
+  const nextThreads = applyThreadUpdates(threads, threadUpdates, (ref, model) =>
+    isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(model) : model,
+  );
+  const nextWatchedThreads = applyThreadUpdates(watchedThreads, watchedUpdates, (ref, model) =>
+    watchIncludeTurns.get(ref) ? model : pruneBackgroundHistoryBodies(model),
+  );
   const publishableThreads = nextThreads;
   const publishableChangedThreads = changedThreads;
   const publishableEndedResumeOnly = endedThreadsResumeOnly;
@@ -7192,8 +7182,8 @@ function handleNotification(n: AnyNotification): void {
 // Not every accepted notification invalidates, so this scans only the refs
 // applyToMap actually changed, not the whole map.
 function newlyInvalidatedHistoryRefs(
-  prev: Map<string, ThreadModel>,
-  next: Map<string, ThreadModel> | null,
+  prev: ReadonlyMap<string, ThreadModel>,
+  next: ReadonlyMap<string, ThreadModel> | null,
   candidates: readonly string[],
 ): string[] {
   if (!next) return [];
@@ -8159,19 +8149,17 @@ async function requireReadyClient(timeoutMs = REQUIRE_READY_TIMEOUT_MS): Promise
 }
 
 function replaceThread(
-  models: Map<string, ThreadModel>,
+  models: ReadonlyMap<string, ThreadModel>,
   ref: string,
   update: (model: ThreadModel) => ThreadModel,
-): Map<string, ThreadModel> {
+): ReadonlyMap<string, ThreadModel> {
   const current = models.get(ref);
   if (!current) return models;
-  const next = new Map(models);
-  next.set(ref, update(current));
-  return next;
+  return shardedMap(models).with(ref, update(current));
 }
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
-  threads: new Map(),
+  threads: ShardedMap.empty(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),
@@ -8186,7 +8174,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   frameTimes: new Map(),
   hydrations: new Map(),
   localOpenings: new Map(),
-  watchedThreads: new Map(),
+  watchedThreads: ShardedMap.empty(),
   deletedRefs: new Set(),
   repairingRefs: new Set(),
   cacheLifetimes: new Map(),
@@ -9944,10 +9932,10 @@ export function resetThreadsStoreForTests(): void {
   threadsStore.setState(
     {
       ...threadsStore.getInitialState(),
-      threads: new Map(),
+      threads: ShardedMap.empty(),
       frameTimes: new Map(),
       hydrations: new Map(),
-      watchedThreads: new Map(),
+      watchedThreads: ShardedMap.empty(),
       deletedRefs: new Set(),
       repairingRefs: new Set(),
       cacheLifetimes: new Map(),
