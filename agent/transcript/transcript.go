@@ -661,8 +661,9 @@ func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
 
 // appendBatch is the locked entry to the sole write primitive. A single append
 // is a batch of one through it. The door decides three things:
-//   - whether the append fsyncs (and so rolls back on failure): every door but
-//     the buffered one;
+//   - whether a failed write rolls back: every door but the buffered one;
+//   - whether the append forces an fsync past the SyncInterval gate: the
+//     durable and synced doors;
 //   - where a retained record's sync-failure diagnostic goes: the ordinary
 //     doors queue it for the session to surface, while the synced door takes
 //     it through the returned error, so it neither queues nor drains the
@@ -689,7 +690,10 @@ func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (r
 		}
 		return nil, nil, nil
 	}
-	return w.appendBatchLocked(turns, place, door != DoorBuffered, door != DoorSynced)
+	// The deferred door rolls back a failed write like the durable one — a line
+	// it cannot record is not left behind — but leaves its fsync to the
+	// interval gate, which is the whole point of the door.
+	return w.appendBatchLocked(turns, place, door != DoorBuffered, door == DoorDurable || door == DoorSynced, door != DoorSynced)
 }
 
 // appendBatchLocked encodes every turn into one buffer, seeks to the end once,
@@ -699,7 +703,7 @@ func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (r
 // unsynced in the file — separately from err, a hard failure that recorded
 // nothing. records holds one Record per turn when the batch was recorded, and
 // is nil when it was not.
-func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSync, queueRetained bool) (records []Record, retained, err error) {
+func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollback, forceSync, queueRetained bool) (records []Record, retained, err error) {
 	// The tail is held to the end of the append, rollback included; see
 	// appendTail.
 	w.tail.mu.Lock()
@@ -760,12 +764,12 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 	// reader two different entries under one number.
 	w.tail.nextSeq += len(turns)
 
-	// Only the durable door rolls back, and only a rollback needs the start
-	// offset. The buffered door leaves a failed write's bytes where they are,
-	// so it skips the seek — and its filesystem-op sequence stays what it was
-	// before this became the one primitive.
+	// Only a rolling-back door needs the start offset. The buffered door leaves
+	// a failed write's bytes where they are, so it skips the seek — and its
+	// filesystem-op sequence stays what it was before this became the one
+	// primitive.
 	var startOffset int64
-	if forceSync {
+	if rollback {
 		var seekErr error
 		if startOffset, seekErr = w.file.Seek(0, io.SeekEnd); seekErr != nil {
 			return nil, nil, fmt.Errorf("seek transcript append start: %w", seekErr)
@@ -789,7 +793,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 	}
 	if failure != nil {
 		var hard error
-		if retained, hard = w.settleFailedWriteLocked(operation, failure, startOffset, written, len(data), forceSync, previousDirty, queueRetained); hard != nil {
+		if retained, hard = w.settleFailedWriteLocked(operation, failure, startOffset, written, len(data), rollback, previousDirty, queueRetained); hard != nil {
 			return nil, nil, hard
 		}
 	}
