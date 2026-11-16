@@ -2068,6 +2068,33 @@ func TestValidate_StopMatcherIsNotDiagnosed(t *testing.T) {
 	}
 }
 
+// TestValidate_MCPPrefixedMatcherIsDiagnosed proves the load-time check for a
+// Claude-style mcp__<server>__<tool> matcher: dispatch presents MCP tools by
+// their registered <server>__<tool> name. The registered-form matcher beside it
+// is the negative control.
+func TestValidate_MCPPrefixedMatcherIsDiagnosed(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreToolUse,
+		plugin.RegisteredHook{Matcher: "mcp__memory__search", Type: "command", Command: "echo claude-form", PluginName: "porting-plugin"},
+		plugin.RegisteredHook{Matcher: "memory__.*", Type: "command", Command: "echo registered-form", PluginName: "porting-plugin"},
+	)
+
+	diags := r.Validate()
+	if len(diags) != 1 {
+		t.Fatalf("expected exactly 1 matcher diagnostic, got %d: %+v", len(diags), diags)
+	}
+	d := diags[0]
+	if d.PluginName != "porting-plugin" {
+		t.Errorf("PluginName = %q, want %q", d.PluginName, "porting-plugin")
+	}
+	if d.Event != string(plugin.HookPreToolUse) {
+		t.Errorf("Event = %q, want %q", d.Event, plugin.HookPreToolUse)
+	}
+	if d.Matcher != "mcp__memory__search" {
+		t.Errorf("Matcher = %q, want the mcp__-form matcher", d.Matcher)
+	}
+}
+
 // TestSupportedSummary_StopMatcherIsRunnable proves the runnable-hook count (the
 // /status number) agrees with dispatch for Stop: a "(" matcher still fires, so
 // the hook is counted rather than omitted.
