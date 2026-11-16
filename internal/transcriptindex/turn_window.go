@@ -2,7 +2,6 @@ package transcriptindex
 
 import (
 	"fmt"
-	"slices"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -59,23 +58,27 @@ func (x *Index) ResolveTurnWindow(selector appwire.ThreadTurnWindow) (ResolvedTu
 	return resolved, err
 }
 
-type indexedTurn struct {
+// turnBoundary is one turn in transcript order: its id and its turn-table
+// slot, if the slot holds an indexed summary. A header prelude has no summary
+// of its own. first is the first entry ordinal the turn can open and version
+// the last one it accounts, both zero on a turn with no summary.
+type turnBoundary struct {
 	id      string
 	slot    uint32
 	indexed bool
+	first   uint64
+	version uint64
 }
 
 func (x *Index) resolveTurnWindow(r *reader, selector appwire.ThreadTurnWindow) (ResolvedTurnWindow, error) {
-	turns, err := x.indexedTurnOrder()
-	if err != nil {
-		return ResolvedTurnWindow{}, x.fail(err)
-	}
-	frontier := frontierOf(turns)
-	start, end, err := selectTurnRange(turns, frontier, selector)
+	start, end, frontier, err := x.selectTurnRange(selector)
 	if err != nil {
 		return ResolvedTurnWindow{}, err
 	}
-	selected := turns[start:end]
+	selected, err := x.turnOrder(start, end-start)
+	if err != nil {
+		return ResolvedTurnWindow{}, x.fail(err)
+	}
 	result := ResolvedTurnWindow{
 		TurnIDs:     make([]string, len(selected)),
 		Frontier:    frontier,
@@ -97,7 +100,7 @@ func (x *Index) resolveTurnWindow(r *reader, selector appwire.ThreadTurnWindow) 
 			result.Candidates = append(result.Candidates, x.preludeCandidate(i))
 		}
 	}
-	candidates, err := x.candidatesForTurnSlots(r, selectedSlots)
+	candidates, err := x.candidatesForTurnSlots(r, selected)
 	if err != nil {
 		return ResolvedTurnWindow{}, err
 	}
@@ -119,50 +122,114 @@ func (x *Index) resolveTurnWindow(r *reader, selector appwire.ThreadTurnWindow) 
 	return result, nil
 }
 
-// indexedTurnOrder returns turn summaries in first-recorded order. A header
-// prelude has no summary of its own, so it is prepended unless an indexed
-// turn_system summary already represents that same turn.
-func (x *Index) indexedTurnOrder() ([]indexedTurn, error) {
-	const chunk = uint64(256)
-	turns := make([]indexedTurn, 0, x.turns.n+1)
-	for start := uint64(0); start < x.turns.n; start += chunk {
-		count := min(chunk, x.turns.n-start)
-		buf, err := x.turns.read(start, int(count))
+// turnCount is how many turns the frontier names: every indexed summary, plus
+// the prelude when no indexed summary represents it.
+func (x *Index) turnCount() (int, error) {
+	prelude, err := x.preludeBoundary()
+	if err != nil {
+		return 0, err
+	}
+	count := int(x.turns.n)
+	if prelude != nil {
+		count++
+	}
+	return count, nil
+}
+
+// turnOrder returns count turns starting at position in transcript order: the
+// prelude first when no indexed summary represents it, then the turn table. It
+// reads only the summaries it returns.
+func (x *Index) turnOrder(position, count int) ([]turnBoundary, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	prelude, err := x.preludeBoundary()
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]turnBoundary, 0, count)
+	tableStart := position
+	if prelude != nil {
+		tableStart--
+		if position == 0 {
+			turns = append(turns, *prelude)
+			tableStart, count = 0, count-1
+		}
+	}
+	if count <= 0 {
+		return turns, nil
+	}
+	if tableStart < 0 || uint64(tableStart) > x.turns.n || uint64(count) > x.turns.n-uint64(tableStart) {
+		return nil, fmt.Errorf("%w: turns %d..%d past %d", errCorrupt, position, position+count, x.turns.n)
+	}
+	buf, err := x.turns.read(uint64(tableStart), count)
+	if err != nil {
+		return nil, err
+	}
+	for i := range count {
+		slot := uint64(tableStart) + uint64(i)
+		record := decodeTurn(buf[i*turnRecordSize:])
+		id, err := x.strings.get(record.ID)
 		if err != nil {
 			return nil, err
 		}
-		for i := range count {
-			record := decodeTurn(buf[i*turnRecordSize:])
-			id, err := x.strings.get(record.ID)
-			if err != nil {
-				return nil, err
-			}
-			turns = append(turns, indexedTurn{id: string(id), slot: uint32(start + i), indexed: true})
-		}
+		turns = append(turns, turnBoundary{
+			id: string(id), slot: uint32(slot), indexed: true,
+			first: record.FirstOrdinal + 1, version: record.Version,
+		})
 	}
+	return turns, nil
+}
+
+// preludeBoundary returns the header prelude's boundary, or nil when the
+// covered transcript has no header or an indexed turn_system summary already
+// represents that same turn. It reads the first turn summary at most.
+func (x *Index) preludeBoundary() (*turnBoundary, error) {
 	if x.prelude == nil {
-		return turns, nil
+		return nil, nil
 	}
-	for _, turn := range turns {
-		if turn.id == x.prelude.ID {
-			return turns, nil
+	if x.turns.n > 0 {
+		record, err := x.turnRecordAt(0)
+		if err != nil {
+			return nil, err
+		}
+		id, err := x.strings.get(record.ID)
+		if err != nil {
+			return nil, err
+		}
+		if string(id) == x.prelude.ID {
+			return nil, nil
 		}
 	}
-	return append([]indexedTurn{{id: x.prelude.ID}}, turns...), nil
+	return &turnBoundary{id: x.prelude.ID}, nil
 }
 
-func frontierOf(turns []indexedTurn) TurnFrontier {
-	frontier := TurnFrontier{TurnCount: len(turns)}
-	if len(turns) > 0 {
-		frontier.OldestTurnID = turns[0].id
-		frontier.NewestTurnID = turns[len(turns)-1].id
+// selectTurnRange resolves a selector to a half-open position range in
+// transcript order, together with the frontier those positions index into. It
+// finds the boundary through the turn-slot table, so a constant-sized window
+// costs a lookup and a handful of record reads rather than a walk of every
+// summary.
+func (x *Index) selectTurnRange(selector appwire.ThreadTurnWindow) (int, int, TurnFrontier, error) {
+	total, err := x.turnCount()
+	if err != nil {
+		return 0, 0, TurnFrontier{}, x.fail(err)
 	}
-	return frontier
-}
-
-func selectTurnRange(turns []indexedTurn, frontier TurnFrontier, selector appwire.ThreadTurnWindow) (int, int, error) {
+	frontier := TurnFrontier{TurnCount: total}
+	if total > 0 {
+		oldest, err := x.turnOrder(0, 1)
+		if err != nil {
+			return 0, 0, TurnFrontier{}, x.fail(err)
+		}
+		newest, err := x.turnOrder(total-1, 1)
+		if err != nil {
+			return 0, 0, TurnFrontier{}, x.fail(err)
+		}
+		if len(oldest) == 1 && len(newest) == 1 {
+			frontier.OldestTurnID, frontier.NewestTurnID = oldest[0].id, newest[0].id
+		}
+	}
 	if selector.Latest > 0 {
-		return max(0, len(turns)-selector.Latest), len(turns), nil
+		return max(0, total-selector.Latest), total, frontier, nil
 	}
 	boundary := selector.Turn
 	if selector.Since != "" {
@@ -171,37 +238,88 @@ func selectTurnRange(turns []indexedTurn, frontier TurnFrontier, selector appwir
 	if selector.Before != nil {
 		boundary = selector.Before.TurnID
 	}
-	at := -1
-	for i, turn := range slices.Backward(turns) {
-		if turn.id == boundary {
-			at = i
-			break
-		}
+	at, found, err := x.turnPosition(boundary)
+	if err != nil {
+		return 0, 0, TurnFrontier{}, x.fail(err)
 	}
-	if at < 0 {
-		return 0, 0, &TurnNotFoundError{TurnID: boundary, Frontier: frontier}
+	if !found {
+		return 0, 0, TurnFrontier{}, &TurnNotFoundError{TurnID: boundary, Frontier: frontier}
 	}
 	switch {
 	case selector.Turn != "":
-		return at, at + 1, nil
+		return at, at + 1, frontier, nil
 	case selector.Since != "":
 		start := at + 1
-		return start, start + min(len(turns)-start, selector.Limit), nil
+		return start, start + min(total-start, selector.Limit), frontier, nil
 	default:
 		end := at
-		return max(0, end-selector.Before.Limit), end, nil
+		return max(0, end-selector.Before.Limit), end, frontier, nil
 	}
 }
 
-// candidatesForTurnSlots scans the compact item records once and projects only
-// contiguous runs that belong to selected turns. A turn can have several runs
-// when another turn was recorded inside it; appending the runs preserves the
-// transcript's item order.
-func (x *Index) candidatesForTurnSlots(r *reader, selected map[uint32]bool) ([]appitempaging.TranscriptItemCandidate, error) {
+// turnPosition names the transcript position of the last turn whose id is id.
+// The turn-slot table answers it with a lookup; a table that cannot name the
+// id falls back to reading the turn table, so the answer is exactly the one a
+// backwards scan gives.
+func (x *Index) turnPosition(id string) (int, bool, error) {
+	slot, found, err := x.turnSlotOf(id)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found {
+		return 0, false, nil
+	}
+	prelude, err := x.preludeBoundary()
+	if err != nil {
+		return 0, false, err
+	}
+	position := int(slot)
+	if prelude != nil {
+		position++
+	}
+	return position, true, nil
+}
+
+// candidatesForTurnSlots projects the items of the selected turns in
+// transcript order. A turn can have several runs when another turn was
+// recorded inside it; appending the runs preserves the transcript's item
+// order.
+//
+// Item records are sorted by position and an item's Entry names its opener's
+// entry ordinal plus one, so every item of a selected turn lies between that
+// turn's first entry ordinal and its last. The scan therefore starts at the
+// earliest selected turn's first item, found by binary search, and walks only
+// that bounded span: a window selects a contiguous run of turns, so the span is
+// the window's own entries, not the session's.
+func (x *Index) candidatesForTurnSlots(r *reader, selected []turnBoundary) ([]appitempaging.TranscriptItemCandidate, error) {
 	if len(selected) == 0 || x.items.n == 0 {
 		return nil, nil
 	}
-	const chunk = uint64(256)
+	slots := make(map[uint32]bool, len(selected))
+	// lo is the first entry ordinal a selected turn can open, hi the last one
+	// it accounts; both are inclusive. They are taken independently so a
+	// selected turn that accounts no entry (Version 0, an interrupted open)
+	// cannot narrow the span another selected turn needs.
+	var lo, hi uint64
+	any := false
+	for _, turn := range selected {
+		if !turn.indexed {
+			continue
+		}
+		slots[turn.slot] = true
+		if !any {
+			lo, hi, any = turn.first, turn.version, true
+		} else {
+			lo, hi = min(lo, turn.first), max(hi, turn.version)
+		}
+	}
+	if !any {
+		return nil, nil
+	}
+	start, err := x.items.search(func(buf []byte) bool { return decodeItem(buf).Entry < lo })
+	if err != nil {
+		return nil, x.fail(err)
+	}
 	var candidates []appitempaging.TranscriptItemCandidate
 	var runStart uint64
 	inRun := false
@@ -213,28 +331,41 @@ func (x *Index) candidatesForTurnSlots(r *reader, selected map[uint32]bool) ([]a
 		candidates = append(candidates, span...)
 		return nil
 	}
-	for start := uint64(0); start < x.items.n; start += chunk {
-		count := min(chunk, x.items.n-start)
-		buf, err := x.items.read(start, int(count))
+	// end is the first item slot past the selected turns' entries: the scan
+	// stops there, and an open run ends there, so no item outside the window
+	// is ever projected.
+	end := x.items.n
+	const chunk = uint64(256)
+	for base := start; base < x.items.n; base += chunk {
+		count := min(chunk, x.items.n-base)
+		buf, err := x.items.read(base, int(count))
 		if err != nil {
 			return nil, x.fail(err)
 		}
 		for i := range count {
-			slot := start + i
-			included := selected[decodeItem(buf[i*itemRecordSize:]).Turn]
+			itemSlot := base + uint64(i)
+			item := decodeItem(buf[i*itemRecordSize:])
+			included := item.Entry <= hi && slots[item.Turn]
 			if included && !inRun {
-				runStart, inRun = slot, true
+				runStart, inRun = itemSlot, true
 			}
 			if !included && inRun {
-				if err := appendRun(slot); err != nil {
+				if err := appendRun(itemSlot); err != nil {
 					return nil, err
 				}
 				inRun = false
 			}
+			if item.Entry > hi {
+				end = itemSlot
+				break
+			}
+		}
+		if end != x.items.n {
+			break
 		}
 	}
 	if inRun {
-		if err := appendRun(x.items.n); err != nil {
+		if err := appendRun(end); err != nil {
 			return nil, err
 		}
 	}
