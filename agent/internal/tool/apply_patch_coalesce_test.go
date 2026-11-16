@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,7 +250,7 @@ func (m *cancellingMutator) ReadFileRawCtx(ctx context.Context, path string) ([]
 // second section's work must not reach the disk here either.
 func TestApplyPatchCoalescedCancelMatchesSequential(t *testing.T) {
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@\n-alpha\n+ALPHA\n*** Update File: f.txt\n@@\n-gamma\n+GAMMA\n*** End Patch\n"
-	run := func(apply func(context.Context, execenv.FileMutator, string) (string, error)) (patchFixtureOutcome, int) {
+	run := func(apply func(context.Context, execenv.FileMutator, string) (string, error)) (patchFixtureOutcome, int, error) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -262,10 +263,10 @@ func TestApplyPatchCoalescedCancelMatchesSequential(t *testing.T) {
 		if err != nil {
 			errText = err.Error()
 		}
-		return patchFixtureOutcome{outcome: out + "\x00" + errText, tree: apatch_snapshotTree(t, dir)}, fm.reads
+		return patchFixtureOutcome{outcome: out + "\x00" + errText, tree: apatch_snapshotTree(t, dir)}, fm.reads, err
 	}
-	want, wantReads := run(applyPatchSequential)
-	got, gotReads := run(ApplyPatchCtx)
+	want, wantReads, wantErr := run(applyPatchSequential)
+	got, gotReads, gotErr := run(ApplyPatchCtx)
 	if got.outcome != want.outcome {
 		t.Errorf("outcome = %q, want %q", got.outcome, want.outcome)
 	}
@@ -275,8 +276,11 @@ func TestApplyPatchCoalescedCancelMatchesSequential(t *testing.T) {
 	if wantReads != 2 {
 		t.Errorf("sequential reads = %d, want 2", wantReads)
 	}
-	if !strings.Contains(want.outcome, context.Canceled.Error()) {
-		t.Errorf("sequential outcome = %q, want it to report %v", want.outcome, context.Canceled)
+	if !errors.Is(wantErr, context.Canceled) {
+		t.Errorf("sequential error = %v, want %v", wantErr, context.Canceled)
+	}
+	if !errors.Is(gotErr, context.Canceled) {
+		t.Errorf("coalesced error = %v, want %v", gotErr, context.Canceled)
 	}
 	if gotReads != 1 {
 		t.Errorf("coalesced reads = %d, want 1", gotReads)

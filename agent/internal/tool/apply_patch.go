@@ -220,7 +220,7 @@ func applyUpdateRun(ctx context.Context, fm execenv.FileMutator, ops []patchOp) 
 	}
 	written := at
 	var touched []string
-	for _, op := range ops {
+	for i, op := range ops {
 		// A section after the first applied on its own re-read the file before
 		// it ran, and that read reports a cancelled context. The run's one read
 		// already happened, so the cancellation is reported here instead.
@@ -234,7 +234,10 @@ func applyUpdateRun(ctx context.Context, fm execenv.FileMutator, ops []patchOp) 
 			return failUpdateRun(fm, path, written, touched, err)
 		}
 		written = next
-		at = next.reread()
+		// Only a section that follows this one matches against the re-read.
+		if i < len(ops)-1 {
+			at = next.reread()
+		}
 		touched = append(touched, "M "+path)
 	}
 	if err := writePatchFileState(fm, path, written); err != nil {
