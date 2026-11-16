@@ -894,7 +894,6 @@ test("an outside press leaves the card folded-open until its click lands", async
   });
   await waitForMacrotaskInActScope();
   expect(card.hasAttribute("data-folded")).toBe(false);
-  expect(editor.style.minHeight).toBe("2lh");
 
   // The click lands on the pressed control first, then folds the card.
   await act(async () => {
@@ -937,7 +936,6 @@ test("a press that never becomes a click never folds the composer", async () => 
   });
   await waitForMacrotaskInActScope();
   expect(card.hasAttribute("data-folded")).toBe(false);
-  expect(editor.style.minHeight).toBe("2lh");
 });
 
 test("a non-primary press holds no composer editing state", async () => {

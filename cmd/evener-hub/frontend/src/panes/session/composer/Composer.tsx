@@ -152,6 +152,20 @@ const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: Session
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
+// Whether a node belongs to the composer: its own subtree, or one of the
+// menus it portals outside it (the session menu, a completion list, a dialog).
+// A press or focus inside keeps the card expanded.
+function isComposerOwned(root: HTMLElement, node: Node | null): boolean {
+  if (node === null) return false;
+  if (root.contains(node)) return true;
+  const element = node.nodeType === 1 ? (node as Element) : null;
+  return (
+    element !== null &&
+    typeof element.closest === "function" &&
+    element.closest('[role="menu"], [role="listbox"], [role="dialog"]') !== null
+  );
+}
+
 export function Composer(props: ComposerProps) {
   if (props.submission !== undefined) return <ComposerWithSubmission {...props} submission={props.submission} />;
   return <ComposerWithOwnSubmission {...props} />;
@@ -332,8 +346,7 @@ function ComposerWithSubmission({
       // outsidePressRef.
       if (outsidePressRef.current) return;
       const active = anchor.ownerDocument.activeElement;
-      if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
-        return;
+      if (isComposerOwned(root, active)) return;
       anchor.removeAttribute("data-composer-editing");
     });
   };
@@ -342,20 +355,15 @@ function ComposerWithSubmission({
   // else rests it. A blur's frame can fire before a press's focus transfer
   // lands, so the blur path defers to the press's release, which reconciles
   // here once the transfer has settled.
-  const reconcileEditorEngagement = (): void => {
+  const reconcileEditorEngagement = useCallback((): void => {
     const root = composerRootRef.current;
     if (!root) return;
-    // The same hold as endComposerEditingSoon: a fold mid-press reflows the
-    // card and loses the pressed control's click.
+    // Held through a press for the same reason; see outsidePressRef.
     if (outsidePressRef.current) return;
     const active = root.ownerDocument.activeElement;
-    if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]'))) return;
+    if (isComposerOwned(root, active)) return;
     setEditorEngaged(false);
-  };
-  // The outside-press effect subscribes once, so it reads the current
-  // reconcile through a ref rather than re-subscribing every render.
-  const reconcileEditorEngagementRef = useRef(reconcileEditorEngagement);
-  reconcileEditorEngagementRef.current = reconcileEditorEngagement;
+  }, []);
   const holdComposerPress = (event: ReactPointerEvent<HTMLDivElement>): void => {
     // Only the primary press can hold editing: a right or middle press fires
     // pointerdown but no click, so a hold armed here could never be released.
@@ -409,13 +417,8 @@ function ComposerWithSubmission({
       const root = composerRootRef.current;
       if (!anchor || !root || !anchor.hasAttribute("data-composer-editing")) return;
       if (event.button !== 0) return;
-      const target = event.target as Element | null;
-      if (
-        target &&
-        typeof target.closest === "function" &&
-        (root.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
-      )
-        return;
+      const target = event.target as Node | null;
+      if (isComposerOwned(root, target)) return;
       // The hold arms even while the editor still holds focus: the browser moves
       // focus as the press's default action, after this listener runs, so that
       // focus is the one the press is about to leave. Whether it left is decided
@@ -425,30 +428,28 @@ function ComposerWithSubmission({
     };
     const onClick = (event: MouseEvent) => {
       if (!outsidePressRef.current) return;
-      // The click is dispatched with its pointerup, so it wins this race; the
-      // cancel keeps a release already scheduled from outliving the fold.
+      // The click resolves the hold; the pointerup timer only covers a press
+      // that never clicked, so clearing one that is pending here is harmless.
       cancelRelease();
       outsidePressRef.current = false;
       const anchor = formAnchorRef.current;
       const root = composerRootRef.current;
       if (!anchor || !root) return;
-      const target = event.target as Element | null;
+      const target = event.target as Node | null;
       // A click that somehow lands back inside the composer is not an exit,
       // and one that arrives after editing already ended has nothing to do.
-      if (
-        target &&
-        typeof target.closest === "function" &&
-        (root.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
-      )
-        return;
+      if (isComposerOwned(root, target)) return;
       if (!anchor.hasAttribute("data-composer-editing")) return;
       // Focus that still sits in the editor is a transcript pan, not an editing
       // exit; only a real focus loss ends it.
       const active = doc.activeElement;
       if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
       anchor.removeAttribute("data-composer-editing");
+      // The ended-session card's writing height followed the editor's focus
+      // through the press; the click is where it rests again.
+      setFollowUpFocused(false);
       // Focus has settled by now, so the resting row can follow it.
-      reconcileEditorEngagementRef.current();
+      reconcileEditorEngagement();
     };
     const onPointerCancel = () => {
       outsidePressRef.current = false;
@@ -481,7 +482,7 @@ function ComposerWithSubmission({
       cancelRelease();
       outsidePressRef.current = false;
     };
-  }, []);
+  }, [reconcileEditorEngagement]);
 
   // The session menu's turn-verb items press the same handlers the row
   // buttons press. Those handlers are recreated every render (they close
@@ -1144,7 +1145,10 @@ function ComposerWithSubmission({
     // expanded without shrinking it during a focus transfer.
     requestAnimationFrame(() => {
       if (!mountedRef.current || followUpFocusSequenceRef.current !== sequence) return;
-      setFollowUpFocused(false);
+      // The ended-session card's height keys on this, so clearing it mid-press
+      // collapses the card exactly as the fold does: a third collapser, held
+      // for the same reason. The click clears it instead.
+      if (!outsidePressRef.current) setFollowUpFocused(false);
       // A press inside the composer can blur the editor to body before the
       // press's own focus transfer lands; clearing engagement here would
       // collapse the row out from under the pressed control. Hold off during

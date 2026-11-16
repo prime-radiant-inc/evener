@@ -1300,6 +1300,32 @@ test("an ended session's field rests at one line and opens to three on focus", a
   expect(textarea().style.minHeight).toBe("1lh");
 });
 
+// An ended session's card is three lines tall while focused, so a mid-press
+// collapse moves the pressed control exactly as the live card's fold does.
+test("an ended session's field keeps its writing height until the outside click lands", async () => {
+  await mountComposer("ref_a", { status: { type: "notLoaded" } });
+  const editor = textarea();
+  await act(async () => editor.focus());
+  expect(editor.style.minHeight).toBe("3lh");
+
+  // The press moves focus off the editor and its blur clears the follow-up
+  // focus on the next frame. The card must not shrink until the click lands.
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+    editor.blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+  expect(editor.style.minHeight).toBe("3lh");
+
+  await act(async () => {
+    fireEvent.click(document.body);
+  });
+  await waitFor(() => expect(editor.style.minHeight).toBe("1lh"));
+});
+
 // A live session's field must NOT pick up the collapsed floor - it keeps the
 // editor's two-line default, so a running composer is a comfortable target.
 test("a live session's field folds to one line and returns to the widget's default floor on focus", async () => {

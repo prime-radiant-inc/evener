@@ -254,7 +254,13 @@ fold mid-gesture.
 **Mutation performed:** reverted the deferral in
 `src/panes/session/composer/Composer.tsx` — the `pointerdown` listener cleared
 `data-composer-editing` immediately again, and the click/pointerup handling
-that defers it was removed.
+that defers it was removed. A stronger mutation also has to restore the two
+other height drivers the same hold covers: `handleFollowUpBlur`'s
+`setFollowUpFocused(false)` and the resting-row reconcile. The browser case
+catches the first because its harness session is live; the ended-session
+driver has unit coverage instead
+(`Composer.recovery.test.tsx`, "an ended session's field keeps its writing
+height until the outside click lands"), which fails while that one is ungated.
 
 **Result before restore:** FAIL at both widths, `composer outside-press click
 390px ... FAIL - editing must survive the outside press until its click lands`

@@ -70,12 +70,12 @@ async function point(send, selector) {
   })()`,
   );
 }
-async function mouse(send, p, type, clickCount = 1) {
+async function mouse(send, p, type, clickCount = 1, buttons) {
   await send("Input.dispatchMouseEvent", {
     type,
     ...p,
     button: "left",
-    buttons: type === "mousePressed" ? 1 : 0,
+    buttons: buttons ?? (type === "mousePressed" ? 1 : 0),
     clickCount,
   });
 }
@@ -491,7 +491,7 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
         if (r.height <= 0 || r.width <= 0) continue;
         if (!node.contains(document.elementFromPoint(x, y))) continue;
         const details = node.closest('details');
-        return { x, y, open: details.open, top: r.top, label: (node.textContent || '').trim().slice(0, 40) };
+        return { x, y, open: details.open, label: (node.textContent || '').trim().slice(0, 40) };
       }
       return null;
     })()`,
@@ -500,14 +500,7 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
 
     // Press, hold long enough that a mid-press fold would have landed, then
     // release. Editing must survive the hold: the fold waits for the click.
-    await send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: aim.x,
-      y: aim.y,
-      button: "left",
-      buttons: 1,
-      clickCount: 1,
-    });
+    await mouse(send, { x: aim.x, y: aim.y }, "mousePressed");
     await delay(400);
     const held = await evaluate(
       send,
@@ -521,22 +514,13 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     assert.equal(held.folded, null, "the card must not fold mid-press");
     assert.ok(held.hit, "the pressed disclosure must still sit under the pointer before release");
 
-    await send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: aim.x,
-      y: aim.y,
-      button: "left",
-      buttons: 0,
-      clickCount: 1,
-    });
-    await until(
-      send,
-      `[...document.querySelectorAll('[data-testid="turn-block"] details')].some(d => d.open !== ${aim.open})`,
-    );
+    await mouse(send, { x: aim.x, y: aim.y }, "mouseReleased");
+    const toggledExpr = `[...document.querySelectorAll('[data-testid="turn-block"] details')].some(d => d.open !== ${aim.open})`;
+    await until(send, toggledExpr);
     const settled = await evaluate(
       send,
       `({
-      toggled: [...document.querySelectorAll('[data-testid="turn-block"] details')].some(d => d.open !== ${aim.open}),
+      toggled: ${toggledExpr},
       folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
       editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
     })`,
@@ -557,44 +541,23 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
       return { x: r.left + 4, y: r.top + Math.min(8, r.height / 2) };
     })()`,
     );
-    await send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: dragStart.x,
-      y: dragStart.y,
-      button: "left",
-      buttons: 1,
-      clickCount: 1,
-    });
-    await send("Input.dispatchMouseEvent", {
-      type: "mouseMoved",
-      x: dragStart.x + 120,
-      y: dragStart.y + 40,
-      button: "left",
-      buttons: 1,
-    });
-    await delay(200);
+    await mouse(send, dragStart, "mousePressed");
+    await mouse(send, { x: dragStart.x + 120, y: dragStart.y + 40 }, "mouseMoved", 1, 1);
+    // The collapse this case must catch lands within one frame and a React
+    // commit; there is no height transition to outlast.
+    await evaluate(send, "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     const midDrag = await evaluate(
       send,
-      `({
-      folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
-      editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
-    })`,
+      `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded')`,
     );
-    assert.equal(midDrag.folded, null, "a text-selection drag must not fold the card mid-gesture");
-    await send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: dragStart.x + 120,
-      y: dragStart.y + 40,
-      button: "left",
-      buttons: 0,
-      clickCount: 1,
-    });
+    assert.equal(midDrag, null, "a text-selection drag must not fold the card mid-gesture");
+    await mouse(send, { x: dragStart.x + 120, y: dragStart.y + 40 }, "mouseReleased");
     return {
       disclosure: aim.label,
       heldEditing: held.editing,
       toggled: settled.toggled,
       foldedAfterClick: settled.folded,
-      dragHeldCard: midDrag.folded === null,
+      dragHeldCard: midDrag === null,
     };
   } finally {
     try {
