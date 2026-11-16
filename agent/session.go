@@ -2729,12 +2729,16 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	}
 	if committed && publishEvent {
 		// The entry and the event announcing it are one publication, and the
-		// transcript door is the statement that says so: while it is held no
-		// fold can publish, so the order a live reader sees is the order the
-		// transcript holds. Emitted after the release, a fold could take the
-		// door in between, commit its markers and flush its own events first,
-		// and the projector — which reads an environment event as a turn
-		// boundary — would split a turn cold replay does not.
+		// transcript door is the statement that says so: the entry is in
+		// history before the event exists, so no reader can observe the event
+		// ahead of the transcript that explains it.
+		//
+		// The door does NOT prevent a turn from being split. An earlier version
+		// of this comment claimed the projector read an environment event as a
+		// turn boundary; it no longer builds turns from events at all, and this
+		// event is a context facet (server/thread_envelope.go's facetsByEvent).
+		// Whether the event needs the door at all is #6513's open question, not
+		// something this comment settles.
 		//
 		// This is the one event published under the door, and the trade is
 		// real: emit is not a bounded send. It parks indefinitely against the
