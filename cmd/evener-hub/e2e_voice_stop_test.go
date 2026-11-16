@@ -162,7 +162,7 @@ func TestE2E_VoiceSessionStopClosesUnacknowledgedProvider(t *testing.T) {
 func TestE2E_VoiceSessionStopSuppressesPendingAndStaleHistory(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	_ = f.device.conn.CloseNow()
-	baseline := f.read(t)
+	baseline := f.readLiveManager(t, "baseline after device close")
 	observer := f.stack.dialRPC(f.ctx, t)
 	if _, err := observer.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, Subscribe: true}); err != nil {
 		t.Fatal(err)
@@ -236,7 +236,7 @@ func TestE2E_VoiceSessionStopReadPreservesRenderedEvidence(t *testing.T) {
 		t.Run(fmt.Sprintf("rendered=%t", rendered), func(t *testing.T) {
 			f := newVoiceCorrectionStack(t)
 			_ = f.device.conn.CloseNow()
-			bridge, device, peer := voiceQuestionSelector(t, f, f.read(t))
+			bridge, device, peer := voiceQuestionSelector(t, f, f.readLiveManager(t, "baseline after device close"))
 			const input, reply = "STOP-RENDER-INPUT-251", "STOP-RENDER-OUTPUT-251"
 			alphaID := f.admit(t, input, false)
 			request := f.next(t)
@@ -328,7 +328,7 @@ func TestE2E_VoiceSessionStopReadPreservesRenderedEvidence(t *testing.T) {
 func TestE2E_VoiceSessionStopHistoryTargetsOnlyOwningExecution(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	_ = f.device.conn.CloseNow()
-	bridge, device, peer := voiceQuestionSelector(t, f, f.read(t))
+	bridge, device, peer := voiceQuestionSelector(t, f, f.readLiveManager(t, "baseline after device close"))
 	observer := f.stack.dialRPC(f.ctx, t)
 	if _, err := observer.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, Subscribe: true}); err != nil {
 		t.Fatal(err)
