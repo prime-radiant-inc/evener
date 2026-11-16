@@ -167,6 +167,10 @@ func (c *wireEncodingCache) store(key wireEncodingKey, data []byte, encoded stri
 		}
 		if len(entry.candidates) >= wireEncodingCacheMaxCandidates {
 			oldest := entry.candidates[0]
+			// Zero the slot before reslicing so the evicted candidate holds no
+			// reference to a payload the budget no longer accounts for. Slices do not
+			// expose the slot afterwards, but the array is what the collector sees.
+			entry.candidates[0] = wireEncodingCandidate{}
 			entry.candidates = entry.candidates[1:]
 			entry.bytes -= oldest.size()
 			c.bytes -= oldest.size()
