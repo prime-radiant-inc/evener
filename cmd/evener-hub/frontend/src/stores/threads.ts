@@ -1974,6 +1974,48 @@ async function pruneSettledTransientRefusals(runtime: MutationRuntime, targetRef
   }
 }
 
+// The delivered SOURCE identities a live model proves right now: the ids a
+// recorded item's lineage carries (a promotion or drain inherits its consumed
+// queue entry's input), plus the queue's own clientMutationIds while those
+// entries still sit queued.
+function deliveredSourceIdsOf(
+  queueClientMutationIds: readonly string[] | undefined,
+  turns: readonly { items?: readonly { conversationInputIds?: readonly string[] }[] }[] | undefined,
+): Set<string> {
+  const ids = new Set<string>(queueClientMutationIds ?? []);
+  for (const turn of turns ?? []) {
+    for (const item of turn.items ?? []) {
+      for (const inputId of item.conversationInputIds ?? []) {
+        if (inputId.startsWith("client:")) ids.add(inputId.slice("client:".length));
+      }
+    }
+  }
+  return ids;
+}
+
+// A refused promote that lands in recovery AFTER its queue entry's delivery
+// was already visible (the refusal's transfer follows a hydration that could
+// not see it coming) must settle against the delivery evidence it arrives
+// into: the storage-change notification the transfer fires is the one moment
+// the runtime can reconcile the two without waiting for the next read.
+// Fire-and-forget like the prune above: a storage failure stays contained.
+async function retireDeliveredPromoteRecoveriesForRefs(
+  runtime: MutationRuntime,
+  targetRefs: Iterable<string>,
+): Promise<void> {
+  for (const targetRef of targetRefs) {
+    const model = trackedThreadModel(targetRef);
+    const delivered = deliveredSourceIdsOf(model?.queue?.clientMutationIds, model?.turns);
+    if (delivered.size === 0) continue;
+    try {
+      await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, delivered);
+    } catch {
+      continue;
+    }
+    if (!isCurrentMutationRuntime(runtime)) return;
+  }
+}
+
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 
@@ -2662,6 +2704,7 @@ function getMutationRuntime(): MutationRuntime | null {
           notifyMutationPersistence(targetRefs);
         }
         void pruneSettledTransientRefusals(runtime, targetRefs);
+        void retireDeliveredPromoteRecoveriesForRefs(runtime, targetRefs);
       }
     },
     onBlockedMutation: (targetRef, client) => {
@@ -6156,6 +6199,18 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
         });
     }
   }
+  // The same delivery-evidence settle a tracked hydration runs: a repository
+  // read is accepted history too, and its bounded window can hold the
+  // delivered entry's lineage while the refused promote's recovery is what
+  // a reload would resurrect. Repository-owned refs bypass the tracked
+  // hydration's sweep, so this is their boundary.
+  if (runtime && authoritative) {
+    void runtime.storage
+      .retireDeliveredPromoteRecoveries(ref, deliveredSourceIdsOf(model.queue?.clientMutationIds, model.turns))
+      .catch(() => {
+        // A later authoritative read runs the same retirement.
+      });
+  }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
@@ -6298,14 +6353,10 @@ async function publishAndReconcileThreadHydration(
         // as the queue's own clientMutationId while the entry still sits
         // queued.
         if (mutationStateAuthoritative) {
-          const deliveredSourceIds = new Set<string>(responseQueue?.clientMutationIds ?? []);
-          for (const turn of hydration.response.thread.turns ?? []) {
-            for (const item of turn.items ?? []) {
-              for (const inputId of item.conversationInputIds ?? []) {
-                if (inputId.startsWith("client:")) deliveredSourceIds.add(inputId.slice("client:".length));
-              }
-            }
-          }
+          const deliveredSourceIds = deliveredSourceIdsOf(
+            responseQueue?.clientMutationIds,
+            hydration.response.thread.turns,
+          );
           await runtime.storage.retireDeliveredPromoteRecoveries(ref, deliveredSourceIds);
         }
         if (!current()) return;

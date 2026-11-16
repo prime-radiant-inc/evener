@@ -473,6 +473,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   settleReceipt: () => Promise.resolve(false),
   settleApplied: () => Promise.resolve(undefined),
   restoreProvenAbsent: () => Promise.resolve([]),
+  retireDeliveredPromoteRecoveries: () => Promise.resolve([]),
   transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off

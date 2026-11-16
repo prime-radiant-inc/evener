@@ -625,6 +625,78 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // The refused-promote ordering gap (roborev round 4): the queue's drain
+  // already delivered the entry - the transcript item records its lineage -
+  // and the promote's journaled refusal lands in recovery AFTER that
+  // evidence was visible. The transfer's own storage-change notification is
+  // the one moment the runtime can reconcile the two; nothing re-reads the
+  // ref afterward, and a bounded-history reload that drops the delivery item
+  // would resurrect the duplicate row for good.
+  test("a refused promote landing after its entry's delivery settles immediately", async () => {
+    const { storage, fake } = await hydratedFallbackTarget({
+      indexedDB: new IDBFactory(),
+      databaseName: "evener-mutation-outbox-promote-delivery-order",
+    });
+    // The model a storage-change hook reads: the drain's recorded item
+    // carries the consumed entry's lineage, and the queue is empty (the
+    // entry is gone - delivered).
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        turns: [
+          {
+            id: "turn_1",
+            status: "completed",
+            itemsView: "full",
+            items: [
+              {
+                id: "item_1",
+                turnId: "turn_1",
+                type: "userMessage",
+                text: "queued message",
+                status: "completed",
+                clientMutationId: "drain_consumer",
+                conversationInputIds: ["client:queue_source"],
+              },
+            ],
+          },
+        ],
+        evener: {
+          ref: params.ref ?? "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 8, depth: 0, ids: [] },
+          activeTurnId: "turn_1",
+        },
+      }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
+    // The press: Steer-now on the (already delivered) entry. The daemon
+    // rejects the promote with its journaled conflict - the exact refusal of
+    // the live report - and the dispatcher moves the record to recovery.
+    fake.on("turn/promoteQueuedAsSteer", (params) => {
+      throw new WireError("promote: queue index 0 out of range (depth 0)", -32011, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+        cause: "journaledRejection",
+      });
+    });
+    await threadsStore
+      .getState()
+      .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "queued message" }, "queue_source");
+    // The transfer reached recovery; the storage-change hook must have
+    // settled it against the delivery evidence the model already holds, so
+    // no refused promote record survives.
+    await flushUntilArrived("the refused promote's recovery to settle", async () => {
+      const recoveries = await storage.listRecovery("ref_a");
+      return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+    });
+    expect(
+      (await storage.listRecovery("ref_a")).filter((record) => record.method === "turn/promoteQueuedAsSteer"),
+    ).toEqual([]);
+    storage.close();
+  });
+
   // Another tab still holding the previous schema blocks the outbox's upgrade,
   // and the adapter refuses the open at once rather than wait. That refusal is
   // the storage's, not the send's, so the send goes out directly.
