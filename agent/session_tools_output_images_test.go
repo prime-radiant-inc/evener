@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -79,6 +80,66 @@ func newImageToolSession(t *testing.T, toolName, stateDir string, exec func() (a
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]events.SessionEvent(nil), collected...)
+	}
+}
+
+// TestToolCallEndCarriesABoundedExcerptOfTheOutput is the wire contract for a
+// tool result's text: the deltas carry every byte, and the end event carries
+// only the excerpt a reader that missed them renders, plus the true byte
+// length, so the two copies cannot both hold the whole payload.
+func TestToolCallEndCarriesABoundedExcerptOfTheOutput(t *testing.T) {
+	t.Parallel()
+	full := strings.Repeat("read file body\n", 4_000)
+	sess, stop := imageToolSession(t, "read_file", func() (any, error) {
+		return tool.TextResult{Output: full, FullOutput: full}, nil
+	})
+
+	sess.execTool(context.Background(), llm.ToolCallData{
+		ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"/tmp/x"}`), Type: "function",
+	}, "")
+	collected := stop()
+
+	var streamed strings.Builder
+	for _, event := range collected {
+		if delta, ok := event.Data.(events.ToolCallOutputDeltaData); ok && delta.CallID == "call_read" {
+			streamed.WriteString(delta.Delta)
+		}
+	}
+	if streamed.String() != full {
+		t.Fatalf("deltas carried %d bytes, want the whole %d-byte output", streamed.Len(), len(full))
+	}
+
+	data := toolCallEndData(t, collected, "call_read")
+	if got := len([]rune(data.Output)); got != events.ToolEndExcerptRunes {
+		t.Fatalf("end event carried %d runes, want the %d-rune excerpt", got, events.ToolEndExcerptRunes)
+	}
+	if data.OutputBytes != len(full) {
+		t.Fatalf("OutputBytes=%d, want the true %d-byte length", data.OutputBytes, len(full))
+	}
+	if !strings.HasPrefix(full, data.Output) {
+		t.Fatal("the excerpt is not the head of the output the deltas streamed")
+	}
+}
+
+// TestToolCallEndSendsAShortOutputWhole keeps the single-copy guarantee from
+// costing a short result its text: a text within the excerpt bound arrives
+// whole and states no length, so no reader has to reassemble it.
+func TestToolCallEndSendsAShortOutputWhole(t *testing.T) {
+	t.Parallel()
+	sess, stop := imageToolSession(t, "write_file", func() (any, error) {
+		return tool.TextResult{Output: "wrote 12 bytes", FullOutput: "wrote 12 bytes"}, nil
+	})
+
+	sess.execTool(context.Background(), llm.ToolCallData{
+		ID: "call_write", Name: "write_file", Arguments: json.RawMessage(`{"path":"/tmp/x"}`), Type: "function",
+	}, "")
+	data := toolCallEndData(t, stop(), "call_write")
+
+	if data.Output != "wrote 12 bytes" {
+		t.Fatalf("Output=%q, want the whole text", data.Output)
+	}
+	if data.OutputBytes != 0 {
+		t.Fatalf("OutputBytes=%d, want 0 so its presence means an excerpt", data.OutputBytes)
 	}
 }
 

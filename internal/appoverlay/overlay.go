@@ -524,10 +524,17 @@ func (o *Overlay) endTool(data events.ToolCallEndData) []Change {
 	item.PrevalOnly = data.PrevalOnly
 	item.Raw = data.ToolState
 	item.ExitCode = apptranscript.ExitCodeFromToolState(data.ToolState)
-	if len(data.Output) > maxRunningOutputBytes {
-		s.output = keepTail([]byte(data.Output), trimmedRunningOutputBytes)
-	} else if data.Output != "" {
-		s.output = []byte(data.Output)
+	// A slot that watched the output stream already holds the tail, and the end
+	// event carries only the bounded excerpt a reader that missed the deltas
+	// renders, so adopting it would replace the tail with less. Only a slot
+	// that saw no deltas takes the event's payload, which is why the event
+	// still carries one at all.
+	if len(s.output) == 0 {
+		if len(data.Output) > maxRunningOutputBytes {
+			s.output = keepTail([]byte(data.Output), trimmedRunningOutputBytes)
+		} else if data.Output != "" {
+			s.output = []byte(data.Output)
+		}
 	}
 	images := apptranscript.LiveOutputImages(data.OutputImages)
 	fetchable := slices.DeleteFunc(slices.Clone(images), apptranscript.UnfetchableUntilRecorded)

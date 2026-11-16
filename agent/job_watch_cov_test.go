@@ -57,6 +57,37 @@ func TestTerminalCatchupWithSendCoversSendPath(t *testing.T) {
 	}
 }
 
+// TestBoundedToolEndRendersTheSameFrame is the cold-reader guard for the bounded
+// TOOL_CALL_END payload: the frame a watch renders from a bounded event must be
+// byte-for-byte the frame it rendered when the event carried the whole text, so
+// bounding the payload cannot change what a reader that never saw the deltas
+// sees.
+func TestBoundedToolEndRendersTheSameFrame(t *testing.T) {
+	t.Parallel()
+	// Multi-byte runes and newlines exercise both the rune-count cut and the
+	// frame's line re-indentation, which is where a byte-length cut would drift.
+	for _, text := range []string{
+		strings.Repeat("x", 5_000),
+		strings.Repeat("é", 5_000),
+		strings.Repeat("line\n", 900),
+		strings.Repeat("é", 990) + strings.Repeat("z", 40),
+	} {
+		var unbounded strings.Builder
+		writeAssistantToolWatchEvent(&unbounded, events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: text})
+
+		excerpt, full := events.BoundToolField(text)
+		var bounded strings.Builder
+		writeAssistantToolWatchEvent(&bounded, events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: excerpt, OutputBytes: full})
+
+		if bounded.String() != unbounded.String() {
+			t.Fatalf("bounded frame differs for a %d-byte text:\nbounded:\n%s\nunbounded:\n%s", len(text), bounded.String(), unbounded.String())
+		}
+		if full == 0 {
+			t.Fatalf("a %d-byte text was not bounded, so the case proves nothing", len(text))
+		}
+	}
+}
+
 // TestWriteAssistantToolWatchEventErrorField covers the error-branch of
 // writeAssistantToolWatchEvent which renders the
 // "error" and "error_truncated" fields when a tool call ends with an error.

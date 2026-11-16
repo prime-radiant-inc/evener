@@ -477,10 +477,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		endData.OutputImages = []events.OutputImage{img}
 	}
 	if res.IsError {
-		endData.Error = res.FullOutput
+		endData.Error, endData.ErrorBytes = events.BoundToolField(res.FullOutput)
 		endData.PrevalOnly = res.PrevalOnly
 	} else {
-		endData.Output = res.FullOutput
+		endData.Output, endData.OutputBytes = events.BoundToolField(res.FullOutput)
 	}
 	s.emit(endData)
 	s.responseSideEffectsMu.Unlock()
