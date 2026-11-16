@@ -450,3 +450,68 @@ func TestClassifySelfInfluenceRecreatedWatchStartsFresh(t *testing.T) {
 		})
 	}
 }
+
+// TestRecordWatchSendRunawayFuseSeesEveryExchangeAcrossCoalescing: a busy
+// receiver coalesces many matches into each frame it finally takes, so one
+// frame stands for a whole exchange and the superseded frames never deliver.
+// The fuse must still reach the cap: the superseded frames' fire entries can
+// never count toward it (SelfInfluenceDepth counts delivered priors only), and
+// spending the record's bounded ancestry on them evicts the delivered
+// ancestors, leaving the fuse below the cap while the loop runs on.
+func TestRecordWatchSendRunawayFuseSeesEveryExchangeAcrossCoalescing(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"assistant.message"}, Send: &watchSendArgs{To: "dlg_obs"}})
+	cfg := onlyWatchConfigForTest(t, jm)
+
+	// Ten matches per exchange: the last is the one the receiver takes.
+	const perExchange = 10
+	fire := func(base *provenance.Causal) bool {
+		jm.mu.Lock()
+		d := jm.watchSendSnapshot(cfg, "caller", "test", events.SessionEvent{SessionID: jm.sessionID, Provenance: provenance.Clone(base)})
+		c := jm.classifySelfInfluenceLocked(cfg, base)
+		jm.mu.Unlock()
+		_, _, ok, err := jm.recordWatchSend(d.withSelfInfluence(c))
+		if err != nil {
+			t.Fatalf("record match: %v", err)
+		}
+		return ok
+	}
+	deliverHead := func() *provenance.Causal {
+		pending := jm.pendingWatchSendDeliveries(nil)
+		if len(pending) == 0 {
+			t.Fatal("no pending frame to deliver")
+		}
+		delivered := provenance.Clone(pending[0].state.Provenance)
+		if err := jm.settleWatchSendDelivered(pending[0].cfg, pending[0].state); err != nil {
+			t.Fatalf("settle head: %v", err)
+		}
+		return delivered
+	}
+
+	// Each exchange descends from the frame the previous exchange delivered,
+	// the way a loop's next trigger carries the reply it answered. Every
+	// exchange but the last is delivered, so the cap's worth of delivered
+	// ancestors exists before the crossing match.
+	var base *provenance.Causal
+	for exchange := range runawaySelfInfluenceDepth {
+		for range perExchange {
+			if !fire(base) {
+				t.Fatalf("exchange %d was dropped below the cap", exchange)
+			}
+		}
+		base = deliverHead()
+	}
+	// The next exchange's first match crosses the cap and must be dropped as
+	// a runaway, so the loop stops instead of outliving the guard.
+	if fire(base) {
+		jm.mu.Lock()
+		depth := jm.fuseDepthLocked(cfg, base)
+		fires := 0
+		if base != nil {
+			fires = len(base.FireKeys)
+		}
+		jm.mu.Unlock()
+		t.Fatalf("the match past the cap persisted (fuseDepth=%d over %d fire entries), want a runaway drop", depth, fires)
+	}
+}

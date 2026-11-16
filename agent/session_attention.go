@@ -1708,16 +1708,29 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var staged map[string]struct{}
+	var inline map[string]struct{}
 	for _, turn := range presentedTurns {
-		if turn.AttentionID == "" {
-			continue
+		if turn.AttentionID != "" {
+			if staged == nil {
+				staged = make(map[string]struct{})
+			}
+			staged[turn.AttentionID] = struct{}{}
 		}
-		if staged == nil {
-			staged = make(map[string]struct{})
+		// A delegate result a reply carried inline spends its delivery here
+		// rather than in an attention turn: its commit on this turn is the
+		// only record that the round presented it.
+		for _, commit := range turn.DelegateDeliveryCommits {
+			if commit.DeliveryID == "" {
+				continue
+			}
+			if inline == nil {
+				inline = make(map[string]struct{})
+			}
+			inline[delegateAttentionID(commit.DeliveryID)] = struct{}{}
 		}
-		staged[turn.AttentionID] = struct{}{}
 	}
 	s.attentionStagedIDs = staged
+	s.attentionStagedInlineDeliveries = inline
 }
 
 // promoteStagedAttentionCoverage credits the staged set of a round whose
@@ -1734,8 +1747,10 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	staged := s.attentionStagedIDs
+	inline := s.attentionStagedInlineDeliveries
 	s.attentionStagedIDs = nil
-	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
+	s.attentionStagedInlineDeliveries = nil
+	if (len(staged) == 0 && len(inline) == 0) || settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		s.attentionMu.Unlock()
 		return
 	}
@@ -1763,6 +1778,18 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 		merged[id] = struct{}{}
 		fresh = append(fresh, id)
 	}
+	// An inline result is consumed by the turn that presented it, so its cause
+	// joins the turn and then leaves the registry: nothing else will resolve it,
+	// and a cause no attention can still arrive for would outlive its item.
+	var spent []string
+	for id := range inline {
+		if _, done := merged[id]; done {
+			continue
+		}
+		merged[id] = struct{}{}
+		fresh = append(fresh, id)
+		spent = append(spent, id)
+	}
 	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
 	s.attentionCausesMergedIDs = merged
@@ -1770,10 +1797,11 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	// The model has now seen these items, so what the turn does next descends
 	// from what caused them. This is where every attention item's cause joins
 	// a turn once: a trigger the accept already resolved, an item presented
-	// at turn start, and one that arrived mid-turn alike.
+	// at turn start, and one that arrived mid-turn or inline alike.
 	s.unionActiveProvenance(acceptedCause)
 	if s.delegateController != nil && len(fresh) > 0 {
 		s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
+		s.delegateController.attentionCauses.forget(spent...)
 	}
 }
 
@@ -1802,6 +1830,7 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
+	s.attentionStagedInlineDeliveries = nil
 	s.attentionCausesMergedIDs = nil
 	s.attentionFoldedCovered = nil
 	s.attentionMu.Unlock()

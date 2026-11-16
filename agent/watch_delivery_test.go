@@ -509,3 +509,50 @@ func TestSendWatchConditionMarkersNameDeliveriesThatCanStillSettle(t *testing.T)
 		t.Fatalf("condition markers = %d, want %d for the pending deliveries alone", markers, pending)
 	}
 }
+
+// Past the hourly threshold, a batch of pending observations from one watch
+// carries the notice on exactly one frame: settlement is what makes the notice
+// given, so a frame that has not settled yet must not release the choice of
+// which frame carries it to the rest of the batch.
+func TestSendWatchBackstopNoticeRidesOnePendingFramePerBatch(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	now := frozenTestTime
+	jm.now = func() time.Time { return now }
+	installWatchBelowValidation(t, jm, watchArgs{
+		Target: "caller",
+		Events: []string{"assistant.message"},
+		Send:   &watchSendArgs{To: "dlg_obs"},
+	})
+	cfg := onlyWatchConfigForTest(t, jm)
+	// The watch has already delivered past the threshold this hour, so its
+	// next frame is due the notice.
+	jm.mu.Lock()
+	for range watchBackstopFires {
+		jm.noteConditionDeliveryLocked(cfg)
+	}
+	jm.mu.Unlock()
+
+	// The receiver settles none of these, so the observations pend together.
+	for i := range 5 {
+		jm.mu.Lock()
+		delivery := jm.conditionFireSendLocked(jm.watchSendSnapshot(cfg, fmt.Sprintf("obs_%d", i), "observation", events.SessionEvent{SessionID: jm.sessionID}))
+		jm.mu.Unlock()
+		if _, _, ok, err := jm.recordWatchSend(delivery); err != nil || !ok {
+			t.Fatalf("observation %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	pending := jm.pendingWatchSendDeliveries(nil)
+	if len(pending) != 5 {
+		t.Fatalf("pending frames = %d, want 5", len(pending))
+	}
+	carried := 0
+	for _, frame := range pending {
+		if strings.Contains(jm.renderWatchSendFrame(frame.cfg, frame.state), llm.SystemNotificationOpenTag) {
+			carried++
+		}
+	}
+	if carried != 1 {
+		t.Fatalf("%d of %d pending frames carried the hourly notice, want exactly 1", carried, len(pending))
+	}
+}

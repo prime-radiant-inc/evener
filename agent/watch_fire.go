@@ -335,6 +335,14 @@ func (jm *jobManager) watchSendBackstopFiresLocked(cfg *watchConfig, state jobst
 	if cfg.backstopNoticeFrame != "" && cfg.backstopNoticeFrame == state.DeliveryID {
 		return cfg.backstopNoticeCount
 	}
+	// The notice counts as given only when its frame settles. While that frame
+	// is still pending, another pending frame must not take the notice too: a
+	// batch of observations would otherwise each carry it at the same count.
+	if cfg.backstopNoticeFrame != "" {
+		if _, held := cfg.conditionFrames[cfg.backstopNoticeFrame]; held {
+			return 0
+		}
+	}
 	if _, condition := cfg.conditionFrames[state.DeliveryID]; !condition {
 		return 0
 	}

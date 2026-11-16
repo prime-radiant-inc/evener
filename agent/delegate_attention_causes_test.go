@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -487,5 +489,44 @@ func TestLaterArrivingUpdateCauseStillJoinsTheTurn(t *testing.T) {
 
 	if got := provenance.MessagesFrom(root.activeCausalProvenance(), "child-session"); got != 2 {
 		t.Fatalf("the turn's lineage holds %d messages from the delegate, want both updates", got)
+	}
+}
+
+// A held report a positive-wait delegate_send consumes inline spends its
+// delivery in a tool-results turn, which carries no attention ID: the reply's
+// earlier_results are the only trace of what the parent's request presented.
+// The report's cause must still join the parent's turn — otherwise the reply
+// that descends from a watch fire loses that lineage and restarts the runaway
+// count — and its registry entry must go once incorporated, since no attention
+// turn remains to resolve it.
+func TestInlineHeldReportJoinsTheTurnAndRetiresItsCause(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	causes := &root.delegateController.attentionCauses
+	const (
+		watchID         = "watch_inline"
+		watchGeneration = "wg_inline"
+		deliveryID      = "dlv_inline_report"
+	)
+	reportID := delegateAttentionID(deliveryID)
+	causes.remember(reportID, provenance.WithWatch(nil, watchID, watchGeneration, deliveryID, "child-session", ""))
+	// The send's reply presented the held report as an earlier result, and its
+	// tool-results turn records the delivery it spent.
+	sendTurn := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: "send", Name: "delegate_send", Content: "HELD_REPORT"},
+	}}})
+	sendTurn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "send", DeliveryID: deliveryID}}
+
+	root.resetAttentionCoverage()
+	root.stagePresentedAttentionCoverage(context.Background(), []schema.Turn{sendTurn})
+	root.promoteStagedAttentionCoverage(llm.Request{})
+
+	turn := root.activeCausalProvenance()
+	if depth := provenance.SelfInfluenceDepth(turn, watchID, watchGeneration, func(string) bool { return true }); depth != 1 {
+		t.Fatalf("the turn that consumed the held report exposes its watch fire at depth %d, want 1: %#v", depth, turn)
+	}
+	if cause := causes.union([]string{reportID}); cause != nil {
+		t.Fatalf("the consumed report's cause is still registered after incorporation: %#v", cause)
 	}
 }

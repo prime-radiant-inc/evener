@@ -1284,6 +1284,13 @@ type Session struct {
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
 	attentionStagedIDs map[string]struct{}
+	// attentionStagedInlineDeliveries is one round's candidate coverage for
+	// delegate results its request presented inline: the delivery ids named by
+	// the presented tool-results turns' DelegateDeliveryCommits. A reply that
+	// carried a held result as earlier_results consumes it with no attention
+	// turn, so its id is the only trace of what the round presented. Promoted
+	// and reset with attentionStagedIDs. Guarded by attentionMu.
+	attentionStagedInlineDeliveries map[string]struct{}
 	// attentionCausesMergedIDs names the attention items whose causes have
 	// already joined the running turn's lineage: promoteStagedAttentionCoverage
 	// merges an item's cause at the first settled request that presents it, so

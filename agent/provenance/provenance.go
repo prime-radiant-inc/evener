@@ -150,6 +150,39 @@ func boundFires(p *Causal) {
 	p.FireKeys = append(p.FireKeys[:0], p.FireKeys[len(p.FireKeys)-maxCausalFires:]...)
 }
 
+// DropSupersededDelivery removes deliveryID from p's lineage: its fire entry
+// and any watch entry naming it. A frame the receiver never took can never
+// count toward SelfInfluenceDepth, which counts only delivered priors, so
+// keeping it spends one of the record's bounded slots on a dead id. A lineage
+// whose frames each stand for many coalesced matches otherwise fills the fire
+// record and the diagnostic chain with dead ids and evicts the delivered
+// ancestors the fuse counts, and the loop outlives the cap. The caller names
+// the id at the moment it supersedes the frame; this package cannot tell a
+// superseded frame from one still awaiting delivery.
+func DropSupersededDelivery(p *Causal, deliveryID string) {
+	if p == nil || deliveryID == "" {
+		return
+	}
+	// The record is rebuilt rather than filtered in place: a coalescing caller
+	// may hand this the Causal a drain is reading, and its slots outlive the
+	// call.
+	fires := make([]FireKey, 0, len(p.FireKeys))
+	for _, fire := range p.FireKeys {
+		if fire.DeliveryID != deliveryID {
+			fires = append(fires, fire)
+		}
+	}
+	p.FireKeys = fires
+	chain := make([]Entry, 0, len(p.Chain))
+	for _, entry := range p.Chain {
+		if entry.Kind == "watch" && entry.DeliveryID == deliveryID {
+			continue
+		}
+		chain = append(chain, entry)
+	}
+	p.Chain = chain
+}
+
 func LatestDeliveryID(p *Causal) string {
 	if p == nil {
 		return ""

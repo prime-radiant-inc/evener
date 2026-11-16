@@ -63,6 +63,31 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	return d
 }
 
+// supersededFireStillCountsLocked reports whether a frame superseded by a
+// coalescing successor can still count toward the runaway fuse. A frame the
+// receiver already took, or one whose delivery is in flight or awaiting a
+// settlement retry, may yet be marked delivered; only a frame with no such
+// hold is certain never to count. The caller must hold jm.mu.
+func (jm *jobManager) supersededFireStillCountsLocked(deliveryID string) bool {
+	if deliveryID == "" {
+		return true
+	}
+	if jm.watchSendDeliveredLocked(deliveryID) {
+		return true
+	}
+	if _, held := jm.stableWatchReceipts[deliveryID]; held {
+		return true
+	}
+	if _, delivering := jm.deliveringWatchSends[deliveryID]; delivering {
+		return true
+	}
+	if _, unsettled := jm.unsettledWatchSends[deliveryID]; unsettled {
+		return true
+	}
+	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
+	return retrying
+}
+
 // recordWatchSend persists a fired send as pending and returns its state.
 // ok=false means the send was superseded or unresolvable (already handled).
 // A persist failure after a durable prefix landed (persisted=true) still
@@ -796,6 +821,14 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		}
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
+		// A superseded frame the receiver never took can never count toward
+		// the runaway fuse. Its fire entry is spend from the record's bounded
+		// ancestry, and enough of them evict the delivered ancestors the fuse
+		// does count. Drop it here, where supersession is known, and only for
+		// a frame no receipt, claim or delivered marker holds.
+		if !jm.supersededFireStillCountsLocked(existing.DeliveryID) {
+			provenance.DropSupersededDelivery(existing.Provenance, existing.DeliveryID)
+		}
 		// The coalesced frame stands in for both the superseded delivery and this
 		// one, so it must carry both causes so either's downstream echo is
 		// recognized — and the breaker must judge the UNION: two below-threshold
