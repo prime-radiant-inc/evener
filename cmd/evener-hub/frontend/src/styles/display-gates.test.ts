@@ -159,13 +159,14 @@ test("every widget tap floor applies on phones and on coarse pointers", () => {
 // index.html no longer locks zoom (viewport-pin.test.ts), so the guarantee
 // that iOS Safari has nothing to auto-zoom into moves here: every rule that
 // styles an editable control - an input/select/textarea element selector, or
-// one of the classes the widgets and panes put on their own controls - sizes
-// its text from --font-size-control (the ui step on fine-pointer widths,
-// floored at 16px on phones and on any coarse pointer at any width) or
+// one of the classes the widgets and panes put on their own editable
+// controls, including the composer's contenteditable .editor - sizes its
+// text from --font-size-control (the ui step on fine-pointer widths, floored
+// at 16px on phones and on any coarse pointer at any width) or
 // --font-size-body. roborev on PR #947 caught the inputs and selects that
 // still took --font-size-ui after the lock was removed.
 const CONTROL_SELECTOR_RE =
-  /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect)(\b|[:.[])/;
+  /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect|editor)(\b|[:.[])/;
 // var(--font-size-control), or the textarea's max(control, body) - never the
 // body size alone, which the S preference scales under 16px on phones.
 const CONTROL_SIZE_RE =
@@ -210,12 +211,30 @@ test("every rule that sizes an editable control uses --font-size-control or --fo
   for (const file of walkCss(srcRoot)) {
     const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const selector = block[1]!.trim().split("\n").pop() ?? "";
+      // The whole captured selector, not its last line: a control can sit on
+      // any line of a multi-line selector list.
+      const selector = block[1]!.trim();
       const body = block[2]!;
       if (!CONTROL_SELECTOR_RE.test(selector)) continue;
       if (!/font-size:/.test(body)) continue;
       expect(body, `${file.slice(srcRoot.length + 1)}: ${selector}`).toMatch(CONTROL_SIZE_RE);
     }
+  }
+});
+
+test("tokens.css is the only stylesheet that declares --font-size-control", () => {
+  // The floor's reach is the touch block's media query: a redeclaration in a
+  // pane or widget stylesheet under a narrower gate would silently drop the
+  // 16px floor on wide touch screens (the Duo's 951pt landscape rides the
+  // coarse arm of the query, not the width arm), which is exactly what the
+  // web UI design system doc says this file catches.
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const file of walkCss(srcRoot)) {
+    if (file.endsWith("tokens.css")) continue;
+    const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css, `${file.slice(srcRoot.length + 1)} redeclares --font-size-control`).not.toMatch(
+      /--font-size-control\s*:/,
+    );
   }
 });
 
