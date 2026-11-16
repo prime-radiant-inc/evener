@@ -165,8 +165,12 @@ func (s *Session) warnDelegateAttentionRefused(delegateID, predicate string) {
 		return
 	}
 	slog.Warn("delegate attention drive refused", "action", delegateAttentionDriveLabel, "session", s.ID(), "delegate", delegateID, "predicate", predicate)
+	// The message names the delegate: clients that render only the warning's
+	// text (web and native systemEventWords) would otherwise show one
+	// identical line for every delegate the same predicate holds, and the
+	// structured fields are the machine contract, not the display.
 	s.emit(events.WarningData{
-		Message:          delegateAttentionDriveLabel + " refused: " + predicate,
+		Message:          delegateAttentionDriveLabel + " refused for delegate " + delegateID + ": " + predicate,
 		Source:           "delegate",
 		Code:             events.WarningCodeDelegateAttentionDriveRefused,
 		DelegateID:       delegateID,
