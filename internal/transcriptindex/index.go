@@ -308,6 +308,26 @@ type Index struct {
 	// entry or reader. The ordinary current-boundary path releases it.
 	cutView   *Index
 	cutLength int64
+	// derived memoizes the last DerivedTotals walk. A past-thread read asks for
+	// the same cut on every request, and the walk sums every turn record, so the
+	// answer is kept against the table state it was computed from. Every record
+	// change goes through table.write, which bumps the epoch: stampTurn rewrites
+	// a turn's own slot in place, so the count alone cannot detect a stale sum.
+	derived derivedMemo
+}
+
+// derivedMemo is one DerivedTotals answer with the table state it describes.
+type derivedMemo struct {
+	valid  bool
+	epoch  uint64
+	turns  uint64
+	from   int
+	usage  [4]int64
+	failed int
+	// unavailable caches a refusal too: a walk that found an unreadable record
+	// or an inexact failure count would find it again, and a past-thread read
+	// must not repeat that walk per request.
+	unavailable bool
 }
 
 // transcriptFile is what the index holds of the transcript file: positioned
@@ -656,6 +676,10 @@ func (x *Index) adopt(m meta) error {
 	}
 	x.meta, x.items.n, x.turns.n, x.updates.n, x.strings.n = m, m.Items, m.Turns, m.Updates, uint64(info.Size())
 	x.builderStale = true
+	// The records this handle can now see changed without a table.write of its
+	// own: another handle extended the sidecar and this one adopted its counts.
+	// A derived memo built from the shorter table must not outlive that.
+	x.turns.epoch++
 	// The adopting handle's buffered copies of the record files end where its
 	// own last build left them, below the counts just taken up from another
 	// handle's meta: reload them, or every read past that point would slice a
@@ -1489,6 +1513,9 @@ func (x *Index) closeBuild() error {
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0
+	// The table is empty now; a memo built from the previous records describes
+	// a build that no longer exists.
+	x.turns.epoch++
 	x.items.buf, x.turns.buf, x.strings.buf = nil, nil, nil
 	return errors.Join(errs...)
 }

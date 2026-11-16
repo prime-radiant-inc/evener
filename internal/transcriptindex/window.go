@@ -113,13 +113,42 @@ var ErrDerivedTotalsUnavailable = errors.New("transcript index cannot derive tot
 func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	sum, failed, err := x.derivedLocked(fromEntryOrdinal)
+	if err != nil {
+		return nil, 0, err
+	}
+	cacheRead := int(sum[2])
+	return appwire.EvenerUsageFromLLM(llm.Usage{
+		InputTokens:     int(sum[0]),
+		OutputTokens:    int(sum[1]),
+		CacheReadTokens: &cacheRead,
+		TotalTokens:     int(sum[3]),
+	}), failed, nil
+}
+
+// derivedLocked performs the DerivedTotals walk, reusing the previous answer
+// when the turn table has not changed since.
+//
+// The walk sums every turn record, and a past-thread read asks for the same cut
+// on each request, so repeating it is the cost this removes. The memo is keyed
+// on the table's mutation epoch AND its count: stampTurn rewrites a turn's own
+// slot in place as later entries arrive, which leaves the count unchanged, so
+// the epoch is what proves the summed records are still the ones present.
+func (x *Index) derivedLocked(fromEntryOrdinal int) ([4]int64, int, error) {
+	// The hit test and the scan both live inside x.locked, because that is what
+	// refreshes the table. A key read before the refresh would compare this
+	// handle's stale counts against a memo of the same stale counts and call a
+	// stale answer current.
 	const chunk = 256
 	var sum [4]int64
 	failed := 0
-	// Read under the shared sidecar lock so the records describe the same
-	// snapshot another handle may have extended or rebuilt, exactly as the
-	// window readers do (readWindow/x.locked).
+	unavailable := false
+	hit := false
 	err := x.locked(false, func() error {
+		if m := &x.derived; m.valid && m.epoch == x.turns.epoch && m.turns == x.turns.n && m.from == fromEntryOrdinal {
+			sum, failed, unavailable, hit = m.usage, m.failed, m.unavailable, true
+			return nil
+		}
 		for start := uint64(0); start < x.turns.n; start += chunk {
 			count := min(uint64(chunk), x.turns.n-start)
 			buf, err := x.turns.read(start, int(count))
@@ -130,9 +159,9 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 				record := decodeTurn(buf[i*turnRecordSize:])
 				if record.Kind == turnKindUnreadable {
 					// A line that did not decode; the scan errors on it, so the
-					// totals are unknown. Checked for every record, as the scan
-					// decodes every line regardless of the cut.
-					return ErrDerivedTotalsUnavailable
+					// totals are unknown.
+					unavailable = true
+					return nil
 				}
 				first := int(record.FirstOrdinal) + 1
 				if first < fromEntryOrdinal {
@@ -142,7 +171,8 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 					// suffix this record cannot express, so refuse and let the
 					// scan answer rather than drop or over-count the turn.
 					if fromEntryOrdinal <= int(record.Version) {
-						return ErrDerivedTotalsUnavailable
+						unavailable = true
+						return nil
 					}
 					continue
 				}
@@ -154,7 +184,8 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 					// needed, so the total cannot match the scan. The bit rides
 					// in the same record as the count, so a crash cannot leave
 					// the count authoritative without it.
-					return ErrDerivedTotalsUnavailable
+					unavailable = true
+					return nil
 				}
 				failed += int(record.FailedToolCalls)
 			}
@@ -162,15 +193,15 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 		return nil
 	})
 	if err != nil {
-		return nil, 0, err
+		return [4]int64{}, 0, err
 	}
-	cacheRead := int(sum[2])
-	return appwire.EvenerUsageFromLLM(llm.Usage{
-		InputTokens:     int(sum[0]),
-		OutputTokens:    int(sum[1]),
-		CacheReadTokens: &cacheRead,
-		TotalTokens:     int(sum[3]),
-	}), failed, nil
+	if !hit {
+		x.derived = derivedMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, from: fromEntryOrdinal, usage: sum, failed: failed, unavailable: unavailable}
+	}
+	if unavailable {
+		return [4]int64{}, 0, ErrDerivedTotalsUnavailable
+	}
+	return sum, failed, nil
 }
 
 // LatestSince is Latest together with what changed since held, read under one
