@@ -8,7 +8,7 @@ import (
 
 func fuzzScenarioFavoriteStoreSetAndDelete(t *testing.T) {
 	dir := t.TempDir()
-	fav := NewFavoriteStore(filepath.Join(dir, "index.db"))
+	fav := closeOnCleanup(t, NewFavoriteStore(filepath.Join(dir, "index.db")))
 	now := time.Unix(1_700_000_000, 0)
 	if err := fav.Set("", "session", "01A", true, now); err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func fuzzScenarioFavoriteStoreSetAndDelete(t *testing.T) {
 }
 
 func TestFavoriteStoreUpdatesAndHidesUnfavoritedDecisions(t *testing.T) {
-	fav := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	fav := closeOnCleanup(t, NewFavoriteStore(filepath.Join(t.TempDir(), "index.db")))
 	now := time.Unix(1_700_000_000, 0)
 	key := ArchiveKey{Kind: "session", ID: "top"}
 	if err := fav.Set("", key.Kind, key.ID, true, now); err != nil {

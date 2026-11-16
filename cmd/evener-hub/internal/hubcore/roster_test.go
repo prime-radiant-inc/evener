@@ -1286,7 +1286,7 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/w"},
 	})
 
-	past := NewPastIndex(filepath.Join(stateRoot, "*"))
+	past := closeOnCleanup(t, NewPastIndex(filepath.Join(stateRoot, "*")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

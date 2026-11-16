@@ -193,11 +193,11 @@ func setupLockedStore(t *testing.T) *PinSectionStore {
 	initLockedDriver()
 	errInjectedLock = realBusyError(t)
 	dbPath := filepath.Join(t.TempDir(), "index.db")
-	seed := NewPinSectionStore(dbPath)
+	seed := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "", "seed-session", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	store.openDB = func(_, dataSourceName string) (*sql.DB, error) {
 		return sql.Open(lockedDriverName, dataSourceName)
 	}
@@ -381,11 +381,11 @@ func setupErrorStore(t *testing.T) *PinSectionStore {
 	t.Helper()
 	initErrorDriver()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
-	seed := NewPinSectionStore(dbPath)
+	seed := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	if _, _, err := seed.CreateOrReuseAndAssign("Seed", "", "seed-session", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	store.openDB = func(_, dataSourceName string) (*sql.DB, error) {
 		return sql.Open(errorDriverName, dataSourceName)
 	}

@@ -115,7 +115,7 @@ func TestPinSectionStoreMigratesLegacyTableToSourceQualifiedKey(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seedLegacyIndexStore(t, dbPath)
 
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	sections, err := store.Sections()
 	if err != nil {
 		t.Fatalf("Sections after migration: %v", err)
@@ -194,7 +194,7 @@ func TestPinSectionStoreLegacyTableMigrationSharesOneTransaction(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	seedLegacyIndexStore(t, dbPath)
 
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	if _, err := store.Sections(); err != nil {
 		t.Fatalf("Sections after migration: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestPinSectionStoreLegacyTableMigrationSharesOneTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	archiveDecisions := NewArchiveStore(dbPath)
+	archiveDecisions := closeOnCleanup(t, NewArchiveStore(dbPath))
 	decisions, err := archiveDecisions.Decisions()
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestPinSectionStoreLegacyTableMigrationSharesOneTransaction(t *testing.T) {
 	if !decisions[ArchiveKey{Kind: "project", ID: "legacy-proj"}] {
 		t.Fatalf("legacy archive decision lost by the shared migration: %+v", decisions)
 	}
-	favorites, err := NewFavoriteStore(dbPath).Favorites()
+	favorites, err := closeOnCleanup(t, NewFavoriteStore(dbPath)).Favorites()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,14 +253,14 @@ func TestIndexSchemaMigrationRunsFromAnyStoreOpen(t *testing.T) {
 
 	// The archive store owns neither pin table; opening it must still migrate
 	// the legacy session_pin rows.
-	if _, err := NewArchiveStore(dbPath).Decisions(); err != nil {
+	if _, err := closeOnCleanup(t, NewArchiveStore(dbPath)).Decisions(); err != nil {
 		t.Fatalf("archive store open: %v", err)
 	}
 	columns := readTableColumns(t, dbPath, "session_pin")
 	if _, ok := columns["source"]; !ok {
 		t.Fatalf("session_pin columns after an archive-store open = %+v, want the source column", columns)
 	}
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	assignments, err := store.Assignments()
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestPinSectionStoreMigrationKeepsNewestCollidingPin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	assignments, err := store.Assignments()
 	if err != nil {
 		t.Fatal(err)
@@ -335,7 +335,7 @@ func TestPinSectionStoreMigrationTieBreaksCollidingPinsDeterministically(t *test
 		t.Fatal(err)
 	}
 
-	store := NewPinSectionStore(dbPath)
+	store := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	assignments, err := store.Assignments()
 	if err != nil {
 		t.Fatal(err)

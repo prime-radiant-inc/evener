@@ -44,7 +44,7 @@ func TestPinSectionStoreRetryErrorsNameTheSourceQualifiedPin(t *testing.T) {
 // on two remote hosts holds three independent pins, and clearing one host's
 // assignment leaves the others untouched.
 func TestPinSectionStoreKeepsSameBareIDOnTwoSourcesIndependent(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	now := time.Unix(1_700_000_000, 0).UTC()
 	local, _, err := store.CreateOrReuseAndAssign("Local", "", "th_1", now)
 	if err != nil {
@@ -117,7 +117,7 @@ func TestPinSectionStoreKeepsSameBareIDOnTwoSourcesIndependent(t *testing.T) {
 // the wire spelling "local" and an absent source address the same controller
 // pin, so a store caller cannot create a second row for one local session.
 func TestPinSectionStoreNormalizesLocalSpelling(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	now := time.Unix(1_700_000_000, 0).UTC()
 	first, _, err := store.CreateOrReuseAndAssign("First", "local", "th_1", now)
 	if err != nil {

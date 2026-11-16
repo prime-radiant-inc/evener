@@ -29,7 +29,7 @@ type pinStoreState struct {
 
 func readPinStoreState(t *testing.T, dbPath string) pinStoreState {
 	t.Helper()
-	plain := NewPinSectionStore(dbPath)
+	plain := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	sections, err := plain.Sections()
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func pinWriteOpNamed(t *testing.T, name string) pinWriteOp {
 // store with no injected faults.
 func seedResearchSection(t *testing.T, dbPath string) PinSection {
 	t.Helper()
-	research, _, err := NewPinSectionStore(dbPath).CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
+	research, _, err := closeOnCleanup(t, NewPinSectionStore(dbPath)).CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
 	if err != nil {
 		t.Fatal(err)
 	}

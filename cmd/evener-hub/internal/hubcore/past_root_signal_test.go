@@ -27,7 +27,7 @@ func rootSignalIndex(t *testing.T) (idx *PastIndex, project string, fires func()
 	base := time.Unix(1_700_000_000, 0).UTC()
 	writeMeta(t, project, schema.SessionMeta{ID: rootSignalRootID, Name: "root", UpdatedAt: base})
 	writeMeta(t, project, schema.SessionMeta{ID: rootSignalSubID, Name: "sub", UpdatedAt: base, IsSubagent: true, ParentSessionID: rootSignalRootID})
-	idx = NewPastIndex(filepath.Join(dir, "projects", "*"))
+	idx = closeOnCleanup(t, NewPastIndex(filepath.Join(dir, "projects", "*")))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

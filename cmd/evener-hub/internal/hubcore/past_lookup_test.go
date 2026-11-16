@@ -11,7 +11,7 @@ import (
 // An index with no state glob has nothing to scan: Rebuild reports no change
 // and Find resolves nothing.
 func TestPastIndexWithoutStateGlobIsEmpty(t *testing.T) {
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	changed, err := idx.Rebuild()
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
@@ -25,7 +25,7 @@ func TestPastIndexWithoutStateGlobIsEmpty(t *testing.T) {
 }
 
 func TestPastIndexFindRejectsAnInvalidID(t *testing.T) {
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	// Seed the cache with the invalid key. If validation moves behind the cache
 	// lookup, this fixture makes the test fail instead of reaching the same
 	// false result through an empty index.

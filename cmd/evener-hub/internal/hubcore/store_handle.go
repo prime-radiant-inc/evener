@@ -15,13 +15,22 @@ import (
 // It caches the file, it is not bound to one inode. Before each reuse get
 // checks that the path still names the file the handle was opened on, and
 // reopens when it does not: a per-call open always read whatever file was
-// there, so an index.db restored, replaced, or deleted and recreated
+// there, so an index.db deleted and recreated, or replaced by a rename,
 // underneath the hub must not stay invisible behind a handle that still
-// points at the old inode.
+// points at the old inode. The check compares inodes, so a rewrite of the
+// same inode (a restore over the file in place) is not a replacement and
+// keeps the handle.
 type keeperHandle struct {
 	mu   sync.Mutex
 	db   *sql.DB
 	file os.FileInfo
+	// retired holds handles that were replaced. They are not closed at the
+	// moment of replacement because a caller that already received one may
+	// still be reading through it; closing it there turns that read into
+	// "sql: database is closed". database/sql keeps no finalizer, so an
+	// abandoned *sql.DB would instead hold its opener goroutine and its
+	// connections for the life of the process, hence the list.
+	retired []*sql.DB
 }
 
 // get returns the shared handle, opening it on first use and reopening it when
@@ -33,9 +42,10 @@ func (h *keeperHandle) get(path string, fsys afero.Fs, open func() (*sql.DB, err
 		if h.stillCurrent(path, fsys) {
 			return h.db, nil
 		}
-		// The file this handle was opened on is gone or replaced. Drop it so
-		// the open below reads the file that is there now.
-		_ = h.db.Close()
+		// The file this handle was opened on is gone or replaced. Retire it so
+		// the open below reads the file that is there now, without closing a
+		// handle another caller may be mid-query on.
+		h.retired = append(h.retired, h.db)
 		h.db, h.file = nil, nil
 	}
 	db, err := open()
@@ -60,15 +70,21 @@ func (h *keeperHandle) stillCurrent(path string, fsys afero.Fs) bool {
 	return os.SameFile(h.file, info)
 }
 
-// close releases the shared handle and forgets it, so a later call reopens
-// instead of using a closed handle.
+// close releases the shared handle and every retired one, and forgets them, so
+// a later call reopens instead of using a closed handle.
 func (h *keeperHandle) close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.db == nil {
-		return nil
+	var err error
+	handles := h.retired
+	if h.db != nil {
+		handles = append(handles, h.db)
 	}
-	db := h.db
-	h.db, h.file = nil, nil
-	return db.Close()
+	h.db, h.file, h.retired = nil, nil, nil
+	for _, db := range handles {
+		if cerr := db.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	return err
 }

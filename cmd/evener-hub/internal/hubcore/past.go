@@ -108,6 +108,7 @@ type PastIndex struct {
 	// connect and the DSN pragmas once per process instead of once per search.
 	// Publications do not use it: writeFTSTx opens its own IMMEDIATE connection
 	// so a concurrent sibling-store commit cannot fail its write upgrade.
+	// The trailing underscore leaves the name readHandle to the accessor.
 	readHandle_ keeperHandle
 
 	// skipped maps every path the last Rebuild refused to index to the reason

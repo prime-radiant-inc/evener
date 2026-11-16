@@ -32,7 +32,7 @@ func TestPastIndex_RecentProjectDirs_DedupesGlobalRecencyLastN(t *testing.T) {
 	beta := mkExistingDir(t, root, "beta")
 	gamma := mkExistingDir(t, root, "gamma")
 
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}},
@@ -50,7 +50,7 @@ func TestPastIndex_RecentProjectDirs_DedupesGlobalRecencyLastN(t *testing.T) {
 
 func TestPastIndex_RecentProjectDirs_CapsAtLimit(t *testing.T) {
 	root := t.TempDir()
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	now := time.Now().UTC()
 	metas := make([]schema.SessionMeta, 0, 20)
 	dirs := make([]string, 0, 20)
@@ -74,7 +74,7 @@ func TestPastIndex_RecentProjectDirs_CapsAtLimit(t *testing.T) {
 }
 
 func TestPastIndex_RecentProjectDirs_EmptyIndexOrNonPositiveLimitReturnsNil(t *testing.T) {
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	if got := idx.RecentProjectDirs(15); got != nil {
 		t.Fatalf("RecentProjectDirs on empty index = %v, want nil", got)
 	}
@@ -96,7 +96,7 @@ func TestPastIndex_RecentProjectDirs_DeletedDirsDoNotConsumeLimitSlots(t *testin
 	older := mkExistingDir(t, root, "older")
 	oldest := mkExistingDir(t, root, "oldest")
 
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: deleted}},
@@ -121,7 +121,7 @@ func TestPastIndex_RecentProjectDirs_FiltersDeletedDirs(t *testing.T) {
 	// Never created — simulates a project directory that has since been
 	// removed from disk.
 
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: deleted}},
@@ -156,7 +156,7 @@ func TestPastIndex_RecentProjectDirs_ExcludesSessionMachinery(t *testing.T) {
 	restoreeSub := mkExistingDir(t, root, "restoree-sub")   // the subagent lane's restore root — must NOT surface
 	unmanaged := mkExistingDir(t, root, "unmanaged")        // path-entered worktree — kept
 
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	now := time.Now().UTC()
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "02wMz5Txv0RootedLaneWt", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: laneRooted}, WorktreePath: laneRooted, WorktreeManaged: true, WorktreeRestoreRoot: restoree},

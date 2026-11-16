@@ -91,12 +91,13 @@ type PinSectionStore struct {
 	openDB   func(driverName, dataSourceName string) (*sql.DB, error)
 	onChange func()
 
-	// readDB is the store's process-lifetime read handle, created by the first
-	// read and reused by every later one, so both navigation reads pay the
-	// connect, the pragma and DDL setup and the schema check once per process
-	// instead of once per read. Writes do not use it: each write attempt opens
-	// its own connection so a retry can take SQLite's write lock with the
-	// IMMEDIATE DSN (see openWriteAttempt).
+	// readHandle_ is the store's process-lifetime read handle, created by the
+	// first read and reused by every later one, so both navigation reads pay
+	// the connect, the pragma and DDL setup and the schema check once per
+	// process instead of once per read. Writes do not use it: each write
+	// attempt opens its own connection so a retry can take SQLite's write lock
+	// with the IMMEDIATE DSN (see openWriteAttempt). The trailing underscore
+	// leaves the name readHandle to the accessor method.
 	readHandle_ keeperHandle
 }
 

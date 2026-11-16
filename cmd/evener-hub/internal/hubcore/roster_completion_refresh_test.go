@@ -20,7 +20,7 @@ func TestRosterCompletionRefreshesIndexedDormancy(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	meta := schema.SessionMeta{ID: id, UpdatedAt: base, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 	writeMeta(t, project, meta)
-	past := NewPastIndex(filepath.Join(root, "*"))
+	past := closeOnCleanup(t, NewPastIndex(filepath.Join(root, "*")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

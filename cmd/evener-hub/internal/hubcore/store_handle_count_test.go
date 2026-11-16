@@ -152,20 +152,20 @@ func newNavigationBuildStores(t *testing.T) navigationBuildStores {
 	dbPath := filepath.Join(root, "index.db")
 	now := time.Unix(1_700_000_000, 0)
 
-	seedArchive := NewArchiveStore(dbPath)
+	seedArchive := closeOnCleanup(t, NewArchiveStore(dbPath))
 	if err := seedArchive.Set("", "session", "seeded-archive", true, now); err != nil {
 		t.Fatal(err)
 	}
-	seedFavorite := NewFavoriteStore(dbPath)
+	seedFavorite := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if err := seedFavorite.Set("", "session", "seeded-favorite", true, now); err != nil {
 		t.Fatal(err)
 	}
-	seedPins := NewPinSectionStore(dbPath)
+	seedPins := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	if _, _, err := seedPins.CreateOrReuseAndAssign("Seeded", "", "seeded-pin", now); err != nil {
 		t.Fatal(err)
 	}
 	seenClock := now.Add(time.Hour)
-	seedSeen := NewSessionSeenStore(dbPath)
+	seedSeen := closeOnCleanup(t, NewSessionSeenStore(dbPath))
 	seedSeen.now = func() time.Time { return seenClock }
 	if _, err := seedSeen.MarkBatch([]SessionSeenMark{{SessionID: "seeded-seen", SeenThrough: seenClock}}); err != nil {
 		t.Fatal(err)
@@ -181,19 +181,19 @@ func newNavigationBuildStores(t *testing.T) navigationBuildStores {
 		OriginalPrompt: "counted needle",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/w"},
 	})
-	indexStore := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	indexStore := closeOnCleanup(t, NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := indexStore.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	indexStore.openDB = countingOpen
 
-	archive := NewArchiveStore(dbPath)
+	archive := closeOnCleanup(t, NewArchiveStore(dbPath))
 	archive.openDB = countingOpen
-	favorite := NewFavoriteStore(dbPath)
+	favorite := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	favorite.openDB = countingOpen
-	pins := NewPinSectionStore(dbPath)
+	pins := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	pins.openDB = countingOpen
-	seen := NewSessionSeenStore(dbPath)
+	seen := closeOnCleanup(t, NewSessionSeenStore(dbPath))
 	seen.openDB = countingOpen
 	seen.now = func() time.Time { return seenClock }
 	// The stat counter rides the same seam, so the per-call file-identity check
@@ -355,16 +355,16 @@ func TestStoreHandlesSeeAnotherStoresCommit(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	now := time.Unix(1_700_000_000, 0)
 
-	writer := NewFavoriteStore(dbPath)
+	writer := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if err := writer.Set("", "session", "shared", true, now); err != nil {
 		t.Fatal(err)
 	}
-	reader := NewFavoriteStore(dbPath)
+	reader := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if got, err := reader.Favorites(); err != nil || !got[ArchiveKey{Kind: "session", ID: "shared"}] {
 		t.Fatalf("reader before write = %v, %v, want the writer's row", got, err)
 	}
 	// A second writer's row must show through the reader's keeper handle.
-	other := NewFavoriteStore(dbPath)
+	other := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if err := other.Set("", "session", "later", true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -384,12 +384,12 @@ func TestStoreHandlesUseOneConnectionUnderConcurrentReads(t *testing.T) {
 	initCountingDriver()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	now := time.Unix(1_700_000_000, 0)
-	seed := NewFavoriteStore(dbPath)
+	seed := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if err := seed.Set("", "session", "s", true, now); err != nil {
 		t.Fatal(err)
 	}
 
-	favorite := NewFavoriteStore(dbPath)
+	favorite := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	favorite.openDB = countingOpen
 
 	countReset()

@@ -10,8 +10,9 @@ import (
 var seenTestNow = time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 
 // newSeenTestStore opens a store at path whose clock reads *now.
-func newSeenTestStore(path string, now *time.Time) *SessionSeenStore {
-	store := NewSessionSeenStore(path)
+func newSeenTestStore(t *testing.T, path string, now *time.Time) *SessionSeenStore {
+	t.Helper()
+	store := closeOnCleanup(t, NewSessionSeenStore(path))
 	store.now = func() time.Time { return *now }
 	return store
 }
@@ -22,7 +23,7 @@ func newSeenTestStore(path string, now *time.Time) *SessionSeenStore {
 func setupErrorSeenStore(t *testing.T, path string) *SessionSeenStore {
 	t.Helper()
 	initErrorDriver()
-	store := newSeenTestStore(path, &seenTestNow)
+	store := newSeenTestStore(t, path, &seenTestNow)
 	store.openDB = func(_, dataSourceName string) (*sql.DB, error) {
 		return sql.Open(errorDriverName, dataSourceName)
 	}
@@ -46,7 +47,7 @@ func TestSessionSeenStoreMarkBatchIsOneTransaction(t *testing.T) {
 		t.Fatal("MarkBatch with a failing second write returned no error")
 	}
 	resetErrorCounters()
-	snapshot, err := newSeenTestStore(path, &seenTestNow).Snapshot()
+	snapshot, err := newSeenTestStore(t, path, &seenTestNow).Snapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestSessionSeenStoreMarkBatchIsOneTransaction(t *testing.T) {
 func TestSessionSeenStoreMarkBatchPersistsEveryMark(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.db")
 	now := seenTestNow
-	store := newSeenTestStore(path, &now)
+	store := newSeenTestStore(t, path, &now)
 	turnA := seenTestNow.Add(10 * time.Minute)
 	turnB := seenTestNow.Add(20 * time.Minute)
 	changed, err := store.MarkBatch([]SessionSeenMark{
@@ -98,12 +99,12 @@ func TestSessionSeenStoreMarkBatchPersistsEveryMark(t *testing.T) {
 func fuzzScenarioSessionSeenStore_EpochIsSetOnceAndSurvivesReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.db")
 	now := seenTestNow
-	first, err := newSeenTestStore(path, &now).Snapshot()
+	first, err := newSeenTestStore(t, path, &now).Snapshot()
 	if err != nil || !first.Epoch.Equal(seenTestNow) {
 		t.Fatalf("first epoch = %v (%v), want %v", first.Epoch, err, seenTestNow)
 	}
 	now = seenTestNow.Add(time.Hour)
-	again, err := newSeenTestStore(path, &now).Snapshot()
+	again, err := newSeenTestStore(t, path, &now).Snapshot()
 	if err != nil || !again.Epoch.Equal(seenTestNow) {
 		t.Fatalf("reopened epoch = %v (%v), want still %v", again.Epoch, err, seenTestNow)
 	}
@@ -114,7 +115,7 @@ func fuzzScenarioSessionSeenStore_EpochIsSetOnceAndSurvivesReopen(t *testing.T) 
 // Board, changes nothing, and "local" names the controller's own sessions.
 func fuzzScenarioSessionSeenStore_MarkSeenMovesForwardOnly(t *testing.T) {
 	now := seenTestNow
-	store := newSeenTestStore(filepath.Join(t.TempDir(), "index.db"), &now)
+	store := newSeenTestStore(t, filepath.Join(t.TempDir(), "index.db"), &now)
 	turn := seenTestNow.Add(10 * time.Minute)
 	for _, step := range []struct {
 		source  string
@@ -146,7 +147,7 @@ func fuzzScenarioSessionSeenStore_MarkSeenMovesForwardOnly(t *testing.T) {
 // mark (opening it again) clears it.
 func fuzzScenarioSessionSeenStore_UnreadOutranksSeenUntilTheNextMark(t *testing.T) {
 	now := seenTestNow
-	store := newSeenTestStore(filepath.Join(t.TempDir(), "index.db"), &now)
+	store := newSeenTestStore(t, filepath.Join(t.TempDir(), "index.db"), &now)
 	key := SessionPinKey("", "01A")
 	turn := seenTestNow.Add(10 * time.Minute)
 	if _, err := markSeenForTest(store, "", "01A", turn); err != nil {
@@ -177,7 +178,7 @@ func fuzzScenarioSessionSeenStore_UnreadOutranksSeenUntilTheNextMark(t *testing.
 // that share a bare ID keep separate markers.
 func fuzzScenarioSessionSeenStore_SourcesKeepSeparateMarks(t *testing.T) {
 	now := seenTestNow
-	store := newSeenTestStore(filepath.Join(t.TempDir(), "index.db"), &now)
+	store := newSeenTestStore(t, filepath.Join(t.TempDir(), "index.db"), &now)
 	local, remote := seenTestNow.Add(time.Minute), seenTestNow.Add(2*time.Minute)
 	if _, err := markSeenForTest(store, "", "01A", local); err != nil {
 		t.Fatal(err)
@@ -201,7 +202,7 @@ func fuzzScenarioSessionSeenStore_SourcesKeepSeparateMarks(t *testing.T) {
 // mark must not invalidate navigation.
 func fuzzScenarioSessionSeenStore_OnChangeFiresOnlyWhenAMarkChanges(t *testing.T) {
 	now := seenTestNow
-	store := newSeenTestStore(filepath.Join(t.TempDir(), "index.db"), &now)
+	store := newSeenTestStore(t, filepath.Join(t.TempDir(), "index.db"), &now)
 	fired := 0
 	store.SetOnChange(func() { fired++ })
 	for range 2 {
@@ -225,7 +226,7 @@ func fuzzScenarioSessionSeenStore_OnChangeFiresOnlyWhenAMarkChanges(t *testing.T
 // fuzzScenarioSessionSeenStore_WithoutADatabaseIsNoStore: an unconfigured
 // store writes nothing and reads as no store, so nothing reads unseen.
 func fuzzScenarioSessionSeenStore_WithoutADatabaseIsNoStore(t *testing.T) {
-	store := NewSessionSeenStore("")
+	store := closeOnCleanup(t, NewSessionSeenStore(""))
 	if changed, err := markSeenForTest(store, "", "01A", seenTestNow); changed || err != nil {
 		t.Fatalf("MarkSeen with no database = %v, %v", changed, err)
 	}

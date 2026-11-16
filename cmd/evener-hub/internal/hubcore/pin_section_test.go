@@ -33,7 +33,7 @@ func TestNormalizePinSectionName(t *testing.T) {
 }
 
 func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	first, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed || first.MemberCount != 1 {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
@@ -56,7 +56,7 @@ func TestPinSectionStoreCreateReusesCaseFoldedNameAndMovesAtomically(t *testing.
 }
 
 func TestPinSectionStoreCreateReusesUnicodeCaseFoldedName(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	first, changed, err := store.CreateOrReuseAndAssign("Straße", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed || first.MemberCount != 1 {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
@@ -68,7 +68,7 @@ func TestPinSectionStoreCreateReusesUnicodeCaseFoldedName(t *testing.T) {
 }
 
 func TestPinSectionStoreEquivalentReuseDoesNotRenameOrReassign(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	first, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("first = %+v, %v, %v", first, changed, err)
@@ -94,7 +94,7 @@ func TestPinSectionStoreEquivalentReuseDoesNotRenameOrReassign(t *testing.T) {
 }
 
 func TestPinSectionStoreSectionsOrderedAndMemberCountDurable(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	alpha, changed, err := store.CreateOrReuseAndAssign("beta", "", "session-a", time.Unix(10, 0))
 	if err != nil || !changed {
 		t.Fatalf("create beta = %+v, %v, %v", alpha, changed, err)
@@ -123,7 +123,7 @@ func TestPinSectionStoreSectionsOrderedAndMemberCountDurable(t *testing.T) {
 }
 
 func TestPinSectionStoreRenameAllowsCaseOnlyChangeAndRejectsConflicts(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
@@ -142,7 +142,7 @@ func TestPinSectionStoreRenameAllowsCaseOnlyChangeAndRejectsConflicts(t *testing
 }
 
 func TestPinSectionStoreDeleteSectionReturnsMemberCountAndCascadesAssignments(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
@@ -165,7 +165,7 @@ func TestPinSectionStoreDeleteSectionReturnsMemberCountAndCascadesAssignments(t 
 }
 
 func TestPinSectionStoreNoOpsReturnChangedFalse(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("create = %+v, %v, %v", section, changed, err)
@@ -185,7 +185,7 @@ func TestPinSectionStoreNoOpsReturnChangedFalse(t *testing.T) {
 }
 
 func TestPinSectionStoreForeignKeysEnabled(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	db, err := store.open()
 	if err != nil {
 		t.Fatal(err)
@@ -202,8 +202,8 @@ func TestPinSectionStoreForeignKeysEnabled(t *testing.T) {
 
 func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnections(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
-	storeA := NewPinSectionStore(dbPath)
-	storeB := NewPinSectionStore(dbPath)
+	storeA := closeOnCleanup(t, NewPinSectionStore(dbPath))
+	storeB := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
 	firstInserted := make(chan struct{})
@@ -270,8 +270,8 @@ func TestPinSectionStoreConcurrentEquivalentCreateOrReuseConvergesAcrossConnecti
 
 func TestPinSectionStoreLastCommittedAssignmentWinsWithoutDuplicates(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
-	storeA := NewPinSectionStore(dbPath)
-	storeB := NewPinSectionStore(dbPath)
+	storeA := closeOnCleanup(t, NewPinSectionStore(dbPath))
+	storeB := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	firstSection, changed, err := storeA.CreateOrReuseAndAssign("One", "", "seed-a", time.Unix(1, 0))
 	if err != nil || !changed {
 		t.Fatalf("seed first = %+v, %v, %v", firstSection, changed, err)
@@ -328,7 +328,7 @@ func TestPinSectionStoreEntropyFailureReturnsError(t *testing.T) {
 	oldRead := pinSectionRandRead
 	defer func() { pinSectionRandRead = oldRead }()
 	pinSectionRandRead = func([]byte) (int, error) { return 0, errors.New("entropy exhausted") }
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	if _, _, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1, 0)); err == nil || !strings.Contains(err.Error(), "entropy exhausted") {
 		t.Fatalf("CreateOrReuseAndAssign error = %v", err)
 	}
@@ -425,7 +425,7 @@ func TestPinSectionStoreOpenFailureFailsEveryOperation(t *testing.T) {
 			{"delete session", func(s *PinSectionStore) error { _, err := s.DeleteSession("", "y"); return err }},
 		} {
 			t.Run(tc.name+"/"+op.name, func(t *testing.T) {
-				store := NewPinSectionStore(filepath.Join(t.TempDir(), "sub", "index.db"))
+				store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "sub", "index.db")))
 				tc.prepare(store)
 				err := op.run(store)
 				if err == nil || tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
@@ -437,7 +437,7 @@ func TestPinSectionStoreOpenFailureFailsEveryOperation(t *testing.T) {
 }
 
 func TestPinSectionStoreMissingSectionIsNotFound(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	if _, _, err := store.Assign("nonexistent-id", "", "session-a", time.Unix(1, 0)); !errorsIsPinSectionNotFound(err) {
 		t.Fatalf("Assign missing section err = %v", err)
 	}
@@ -447,7 +447,7 @@ func TestPinSectionStoreMissingSectionIsNotFound(t *testing.T) {
 }
 
 func TestPinSectionStoreRejectsAnInvalidName(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	if _, _, err := store.CreateOrReuseAndAssign("", "", "s", time.Unix(1, 0)); !errors.Is(err, ErrPinSectionName) {
 		t.Fatalf("CreateOrReuseAndAssign blank name err = %v", err)
 	}
@@ -475,7 +475,7 @@ func TestPinSectionStoreReadsFailOnAMalformedSchema(t *testing.T) {
 		{"assignments", `CREATE TABLE session_pin (session_id TEXT)`, func(s *PinSectionStore) error { _, err := s.Assignments(); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+			store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 			db, err := store.open()
 			if err != nil {
 				t.Fatal(err)
@@ -517,7 +517,7 @@ func TestPinSectionStoreCreateOrReuseHookFires(t *testing.T) {
 	defer func() { pinSectionBeforeAssignmentCommitHook = oldHook }()
 	fired := false
 	pinSectionBeforeAssignmentCommitHook = func() { fired = true }
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	if _, _, err := store.CreateOrReuseAndAssign("Research", "", "s1", time.Unix(1, 0)); err != nil {
 		t.Fatal(err)
 	}

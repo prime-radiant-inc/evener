@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,12 +18,12 @@ func TestStoreCloseReleasesTheSharedHandle(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	now := time.Unix(1_700_000_000, 0)
 
-	never := NewArchiveStore(dbPath)
+	never := closeOnCleanup(t, NewArchiveStore(dbPath))
 	if err := never.Close(); err != nil {
 		t.Fatalf("Close on a store that never opened = %v, want nil", err)
 	}
 
-	archive := NewArchiveStore(dbPath)
+	archive := closeOnCleanup(t, NewArchiveStore(dbPath))
 	if err := archive.Set("", "session", "before-close", true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +34,7 @@ func TestStoreCloseReleasesTheSharedHandle(t *testing.T) {
 		t.Fatalf("second archive Close = %v, want nil: Close stays idempotent", err)
 	}
 
-	favorite := NewFavoriteStore(dbPath)
+	favorite := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if err := favorite.Set("", "session", "closed", true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestStoreCloseReleasesTheSharedHandle(t *testing.T) {
 		t.Fatalf("favorite Close = %v", err)
 	}
 
-	pins := NewPinSectionStore(dbPath)
+	pins := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	if _, err := pins.Sections(); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +50,7 @@ func TestStoreCloseReleasesTheSharedHandle(t *testing.T) {
 		t.Fatalf("pin Close = %v", err)
 	}
 
-	seen := NewSessionSeenStore(dbPath)
+	seen := closeOnCleanup(t, NewSessionSeenStore(dbPath))
 	if _, err := seen.Snapshot(); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,7 @@ func TestStoreUseAfterCloseReopens(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	now := time.Unix(1_700_000_000, 0)
 
-	archive := NewArchiveStore(dbPath)
+	archive := closeOnCleanup(t, NewArchiveStore(dbPath))
 	if err := archive.Set("", "session", "a", true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +82,7 @@ func TestStoreUseAfterCloseReopens(t *testing.T) {
 		t.Fatalf("Decisions after Close = %v, %v, want the new row", got, err)
 	}
 
-	favorite := NewFavoriteStore(dbPath)
+	favorite := closeOnCleanup(t, NewFavoriteStore(dbPath))
 	if err := favorite.Set("", "session", "a", true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestStoreUseAfterCloseReopens(t *testing.T) {
 		t.Fatalf("favorite Set after Close = %v, want a fresh handle", err)
 	}
 
-	pins := NewPinSectionStore(dbPath)
+	pins := closeOnCleanup(t, NewPinSectionStore(dbPath))
 	if _, err := pins.Sections(); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +104,7 @@ func TestStoreUseAfterCloseReopens(t *testing.T) {
 		t.Fatalf("Sections after Close = %v, want a fresh handle", err)
 	}
 
-	seen := NewSessionSeenStore(dbPath)
+	seen := closeOnCleanup(t, NewSessionSeenStore(dbPath))
 	if _, err := seen.Snapshot(); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +114,83 @@ func TestStoreUseAfterCloseReopens(t *testing.T) {
 	seen.now = func() time.Time { return now.Add(time.Hour) }
 	if _, err := seen.MarkBatch([]SessionSeenMark{{SessionID: "s", SeenThrough: now}}); err != nil {
 		t.Fatalf("MarkBatch after Close = %v, want a fresh handle", err)
+	}
+}
+
+// TestKeeperHandleSwapDoesNotCloseAHandleInUse pins that a replacement does not
+// close the pool another caller is still querying. get hands the *sql.DB to the
+// caller, so closing it on the swap path makes an in-flight read fail with
+// "database is closed" — and a caller that swallows the error (archiveDecisions
+// falls back to an empty map) silently drops its data instead.
+func TestKeeperHandleSwapDoesNotCloseAHandleInUse(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "index.db")
+	store := closeOnCleanup(t, NewArchiveStore(dbPath))
+	now := time.Unix(1_700_000_000, 0)
+	if err := store.Set("", "session", "before", true, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// A caller takes the handle the way every read path does.
+	inUse, err := store.db()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Another caller sees a replaced file and forces the swap.
+	for _, p := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Set("", "session", "after", true, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first caller's handle must still work: a swap may retire a pool, it
+	// must not close one out from under an active query.
+	if _, err := inUse.Exec(`SELECT 1`); err != nil {
+		t.Fatalf("the handle a caller already held was closed by the swap: %v", err)
+	}
+}
+
+// TestKeeperHandleCloseReleasesRetiredHandles pins that the pools a swap
+// retires are released on Close. database/sql keeps no finalizer, so a retired
+// pool that is never closed holds its opener goroutine and its connections for
+// the life of the process: an index.db replaced repeatedly would accumulate
+// them. Close must reach the retired pools, not only the current one.
+func TestKeeperHandleCloseReleasesRetiredHandles(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "index.db")
+	store := closeOnCleanup(t, NewArchiveStore(dbPath))
+	now := time.Unix(1_700_000_000, 0)
+
+	for i, id := range []string{"first", "second"} {
+		if err := store.Set("", "session", id, true, now); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			for _, p := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
+				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+
+	store.handle.mu.Lock()
+	retired := append([]*sql.DB(nil), store.handle.retired...)
+	store.handle.mu.Unlock()
+	if len(retired) == 0 {
+		t.Fatal("the replacement retired no handle: the rest of this test would prove nothing")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	for i, db := range retired {
+		if err := db.Ping(); err == nil {
+			t.Fatalf("retired handle %d is still open after Close: retired pools accumulate for the process lifetime", i)
+		}
 	}
 }
 
@@ -132,7 +210,7 @@ func TestKeeperHandleReopensWhenTheFileIsReplaced(t *testing.T) {
 		OriginalPrompt: "alpha needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"},
 	})
 	dbPath := filepath.Join(root, "index.db")
-	index := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	index := closeOnCleanup(t, NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := index.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -182,12 +260,12 @@ func TestPastIndexCloseReleasesTheReadHandle(t *testing.T) {
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/w"},
 	})
 
-	never := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	never := closeOnCleanup(t, NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if err := never.Close(); err != nil {
 		t.Fatalf("Close before any search = %v, want nil", err)
 	}
 
-	index := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	index := closeOnCleanup(t, NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := index.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

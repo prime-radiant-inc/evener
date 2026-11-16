@@ -286,7 +286,7 @@ func TestClassifyFavoriteDecisions_FalseDecisionsAndPersistenceRemainUntouched(t
 		t.Fatalf("classifier mutated stored decision input: got %#v, want %#v", decisions, before)
 	}
 
-	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewFavoriteStore(filepath.Join(t.TempDir(), "index.db")))
 	if err := store.Set("", trueKey.Kind, trueKey.ID, true, favoriteAuthorityTestTime); err != nil {
 		t.Fatal(err)
 	}
