@@ -1,17 +1,15 @@
 // @vitest-environment node
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { MOBILE_QUERY } from "../shell/useIsMobile";
-import { escapeRegExp } from "./cssBlock";
+import { escapeRegExp, mediaBlock, readModuleCss } from "./cssBlock";
 
-const STYLES_DIR = dirname(fileURLToPath(import.meta.url));
-const GLOBAL_CSS = readFileSync(join(STYLES_DIR, "global.css"), "utf8");
+// readModuleCss also strips comments, so a declaration quoted in a doc
+// comment can never satisfy - or fail - an assertion about a rule.
+const GLOBAL_CSS = readModuleCss(import.meta.url, "global.css");
 
-function removeMobileMediaBlock(source: string): string {
-  const start = source.indexOf(`@media ${MOBILE_QUERY} {`);
+function removeMediaBlock(source: string, mediaQuery: string): string {
+  const start = source.indexOf(`@media ${mediaQuery} {`);
   expect(start).toBeGreaterThanOrEqual(0);
 
   let depth = 0;
@@ -27,7 +25,7 @@ function removeMobileMediaBlock(source: string): string {
     }
   }
 
-  throw new Error("mobile media block was not closed");
+  throw new Error("media block was not closed");
 }
 
 test("mobile: html suppresses root overscroll while panes retain scroll ownership", () => {
@@ -44,33 +42,17 @@ test("mobile: html suppresses root overscroll while panes retain scroll ownershi
 });
 
 test("desktop: root overscroll containment is not declared outside the mobile query", () => {
-  const withoutMobileBlock = removeMobileMediaBlock(GLOBAL_CSS);
+  const withoutMobileBlock = removeMediaBlock(GLOBAL_CSS, MOBILE_QUERY);
   expect(withoutMobileBlock).not.toContain("overscroll-behavior");
 });
 
 test("touch screens pan but never zoom this app", () => {
-  // The app is app-like on every touch device (Jesse 2026-11-15): no
-  // double-tap zoom-to-fit, no pinch zoom - matching the native app, which
-  // has no zoom on any display. pan-x pan-y keeps scrolling and spends both
-  // zoom gestures; the (any-pointer: coarse) query reaches every touch
-  // screen at any width, including the iPhone Duo's 951pt inner display in
-  // landscape and touch laptops. Desktop zoom is untouched by construction:
-  // touch-action governs touch input only, and a window with no touch screen
-  // never matches the coarse query. Component drag gestures (sheet, rail
-  // resize, mermaid pan) declare touch-action: none on their own elements;
-  // the intersection keeps those exactly as they are.
-  const coarse = /@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/.exec(GLOBAL_CSS);
-  expect(coarse, "global.css must have an (any-pointer: coarse) media block").not.toBeNull();
-  const bodyRule = /\bbody \{([^}]*)\}/.exec(coarse![1]!);
-  expect(bodyRule, "the coarse block must style body").not.toBeNull();
-  expect(bodyRule![1]).toContain("touch-action: pan-x pan-y");
-  // The rule lives only under the coarse gate: a top-level declaration is
-  // redundant (touch input implies a coarse pointer), and a phone-gated one
-  // would miss wide touch screens.
-  const topLevelBody = /\nbody \{([^}]*)\}/.exec(GLOBAL_CSS);
-  expect(topLevelBody, "global.css must have a top-level body rule").not.toBeNull();
-  expect(topLevelBody![1]).not.toContain("touch-action");
-  const mobile = GLOBAL_CSS.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(mobile).not.toBeNull();
-  expect(mobile![1]).not.toContain("touch-action");
+  // The 2026-11-15 decision (Jesse): every touch screen pans and never zooms
+  // the app, matching the native app, which has no zoom on any display.
+  // global.css's coarse-gate comment owns the full rationale.
+  const coarse = mediaBlock(GLOBAL_CSS, "any-pointer: coarse");
+  expect(coarse).toMatch(/\bbody \{[^}]*touch-action: pan-x pan-y;/);
+  // That block alone may declare touch-action: with it removed, no other
+  // rule - top-level, the phone gate, or any later gate - owns the property.
+  expect(removeMediaBlock(GLOBAL_CSS, "(any-pointer: coarse)")).not.toContain("touch-action");
 });

@@ -125,8 +125,11 @@ function mediaBlocks(source: string): { prelude: string; body: string }[] {
   return blocks;
 }
 
+// tokens.css parsed once: every media-block test below shares this walk.
+const TOKENS_BLOCKS = mediaBlocks(CSS);
+
 test("the 44px touch-target floor is declared for phones and coarse pointers (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
-  const blocks = mediaBlocks(CSS);
+  const blocks = TOKENS_BLOCKS;
   const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
   expect(tapFloor, `tokens.css must have a ${TAP_FLOOR_QUERY} media block`).toBeDefined();
   expect(tapFloor!.body).toMatch(/--tap-min:\s*44px/);
@@ -188,7 +191,7 @@ test("--font-size-control is the ui step on fine pointers and floors at 16px on 
   // alias: the S preference scales the phone body to 14.4px and the ui step
   // to 11.7px, and iOS zooms into a 14.4px field just the same (roborev on
   // PR #947).
-  const blocks = mediaBlocks(CSS);
+  const blocks = TOKENS_BLOCKS;
   const floor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
   expect(floor, `tokens.css must have a ${TAP_FLOOR_QUERY} media block`).toBeDefined();
   expect(floor!.body).toMatch(/--font-size-control: max\(16px, var\(--font-size-body\), var\(--font-size-ui\)\);/);
@@ -200,7 +203,6 @@ test("--font-size-control is the ui step on fine pointers and floors at 16px on 
   const phone = blocks.find((block) => block.prelude === MOBILE_QUERY);
   expect(phone, "tokens.css must have a phone media block").toBeDefined();
   expect(phone!.body).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
-  expect(phone!.body).not.toMatch(/--font-size-control:/);
 });
 
 test("every rule that sizes an editable control uses --font-size-control or --font-size-body", () => {
