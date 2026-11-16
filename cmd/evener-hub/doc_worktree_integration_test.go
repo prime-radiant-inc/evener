@@ -29,6 +29,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/testfs"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
@@ -695,23 +696,14 @@ func awaitWorktreeDocumentResync(ctx context.Context, t *testing.T, notification
 // before it lands answers against the directory the step replaced.
 func awaitWorktreeProjectedCWD(ctx context.Context, t *testing.T, client *appwire.Client, ref, want string) {
 	t.Helper()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
+	testwait.UntilSeen(t, "the daemon to project cwd "+want, func() (bool, string) {
 		read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 		if err != nil {
-			t.Fatalf("daemon ThreadRead awaiting cwd %q: %v", want, err)
+			return false, "thread/read failed: " + err.Error()
 		}
 		projected := strings.TrimSpace(read.Thread.CWD)
-		if projected == want {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("daemon projected cwd = %q, want %q: %v", projected, want, ctx.Err())
-		case <-ticker.C:
-		}
-	}
+		return projected == want, "projected cwd = " + projected
+	})
 }
 
 func dialWorktreeDocumentClient(t *testing.T, hubURL string) *appwire.Client {
