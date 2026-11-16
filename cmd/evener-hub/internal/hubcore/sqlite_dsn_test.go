@@ -70,6 +70,24 @@ func TestSharedStoresOpenWithSynchronousNormal(t *testing.T) {
 			defer func() { _ = db.Close() }()
 			return readSynchronous(t, db)
 		}},
+		{"session_seen", synchronousNormal, func(t *testing.T, dbPath string) int {
+			t.Helper()
+			db, err := NewSessionSeenStore(dbPath).open()
+			if err != nil {
+				t.Fatalf("session seen open: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			return readSynchronous(t, db)
+		}},
+		{"hub_identity", synchronousNormal, func(t *testing.T, dbPath string) int {
+			t.Helper()
+			db, err := NewHubIdentityStore(dbPath).open()
+			if err != nil {
+				t.Fatalf("hub identity open: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+			return readSynchronous(t, db)
+		}},
 		{"past_fts", synchronousNormal, func(t *testing.T, dbPath string) int {
 			t.Helper()
 			index := NewPastIndexWithDB("", dbPath)
