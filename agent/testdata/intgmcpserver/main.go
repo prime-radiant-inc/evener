@@ -10,7 +10,10 @@
 // An optional argv[1] names an exit-marker file: when set, it is written
 // right before the process exits, letting a test confirm this subprocess
 // actually terminated (in response to Manager.Close closing its stdin)
-// instead of being orphaned.
+// instead of being orphaned. The marker is also what lets a test fail the first
+// start: with --fail-first, a start whose marker file does not exist yet
+// creates it and exits without serving, so the next start of the same server
+// speaks MCP.
 package main
 
 import (
@@ -23,6 +26,16 @@ import (
 )
 
 func main() {
+	marker := ""
+	failFirst := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--fail-first" {
+			failFirst = true
+			continue
+		}
+		marker = arg
+	}
+
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "intgmcpserver",
 		Version: "v0.0.1",
@@ -53,9 +66,18 @@ func main() {
 		}, nil
 	})
 
+	if failFirst && marker != "" {
+		if _, err := os.Stat(marker); err != nil {
+			// First start: record that this start happened, then exit before
+			// serving MCP so the client's connect fails.
+			_ = os.WriteFile(marker, []byte("exited\n"), 0644)
+			return
+		}
+	}
+
 	runErr := server.Run(context.Background(), &mcpsdk.StdioTransport{})
-	if len(os.Args) > 1 {
-		_ = os.WriteFile(os.Args[1], []byte("exited\n"), 0644)
+	if marker != "" {
+		_ = os.WriteFile(marker, []byte("exited\n"), 0644)
 	}
 	if runErr != nil {
 		log.Fatalf("intgmcpserver: %v", runErr)
