@@ -582,6 +582,51 @@ test("a refused promote suppresses through a recorded item's own mutation id, no
   expect(rows).toEqual([]);
 });
 
+// A refused promote whose entry is STILL QUEUED (the index-shift refusal:
+// another client removed an earlier entry, so the promote's index no longer
+// matches) consumed nothing. The message sits in the daemon's queue, so the
+// merged row must be the QUEUE's row - method, state, and controls included -
+// or the user's queued message renders as refused work with no Steer, Edit,
+// or Remove until something else delivers it (roborev round 8, finding 1).
+test("a refused promote whose entry is still queued renders as the queue's row with its controls", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 9,
+      ids: ["q1"],
+      clientMutationIds: ["m_source"],
+      texts: ["queued text"],
+      preview: ["queued text"],
+    },
+    pendingMutations: [],
+    turns: [],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 1)",
+      }),
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "promote",
+    method: "queue",
+    state: "queued",
+    queueIndex: 0,
+    queueEntryId: "q1",
+  });
+});
+
 test("a carried row stays while its recorded owner is still only pending", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },

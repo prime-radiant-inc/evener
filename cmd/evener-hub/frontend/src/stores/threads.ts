@@ -1988,11 +1988,19 @@ async function retireDeliveredPromoteRecoveriesForRefs(
   for (const targetRef of targetRefs) {
     const delivered = deliveredSourceIds(trackedThreadModel(targetRef));
     if (delivered.size === 0) continue;
+    let retired: string[] = [];
     try {
-      await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, delivered);
+      retired = await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, delivered);
     } catch {
       continue;
     }
+    // The retirement deleted rows this tab's projections may still hold: the
+    // storage-side delete reaches IndexedDB but no persistence subscriber
+    // hears it, so a cached recovery row would render again until some later
+    // read re-projects. The dispatcher's own onStorageChange fired BEFORE
+    // this retire ran, so the notification it carried read the row still
+    // present. Only a retirement that removed something owes a fresh one.
+    if (retired.length > 0) notifyMutationPersistence([targetRef]);
     if (!isCurrentMutationRuntime(runtime)) return;
   }
 }
@@ -6187,9 +6195,14 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
   // hydration's sweep, so this is their boundary.
   if (runtime && authoritative) {
     const evidence = deliveredSourceIds(model);
-    void runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence).catch(() => {
-      // A later authoritative read runs the same retirement.
-    });
+    void runtime.storage
+      .retireDeliveredPromoteRecoveries(ref, evidence)
+      .then((retired) => {
+        if (retired.length > 0) notifyMutationPersistence([ref]);
+      })
+      .catch(() => {
+        // A later authoritative read runs the same retirement.
+      });
   }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
@@ -6334,7 +6347,8 @@ async function publishAndReconcileThreadHydration(
         // queue's own id, which means still queued, not delivered.
         if (mutationStateAuthoritative) {
           const evidence = deliveredSourceIds(published);
-          await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
+          const retired = await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
+          if (retired.length > 0) notifyMutationPersistence([ref]);
         }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
@@ -7927,9 +7941,14 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
   // local consumer record means no storage-change callback fires), so this
   // publication moment settles the refused promote here too.
   const evidence = deliveredSourceIds(model);
-  void runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence).catch(() => {
-    // A later accepted snapshot runs the same retirement.
-  });
+  void runtime.storage
+    .retireDeliveredPromoteRecoveries(ref, evidence)
+    .then((retired) => {
+      if (retired.length > 0) notifyMutationPersistence([ref]);
+    })
+    .catch(() => {
+      // A later accepted snapshot runs the same retirement.
+    });
   const pending = pendingConsumedSettlements.get(ref);
   // An input the daemon names as retired will never be recorded, so it settles
   // without any transcript evidence. A cancellation announces itself only this

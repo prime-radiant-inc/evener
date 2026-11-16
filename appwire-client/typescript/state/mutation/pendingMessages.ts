@@ -888,6 +888,15 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     if (!owner && mutationId) owner = rows.get(mutationId);
     if (owner) {
       const withQueue = mergeQueueContent(owner, families.get(owner.id), pendingById.get(owner.id));
+      // An unedited refused promote whose entry is STILL in the queue consumed
+      // nothing - the index-shift refusal another client's removal causes.
+      // The message sits in the daemon's queue, so the queue owns the
+      // presentation: method and state come from the queue row, or the user's
+      // still-queued message renders as refused work with no Steer, Edit, or
+      // Remove until something else delivers it. An edited recovery is the
+      // user's own unsent composition and keeps recovery ownership.
+      const refusedPromoteUnedited =
+        withQueue.method === "promote" && withQueue.state === "refused" && !locallyEnded(withQueue);
       const next: PendingMessage<A> = {
         ...withQueue,
         // A queued message's state is the queue's (including the Stop-parked
@@ -895,7 +904,10 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         // Stop cancels an unattempted queue row while the daemon leaves the
         // entry in its queue, so taking the queue's word would render a
         // canceled message as "Queued" with actions that no longer apply.
-        ...(withQueue.method === "queue" && !locallyEnded(withQueue) ? { state: row.state } : {}),
+        ...((withQueue.method === "queue" || refusedPromoteUnedited) && !locallyEnded(withQueue)
+          ? { state: row.state }
+          : {}),
+        ...(refusedPromoteUnedited ? { method: row.method, fromThisClient: row.fromThisClient } : {}),
         ...(row.queueIndex !== undefined ? { queueIndex: row.queueIndex } : {}),
         ...(row.queueEntryId ? { queueEntryId: row.queueEntryId } : {}),
         ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),

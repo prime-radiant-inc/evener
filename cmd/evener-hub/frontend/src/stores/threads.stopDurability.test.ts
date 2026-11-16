@@ -779,6 +779,14 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     });
     // The accepted frame: another client's drain delivered the entry. Normal
     // consumption records the source's own id as the item's id, no lineage.
+    // A persistence subscriber hears the retirement: the storage-side delete
+    // reaches IndexedDB alone, and without a notification the pending
+    // projections keep the cached recovery row until some later read
+    // re-projects (roborev round 8, finding 2).
+    const persistedRefs: string[][] = [];
+    const unsubscribePersistence = subscribeMutationPersistence((refs) => {
+      persistedRefs.push([...refs]);
+    });
     fake.emitNotification({
       method: "history/updated",
       params: {
@@ -804,6 +812,8 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
       return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
     });
     expect(transfers.length).toBe(1);
+    unsubscribePersistence();
+    expect(persistedRefs.some((refs) => refs.includes("ref_a"))).toBe(true);
     storage.close();
   });
 
