@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -172,9 +173,20 @@ func TestProbe_HTTP_NonMCPBody_Unreachable(t *testing.T) {
 
 // A connection that is actively refused (nobody listening) reads
 // "unreachable" for both the http and sse transports.
+//
+// The port is picked on 127.0.0.2 because the kernel can hand a port freed on
+// 127.0.0.1 to a parallel test's MCP server before the probe dials it, which
+// made the probe read "available" on CI (#6397). A socket bound to 127.0.0.1
+// does not answer connections addressed to 127.0.0.2, so no such server can
+// answer this one. A dial to the closed 127.0.0.2 port is refused immediately
+// rather than dropped, so the probe still reports the connection failure the
+// test asserts. A host that cannot bind the alias skips rather than fails.
 func TestProbe_ConnectionRefused_Unreachable(t *testing.T) {
 	t.Parallel()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := net.Listen("tcp4", "127.0.0.2:0")
+	if errors.Is(err, syscall.EADDRNOTAVAIL) {
+		t.Skipf("host cannot bind loopback alias: %v", err)
+	}
 	if err != nil {
 		t.Fatalf("net.Listen: %v", err)
 	}
