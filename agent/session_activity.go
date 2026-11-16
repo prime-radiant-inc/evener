@@ -228,8 +228,9 @@ func sessionSubtreeDelegateIDs(state delegatestore.State, sessionID string) []st
 }
 
 // activityRootTitle names the root ancestor row from the root session's own
-// label. A live root reads its in-memory name; a closed or absent one reads
-// the persisted meta, so a retained read and a live read name the row alike.
+// label. A root matching rootID reads its in-memory name; an absent root, or
+// one whose id does not match, reads the persisted meta, so a retained read
+// and a live read name the row alike.
 func activityRootTitle(root *Session, stateDir, rootID string) string {
 	if root != nil && root.ID() == rootID {
 		return liveActivitySessionLabel(root)
