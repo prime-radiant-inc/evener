@@ -73,7 +73,6 @@ import {
   canEditQueuedMessage,
   canRemoveQueuedMessage,
   DIRECT_FALLBACK_METHODS,
-  deliveredSourceIds,
   type MutationDiscoveryReason,
   MutationDispatcher,
   notificationMutationIdentities,
@@ -81,6 +80,7 @@ import {
   type PendingTurnEntry,
   queueEntryAt,
   recordedInputLineage,
+  settledSourceIds,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -1986,11 +1986,10 @@ async function retireDeliveredPromoteRecoveriesForRefs(
   targetRefs: Iterable<string>,
 ): Promise<void> {
   for (const targetRef of targetRefs) {
-    const delivered = deliveredSourceIds(trackedThreadModel(targetRef));
-    if (delivered.size === 0) continue;
-    let retired: string[] = [];
+    const settled = settledSourceIds(trackedThreadModel(targetRef));
+    if (settled.size === 0) continue;
     try {
-      retired = await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, delivered);
+      await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, settled);
     } catch {
       continue;
     }
@@ -1999,8 +1998,12 @@ async function retireDeliveredPromoteRecoveriesForRefs(
     // hears it, so a cached recovery row would render again until some later
     // read re-projects. The dispatcher's own onStorageChange fired BEFORE
     // this retire ran, so the notification it carried read the row still
-    // present. Only a retirement that removed something owes a fresh one.
-    if (retired.length > 0) notifyMutationPersistence([targetRef]);
+    // present. The notify is unconditional in the settled evidence: another
+    // tab's sweep may have deleted the row first (this call returns nothing)
+    // while THIS tab's cached projection still holds it, and only a fresh
+    // projection read clears the tab-local cache. A no-op refresh is
+    // idempotent.
+    notifyMutationPersistence([targetRef]);
     if (!isCurrentMutationRuntime(runtime)) return;
   }
 }
@@ -6194,11 +6197,13 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
   // a reload would resurrect. Repository-owned refs bypass the tracked
   // hydration's sweep, so this is their boundary.
   if (runtime && authoritative) {
-    const evidence = deliveredSourceIds(model);
+    const evidence = settledSourceIds(model);
     void runtime.storage
       .retireDeliveredPromoteRecoveries(ref, evidence)
-      .then((retired) => {
-        if (retired.length > 0) notifyMutationPersistence([ref]);
+      .then(() => {
+        // Unconditional in the evidence: another tab's sweep may have deleted
+        // the row first while this tab's cached projection still holds it.
+        notifyMutationPersistence([ref]);
       })
       .catch(() => {
         // A later authoritative read runs the same retirement.
@@ -6346,9 +6351,12 @@ async function publishAndReconcileThreadHydration(
         // consumption) or as a lineage id (inherited input) - never as the
         // queue's own id, which means still queued, not delivered.
         if (mutationStateAuthoritative) {
-          const evidence = deliveredSourceIds(published);
-          const retired = await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
-          if (retired.length > 0) notifyMutationPersistence([ref]);
+          const evidence = settledSourceIds(published);
+          await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
+          // Unconditional in the evidence: another tab's sweep may have
+          // deleted the row first while this tab's cached projection still
+          // holds it.
+          notifyMutationPersistence([ref]);
         }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
@@ -7940,11 +7948,13 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
   // frame can be the FIRST place a foreign consumer's delivery appears (no
   // local consumer record means no storage-change callback fires), so this
   // publication moment settles the refused promote here too.
-  const evidence = deliveredSourceIds(model);
+  const evidence = settledSourceIds(model);
   void runtime.storage
     .retireDeliveredPromoteRecoveries(ref, evidence)
-    .then((retired) => {
-      if (retired.length > 0) notifyMutationPersistence([ref]);
+    .then(() => {
+      // Unconditional in the evidence: another tab's sweep may have deleted
+      // the row first while this tab's cached projection still holds it.
+      notifyMutationPersistence([ref]);
     })
     .catch(() => {
       // A later accepted snapshot runs the same retirement.

@@ -366,6 +366,20 @@ export function deliveredSourceIds(model: ThreadModel | undefined): Set<string> 
   return ids;
 }
 
+// Every SETTLED source identity a model proves: the delivered identities
+// above, plus the inputs the daemon names retired - a canceled queue entry
+// will never deliver, so a promote recovery linked to it is dead the same
+// way a delivered one is (a removed message must not resurrect as refused
+// work). An edited recovery never rides this set: the storage's own
+// compositionRevision check preserves it there.
+export function settledSourceIds(model: ThreadModel | undefined): Set<string> {
+  const ids = deliveredSourceIds(model);
+  for (const inputId of model?.conversationProvenance?.retiredInputs ?? []) {
+    ids.add(inputId.startsWith("client:") ? inputId.slice("client:".length) : inputId);
+  }
+  return ids;
+}
+
 function outboxEntry(
   record: PendingRecord,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,

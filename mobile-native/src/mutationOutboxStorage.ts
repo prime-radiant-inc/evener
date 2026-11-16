@@ -919,11 +919,8 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// hydration path settles the UNEDITED record durably here. An edited
 	// composition is the user's own unsent work and survives every sweep
 	// (settlementRetiresRecovery's rule, read structurally).
-	async retireDeliveredPromoteRecoveries(
-		targetRef: string,
-		deliveredSourceIds: ReadonlySet<string>,
-	): Promise<string[]> {
-		if (deliveredSourceIds.size === 0) return [];
+	async retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]> {
+		if (settledSourceIds.size === 0) return [];
 		const retired: string[] = [];
 		for (const record of await this.listRecovery(targetRef)) {
 			if (record.recoveryKind !== "rejected") continue;
@@ -934,7 +931,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
 			const sourceMutationId =
 				typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
-			if (sourceMutationId === undefined || !deliveredSourceIds.has(sourceMutationId)) continue;
+			if (sourceMutationId === undefined || !settledSourceIds.has(sourceMutationId)) continue;
 			await this.discardRecovery(record.clientMutationId, targetRef);
 			retired.push(record.clientMutationId);
 		}

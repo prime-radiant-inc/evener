@@ -873,6 +873,33 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     await flushIndexedDBUntil(async () => (await storage.listRecovery("ref_a")).length === 1);
     const survivors = await storage.listRecovery("ref_a");
     expect(survivors.filter((record) => record.method === "turn/promoteQueuedAsSteer")).toHaveLength(1);
+
+    // The user cancels the still-queued entry from the restored controls
+    // (roborev round 9, finding 1): a canceled source will never deliver, so
+    // the linked promote recovery is dead the same way a delivered one is -
+    // a removed message must not resurrect as refused work on the next
+    // projection or reload. The provenance frame is the cancel's only
+    // announcement.
+    fake.emitNotification({
+      method: "thread/conversation-provenance/changed",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        provenance: {
+          version: 1,
+          authoritative: true,
+          revision: 1,
+          instanceId: "thr_ref_a",
+          admittedInputs: [],
+          retiredInputs: ["client:queue_source"],
+          frontiers: [],
+        },
+      },
+    } as Parameters<typeof fake.emitNotification>[0]);
+    await flushUntilArrived("the refused promote's recovery to settle with its canceled source", async () => {
+      const recoveries = await storage.listRecovery("ref_a");
+      return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+    });
     storage.close();
   });
 

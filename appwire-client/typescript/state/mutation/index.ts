@@ -45,6 +45,7 @@ export {
   reconcilePendingEntries,
   recordedInputLineage,
   reflectedMutationIds,
+  settledSourceIds,
   skillMarkers,
   truncateForDisplay,
 } from "./pendingEntries";

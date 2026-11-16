@@ -1853,18 +1853,17 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     });
   }
 
-  // A refused promote whose queue entry another transition already delivered
-  // is a duplicate the projection suppresses while the proof is visible - but
-  // a bounded transcript window can drop the proof on a reload, so the
+  // A refused promote whose queue entry another transition already SETTLED -
+  // delivered, or confirmed canceled (an input the daemon names retired will
+  // never deliver, so a removed message must not resurrect as refused work)
+  // - is a duplicate the projection suppresses while the proof is visible,
+  // but a bounded transcript window can drop the proof on a reload, so the
   // hydration path settles the UNEDITED record durably here (render-side
   // suppression alone would resurrect the row). An edited composition is the
   // user's own unsent work and survives every sweep
   // (settlementRetiresRecovery's rule, read structurally).
-  async retireDeliveredPromoteRecoveries(
-    targetRef: string,
-    deliveredSourceIds: ReadonlySet<string>,
-  ): Promise<string[]> {
-    if (deliveredSourceIds.size === 0) return [];
+  async retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]> {
+    if (settledSourceIds.size === 0) return [];
     const retired = await this.#write<string[]>(
       [RECOVERY_STORE],
       "retireDeliveredPromoteRecoveries",
@@ -1882,7 +1881,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
             display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
           const sourceMutationId =
             typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
-          if (sourceMutationId === undefined || !deliveredSourceIds.has(sourceMutationId)) continue;
+          if (sourceMutationId === undefined || !settledSourceIds.has(sourceMutationId)) continue;
           await requestResult(store.delete(record.clientMutationId));
           retiredIds.push(record.clientMutationId);
         }
