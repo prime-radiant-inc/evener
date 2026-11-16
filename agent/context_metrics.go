@@ -19,12 +19,18 @@ type ContextMetrics = schema.ContextMetrics
 // not mutated in place. ContextStatus relies on that same invariant and does
 // not introduce a stronger immutability guarantee.
 //
-// The copy is taken under s.mu and the estimate runs after the unlock.
+// The snapshot is taken under s.mu's read lock and the estimate runs after the
+// unlock. The lock is a reader, not a writer, because the sample must not exclude
+// the emit path's provenance read: on a read/write lock a pending writer blocks new
+// readers, so an exclusive sample here stalls every concurrent emit for the whole
+// sample. The context manager's own lock is taken inside this one (ObserveHistory),
+// and contextmgr never calls back into Session, so the pair has no reverse edge to
+// cycle on.
 func (s *Session) ContextStatus() (ContextMetrics, float64) {
 	if s.contextMgr == nil {
 		return ContextMetrics{}, 0
 	}
-	s.mu.Lock()
+	s.mu.RLock()
 	// When the manager already holds this revision's estimate, hand it no
 	// history at all rather than copying one out from under the lock. The copy
 	// was the largest part of a sample's cost at scale (8.24 MB of 8.96 MB at
@@ -35,18 +41,18 @@ func (s *Session) ContextStatus() (ContextMetrics, float64) {
 	}
 	histLen := len(s.history)
 	revision := s.historyRevision
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	// The manager holds the profile that answered the last round (a fallback
 	// replaces it), so its window, usage and source come from one snapshot.
 	metrics, pressure, profile, ok := s.contextMgr.EstimateStatusForHistory(hist, histLen, 0, revision)
 	if !ok {
 		// The memo could not answer for the whole history. Take the copy and ask
 		// again rather than report a prefix.
-		s.mu.Lock()
+		s.mu.RLock()
 		hist = append([]schema.Turn{}, s.history...)
 		histLen = len(s.history)
 		revision = s.historyRevision
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		metrics, pressure, profile, _ = s.contextMgr.EstimateStatusForHistory(hist, histLen, 0, revision)
 	}
 	_, metrics.WindowSource = budgetingWindow(profile)

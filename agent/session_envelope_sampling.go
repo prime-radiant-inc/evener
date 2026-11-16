@@ -37,10 +37,15 @@ import (
 // move, and because the blocked send holds eventsMu.RLock the session can no
 // longer even be CLOSED (Close needs eventsMu.Lock).
 //
-// Session.mu is safe by construction rather than
+// Session.mu's WRITE lock is safe by construction rather than
 // by convention: the emit path re-acquires it (emit -> activeCausalProvenance),
 // so agent code cannot hold it across an emit without self-deadlocking on the
-// first execution. session_emit_lock_guard_test.go pins that. No other lock in
+// first execution. session_emit_lock_guard_test.go pins that. Its READ lock
+// carries no such guarantee — a read-lock holder reaches emit's read lock as a
+// second reader, which parks only while a writer is pending — so read-lock
+// holders must not emit: a read lock is a leaf that touches only guarded fields,
+// takes nothing else, and never emits. TestSessionReadLockIsALeaf pins it. No
+// other lock in
 // this package has anything equivalent. The frontier leaf is the other allowed
 // lock: its recorded listener never takes Session.mu and releases the leaf
 // before emitting. A sampler taking mu then the leaf cannot cycle with it.
