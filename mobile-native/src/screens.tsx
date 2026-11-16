@@ -1375,17 +1375,37 @@ function ConversationScreenView({
 		() => projectNativeTranscript(conversation, displayConfig, { justTheConversation: display.justTheConversation }),
 		[conversation, displayConfig, display.justTheConversation],
 	);
-	const timelineRows = useMemo(
+	// Your answers to a question show beneath the question itself. The hide
+	// reads the turns alone, so a publish that changed no row (the store keeps
+	// `turns` there) skips it as it skips sessionRows.
+	const answerHide = useMemo(
 		() =>
-			// Your answers to a question show beneath the question itself.
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
 					olderToLoad: olderPage !== null,
 					config: displayConfig,
 				}),
+				conversation,
 			),
 		[presentation.items, conversation?.turns, olderPage, displayConfig],
 	);
+	const timelineRows = answerHide.rows;
+	// The answers the question rows above render beneath their questions.
+	// Find searches the rows, and the raw answer row is hidden once its recap
+	// stands for it, so the rendered answer has to reach Find this way or the
+	// words stop being searchable while they are still on screen (#6328).
+	const answersByRow = useMemo(() => {
+		const answers = new Map<string, string>();
+		for (const row of timelineRows) {
+			if (row.kind !== "activity" || row.label !== "ask_user") continue;
+			const answer = answerTo(conversation, row.id);
+			if (answer !== undefined) answers.set(row.id, answer);
+		}
+		return answers;
+	}, [timelineRows, conversation?.turns]);
+	// The hide's stand-ins, so a Find selection on a row it dropped moves to
+	// the question row showing the same words instead of vanishing.
+	const answerStandIns = answerHide.standIns;
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row's coordinator: this session, or on a subagent's screen,
 	// the same coordinator. A row shows only in a loaded transcript, which
@@ -1660,6 +1680,8 @@ function ConversationScreenView({
 			find,
 			setFind,
 			timelineRows,
+			answersByRow,
+			answerStandIns,
 			conversation,
 			focused,
 			status: snapshot.status,

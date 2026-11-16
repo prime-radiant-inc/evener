@@ -91,7 +91,10 @@ function rowsAt(level: Level, turns: Turn[], systemEvents = true) {
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
-		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
+		rows: hideAnswerMessages(
+			sessionRows(groupTimeline(presentation.items), conversation.turns, { config }),
+			conversation,
+		).rows,
 		model,
 		expandByDefault: presentation.expandByDefault,
 	};
@@ -426,7 +429,10 @@ describe("shared-notes snapshots", () => {
 			const conversation = store.getState().conversation;
 			if (!conversation) throw new Error("no stored conversation");
 			const presentation = projectNativeTranscript(conversation, config);
-			const rows = hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns));
+			const rows = hideAnswerMessages(
+				sessionRows(groupTimeline(presentation.items), conversation.turns),
+				conversation,
+			).rows;
 			const row = rows.find((entry) => entry.id === largeNotes.id);
 			if (row?.kind !== "notice") throw new Error("no large notes notice");
 			expect(new TextEncoder().encode(snapshot).length).toBeGreaterThan(MAX_ITEM_BYTES);

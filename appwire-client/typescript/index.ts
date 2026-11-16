@@ -93,7 +93,7 @@ export type {
 } from "./askDock";
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
-export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
+export { answeredAskUserReply, answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
 export {
   admissionRejection,

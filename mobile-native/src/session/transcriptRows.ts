@@ -8,6 +8,7 @@
 // - a time marker introduces the first turn (once no older history is left
 //   to load), a turn that starts after ten quiet minutes, and a new day.
 import {
+	answeredAskUserReply,
 	answeredAskUserSuffix,
 	compactDuration,
 	contentVectorForConfig,
@@ -19,6 +20,7 @@ import {
 	taskListChanges,
 	toolFamily,
 	type AskUserQuestion,
+	type ItemModel,
 	type ThreadModel,
 	type ToolFamily,
 	type TranscriptDisplayConfigV1,
@@ -188,26 +190,74 @@ export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>)
 	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments }) : undefined;
 }
 
-// A composed answer reply: "[answers]" and then numbered lines like
-// '1. [Choice] → "Drop them"' (the package's composeAskAnswers).
-const ANSWER_REPLY = /^\[answers\]\n\d+\. \[/;
+/** The transcript a hide produces, and where each row it dropped went. A
+ * consumer holding the rows also holds the stand-ins: a key pointing at a
+ * hidden answer moves to its question row rather than pointing at nothing
+ * (#6328's paging transition — the reply is on the loaded page, its question
+ * on an older one, and loading that page hides the reply). */
+export interface AnswerHideResult {
+	rows: TimelineRow[];
+	/** Each hidden answer row's reader key, mapped to the question row whose
+	 * recap now carries its content. */
+	standIns: ReadonlyMap<string, string>;
+}
 
-/** Drops the "[answers]" message you sent a question, once a question row
- * that shows its questions came before it: that row shows your answer
- * beneath the question (spec 8.2, "Question (history)"). A message that only
- * looks like answers, or whose own question row can't show itself, stays. */
-export function hideAnswerMessages(rows: readonly TimelineRow[]): TimelineRow[] {
-	let asked = false;
-	return rows.filter((row) => {
-		if (row.kind === "activity" && askRowQuestions(row)) asked = true;
-		if (asked && row.kind === "user" && ANSWER_REPLY.test(row.text)) {
-			// The reply now shows beneath its question, so clear the flag: a later
-			// answer needs a question of its own before it too is hidden.
-			asked = false;
-			return false;
-		}
-		return true;
-	});
+/** Drops the answer rows a question row in this window recaps, so each
+ * answer renders once — beneath the question that asked it (spec 8.2,
+ * "Question (history)"). The reply hidden is exactly the reply the
+ * question row's recap carries in full (the package's answeredAskUserReply,
+ * the derivation that very recap renders), never a row-local guess at the
+ * link's meaning: whatever the recap does not show — because it refuses the
+ * link, cuts the reply to its first line, or is not on screen at all — only
+ * the raw row holds, so it stays (#6328).
+ *
+ * The stand-ins ride along with the rows rather than coming from a second
+ * function, so a caller cannot render the hidden transcript and forget that
+ * a key it was holding now names a row that is gone. */
+export function hideAnswerMessages(
+	rows: readonly TimelineRow[],
+	model: Pick<ThreadModel, "turns"> | null,
+): AnswerHideResult {
+	// Which answer rows this window recaps, and which question row stands in
+	// for each. The drop below and the stand-ins come from this one pass, so
+	// they cannot disagree about what disappeared.
+	const standIns = new Map<string, string>();
+	if (!model) return { rows: [...rows], standIns };
+	const answerRows = new Map<string, TimelineRow>();
+	for (const row of rows) {
+		if (row.kind === "user") answerRows.set(readerKey(row), row);
+	}
+	// The replies some question row here recaps. The recap reads the model,
+	// not the rows, so an ask row's recap can name a reply whose row sits in
+	// this window — the one to hide — and never one already gone.
+	for (const row of rows) {
+		if (row.kind !== "activity" || row.label !== "ask_user") continue;
+		// The row is what shows the recap, and it draws its questions from
+		// its own bounded copy of the arguments (askRowQuestions above): an
+		// unreadable row renders no recap, whatever the model still holds,
+		// so its reply must stay.
+		if (!askRowQuestions(row)) continue;
+		const item = itemById(model, row.id);
+		if (!item) continue;
+		const reply = answeredAskUserReply(model, item);
+		if (!reply) continue;
+		// The reply's row keys by its item identity, transcript key first
+		// (readerKey): history re-mints the display id and keeps the transcript
+		// key, so the id alone names the row only in a live transcript.
+		const replyRow = answerRows.get(reply.transcriptKey ?? reply.id);
+		if (!replyRow) continue;
+		standIns.set(readerKey(replyRow), readerKey(row));
+	}
+	return { rows: rows.filter((row) => row.kind !== "user" || !standIns.has(readerKey(row))), standIns };
+}
+
+/** The model's item with `itemId`, wherever its turn sits. */
+function itemById(model: Pick<ThreadModel, "turns">, itemId: string): ItemModel | undefined {
+	for (const turn of model.turns) {
+		const item = turn.items.find((candidate) => candidate.id === itemId);
+		if (item) return item;
+	}
+	return undefined;
 }
 
 /** Your answer to the question the ask_user item `itemId` asked, for its
@@ -216,12 +266,9 @@ export function hideAnswerMessages(rows: readonly TimelineRow[]): TimelineRow[] 
  * answer alone. */
 export function answerTo(model: Pick<ThreadModel, "turns"> | null, itemId: string): string | undefined {
 	if (!model) return undefined;
-	for (const turn of model.turns) {
-		const item = turn.items.find((candidate) => candidate.id === itemId);
-		if (!item) continue;
-		return answeredAskUserSuffix(model as ThreadModel, item)?.replace(/^ \u2014 answered: /, "");
-	}
-	return undefined;
+	const item = itemById(model, itemId);
+	if (!item) return undefined;
+	return answeredAskUserSuffix(model, item)?.replace(/^ \u2014 answered: /, "");
 }
 
 /** The run that is still growing: the last run of the turn in progress

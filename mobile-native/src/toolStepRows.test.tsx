@@ -47,7 +47,10 @@ function projectedAt(level: Level) {
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
 		presentation,
-		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
+		rows: hideAnswerMessages(
+			sessionRows(groupTimeline(presentation.items), conversation.turns, { config }),
+			conversation,
+		).rows,
 	};
 }
 
@@ -72,7 +75,10 @@ it.each(["memory_read", "memory_search"])(
 		const { config, justTheConversation } = displayForLevel("full", null);
 		const conversation = projectConversation(model, undefined, config ?? undefined);
 		const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
-		const rows = hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config }));
+		const rows = hideAnswerMessages(
+			sessionRows(groupTimeline(presentation.items), conversation.turns, { config }),
+			conversation,
+		).rows;
 		const steps = rows.filter((row): row is Run => row.kind === "run").flatMap((run) => run.steps);
 		const step = steps.find((entry) => entry.label === name);
 		if (!step) throw new Error(`missing recorded ${name} native step`);
