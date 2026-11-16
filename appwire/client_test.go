@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -708,4 +712,139 @@ func TestClientReady(t *testing.T) {
 	if !NewClient(newMemoryTransport()).Ready() {
 		t.Fatal("client constructed with a transport reported not ready")
 	}
+}
+
+// A large response's result is decoded into storage resolved from the pending
+// request its id names, while the frame carrying it is read. Two requests are in
+// flight and their answers arrive in the reverse of the order their requests did,
+// so each answer fits either target: a decode that resolved the wrong pending
+// entry fills one caller's target with the other's result and reports no error.
+// Each caller asserts that the result it got back names the id it observed for
+// its own request, which only binding by id satisfies.
+func TestClientBindsLargeResponseToItsOwnRequest(t *testing.T) {
+	payload := strings.Repeat("delegate-task ", 6000)
+
+	// boundResult is one caller's view of its own request: the id it observed
+	// before the frame went out, and the id the result it received carries.
+	type boundResult struct {
+		observed string
+		got      string
+		err      error
+	}
+
+	// exchange runs both calls concurrently over a real stream and answers them
+	// in the reverse of their arrival, so the answer that resolves second
+	// belongs to the request that arrived first.
+	exchange := func(t *testing.T, callA, callB func(context.Context, *Client) boundResult, answer func(Request) (any, error)) {
+		t.Helper()
+		a, b := net.Pipe()
+		defer a.Close() //nolint:errcheck // test cleanup
+		defer b.Close() //nolint:errcheck // test cleanup
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// The serving side reports its own failures. It must not touch t: it can
+		// outlive the subtest, and a report that lands after the subtest ended
+		// panics the package instead of failing this test.
+		serverErr := make(chan error, 1)
+		go func() {
+			server := NewStreamTransport(b)
+			requests := make([]Request, 0, 2)
+			for range 2 {
+				msg, err := server.Recv(ctx)
+				if err != nil {
+					serverErr <- fmt.Errorf("server recv: %w", err)
+					return
+				}
+				if msg.Request == nil {
+					serverErr <- fmt.Errorf("server got %+v, want a request", msg)
+					return
+				}
+				requests = append(requests, *msg.Request)
+			}
+			for i, req := range slices.Backward(requests) {
+				result, err := answer(requests[i])
+				if err != nil {
+					serverErr <- fmt.Errorf("build answer: %w", err)
+					return
+				}
+				if err := server.Send(ctx, ResponseMessage(req.ID, result)); err != nil {
+					serverErr <- fmt.Errorf("server send: %w", err)
+					return
+				}
+			}
+			serverErr <- nil
+		}()
+
+		client := NewClient(NewStreamTransport(a))
+		client.Start(ctx)
+		defer client.Close() //nolint:errcheck // test cleanup
+
+		outs := make(chan boundResult, 2)
+		go func() { outs <- callA(ctx, client) }()
+		go func() { outs <- callB(ctx, client) }()
+
+		for range 2 {
+			select {
+			case got := <-outs:
+				if got.err != nil {
+					t.Fatalf("request: %v", got.err)
+				}
+				if got.got != got.observed {
+					t.Fatalf("result names request %q, want this caller's own %q: a result was decoded into another request's target", got.got, got.observed)
+				}
+			case <-ctx.Done():
+				t.Fatalf("both requests did not complete: %v", ctx.Err())
+			}
+		}
+		// A serving side that failed did not prove what this test claims. The
+		// wait is bounded so a serving side that cannot finish fails the test
+		// rather than hanging the package.
+		select {
+		case err := <-serverErr:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("server did not finish: %v", ctx.Err())
+		}
+	}
+
+	// readCall issues a thread/read whose answer is large enough to be decoded
+	// on the direct path, and reports the id its result names.
+	readCall := func(threadID string) func(context.Context, *Client) boundResult {
+		return func(ctx context.Context, client *Client) boundResult {
+			var observed ID
+			out, err := client.ThreadRead(WithRequestIDObserver(ctx, func(id ID) { observed = id }), ThreadReadParams{ThreadID: threadID})
+			return boundResult{observed: observed.String(), got: out.Thread.ID, err: err}
+		}
+	}
+	answerRead := func(req Request) (any, error) {
+		return ThreadReadResponse{Thread: Thread{ID: req.ID.String(), Source: payload}}, nil
+	}
+
+	t.Run("different response types", func(t *testing.T) {
+		exchange(t,
+			readCall("a-thread"),
+			func(ctx context.Context, client *Client) boundResult {
+				var observed ID
+				out, err := client.ThreadList(WithRequestIDObserver(ctx, func(id ID) { observed = id }), ThreadListParams{SearchTerm: "a-search"})
+				got := ""
+				if len(out.Data) > 0 {
+					got = out.Data[0].ID
+				}
+				return boundResult{observed: observed.String(), got: got, err: err}
+			},
+			func(req Request) (any, error) {
+				if req.Method != MethodThreadList {
+					return answerRead(req)
+				}
+				return ThreadListResponse{Data: []Thread{{ID: req.ID.String(), Source: payload}}}, nil
+			})
+	})
+
+	t.Run("same response type", func(t *testing.T) {
+		exchange(t, readCall("first-thread"), readCall("second-thread"), answerRead)
+	})
 }

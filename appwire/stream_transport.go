@@ -286,11 +286,19 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 }
 
 func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
+	msg, _, err := t.recvBound(ctx, nil)
+	return msg, err
+}
+
+// recvBound reads one frame and decodes it through decodeFrameBound, so a large
+// response's result is decoded straight into the storage bind resolves for its
+// id instead of being scanned a second time by the client.
+func (t *StreamTransport) recvBound(ctx context.Context, bind frameBinder) (Message, any, error) {
 	if err := t.poisonErr(); err != nil {
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	// Same ordering as Send: record the cancellation before the close that
 	// unblocks this read can be observed by anyone else.
@@ -304,7 +312,7 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 		// call reports, and this call must not disagree with it by preferring a
 		// cancellation that did not actually win.
 		if pErr := t.poisonErr(); pErr != nil {
-			return Message{}, pErr
+			return Message{}, nil, pErr
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			// Nothing was recorded yet, so this read was unblocked by something
@@ -312,12 +320,12 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 			// stream is closed underneath, so leaving it unset makes a later Recv
 			// report an orderly io.EOF for a local cancellation.
 			t.poison(ctxErr)
-			return Message{}, ctxErr
+			return Message{}, nil, ctxErr
 		}
 		// A cancellation landing after those checks but before the deferred stop
 		// must not be reported as a clean end of stream.
 		if err := t.latchLateCancel(ctx, stop); err != nil {
-			return Message{}, err
+			return Message{}, nil, err
 		}
 		// A read that consumed no bytes left the framing intact but the stream
 		// broken; a clean io.EOF is the stream simply ending. Latch the former
@@ -325,38 +333,38 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 		if !errors.Is(err, io.EOF) {
 			t.poison(err)
 		}
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	// A complete line can still arrive after the context was canceled — bufio
 	// may have prefetched it — and cancellation still wins: the caller asked to
 	// stop and the stream is being closed under this call.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		t.poison(ctxErr)
-		return Message{}, ctxErr
+		return Message{}, nil, ctxErr
 	}
-	var msg Message
-	if err := decodeFrame(&msg, line); err != nil {
+	msg, bound, err := decodeFrameBound(line, bind)
+	if err != nil {
 		// Decoding a large frame takes long enough for a cancellation to land and
 		// close the stream, so the same latch applies before reporting a decode
 		// failure — otherwise later calls see a raw close error for a teardown
 		// the caller asked for.
 		if err := t.latchLateCancel(ctx, stop); err != nil {
-			return Message{}, err
+			return Message{}, nil, err
 		}
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	// Same window on the read side: a cancellation after the check above and
 	// before the deferred stop closed the stream, so the message is not
 	// delivered and the cancellation is latched.
 	if err := t.latchLateCancel(ctx, stop); err != nil {
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	// Same on the read side: a Close that landed while this frame was being read
 	// or decoded must not be answered with a message from a closed transport.
 	if pErr := t.poisonErr(); pErr != nil {
-		return Message{}, pErr
+		return Message{}, nil, pErr
 	}
-	return msg, nil
+	return msg, bound, nil
 }
 
 // readLine reads one newline-terminated frame, bounded by the transport's limit.

@@ -82,7 +82,12 @@ type Notification struct {
 // id-less frame received off the wire round-trips faithfully: ID.MarshalJSON
 // would otherwise render it as `null`, which ID.UnmarshalJSON rejects.
 type Response struct {
-	ID     ID  `json:"id,omitzero"`
+	ID ID `json:"id,omitzero"`
+	// Result is the wire bytes off the transport. A client that decodes a large
+	// response's result by id puts the value it filled in its place: the decoder
+	// writes the member straight into the waiting request's storage, and no
+	// second pass over the payload is needed. Nothing that reads a Result off the
+	// wire depends on which of the two it holds.
 	Result any `json:"result"`
 }
 
