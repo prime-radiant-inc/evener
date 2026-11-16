@@ -27,10 +27,18 @@ func (s *Session) ToolDefinitions() []llm.ToolDefinition {
 	return append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
 }
 
-func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
-	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, s.delegationAllowance > 0, "")
+// defaultToolsForAgent is the tool set a role's delegate receives when this
+// session starts one with no delegation_allowance and no isolation: the
+// ceiling the spawn applies, so the roster cannot advertise a capability the
+// grant withholds.
+func (s *Session) defaultToolsForAgent(registered map[string]bool, agent plugin.Agent) []string {
+	canonical := s.subagentToolNameCeilingFromRegistered(registered, &agent, canGrantDelegation(s.delegationAllowance), "")
 	canonical = ensureRecoveryReader(canonical, s.reg)
-	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
+	return s.providerVisibleToolNames(canonical)
+}
+
+func (s *Session) defaultToolSummaryForAgentFromRegistered(registered map[string]bool, agent plugin.Agent) string {
+	return formatToolNamesForPrompt(s.defaultToolsForAgent(registered, agent))
 }
 
 func (s *Session) availableAgentEntries() []agentEntry {
@@ -223,6 +231,7 @@ func (s *Session) rebuildToolDefsCache() {
 	if s == nil || s.reg == nil {
 		if s != nil {
 			s.cachedToolDefs = nil
+			s.cachedToolDefsJSONBytes = 0
 		}
 		return
 	}
@@ -252,10 +261,10 @@ func (s *Session) rebuildToolDefsCache() {
 				if !s.hubEnabled {
 					td = s.delegateToolDefinition()
 				}
-				// When this session can only grant allowance 0 (own allowance 1),
-				// delegation_allowance has a single legal value — a no-op knob. Hide it
-				// so the model is not offered a parameter it cannot meaningfully set.
-				if s.delegationAllowance <= 1 {
+				// When no legal grant lets the child delegate, delegation_allowance has
+				// a single useful value — a no-op knob. Hide it so the model is not
+				// offered a parameter it cannot meaningfully set.
+				if !canGrantDelegation(s.delegationAllowance) {
 					if props, ok := td.Parameters["properties"].(map[string]any); ok {
 						delete(props, "delegation_allowance")
 					}
@@ -360,6 +369,7 @@ func (s *Session) rebuildToolDefsCache() {
 	}
 
 	s.cachedToolDefs = defs
+	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
 }
 
 // normalizeRegistryToolDefinition keeps directly registered tools acceptable

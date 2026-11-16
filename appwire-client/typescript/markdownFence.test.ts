@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
+import { fenceLanguage, fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
 
 test("the gate matches a mermaid opener with indentation, either fence character and any case", () => {
   expect(MERMAID_FENCE.test("intro\n```mermaid\ngraph TD\n```")).toBe(true);
@@ -18,6 +18,15 @@ test("the diagram source gets its stripped trailing newline back", () => {
   expect(mermaidText({ type: "code", text: "graph TD; A-->B" })).toBe("graph TD; A-->B\n");
   expect(mermaidText({ type: "code", text: "" })).toBe("");
   expect(mermaidText({ type: "code" })).toBe("");
+});
+
+test("a fence's label is its info string's first word", () => {
+  expect(fenceLanguage({ type: "code", lang: "go" })).toBe("go");
+  expect(fenceLanguage({ type: "code", lang: "  Go title here " })).toBe("Go");
+  // An unlabeled fence shows no header, and only a code token has a label.
+  expect(fenceLanguage({ type: "code" })).toBe("");
+  expect(fenceLanguage({ type: "code", lang: "   " })).toBe("");
+  expect(fenceLanguage({ type: "paragraph", lang: "go" })).toBe("");
 });
 
 test.each([

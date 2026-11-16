@@ -326,7 +326,7 @@ func NewVoiceJournal(root string) (*VoiceJournal, error) {
 	if err := file.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", sqliteDSNImmediate(path)+"&_pragma=synchronous(FULL)&_pragma=foreign_keys(ON)")
+	db, err := sql.Open("sqlite", sqliteDSNFullImmediate(path)+"&_pragma=foreign_keys(ON)")
 	if err != nil {
 		return nil, err
 	}

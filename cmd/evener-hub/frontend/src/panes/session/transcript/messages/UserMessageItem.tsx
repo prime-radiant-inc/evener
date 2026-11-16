@@ -163,7 +163,7 @@ export function UserMessageView({
           )}
           {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
         </div>
-        <div className={CLASS.body} data-testid="user-bubble">
+        <div className={CLASS.body} data-testid="user-bubble" data-message-body="">
           <div className={CLASS.text}>{entityText ? <EntityText text={item.text} /> : item.text}</div>
           {provisional !== undefined && <span className={CLASS.railmark} aria-hidden="true" />}
           <ImageGallery images={item.images} />

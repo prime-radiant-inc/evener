@@ -289,6 +289,16 @@ export {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+export {
+  findIndexIn,
+  findMatches,
+  findNeedle,
+  findReadable,
+  type MatchPosition,
+  matchPosition,
+  stepMatch,
+  textMatchesFind,
+} from "./findInSession";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
@@ -474,7 +484,13 @@ export {
   lifecycleStateIsTerminal,
 } from "./lifecycle";
 export type { FenceToken } from "./markdownFence";
-export { fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
+export {
+  fenceLanguage,
+  fenceTokenTerminated,
+  isMermaidCodeToken,
+  MERMAID_FENCE,
+  mermaidText,
+} from "./markdownFence";
 export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
 export {
   MEMORY_CONTEXT_EVENT_KIND,

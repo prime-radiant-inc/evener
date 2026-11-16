@@ -18,6 +18,14 @@ const (
 	DoorDurable
 	// DoorSynced is AppendSynced's door: recorded AND durable, or an error.
 	DoorSynced
+	// DoorDeferred is the per-round door: a line it cannot record is rolled
+	// back and reported exactly as the durable door's is, and its fsync is
+	// left to the SyncInterval gate, so a busy session pays at most one sync
+	// per interval rather than one per append. A power crash can drop what
+	// the interval still covers; a process crash drops nothing handed to the
+	// OS. The next sync — a later append past the interval, a turn
+	// completion, Close, or retirement — settles the debt.
+	DoorDeferred
 )
 
 // RecordOptions chooses an append's door and the turn its entry joins.

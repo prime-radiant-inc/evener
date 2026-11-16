@@ -6,9 +6,12 @@
          control is at least 16px on phones and on any coarse pointer
          (tokens.css's touch block, beside --tap-min, floors
          --font-size-control; display-gates.test.ts scans every control
-         rule), so iOS Safari has nothing to auto-zoom into, and global.css's
-         (any-pointer: coarse) touch-action: pan-x pan-y drops double-tap and
-         pinch zoom while scrolling stays; viewport-fit=cover makes
+         rule), so iOS Safari has nothing to auto-zoom into; global.css's
+         (any-pointer: coarse) touch-action: pan-x pan-y drops double-tap
+         and pinch zoom where touch-action carries the viewport (Chromium),
+         and pinchVeto prevents Safari's gesturestart under the same coarse
+         gate (main.tsx), which is what iOS respects for pinch;
+         viewport-fit=cover makes
          the env(safe-area-inset-*) paddings in the mobile shell nonzero.
          interactive-widget=resizes-content
          makes Chromium/Android shrink the layout viewport when the on-screen

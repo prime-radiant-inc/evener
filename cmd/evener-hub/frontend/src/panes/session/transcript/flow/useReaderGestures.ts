@@ -136,50 +136,54 @@ export function useReaderGestures({
   //     touch path, which is more exact), a secondary button, a drag that is
   //     over (no button held), and one that has left the port.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the ref arguments are stable useRef objects owned by useTranscriptScroll
-  const startPointerDrag = useCallback((event: PointerEvent) => {
-    // A finger produces BOTH event streams. The touch path knows about
-    // direction and nested scrollers; adopting the same finger here as a drag
-    // would mark every sideways swipe and undo that exactness.
-    //
-    // The primary button drags a scrollbar or a selection; the middle button is
-    // native autoscroll, which scrolls the port continuously for as long as it
-    // is held - so leaving it out costs a re-pin on every correction that lands
-    // while it is moving, not a single frame. The secondary button opens a menu
-    // and never scrolls. Where the middle button does nothing at all, this marks
-    // a drag that moves nothing: the same trade the path already makes for a
-    // selection drag.
-    //
-    // The two buttons are tracked differently, because their held states mean
-    // opposite things.
-    //
-    // A mark comes from pointermove and lasts one frame, which is the whole
-    // story for the PRIMARY button: a selection drag holds it for as long as the
-    // reader is choosing text and scrolls nothing while they pause, so a held
-    // primary button must never be a standing veto - that is the permanent false
-    // veto this design treats as the harmful direction.
-    //
-    // A held MIDDLE button is the opposite: native autoscroll scrolls the port
-    // continuously while the pointer sits still, producing a stream of scroll
-    // events with no pointermove to mark any of them. So it is tracked as a
-    // state rather than an event, and the scroll listener reads it. Being a
-    // state, it is bounded by its clears rather than by any clock: the button
-    // coming up, a move without it, the pointer leaving the port, the pane
-    // switching session, and focus or visibility going away.
-    //
-    // Two trades come with it. On a platform where a middle-button hold does
-    // nothing at all it is a standing veto over a transcript that is not moving,
-    // which needs the reader to press and hold the middle button over the
-    // transcript while content grows. And because pointerleave is one of the
-    // clears, an autoscroll that carries on with the cursor outside the port
-    // goes unmarked from then on - under-marking, the safe side, and the same
-    // trade pointerleave already makes for a drag.
-    if (event.pointerType === "touch") return;
-    if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
-    if (event.button === 1) middleButtonHeldRef.current = true;
-    pointerDraggingRef.current = true;
-    const port = event.currentTarget;
-    if (port instanceof HTMLElement) readerGestureRef.current = { beforeOffset: port.scrollTop, admitted: false };
-  }, []);
+  const startPointerDrag = useCallback(
+    (event: PointerEvent) => {
+      // A finger produces BOTH event streams. The touch path knows about
+      // direction and nested scrollers; adopting the same finger here as a drag
+      // would mark every sideways swipe and undo that exactness.
+      //
+      // The primary button drags a scrollbar or a selection; the middle button is
+      // native autoscroll, which scrolls the port continuously for as long as it
+      // is held - so leaving it out costs a re-pin on every correction that lands
+      // while it is moving, not a single frame. The secondary button opens a menu
+      // and never scrolls. Where the middle button does nothing at all, this marks
+      // a drag that moves nothing: the same trade the path already makes for a
+      // selection drag.
+      //
+      // The two buttons are tracked differently, because their held states mean
+      // opposite things.
+      //
+      // A mark comes from pointermove and lasts one frame, which is the whole
+      // story for the PRIMARY button: a selection drag holds it for as long as the
+      // reader is choosing text and scrolls nothing while they pause, so a held
+      // primary button must never be a standing veto - that is the permanent false
+      // veto this design treats as the harmful direction.
+      //
+      // A held MIDDLE button is the opposite: native autoscroll scrolls the port
+      // continuously while the pointer sits still, producing a stream of scroll
+      // events with no pointermove to mark any of them. So it is tracked as a
+      // state rather than an event, and the scroll listener reads it. Being a
+      // state, it is bounded by its clears rather than by any clock: the button
+      // coming up, a move without it, the pointer leaving the port, the pane
+      // switching session, and focus or visibility going away.
+      //
+      // Two trades come with it. On a platform where a middle-button hold does
+      // nothing at all it is a standing veto over a transcript that is not moving,
+      // which needs the reader to press and hold the middle button over the
+      // transcript while content grows. And because pointerleave is one of the
+      // clears, an autoscroll that carries on with the cursor outside the port
+      // goes unmarked from then on - under-marking, the safe side, and the same
+      // trade pointerleave already makes for a drag.
+      if (event.pointerType === "touch") return;
+      if ((event.button !== 0 && event.button !== 1) || !event.isPrimary) return;
+      if (event.button === 1) middleButtonHeldRef.current = true;
+      pointerDraggingRef.current = true;
+      const port = listRef.current?.getScrollElement();
+      if (port && event.currentTarget === port)
+        readerGestureRef.current = { beforeOffset: port.scrollTop, admitted: false };
+    },
+    [listRef],
+  );
   // A mouse pointer gets no implicit capture, so a drag released outside the
   // port never delivers pointerup to it, and a drag that started elsewhere can
   // wander in with its button still down. Two answers, neither alone complete:
@@ -263,8 +267,8 @@ export function useReaderGestures({
       // wheel a descendant already claimed will not reach the port either.
       if (event.ctrlKey || event.shiftKey || event.defaultPrevented) return;
       if (event.deltaY === 0) return;
-      const port = event.currentTarget;
-      if (!(port instanceof HTMLElement)) return;
+      const port = listRef.current?.getScrollElement();
+      if (!port || event.currentTarget !== port) return;
       const metrics = measure(port);
       if (!verticalInputCanMovePort(port, metrics, event.target, event.deltaY > 0 ? 1 : -1)) return;
       // An upward wheel from the end is the reader leaving it, and says so
@@ -280,7 +284,7 @@ export function useReaderGestures({
         readerCallbacksRef.current.onReaderAway?.(lastScrollGeometryRef.current.scrollTop);
       markGesture(true, lastScrollGeometryRef.current.scrollTop);
     },
-    [markGesture, measure],
+    [listRef, markGesture, measure],
   );
   const startTouch = useCallback((event: TouchEvent) => {
     lastTouchYRef.current = event.touches[0]?.clientY ?? null;
@@ -293,13 +297,13 @@ export function useReaderGestures({
       // A first move with no recorded start (the touch began outside the port)
       // is not marked; the next one with real movement is.
       if (y === null || last === null || y === last) return;
-      const port = event.currentTarget;
-      if (!(port instanceof HTMLElement)) return;
+      const port = listRef.current?.getScrollElement();
+      if (!port || event.currentTarget !== port) return;
       // A finger moving UP - clientY decreasing - pushes content down.
       if (!verticalInputCanMovePort(port, measure(port), event.target, y < last ? 1 : -1)) return;
       markGesture();
     },
-    [markGesture, measure],
+    [listRef, markGesture, measure],
   );
   // A finished touch has to clear the recorded Y, or the "no recorded start"
   // guard above is true exactly once per mount and every later outside-start
@@ -318,7 +322,10 @@ export function useReaderGestures({
         (event.shiftKey && !space) ||
         isIMECompositionKeydown(event) ||
         isEditableTarget(event.target) ||
-        (space && event.target instanceof Element && event.target.closest("button, summary"))
+        (space &&
+          event.target !== null &&
+          (event.target as Node).nodeType === 1 &&
+          (event.target as Element).closest("button, summary"))
       )
         return;
       let direction: -1 | 1 | undefined;
@@ -329,10 +336,11 @@ export function useReaderGestures({
       } else if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End") {
         direction = 1;
       }
-      const port = event.currentTarget;
+      const port = listRef.current?.getScrollElement();
       if (
         direction === undefined ||
-        !(port instanceof HTMLElement) ||
+        !port ||
+        event.currentTarget !== port ||
         !verticalInputCanMovePort(port, measure(port), event.target, direction)
       )
         return;

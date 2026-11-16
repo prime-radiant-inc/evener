@@ -35,7 +35,8 @@ type TreeOpts struct {
 // Tree resolves the selector and walks the session tree: stable delegate edges,
 // possibly crossing buckets via each child's transcript ref, and
 // — with Observers — observer edges (from the worker's SessionMeta.ObservedBy).
-func Tree(stateBase, selector string, opts TreeOpts) (TreeNode, error) {
+// A cancelled ctx stops the walk and returns its error with no partial tree.
+func Tree(ctx context.Context, stateBase, selector string, opts TreeOpts) (TreeNode, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return TreeNode{}, err
@@ -46,42 +47,66 @@ func Tree(stateBase, selector string, opts TreeOpts) (TreeNode, error) {
 	}
 	visited := map[string]bool{}
 	root := TreeNode{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef}
-	return expandNode(stateBase, root, paths, opts, depth, visited, delegateCache{}), nil
+	node, err := expandNode(ctx, stateBase, root, paths, opts, depth, visited, delegateCache{})
+	if err != nil {
+		// A cancelled walk is the operation stopping, not a partial tree the
+		// caller could read anything from.
+		return TreeNode{}, err
+	}
+	return node, nil
 }
 
-func expandNode(stateBase string, node TreeNode, paths Paths, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) TreeNode {
+func expandNode(ctx context.Context, stateBase string, node TreeNode, paths Paths, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) (TreeNode, error) {
+	if err := ctx.Err(); err != nil {
+		return node, err
+	}
 	if visited[paths.SessionID] {
 		node.Note = "already shown (cycle)"
-		return node
+		return node, nil
 	}
 	visited[paths.SessionID] = true
 
-	failures, err := legacyDelegateFailuresBounded(context.Background(), paths.JobsPath)
+	failures, err := legacyDelegateFailuresBounded(ctx, paths.JobsPath)
 	if err != nil {
+		// A cancelled read is the operation stopping, not a node that
+		// could not be read.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return node, ctxErr
+		}
 		node.Note = "jobs unreadable: " + err.Error()
-		return node
+		return node, nil
 	}
 	node.Failures = failures
-	_, stable, diagnostics, err := delegates.get(paths)
+	_, stable, diagnostics, err := delegates.get(ctx, paths)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return node, ctxErr
+		}
 		node.Note = "delegates unreadable: " + err.Error()
-		return node
+		return node, nil
 	}
 	if len(diagnostics) != 0 {
 		node.Note = strings.Join(diagnostics, "; ")
 	}
 
-	node.Children = append(node.Children, delegateChildren(stateBase, paths.SessionID, stable, opts, depthRemaining, visited, delegates)...)
+	children, err := delegateChildren(ctx, stateBase, paths.SessionID, stable, opts, depthRemaining, visited, delegates)
+	if err != nil {
+		return node, err
+	}
+	node.Children = append(node.Children, children...)
 	if opts.Observers {
 		node.Children = append(node.Children, observerChildren(stateBase, paths)...)
 	}
-	return node
+	return node, nil
 }
 
-func delegateChildren(stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) []TreeNode {
+func delegateChildren(ctx context.Context, stateBase, ownerSessionID string, state delegatestore.State, opts TreeOpts, depthRemaining int, visited map[string]bool, delegates delegateCache) ([]TreeNode, error) {
 	rows := projectDoctorDelegates("", ownerSessionID, state)
 	children := make([]TreeNode, 0, len(rows))
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		child := TreeNode{
 			SessionID: row.ChildSessionID, TranscriptRef: "",
 			Name: row.Name, AgentType: row.AgentType, Status: row.Phase, Edge: "delegate",
@@ -98,14 +123,20 @@ func delegateChildren(stateBase, ownerSessionID string, state delegatestore.Stat
 		}
 		child.TranscriptRef = childPaths.TranscriptRef
 		if depthRemaining > 1 {
-			child = expandNode(stateBase, child, childPaths, opts, depthRemaining-1, visited, delegates)
+			child, err = expandNode(ctx, stateBase, child, childPaths, opts, depthRemaining-1, visited, delegates)
+			if err != nil {
+				return nil, err
+			}
 		} else {
-			child.Note = stableDepthLimitNote(childPaths, delegates)
+			child.Note, err = stableDepthLimitNote(ctx, childPaths, delegates)
+			if err != nil {
+				return nil, err
+			}
 		}
 		child.Note = withDelegateReason(child.Note, row.NotResumableReason)
 		children = append(children, child)
 	}
-	return children
+	return children, nil
 }
 
 func withDelegateReason(existing, reason string) string {
@@ -118,15 +149,18 @@ func withDelegateReason(existing, reason string) string {
 	return reason + "; " + existing
 }
 
-func stableDepthLimitNote(paths Paths, delegates delegateCache) string {
-	_, state, _, err := delegates.get(paths)
+func stableDepthLimitNote(ctx context.Context, paths Paths, delegates delegateCache) (string, error) {
+	_, state, _, err := delegates.get(ctx, paths)
 	if err != nil {
-		return ""
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
+		return "", nil
 	}
 	if len(projectDoctorDelegates("", paths.SessionID, state)) != 0 {
-		return "depth limit (children not expanded)"
+		return "depth limit (children not expanded)", nil
 	}
-	return ""
+	return "", nil
 }
 
 func observerChildren(stateBase string, paths Paths) []TreeNode {

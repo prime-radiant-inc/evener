@@ -734,13 +734,26 @@ func (s *Session) armDelegateAttentions(attentionIDs []string) error {
 
 // armDelegateAttentionsOnce arms a batch for a receiver. Only the root
 // receiver has several IDs to arm; a child receiver's wake is its notify, so
-// the non-root path keeps the single-ID arm for callers that pass one anyway.
+// the non-root path arms every ID against the controller and then wakes the
+// receiver once for the whole batch — the same single wake a one-ID arm's
+// caller gets — instead of once per ID.
 func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
 	if !s.isRootDelegateAttentionReceiver() {
+		armed := false
 		for _, attentionID := range attentionIDs {
-			if err := s.armDelegateAttentionOnce(attentionID); err != nil {
+			idArmed, err := s.armDelegateAttentionInController(attentionID)
+			if err != nil {
 				return err
 			}
+			armed = armed || idArmed
+		}
+		if armed {
+			// One wake for the batch. The arms above ended the user-stop
+			// holds before this fires, because the notify func drives the
+			// receiver synchronously: a hold still in place at the drive's
+			// list read would present the armed row alone and leave the
+			// stopped report for a later generation.
+			s.notify()
 		}
 		return nil
 	}
@@ -765,24 +778,44 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 	if s.isRootDelegateAttentionReceiver() {
 		return s.armDelegateAttentionsOnce([]string{attentionID})
 	}
+	armed, err := s.armDelegateAttentionInController(attentionID)
+	if err != nil {
+		return err
+	}
+	if armed {
+		// The core above ended the user-stop holds before this fires,
+		// because the notify func drives the receiver synchronously: a hold
+		// still in place at the drive's list read would present the armed row
+		// alone and leave the stopped report for a later generation.
+		s.notify()
+	}
+	return nil
+}
+
+// armDelegateAttentionInController performs one non-root arm attempt without
+// waking: it takes the receiver's pending attention to the controller (opening
+// the delegate's attention there and outwaiting a racing attention start) and
+// reports whether attentionID was still pending, so the caller decides how the
+// wake fires — once for a batch, or the single-ID arm's own notify.
+func (s *Session) armDelegateAttentionInController(attentionID string) (armed bool, err error) {
 	if s.delegateController == nil || s.owningDelegateID == "" {
-		return errors.New("delegate attention controller identity is incomplete")
+		return false, errors.New("delegate attention controller identity is incomplete")
 	}
 	for {
 		s.attentionMu.Lock()
 		ids, err := s.pendingDelegateAttentionIDsLocked()
 		if err != nil {
 			s.attentionMu.Unlock()
-			return err
+			return false, err
 		}
 		if !slices.Contains(ids, attentionID) {
 			s.attentionMu.Unlock()
-			return nil
+			return false, nil
 		}
 		_, blocker, plan, emit, err := s.delegateController.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
 		s.attentionMu.Unlock()
 		if err != nil {
-			return err
+			return false, err
 		}
 		if blocker != nil {
 			<-blocker
@@ -791,15 +824,13 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 		if emit {
 			s.delegateController.emitDelegateUpdate(plan)
 		}
-		// The wake below drives synchronously through the session's notify
-		// func, and the drive it starts reads the automatic list in that same
-		// call: the holds a user's stop left must end before it fires, or the
-		// generation the wake starts presents the armed row alone and the
-		// stopped report waits a later generation. A failed arm never reaches
-		// this point; the holds stand.
+		// The holds end here, before the caller's wake: the notify func
+		// drives the receiver synchronously, and a hold still in place at
+		// the drive's list read would present the armed row alone and leave
+		// the stopped report for a later generation. A failed arm never
+		// reaches this point; the holds stand.
 		s.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
-		s.notify()
-		return nil
+		return true, nil
 	}
 }
 

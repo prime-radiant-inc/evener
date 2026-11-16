@@ -669,6 +669,14 @@ const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
 // restarts. Clients show it at every level.
 const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
 
+// WarningCodeDelegateAttentionDriveRefused identifies the notice that a
+// delegate's owed attention is held by a guard: a wake eligibility or drive
+// predicate refused it, naming the predicate on the warning's
+// RefusedPredicate field. Evener retries on its own with backoff while the
+// attention is owed, and warns once per refusal episode, so clients show this
+// warning only at their most detailed level, by this stable code.
+const WarningCodeDelegateAttentionDriveRefused = "delegate_attention_drive_refused"
+
 // WarningCodeDelegateStartDeliveryReplay identifies the notice that a
 // committed delegate start could not replay an owed delivery. The parcel is
 // requeued and the start continues.
@@ -707,6 +715,16 @@ type WarningData struct {
 	// the event the matcher was declared under) for a hook-configuration
 	// warning. Carries only the name, no hook payload or secrets.
 	EventName string `json:"event_name,omitempty"`
+	// RefusedPredicate is the stable identifier of the guard predicate that
+	// refused a delegate attention wake eligibility or drive, on the warning
+	// that reports the refusal. It is a machine token — one of "binding",
+	// "recovery_required", "finalizing", "reservation", "start_blocked" or
+	// "fatal_run_gated" (the agent package's unexported
+	// delegateAttentionRefused* constants, whose values are named here so
+	// wire consumers can key on them without importing the agent package) —
+	// never prose, so clients and tests can key on which predicate held the
+	// wake without matching wording.
+	RefusedPredicate string `json:"refused_predicate,omitempty"`
 	// SummaryFailure carries bounded route and failure metadata, never provider text.
 	SummaryFailure *diagnostic.SummaryFailure `json:"summary_failure,omitempty"`
 }

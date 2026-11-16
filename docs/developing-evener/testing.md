@@ -921,18 +921,18 @@ settled, and the dispatched request has gone out by then. The flush waits only f
 work registered with that tracker: if production code adds an awaited step outside
 storage (say, a component awaits a store call before clearing its state), wrap
 the whole operation in `trackProjectionWork` (src/stores/projectionWork.ts), or
-the flush returns early. A `waitFor` on the request races that chain against a
-1000ms ceiling, which a loaded host can outlast, and it stops as soon as the
-request appears, with the receipt's settle and the refresh after it still to
-come. A test that holds tracked work open on purpose (a held read or commit)
-cannot flush until it releases it; it awaits the request at the fake's handler
-instead. Other async effects are waited for with `waitFor` or a `findBy*` on the
-result. Leaving any of this unawaited is worse than a flake in one test: the
-store calls `requireClient()` when the RPC finally goes out, which by then can be
-the next test's fake client, so the next test sees an extra call. For the same
-reason a suite resets every global store it renders against, such as
-`resetToastStoreForTests()`, in `beforeEach`; otherwise a toast from the previous
-test can satisfy this test's assertion.
+the flush returns early. A `waitFor` on the request still races that chain: its
+deadline follows the test's own runner budget (src/testWaitBudget.ts), not a
+fixed second, but it stops as soon as the request appears, with the receipt's
+settle and the refresh after it still to come. A test that holds tracked work
+open on purpose (a held read or commit) cannot flush until it releases it; it
+awaits the request at the fake's handler instead. Other async effects are waited
+for with `waitFor` or a `findBy*` on the result. Leaving any of this unawaited is
+worse than a flake in one test: the store calls `requireClient()` when the RPC
+finally goes out, which by then can be the next test's fake client, so the next
+test sees an extra call. For the same reason a suite resets every global store it
+renders against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
+toast from the previous test can satisfy this test's assertion.
 
 The connection store follows the same rule: reset it with
 `resetConnectionStoreForTests()` (`stores/connection.ts`) rather than a

@@ -58,7 +58,7 @@ func targetJobFixture(t *testing.T) (base, sid string) {
 // be readable from the watch row itself.
 func TestWatches_TargetJobStateJoined(t *testing.T) {
 	base, sid := targetJobFixture(t)
-	r, err := Watches(base, sid, WatchOpts{})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestWatches_TargetJobStateJoined(t *testing.T) {
 // target was already dead and produced nothing to match.
 func TestWatches_RenderTellsTheUnfiredStory(t *testing.T) {
 	base, sid := targetJobFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{WatchID: targetJobWatchID})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{WatchID: targetJobWatchID})
 	out := RenderWatches(r)
 
 	for _, want := range []string{
@@ -109,7 +109,7 @@ func TestWatches_RenderTellsTheUnfiredStory(t *testing.T) {
 // never guessed at, and never crashed on.
 func TestWatches_TargetJobAbsentIsHonest(t *testing.T) {
 	base, sid := targetJobFixture(t)
-	r, err := Watches(base, sid, WatchOpts{WatchID: orphanWatchID})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{WatchID: orphanWatchID})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestWatches_TargetJobAbsentIsHonest(t *testing.T) {
 // joined state nor a missing-job claim.
 func TestWatches_SessionTargetHasNoTargetJob(t *testing.T) {
 	base, sid := targetJobFixture(t)
-	r, err := Watches(base, sid, WatchOpts{WatchID: sessionWatchID})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{WatchID: sessionWatchID})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}

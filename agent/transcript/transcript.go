@@ -32,6 +32,11 @@ import (
 // newline is framing and does not count toward this limit.
 const DefaultMaxLineBytes = 128 << 20
 
+// maxRetainedEntryBuf bounds the encode buffer a writer keeps between appends:
+// a batch at or above it is dropped rather than held, so one tool result that
+// fills most of a line does not pin that memory for the session's life.
+const maxRetainedEntryBuf = 1 << 20
+
 // FormatVersion is the only transcript format this package writes or accepts.
 const FormatVersion = 2
 
@@ -419,6 +424,13 @@ type Writer struct {
 	// behind a gap the filesystem zero-fills.
 	positionUnknown bool
 
+	// entryBuf is the buffer the append in flight encodes its entries into,
+	// kept across appends so a session's steady state pays for the growth once.
+	// Its bytes are written before the append returns and nothing retained
+	// refers to them, so the next append may overwrite them. An append that
+	// grew it past maxRetainedEntryBuf drops it rather than keeping it.
+	entryBuf bytes.Buffer
+
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
 	// installs it, and a nil counter reports ABSENT rather than zero: a writer
@@ -661,8 +673,9 @@ func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
 
 // appendBatch is the locked entry to the sole write primitive. A single append
 // is a batch of one through it. The door decides three things:
-//   - whether the append fsyncs (and so rolls back on failure): every door but
-//     the buffered one;
+//   - whether a failed write rolls back: every door but the buffered one;
+//   - whether the append forces an fsync past the SyncInterval gate: the
+//     durable and synced doors;
 //   - where a retained record's sync-failure diagnostic goes: the ordinary
 //     doors queue it for the session to surface, while the synced door takes
 //     it through the returned error, so it neither queues nor drains the
@@ -689,7 +702,10 @@ func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (r
 		}
 		return nil, nil, nil
 	}
-	return w.appendBatchLocked(turns, place, door != DoorBuffered, door != DoorSynced)
+	// The deferred door rolls back a failed write like the durable one — a line
+	// it cannot record is not left behind — but leaves its fsync to the
+	// interval gate, which is the whole point of the door.
+	return w.appendBatchLocked(turns, place, door != DoorBuffered, door == DoorDurable || door == DoorSynced, door != DoorSynced)
 }
 
 // appendBatchLocked encodes every turn into one buffer, seeks to the end once,
@@ -699,7 +715,7 @@ func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (r
 // unsynced in the file — separately from err, a hard failure that recorded
 // nothing. records holds one Record per turn when the batch was recorded, and
 // is nil when it was not.
-func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSync, queueRetained bool) (records []Record, retained, err error) {
+func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollback, forceSync, queueRetained bool) (records []Record, retained, err error) {
 	// The tail is held to the end of the append, rollback included; see
 	// appendTail.
 	w.tail.mu.Lock()
@@ -743,29 +759,34 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 	w.tailMove = w.tail.moved()
 
 	firstSeq := w.tail.nextSeq
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
+	w.entryBuf.Reset()
+	enc := json.NewEncoder(&w.entryBuf) // Encode writes the trailing newline per entry
 	batch := make([]Record, len(turns))
 	for i, turn := range turns {
-		start := buf.Len()
+		start := w.entryBuf.Len()
 		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
 			return nil, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
-		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(buf.Len() - start), Turn: turn}
+		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(w.entryBuf.Len() - start), Turn: turn}
 	}
-	data := buf.Bytes()
+	data := w.entryBuf.Bytes()
+	if w.entryBuf.Cap() >= maxRetainedEntryBuf {
+		// One entry this large would pin its buffer for the writer's life.
+		// data keeps the bytes alive until the write below returns.
+		w.entryBuf = bytes.Buffer{}
+	}
 	// The batch's sequence numbers are spent from here on, whatever becomes of
 	// its lines. A rolled-back line was in the file for a moment, and a reader
 	// in another process may have seen it; reusing its Seq would give that
 	// reader two different entries under one number.
 	w.tail.nextSeq += len(turns)
 
-	// Only the durable door rolls back, and only a rollback needs the start
-	// offset. The buffered door leaves a failed write's bytes where they are,
-	// so it skips the seek — and its filesystem-op sequence stays what it was
-	// before this became the one primitive.
+	// Only a rolling-back door needs the start offset. The buffered door leaves
+	// a failed write's bytes where they are, so it skips the seek — and its
+	// filesystem-op sequence stays what it was before this became the one
+	// primitive.
 	var startOffset int64
-	if forceSync {
+	if rollback {
 		var seekErr error
 		if startOffset, seekErr = w.file.Seek(0, io.SeekEnd); seekErr != nil {
 			return nil, nil, fmt.Errorf("seek transcript append start: %w", seekErr)
@@ -789,7 +810,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, forceSy
 	}
 	if failure != nil {
 		var hard error
-		if retained, hard = w.settleFailedWriteLocked(operation, failure, startOffset, written, len(data), forceSync, previousDirty, queueRetained); hard != nil {
+		if retained, hard = w.settleFailedWriteLocked(operation, failure, startOffset, written, len(data), rollback, previousDirty, queueRetained); hard != nil {
 			return nil, nil, hard
 		}
 	}

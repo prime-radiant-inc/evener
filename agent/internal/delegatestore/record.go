@@ -90,15 +90,20 @@ const (
 )
 
 type Descriptor struct {
-	ChildSessionID    string              `json:"child_session_id"`
-	TranscriptRef     string              `json:"transcript_ref"`
-	ParentDelegateID  string              `json:"parent_delegate_id,omitempty"`
-	OwnerSessionID    string              `json:"owner_session_id"`
-	VisibleSessionID  string              `json:"visible_session_id,omitempty"`
-	OriginTurnID      string              `json:"origin_turn_id,omitempty"`
-	OriginToolCallID  string              `json:"origin_tool_call_id,omitempty"`
-	OriginItemID      string              `json:"origin_item_id,omitempty"`
-	Task              string              `json:"task"`
+	ChildSessionID   string `json:"child_session_id"`
+	TranscriptRef    string `json:"transcript_ref"`
+	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
+	OwnerSessionID   string `json:"owner_session_id"`
+	VisibleSessionID string `json:"visible_session_id,omitempty"`
+	OriginTurnID     string `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string `json:"origin_item_id,omitempty"`
+	Task             string `json:"task"`
+	// Description is optional identifying text beside Task. The current runtime
+	// writes only the empty value, so a new delegate's brief is recorded in Task
+	// alone. Readers prefer Description and fall back to Task (the activity
+	// ancestor Title, the native subagent row). The field stays in the schema
+	// because journals written by older runtimes recorded the brief in both.
 	Description       string              `json:"description,omitempty"`
 	AgentType         string              `json:"agent_type"`
 	RequestedModel    string              `json:"requested_model,omitempty"`

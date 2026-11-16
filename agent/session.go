@@ -141,12 +141,16 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
-	// roundFallbackMessages is the round's unprojected request messages (system
-	// plus expanded history) kept for the fallback chain, whose targets apply
-	// their own thinking-replay and tool-result media policy.
+	// roundFallbackSource is the round's unprojected request input (system plus
+	// expanded history) kept for the fallback chain, whose targets apply their
+	// own thinking-replay and tool-result media policy (#4563, #4217).
 	// prepareModelRequestWithError writes it and callModelWithFallback takes and
-	// clears it on the same turn goroutine; mu guards the exchange (#4563, #4217).
-	roundFallbackMessages []llm.Message
+	// clears it on the same turn goroutine; mu guards the exchange. It holds the
+	// input rather than a built message slice because only Messages depends on
+	// that input: the fallback lays out its own messages when it runs, so a
+	// round that never falls back builds one request instead of two (#6442).
+	roundFallbackSource    roundFallbackSource
+	roundFallbackSourceSet bool
 	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
 	// provider rejected. Request assembly omits those bytes for the rest of the
 	// session (the transcript keeps them); the rejection recovery adds the IDs
@@ -346,7 +350,20 @@ type Session struct {
 	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
-	mu sync.Mutex
+	//
+	// mu is a read/write lock. Every mutation of a guarded field takes Lock;
+	// a pure read may take RLock only when it touches guarded fields and
+	// nothing else, never mutates what it reads, and takes no other lock
+	// except one classified in session_emit_lock_guard_test.go as a
+	// collaborator whose holder cannot reach Session. Two readers are the emit
+	// stamp (activeCausalProvenance) and the context sample (ContextStatus),
+	// which run on every event and every sample; sharing keeps them from
+	// serializing each other. Readers are still excluded by any writer, so a
+	// read observes one whole state and never a write in progress. Go read
+	// locks are not recursive: a path that takes RLock and then reaches
+	// another Session RLock or Lock can wedge when a writer is pending, so no
+	// reader may call another.
+	mu sync.RWMutex
 	// retirementController is process-owned and published atomically so admission
 	// never nests the controller mutex with a Session lock. Nil leaves ordinary
 	// non-daemon sessions unchanged; descendants inherit it before starting work.
@@ -1349,6 +1366,11 @@ type Session struct {
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
+	// cachedToolDefsJSONBytes is cachedToolDefs' serialized length, measured
+	// where the defs are built so the token estimator can price them without
+	// re-serializing the list every round (#6406). It is written only where
+	// cachedToolDefs is, and must describe exactly the list beside it.
+	cachedToolDefsJSONBytes int
 
 	systemPromptOverride string
 	cachedSystemPrompt   string
@@ -2987,11 +3009,11 @@ func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 
 // recordTranscriptLocked is the one door every session write to its transcript
 // goes through, with attentionMu held: it stamps the entry with the session's
-// configured model, holds a buffered or durable write made before the writer
-// is attached (see holdTurnUntilTranscriptReady; the synced door refuses one
-// instead), and otherwise appends through door with the given placement,
-// reporting whether the entry was recorded. A held turn reports not recorded,
-// with no error.
+// configured model, holds a write through any door but the synced one made
+// before the writer is attached (see holdTurnUntilTranscriptReady; the synced
+// door refuses one instead), and otherwise appends through door with the given
+// placement, reporting whether the entry was recorded. A held turn reports not
+// recorded, with no error.
 func (s *Session) recordTranscriptLocked(t schema.Turn, door transcript.Door, place transcript.Placement) (transcript.Record, error) {
 	t = s.withEntryModel(t)
 	if door == transcript.DoorSynced {
@@ -3047,6 +3069,23 @@ func (s *Session) writeTranscriptDurable(t schema.Turn) error {
 // (appendTurnAfterTranscriptWrite) or the fold publication transaction.
 func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	_, err := s.recordTranscriptLocked(t, transcript.DoorDurable, transcript.PlaceSession)
+	return err
+}
+
+// writeTranscriptDeferredLocked records a turn whose fsync is left to the
+// writer's SyncInterval gate: a failed write still rolls back and reports, so
+// the turn is recorded or not recorded exactly as through the durable door,
+// but a recorded turn is not fsynced on its own. It is the per-round door —
+// the assistant turn — because a turn with many tool rounds would otherwise
+// pay one fsync per round. The debt is settled by the next append that passes
+// the interval, a synced write (the turn's completion, a delivered message, a
+// terminal job result), or Close. A power crash can drop what the interval
+// still covers; a process crash drops nothing handed to the OS.
+//
+// A turn whose loss a reader would see needs the durable or synced door
+// instead: this one promises recorded, not durable.
+func (s *Session) writeTranscriptDeferredLocked(t schema.Turn) error {
+	_, err := s.recordTranscriptLocked(t, transcript.DoorDeferred, transcript.PlaceSession)
 	return err
 }
 
@@ -3233,7 +3272,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		}
 		return s.appendTurnAfterTranscriptWriteLocked(
 			t,
-			func() error { return s.writeTranscriptDurableLocked(t) },
+			func() error { return s.writeTranscriptDeferredLocked(t) },
 			func() {
 				s.history = append(s.history, t)
 				// The round's entry is recorded: the next model call is a new

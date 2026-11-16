@@ -99,17 +99,18 @@ type JobOpts struct {
 // Jobs resolves the selector and reports every job the session ran, folded from
 // jobs.jsonl by the runtime's own jobstore.FoldOrdered — so the list is in the
 // durable append order the log defines and carries the runtime's own numbers.
-func Jobs(stateBase, selector string, opts JobOpts) (JobReport, error) {
+// A cancelled ctx stops the read and returns its error with no partial report.
+func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobReport, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return JobReport{}, err
 	}
-	events, err := jobstore.ReadEvents(paths.JobsPath)
+	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return JobReport{}, err
 	}
 	report := buildJobReport(paths, events, opts)
-	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(paths)
+	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(ctx, paths)
 	if err != nil {
 		return JobReport{}, err
 	}
@@ -173,8 +174,8 @@ type delegateCacheKey struct {
 // the miss path): the miss path calls stableDoctorDelegatesForRoot directly.
 // Callers holding the session's meta already (ListSessions does) can skip the
 // per-session meta read with getForRoot.
-func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, error) {
-	return c.getForRoot(context.Background(), paths.BucketDir, resolveDelegateRoot(paths))
+func (c delegateCache) get(ctx context.Context, paths Paths) (string, delegatestore.State, []string, error) {
+	return c.getForRoot(ctx, paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // getForRoot is get with a pre-resolved root — the caller already read the
@@ -218,8 +219,8 @@ func delegateRootFromMeta(meta schema.SessionMeta, self string) string {
 
 // stableDoctorDelegates resolves the root session (meta.JobTreeRootSessionID
 // override, else the session itself) and reads that root's delegates.jsonl.
-func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
-	return stableDoctorDelegatesForRoot(context.Background(), paths.BucketDir, resolveDelegateRoot(paths))
+func stableDoctorDelegates(ctx context.Context, paths Paths) (string, delegatestore.State, []string, error) {
+	return stableDoctorDelegatesForRoot(ctx, paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // stableDoctorDelegatesForRoot reads one resolved root's delegates.jsonl

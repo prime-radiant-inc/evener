@@ -1265,14 +1265,16 @@ their implementation or further approval-design discussion.
 read_file, write_file and edit_file on a root session with an active subscriber.
 Batch patch, browsing and shell operations have no equivalent path here;
 delegates cannot escalate to the parent through it. Repeated approved file work
-can require repeated decisions. A batch patch applies operations sequentially,
-so a permission error on a later operation can follow successful earlier edits.
+can require repeated decisions. A batch patch applies its operations in order,
+so a permission error on a later one can follow successful earlier edits.
 
 **Evidence.** [Invocation grant](../../agent/session_escalation.go#L60),
 [eligibility/tool gates](../../agent/session_escalation.go#L107), and
 [rerun](../../agent/session_escalation.go#L231) define the limit.
-The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L18) applies each
-operation before checking the next and returns on the first error.
+The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L28) applies each
+operation in order and returns on the first error. Consecutive update sections
+on one file are applied together, so a later section's error follows the
+earlier sections' edits having been written.
 This is a scoped mechanism, not a claim that every Evener permission flow has
 these restrictions.
 
@@ -1440,7 +1442,10 @@ These are useful patterns and preservation checks, rather than new fix requests.
   position remain with the existing stores and scroll owners. Find stays
   incomplete until a match or confirmed history end; proven permanent failures
   keep their explanations. Closing Find or jumping live cancels only that
-  consumer's demand. Fulfilled reads without cursor progress remain quiet and
+  consumer's demand. Browser Find is its own consumer beside the pane's reader:
+  it reads older pages only when the user steps older past the loaded matches,
+  reads back to its current match when a refresh or resync drops that page, and
+  is withdrawn alone by closing Find or changing the words. Fulfilled reads without cursor progress remain quiet and
   paced rather than reporting a fetch failure. Native session memory also retains pending demand
   across route disposal without holding a closed store or service. Mounted native views keep independent demand; a detached pending owner is
   adopted once when the reader commits, preserving its requested page and Find

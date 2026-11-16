@@ -49,13 +49,43 @@ type Subscriptions struct {
 	mu       sync.RWMutex
 	byConn   map[string]map[string]*subscription
 	byThread map[string]map[string]*subscription
+	// departed, when non-nil, is closed and replaced by any change that can
+	// take a thread's live-interest count to zero. A relay waits on the
+	// channel it read instead of polling for an idle thread; the change is
+	// advisory, because a reader that misses the close still finds the
+	// thread idle whenever it next looks.
+	departed chan struct{}
 }
 
 func NewSubscriptions() *Subscriptions {
 	return &Subscriptions{
 		byConn:   map[string]map[string]*subscription{},
 		byThread: map[string]map[string]*subscription{},
+		departed: make(chan struct{}),
 	}
+}
+
+// Departed returns a channel closed by the next change that can make a
+// thread idle. Every waiter wakes on any such change and re-reads
+// ConnectionCount, so one close serves every relay: the signal says "look
+// again", never which thread changed. It is advisory — a relay that misses a
+// close finds the same answer on its next look — which is why the callers
+// that could otherwise leak keep a slow poll beside it.
+func (s *Subscriptions) Departed() <-chan struct{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.departed
+}
+
+// noteDepartureLocked wakes every Departed waiter. Callers hold s.mu for
+// writing, and the send never blocks: closing the current channel is the
+// whole signal, and a new one takes its place for the next change.
+func (s *Subscriptions) noteDepartureLocked() {
+	if s.departed == nil {
+		return
+	}
+	close(s.departed)
+	s.departed = make(chan struct{})
 }
 
 func (s *Subscriptions) Subscribe(connID, threadID string) {
@@ -105,9 +135,17 @@ func (s *Subscriptions) unsubscribeMatchingLocked(connID string, matches func(*s
 		}
 	}
 	for threadID, sub := range s.byConn[connID] {
+		wasLive := !sub.withdrawn
 		withdraw(sub)
 		if sub.withdrawn && !sub.buffering {
 			s.removeThreadLocked(connID, threadID)
+			continue
+		}
+		// A buffering entry is marked rather than removed, and a marked entry
+		// is already skipped by ConnectionCount: the departure happened here
+		// even though the entry is still in the map.
+		if wasLive && sub.withdrawn {
+			s.noteDepartureLocked()
 		}
 	}
 }
@@ -313,6 +351,9 @@ func (s *Subscriptions) removeThreadLocked(connID, threadID string) {
 	if len(s.byThread[threadID]) == 0 {
 		delete(s.byThread, threadID)
 	}
+	// Every removal, including a withdrawn entry's deferred one, passes
+	// here, so this is the one place that has to wake the idle waiters.
+	s.noteDepartureLocked()
 }
 
 func (s *Subscriptions) connectionSnapshotLocked(connID string) connectionSubscriptionSnapshot {

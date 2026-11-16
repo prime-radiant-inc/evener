@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,6 +41,57 @@ func subagentMeta(t *testing.T, stateDir, sid, parent string) {
 // transcripts so a caller comparing prompting arms reads them out of
 // result.json instead of hand-reading transcripts.
 //
+// A probe's execution deadline bounds the probe run, not the collection of a
+// transcript it already wrote. Here the probe is killed at its deadline after
+// its transcript landed, so collection meets an expired execution deadline;
+// the metrics the manifest asked for must still be reported, and the readable
+// transcript must not be reported as unavailable.
+func TestRunProbeCollectsMetricsAfterTheExecutionDeadlineExpires(t *testing.T) {
+	dir := t.TempDir()
+	const rootID = "02wMz5Txv1C3Hut0M8GCeB"
+	outDir := filepath.Join(dir, "out")
+	// runProbe derives stateDir from outDir/slug/rep, so the transcript written
+	// here is the one the probe's own collection reads.
+	stateDir := filepath.Join(outDir, "deadline", "rep-01", "state")
+	rootMeta(t, stateDir, rootID)
+	writeFluencyTranscript(t, stateDir, rootID, []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				fluencyToolCall("read_file", `{"file_path":"configpath/resolve.go"}`),
+			},
+		}),
+	})
+
+	// The child outlives the deadline by a wide margin, so the probe is always
+	// killed by its timeout rather than racing it.
+	bin := filepath.Join(dir, "slow-evener")
+	mustWrite(t, bin, "#!/bin/sh\nsleep 5\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runConfig{
+		model: "openai/m", harness: "cli", outDir: outDir,
+		evenerBin: bin, timeout: 300 * time.Millisecond, reasoningEffort: "low",
+	}
+	probe := probeFile{ID: "deadline", Prompt: "p", Metrics: metricsSpec{WantsInvestigativeCallCount: true}}
+
+	res := runProbe(cfg, probe, 1, map[string]bool{}, nil)
+
+	got, ok := res.Metrics["investigative_call_count"]
+	if !ok {
+		t.Fatalf("metrics = %#v, want investigative_call_count from the readable transcript (findings: %#v)", res.Metrics, res.Findings)
+	}
+	if got != 1 {
+		t.Errorf("investigative_call_count = %v, want 1", got)
+	}
+	for _, f := range res.Findings {
+		if f.Title == "phase metrics unavailable" {
+			t.Errorf("readable transcript reported unavailable: %+v", f)
+		}
+	}
+}
+
 // mustWireNamesForModel derives the run's wire map exactly as the runner
 // does, for tests that exercise provider-visible tool names.
 func mustWireNamesForModel(t *testing.T, modelRef string) map[string]string {
@@ -86,7 +138,7 @@ func TestProbeMetricsComputedFromTranscripts(t *testing.T) {
 	}
 	writeFluencyTranscript(t, stateDir, rootID, turns)
 
-	got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, "openai/test-model"))
+	got, err := computeProbeMetrics(t.Context(), stateDir, mustWireNamesForModel(t, "openai/test-model"))
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -169,7 +221,7 @@ func TestProbeMetricsProviderWireNames(t *testing.T) {
 			}
 			writeFluencyTranscript(t, stateDir, rootID, turns)
 
-			got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, tt.modelRef))
+			got, err := computeProbeMetrics(t.Context(), stateDir, mustWireNamesForModel(t, tt.modelRef))
 			if err != nil {
 				t.Fatalf("computeProbeMetrics: %v", err)
 			}
@@ -207,7 +259,7 @@ func TestProbeMetricsPrematureFixFlagged(t *testing.T) {
 		}
 		writeFluencyTranscript(t, stateDir, rootID, turns)
 
-		got, err := computeProbeMetrics(stateDir, nil)
+		got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 		if err != nil {
 			t.Fatalf("computeProbeMetrics: %v", err)
 		}
@@ -245,7 +297,7 @@ func TestProbeMetricsPrematureFixFlagged(t *testing.T) {
 		}
 		writeFluencyTranscript(t, stateDir, rootID, turns)
 
-		got, err := computeProbeMetrics(stateDir, nil)
+		got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 		if err != nil {
 			t.Fatalf("computeProbeMetrics: %v", err)
 		}
@@ -276,7 +328,7 @@ func TestProbeMetricsProseMentionIsNotExecution(t *testing.T) {
 	}
 	writeFluencyTranscript(t, stateDir, rootID, turns)
 
-	got, err := computeProbeMetrics(stateDir, nil)
+	got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -319,7 +371,7 @@ func TestProbeMetricsIgnoresSubagentSessions(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir, nil)
+	got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -370,7 +422,7 @@ func TestProbeMetricsRepeatKeyDiscriminates(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, "openai/test-model"))
+	got, err := computeProbeMetrics(t.Context(), stateDir, mustWireNamesForModel(t, "openai/test-model"))
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -405,7 +457,7 @@ func TestProbeMetricsCountsToolRounds(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir, nil)
+	got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -491,7 +543,7 @@ metrics:
 	})
 
 	res := probeResult{Probe: probe.ID, CanonicalToolCounts: map[string]int{}, ModelToolCounts: map[string]int{}}
-	applyProbeMetrics(&res, probe, stateDir, nil)
+	applyProbeMetrics(t.Context(), &res, probe, stateDir, nil)
 
 	if res.Metrics == nil {
 		t.Fatal("result metrics = nil, want the manifest-named metrics computed and reported")
@@ -531,7 +583,7 @@ func TestProbeMetricsSurfacesTranscriptError(t *testing.T) {
 
 	res := probeResult{Probe: "p", CanonicalToolCounts: map[string]int{}, ModelToolCounts: map[string]int{}}
 	probe := probeFile{Metrics: metricsSpec{WantsInvestigativeCallCount: true}}
-	applyProbeMetrics(&res, probe, stateDir, nil)
+	applyProbeMetrics(t.Context(), &res, probe, stateDir, nil)
 
 	if len(res.Findings) == 0 {
 		t.Fatal("corrupt transcript produced no findings; metrics errors must surface, not vanish")
@@ -554,7 +606,7 @@ func TestProbeMetricsEnforcesMaxToolCalls(t *testing.T) {
 	probe := probes[0]
 
 	over := probeResult{Probe: "p", ModelToolCounts: map[string]int{"shell": 3}}
-	applyProbeMetrics(&over, probe, t.TempDir(), nil)
+	applyProbeMetrics(t.Context(), &over, probe, t.TempDir(), nil)
 	found := false
 	for _, f := range over.Findings {
 		if f.Title == "tool call budget exceeded" {
@@ -566,7 +618,7 @@ func TestProbeMetricsEnforcesMaxToolCalls(t *testing.T) {
 	}
 
 	under := probeResult{Probe: "p", ModelToolCounts: map[string]int{"shell": 2}}
-	applyProbeMetrics(&under, probe, t.TempDir(), nil)
+	applyProbeMetrics(t.Context(), &under, probe, t.TempDir(), nil)
 	for _, f := range under.Findings {
 		if f.Title == "tool call budget exceeded" {
 			t.Fatalf("under-budget run produced a budget finding: %#v", under.Findings)

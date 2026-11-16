@@ -892,11 +892,10 @@ test("a promoted text-and-image row keeps refusing Edit through the in-flight pr
   const firstTree = render(<PendingRowStack ref="ref_a" />);
   fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
   // Let the press's dispatch reach the wire so the fake handler captures the
-  // promotion's own clientMutationId (the daemon echoes it back).
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-  expect(promoteId).not.toBe("");
+  // promotion's own clientMutationId (the daemon echoes it back). A fixed
+  // 20ms sleep lost that race on loaded CI runners; waitFor polls the
+  // capture itself, act-wrapped like this file's other post-dispatch waits.
+  await waitFor(() => expect(promoteId).not.toBe(""));
   firstTree.unmount();
   // The daemon-side window: the queue snapshot still lists the entry while
   // a claimed promote execution owns it (queueEntryIds names q1). The

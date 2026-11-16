@@ -62,9 +62,9 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		Watches:       jm.liveWatchSummaries(),
 		RecentWatches: jm.recentWatchSummaries(),
 	}
-	// Allowance ≤ 1 can only grant 0 — a no-op knob; surface it only when it
-	// actually enables fan-out (mirrors eliding the delegate schema param).
-	if allowance > 1 {
+	// Surface the allowance only when some legal grant lets a child delegate;
+	// otherwise it is a no-op knob (mirrors eliding the delegate schema param).
+	if canGrantDelegation(allowance) {
 		result.DelegationAllowance = allowance
 	}
 	return tool.StateResult{Output: formatJobList(result, maxChars), State: result}, nil

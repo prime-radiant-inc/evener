@@ -5,6 +5,7 @@ import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGu
 import { guardConsoleOutput } from "./testConsoleGuard";
 import { guardTestingLibraryAgainstEndedBodies, runAsTheCurrentTest, stopMarkingTests } from "./testEndedBodyGuard";
 import { unmountEveryTree } from "./testUnmount";
+import { useTheTestRunnersWaitBudget } from "./testWaitBudget";
 
 // Every test file must get its own VM context: stores, pane registrations and
 // module mocks are module-scoped. Vitest's vmThreads pool gives each file one
@@ -81,7 +82,13 @@ afterAll(() => {
 // the act environment off and never turns it back on, so every test starts
 // with it on.
 guardTestingLibraryAgainstEndedBodies();
-aroundEach((runTest, context) => runAsTheCurrentTest(runTest, context.signal));
+// Vitest wraps a test's body and every hook around it in this one hook, so the
+// deadline installed here is the one that test's waits run under, and it is
+// off again before the next test's.
+aroundEach((runTest, context) => {
+  const restoreWaitBudget = useTheTestRunnersWaitBudget(context.task.timeout);
+  return runAsTheCurrentTest(runTest, context.signal).finally(restoreWaitBudget);
+});
 afterAll(stopMarkingTests);
 beforeEach(() => {
   reactEnvironment.IS_REACT_ACT_ENVIRONMENT = true;

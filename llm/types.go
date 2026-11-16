@@ -465,6 +465,15 @@ type Request struct {
 	InputTokensEstimate            int                   `json:"-"`
 	FullHistoryInputTokensEstimate int                   `json:"-"`
 	ContinuationDiagnostic         string                `json:"-"`
+	// ToolsJSONBytes is the serialized byte length of Tools, stamped by a
+	// caller that measured the list once with ToolsJSONBytes. The local
+	// estimator bills the tool list by that length and re-marshals only when
+	// this is zero, so a stamped request prices its tools without
+	// serializing them (#6406). Zero means unstamped. A stamped request must
+	// treat Tools and every element's Parameters as immutable: the stamp
+	// describes the bytes at stamping time, so a schema edited in place would
+	// drift the estimate silently. Rebuild the list and re-measure instead.
+	ToolsJSONBytes int `json:"-"`
 
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }

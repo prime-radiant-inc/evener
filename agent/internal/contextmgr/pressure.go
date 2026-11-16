@@ -54,6 +54,12 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 		cm.assumedWindowDisclosed = false
 	}
 	cm.profile = profile
+	// Any change to the profile can change what the estimator reads (the
+	// replay rule, and every resolved field the estimator bills against), and
+	// the memo cannot afford a deep compare of the resolved row on its hot path.
+	// A generation counter makes any swap a miss, including a swap to a profile
+	// that compares equal.
+	cm.profileGen++
 }
 
 func sameProfileTarget(a, b *provider.Profile) bool {
@@ -104,7 +110,7 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 // a model switch (SetProfile) cannot pair one model's window with another's
 // tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
-	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	prof, lastTokens, measuredLen, _ := cm.profileSnapshot()
 	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, history, sysPromptChars)
 }
 
@@ -112,7 +118,7 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 // ONE snapshot, so a compaction layer's decision and that layer's before/after
 // diagnostics describe one model even if SetProfile lands in between.
 func (cm *Manager) pressureWithProfile(history *[]schema.Turn, sysPromptChars int) (float64, *provider.Profile) {
-	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	prof, lastTokens, measuredLen, _ := cm.profileSnapshot()
 	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
 }
 
@@ -252,10 +258,10 @@ func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
 // clears the measurement in one section of the same lock, so reading them in
 // separate sections could pair one model's window with another model's cleared
 // measurement.
-func (cm *Manager) profileSnapshot() (*provider.Profile, int, int) {
+func (cm *Manager) profileSnapshot() (*provider.Profile, int, int, uint64) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	return cm.profile, cm.lastInputTokens, cm.historyLenAtMeasure
+	return cm.profile, cm.lastInputTokens, cm.historyLenAtMeasure, cm.profileGen
 }
 
 // estimateUsedTokens is the pure token-accounting core shared by estimatePressure
@@ -349,7 +355,14 @@ func (cm *Manager) estimateTokens(turns []schema.Turn) int {
 // plain chat reasoning does not size compaction against bytes it never sends
 // (#4563); a request-level estimate keeps billing what the builder serializes.
 func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn) int {
-	res := resolvedTargetOf(prof)
+	return estimateTokenPartsFor(resolvedTargetOf(prof), turns).Total()
+}
+
+// estimateTokenPartsFor is the estimator's additive decomposition over turns: it
+// projects the turns the way the request builder does and returns the chars and
+// fixed-price token counts the estimate is built from. Summing parts across
+// slices and calling Total once gives exactly the whole-slice answer.
+func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
@@ -358,7 +371,7 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 		}
 		messages = append(messages, llm.TrimThinkingForReplayMessage(t.Message, dropPlainThinking))
 	}
-	return llm.EstimateMessagesInputTokensForResolved(res, messages).Tokens
+	return llm.EstimateMessageInputTokenPartsForResolved(res, messages)
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -106,13 +107,14 @@ type settledDelivery struct {
 // (coalescing-collapsed) deliveries, provenance, and breaker telemetry (the
 // runtime-stamped self-influence depth + runaway-fuse drops) — read from the real
 // jobstore folds + a raw scan of the settled watch_send_* events (FoldWatchSends
-// discards terminal payloads, surfacing only pending frames).
-func Watches(stateBase, selector string, opts WatchOpts) (WatchReport, error) {
+// discards terminal payloads, surfacing only pending frames). A cancelled ctx
+// stops the read and returns its error with no partial report.
+func Watches(ctx context.Context, stateBase, selector string, opts WatchOpts) (WatchReport, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return WatchReport{}, err
 	}
-	events, err := jobstore.ReadEvents(paths.JobsPath)
+	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return WatchReport{}, err
 	}

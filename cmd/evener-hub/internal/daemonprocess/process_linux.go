@@ -2,6 +2,7 @@ package daemonprocess
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -46,14 +47,41 @@ func (p *linuxProcess) kill() error {
 	return err
 }
 func (p *linuxProcess) exited() (bool, error) {
-	return p.exitedWith(unix.Poll)
+	return p.exitPoll(unix.Poll, 0)
 }
 
+// waitExit parks on the pidfd until it reports the exit, so an explicit waiter
+// costs one wakeup instead of one per tick. The poll timeout is only how often
+// the caller's cancellation is re-checked: a pidfd has no interruptible receive,
+// so cancellation has to be noticed between waits.
+func (p *linuxProcess) waitExit(ctx context.Context) error {
+	const cancelPoll = 200 * time.Millisecond
+	for {
+		gone, err := p.exitPollUntil(unix.Poll, time.Now().Add(cancelPoll))
+		if err != nil {
+			return err
+		}
+		if gone {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+}
+
+// exitedWith is exitPoll with the poll function injected for tests.
 func (p *linuxProcess) exitedWith(poll func([]unix.PollFd, int) (int, error)) (bool, error) {
+	return p.exitPoll(poll, 0)
+}
+
+// exitPoll polls the pidfd for readiness, which is this platform's proof of
+// exit, and reports whether the process is gone.
+func (p *linuxProcess) exitPoll(poll func([]unix.PollFd, int) (int, error), timeoutMillis int) (bool, error) {
 	fds := []unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}
 	var err error
 	for {
-		_, err = poll(fds, 0)
+		_, err = poll(fds, timeoutMillis)
 		if !errors.Is(err, unix.EINTR) {
 			break
 		}
@@ -65,6 +93,35 @@ func (p *linuxProcess) exitedWith(poll func([]unix.PollFd, int) (int, error)) (b
 		return false, os.ErrClosed
 	}
 	return fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0, nil
+}
+
+// exitPollUntil is exitPoll with the timeout treated as a DEADLINE rather than a
+// per-attempt budget: an interrupted poll is retried with the time already spent
+// subtracted. A signal storm therefore still returns to the waiter's
+// cancellation check within one timeout, where restarting the full timeout on
+// every EINTR would hold a cancellable wait past its deadline.
+func (p *linuxProcess) exitPollUntil(poll func([]unix.PollFd, int) (int, error), deadline time.Time) (bool, error) {
+	fds := []unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}
+	for {
+		remaining := time.Until(deadline).Milliseconds()
+		if remaining <= 0 {
+			// The budget is spent. Report not-gone rather than an error, so the
+			// caller runs its own cancellation check instead of reading elapsed
+			// time as a poll failure.
+			return false, nil
+		}
+		_, err := poll(fds, int(remaining))
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if fds[0].Revents&unix.POLLNVAL != 0 {
+			return false, os.ErrClosed
+		}
+		return fds[0].Revents&(unix.POLLIN|unix.POLLHUP) != 0, nil
+	}
 }
 
 func (p *linuxProcess) inspect(t Target) (identity, error) {

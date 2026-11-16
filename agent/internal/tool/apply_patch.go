@@ -27,12 +27,22 @@ func ApplyPatchCtx(ctx context.Context, fm execenv.FileMutator, patch string) (s
 		return "", err
 	}
 	var touched []string
-	for _, op := range ops {
-		paths, err := op.apply(ctx, fm)
+	for i := 0; i < len(ops); {
+		// Consecutive *** Update File: sections naming one file share one read
+		// and one write of it, instead of each one rewriting the whole file
+		// (issue #6430).
+		end := coalescedUpdateRun(ops, i)
+		var paths []string
+		if end-i > 1 {
+			paths, err = applyUpdateRun(ctx, fm, ops[i:end])
+		} else {
+			paths, err = ops[i].apply(ctx, fm)
+		}
 		if err != nil {
 			return "", err
 		}
 		touched = append(touched, paths...)
+		i = end
 	}
 	if len(touched) == 0 {
 		return "no changes", nil
@@ -88,14 +98,187 @@ type updateFileOp struct {
 	hunks  [][]string // diff lines per hunk (may include leading @@ hint line)
 }
 
-func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]string, error) {
-	origBytes, err := readFileRawCtx(ctx, fm, o.path)
+// coalescedUpdateRun returns the end (exclusive) of the run of update
+// operations at start that can share one read and one write of their file: the
+// maximal run of consecutive *** Update File: sections naming one path and
+// carrying a *** Move to:. A section carrying a *** Move to: runs alone, so its
+// rename lands before the next section reads the path — and, when it starts the
+// run, so its rename is not dropped by being folded into a run.
+func coalescedUpdateRun(ops []patchOp, start int) int {
+	first, ok := ops[start].(updateFileOp)
+	if !ok || first.moveTarget() != "" {
+		return start + 1
+	}
+	end := start + 1
+	for end < len(ops) {
+		next, ok := ops[end].(updateFileOp)
+		if !ok || next.path != first.path || next.moveTarget() != "" {
+			break
+		}
+		end++
+	}
+	return end
+}
+
+// moveTarget is o's *** Move to: path, empty when it carries none.
+func (o updateFileOp) moveTarget() string { return strings.TrimSpace(o.moveTo) }
+
+// patchFileState is one file as the applier holds it: the lines a whole-file
+// read normalizes to, and whether the file ended with a newline. It is what a
+// read of the file plus one update section's rewrite produces, so a run of
+// sections can carry it between them instead of rewriting and re-reading the
+// file after each.
+type patchFileState struct {
+	lines   []string
+	finalNL bool
+}
+
+// loadPatchFileState reads path into the state an update section starts from.
+func loadPatchFileState(ctx context.Context, fm execenv.FileMutator, path string) (patchFileState, error) {
+	origBytes, err := readFileRawCtx(ctx, fm, path)
+	if err != nil {
+		return patchFileState{}, err
+	}
+	return patchStateFromText(strings.ReplaceAll(string(origBytes), "\r\n", "\n")), nil
+}
+
+// patchStateFromText is the state a read of CRLF-normalized text yields.
+func patchStateFromText(text string) patchFileState {
+	return patchFileState{
+		lines:   strings.Split(strings.TrimSuffix(text, "\n"), "\n"),
+		finalNL: strings.HasSuffix(text, "\n"),
+	}
+}
+
+// text is the file's bytes as the applier writes them.
+func (s patchFileState) text() string {
+	text := strings.Join(s.lines, "\n")
+	if s.finalNL {
+		text += "\n"
+	}
+	return text
+}
+
+// reread returns the state a read of the written bytes yields — the state the
+// next section started from when each section wrote and re-read the file
+// itself. It replaces the written form of an empty last line with the final
+// newline a read sees, and strips a trailing CR from a line the write
+// terminates, because the read normalizes CRLF. Both forms write the same
+// bytes, so canonicalizing never changes what lands on disk.
+func (s patchFileState) reread() patchFileState {
+	// No lines reads as one empty line.
+	if len(s.lines) == 0 {
+		return patchFileState{lines: []string{""}, finalNL: s.finalNL}
+	}
+	// One empty line with no final newline writes no bytes at all.
+	if len(s.lines) == 1 && s.lines[0] == "" && !s.finalNL {
+		return patchFileState{lines: []string{""}}
+	}
+	// A line is terminated by a newline in the written text unless it is the
+	// last line of a file with no final newline.
+	lastTerminated := s.finalNL
+	lines := s.lines
+	var stripped []string
+	for i, line := range lines {
+		terminated := i < len(lines)-1 || lastTerminated
+		if terminated && strings.HasSuffix(line, "\r") {
+			if stripped == nil {
+				stripped = append([]string(nil), lines...)
+			}
+			stripped[i] = strings.TrimSuffix(line, "\r")
+		}
+	}
+	if stripped != nil {
+		lines = stripped
+	}
+	if s.finalNL || lines[len(lines)-1] != "" {
+		return patchFileState{lines: lines, finalNL: s.finalNL}
+	}
+	// The empty last line is now the final newline instead.
+	return patchFileState{lines: lines[:len(lines)-1], finalNL: true}
+}
+
+// writePatchFileState writes state to path at the permission every patch write
+// uses.
+func writePatchFileState(fm execenv.FileMutator, path string, state patchFileState) error {
+	return fm.WriteFileRaw(path, []byte(state.text()), 0o644)
+}
+
+// applyUpdateRun applies overlapping sections of one file in order, over one
+// in-memory copy of it, and writes the file once. Each section matches its
+// hunks against the lines a per-section apply would have re-read after the
+// sections before it, so a hunk that cannot match fails at its own section with
+// the same diagnostic. The bytes written are the last section's own output — a
+// re-read only ever feeds the next section's matching, never the write.
+func applyUpdateRun(ctx context.Context, fm execenv.FileMutator, ops []patchOp) ([]string, error) {
+	path := ops[0].(updateFileOp).path
+	// at is the state a read of the file yields; written is what the last
+	// completed section produced, which is what lands on disk.
+	at, err := loadPatchFileState(ctx, fm, path)
 	if err != nil {
 		return nil, err
 	}
-	origText := strings.ReplaceAll(string(origBytes), "\r\n", "\n")
-	hasFinalNL := strings.HasSuffix(origText, "\n")
-	origLines := strings.Split(strings.TrimSuffix(origText, "\n"), "\n")
+	written := at
+	var touched []string
+	for i, op := range ops {
+		// A section after the first applied on its own re-read the file before
+		// it ran, and that read reports a cancelled context. The run's one read
+		// already happened, so the cancellation is reported here instead.
+		if len(touched) > 0 {
+			if err := ctx.Err(); err != nil {
+				return failUpdateRun(fm, path, written, touched, err)
+			}
+		}
+		next, err := op.(updateFileOp).update(at)
+		if err != nil {
+			return failUpdateRun(fm, path, written, touched, err)
+		}
+		written = next
+		// Only a section that follows this one matches against the re-read.
+		if i < len(ops)-1 {
+			at = next.reread()
+		}
+		touched = append(touched, "M "+path)
+	}
+	if err := writePatchFileState(fm, path, written); err != nil {
+		return nil, err
+	}
+	return touched, nil
+}
+
+// failUpdateRun reports err, after writing the sections that completed: applied
+// one at a time, each section wrote itself before the next one ran, so those
+// bytes are on disk ahead of the failure. A failure to write them is reported
+// in their place.
+func failUpdateRun(fm execenv.FileMutator, path string, written patchFileState, touched []string, err error) ([]string, error) {
+	if len(touched) > 0 {
+		if writeErr := writePatchFileState(fm, path, written); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+	return nil, err
+}
+
+func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]string, error) {
+	// A lone section is a run of one, so it matches, writes, and fails exactly
+	// as the same section does inside a longer run.
+	if _, err := applyUpdateRun(ctx, fm, []patchOp{o}); err != nil {
+		return nil, err
+	}
+	moveTo := o.moveTarget()
+	if moveTo != "" && moveTo != o.path {
+		if err := fm.RenamePath(o.path, moveTo); err != nil {
+			return nil, err
+		}
+		return []string{fmt.Sprintf("R %s -> %s", o.path, moveTo)}, nil
+	}
+	return []string{"M " + o.path}, nil
+}
+
+// update applies o's hunks to state and returns the resulting state without
+// touching fm.
+func (o updateFileOp) update(state patchFileState) (patchFileState, error) {
+	origLines := state.lines
 
 	out := make([]string, 0, len(origLines))
 	pos := 0
@@ -126,7 +309,7 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 			if hunkLine == 0 {
 				diagLine = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
 			}
-			return nil, &PatchMismatchError{
+			return patchFileState{}, &PatchMismatchError{
 				kind:      "expected lines not found",
 				Path:      o.path,
 				HunkLine:  hunkLine,
@@ -144,21 +327,7 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 	}
 
 	out = append(out, origLines[pos:]...)
-	newText := strings.Join(out, "\n")
-	if hasFinalNL {
-		newText += "\n"
-	}
-	if err := fm.WriteFileRaw(o.path, []byte(newText), 0o644); err != nil {
-		return nil, err
-	}
-	moveTo := strings.TrimSpace(o.moveTo)
-	if moveTo != "" && moveTo != o.path {
-		if err := fm.RenamePath(o.path, moveTo); err != nil {
-			return nil, err
-		}
-		return []string{fmt.Sprintf("R %s -> %s", o.path, moveTo)}, nil
-	}
-	return []string{"M " + o.path}, nil
+	return patchFileState{lines: out, finalNL: state.finalNL}, nil
 }
 
 func parseV4APatch(patch string) ([]patchOp, error) {

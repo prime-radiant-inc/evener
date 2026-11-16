@@ -141,7 +141,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 
 	case "transcript":
 		if v := stringArg(args, "count"); v != "" {
-			return doctor.Count(stateBase, selector, v)
+			return doctor.Count(ctx, stateBase, selector, v)
 		}
 		if shellBoolArg(args, "health") {
 			return doctor.TranscriptHealth(ctx, stateBase, selector)
@@ -161,7 +161,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 			}
 			opts.TextMax = n
 		}
-		return doctor.Transcript(stateBase, selector, opts)
+		return doctor.Transcript(ctx, stateBase, selector, opts)
 
 	case "apilog":
 		if shellBoolArg(args, "validate") {
@@ -186,7 +186,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 		if v := stringArg(args, "job_id"); v != "" {
 			opts.JobID = v
 		}
-		return doctor.Jobs(stateBase, selector, opts)
+		return doctor.Jobs(ctx, stateBase, selector, opts)
 
 	case "mutations":
 		return doctor.Mutations(stateBase, selector)
@@ -199,7 +199,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 		if shellBoolArg(args, "self_loops") {
 			opts.SelfLoopsOnly = true
 		}
-		return doctor.Watches(stateBase, selector, opts)
+		return doctor.Watches(ctx, stateBase, selector, opts)
 
 	case "tree":
 		opts := doctor.TreeOpts{}
@@ -209,7 +209,7 @@ func dispatchDoctorEvener(ctx context.Context, deps *toolDeps, args map[string]a
 		if shellBoolArg(args, "observers") {
 			opts.Observers = true
 		}
-		return doctor.Tree(stateBase, selector, opts)
+		return doctor.Tree(ctx, stateBase, selector, opts)
 
 	case "turnids":
 		opts := doctor.TurnIDOpts{}

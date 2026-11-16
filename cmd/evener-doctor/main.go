@@ -235,7 +235,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *count != "" {
-		res, err := doctor.Count(base, sel, *count)
+		res, err := doctor.Count(context.Background(), base, sel, *count)
 		if err != nil {
 			return fail(stderr, "transcript", err)
 		}
@@ -269,7 +269,7 @@ func cmdTranscript(args []string, stdout, stderr io.Writer) int {
 	if *fullText {
 		opts.TextMax = doctor.TextMaxFull
 	}
-	res, err := doctor.Transcript(base, sel, opts)
+	res, err := doctor.Transcript(context.Background(), base, sel, opts)
 	if err != nil {
 		return fail(stderr, "transcript", err)
 	}
@@ -357,7 +357,7 @@ func cmdJobs(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.Jobs(base, sel, doctor.JobOpts{JobID: *jobID})
+	res, err := doctor.Jobs(context.Background(), base, sel, doctor.JobOpts{JobID: *jobID})
 	if err != nil {
 		return fail(stderr, "jobs", err)
 	}
@@ -402,7 +402,7 @@ func cmdWatches(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.Watches(base, sel, doctor.WatchOpts{WatchID: *watchID, SelfLoopsOnly: *selfLoops})
+	res, err := doctor.Watches(context.Background(), base, sel, doctor.WatchOpts{WatchID: *watchID, SelfLoopsOnly: *selfLoops})
 	if err != nil {
 		return fail(stderr, "watches", err)
 	}
@@ -424,7 +424,7 @@ func cmdTree(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "state", err)
 	}
-	res, err := doctor.Tree(base, sel, doctor.TreeOpts{Depth: *depth, Observers: *observers})
+	res, err := doctor.Tree(context.Background(), base, sel, doctor.TreeOpts{Depth: *depth, Observers: *observers})
 	if err != nil {
 		return fail(stderr, "tree", err)
 	}

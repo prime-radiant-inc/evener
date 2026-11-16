@@ -186,7 +186,13 @@ type meta struct {
 	// LatestExecutionTurnSlot is the one-based turn-table slot of the latest
 	// execution summary; zero means the covered transcript has no execution.
 	LatestExecutionTurnSlot uint64 `json:"latest_execution_turn_slot,omitempty"`
-	Updates                 uint64 `json:"updates"`
+	// TurnSlotsFile names the turn-slot table in the build and its capacity in
+	// buckets. The table maps a turn id to its turn-table slot so a
+	// turn-addressed read is a lookup; a build that predates it names none and
+	// its readers scan the turn table instead.
+	TurnSlotsFile     string `json:"turn_slots_file,omitempty"`
+	TurnSlotsCapacity uint64 `json:"turn_slots_capacity,omitempty"`
+	Updates           uint64 `json:"updates"`
 	// UpdatesFile names the update log's file in the build ("" is the
 	// first, updatesFile); a cut writes the kept records to a new file.
 	// UpdatesFrom is the offset from which the log holds every update: those
@@ -285,9 +291,14 @@ type Index struct {
 	turns      table
 	updates    table
 	strings    blob
-	meta       meta
-	prelude    *appwire.Turn
-	builder    builder
+	// turnSlots maps turn ids to turn-table slots (see turnslots.go). Nil on a
+	// view that holds no table, whose reads scan the turn table instead.
+	turnSlots *turnSlotTable
+	// turnSlotsNamed is how many turn records the table names.
+	turnSlotsNamed uint64
+	meta           meta
+	prelude        *appwire.Turn
+	builder        builder
 	// updatesName is the update log file updates has open.
 	updatesName string
 	// builderStale reports records another handle extended, which the
@@ -298,6 +309,9 @@ type Index struct {
 	stale bool
 	// rebuilds counts full builds by this handle, for tests.
 	rebuilds int
+	// derivedWalks counts DerivedTotals full walks by this handle's table, for
+	// tests. A memo hit does not walk, so a repeated read leaves this alone.
+	derivedWalks int
 	// refusing marks a handle opened by OpenRefusing: it runs no full
 	// rebuild and never blocks on the sidecar's lock, in any operation.
 	refusing bool
@@ -308,6 +322,79 @@ type Index struct {
 	// entry or reader. The ordinary current-boundary path releases it.
 	cutView   *Index
 	cutLength int64
+	// derived memoizes the last DerivedTotals walk. A past-thread read asks for
+	// the same cut on every request, and the walk sums every turn record, so the
+	// answer is kept against the table state it was computed from. Every record
+	// change goes through table.write, which bumps the epoch: stampTurn rewrites
+	// a turn's own slot in place, so the count alone cannot detect a stale sum.
+	derived derivedMemo
+	// derivedOwner is the handle whose derived memo this view answers to. A
+	// current-boundary read wraps itself in a fresh view per request, so a memo
+	// stored on the view would be discarded before the next request could reuse
+	// it and every read of a large history would walk every turn again. The view
+	// writes its answer to both, and reads through to the owner.
+	derivedOwner *Index
+	// preludeMemo is whether an indexed turn summary already represents the
+	// header prelude, with the table state it describes (see preludeBoundary).
+	preludeMemo preludeMemo
+	// preludeOwner is the handle whose prelude memo this view answers to, for
+	// the reason derivedOwner names one: the view is per request, so a memo kept
+	// on it would be recomputed — by a walk of the turn table — on every read.
+	preludeOwner *Index
+}
+
+// preludeMemo is one preludeBoundary answer with the table state it describes.
+// The epoch is the turn table's, because a record append or in-place rewrite is
+// what can newly index the prelude's id; the count alone cannot see a rewrite.
+type preludeMemo struct {
+	valid   bool
+	epoch   uint64
+	turns   uint64
+	indexed bool
+}
+
+// preludeStore is where a view keeps its preludeBoundary answer: the handle
+// that outlives it. A reconstructed cut view keeps its own, because its table
+// is a private prefix with a turn count the handle's memo does not describe.
+func (x *Index) preludeStore() *preludeMemo {
+	if x.preludeOwner != nil {
+		return &x.preludeOwner.preludeMemo
+	}
+	return &x.preludeMemo
+}
+
+// derivedMemo is one DerivedTotals answer with the table state it describes.
+type derivedMemo struct {
+	valid  bool
+	epoch  uint64
+	turns  uint64
+	from   int
+	usage  [4]int64
+	failed int
+	// unavailable caches a refusal too: a walk that found an unreadable record
+	// or an inexact failure count would find it again, and a past-thread read
+	// must not repeat that walk per request.
+	unavailable bool
+}
+
+// derivedStore is where a view keeps its DerivedTotals answer: the handle that
+// outlives it, so the next request's view can reuse it. A reconstructed cut
+// view keeps its own, because its table is a private replay with an epoch that
+// says nothing about the handle's records.
+func (x *Index) derivedStore() *derivedMemo {
+	if x.derivedOwner != nil {
+		return &x.derivedOwner.derived
+	}
+	return &x.derived
+}
+
+// derivedCounter is the handle whose walk count this view increments, for the
+// same reason derivedStore names one: the view is per request.
+func (x *Index) derivedCounter() *Index {
+	if x.derivedOwner != nil {
+		return x.derivedOwner
+	}
+	return x
 }
 
 // transcriptFile is what the index holds of the transcript file: positioned
@@ -510,6 +597,9 @@ func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 	if x.refusing && x.stale {
 		return x.refuseRebuild()
 	}
+	if err := x.reopenSidecars(); err != nil {
+		return err
+	}
 	return fn()
 }
 
@@ -656,6 +746,10 @@ func (x *Index) adopt(m meta) error {
 	}
 	x.meta, x.items.n, x.turns.n, x.updates.n, x.strings.n = m, m.Items, m.Turns, m.Updates, uint64(info.Size())
 	x.builderStale = true
+	// The records this handle can now see changed without a table.write of its
+	// own: another handle extended the sidecar and this one adopted its counts.
+	// A derived memo built from the shorter table must not outlive that.
+	x.turns.epoch++
 	// The adopting handle's buffered copies of the record files end where its
 	// own last build left them, below the counts just taken up from another
 	// handle's meta: reload them, or every read past that point would slice a
@@ -669,6 +763,12 @@ func (x *Index) adopt(m meta) error {
 		return err
 	}
 	if err := x.strings.load(); err != nil {
+		return err
+	}
+	// The turn-slot file is borrowed from the build, not loaded:
+	// a parked handle drops them (see releaseRecordBuffers) and the next read
+	// reopens them (see reopenSidecars).
+	if err := x.openTurnSlots(m); err != nil {
 		return err
 	}
 	// A record table that loaded past the buffer limit writes through from
@@ -882,7 +982,9 @@ func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, bool, error) {
 		}
 		if row.Slot < committed {
 			offsets = append(offsets, row.Offset)
-			turnAdvanced = turnAdvanced || row.Kind == updatedTurn
+			if row.Kind == updatedTurn {
+				turnAdvanced = true
+			}
 		}
 	}
 	return offsets, turnAdvanced, nil
@@ -1146,6 +1248,9 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	if err := x.scan(length); err != nil {
 		return err
 	}
+	if err := x.buildTurnSlots(); err != nil {
+		return err
+	}
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
@@ -1335,6 +1440,16 @@ func (x *Index) writeMeta() error {
 			return err
 		}
 	}
+	// The turn-slot table takes up the same boundary and the same rule: it
+	// names only records the commit below counts.
+	if x.turnSlots == nil && x.turns.n > 0 {
+		if err := x.buildTurnSlots(); err != nil {
+			return err
+		}
+	}
+	if err := x.extendTurnSlots(x.turnSlotsNamed); err != nil {
+		return err
+	}
 	if testKillAfterRecordWrites != nil {
 		if err := testKillAfterRecordWrites(); err != nil {
 			return err
@@ -1381,6 +1496,9 @@ func (x *Index) publishMeta() error {
 	b := &x.builder
 	x.meta.TailSHA256 = sum
 	x.meta.Items, x.meta.Turns, x.meta.Updates = x.items.n, x.turns.n, x.updates.n
+	if x.turnSlots != nil {
+		x.meta.TurnSlotsFile, x.meta.TurnSlotsCapacity = x.turnSlots.name, x.turnSlots.capacity
+	}
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
 	x.meta.CommCalls = persistCommCalls(b.commCalls)
@@ -1390,7 +1508,11 @@ func (x *Index) publishMeta() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomically(filepath.Join(x.dir, x.build, metaFile), data)
+	if err := writeFileAtomically(filepath.Join(x.dir, x.build, metaFile), data); err != nil {
+		return err
+	}
+	x.removeOtherTurnSlotTables()
+	return nil
 }
 
 // persistCommCalls converts the builder's open communicate calls to their
@@ -1466,7 +1588,10 @@ func (x *Index) openFiles(create bool) error {
 	if err := x.turns.load(); err != nil {
 		return err
 	}
-	return x.strings.load()
+	if err := x.strings.load(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // closeBuild drops the open build and its view of the transcript.
@@ -1476,6 +1601,7 @@ func (x *Index) closeBuild() error {
 		errs = append(errs, x.transcript.Close())
 		x.transcript = nil
 	}
+	x.closeTurnSlots()
 	for _, f := range []*recordFile{&x.items.file, &x.turns.file, &x.updates.file, &x.strings.file} {
 		if *f != nil {
 			errs = append(errs, (*f).Close())
@@ -1489,6 +1615,9 @@ func (x *Index) closeBuild() error {
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0
+	// The table is empty now; a memo built from the previous records describes
+	// a build that no longer exists.
+	x.turns.epoch++
 	x.items.buf, x.turns.buf, x.strings.buf = nil, nil, nil
 	return errors.Join(errs...)
 }
@@ -1507,6 +1636,27 @@ func (x *Index) releaseRecordBuffers() {
 	x.items.buf, x.items.flushed = nil, 0
 	x.turns.buf, x.turns.flushed = nil, 0
 	x.strings.buf, x.strings.flushed = nil, 0
+	// The sidecars are held to the same rule: idle retention is the memory the
+	// cache's capacity bound was never meant to carry.
+	x.closeTurnSlots()
+	// A cached cut view borrows the slot table, so it goes with it.
+	x.cutView, x.cutLength = nil, 0
+}
+
+// reopenSidecars reopens the sidecar files an idle handle dropped, so a read
+// after a parked period answers from them instead of scanning. refresh adopts
+// only a changed covered state, so without this a handle that was released and
+// re-acquired would read as a tableless view for the rest of its life.
+func (x *Index) reopenSidecars() error {
+	if x.readView || x.build == "" {
+		return nil
+	}
+	if x.turnSlots == nil {
+		if err := x.openTurnSlots(x.meta); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func randomName() (string, error) {

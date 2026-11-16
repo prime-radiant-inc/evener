@@ -450,7 +450,7 @@ func FuzzMsfzCallModelWithFallback(f *testing.F) {
 		t.Cleanup(sess.Close)
 
 		profile := sess.currentProfile()
-		req := sess.buildModelRequest(profile, "system", []llm.Message{llm.User("hi")}, nil, "")
+		req := sess.buildModelRequest(profile, "system", []llm.Message{llm.User("hi")}, nil, "", 0)
 
 		// TRIPWIRE: msfzStreamAdapter is a scripted in-process adapter with no
 		// real I/O; this normally completes in well under a second. 30s only

@@ -96,6 +96,20 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	// through takeSendDriveGuard, so the two busy lists cannot drift. The
 	// attention-only extras are layered on top.
 	blocked := sub.startBlockedLocked() || sub.closed || sub.fatalRunGated || s.childCommittedSendStart(sub.sess.id)
+	// Only the strand-shaped holds name a predicate in the refusal warning
+	// (#6330): a busy run, a concurrent drive claim or a disposal gate is
+	// presenting or about to present the attention itself, and a closed child
+	// or a committed send leaves the resolution to its teardown or reply, so
+	// warning on those healthy shapes would bury the strand signal in noise.
+	// The holds that strand a lane are a finalizing runtime — its drain takes
+	// no turn for a report — and the fatal-run gate.
+	refusal := ""
+	switch {
+	case sub.fatalRunGated:
+		refusal = delegateAttentionRefusedFatalRunGated
+	case sub.finalizing:
+		refusal = delegateAttentionRefusedStartBlocked
+	}
 	if blocked && sub.driving {
 		sub.attentionDriveRefused = true
 	}
@@ -104,6 +118,9 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	}
 	sub.mu.Unlock()
 	if blocked {
+		if refusal != "" {
+			s.warnDelegateAttentionRefused(sub.sess.owningDelegateID, refusal)
+		}
 		return true
 	}
 	launched := false
@@ -199,6 +216,11 @@ func (s *Session) driveDelegateAttention(sub *subagent) bool {
 	s.delegateController.emitDelegateUpdate(started.plan)
 	launchErr := s.launchAcceptedDelegateAttention(sub, started)
 	launched = launchErr == nil
+	if launchErr == nil {
+		// The generation owns the attention now, so this delegate's refusal
+		// episode ends: a later refusal warns afresh under its own predicate.
+		s.delegateAttentionWarningResolved(delegateAttentionDriveLabel, sub.sess.owningDelegateID)
+	}
 	if launchErr != nil {
 		// FinishGeneration, not FailCommittedRestart: an attention
 		// generation's binding is born ready, and FailCommittedRestart refuses
@@ -423,6 +445,12 @@ func (s *Session) drivePendingDelegateAttention() bool {
 	}
 	s.forgetSettledDelegateAttentionWarnings()
 	escalated := s.escalateUnreachableDelegateAttention()
+	// Every wake this pass cannot drive says which guard predicate holds it
+	// (#6330): a refusal here used to be silent, so a stranded lane was
+	// indistinguishable from a quiet one.
+	for _, refusal := range s.delegateController.pendingDelegateAttentionRefusals() {
+		s.warnDelegateAttentionRefused(refusal.delegateID, refusal.predicate)
+	}
 	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
 	if !pending {
 		return escalated

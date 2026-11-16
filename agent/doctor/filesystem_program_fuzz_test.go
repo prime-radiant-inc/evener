@@ -307,27 +307,27 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	_, _ = ResolveStateBase("")
 	doctorUserHomeDir = originalHome
 	missing := filepath.Join(fixture.base, "missing.transcript.jsonl")
-	if _, err := loadTranscript(missing); err == nil {
+	if _, err := loadTranscriptContext(t.Context(), missing); err == nil {
 		t.Fatal("missing transcript unexpectedly loaded")
 	}
 	badInterior := filepath.Join(fixture.base, "bad-interior.jsonl")
 	if err := os.WriteFile(badInterior, []byte("{bad}\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadTranscript(badInterior); err == nil {
+	if _, err := loadTranscriptContext(t.Context(), badInterior); err == nil {
 		t.Fatal("malformed interior transcript unexpectedly loaded")
 	}
 	badEntry := filepath.Join(fixture.base, "bad-entry.jsonl")
 	if err := os.WriteFile(badEntry, []byte("{\"kind\":\"entry\",\"turn\":\"bad\"}\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadTranscript(badEntry); err == nil {
+	if _, err := loadTranscriptContext(t.Context(), badEntry); err == nil {
 		t.Fatal("malformed transcript entry unexpectedly loaded")
 	}
-	if _, err := Count(fixture.base, "missing", "tool"); err == nil {
+	if _, err := Count(t.Context(), fixture.base, "missing", "tool"); err == nil {
 		t.Fatal("Count missing selector unexpectedly succeeded")
 	}
-	if _, err := Transcript(fixture.base, "missing", TranscriptOpts{}); err == nil {
+	if _, err := Transcript(t.Context(), fixture.base, "missing", TranscriptOpts{}); err == nil {
 		t.Fatal("Transcript missing selector unexpectedly succeeded")
 	}
 	_ = toolResultContentText(make(chan int))
@@ -337,10 +337,10 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	}
 	originalOpen := openDoctorTranscriptFile
 	openDoctorTranscriptFile = func(string) (io.ReadSeekCloser, error) { return nil, errors.New("scripted transcript read failure") }
-	if _, err := Count(fixture.base, fixture.rootSID, "tool"); err == nil {
+	if _, err := Count(t.Context(), fixture.base, fixture.rootSID, "tool"); err == nil {
 		t.Fatal("Count unreadable transcript unexpectedly succeeded")
 	}
-	if _, err := Transcript(fixture.base, fixture.rootSID, TranscriptOpts{}); err == nil {
+	if _, err := Transcript(t.Context(), fixture.base, fixture.rootSID, TranscriptOpts{}); err == nil {
 		t.Fatal("Transcript unreadable transcript unexpectedly succeeded")
 	}
 	openDoctorTranscriptFile = originalOpen
@@ -348,15 +348,15 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if err := os.WriteFile(blankLine, []byte("\n{\"kind\":\"header\",\"format_version\":2,\"session_id\":\""+fixture.rootSID+"\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadTranscript(blankLine); err != nil {
+	if _, err := loadTranscriptContext(t.Context(), blankLine); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Watches(fixture.base, "missing", WatchOpts{}); err == nil {
+	if _, err := Watches(t.Context(), fixture.base, "missing", WatchOpts{}); err == nil {
 		t.Fatal("Watches missing selector unexpectedly succeeded")
 	}
 	_ = RenderWatches(WatchReport{SessionID: "edge", Watches: []WatchView{{MaxSelfInfluenceDepth: 1}}})
 	for _, tool := range []string{"read_file", "submit_answer", "delegate_send"} {
-		result, err := Count(fixture.base, fixture.rootSID, tool)
+		result, err := Count(t.Context(), fixture.base, fixture.rootSID, tool)
 		if err != nil || result.SessionID != fixture.rootSID || result.Tool != tool {
 			t.Fatalf("Count(%q) = %#v, %v", tool, result, err)
 		}
@@ -370,13 +370,13 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if trace.Counts[0].Calls != 1 || trace.Counts[1].Calls != 1 || trace.Counts[2].Calls != 0 || trace.Counts[2].MentionsAssistantText == 0 {
 		t.Fatalf("Count results = %#v", trace.Counts)
 	}
-	if _, err := Count(fixture.base, "local:"+doctorFilesystemAbsentSID, "read_file"); err == nil {
+	if _, err := Count(t.Context(), fixture.base, "local:"+doctorFilesystemAbsentSID, "read_file"); err == nil {
 		t.Fatal("Count missing selector unexpectedly succeeded")
 	}
 
 	ranges := []string{"", "last:1", "start:2", "2-3", "3-1", "last:not-a-number"}
 	for _, rangeArg := range ranges {
-		result, err := Transcript(fixture.base, fixture.rootSID, TranscriptOpts{Range: rangeArg})
+		result, err := Transcript(t.Context(), fixture.base, fixture.rootSID, TranscriptOpts{Range: rangeArg})
 		if err != nil || result.TurnsRendered+result.Elided != result.TurnsTotal || result.ResultTool != "submit_answer" {
 			t.Fatalf("Transcript(%q) = %#v, %v", rangeArg, result, err)
 		}
@@ -391,7 +391,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if len(trace.Transcripts[0].Turns) != 3 || !trace.Transcripts[0].Turns[1].ToolCalls[1].IsResult || len(trace.Transcripts[0].Turns[2].ToolResults) != 2 {
 		t.Fatalf("Transcript summaries = %#v", trace.Transcripts[0])
 	}
-	if _, err := Transcript(fixture.base, "local:"+doctorFilesystemAbsentSID, TranscriptOpts{}); err == nil {
+	if _, err := Transcript(t.Context(), fixture.base, "local:"+doctorFilesystemAbsentSID, TranscriptOpts{}); err == nil {
 		t.Fatal("Transcript missing selector unexpectedly succeeded")
 	}
 	if got := toolResultContentText(math.Inf(1)); got != "+Inf" {
@@ -400,8 +400,8 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if got := resolveResultTool(Paths{BucketDir: t.TempDir(), SessionID: "missing"}); got != "communicate" {
 		t.Fatalf("resolveResultTool missing meta = %q", got)
 	}
-	if _, err := loadTranscript(filepath.Join(t.TempDir(), "missing.transcript.jsonl")); err == nil {
-		t.Fatal("loadTranscript missing path unexpectedly succeeded")
+	if _, err := loadTranscriptContext(t.Context(), filepath.Join(t.TempDir(), "missing.transcript.jsonl")); err == nil {
+		t.Fatal("loadTranscriptContext missing path unexpectedly succeeded")
 	}
 
 	apiOpts := []APILogOpts{
@@ -436,7 +436,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 
 	watchOpts := []WatchOpts{{}, {SelfLoopsOnly: true}, {WatchID: "watch_a"}, {WatchID: "doctor_absent", SelfLoopsOnly: true}}
 	for _, opts := range watchOpts {
-		result, err := Watches(fixture.base, fixture.rootSID, opts)
+		result, err := Watches(t.Context(), fixture.base, fixture.rootSID, opts)
 		if err != nil || result.SessionID != fixture.rootSID {
 			t.Fatalf("Watches(%#v) = %#v, %v", opts, result, err)
 		}
@@ -450,7 +450,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if len(trace.Watches[0].Watches) < 2 || trace.Watches[0].Watches[0].Generation != "wg1" || len(trace.Watches[1].Watches) != 1 || trace.Watches[1].Watches[0].RunawayDrops == 0 || len(trace.Watches[3].Watches) != 0 {
 		t.Fatalf("Watch reports = %#v", trace.Watches)
 	}
-	if _, err := Watches(fixture.base, fixture.noJobsSID, WatchOpts{}); err == nil {
+	if _, err := Watches(t.Context(), fixture.base, fixture.noJobsSID, WatchOpts{}); err == nil {
 		t.Fatal("Watches unreadable jobs unexpectedly succeeded")
 	}
 	if got := terminalKind(jobstore.EventKind("unknown")); got != "unknown" {
@@ -458,7 +458,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	}
 
 	for _, opts := range []TreeOpts{{Depth: 1, Observers: true}, {Depth: 3, Observers: true}, {Depth: maxTreeDepth + 1}} {
-		result, err := Tree(fixture.base, fixture.rootSID, opts)
+		result, err := Tree(t.Context(), fixture.base, fixture.rootSID, opts)
 		if err != nil || result.SessionID != fixture.rootSID {
 			t.Fatalf("Tree(%#v) = %#v, %v", opts, result, err)
 		}
@@ -472,11 +472,11 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if !doctorFilesystemProgramTreeHasNote(trace.Trees[0], "depth limit") || !doctorFilesystemProgramTreeHasNote(trace.Trees[1], "already shown") || !doctorFilesystemProgramTreeHasNote(trace.Trees[1], "transcript not found") {
 		t.Fatalf("Tree notes = %#v", trace.Trees)
 	}
-	noJobsTree, err := Tree(fixture.base, fixture.noJobsSID, TreeOpts{})
+	noJobsTree, err := Tree(t.Context(), fixture.base, fixture.noJobsSID, TreeOpts{})
 	if err != nil || !strings.Contains(noJobsTree.Note, "jobs unreadable") {
 		t.Fatalf("Tree unreadable jobs = %#v, %v", noJobsTree, err)
 	}
-	if _, err := Tree(fixture.base, "local:"+doctorFilesystemAbsentSID, TreeOpts{}); err == nil {
+	if _, err := Tree(t.Context(), fixture.base, "local:"+doctorFilesystemAbsentSID, TreeOpts{}); err == nil {
 		t.Fatal("Tree missing selector unexpectedly succeeded")
 	}
 	return trace

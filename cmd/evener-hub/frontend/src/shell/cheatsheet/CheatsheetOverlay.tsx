@@ -70,6 +70,7 @@ const GROUP_BY_ACTION: Readonly<Record<string, GroupId>> = {
   [ACTIONS.transcriptPageDown]: "transcript",
   [ACTIONS.transcriptScrollTop]: "transcript",
   [ACTIONS.transcriptScrollBottom]: "transcript",
+  [ACTIONS.transcriptFind]: "transcript",
   [ACTIONS.composerFocus]: "composer",
   [ACTIONS.selectionQuote]: "composer",
 };

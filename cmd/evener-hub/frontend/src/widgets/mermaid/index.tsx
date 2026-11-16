@@ -4,12 +4,13 @@ import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { ZoomableMedia } from "../zoomablemedia";
 import { DiagramViewer } from "./DiagramViewer";
-import { MERMAID_DIAGRAM_ATTR } from "./markers";
+import { MERMAID_DIAGRAM_ATTR, MERMAID_FENCE_LANGUAGE } from "./markers";
 import styles from "./mermaid.module.css";
+import { noteMermaidRender } from "./renderState";
 import { mermaidThemeVariables } from "./resolveScheme";
 import { renderMermaidSvg } from "./security";
 
-export { MERMAID_DIAGRAM_ATTR } from "./markers";
+export { MERMAID_DIAGRAM_ATTR, MERMAID_FENCE_LANGUAGE } from "./markers";
 
 const CLASS = {
   root: requireClass(styles.root, "mermaid.module.css", "root"),
@@ -61,10 +62,18 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: MermaidDiagr
     });
     Promise.race([renderMermaidSvg(source, mermaidThemeVariables(scheme)), timeout])
       .then((svg) => {
-        if (!cancelled) setState({ status: "ok", svg });
+        if (!cancelled) {
+          setState({ status: "ok", svg });
+          noteMermaidRender(source, "ok");
+        }
       })
       .catch(() => {
-        if (!cancelled) setState({ status: "error" });
+        if (!cancelled) {
+          setState({ status: "error" });
+          // A failed diagram shows its source as code, so those words are on
+          // screen and Find has to count them.
+          noteMermaidRender(source, "error");
+        }
       });
     return () => {
       cancelled = true;
@@ -80,7 +89,7 @@ export function MermaidDiagram({ source, renderTimeoutMs = 10000 }: MermaidDiagr
     body = (
       <div className={CODEBLOCK_CLASS.root}>
         <div className={CODEBLOCK_CLASS.header}>
-          <span className={CODEBLOCK_CLASS.language}>mermaid</span>
+          <span className={CODEBLOCK_CLASS.language}>{MERMAID_FENCE_LANGUAGE}</span>
         </div>
         <pre className={CODEBLOCK_CLASS.pre}>
           <code className={CODEBLOCK_CLASS.code}>{source}</code>

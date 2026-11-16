@@ -30,6 +30,15 @@ export function isMermaidCodeToken(token: FenceToken): boolean {
   return token.type === "code" && token.lang?.trim().split(/\s+/)[0]?.toLowerCase() === "mermaid";
 }
 
+// The language a fenced block labels itself with, as its header shows it, or
+// "" when the fence names none. An info string's first word is the label; the
+// rest is a title the header does not show. A renderer and a text reader both
+// derive the label here so the words on screen and the words searched agree.
+export function fenceLanguage(token: FenceToken): string {
+  if (token.type !== "code") return "";
+  return token.lang?.trim().split(/\s+/)[0] ?? "";
+}
+
 // The diagram source is the fenced block's content, restored to its
 // newline-terminated source form. marked strips exactly one trailing newline
 // from a code token's text at lex, so a non-empty text is missing that final
