@@ -91,6 +91,14 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
+	legacyProfile := status.Profile
+	legacyModel := status.Model
+	if modelControl != nil {
+		legacyProfile = modelControl.Active.ModelProvider
+		legacyModel = modelControl.Active.Model
+		reasoningEffortLevels = modelControl.Active.ReasoningEffortLevels
+		supportsReasoning = modelControl.Active.SupportsReasoning
+	}
 	visionModel := envelope.VisionModel
 	manager := envelope.Manager
 	lastTurnEndedAt := envelope.LastTurnEndedAt
@@ -110,7 +118,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		SessionID:     status.SessionID,
 		Name:          threadName,
 		Preview:       threadPreview,
-		ModelProvider: status.Model,
+		ModelProvider: legacyModel,
 		Status:        appwire.ThreadStatus{Type: statusType},
 		CWD:           workingDir,
 		Path:          filepath.Base(workingDir),
@@ -121,7 +129,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			PendingAsk:             projectPendingAsk(envelope.PendingAsk),
 			Ref:                    ref,
 			InstanceID:             threadID,
-			Profile:                status.Profile,
+			Profile:                legacyProfile,
 			TurnCount:              status.Turns,
 			ActiveTurnID:           activeTurnID,
 			ContextPressure:        pressure,
@@ -142,7 +150,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			AgentNote:              agentNote,
 			SessionURLs:            sessionURLs,
 			Usage:                  usage,
-			Cost:                   appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
+			Cost:                   appwire.EstimateCost(s.costFor(legacyProfile+"/"+legacyModel), usage),
 			WorkMillis:             workMillis,
 			ActiveTurnStartedAt:    activeTurnStartedAt,
 			FailedToolCalls:        failedToolCalls,

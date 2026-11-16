@@ -15,6 +15,7 @@ import {
   type ItemModel,
   invalidateHistory,
   itemTextPresence,
+  type ModelControlSnapshot,
   mergeOlderItemPage,
   mergeSavedViewPage,
   mergeTranscriptItemVersioned,
@@ -1133,7 +1134,15 @@ export class TranscriptRepository {
       if (notification.method === "history/updated") {
         this.accept(notification, context);
       } else if (notification.method === "thread/model/controlChanged") {
-        this.accept(notification, context);
+        const held = this.#model?.modelControl;
+        const incoming = notification.params.modelControl;
+        if (
+          held &&
+          held.authority.instanceId === incoming.authority.instanceId &&
+          held.authority.bootGeneration === incoming.authority.bootGeneration
+        ) {
+          this.accept(notification, context);
+        }
       } else if (
         notification.method === "thread/queueChanged" &&
         notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)
@@ -1162,6 +1171,24 @@ export class TranscriptRepository {
     if (this.#disposed || this.#sealed || !this.#model) return;
     this.#model = { ...this.#model, ...fields };
     this.#publish();
+  }
+
+  /** Admit a model-control response through the repository that owns this transcript. */
+  acceptModelControlResponse(snapshot: ModelControlSnapshot, context: { lifetime: number }): boolean {
+    if (this.#sealed || !this.#acceptsLifetime(context.lifetime) || !this.#model) return false;
+    const before = this.#model;
+    const reduced = reduceModelControl(before, { kind: "response", snapshot });
+    const next = reduced.decision === "invalidate" ? invalidateHistory(reduced.model) : reduced.model;
+    if (next !== before) {
+      this.#model = next;
+      if (reduced.decision === "invalidate") {
+        this.#advanceSourceRevision();
+        this.#recoveryNeeded = true;
+      }
+      this.#publish();
+      this.#reclaimBackgroundModel();
+    }
+    return true;
   }
 
   /** Accept a notification only when the captured authority still matches this repository. */

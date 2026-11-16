@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -63,6 +64,26 @@ func TestModelControlSnapshotStartsAtRevisionOne(t *testing.T) {
 	}
 	if got.Active.ModelProvider != "openai" || got.Active.Model != "gpt-5.4" {
 		t.Fatalf("active model = %+v, want openai/gpt-5.4", got.Active)
+	}
+}
+
+func TestModelControlSnapshotSerializesEmptyEffortLevelsAsArray(t *testing.T) {
+	t.Parallel()
+	active := modelControlActive(newAnthropicProfile("claude-unknown-model"))
+	if active.ReasoningEffortLevels == nil {
+		t.Fatal("active effort levels = nil, want an empty list")
+	}
+
+	encoded, err := json.Marshal(cloneModelControlSnapshot(appwire.ModelControlSnapshot{Active: active}))
+	if err != nil {
+		t.Fatalf("marshal model-control snapshot: %v", err)
+	}
+	var decoded appwire.ModelControlSnapshot
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal model-control snapshot: %v", err)
+	}
+	if decoded.Active.ReasoningEffortLevels == nil {
+		t.Fatal("serialized effort levels decoded as nil, want an empty list")
 	}
 }
 

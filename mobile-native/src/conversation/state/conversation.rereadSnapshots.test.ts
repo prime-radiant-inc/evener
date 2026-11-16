@@ -142,6 +142,34 @@ describe("ConversationStore", () => {
 				model: "claude-opus-4-6",
 			});
 		});
+
+		it("a conflicting model-control notification rereads the canonical snapshot", async () => {
+			const service = new FakeConversationService();
+			const store = createConversationStore();
+			const initial = modelControl(2, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			service.readProjectionResult = { conversation: modelConversation(initial), olderCursor: null };
+			await store.getState().openProjected(service, "ref-1");
+			const replacement = modelControl(1, MODEL_AUTHORITY_B, "claude-opus-4-6");
+			service.readProjectionResult = { conversation: modelConversation(replacement), olderCursor: null };
+			const ctrl = makeControlledRead(service);
+
+			store.getState().applyNotification({
+				method: "thread/model/controlChanged",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					modelControl: modelControl(1, MODEL_AUTHORITY_B, "claude-opus-4-6"),
+				},
+			});
+			await ctrl.started(1);
+			expect(store.getState().latestReadState).toBe("reading");
+			await ctrl.ready(1);
+			expect(ctrl.release()).toBe(true);
+			await ctrl.completed(1);
+			await yieldMicrotask();
+
+			expect(store.getState().conversation?.modelControl).toEqual(replacement);
+		});
 	});
 
 	// --- Fix round 1: I1/I2/M1 rejection items ----------------------------------

@@ -569,7 +569,7 @@ func cloneModelControlSnapshot(snapshot *appwire.ModelControlSnapshot) *appwire.
 		return nil
 	}
 	clone := *snapshot
-	clone.Active.ReasoningEffortLevels = append([]string(nil), snapshot.Active.ReasoningEffortLevels...)
+	clone.Active.ReasoningEffortLevels = append([]string{}, snapshot.Active.ReasoningEffortLevels...)
 	if snapshot.Desired != nil {
 		desired := *snapshot.Desired
 		clone.Desired = &desired

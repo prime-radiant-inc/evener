@@ -614,15 +614,11 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 	}
 }
 
-// TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces pins the
-// commit path's transition facts: a pick classifies its switch against the
-// profile current when it validated, but commits later, and an older pick's
-// application can move the session through another provider while this one
-// sat parked in its live-listing preflight. The commit must reconcile the
-// provider-specific tools against the profile it actually replaces, so a
-// same-provider pick landing past an intervening cross-provider switch still
-// re-registers the tools that switch removed.
-func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.T) {
+// TestSlowerOlderPickDoesNotTemporarilyReconcileTools pins the request-sequence
+// fence through provider-specific tool state. Once a newer pick is admitted,
+// an older pick that finishes validation later is superseded without applying
+// its provider or temporarily removing the current provider's tools.
+func TestSlowerOlderPickDoesNotTemporarilyReconcileTools(t *testing.T) {
 	dir := t.TempDir()
 	googleAdapter := &gatedListingAdapter{name: "google"}
 	openaiAdapter := &gatedListingAdapter{name: "openai"}
@@ -673,33 +669,32 @@ func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.
 	olderDone := make(chan error, 1)
 	go func() { olderDone <- s.SetModel("openai/gpt-5.2") }()
 	<-olderCalled
-	// The newer pick (google) is admitted second: it classifies itself
-	// same-provider against the still-google profile, then parks in its own
-	// enumeration. Its commit lands after the older pick's, which the
-	// acceptance watermark permits: neither application superseded the other.
+	// The newer pick (google) is admitted second and parks in its enumeration.
+	// Its request sequence supersedes the older pick before either can commit.
 	newerDone := make(chan error, 1)
 	go func() { newerDone <- s.SetModel("gemini-2.5-pro") }()
 	<-newerCalled
 
-	// The older pick's enumeration returns and its commit lands while the
-	// newer pick is still parked: google -> openai, web_search removed.
+	// The older pick's enumeration returns while the newer pick is still parked.
+	// It must not cause a temporary google -> openai transition.
 	close(releaseOlder)
 	if err := <-olderDone; err != nil {
 		t.Fatalf("older pick: %v", err)
 	}
-	if s.reg.Get("web_search") != nil {
-		t.Fatal("pre-condition: the intervening openai switch must have removed web_search")
+	if s.reg.Get("web_search") == nil {
+		t.Fatal("superseded older pick removed web_search before the newer pick settled")
+	}
+	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
+		t.Fatalf("profile model after superseded older pick = %q, want %q", got, "gemini-2.5-pro")
 	}
 
-	// The newer pick's enumeration returns and its commit lands on the openai
-	// profile: the transition it actually replaces is openai -> google, and
-	// the provider-specific tools the intervening switch removed must return.
+	// The newer same-model pick then settles without changing provider tools.
 	close(releaseNewer)
 	if err := <-newerDone; err != nil {
 		t.Fatalf("newer pick: %v", err)
 	}
 	if s.reg.Get("web_search") == nil {
-		t.Fatal("web_search is missing after a same-provider pick landed past an intervening cross-provider switch; the commit must reconcile provider tools against the profile it actually replaces")
+		t.Fatal("web_search is missing after the newer same-provider pick settled")
 	}
 	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
 		t.Fatalf("profile model = %q; the newer pick must own the outcome (%q)", got, "gemini-2.5-pro")

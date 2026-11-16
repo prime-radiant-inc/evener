@@ -3179,6 +3179,46 @@ it("advances held model control without admitting a stale history read", async (
   owner.dispose();
 });
 
+it("does not replay quarantined model control from the read's retired authority", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const current = read("current", 1);
+  current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  current.thread.evener.modelControl = {
+    authority: { instanceId: threadId, bootGeneration: "2" },
+    revision: 1,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: [],
+      supportsReasoning: true,
+    },
+  };
+  expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
+
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/model/controlChanged",
+        params: {
+          ref,
+          threadId,
+          modelControl: {
+            ...current.thread.evener.modelControl,
+            authority: { instanceId: threadId, bootGeneration: "1" },
+          },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  expect(owner.getSnapshot()?.modelControl).toEqual(current.thread.evener.modelControl);
+  expect(owner.getSnapshot()?.history?.invalidatedAtGeneration).toBeUndefined();
+  owner.dispose();
+});
+
 it("accepts a matching recorded append into a seeded model's current source authority", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

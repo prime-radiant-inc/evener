@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -64,10 +66,27 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 		// fails on a clear assertion rather than hanging.
 		steps: nil,
 	})
+	deps := defaultServeDeps()
+	bridge := deps.bridge
+	modelChangedParked := make(chan struct{})
+	releaseModelChanged := make(chan struct{})
+	releaseBridge := sync.OnceFunc(func() { close(releaseModelChanged) })
+	deps.bridge = func(srv serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
+		bridge(srv, sess, func(event events.SessionEvent) {
+			if event.Kind == events.EventModelChanged {
+				close(modelChangedParked)
+				<-releaseModelChanged
+			}
+			if observer != nil {
+				observer(event)
+			}
+		}, onDrained)
+	}
 
 	workDir := t.TempDir()
 	stateDir := t.TempDir()
 	runDir := t.TempDir()
+	t.Cleanup(releaseBridge)
 
 	args := []string{
 		"--model", "openai/gpt-initial",
@@ -79,17 +98,25 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runServe(args)
+		done <- runServeWithDeps(args, deps)
 	}()
-	t.Cleanup(func() {
-		select {
-		case <-done:
-		default:
-			// best-effort; the thread/shutdown below normally drains this.
-		}
-	})
 
 	entry := waitForServeTestRendezvous(t, runDir)
+	serveExited := false
+	t.Cleanup(func() {
+		releaseBridge()
+		if serveExited {
+			return
+		}
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = shutdownServeTestDaemon(shutdownCtx, entry.Address, entry.SessionID)
+		select {
+		case <-done:
+		case <-shutdownCtx.Done():
+			t.Errorf("runServe cleanup: %v", shutdownCtx.Err())
+		}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -137,6 +164,11 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 	if err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)
 	}
+	select {
+	case <-modelChangedParked:
+	case <-ctx.Done():
+		t.Fatalf("waiting for parked model-change bridge: %v", ctx.Err())
+	}
 
 	// No turn has run (steps is empty and Requests() below proves it). The G2
 	// guarantee is that thread/read already reflects the new model.
@@ -150,6 +182,10 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 	if after.Thread.Evener.ModelControl.Active.Model != "gpt-switched" {
 		t.Fatalf("thread/read model after switch = %+v, want gpt-switched", after.Thread.Evener.ModelControl)
 	}
+	if after.Thread.ModelProvider != "gpt-switched" {
+		t.Fatalf("legacy thread/read ModelProvider = %q, want %q", after.Thread.ModelProvider, "gpt-switched")
+	}
+	releaseBridge()
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
 		t.Fatalf("thread/shutdown: %v", err)
@@ -157,6 +193,7 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 
 	select {
 	case err := <-done:
+		serveExited = true
 		if err != nil {
 			t.Fatalf("runServe: %v", err)
 		}

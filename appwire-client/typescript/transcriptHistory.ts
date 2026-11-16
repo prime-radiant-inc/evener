@@ -7,7 +7,7 @@ import { compareBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
-import { reduceModelControl } from "./modelControl";
+import { projectModelControlSnapshot, reduceModelControl } from "./modelControl";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
 export { comparePositions } from "./model";
@@ -1033,7 +1033,8 @@ export function applyReadResponse<M extends ThreadModel>(
           version: resp.thread.evener.capabilities?.modelControlVersion ?? 0,
           snapshot: resp.thread.evener.modelControl,
         };
-  return publicModel<M>(reduceModelControl(next, { kind: "read", ...control }).model);
+  const heldControl = control.version === 1 ? restoreHeldModelControl(next, model) : next;
+  return publicModel<M>(reduceModelControl(heldControl, { kind: "read", ...control }).model);
 }
 
 // Splits turns already merged into TurnModel[] back into a HistoryFragment
@@ -1212,7 +1213,19 @@ export function applyReadModel<M extends ThreadModel>(
     fallback && model.modelControlVersion === 1
       ? { version: 1, snapshot: model.modelControl }
       : { version: fresh.modelControlVersion ?? 0, snapshot: fresh.modelControl };
-  return publicModel<M>(reduceModelControl(next, { kind: "read", ...control }).model);
+  const heldControl = control.version === 1 ? restoreHeldModelControl(next, model) : next;
+  return publicModel<M>(reduceModelControl(heldControl, { kind: "read", ...control }).model);
+}
+
+function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
+  if (held.modelControlVersion === 1 && held.modelControl) {
+    return projectModelControlSnapshot(next, held.modelControl);
+  }
+  return {
+    ...next,
+    modelControlVersion: held.modelControlVersion,
+    modelControl: held.modelControl,
+  };
 }
 
 type PageDisposition = "discard" | "defer" | "invalidate" | "merge";

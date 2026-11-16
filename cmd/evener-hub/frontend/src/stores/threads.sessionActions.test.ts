@@ -787,6 +787,57 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
   });
 
+  test("a model response accepted during a read remains the repository's canonical snapshot", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(1);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const read = deferred<ThreadReadResponse>();
+    const readStarted = nextHandledRequest(fake, "thread/read", () => read.promise);
+    const refreshing = threadsStore.getState().refreshThread("ref_a");
+    await readStarted;
+    const accepted = modelControlSnapshot(2, {
+      desiredProvider: "openai",
+      desiredModel: "gpt-5.5",
+      clientMutationId: "55555555-5555-4555-8555-555555555555",
+    });
+    fake.on("thread/model/set", () => ({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: accepted,
+    }));
+
+    await threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { ref: "ref_a", threadId: "thr_ref_a", status: { type: "active" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(accepted);
+
+    read.resolve(capableModelRead("ref_a", initial));
+    await refreshing;
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(accepted);
+  });
+
+  test("a conflicting equal-revision model response invalidates history", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/model/set", () => ({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: modelControlSnapshot(2, { activeProvider: "google", activeModel: "gemini-3-pro" }),
+    }));
+
+    await threadsStore.getState().setModel("ref_a", "google", "gemini-3-pro");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.modelControl).toBeUndefined();
+    expect(model?.history?.invalidatedAtGeneration).toBeDefined();
+  });
+
   test("a direct setModel refusal preserves the accepted shared snapshot", async () => {
     const fake = connectFakeClient();
     const accepted = modelControlSnapshot(2, {

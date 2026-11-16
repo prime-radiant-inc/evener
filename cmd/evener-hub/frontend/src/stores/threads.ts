@@ -9060,35 +9060,43 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
-    if (response.modelControlVersion !== 1 || !response.modelControl) return;
+    const snapshot = response.modelControl;
+    if (response.modelControlVersion !== 1 || !snapshot) return;
 
-    const state = threadsStore.getState();
     if (
       getWiredClient() !== client ||
       getReadyEpoch() !== fence.clientGeneration ||
       (threadReadSequences.get(ref) ?? 0) !== fence.readGeneration ||
-      !sameModelControlAuthority(response.modelControl.authority, fence.authority)
+      !sameModelControlAuthority(snapshot.authority, fence.authority)
     )
       return;
+    const route = entryTranscriptRoute(ref);
+    const repository = route?.repository;
+    const repositoryModel = repository?.getSnapshot();
+    const repositoryOwnsResponse =
+      route !== undefined &&
+      repository !== undefined &&
+      repositoryModel !== undefined &&
+      sameModelControlAuthority(modelControlAuthority(repositoryModel), fence.authority) &&
+      repository.acceptModelControlResponse(snapshot, { lifetime: route.lifetime });
+    const state = threadsStore.getState();
     const threadModel = state.threads.get(ref);
     const watchedModel = state.watchedThreads.get(ref);
+    const applyResponse = (held: ThreadModel): ThreadModel => {
+      const reduced = reduceModelControl(held, { kind: "response", snapshot });
+      return reduced.decision === "invalidate" ? invalidateHistory(reduced.model) : reduced.model;
+    };
     const admittedThread =
-      threadModel && sameModelControlAuthority(modelControlAuthority(threadModel), fence.authority)
-        ? threadModel
+      !repositoryOwnsResponse &&
+      threadModel &&
+      sameModelControlAuthority(modelControlAuthority(threadModel), fence.authority)
+        ? applyResponse(threadModel)
         : undefined;
     const admittedWatched =
       watchedModel && sameModelControlAuthority(modelControlAuthority(watchedModel), fence.authority)
-        ? watchedModel
+        ? applyResponse(watchedModel)
         : undefined;
-    putThreadModels(
-      ref,
-      admittedThread
-        ? reduceModelControl(admittedThread, { kind: "response", snapshot: response.modelControl }).model
-        : undefined,
-      admittedWatched
-        ? reduceModelControl(admittedWatched, { kind: "response", snapshot: response.modelControl }).model
-        : undefined,
-    );
+    putThreadModels(ref, admittedThread, admittedWatched);
   },
 
   async setReasoningEffort(ref, level) {

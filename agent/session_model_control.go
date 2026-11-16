@@ -50,13 +50,13 @@ func modelControlActive(profile *provider.Profile) appwire.ModelControlActive {
 	return appwire.ModelControlActive{
 		ModelProvider:         profile.ID(),
 		Model:                 profile.Model(),
-		ReasoningEffortLevels: append([]string(nil), profile.ReasoningEffortLevels()...),
+		ReasoningEffortLevels: append([]string{}, profile.ReasoningEffortLevels()...),
 		SupportsReasoning:     profile.SupportsReasoning(),
 	}
 }
 
 func cloneModelControlSnapshot(snapshot appwire.ModelControlSnapshot) appwire.ModelControlSnapshot {
-	snapshot.Active.ReasoningEffortLevels = append([]string(nil), snapshot.Active.ReasoningEffortLevels...)
+	snapshot.Active.ReasoningEffortLevels = append([]string{}, snapshot.Active.ReasoningEffortLevels...)
 	if snapshot.Desired != nil {
 		desired := *snapshot.Desired
 		snapshot.Desired = &desired

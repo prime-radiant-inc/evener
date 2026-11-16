@@ -18,14 +18,14 @@ function sameAuthority(left: ModelControlAuthority, right: ModelControlAuthority
   return left.instanceId === right.instanceId && left.bootGeneration === right.bootGeneration;
 }
 
-function projectSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
+export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
   return {
     ...model,
     modelControlVersion: 1,
     modelControl: snapshot,
     modelProvider: snapshot.active.modelProvider,
     model: snapshot.active.model,
-    reasoningEffortLevels: [...snapshot.active.reasoningEffortLevels],
+    reasoningEffortLevels: [...(snapshot.active.reasoningEffortLevels ?? [])],
     supportsReasoning: snapshot.active.supportsReasoning,
   };
 }
@@ -47,7 +47,13 @@ export function reduceModelControl(
     if (!carrier.snapshot) {
       return { model: invalidateSnapshot({ ...model, modelControlVersion: 1 }), decision: "invalidate" };
     }
-    return { model: projectSnapshot(model, carrier.snapshot), decision: "applied" };
+    if (model.modelControlVersion !== 1 || !model.modelControl) {
+      return { model: projectModelControlSnapshot(model, carrier.snapshot), decision: "applied" };
+    }
+    if (!sameAuthority(model.modelControl.authority, carrier.snapshot.authority)) {
+      return { model: projectModelControlSnapshot(model, carrier.snapshot), decision: "applied" };
+    }
+    return reduceRevision(model, model.modelControl, carrier.snapshot);
   }
 
   if (model.modelControlVersion !== 1 || !model.modelControl) {
@@ -58,13 +64,21 @@ export function reduceModelControl(
   if (!sameAuthority(held.authority, incoming.authority)) {
     return { model: invalidateSnapshot(model), decision: "invalidate" };
   }
+  return reduceRevision(model, held, incoming);
+}
+
+function reduceRevision(
+  model: ThreadModel,
+  held: ModelControlSnapshot,
+  incoming: ModelControlSnapshot,
+): { model: ThreadModel; decision: ModelControlDecision } {
   if (incoming.revision < held.revision) return { model, decision: "ignored" };
   if (incoming.revision === held.revision) {
     return sameJsonValue(held, incoming)
       ? { model, decision: "duplicate" }
       : { model: invalidateSnapshot(model), decision: "invalidate" };
   }
-  return { model: projectSnapshot(model, incoming), decision: "applied" };
+  return { model: projectModelControlSnapshot(model, incoming), decision: "applied" };
 }
 
 export function modelControlAuthority(model: ThreadModel): ModelControlAuthority | undefined {

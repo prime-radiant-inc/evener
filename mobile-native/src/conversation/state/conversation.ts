@@ -2748,6 +2748,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// applier to disagree with. The two display bounds run after the
 				// projection.
 				let applied = foldNotification(state.conversation, n);
+				const modelControlInvalidated =
+					n.method === "thread/model/controlChanged" &&
+					state.conversation.modelControl !== undefined &&
+					applied.modelControl === undefined;
 				// RoboRev round 34: a warning with no active turn is the one frame
 				// the wire drops entirely (and never persists, so no read can carry
 				// it back), yet it is a real diagnostic — the projector emits
@@ -2849,6 +2853,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const droppedByTheWiresOwnRule = n.method === "warning" && !state.conversation.activeTurnId;
 				if (
 					n.method === "evener/thread/resync" ||
+					modelControlInvalidated ||
 					(touchesTranscript && !droppedByTheWiresOwnRule && applied.turns === state.conversation.turns)
 				) {
 					requestRehydrate(state.ref);

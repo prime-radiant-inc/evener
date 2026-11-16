@@ -79,6 +79,16 @@ describe("whole model-control snapshot reconciliation", () => {
     expect(modelControlAuthority(result.model)).toEqual(AUTHORITY);
   });
 
+  test("an accepted read tolerates an empty effort ladder encoded as null", () => {
+    const current = snapshot(1);
+    current.active.reasoningEffortLevels = null as unknown as string[];
+
+    const result = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: current });
+
+    expect(result.decision).toBe("applied");
+    expect(result.model.reasoningEffortLevels).toEqual([]);
+  });
+
   test("an accepted unsupported read atomically clears capability and snapshot before exposing legacy metadata", () => {
     const capable = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(2) }).model;
     const legacyRead = {
@@ -280,14 +290,27 @@ describe("whole model-control snapshot reconciliation", () => {
     expect(result.model.modelControl).toEqual(applied);
   });
 
-  test("a same-authority reconnect read replaces rather than revision-merging", () => {
+  test("a lower-revision same-authority read cannot replace newer held control", () => {
     const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(9) }).model;
     const recovered = snapshot(2, { provider: "openai", model: "gpt-5.5" });
 
     const result = reduceModelControl(initial, { kind: "read", version: 1, snapshot: recovered });
 
-    expect(result.decision).toBe("applied");
-    expect(result.model.modelControl).toEqual(recovered);
+    expect(result.decision).toBe("ignored");
+    expect(result.model).toBe(initial);
+  });
+
+  test("an equal-revision conflicting read invalidates held control", () => {
+    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(3) }).model;
+
+    const result = reduceModelControl(initial, {
+      kind: "read",
+      version: 1,
+      snapshot: snapshot(3, { provider: "openai", model: "gpt-5.5" }),
+    });
+
+    expect(result.decision).toBe("invalidate");
+    expect(result.model.modelControl).toBeUndefined();
   });
 
   test("an accepted replacement-authority read resets the comparison domain", () => {
