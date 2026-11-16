@@ -2,8 +2,11 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -510,6 +513,64 @@ func (a *nilStreamAdapter) Complete(context.Context, Request) (Response, error) 
 }
 
 func (a *nilStreamAdapter) Stream(context.Context, Request) (Stream, error) { return nil, nil }
+
+// TestClient_Stream_LogsARefusedNilStreamAsAFailure verifies that the durable
+// API log records the refusal, not a successful call that produced nothing.
+// The refusal has to happen inside the adapter handler: middleware wraps that
+// handler, and APILogger settles the call as soon as the handler returns, so a
+// guard above the middleware would leave a success in the log for a call that
+// never produced a stream.
+func TestClient_Stream_LogsARefusedNilStreamAsAFailure(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls its neighbours with a shared t.
+	dir := t.TempDir()
+	logger, err := NewSessionAPILogger(dir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	if err := logger.ReserveSession("s1"); err != nil {
+		t.Fatalf("ReserveSession: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = logger.ReleaseSession("s1")
+		_ = logger.Close()
+	})
+
+	c := NewClient()
+	c.Register(&nilStreamAdapter{name: "openai"})
+	c.Use(logger)
+
+	ctx := WithAPILogContext(context.Background(), "s1")
+	if _, err := c.Stream(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}}); err == nil {
+		t.Fatal("Stream accepted a nil stream from an adapter")
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "sessions", "s1.api.jsonl"))
+	if err != nil {
+		t.Fatalf("read api log: %v", err)
+	}
+	var outcome string
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Kind    string `json:"kind"`
+			Outcome string `json:"outcome"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode api log line: %v", err)
+		}
+		if rec.Kind == "attempt_group_settlement" {
+			outcome = rec.Outcome
+		}
+	}
+	if outcome == "" {
+		t.Fatalf("no settlement record written to the API log:\n%s", body)
+	}
+	if outcome == string(apilog.AttemptSuccess) {
+		t.Fatalf("API log recorded a refused nil stream as %q:\n%s", outcome, body)
+	}
+}
 
 func TestClient_Stream_DoesNotRetryAutomatically(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.

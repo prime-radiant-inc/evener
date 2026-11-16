@@ -391,22 +391,29 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 			}
 		}
 		observeRequestSent(ctx)
+		var (
+			st  Stream
+			err error
+		)
 		if t.override != nil {
-			return t.override.Stream(ctx, req)
+			st, err = t.override.Stream(ctx, req)
+		} else {
+			st, err = t.protocol.Stream(c.withHasher(ctx), req, t.res)
 		}
-		return t.protocol.Stream(c.withHasher(ctx), req, t.res)
+		// An adapter that reports success with no stream is a broken contract:
+		// the stamping wrapper reads the inner channel on every iteration, so a
+		// nil inner dereferences it and kills the process. Reject it here, at
+		// the innermost layer, so middleware settles a real error rather than
+		// logging a successful call that produced nothing.
+		if err == nil && st == nil {
+			err = fmt.Errorf("%w: provider %q returned no stream", ErrStreamUnsupported, t.name)
+		}
+		return st, err
 	}
 	handler := applyMiddlewareStream(base, c.middlewareSnapshot())
 	st, err := handler(ctx, req)
 	if err != nil {
 		return nil, RewriteErrorProvider(err, t.name)
-	}
-	// An adapter that reports success with no stream is a broken contract: the
-	// stamping wrapper reads the inner channel on every iteration, so a nil
-	// inner dereferences it and kills the process. Refuse it here, where the
-	// adapter's answer becomes a stream the caller can read.
-	if st == nil {
-		return nil, RewriteErrorProvider(fmt.Errorf("%w: provider %q returned no stream", ErrStreamUnsupported, t.name), t.name)
 	}
 	return newProviderStampStream(st, t.name), nil
 }
