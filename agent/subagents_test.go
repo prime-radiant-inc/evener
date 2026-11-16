@@ -93,7 +93,9 @@ func TestDefaultToolSummaryMatchesSpawnCeiling(t *testing.T) {
 // TestToolSummaryAdvertisesWhatTheDefaultGrantGrants proves the roster against a
 // real spawn instead of against the roster's own predicate: for every allowance,
 // each role's advertised tool set is the registry of a delegate this session
-// actually starts with no delegation_allowance.
+// actually builds with no delegation_allowance. prepareStableChild runs the
+// production construct path synchronously, so the child registry is final and
+// no launch can clear it underneath the assertion.
 func TestToolSummaryAdvertisesWhatTheDefaultGrantGrants(t *testing.T) {
 	t.Parallel()
 	for _, allowance := range []int{1, 2, 3} {
@@ -109,17 +111,8 @@ func TestToolSummaryAdvertisesWhatTheDefaultGrantGrants(t *testing.T) {
 				}
 
 				advertised := root.defaultToolNamesForAgent(root.pluginAgents[role])
-				result := root.createDelegate(context.Background(), delegateArgs{Task: "probe", AgentType: role})
-				if result.Err != nil {
-					t.Fatalf("createDelegate: %v", result.Err)
-				}
-				root.delegateController.mu.Lock()
-				live := root.delegateController.live[result.DelegateID]
-				root.delegateController.mu.Unlock()
-				if live == nil || live.binding == nil || live.binding.runtime == nil {
-					t.Fatal("no live child session")
-				}
-				child := live.binding.runtime
+				prepared := prepareStableChild(t, root, delegateArgs{Task: "probe", AgentType: role})
+				child := prepared.sub.sess
 				registered := child.reg.RegisteredNames()
 				got := make([]string, 0, len(registered))
 				for name := range registered {
