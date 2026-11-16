@@ -266,65 +266,60 @@ export function readyDispatchTierReads({ reads, firstInvalidationAt }) {
   return reads.filter((read) => read.at < firstInvalidationAt);
 }
 
-// Every invalidation one socket received after the handshake that carried it,
-// attributed by connection rather than by the moment a reader noticed the cut.
+// Every invalidation the page's own handler took on the connection that closed.
 //
 // Closing the old socket is not instant, and the page keeps consuming
-// invalidations until it lands. A reader that snapshotted the consumed sequence
-// when it started closing can therefore miss one the page did consume, and
-// comparing a reconnect's advertisement against that stale number calls a
-// healthy equal-sequence reconnect a reload. Frames carry the connection CDP
-// observed them on, so scoping by it is exact however late the reader looks -
-// which is why a closed socket's frames can be read after the reconnect, when
-// they are final.
-export function socketInvalidations({ frames, socketId, afterAt, generationId }) {
-  return frames
-    .slice(afterAt + 1)
-    .filter(
-      (frame) =>
-        frame.direction === "Network.webSocketFrameReceived" &&
-        frame.method === "evener/navigation/invalidated" &&
-        frame.requestId === socketId &&
-        frame.params?.generationId === generationId,
-    )
-    .map((frame) => frame.params.sequence);
+// invalidations until it lands, so the consumed sequence has to be read once
+// that connection is done rather than snapshotted when a reader notices the
+// cut. It also has to come from the page: a frame in the network log is not a
+// frame the page took. close() nulls the client's onmessage before the socket
+// finishes closing (client.ts detachSocketHandlers), so an invalidation
+// arriving in that gap is logged by CDP and dropped by the client. Counting it
+// would overstate what the page consumed, and an overstated consumed sequence
+// against a reconnect that really did move past it calls a genuine reload an
+// equal-sequence reconnect - which then rejects the reads that reload sends.
+// The page-side record holds only the frames its handler was still attached
+// for, so it is what the store actually consumed.
+export function socketInvalidations({ delivered = [], generationId }) {
+  return delivered
+    .filter((params) => params?.generationId === generationId)
+    .map((params) => params.sequence);
 }
 
 // The needs-you offsets the closing connection left the page without.
 //
-// A reply on the wire is not a delivery: the client detaches a retired socket's
-// handlers, so an answer that arrives after the close lands is dropped and the
-// entry keeps the base it read from. The page's own next read is what says so.
-// A retry of a lost read carries the base that read used, because the base is
-// the revision the entry still holds; a read of an entry whose answer was taken
-// carries the revision that answer moved it to. The store re-forces exactly the
-// entries a close left stale, so those offsets - and no others - are the ones a
-// reconnect at an equal sequence may read again.
-export function lostTierRead({ frames, lostSocketId, reconnectSocketId }) {
+// This is the second quantity the wire cannot answer. A sent frame is
+// authoritative - the page called send - but a received one is not: close()
+// nulls the client's onmessage before the socket finishes closing, so an answer
+// that arrives in that gap is logged by CDP and never reaches the page. The
+// page's own record of what its handler took is the only evidence of delivery.
+// The store re-forces exactly the entries a close left stale, so a reconnect at
+// an equal sequence may retry those offsets - and, because this set is
+// intersected with its own reads, nothing else.
+export function lostTierRead({ frames, lostSocketId, reconnectSocketId, deliveredReplyIds = [] }) {
   const tierRead = (frame) =>
     frame.direction === "Network.webSocketFrameSent" &&
     frame.method === "evener/navigation/read" &&
     frame.params?.resource === "section" &&
     frame.params?.section === "needs_you";
-  const baseOf = (frame) => {
-    const base = frame.params?.base;
-    return base ? `${base.generationId}/${base.revision}/${base.etag}` : "none";
-  };
   const offsetOf = (frame) => frame.params?.offset ?? 0;
-  // Only the last read a connection sent at an offset can be the one it lost:
-  // an earlier one at that offset was superseded on the same connection.
-  const lastSentBy = (socketId) => {
-    const last = new Map();
-    for (const frame of frames)
-      if (tierRead(frame) && frame.requestId === socketId) last.set(offsetOf(frame), baseOf(frame));
-    return last;
-  };
-  const lost = lastSentBy(lostSocketId);
+  // A read the page's handler took an answer for was delivered, whatever the
+  // entry now holds; one it never took left its entry stale.
+  const taken = new Set(deliveredReplyIds);
+  // Only the last read a connection sent at an offset describes the entry it
+  // left: an earlier one was superseded, and its missing answer says nothing
+  // about what the entry holds now.
+  const lastAt = new Map();
+  for (const frame of frames)
+    if (tierRead(frame) && frame.requestId === lostSocketId) lastAt.set(offsetOf(frame), frame);
+  const lost = new Set(
+    [...lastAt].filter(([, frame]) => !taken.has(frame.id)).map(([offset]) => offset),
+  );
   return [
     ...new Set(
       frames
         .filter((frame) => tierRead(frame) && frame.requestId === reconnectSocketId)
-        .filter((frame) => lost.has(offsetOf(frame)) && lost.get(offsetOf(frame)) === baseOf(frame))
+        .filter((frame) => lost.has(offsetOf(frame)))
         .map(offsetOf),
     ),
   ];
@@ -1193,9 +1188,9 @@ export async function attentionJourney(ctx) {
   // there, with the raw sequence it advertised, the connection that carried it,
   // and every invalidation of that generation recorded after it. Which of those
   // numbers decides the branch is reconnectSequences' rule, not this reader's.
-  // The reader also returns the socket so its side's invalidations can be
-  // recounted from the frames once they are final, rather than frozen at
-  // whatever moment the caller happened to look.
+  // The reader also returns the socket so its side's invalidations can be read
+  // from what the page's handler took once that connection is done, rather
+  // than frozen at whatever moment the caller happened to look.
   const handshakeBefore = (to) => {
     const initializeIds = new Set(
       frames
@@ -1253,14 +1248,36 @@ export async function attentionJourney(ctx) {
   // no clock to race.
   await reconnect({ expectRefs: mountedOwners });
   await wait(`${driver.paneScopeExpr(rootRef)} !== null`, "the source pane survives a real socket reconnect");
+  // What the connection the tier loaded under handed to the page before it went
+  // away, read from the page rather than the network log. A received frame in
+  // the log is not a frame the page took: close() nulls the client's onmessage
+  // before the socket finishes closing, so anything arriving in that gap is
+  // logged and dropped. Both quantities this leg takes from that connection -
+  // how far the page consumed, and which tier reads it never got an answer for
+  // - come from here; a sent frame stays authoritative, since the page called
+  // send. The driver stamps the connection it cut, because initialize ids
+  // repeat across connections.
+  const cutRecord = await read(`(() => {
+    const socket = (window.__cascadeSockets ?? []).find((candidate) => candidate.__guardCutSocket === true);
+    if (!socket) return null;
+    return { handshakeId: socket.__deliveredHandshakeId, invalidations: socket.__deliveredInvalidations,
+      replyIds: socket.__deliveredReplyIds };
+  })()`);
   const reconnectHandshake = handshakeBefore(frames.length);
   assert.ok(reconnectHandshake, "the reconnect reported a navigation handshake this driver saw");
+  // Without this the two rules below would pass by reading nothing at all: an
+  // absent record reads as "consumed only the handshake, answered no reads" and
+  // would quietly change the branch instead of failing.
+  assert.ok(cutRecord, "the page kept a record of the connection the tier loaded under");
+  assert.equal(cutRecord.handshakeId, consumedAtCut.handshakeId,
+    "the connection the tier loaded under is the one the page recorded that handshake on");
   // Each side contributes the value the store's comparison uses: the sequence
   // the page had consumed on the connection that closed, and the raw sequence
-  // the reconnect advertises. The page's side is recounted from the closed
-  // connection's own frames, so an invalidation it took while the close was in
-  // flight is included; the reconnect's side excludes invalidations arriving
-  // during subscription recovery, which are later than that comparison.
+  // the reconnect advertises. The page's side is read from what that
+  // connection's handler took, so an invalidation it took while the close was
+  // in flight is included and one that arrived after the handler was detached
+  // is not; the reconnect's side excludes invalidations arriving during
+  // subscription recovery, which are later than that comparison.
   assert.notEqual(reconnectHandshake.socketId, consumedAtCut.socketId,
     "the reconnect's handshake arrived on a connection of its own");
   const consumed = {
@@ -1268,9 +1285,7 @@ export async function attentionJourney(ctx) {
     sequence: reconnectSequences({
       handshakeSequence: consumedAtCut.handshakeSequence,
       invalidations: socketInvalidations({
-        frames,
-        socketId: consumedAtCut.socketId,
-        afterAt: frames.indexOf(consumedAtCut.frame),
+        delivered: cutRecord.invalidations,
         generationId: consumedAtCut.generationId,
       }),
     }).consumed,
@@ -1320,6 +1335,7 @@ export async function attentionJourney(ctx) {
     frames,
     lostSocketId: consumedAtCut.socketId,
     reconnectSocketId: reconnectHandshake.socketId,
+    deliveredReplyIds: cutRecord.replyIds,
   });
   const readyBranch = reconnectReadyDecision({
     consumed,

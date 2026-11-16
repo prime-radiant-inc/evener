@@ -238,32 +238,19 @@ test("with no later invalidation every tier read is the ready dispatch's", () =>
   );
 });
 
-// The reviewer's timing: the page takes a live-only invalidation while the old
-// socket is still closing, so it has consumed 8 by the time the reconnect
-// advertises 8. The store retains - equal sequences - and so must the decision.
-// Reading the page's side from the closed connection's own frames is what makes
-// that number 8; a reader that snapshotted 7 before starting the close reports
-// a reload for a healthy reconnect.
+// The page takes a live-only invalidation while the old socket is still
+// closing, so it has consumed 8 by the time the reconnect advertises 8. The
+// store retains - equal sequences - and so must the decision. Reading the
+// page's side after that connection is done is what makes that number 8; a
+// reader that snapshotted 7 when it noticed the cut reports a reload for a
+// healthy reconnect.
 test("an invalidation the page took while the close was in flight is consumed", () => {
-  // Frames as the connection saw them: its handshake, then a live-only
-  // invalidation that lands while the reader is still asking the page what it
-  // consumed. `beforeAt` is the moment the reader noticed the cut, before that
-  // invalidation arrived.
-  const socketFrames = [
-    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "initialize", id: 1, result: { navigation: { generationId: "generation-a", sequence: 7 } } },
-    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "evener/navigation/invalidated", params: { generationId: "generation-a", sequence: 8 } },
-  ];
-  const snapshottedEarly = socketInvalidations({
-    frames: socketFrames,
-    socketId: "socket-old",
-    afterAt: 0,
-    generationId: "generation-a",
+  const delivered = [{ generationId: "generation-a", sequence: 8 }];
+  const consumedAfterTheClose = reconnectSequences({
+    handshakeSequence: 7,
+    invalidations: socketInvalidations({ delivered, generationId: "generation-a" }),
   });
-  const consumedAfterTheClose = reconnectSequences({ handshakeSequence: 7, invalidations: snapshottedEarly });
   assert.equal(consumedAfterTheClose.consumed, 8);
-  // With the page's side read from its own connection, the reconnect that
-  // advertises 8 is the equal-sequence reconnect the store retains, and it is
-  // taken as retained rather than as a reload.
   assert.equal(
     reconnectReadyDecision({
       consumed: { ...consumed, sequence: consumedAfterTheClose.consumed },
@@ -277,20 +264,64 @@ test("an invalidation the page took while the close was in flight is consumed", 
   assert.equal(reconnectSequences({ handshakeSequence: 7, invalidations: [] }).consumed, 7);
 });
 
+// A frame the network log holds is not a frame the page took. close() nulls the
+// client's onmessage before the socket finishes closing, so an invalidation
+// arriving in that gap is logged by CDP and dropped by the client. Counting it
+// would overstate the consumed sequence, and against a reconnect that really
+// did move past it that overstatement turns a genuine reload into an apparent
+// equal-sequence reconnect - which then rejects the reads that reload sent.
+test("an invalidation the client dropped does not advance the consumed sequence", () => {
+  // What the wire saw: the handshake, then sequence 8, then the close.
+  const wireFrames = [
+    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "initialize", id: 1, result: { navigation: { generationId: "generation-a", sequence: 7 } } },
+    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "evener/navigation/invalidated", params: { generationId: "generation-a", sequence: 8 } },
+  ];
+  // What the page's handler took: the same, minus the frame that arrived after
+  // onmessage was detached.
+  const delivered = [];
+  // The rule the wire alone would give is 8, one past what the page consumed.
+  const wireOnly = reconnectSequences({
+    handshakeSequence: 7,
+    invalidations: wireFrames
+      .filter((f) => f.method === "evener/navigation/invalidated")
+      .map((f) => f.params.sequence),
+  });
+  assert.equal(wireOnly.consumed, 8);
+  const fromThePage = reconnectSequences({
+    handshakeSequence: 7,
+    invalidations: socketInvalidations({ delivered, generationId: "generation-a" }),
+  });
+  assert.equal(fromThePage.consumed, 7);
+  // The reconnect genuinely moved 7 -> 8, so the store reloads. Read from the
+  // page that is a reload; read from the wire the two numbers match and the
+  // reload's own reads are rejected as if the guard had seen a retention -
+  // which is the failing assertion, arrived at by overstating the consumed
+  // sequence rather than by understating it.
+  assert.equal(
+    reconnectReadyDecision({
+      consumed: { ...consumed, sequence: fromThePage.consumed },
+      reconnected: reconnectedAt({ sequence: 8 }),
+      deliveredTierReads: [tierRead(0)],
+    }),
+    "reloaded",
+  );
+  assert.throws(
+    () =>
+      reconnectReadyDecision({
+        consumed: { ...consumed, sequence: wireOnly.consumed },
+        reconnected: reconnectedAt({ sequence: 8 }),
+        deliveredTierReads: [tierRead(0)],
+      }),
+    rejectedWith(["offset 0 (request-1)"], [], "deepStrictEqual"),
+  );
+});
+
 // Attribution is by connection, so another socket's invalidations never advance
 // this page's consumed sequence - and a reconnect that really did move past it
 // is still a reload.
 test("another connection's invalidation is not this page's consumed sequence", () => {
-  const socketFrames = [
-    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "initialize", id: 1, result: { navigation: { generationId: "generation-a", sequence: 7 } } },
-    { direction: "Network.webSocketFrameReceived", requestId: "socket-new", method: "evener/navigation/invalidated", params: { generationId: "generation-a", sequence: 9 } },
-  ];
-  assert.deepEqual(
-    socketInvalidations({ frames: socketFrames, socketId: "socket-old", afterAt: 0, generationId: "generation-a" }),
-    [],
-  );
-  // A reconnect advertising a sequence genuinely past the consumed one is a
-  // reload, so the connection scoping does not blunt the reload branch.
+  const delivered = [{ generationId: "generation-b", sequence: 9 }];
+  assert.deepEqual(socketInvalidations({ delivered, generationId: "generation-a" }), []);
   assert.equal(
     reconnectReadyDecision({
       consumed: { ...consumed, sequence: 7 },
@@ -390,10 +421,9 @@ test("a read whose answer the close dropped is the offset the reconnect may retr
   );
 });
 
-test("a retry that moved its base was an answered read, not a lost one", () => {
-  // Both reads were answered and applied before the cut, so the reconnect's
-  // retry of offset 0 carries the revision that answer moved the entry to. The
-  // entry is not stale, the store starts no such read, and a read that did
+test("a read the page took an answer for is not a lost read", () => {
+  // Both reads were answered and the page took both answers before the cut. The
+  // entries are not stale, the store starts no such read, so a read that did
   // arrive anyway is not a retry any lost read licenses.
   const frames = [
     tierReadSent({ id: 1, socket: "socket-old", offset: 0, base: baseAt(46) }),
@@ -401,8 +431,9 @@ test("a retry that moved its base was an answered read, not a lost one", () => {
     tierReadSent({ id: 3, socket: "socket-new", offset: 0, base: baseAt(47) }),
     tierReadSent({ id: 4, socket: "socket-new", offset: 50, base: baseAt(48) }),
   ];
+  const deliveredReplyIds = [1, 2];
   assert.deepEqual(
-    lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+    lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new", deliveredReplyIds }),
     [],
   );
   assert.throws(
@@ -411,23 +442,46 @@ test("a retry that moved its base was an answered read, not a lost one", () => {
         consumed: { ...consumed, sequence: 112 },
         reconnected: reconnectedAt({ sequence: 112 }),
         deliveredTierReads: [{ offset: 0, label: "offset 0 (3)" }],
-        retryableOffsets: lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+        retryableOffsets: lostTierRead({
+          frames,
+          lostSocketId: "socket-old",
+          reconnectSocketId: "socket-new",
+          deliveredReplyIds,
+        }),
       }),
     rejectedWith(["offset 0 (3)"], [], "deepStrictEqual"),
   );
 });
 
-test("only the last read a closing connection sent at an offset can be lost", () => {
-  // A tier entry read twice on the same connection: the first was superseded,
-  // so its base is not a base the page still holds. Matching on any earlier
-  // send would license a retry the entry never earned.
+test("the last read a connection sent at an offset is the one that decides it", () => {
+  // The same entry read twice on one connection. The earlier read's answer was
+  // dropped, but a later read at that offset went out and the page took its
+  // answer, so the entry holds that answer and is not stale: the store starts
+  // no retry. Keying on any unanswered read at the offset would mark it lost and
+  // bless a retry the entry never earned.
   const frames = [
     tierReadSent({ id: 1, socket: "socket-old", offset: 0, base: baseAt(20) }),
     tierReadSent({ id: 2, socket: "socket-old", offset: 0, base: baseAt(46) }),
-    tierReadSent({ id: 3, socket: "socket-new", offset: 0, base: baseAt(20) }),
+    tierReadSent({ id: 3, socket: "socket-new", offset: 0, base: baseAt(46) }),
   ];
   assert.deepEqual(
-    lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+    lostTierRead({
+      frames,
+      lostSocketId: "socket-old",
+      reconnectSocketId: "socket-new",
+      deliveredReplyIds: [2],
+    }),
     [],
+  );
+  // And the reverse: the last read was the one that went unanswered, so that
+  // entry is the stale one and its retry is the only one licensed.
+  assert.deepEqual(
+    lostTierRead({
+      frames,
+      lostSocketId: "socket-old",
+      reconnectSocketId: "socket-new",
+      deliveredReplyIds: [1],
+    }),
+    [0],
   );
 });
