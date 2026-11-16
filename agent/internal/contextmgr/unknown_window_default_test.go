@@ -422,7 +422,7 @@ func TestEstimateUsageMarksAssumedWindow(t *testing.T) {
 func TestTripwireRejectsAnotherModelsMeasurement(t *testing.T) {
 	// The A-pass: an unknown-window profile and the snapshot it captured.
 	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
-	captured, _, _ := cm.profileSnapshot()
+	captured, _, _, _ := cm.profileSnapshot()
 	if _, unknown := effectiveWindowOf(captured); !unknown {
 		t.Fatal("fixture: the gateway profile must resolve an unknown window")
 	}
