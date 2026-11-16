@@ -80,6 +80,7 @@ import {
   type PendingTurnEntry,
   queueEntryAt,
   recordedInputLineage,
+  settledSourceIds,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -485,6 +486,7 @@ export interface ThreadsStoreState {
     index: number,
     expectedEntryId: string,
     display: PromoteDisplayInput,
+    sourceMutationId?: string,
   ): Promise<void>;
   // Removes the queued follow-up at index so it is never consumed (issue
   // #23; also the removal half of the composer's edit-and-recompose flow).
@@ -1973,6 +1975,39 @@ async function pruneSettledTransientRefusals(runtime: MutationRuntime, targetRef
   }
 }
 
+// A refused promote that lands in recovery AFTER its queue entry's delivery
+// was already visible (the refusal's transfer follows a hydration that could
+// not see it coming) must settle against the delivery evidence it arrives
+// into: the storage-change notification the transfer fires is the one moment
+// the runtime can reconcile the two without waiting for the next read.
+// Fire-and-forget like the prune above: a storage failure stays contained.
+async function retireDeliveredPromoteRecoveriesForRefs(
+  runtime: MutationRuntime,
+  targetRefs: Iterable<string>,
+): Promise<void> {
+  for (const targetRef of targetRefs) {
+    const settled = settledSourceIds(trackedThreadModel(targetRef));
+    if (settled.size === 0) continue;
+    let retired: string[] = [];
+    try {
+      retired = await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, settled);
+    } catch {
+      continue;
+    }
+    // The retirement deleted rows this tab's projections may still hold: the
+    // storage-side delete reaches IndexedDB but no persistence subscriber
+    // hears it, so a cached recovery row would render again until some later
+    // read re-projects. The dispatcher's own onStorageChange fired BEFORE
+    // this retire ran, so the notification it carried read the row still
+    // present. Only a retirement that removed something owes a fresh one:
+    // the gate keeps ordinary frames from waking the projection refresh for
+    // every session with mere transcript evidence (which would start the
+    // mutation runtime in hosts that never opened it).
+    if (retired.length > 0) notifyMutationPersistence([targetRef]);
+    if (!isCurrentMutationRuntime(runtime)) return;
+  }
+}
+
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 
@@ -2661,6 +2696,7 @@ function getMutationRuntime(): MutationRuntime | null {
           notifyMutationPersistence(targetRefs);
         }
         void pruneSettledTransientRefusals(runtime, targetRefs);
+        void retireDeliveredPromoteRecoveriesForRefs(runtime, targetRefs);
       }
     },
     onBlockedMutation: (targetRef, client) => {
@@ -6155,6 +6191,22 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
         });
     }
   }
+  // The same delivery-evidence settle a tracked hydration runs: a repository
+  // read is accepted history too, and its bounded window can hold the
+  // delivered entry's lineage while the refused promote's recovery is what
+  // a reload would resurrect. Repository-owned refs bypass the tracked
+  // hydration's sweep, so this is their boundary.
+  if (runtime && authoritative) {
+    const evidence = settledSourceIds(model);
+    void runtime.storage
+      .retireDeliveredPromoteRecoveries(ref, evidence)
+      .then((retired) => {
+        if (retired.length > 0) notifyMutationPersistence([ref]);
+      })
+      .catch(() => {
+        // A later authoritative read runs the same retirement.
+      });
+  }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
@@ -6288,6 +6340,19 @@ async function publishAndReconcileThreadHydration(
           ),
           { retainDisplayCopy: true, queueEntryIdsById },
         );
+        // A refused promote whose queue entry this response proves delivered
+        // is a duplicate the projection suppresses while the proof is visible
+        // - but the transcript window is bounded, so the proof can age out on
+        // a later read. Settle the unedited recovery durably now (an edited
+        // composition is the user's own unsent work and survives): the
+        // delivered source speaks as a recorded item's own id (normal
+        // consumption) or as a lineage id (inherited input) - never as the
+        // queue's own id, which means still queued, not delivered.
+        if (mutationStateAuthoritative) {
+          const evidence = settledSourceIds(published);
+          const retired = await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
+          if (retired.length > 0) notifyMutationPersistence([ref]);
+        }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
         // the live projection. Retry unresolved records with their original
@@ -7874,6 +7939,19 @@ function forgetConsumedQueueRows(ref: string): void {
 // waiting on a retired input. The queue frame that named the consumption keeps
 // the copy visible until then.
 function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: ThreadModel): void {
+  // The same delivery-evidence settle the read paths run: an accepted live
+  // frame can be the FIRST place a foreign consumer's delivery appears (no
+  // local consumer record means no storage-change callback fires), so this
+  // publication moment settles the refused promote here too.
+  const evidence = settledSourceIds(model);
+  void runtime.storage
+    .retireDeliveredPromoteRecoveries(ref, evidence)
+    .then((retired) => {
+      if (retired.length > 0) notifyMutationPersistence([ref]);
+    })
+    .catch(() => {
+      // A later accepted snapshot runs the same retirement.
+    });
   const pending = pendingConsumedSettlements.get(ref);
   // An input the daemon names as retired will never be recorded, so it settles
   // without any transcript evidence. A cancellation announces itself only this
@@ -8952,7 +9030,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
+  async promoteQueuedAsSteer(ref, index, expectedEntryId, display, sourceMutationId) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
     // turn id that would only add a second way to fail. The optimistic input
@@ -8966,6 +9044,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       {
         method: COMPOSER_METHODS.promote,
+        // The promoted row's own identity: the queue entry's source
+        // mutation when one exists. A refused promote's recovery row
+        // suppresses through this id after the entry's consumer settles
+        // (the recorded lineage speaks in it), where expectedEntryId's
+        // ownership mapping no longer exists.
+        ...(sourceMutationId !== undefined ? { sourceMutationId } : {}),
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.images ?? []).map((image) => ({
