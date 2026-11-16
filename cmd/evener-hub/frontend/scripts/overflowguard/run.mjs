@@ -64,6 +64,7 @@ import {
   measureComposerPlacement,
   typeComposerDraft,
   verifyComposerGesture,
+  verifyComposerOutsidePressClick,
   waitForComposerSettled,
 } from "./composer.mjs";
 
@@ -1994,6 +1995,23 @@ async function main() {
       }
     }
     await delayedComposer();
+    // The card is in flow: an outside press that folds it mid-press moves the
+    // pressed control away before its click lands. Trusted input is the only
+    // oracle for that; jsdom cannot hit-test at release.
+    for (const width of [390, 1400]) {
+      const label = `composer outside-press click ${width}px`;
+      try {
+        const result = await verifyComposerOutsidePressClick(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+          width,
+        );
+        console.log(`${label} ... PASS - ${JSON.stringify(result)}`);
+      } catch (error) {
+        failed++;
+        console.log(`${label} ... FAIL - ${error.message}`);
+      }
+    }
     if (composerOnly) return failed > 0 ? 1 : 0;
 
     const paging = await verifyItemPaging(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?paging=1`);
