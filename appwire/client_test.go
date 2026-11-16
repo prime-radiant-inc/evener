@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -707,5 +711,90 @@ func TestClientReady(t *testing.T) {
 	}
 	if !NewClient(newMemoryTransport()).Ready() {
 		t.Fatal("client constructed with a transport reported not ready")
+	}
+}
+
+// A large response's result is decoded into storage resolved from the pending
+// request its id names, while the frame carrying it is read. Two requests of the
+// same type are in flight and their answers arrive in the reverse of the order
+// their requests did, so each payload fits either target: a decode that resolved
+// the wrong pending entry returns the other request's payload and reports no
+// error. Only binding by id keeps them apart.
+func TestClientBindsLargeResponseToItsOwnRequest(t *testing.T) {
+	payload := strings.Repeat("delegate-task ", 6000)
+
+	a, b := net.Pipe()
+	defer a.Close() //nolint:errcheck // test cleanup
+	defer b.Close() //nolint:errcheck // test cleanup
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		server := NewStreamTransport(b)
+		var ids []ID
+		for range 2 {
+			msg, err := server.Recv(ctx)
+			if err != nil {
+				serverErr <- fmt.Errorf("server recv: %w", err)
+				return
+			}
+			if msg.Request == nil {
+				serverErr <- fmt.Errorf("server got %+v, want a request", msg)
+				return
+			}
+			ids = append(ids, msg.Request.ID)
+		}
+
+		// Each answer names the request it answers and carries a payload large
+		// enough that its result is decoded while the frame is read.
+		frames := make([]json.RawMessage, len(ids))
+		for i, id := range ids {
+			result, err := json.Marshal(ThreadReadResponse{Thread: Thread{ID: id.String(), Source: payload}})
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			frames[i] = result
+		}
+		for i, frame := range slices.Backward(frames) {
+			if err := server.Send(ctx, ResponseMessage(ids[i], frame)); err != nil {
+				serverErr <- err
+				return
+			}
+		}
+		serverErr <- nil
+	}()
+
+	client := NewClient(NewStreamTransport(a))
+	client.Start(ctx)
+	defer client.Close() //nolint:errcheck // test cleanup
+
+	type outcome struct {
+		id  string
+		err error
+	}
+	outs := make(chan outcome, 2)
+	call := func() {
+		out, err := client.ThreadRead(ctx, ThreadReadParams{ThreadID: payload})
+		outs <- outcome{id: out.Thread.ID, err: err}
+	}
+	go call()
+	go call()
+
+	seen := map[string]bool{}
+	for range 2 {
+		got := <-outs
+		if got.err != nil {
+			t.Fatalf("request: %v", got.err)
+		}
+		seen[got.id] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("two requests received one payload %v: a result was decoded into another request's target", seen)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -85,9 +85,12 @@ func TestClientRequestDecodesWireResultWithoutRounding(t *testing.T) {
 	}
 }
 
-// BenchmarkMessageDecodeLargeResponse measures decoding one large response
-// frame and its typed result, shaped like a probe's thread/read answer whose
-// diagnostics carry every retained delegate's task text.
+// BenchmarkMessageDecodeLargeResponse measures one large response frame decoded
+// into its typed result, shaped like a probe's thread/read answer whose
+// diagnostics carry every retained delegate's task text. The frame is built once,
+// so the measurement is the decode: the result is bound to its request by id and
+// filled by the pass that validates the frame. The bind itself is one map lookup
+// under the client's lock, which the routing test exercises.
 func BenchmarkMessageDecodeLargeResponse(b *testing.B) {
 	delegates := make([]EvenerDelegateInfo, 200)
 	for i := range delegates {
@@ -102,13 +105,16 @@ func BenchmarkMessageDecodeLargeResponse(b *testing.B) {
 	b.SetBytes(int64(len(frame)))
 	b.ReportAllocs()
 	for b.Loop() {
-		var msg Message
-		if err := decodeFrame(&msg, frame); err != nil {
+		var storage ThreadReadResponse
+		msg, bound, err := decodeFrameBound(frame, func([]byte) any { return &storage })
+		if err != nil {
 			b.Fatal(err)
 		}
-		var out ThreadReadResponse
-		if err := json.Unmarshal(msg.Response.Result.(json.RawMessage), &out); err != nil {
-			b.Fatal(err)
+		if bound == nil || storage.Thread.ID != "root" {
+			b.Fatalf("bound=%v Thread.ID=%q, want the result filled from the frame", bound != nil, storage.Thread.ID)
+		}
+		if _, ok := msg.Response.Result.(*ThreadReadResponse); !ok {
+			b.Fatalf("Response.Result = %T, want the filled target", msg.Response.Result)
 		}
 	}
 }
