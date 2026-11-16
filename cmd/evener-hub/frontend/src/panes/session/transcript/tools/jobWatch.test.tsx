@@ -1133,58 +1133,6 @@ test("a filter sentence joins its clauses with spaces, not commas (M1)", () => {
   expect(body).toContain("makes a tool call on read_file ending in error (assistant.tool) (every 3)");
 });
 
-// --- RoboRev combined review (818e809): heartbeat-only lifecycle (M2) -------
-// Periodic progress ticks never consume the condition-fire budget, so a
-// heartbeat-only watch can live indefinitely — claiming it "auto-clears
-// after 50 matches" is a false lifecycle guarantee.
-
-test("a heartbeat-only sentence claims no auto-clear (M2)", () => {
-  const d = toolRendererFor("job_watch");
-  const Body = d.body!;
-  render(
-    <Body
-      item={watchItem(
-        { operation: "create", source: "job_a1b2" },
-        {
-          watch_id: "watch_hb",
-          source: "job_a1b2",
-          watching: true,
-          progress_interval_ms: 120000,
-          replaced_existing: false,
-          fired: false,
-        },
-      )}
-      live={false}
-    />,
-  );
-  const body = screen.getByTestId("job-watch-body").textContent ?? "";
-  expect(body).toContain("heartbeat every 2m");
-  expect(body).not.toContain("auto-clears");
-});
-
-test("a budgeted trigger keeps the auto-clear clause (M2)", () => {
-  const d = toolRendererFor("job_watch");
-  const Body = d.body!;
-  render(
-    <Body
-      item={watchItem(
-        { operation: "create", source: "job_a1b2" },
-        {
-          watch_id: "watch_combo",
-          source: "job_a1b2",
-          watching: true,
-          output_match: "ready",
-          progress_interval_ms: 120000,
-          replaced_existing: false,
-          fired: false,
-        },
-      )}
-      live={false}
-    />,
-  );
-  expect(screen.getByTestId("job-watch-body").textContent ?? "").toContain("auto-clears after 50 matches");
-});
-
 // --- RoboRev combined review (33d5b9a): composite detail views (M1) ---------
 // A watch combining output_match with events/filter/every must name every
 // armed clause in the inspect body and the expanded row detail — not just
@@ -1689,9 +1637,8 @@ test("an inspect body with deliveries owns one terminal period (8a56741 finding 
     />,
   );
   const body = screen.getByTestId("job-watch-body").textContent ?? "";
-  expect(body).not.toContain("matches. —");
-  expect(body).not.toContain("matches. ");
-  expect(body).toContain("matches — 3 deliveries");
+  expect(body).toContain("3 deliveries");
+  expect(body.match(/\./g)?.length).toBe(1);
   expect(body.endsWith(".")).toBe(true);
 });
 

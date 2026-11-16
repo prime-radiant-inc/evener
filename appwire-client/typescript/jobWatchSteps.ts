@@ -35,14 +35,6 @@ import {
 /** The parts of a job_watch step its words read. */
 export type JobWatchStep = Pick<ItemModel, "toolName" | "argumentsJSON" | "raw">;
 
-/** watchDeliveryBudget in package agent: the condition-fire budget the Go
- * side's own notices name ("matched 50 times"). It is not the denominator for
- * a watch's deliveries count: cfg.deliveries counts every model-facing
- * delivery including periodic progress/timer ticks that never consume the
- * condition-fire budget (countWatchDeliveryLocked), so "N of 50" could read
- * past the budget ("55 of 50"). The count reads bare, labeled as what it is. */
-export const WATCH_DELIVERY_BUDGET = 50;
-
 const NOTE_HEAD_CHARS = 48;
 
 /** A create result is a timer when it carries the timer's own fields
@@ -233,16 +225,16 @@ function createWords(raw: JsonObject, step: JobWatchStep): StepWords {
 // backend records: cleared (explicit clear, agent's clearWatch,
 // "watch cleared"), replaced (a newer watch took the key, "watch replaced"),
 // fired (a one-shot timer retired by its only fire,
-// clearWatchByIDMatchingWithReason), budget_exhausted (the condition-fire
-// budget tripped, the Go notice's own "matched 50 times",
-// watchBudgetClearedMessage), auto_removed_terminal (the watched job went
-// terminal before the condition could match), and job_manager_closed
-// (agent/jobs.go). Anything else falls back to the raw id, never an invented
-// meaning.
+// clearWatchByIDMatchingWithReason), auto_removed_terminal (the watched job
+// went terminal before the condition could match), and job_manager_closed
+// (agent/jobs.go). budget_exhausted is no longer produced: it only words rows
+// recorded by older runs under the since-removed 50-match limit, and can go
+// once those journals age out. Anything else falls back to the raw id, never
+// an invented meaning.
 export function endReasonPhrase(endReason: string | undefined): string {
   switch (endReason) {
     case "budget_exhausted":
-      return `matched ${WATCH_DELIVERY_BUDGET} times (budget exhausted)`;
+      return "matched 50 times (budget exhausted)";
     case "auto_removed_terminal":
       return "watched job finished before it could fire";
     case "replaced":

@@ -31,13 +31,9 @@ import (
 //	   simultaneously live (jm.watches) and torn-down-but-flushing (terminalFlush);
 //	   a cleared watch_id never reappears live (fresh ids are minted per install,
 //	   so a cleared id can never be reused).
-//	O3 (delivery budget): the budget is a circuit breaker on CONDITION fires. For
-//	   a watch with no progress interval, no config's delivery count ever exceeds
-//	   watchDeliveryBudget and a LIVE watch is always strictly under budget — the
-//	   breaker auto-clears on the budget-th fire (spec §4 F1), so nothing at or
-//	   over budget is ever left installed. A periodic tick counts a delivery
-//	   without being a condition fire, so a watch carrying a progress interval may
-//	   sit at or over the budget and stay live.
+//	O3 (no delivery cap): delivering never ends a watch. A session-event op
+//	   leaves every watch that was live before it still live, however many
+//	   times it has fired.
 //	O4 (delivery matches the pure core): on a session-event op, the number of
 //	   no-send caller notifications the effectful onSessionEvent actually delivers
 //	   equals the number the pure evaluateWatchEvent core predicts for the same
@@ -299,6 +295,7 @@ type ws_opOutcome struct {
 	emitChecked   bool   // emit: the differential prediction is meaningful
 	emitPredicted int    // emit: predicted no-send caller deliveries
 	emitObserved  int    // emit: observed "event:" caller notifications
+	emitEnded     int    // emit: live watches that the op ended
 }
 
 type ws_safeResult struct {
@@ -387,24 +384,38 @@ func (h *ws_harness) applyEmit(op ws_op) ws_opOutcome {
 	h.capMu.Lock()
 	before := len(h.captured)
 	h.capMu.Unlock()
+	h.jm.mu.Lock()
+	liveBefore := make([]*watchConfig, 0, len(h.jm.watches))
+	for _, cfg := range h.jm.watches {
+		liveBefore = append(liveBefore, cfg)
+	}
+	h.jm.mu.Unlock()
 
 	h.jm.onSessionEvent(ev)
 
+	ended := 0
+	h.jm.mu.Lock()
+	for _, cfg := range liveBefore {
+		if _, live := watchKeyForConfigLocked(h.jm, cfg); !live {
+			ended++
+		}
+	}
+	h.jm.mu.Unlock()
+
 	// Isolate the no-send notification rail by shape. A job-finished notification
 	// replaces the generic event reason with the concrete terminal reason, so the
-	// reason prefix is not a stable delivery discriminator. The budget-cleared
-	// circuit breaker remains distinguishable by its "watch cleared:" reason, and
-	// a caller-targeted SEND carries a non-nil WatchSend token.
+	// reason prefix is not a stable delivery discriminator. A caller-targeted
+	// SEND carries a non-nil WatchSend token.
 	observed := 0
 	h.capMu.Lock()
 	for _, n := range h.captured[before:] {
-		if n.Kind == jobNotificationKindWatch && n.WatchSend == nil && !strings.HasPrefix(n.Reason, "watch cleared:") {
+		if n.Kind == jobNotificationKindWatch && n.WatchSend == nil {
 			observed++
 		}
 	}
 	h.capMu.Unlock()
 
-	return ws_opOutcome{emitChecked: true, emitPredicted: predicted, emitObserved: observed}
+	return ws_opOutcome{emitChecked: true, emitPredicted: predicted, emitObserved: observed, emitEnded: ended}
 }
 
 func (h *ws_harness) buildEvent(op ws_op) events.SessionEvent {
@@ -519,9 +530,6 @@ type ws_watchSnap struct {
 	eventCount int
 	nextSeq    uint64
 	live       bool
-	// periodic marks a config whose progress timer counts deliveries that are not
-	// condition fires, which the budget deliberately does not bound (see O3).
-	periodic bool
 }
 
 func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, step int) {
@@ -566,19 +574,9 @@ func (m *ws_model) check(rt *rapid.T, h *ws_harness, _ ws_op, out ws_opOutcome, 
 		}
 	}
 
-	// O3: delivery budget. A periodic tick counts a delivery without being a
-	// condition fire, so the bound holds only for watches with no progress
-	// interval.
-	for _, s := range snaps {
-		if s.periodic {
-			continue
-		}
-		if s.deliveries > watchDeliveryBudget {
-			rt.Fatalf("step %d: watch %s deliveries=%d exceeds budget %d", step, s.watchID, s.deliveries, watchDeliveryBudget)
-		}
-		if s.live && s.deliveries >= watchDeliveryBudget {
-			rt.Fatalf("step %d: live watch %s at/over budget (%d) was not auto-cleared", step, s.watchID, s.deliveries)
-		}
+	// O3: no delivery cap. Delivering never ends a watch.
+	if out.emitEnded != 0 {
+		rt.Fatalf("step %d: a session-event op ended %d live watch(es)", step, out.emitEnded)
 	}
 
 	// O4: on an event op, the effectful deliver count equals the pure core's
@@ -636,6 +634,5 @@ func ws_snapConfig(cfg *watchConfig, live bool) ws_watchSnap {
 		eventCount: cfg.eventCount,
 		nextSeq:    cfg.nextUpdateSeq,
 		live:       live,
-		periodic:   cfg.progressIntervalMS > 0,
 	}
 }

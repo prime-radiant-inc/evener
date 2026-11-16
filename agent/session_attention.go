@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/foldcache"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -1322,8 +1323,22 @@ func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema
 // its turn until a settled request presents it. The accept path and the
 // restart of an owed generation both set it.
 func (s *Session) holdAcceptedTrigger(attentionID string) {
+	// The accept resolves the trigger before its generation runs, and the
+	// resolution drops the controller's copy of its cause; the latch keeps the
+	// cause for the request that presents the trigger. A re-hold of the same
+	// trigger (a commit whose journal append failed and retried) finds the
+	// controller's copy already dropped, so it keeps the cause the first hold
+	// latched instead of overwriting it with none.
+	var cause *provenance.Causal
+	if s.delegateController != nil {
+		cause = s.delegateController.attentionCauses.union([]string{attentionID})
+	}
 	s.attentionMu.Lock()
+	if cause == nil && s.attentionAcceptedID == attentionID {
+		cause = s.attentionAcceptedCause
+	}
 	s.attentionAcceptedID = attentionID
+	s.attentionAcceptedCause = cause
 	s.attentionMu.Unlock()
 }
 
@@ -1718,21 +1733,48 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // turn.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
 	staged := s.attentionStagedIDs
 	s.attentionStagedIDs = nil
 	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
+		s.attentionMu.Unlock()
 		return
 	}
+	var acceptedCause *provenance.Causal
 	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
 		s.attentionAcceptedID = ""
+		acceptedCause, s.attentionAcceptedCause = s.attentionAcceptedCause, nil
 	}
 	covered := s.attentionCoveredIDs
 	if covered == nil {
 		covered = make(map[string]struct{}, len(staged))
 	}
+	merged := s.attentionCausesMergedIDs
+	if merged == nil {
+		merged = make(map[string]struct{}, len(staged))
+	}
+	// Each item's cause joins the turn at the first settled request that
+	// presents it; a later request of the same turn re-presenting the item
+	// merges nothing.
+	var fresh []string
+	for id := range staged {
+		if _, done := merged[id]; done {
+			continue
+		}
+		merged[id] = struct{}{}
+		fresh = append(fresh, id)
+	}
 	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
+	s.attentionCausesMergedIDs = merged
+	s.attentionMu.Unlock()
+	// The model has now seen these items, so what the turn does next descends
+	// from what caused them. This is where every attention item's cause joins
+	// a turn once: a trigger the accept already resolved, an item presented
+	// at turn start, and one that arrived mid-turn alike.
+	s.unionActiveProvenance(acceptedCause)
+	if s.delegateController != nil && len(fresh) > 0 {
+		s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
+	}
 }
 
 type foldedCoveredAttentionTurn struct {
@@ -1760,6 +1802,7 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
+	s.attentionCausesMergedIDs = nil
 	s.attentionFoldedCovered = nil
 	s.attentionMu.Unlock()
 }
@@ -2475,6 +2518,9 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		if verified.resolutions[attentionID] != disposition || verified.resumeGenerations[attentionID] != resumeGeneration {
 			return fmt.Errorf("attention %q resolution was not durably appended", attentionID)
 		}
+	}
+	if s.delegateController != nil {
+		s.delegateController.attentionCauses.forget(ids...)
 	}
 	return nil
 }

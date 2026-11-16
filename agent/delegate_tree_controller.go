@@ -102,8 +102,11 @@ type delegateTreeController struct {
 	idleReleaseArmSeq uint64
 	watchEnqueues     map[uint64]*delegateWatchReceipt
 	watchDeliveries   map[uint64]*delegateWatchReceipt
-	reclamations      map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming        map[string]uint64
+	// attentionCauses carries provenance across the delegate hop; it has its
+	// own lock.
+	attentionCauses delegateAttentionCauses
+	reclamations    map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming      map[string]uint64
 	// releasing records a non-terminal runtime release that has committed (its
 	// subagent record unhooked and its resident pointer cleared) but whose
 	// teardown has not finished. A lane handoff treats the subtree as busy

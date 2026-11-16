@@ -149,7 +149,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}
 		notifications = append(notifications, n)
-		// Periodic ticks never trip the condition-fire budget.
+		// A periodic tick is a clock, not a condition fire.
 		jm.countWatchDeliveryLocked(cfg)
 	}
 	emitting := len(notifications) > 0

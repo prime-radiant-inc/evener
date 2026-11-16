@@ -48,8 +48,6 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.deliveries = watchDeliveryBudget - 1
-			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: rec.JobID}] = cfg
 			jm.feedJobOutput(rec.JobID, []byte("hit\n"), 4)
 		case 3:
@@ -80,8 +78,6 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.deliveries = watchDeliveryBudget - 1
-			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: "job_x"}] = cfg
 			if !jm.fireAttachScan(cfg, "job_x", []byte("hit\n")) {
 				t.Fatal("attach scan did not fire")
@@ -144,8 +140,6 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.deliveries = watchDeliveryBudget - 1
-			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[watchKey{Target: "*"}] = cfg
 			jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate})
 		case 14:
@@ -230,42 +224,20 @@ func FuzzJobWatchEventsOutput(f *testing.F) {
 			}
 			close(stop)
 		case 20:
-			// The send twin of case 5. The attach scan's send rail counts its
-			// fire at the match and its delivery only when the frame settles,
-			// which nothing here drains, so the breaker has to latch at the
-			// match or the watch matches without bound.
+			// The send twin of case 5: the attach scan's send rail counts its
+			// fire at the match, and the fire is the watch's own business, so
+			// the watch stays live.
 			key := watchKey{Target: "job_x", SendTo: "dlg_x"}
 			cfg, err := newWatchConfig(watchArgs{Target: "job_x", OutputMatch: "hit", Send: &watchSendArgs{To: "dlg_x"}}, jm.now(), "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.conditionFires = watchDeliveryBudget - 1 // the next fire crosses the budget
 			jm.watches[key] = cfg
-			cleared := 0
-			jm.enqueue = func(n jobNotification) {
-				if n.Reason != watchBudgetClearedMessage("job_x") {
-					return
-				}
-				cleared++
-				// The auto-clear does durable I/O and re-takes jm.mu, so it must
-				// be scheduled after the observation releases it (spec §3).
-				if !jm.mu.TryLock() {
-					t.Error("budget auto-clear notification delivered under jm.mu")
-					return
-				}
-				jm.mu.Unlock()
-			}
 			if !jm.fireAttachScan(cfg, "job_x", []byte("hit\n")) {
 				t.Fatal("attach scan did not fire")
 			}
-			if !cfg.budgetTripped {
-				t.Fatal("attach-scan send at the budget did not latch the breaker")
-			}
-			if cleared != 1 {
-				t.Fatalf("budget-cleared notifications = %d, want exactly 1", cleared)
-			}
-			if jm.watches[key] != nil {
-				t.Fatal("attach-scan send over budget left its watch live")
+			if cfg.conditionFires != 1 || jm.watches[key] == nil {
+				t.Fatalf("attach-scan send = conditionFires:%d live:%t, want one fire and a live watch", cfg.conditionFires, jm.watches[key] != nil)
 			}
 		}
 	})

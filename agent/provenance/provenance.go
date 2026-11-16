@@ -2,6 +2,8 @@
 //
 // The load-bearing structure is a deduped set of WatchKey (watch_id, watch_generation);
 // the diagnostic Chain is bounded separately so truncation can never drop watch keys.
+// FireKeys record the lineage's distinct watch fires on their own, so the
+// runaway guard's count survives a Chain that outgrew its bound.
 package provenance
 
 import "slices"
@@ -9,6 +11,11 @@ import "slices"
 // maxDiagnosticChain bounds the diagnostic Chain; exceeding it truncates Chain entries
 // only, never WatchKeys.
 const maxDiagnosticChain = 16
+
+// maxCausalFires bounds FireKeys, comfortably past the runaway depth the
+// guard trips at; the oldest fire drops only in a lineage that long since
+// crossed it.
+const maxCausalFires = 64
 
 type WatchKey struct {
 	WatchID         string `json:"watch_id"`
@@ -18,6 +25,7 @@ type WatchKey struct {
 type Causal struct {
 	WatchKeys      []WatchKey `json:"watch_keys,omitempty"`
 	Chain          []Entry    `json:"chain,omitempty"`
+	FireKeys       []FireKey  `json:"fire_keys,omitempty"`
 	ChainTruncated bool       `json:"chain_truncated,omitempty"`
 }
 
@@ -30,6 +38,16 @@ type Entry struct {
 	JobID           string `json:"job_id,omitempty"`
 }
 
+// FireKey names one watch fire of a lineage: which watch fired, in which
+// generation, under which delivery id. It is retained independently of the
+// diagnostic Chain, whose bound would otherwise hide the fires behind newer
+// entries.
+type FireKey struct {
+	WatchID         string `json:"watch_id,omitempty"`
+	WatchGeneration string `json:"watch_generation,omitempty"`
+	DeliveryID      string `json:"delivery_id,omitempty"`
+}
+
 func Clone(p *Causal) *Causal {
 	if p == nil {
 		return nil
@@ -37,7 +55,9 @@ func Clone(p *Causal) *Causal {
 	out := &Causal{ChainTruncated: p.ChainTruncated}
 	out.WatchKeys = append(out.WatchKeys, p.WatchKeys...)
 	out.Chain = append(out.Chain, p.Chain...)
+	out.FireKeys = append(out.FireKeys, p.FireKeys...)
 	truncateChain(out)
+	boundFires(out)
 	return NilIfEmpty(out)
 }
 
@@ -45,7 +65,7 @@ func NilIfEmpty(p *Causal) *Causal {
 	if p == nil {
 		return nil
 	}
-	if len(p.WatchKeys) == 0 && len(p.Chain) == 0 && !p.ChainTruncated {
+	if len(p.WatchKeys) == 0 && len(p.Chain) == 0 && len(p.FireKeys) == 0 && !p.ChainTruncated {
 		return nil
 	}
 	return p
@@ -66,6 +86,8 @@ func ContainsWatch(p *Causal, watchID, watchGeneration string) bool {
 func Union(parts ...*Causal) *Causal {
 	var out Causal
 	seen := make(map[WatchKey]bool)
+	entrySeen := make(map[Entry]bool)
+	fireSeen := make(map[FireKey]bool)
 	for _, part := range parts {
 		if part == nil {
 			continue
@@ -77,10 +99,28 @@ func Union(parts ...*Causal) *Causal {
 			seen[key] = true
 			out.WatchKeys = append(out.WatchKeys, key)
 		}
-		out.Chain = append(out.Chain, part.Chain...)
+		// Two causes of one turn commonly share ancestry; a shared entry is
+		// one causal event, so it appears once. Only fully-identical entries
+		// collapse — a genuinely new cause carries a field the held entries
+		// do not and survives untouched.
+		for _, entry := range part.Chain {
+			if entrySeen[entry] {
+				continue
+			}
+			entrySeen[entry] = true
+			out.Chain = append(out.Chain, entry)
+		}
+		for _, fire := range part.FireKeys {
+			if fireSeen[fire] {
+				continue
+			}
+			fireSeen[fire] = true
+			out.FireKeys = append(out.FireKeys, fire)
+		}
 		out.ChainTruncated = out.ChainTruncated || part.ChainTruncated
 	}
 	truncateChain(&out)
+	boundFires(&out)
 	return NilIfEmpty(&out)
 }
 
@@ -96,7 +136,18 @@ func WithWatch(base *Causal, watchID, watchGeneration, deliveryID, sessionID, jo
 			JobID:           jobID,
 		}},
 	}
+	if deliveryID != "" {
+		added.FireKeys = []FireKey{{WatchID: watchID, WatchGeneration: watchGeneration, DeliveryID: deliveryID}}
+	}
 	return Union(base, added)
+}
+
+// boundFires caps p's fire record at maxCausalFires, keeping the newest.
+func boundFires(p *Causal) {
+	if p == nil || len(p.FireKeys) <= maxCausalFires {
+		return
+	}
+	p.FireKeys = append(p.FireKeys[:0], p.FireKeys[len(p.FireKeys)-maxCausalFires:]...)
 }
 
 func LatestDeliveryID(p *Causal) string {
@@ -123,6 +174,21 @@ func SelfInfluenceDepth(p *Causal, watchID, generation string, delivered func(st
 		return 0
 	}
 	seen := make(map[string]bool)
+	count := func(fire FireKey) {
+		if fire.WatchID != watchID || fire.DeliveryID == "" {
+			return
+		}
+		if generation != "" && fire.WatchGeneration != generation {
+			return
+		}
+		if !delivered(fire.DeliveryID) || seen[fire.DeliveryID] {
+			return
+		}
+		seen[fire.DeliveryID] = true
+	}
+	for _, fire := range p.FireKeys {
+		count(fire)
+	}
 	for _, entry := range p.Chain {
 		if entry.Kind != "watch" || entry.WatchID != watchID || entry.DeliveryID == "" {
 			continue
@@ -149,4 +215,28 @@ func truncateChain(p *Causal) {
 	next = append(next, p.Chain[len(p.Chain)-keepTail:]...)
 	p.Chain = next
 	p.ChainTruncated = true
+}
+
+// EntryKindMessage marks a lineage entry for a message one session sent
+// another, such as a delegate's update to its parent.
+const EntryKindMessage = "message"
+
+// WithMessage extends base with an entry for the message deliveryID that
+// sessionID sent.
+func WithMessage(base *Causal, sessionID, deliveryID string) *Causal {
+	return Union(base, &Causal{Chain: []Entry{{Kind: EntryKindMessage, SessionID: sessionID, DeliveryID: deliveryID}}})
+}
+
+// MessagesFrom counts the distinct messages sessionID sent in p's lineage.
+func MessagesFrom(p *Causal, sessionID string) int {
+	if p == nil || sessionID == "" {
+		return 0
+	}
+	var seen []string
+	for _, entry := range p.Chain {
+		if entry.Kind == EntryKindMessage && entry.SessionID == sessionID && !slices.Contains(seen, entry.DeliveryID) {
+			seen = append(seen, entry.DeliveryID)
+		}
+	}
+	return len(seen)
 }

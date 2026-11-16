@@ -14,10 +14,9 @@ import (
 // removed create-time forbid used to reject: any watch whose resolved event kinds
 // include a self-generated kind (assistant.tool/communicate, including via "*")
 // AND whose delivery returns to the generating session (send omitted or
-// send.to=caller). configureWatch now ACCEPTS every one of these — the breaker
-// bounds the loop at runtime (the depth fuse via recordWatchSend on the send
-// path, the volume breaker watchDeliveryBudget on the no-send notification path)
-// instead of a create-time forbid.
+// send.to=caller). configureWatch now ACCEPTS every one of these — the send
+// path is bounded at runtime by the depth fuse in recordWatchSend, and the
+// no-send path by the watch's every setting, instead of a create-time forbid.
 func TestSelfDeliveryWatchShapesInstall(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -185,7 +184,7 @@ func TestEventWatchDeliversWatchOriginatedSubagentEventsClassified(t *testing.T)
 // TestNoSendWatchNotificationCarriesProvenanceForEchoClassification: the
 // notification's provenance still carries the watch key (that is how a downstream
 // event is RECOGNIZED as the watch's echo) — but under the breaker policy the
-// echo re-notifies instead of being suppressed; the volume budget bounds it.
+// echo re-notifies instead of being suppressed.
 func TestNoSendWatchNotificationCarriesProvenanceForEchoClassification(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

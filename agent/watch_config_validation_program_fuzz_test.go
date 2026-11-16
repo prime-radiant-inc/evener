@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -111,9 +110,6 @@ func wcvpAssertPureContracts(t *testing.T, r *wcvpReader) {
 	}
 	if got := quietWatchdogMessage(2*time.Minute, frozenTestTime); !strings.Contains(got, "2m") || !strings.Contains(got, frozenTestTime.Format(time.RFC3339Nano)) {
 		t.Fatalf("quiet watchdog message = %q", got)
-	}
-	if got := watchBudgetClearedMessage("job_wcvp"); !strings.Contains(got, "job_wcvp") || !strings.Contains(got, fmt.Sprint(watchDeliveryBudget)) {
-		t.Fatalf("budget-cleared message = %q", got)
 	}
 
 	for _, tc := range []struct {

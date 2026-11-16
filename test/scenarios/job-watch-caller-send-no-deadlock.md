@@ -146,7 +146,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   classified self-influenced, and each such frame carries an escalating
   `<system-reminder>` depth line (`↳ this turn responded to your last
   message.`). Observer resumes with no fresh parent activity between
-  them are therefore expected, bounded by the runaway fuse and the
-  50-delivery watch budget — clear both watches promptly. Only
+  them are therefore expected, bounded by the runaway fuse — clear both
+  watches promptly. Only
   `watch_send_dropped` with `diagnostic_reason: "runaway"` is a
   finding.

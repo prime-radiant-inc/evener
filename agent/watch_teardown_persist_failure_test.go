@@ -87,36 +87,6 @@ func TestClearWatchPersistFailureLeavesWatchLiveAndRetryable(t *testing.T) {
 	}
 }
 
-func TestBudgetAutoClearPersistFailureReArmsTheBudgetLatch(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	key, cfg := teardownFailureConfig("watch-budget", "job_budget", "dlg_budget")
-	cfg.budgetTripped = true
-	installTeardownFailureConfig(jm, key, cfg)
-
-	restore := failWatchClearedAppends(jm, errors.New("budget persist failed"))
-	if _, ok := jm.autoClearWatchOverBudgetNotification(cfg); ok {
-		t.Fatal("auto-clear reported success although its teardown did not persist")
-	}
-	if live, rejecting := watchLiveAndAcceptingDelivery(jm, key, cfg); !live || rejecting {
-		t.Fatalf("after failed auto-clear: live=%t rejecting=%t, want live and accepting delivery", live, rejecting)
-	}
-	jm.mu.Lock()
-	tripped := cfg.budgetTripped
-	jm.mu.Unlock()
-	if tripped {
-		t.Fatal("budget latch stayed set, so no later fire could retry the auto-clear")
-	}
-
-	restore()
-	if _, ok := jm.autoClearWatchOverBudgetNotification(cfg); !ok {
-		t.Fatal("retry auto-clear did not complete")
-	}
-	if live, _ := watchLiveAndAcceptingDelivery(jm, key, cfg); live {
-		t.Fatal("watch is still live after a successful retry")
-	}
-}
-
 func TestAbandonRunningJobsPersistFailureLeavesWatchLive(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

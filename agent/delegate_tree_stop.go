@@ -634,6 +634,7 @@ func (c *delegateTreeController) Close(ctx context.Context) error {
 	if err := c.closeRuntimeTree(ctx); err != nil {
 		return err
 	}
+	c.attentionCauses.clear()
 	return c.store.Close()
 }
 

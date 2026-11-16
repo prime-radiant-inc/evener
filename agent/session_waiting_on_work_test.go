@@ -223,7 +223,9 @@ func TestSessionHasWakeableWorkTimerHandoff(t *testing.T) {
 	}
 }
 
-func TestSessionHasWakeableWorkEventWatchBudgetHandoff(t *testing.T) {
+// An event watch's notification must keep the receiving session wakeable
+// from the fire until it is queued, on every fire.
+func TestSessionHasWakeableWorkEventWatchHandoff(t *testing.T) {
 	t.Parallel()
 	root := newTestSessionForState(t)
 	t.Cleanup(root.Close)
@@ -232,18 +234,15 @@ func TestSessionHasWakeableWorkEventWatchBudgetHandoff(t *testing.T) {
 	root.subagents.track(&subagent{id: child.ID(), sess: child})
 	jm := child.jobManager
 	observed := 0
-	res, err := jm.configureWatch(watchArgs{
+	_, err := jm.configureWatch(watchArgs{
 		Target: "*", Events: []string{"job.notification"}, ReceiverSessionID: root.ID(),
 		ReceiverNotify: func(n jobNotification) {
 			observed++
-			if jm.hasArmedWatch() {
-				t.Error("event watch must be budget-cleared before enqueue")
-			}
-			if observed == 1 && root.peekNotifications() != 0 {
-				t.Error("event watch notification must not yet be queued")
+			if !jm.hasNoticeEmissionInFlight() {
+				t.Error("event watch emission must be in flight until its notification is queued")
 			}
 			if !root.hasWakeableWork() {
-				t.Error("budget-cleared event watch must remain wakeable until enqueue")
+				t.Error("event watch must keep the receiver wakeable until enqueue")
 			}
 			root.enqueueJobNotificationAndNotify(n)
 		},
@@ -251,30 +250,30 @@ func TestSessionHasWakeableWorkEventWatchBudgetHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jm.mu.Lock()
-	_, cfg, ok := jm.watchConfigByIDLocked(res.WatchID)
-	if ok {
-		cfg.conditionFires = watchDeliveryBudget - 1
+	fire := func() {
+		jm.onSessionEvent(events.SessionEvent{
+			Kind: events.EventJobFinished, SessionID: child.ID(), Data: events.JobFinishedData{},
+		})
 	}
-	jm.mu.Unlock()
-	if !ok {
-		t.Fatal("event watch was not registered")
+	settled := func(wantQueued int) {
+		t.Helper()
+		jm.mu.Lock()
+		inFlight := jm.noticesInFlight
+		jm.mu.Unlock()
+		if inFlight != 0 || jm.hasNoticeEmissionInFlight() {
+			t.Fatal("handed-off event watch must leave no producer signal in flight")
+		}
+		if observed != wantQueued || root.peekNotifications() != wantQueued || !root.hasWakeableWork() {
+			t.Fatalf("handoff = observed:%d queued:%d wakeable:%t, want %d queued notifications", observed, root.peekNotifications(), root.hasWakeableWork(), wantQueued)
+		}
 	}
 	if root.hasWorkingSubagent() || child.autonomyInFlight() {
 		t.Fatal("child must be idle")
 	}
-	jm.onSessionEvent(events.SessionEvent{
-		Kind: events.EventJobFinished, SessionID: child.ID(), Data: events.JobFinishedData{},
-	})
-	jm.mu.Lock()
-	inFlight := jm.noticesInFlight
-	jm.mu.Unlock()
-	if inFlight != 0 || jm.hasNoticeEmissionInFlight() || jm.hasArmedWatch() {
-		t.Fatal("budget-cleared event watch must have no remaining producer signal")
-	}
-	if observed != 2 || root.peekNotifications() != 2 || !root.hasWakeableWork() {
-		t.Fatal("event watch must hand off its event and budget-clear notifications")
-	}
+	fire()
+	settled(1)
+	fire()
+	settled(2)
 }
 
 func TestSessionHasWakeableWorkJobFinalizationHandoff(t *testing.T) {
