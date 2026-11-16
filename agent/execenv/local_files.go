@@ -142,7 +142,71 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, pat
 	if bytes.IndexByte(b, 0) >= 0 {
 		return "", nil, fmt.Errorf("binary file (NUL byte): %s", path)
 	}
-	return NumberLines(string(b), offsetLine, limitLines), b, nil
+	return NumberLinesBytes(b, offsetLine, limitLines), b, nil
+}
+
+// NumberLinesBytes is NumberLines over the file's raw bytes. It exists so a
+// caller that already holds the bytes does not pay a whole-file string copy to
+// display a small window: the read_file path returns a 20-line window while
+// holding an 8 MiB file, and converting the file to a string first copies every
+// byte of it. The output is byte-identical to NumberLines(string(text), ...).
+func NumberLinesBytes(text []byte, offsetLine, limitLines *int) string {
+	start := 1
+	if offsetLine != nil && *offsetLine > 0 {
+		start = *offsetLine
+	}
+	limit := DefaultReadLines
+	if limitLines != nil && *limitLines > 0 {
+		limit = *limitLines
+	}
+	// A trailing newline terminates the last line rather than starting another,
+	// so it is not a row of its own. Trimming it first is what makes an offset
+	// past a one-line file report "" instead of an empty extra line. A CRLF
+	// terminator is removed as a unit, so the CR of a final empty CRLF line
+	// does not survive as a stray byte.
+	if bytes.HasSuffix(text, []byte("\r\n")) {
+		text = text[:len(text)-2]
+	} else {
+		text = bytes.TrimSuffix(text, []byte{'\n'})
+	}
+	offset := 0
+	for i := 1; i < start; i++ {
+		idx := bytes.IndexByte(text[offset:], '\n')
+		if idx < 0 {
+			return ""
+		}
+		offset += idx + 1
+	}
+	window := text[offset:]
+	var out strings.Builder
+	remaining := limit
+	lineNumber := start
+	consumed := 0
+	for remaining > 0 {
+		idx := bytes.IndexByte(window[consumed:], '\n')
+		var line []byte
+		if idx < 0 {
+			line = window[consumed:]
+			consumed = len(window)
+		} else {
+			line = window[consumed : consumed+idx]
+			consumed += idx + 1
+		}
+		// CRLF normalizes to LF per emitted line, so only the window is
+		// rewritten and the rest of the file is never touched. Only a line a
+		// newline terminated can end in the CR of a CRLF pair; a CR at the end
+		// of the final unterminated line is file content and stays.
+		if idx >= 0 {
+			line = bytes.TrimSuffix(line, []byte{'\r'})
+		}
+		fmt.Fprintf(&out, "%4d\t%s\n", lineNumber, line)
+		lineNumber++
+		remaining--
+		if idx < 0 {
+			break
+		}
+	}
+	return out.String()
 }
 
 // eachLine visits the '\n'-separated segments of text in order — including
@@ -182,25 +246,57 @@ func NumberLines(text string, offsetLine, limitLines *int) string {
 	if limitLines != nil && *limitLines > 0 {
 		limit = *limitLines
 	}
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.TrimSuffix(text, "\n")
-	// Skip to line start. Running out of newlines first means start is past
-	// the final segment.
+	// A trailing newline terminates the last line rather than starting another,
+	// so it is not a row of its own. Trimming it first is what makes an offset
+	// past a one-line file report "" instead of an empty extra line. A CRLF
+	// terminator is removed as a unit, so the CR of a final empty CRLF line
+	// does not survive as a stray byte.
+	if strings.HasSuffix(text, "\r\n") {
+		text = text[:len(text)-2]
+	} else {
+		text = strings.TrimSuffix(text, "\n")
+	}
+	// Skip to the window's first line by scanning newlines in the original
+	// text. Running out of newlines first means start is past the final
+	// segment. The scan does not normalize or copy, so skipping a long prefix
+	// costs only the newline scan, not a rewrite of every byte before it.
+	offset := 0
 	for i := 1; i < start; i++ {
-		idx := strings.IndexByte(text, '\n')
+		idx := strings.IndexByte(text[offset:], '\n')
 		if idx < 0 {
 			return ""
 		}
-		text = text[idx+1:]
+		offset += idx + 1
 	}
-	remaining := limit
+	windowText := text[offset:]
 	var out strings.Builder
-	eachLine(text, func(line string) bool {
-		fmt.Fprintf(&out, "%4d\t%s\n", start, line)
-		start++
+	remaining := limit
+	lineNumber := start
+	consumed := 0
+	for remaining > 0 {
+		idx := strings.IndexByte(windowText[consumed:], '\n')
+		var line string
+		if idx < 0 {
+			line = windowText[consumed:]
+			consumed = len(windowText)
+		} else {
+			line = windowText[consumed : consumed+idx]
+			consumed += idx + 1
+		}
+		// CRLF normalizes to LF per line, so only the emitted window is
+		// rewritten; the rest of the file is never touched. Only a line a
+		// newline terminated can end in the CR of a CRLF pair; a CR at the end
+		// of the final unterminated line is file content and stays.
+		if idx >= 0 {
+			line = strings.TrimSuffix(line, "\r")
+		}
+		fmt.Fprintf(&out, "%4d\t%s\n", lineNumber, line)
+		lineNumber++
 		remaining--
-		return remaining == 0
-	})
+		if idx < 0 {
+			break
+		}
+	}
 	return out.String()
 }
 
