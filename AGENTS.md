@@ -323,14 +323,15 @@ loading them, since each opens a socket the moment its body runs.
   on top of main and the PRs ahead of it and merges it when the required
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
-  dropped` names the queue's own removal reason. `failed_checks` means a
-  required check failed in the merge group; that candidate is not always
-  your PR, so read the merge-group failure comment on the PR and re-enqueue
-  when the failed lanes are unrelated to your change or look transient.
+  dropped` names the queue's own removal reason and the PR's merge-group
+  run. `failed_checks` means a required check failed in the
+  merge group; that candidate is not always your PR, so read the
+  merge-group run named in the `MERGEQ dropped` line and re-enqueue when
+  the failed lanes are unrelated to your change or look transient.
   `checks_timed_out` means the queue gave up waiting: confirm the
-  merge-group run completed green, then re-enqueue the same head. A
-  cancelled group posts no failure comment. Any other reason needs the
-  merge-group run inspected first.
+  merge-group run named in the `MERGEQ dropped` line completed green,
+  then re-enqueue the same head. A cancelled group posts no failure
+  comment. Any other reason needs the merge-group run inspected first.
   A repeated drop on one ambient failing row — every lane on the PR head is
   green, the failing check sits outside the diff, and the base's own latest
   run fails the same row — is the queue retesting a flake the base already

@@ -43,26 +43,28 @@ done
 case "$wait" in ''|*[!0-9]*) echo "--wait takes whole seconds, got: $wait" >&2; usage ;; esac
 wait=$((10#$wait))  # decimal: bash arithmetic reads a leading 0 as octal
 
-# status prints "STATE MERGE_SHA POSITION QUEUE_STATE" from one query, so the
-# PR's state and its queue entry are read at the same instant ("-" for absent
-# values). It exits nonzero when the query fails, and so does the script.
+# status prints "ID STATE MERGE_SHA POSITION QUEUE_STATE BASE" from one query,
+# so the PR's state, its queue entry and its base branch are read at the same
+# instant ("-" for absent values). It exits nonzero when the query fails, and
+# so does the script. BASE names the merge-group run's queue branch:
+# gh-readonly-queue/<BASE>/pr-<N>-<base tip>.
 status() {
   local out
-  if ! out=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id state mergeCommit{oid} mergeQueueEntry{position state}}}}' \
+  if ! out=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id state baseRefName mergeCommit{oid} mergeQueueEntry{position state}}}}' \
     -f o="${repo%%/*}" -f n="${repo##*/}" -F p="$pr" \
-    --jq '.data.repository.pullRequest | "\(.id) \(.state) \(.mergeCommit.oid // "-") \(.mergeQueueEntry.position // "-") \(.mergeQueueEntry.state // "-")"' 2>&1); then
+    --jq '.data.repository.pullRequest | "\(.id) \(.state) \(.mergeCommit.oid // "-") \(.mergeQueueEntry.position // "-") \(.mergeQueueEntry.state // "-") \(.baseRefName // "-")"' 2>&1); then
     echo "MERGEQ lookup failed: $out" >&2
     exit 2
   fi
   echo "$out"
 }
 
-# refresh sets id, st, sha, pos and qstate from status, stopping the script if
-# the lookup failed (a failure inside "$(...)" alone would not).
+# refresh sets id, st, sha, pos, qstate and base from status, stopping the
+# script if the lookup failed (a failure inside "$(...)" alone would not).
 refresh() {
   local s
   s=$(status) || exit 2
-  read -r id st sha pos qstate <<<"$s"
+  read -r id st sha pos qstate base <<<"$s"
 }
 
 # merged_sha prints the merge commit and succeeds when the PR's own state says
@@ -95,34 +97,61 @@ queue_drop_reason() {
     --jq '.data.repository.pullRequest.timelineItems.nodes[0] | if . == null then "" else "\(.createdAt | fromdateiso8601) \(.reason // "")" end'
 }
 
+# A merge-group run's headBranch is gh-readonly-queue/<base>/pr-<N>-<base tip>:
+# GitHub puts the base tip the queue tested on top of, not the PR head, so the
+# exact branch cannot be built before the run exists and the suffix is matched
+# on its prefix. The prefix is passed through the environment rather than
+# interpolated into the jq program, whose literals a branch name can break.
+#
+# merge_group_ref names how to reach this PR's merge-group run: its run id and
+# URL when the most recent match resolves, otherwise the queue branch prefix so
+# the operator can list it. It never fails the script: a run lookup that errors
+# or finds nothing falls back to the prefix, and a base the status read did not
+# supply falls back to the generic run.
+merge_group_ref() {
+  local prefix out
+  if [ -z "${base:-}" ] || [ "$base" = "-" ] || [ "$base" = "null" ]; then
+    printf 'the merge-group run for this PR'
+    return
+  fi
+  prefix="gh-readonly-queue/${base}/pr-${pr}-"
+  out=$(QUEUE_PREFIX="$prefix" gh run list --repo "$repo" --event merge_group --limit 100 \
+    --json databaseId,url,conclusion,headBranch \
+    --jq '[.[] | select(.headBranch | startswith(env.QUEUE_PREFIX))][0] | if . == null then "" else "merge-group run \(.databaseId) (\(.conclusion // "unknown")): \(.url)" end' 2>/dev/null) || out=""
+  if [ -n "$out" ]; then printf '%s' "$out"; else printf 'the merge-group run for queue branch prefix %s' "$prefix"; fi
+}
+
 # drop_outcome prints the one outcome line for a queue drop, keyed on the
 # queue's own removal reason so a green entry dropped by a batch rebuild is not
 # read as a failed PR. A removal event older than the drop it is meant to
-# explain is a stale prior event, not this drop's reason.
+# explain is a stale prior event, not this drop's reason. Every branch names
+# this PR's merge-group run, so the lane can go straight to it instead of
+# hunting through the Actions API.
 drop_outcome() {
-  local event created reason
+  local event created reason run
+  run=$(merge_group_ref)
   if ! event=$(queue_drop_reason 2>/dev/null); then
-    printf 'MERGEQ dropped: PR left the queue without merging (state=%s); could not read the queue removal reason; inspect the merge-group run before re-enqueueing\n' "$st"
+    printf 'MERGEQ dropped: PR left the queue without merging (state=%s); could not read the queue removal reason; see %s before re-enqueueing\n' "$st" "$run"
     return
   fi
   created=${event%% *}
   reason=${event#* }
   case "$reason" in
   failed_checks)
-    reason="a required check failed in the merge group; read the merge-group failure comment on the PR and re-enqueue when the failed lanes are unrelated to your change or look transient"
+    reason="a required check failed in the merge group; see $run and re-enqueue when the failed lanes are unrelated to your change or look transient"
     ;;
   checks_timed_out)
-    reason="the queue timed out waiting for checks; confirm this entry's merge-group run completed green, then re-enqueue the same head"
+    reason="the queue timed out waiting for checks; confirm $run completed green, then re-enqueue the same head"
     ;;
   "")
-    reason="the queue removal reason was unavailable; inspect the merge-group run before re-enqueueing"
+    reason="the queue removal reason was unavailable; see $run before re-enqueueing"
     ;;
   *)
-    reason="queue removal reason: $reason — inspect the merge-group run before re-enqueueing"
+    reason="queue removal reason: $reason — see $run before re-enqueueing"
     ;;
   esac
   if [ -n "$event" ] && [ "$created" -lt $(( $(date +%s) - 600 )) ]; then
-    reason="the latest queue removal event predates this drop; inspect the merge-group run before re-enqueueing"
+    reason="the latest queue removal event predates this drop; see $run before re-enqueueing"
   fi
   printf 'MERGEQ dropped: PR left the queue without merging (state=%s); %s\n' "$st" "$reason"
 }
