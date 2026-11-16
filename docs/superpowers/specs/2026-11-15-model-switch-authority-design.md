@@ -79,7 +79,7 @@ The change fails even when its common path looks right if:
 - Older hubs typed-decode and re-encode model requests, responses, and reads but relay unknown notifications opaquely. A client must not enable half of this protocol from a forwarded notification alone.
 - `thread/read` already carries `BootGeneration`, and its thread carries `InstanceID`. Revisions are comparable only inside that identity pair.
 - Live thread snapshots are materialized through the server envelope. The model-control snapshot needs a typed facet updated through `refreshFacets` and read by `appThread`; a callback fallback during read would violate the envelope's single-writer rule and could sample a different transition.
-- Existing `thread/model/changed` combines model metadata with a point-in-time context-usage sample. Usage is not model-control authority and changes independently, so the new snapshot must not make it part of the model-control revision domain.
+- Existing `thread/model/changed` combines canonical model metadata with effective context status. Context usage changes independently, and fallback can change the answering profile's window, assumed state, threshold, pressure, and source without changing the selected canonical model. Those context fields remain under their existing context-status authority and outside the model-control revision domain.
 - Generated AppWire TypeScript and protocol documentation come only from `make generate`.
 - Default behavior tests use scripted providers and real Evener code below the provider boundary. They require no network or credentials.
 
@@ -131,9 +131,6 @@ ModelControlSnapshot
     model
     reasoningEffortLevels
     supportsReasoning
-    contextWindow
-    contextAssumed
-    compactionThreshold
   desired, optional
     requestSequence
     clientMutationId, optional only for legacy callers
@@ -147,18 +144,16 @@ ModelControlSnapshot
 `active` is complete for the stable metadata controlled by the active model profile:
 
 - provider and model;
-- supported reasoning levels and whether reasoning is supported;
-- context-window capacity, whether that capacity is assumed, and the compaction threshold.
+- supported reasoning levels and whether reasoning is supported.
 
 The snapshot deliberately excludes independently changing state:
 
 - current reasoning effort remains owned by `thread/reasoning-effort/changed`;
 - vision routing remains owned by its existing setting and notification;
-- `contextUsed` is a session metric, not model metadata;
-- `contextPressure` is derived from current usage and the active context policy;
+- all context status remains owned by the existing context-status projection: usage, effective window, pressure, assumed state, compaction threshold, and window source;
 - usage, cost, work time, and turn status remain in their existing snapshot fields.
 
-A capable client updates the active model metadata atomically from `ModelControlSnapshot`, retains its latest context-usage sample, and recomputes the displayed pressure against the new active context policy. A fresh `thread/read` remains authoritative for current context usage. This removes the old event's mixed ownership without putting continuously changing usage under a model-control revision.
+A capable client updates provider, model, and reasoning capability atomically from `ModelControlSnapshot`. It continues to accept context status from the existing read and live carriers without treating those fields as canonical model identity. This separation matters when a fallback answers: the selected model remains `active`, while effective context status follows the profile that answered.
 
 `desired` exists only after this authority accepts a request. Its lifecycle means:
 
@@ -229,9 +224,9 @@ The snapshot facet is written only by `refreshFacets` and read only by `appThrea
 
 The response, notification, and read serialize the same `ModelControlSnapshot` type. A carrier may observe a later revision than the request that triggered it, but it never constructs a partial request-specific snapshot.
 
-The hub must stop discarding the model-set response: its local-daemon forwarding method and application method return the typed response to browser and native callers. This is required scope, not an optional optimization. Without it, the initiating composer would wait for notification delivery and the three carriers would not implement one protocol.
+Every hub hop must stop discarding the model-set response. The shared `appsource.Source` contract, `LocalDaemonSource`, `RemoteHubSource` and its remote result forwarding, the resume wrapper, the hub application method, and the browser-facing RPC all return the typed response to browser and native callers. This is required scope, not an optional optimization. Without it, the initiating composer would wait for notification delivery and the three carriers would not implement one protocol.
 
-Existing `thread/model/changed` remains for legacy clients. After a version-1 read, the shared reducer treats `ModelControlSnapshot` as the only writer of model provider, model, reasoning capability, and context-policy metadata. It does not let a delayed legacy event overwrite those fields. Current context usage remains owned by reads, and displayed pressure is recalculated when model context policy changes.
+Existing `thread/model/changed` remains for legacy clients and retains its existing context-status update for capable clients. After a version-1 read, the shared reducer treats `ModelControlSnapshot` as the only writer of model provider, model, and reasoning capability. It does not let a delayed legacy event overwrite those snapshot-owned fields. Effective context policy and usage remain separate because fallback may change them without a canonical model transition.
 
 ### End-to-end flow
 
@@ -261,18 +256,22 @@ Response and notification may arrive in either order. Whole-snapshot revision co
 
 The AppWire TypeScript package owns one pure reducer used by browser and native clients. It stores `ModelControlSnapshot` separately from unrelated thread state and derives the displayed model from it.
 
-For a response, notification, or read:
+The subscription starts before its establishing read. Until that read is accepted, each client quarantines model-control responses and notifications with the other notifications belonging to that in-flight read. If the read installs version 1, the client replays matching-authority quarantined carriers over the read snapshot in arrival order. If the read is rejected or does not advertise version 1, it discards the quarantine. A notification that races ahead of its capability-establishing read therefore cannot be lost or accidentally enable the protocol.
+
+For an accepted read, response, or notification:
 
 1. Apply the existing read-generation and boot-generation admission fences first.
-2. If no model-control capability has been installed by an accepted read, ignore response and notification snapshots and preserve legacy canonical behavior.
-3. Require exact `instanceId` and `bootGeneration` equality before comparing revision.
-4. On any identity mismatch, invalidate the thread, remove the old model-control snapshot, and use the existing replacement-read path. Never order opaque instance IDs.
-5. Within one authority, replace the whole snapshot only when its revision is strictly newer.
-6. Treat equal revision and equal content as a duplicate.
-7. Treat equal revision with different content as a protocol inconsistency: invalidate and reread rather than choosing fields.
-8. Ignore lower revisions.
-9. An accepted replacement read installs the new authority and its complete snapshot before any old-authority carrier can be considered.
-10. Preserve a newer live snapshot when a read that began earlier completes through the existing read-generation fences.
+2. Treat every accepted read as authoritative for capability presence. Version 1 atomically installs its complete snapshot. Absence of version 1 atomically removes any previously installed capability and model-control snapshot before the read's legacy model fields become visible.
+3. If no model-control capability has been installed by an accepted read, quarantine carriers for an in-flight establishing read as described above; otherwise ignore response and notification snapshots and preserve legacy canonical behavior.
+4. Require exact `instanceId` and `bootGeneration` equality before comparing revision.
+5. On a current-generation notification identity mismatch, invalidate the thread, remove the old model-control snapshot, and use the existing replacement-read path. Never order opaque instance IDs.
+6. Before a model-set response enters the shared reducer, compare the authority captured when its request was issued with the currently installed authority and client/read generation. If replacement has retired that request authority, discard the response. A delayed old response must not invalidate a freshly installed replacement. A response still current at admission follows the ordinary mismatch rule.
+7. Within one authority, replace the whole snapshot only when its revision is strictly newer.
+8. Treat equal revision and equal content as a duplicate.
+9. Treat equal revision with different content as a protocol inconsistency: invalidate and reread rather than choosing fields.
+10. Ignore lower revisions.
+11. An accepted replacement read installs the new authority and its complete snapshot before any old-authority carrier can be considered.
+12. Preserve a newer live snapshot when a read that began earlier completes through the existing read-generation fences.
 
 The display projection is:
 
@@ -313,13 +312,13 @@ All wire changes are additive:
 - one new notification;
 - no required change to the legacy model-change notification.
 
-A new client enables the protocol only after an accepted version-1 read. An older typed hub drops the version while re-encoding the read, so an opaquely relayed new notification cannot enable half the protocol. The client ignores it and retains conservative legacy behavior.
+A new client enables the protocol only after an accepted version-1 read. Every later accepted read re-evaluates that capability. A read without version 1 atomically disables the protocol and clears its snapshot, including when a same-ref connection moves from a new hub to an older hub, daemon, or daemonless source. An older typed hub drops the version while re-encoding the read, so an opaquely relayed new notification cannot enable half the protocol. The client discards its pre-read quarantine and retains conservative legacy behavior.
 
 A new client talking to an old daemon receives `{}` and no read capability. It continues showing the canonical model until the legacy model-change notification arrives.
 
 An old client talking to a new daemon ignores additive fields and the unknown notification. The new daemon still routes its legacy request through the snapshot state machine and emits the legacy model-change event when the active model changes.
 
-A new daemon behind a new hub preserves request identity, forwards the typed response, preserves the read capability and snapshot, and relays the typed notification.
+A new daemon behind new remote and controller hubs preserves request identity and the typed response through every source and RPC hop, preserves the read capability and snapshot, and relays the typed notification. A new controller connected to an old remote hub receives no capability and uses the conservative path.
 
 This replacement supersedes PR #6345. Do not merge or close #6345 until this replacement passes its behavior gates and Jesse separately authorizes that repository action. Revalidate rather than copying code from that branch.
 
@@ -335,18 +334,22 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Same-model pick is accepted | Revision advances and desired becomes applied even without a legacy model-change event |
 | Old active-model event arrives after a newer snapshot | Capable reducer cannot use it to overwrite snapshot-owned metadata |
 | Older response arrives after a newer notification | Lower snapshot revision is ignored |
+| Initial notification revision 2 arrives while capability read revision 1 is in flight | Client quarantines it, installs version 1 from the read, then replays revision 2 |
 | Equal revision arrives with different content | Protocol inconsistency invalidates and rereads |
 | Caller disconnects after request sequence assignment | Session admission reaches a per-call terminal outcome; shared state changes only if accepted |
 | Legacy request follows a version-1 accepted intent | If accepted, it advances the snapshot and replaces the old desired record, with no mutation ID |
 | Client reconnects through a capable path | One read restores active metadata and desired lifecycle from the whole snapshot |
+| Accepted replacement read omits version 1 | Client atomically clears capability and snapshot, discards quarantined new-protocol carriers, and resumes legacy behavior |
 | Thread is cleared | Client drops old snapshot and waits for replacement read before authority-aware mutation |
 | Daemon boot or thread instance changes | Identity reset happens before revision comparison; replacement read installs the new authority |
 | Request carries stale expected identity | Atomic binding refuses it before sequence assignment; replacement session is untouched |
 | Slow admission finishes after clear | Origin identity cannot update the replacement envelope or client authority |
+| Old model-set response arrives after replacement read | Request-generation fence proves its captured authority retired, so the response is discarded without invalidating the replacement |
 | Successful response is followed immediately by read | Synchronous envelope commit makes read return that revision or newer |
 | Old hub forwards notification but drops read fields | No version is installed, so notification is ignored |
 | Old daemon returns `{}` | No version is installed and no desired intent is invented |
 | New daemon serves old client | Old client ignores new protocol and follows legacy canonical changes |
+| Fallback with a different context window answers | Canonical active model snapshot is unchanged; existing context status reports the answering profile's effective policy |
 
 ## Testing strategy
 
@@ -365,7 +368,8 @@ Use real `Session` model switching with controlled profile resolution and safe p
 - an older deferred result unable to change a newer desired intent;
 - same-model acceptance advancing revision without `EventModelChanged`;
 - legacy acceptance replacing a prior identity-bearing desired intent;
-- complete active metadata captured in the same transition as profile commit.
+- complete canonical active metadata captured in the same transition as profile commit;
+- fallback changing effective context policy without changing canonical model-control state.
 
 ### Daemon, server, hub, and AppWire
 
@@ -373,7 +377,9 @@ Use a scripted provider with real session, event, envelope, RPC, and snapshot pa
 
 - a mid-turn set response carries the accepted pending snapshot;
 - response, notification, and read serialize the same snapshot shape and value;
-- the hub returns rather than discards the typed response;
+- `appsource.Source`, local-daemon forwarding, application RPC, and browser-facing RPC return rather than discard the typed response;
+- a controller hub forwards the exact typed response through `RemoteHubSource` and a new remote hub to and from the daemon;
+- a new controller connected to an old remote hub receives no capability and remains conservative;
 - success follows the same-origin envelope commit, so an immediate read cannot be older;
 - an idle-tail rejection reaches notification and read with exact mutation identity;
 - cached-envelope overlap cannot install an older revision;
@@ -398,11 +404,15 @@ Table-test:
 - local pick followed by foreign accepted pick;
 - same-model applied snapshot correcting stale client metadata;
 - delayed legacy model-change payload unable to overwrite snapshot-owned metadata;
+- fallback-derived context policy remaining authoritative while canonical model metadata stays in the snapshot;
 - legacy mutation snapshot replacing identity-bearing state;
 - same-authority reconnect and replacement-authority reset;
-- identity mismatch invalidation before revision comparison;
+- current-generation notification identity mismatch invalidation before revision comparison;
+- delayed response from a retired request authority discarded without invalidating the replacement;
 - capable full snapshot versus unsupported absent fields;
-- context usage retained and pressure recalculated when context-policy metadata changes.
+- accepted capable-to-unsupported read atomically clearing capability and snapshot;
+- revision-2 notification quarantined during the revision-1 capability read, then replayed;
+- unsupported establishing read discarding its quarantined model-control carriers.
 
 ### Browser
 
@@ -414,12 +424,15 @@ Drive the real store and composer with the AppWire test client. Prove:
 - rejected desired intent falls back to active after live delivery and reconnect;
 - same-model acceptance settles through response or notification;
 - old-hub split carriers never create a desired display;
+- a notification arriving during the capability-establishing read is replayed over that read;
+- a capable-to-old-hub read clears the old desired display and resumes legacy events;
+- a delayed response issued under a replaced authority cannot clear the replacement snapshot;
 - clear removes the old snapshot and waits for replacement read;
 - two views retain independent request fences while converging on shared state.
 
 ### Native
 
-Cover mutation UUID and expected-authority generation, typed-response forwarding, shared reducer behavior, live notification, reconnect recovery, old-hub and old-daemon fallback, clear-before-read behavior, and Board-row label fallback.
+Cover mutation UUID and expected-authority generation, typed-response forwarding, shared reducer behavior, live notification, establishing-read quarantine and replay, capable-to-unsupported downgrade, delayed retired-authority response, reconnect recovery, old-hub and old-daemon fallback, clear-before-read behavior, and Board-row label fallback.
 
 ### Repository gates
 
@@ -435,11 +448,11 @@ Run `make generate` and commit generated AppWire TypeScript and `docs/appwire-pr
 6. Same-model acceptance advances shared state without requiring `thread/model/changed`.
 7. Response, notification, and read cannot be combined into a mixed-revision value.
 8. A legacy accepted mutation advances the same snapshot and cannot leave stale desired state recoverable.
-9. Delayed legacy model events cannot regress snapshot-owned active metadata.
+9. Delayed legacy model events cannot regress snapshot-owned active metadata, while fallback-owned effective context status remains independent.
 10. A stale-authority request cannot mutate a replacement session, and a retired session cannot update the replacement projection.
 11. A read begun after a successful response observes that same-authority revision or newer.
 12. Restart, clear, and replacement discard old authority before revision comparison.
-13. New clients enable the protocol only after a version-1 read; old clients, hubs, and daemons retain conservative behavior.
+13. New clients enable the protocol only after a version-1 read and disable it on any accepted read that omits the version; old clients, hubs, and daemons retain conservative behavior.
 14. No client infers identity from order, target, timing, or warning text.
 15. Default tests exercise real Evener paths below a scripted provider boundary without network or credentials.
 
