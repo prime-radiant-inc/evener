@@ -1976,10 +1976,20 @@ test("the quiet watchdog parses how long the subagent has been quiet", () => {
     title: "Delegate quiet",
     tone: "neutral",
     delegateId: "dlg_1",
-    quiet: { window: "10m", lastActivityAt: "2026-09-28T20:01:00Z" },
+    quiet: { silence: "10m", lastActivityAt: "2026-09-28T20:01:00Z" },
   });
   expect(n?.outcome).toBeUndefined();
   expect(n?.message).toBeUndefined();
+});
+
+// A repeat of one silent stretch names the ongoing total ("quiet for 20m"),
+// not the window (agent/delegate_quiet_watch.go's BeginQuietAttention). The
+// wire fixture above only ever carries a first wake, whose total IS the
+// window, so this pins that the parsed field means the silence on every frame.
+test("a repeat quiet frame's parsed field carries the ongoing total", () => {
+  const frame = `<delegate-notification delegate_id="dlg_1">quiet for 20m; last activity: 2026-09-28T20:01:00Z</delegate-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(frame)), 0);
+  expect(n.quiet).toEqual({ silence: "20m", lastActivityAt: "2026-09-28T20:01:00Z" });
 });
 
 test("the quiet watchdog's prose is handed back as plain text", () => {
@@ -1987,7 +1997,7 @@ test("the quiet watchdog's prose is handed back as plain text", () => {
 quiet for 10m; last activity: 2026&amp;01
 </delegate-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(frame)), 0);
-  expect(n.quiet).toEqual({ window: "10m", lastActivityAt: "2026&01" });
+  expect(n.quiet).toEqual({ silence: "10m", lastActivityAt: "2026&01" });
   expect(n.prose).toBe("quiet for 10m; last activity: 2026&01");
 });
 
