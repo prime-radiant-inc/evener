@@ -82,7 +82,7 @@ func endNoticeFixture(t *testing.T) (base, sid string) {
 // the thing that makes the answer look like yes.
 func TestWatches_EndNoticeIsNotCountedAsADelivery(t *testing.T) {
 	base, sid := endNoticeFixture(t)
-	r, err := Watches(base, sid, WatchOpts{})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestWatches_EndNoticeIsNotCountedAsADelivery(t *testing.T) {
 // distinction has to be legible there and not only in the verbose delivery list.
 func TestWatches_RenderSeparatesEndNoticeFromDeliveries(t *testing.T) {
 	base, sid := endNoticeFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{WatchID: endNoticeWatchID})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{WatchID: endNoticeWatchID})
 	out := RenderWatches(r)
 
 	for _, want := range []string{

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -71,7 +72,7 @@ func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.R
 			if err != nil {
 				return nil, 0, fmt.Errorf("%s: %w", lr.Path, err)
 			}
-			tr, err := runnerReadTranscript(res.StateDir, rootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+			tr, err := runnerReadTranscript(context.Background(), res.StateDir, rootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 			if err != nil {
 				return nil, 0, fmt.Errorf("%s: %w", lr.Path, err)
 			}

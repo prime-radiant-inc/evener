@@ -86,7 +86,7 @@ func TestProbeMetricsComputedFromTranscripts(t *testing.T) {
 	}
 	writeFluencyTranscript(t, stateDir, rootID, turns)
 
-	got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, "openai/test-model"))
+	got, err := computeProbeMetrics(t.Context(), stateDir, mustWireNamesForModel(t, "openai/test-model"))
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestProbeMetricsProviderWireNames(t *testing.T) {
 			}
 			writeFluencyTranscript(t, stateDir, rootID, turns)
 
-			got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, tt.modelRef))
+			got, err := computeProbeMetrics(t.Context(), stateDir, mustWireNamesForModel(t, tt.modelRef))
 			if err != nil {
 				t.Fatalf("computeProbeMetrics: %v", err)
 			}
@@ -207,7 +207,7 @@ func TestProbeMetricsPrematureFixFlagged(t *testing.T) {
 		}
 		writeFluencyTranscript(t, stateDir, rootID, turns)
 
-		got, err := computeProbeMetrics(stateDir, nil)
+		got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 		if err != nil {
 			t.Fatalf("computeProbeMetrics: %v", err)
 		}
@@ -245,7 +245,7 @@ func TestProbeMetricsPrematureFixFlagged(t *testing.T) {
 		}
 		writeFluencyTranscript(t, stateDir, rootID, turns)
 
-		got, err := computeProbeMetrics(stateDir, nil)
+		got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 		if err != nil {
 			t.Fatalf("computeProbeMetrics: %v", err)
 		}
@@ -276,7 +276,7 @@ func TestProbeMetricsProseMentionIsNotExecution(t *testing.T) {
 	}
 	writeFluencyTranscript(t, stateDir, rootID, turns)
 
-	got, err := computeProbeMetrics(stateDir, nil)
+	got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestProbeMetricsIgnoresSubagentSessions(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir, nil)
+	got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestProbeMetricsRepeatKeyDiscriminates(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir, mustWireNamesForModel(t, "openai/test-model"))
+	got, err := computeProbeMetrics(t.Context(), stateDir, mustWireNamesForModel(t, "openai/test-model"))
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestProbeMetricsCountsToolRounds(t *testing.T) {
 		}),
 	})
 
-	got, err := computeProbeMetrics(stateDir, nil)
+	got, err := computeProbeMetrics(t.Context(), stateDir, nil)
 	if err != nil {
 		t.Fatalf("computeProbeMetrics: %v", err)
 	}
@@ -491,7 +491,7 @@ metrics:
 	})
 
 	res := probeResult{Probe: probe.ID, CanonicalToolCounts: map[string]int{}, ModelToolCounts: map[string]int{}}
-	applyProbeMetrics(&res, probe, stateDir, nil)
+	applyProbeMetrics(t.Context(), &res, probe, stateDir, nil)
 
 	if res.Metrics == nil {
 		t.Fatal("result metrics = nil, want the manifest-named metrics computed and reported")
@@ -531,7 +531,7 @@ func TestProbeMetricsSurfacesTranscriptError(t *testing.T) {
 
 	res := probeResult{Probe: "p", CanonicalToolCounts: map[string]int{}, ModelToolCounts: map[string]int{}}
 	probe := probeFile{Metrics: metricsSpec{WantsInvestigativeCallCount: true}}
-	applyProbeMetrics(&res, probe, stateDir, nil)
+	applyProbeMetrics(t.Context(), &res, probe, stateDir, nil)
 
 	if len(res.Findings) == 0 {
 		t.Fatal("corrupt transcript produced no findings; metrics errors must surface, not vanish")
@@ -554,7 +554,7 @@ func TestProbeMetricsEnforcesMaxToolCalls(t *testing.T) {
 	probe := probes[0]
 
 	over := probeResult{Probe: "p", ModelToolCounts: map[string]int{"shell": 3}}
-	applyProbeMetrics(&over, probe, t.TempDir(), nil)
+	applyProbeMetrics(t.Context(), &over, probe, t.TempDir(), nil)
 	found := false
 	for _, f := range over.Findings {
 		if f.Title == "tool call budget exceeded" {
@@ -566,7 +566,7 @@ func TestProbeMetricsEnforcesMaxToolCalls(t *testing.T) {
 	}
 
 	under := probeResult{Probe: "p", ModelToolCounts: map[string]int{"shell": 2}}
-	applyProbeMetrics(&under, probe, t.TempDir(), nil)
+	applyProbeMetrics(t.Context(), &under, probe, t.TempDir(), nil)
 	for _, f := range under.Findings {
 		if f.Title == "tool call budget exceeded" {
 			t.Fatalf("under-budget run produced a budget finding: %#v", under.Findings)

@@ -28,11 +28,11 @@ func TestDoctorDelegateReportsLegacyStateAndWatchFailures(t *testing.T) {
 		}},
 	})
 
-	jobs, err := Jobs(base, sidA, JobOpts{})
+	jobs, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
-	watches, err := Watches(base, sidA, WatchOpts{})
+	watches, err := Watches(t.Context(), base, sidA, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -55,11 +55,11 @@ func TestDoctorDelegateReportsLegacyStateAndWatchFailures(t *testing.T) {
 
 func TestDoctorDelegatePreservesShellAndWatchDiagnostics(t *testing.T) {
 	base, sid, _, _ := stableDoctorFixture(t)
-	jobs, err := Jobs(base, sid, JobOpts{})
+	jobs, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
-	watches, err := Watches(base, sid, WatchOpts{})
+	watches, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}

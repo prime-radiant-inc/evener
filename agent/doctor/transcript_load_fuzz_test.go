@@ -28,18 +28,18 @@ func TestLoadTranscriptRejectsUnsupportedFormatsWithoutPartialState(t *testing.T
 				t.Fatalf("write input: %v", err)
 			}
 
-			doc, err := loadTranscript(path)
+			doc, err := loadTranscriptContext(t.Context(), path)
 			if !errors.Is(err, transcript.ErrUnsupportedFormat) {
-				t.Fatalf("loadTranscript error = %v, want ErrUnsupportedFormat", err)
+				t.Fatalf("loadTranscriptContext error = %v, want ErrUnsupportedFormat", err)
 			}
 			if !reflect.DeepEqual(doc, transcriptDoc{}) {
-				t.Fatalf("loadTranscript accepted partial state: %+v", doc)
+				t.Fatalf("loadTranscriptContext accepted partial state: %+v", doc)
 			}
 		})
 	}
 }
 
-// FuzzDoctorLoadTranscript drives loadTranscript — the doctor package's real
+// FuzzDoctorLoadTranscript drives loadTranscriptContext — the doctor package's real
 // transcript-file decode seam (the per-line kind peek + Header/Entry
 // json.Unmarshal). Input is a raw transcript JSONL blob written to a temp file.
 // Beyond no-panic it asserts that every entry the loader accepted re-serializes
@@ -68,7 +68,7 @@ func FuzzDoctorLoadTranscript(f *testing.F) {
 			t.Fatalf("write input: %v", err)
 		}
 
-		doc, err := loadTranscript(path)
+		doc, err := loadTranscriptContext(t.Context(), path)
 		if err != nil {
 			return // malformed transcript: no-panic floor proven, stop
 		}
