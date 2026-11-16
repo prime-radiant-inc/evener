@@ -155,7 +155,8 @@ func TestAppendBatchWritesTheFreshBufferBytes(t *testing.T) {
 	if _, err := w.AppendBatch(turns); err != nil {
 		t.Fatalf("AppendBatch: %v", err)
 	}
-	first, err := w.AppendBatch([]schema.Turn{{Kind: schema.TurnAssistant, Message: llm.Assistant("four"), Timestamp: at}})
+	after := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("four"), Timestamp: at}
+	first, err := w.AppendBatch([]schema.Turn{after})
 	if err != nil {
 		t.Fatalf("AppendBatch (second): %v", err)
 	}
@@ -185,7 +186,9 @@ func TestAppendBatchWritesTheFreshBufferBytes(t *testing.T) {
 			wrote = append(wrote, line)
 		}
 	}
-	all := append(turns, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("four"), Timestamp: at})
+	all := make([]schema.Turn, 0, len(turns)+1)
+	all = append(all, turns...)
+	all = append(all, after)
 	if len(wrote) != len(all) {
 		t.Fatalf("transcript holds %d entry lines, want the %d written", len(wrote), len(all))
 	}
