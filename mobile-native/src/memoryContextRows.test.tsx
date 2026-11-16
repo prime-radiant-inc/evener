@@ -22,6 +22,7 @@ import {
 import {
 	memoryContextWireCases,
 	memoryContextWireItem,
+	memoryContextWireItems,
 } from "@evener/appwire-client/testing/memoryContextWireFixtures";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
@@ -223,10 +224,29 @@ afterEach(() => {
 	unmountMountedTrees();
 });
 
-// --- collapsed at every level, both System events settings ------------------
+// --- collapsed wherever the actions view shows it, both System events settings -
 
-describe("collapsed 'Refreshed my memory' at every level and gate", () => {
-	it.each(LEVELS)("stays closed with System events off at %s", (level) => {
+// Chat and Intent fold actions into one-line steps, so the refresh has no row of
+// its own there (Jesse, 2026-11-16). Chat projects at Intent on the phone, so it
+// follows the same rule. Both lists derive from LEVELS so a new level cannot
+// slip past these tests.
+const INTENT_LEVELS = LEVELS.filter((level) => level === "chat" || level === "intent");
+const ACTION_LEVELS = LEVELS.filter((level) => level !== "chat" && level !== "intent");
+const MEMORY_CONTEXT_ITEMS = memoryContextWireItems();
+
+describe("collapsed 'Refreshed my memory' wherever the actions view shows it", () => {
+	it.each(INTENT_LEVELS)("has no row at %s", (level) => {
+		// The fixture parses once here rather than per level and gate; every
+		// recorded refresh must be absent, not just the one that reads first.
+		for (const item of MEMORY_CONTEXT_ITEMS) {
+			for (const systemEvents of [false, true]) {
+				const { rows } = projectRows(level, [item], systemEvents);
+				expect(rows.some((row) => row.id === item.id)).toBe(false);
+			}
+		}
+	});
+
+	it.each(ACTION_LEVELS)("stays closed with System events off at %s", (level) => {
 		for (const name of memoryContextWireCases()) {
 			resetDisclosure();
 			const item = memoryContextWireItem(name);
@@ -241,7 +261,7 @@ describe("collapsed 'Refreshed my memory' at every level and gate", () => {
 		}
 	});
 
-	it.each(LEVELS)("stays closed with System events on at %s", (level) => {
+	it.each(ACTION_LEVELS)("stays closed with System events on at %s", (level) => {
 		for (const name of memoryContextWireCases()) {
 			resetDisclosure();
 			const { tree } = mountItem(memoryContextWireItem(name), level, true);

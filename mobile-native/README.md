@@ -141,11 +141,7 @@ cache boundary, failure recovery, checks and deferred C05/C06 work.
 
 ## Memory-refresh transcript updates
 
-Automatic index observations appear as standalone **Refreshed my memory** rows.
-They start folded at every detail level, including Full, with System events
-either on or off. General expansion defaults do not open them. Tapping shows
-scope, state, truncation and formatted content through the native Markdown
-renderer. Unavailable and revoked states stay visible while folded. A separate
+Automatic index observations appear as standalone **Refreshed my memory** rows
 **Source** disclosure exposes the complete original text, including content the
 formatted view omits; malformed observations open as that text directly and do
 not block later valid observations.

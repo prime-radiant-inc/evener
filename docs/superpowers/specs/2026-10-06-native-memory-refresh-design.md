@@ -19,7 +19,9 @@ and the deferred Android/iPad work remain outside scope.
 
 - Keep automatic refreshes as standalone rows in their recorded position.
 - Use **Refreshed my memory** with the existing native disclosure affordance.
-  Start closed at every verbosity level, including Full, with System events
+  Chat and Intent show no refresh row: they fold actions into one-line steps,
+  and the shared projector hides the typed kind there (Jesse, 2026-11-16).
+  From Tools up the row starts closed, including at Full, with System events
   either on or off. General expansion defaults must not open these rows.
 - Tapping opens scope, state and formatted index content through the existing
   native Markdown renderer. Reuse its current link and content policies.

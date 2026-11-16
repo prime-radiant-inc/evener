@@ -301,6 +301,12 @@ function isToolRepairNotice(item: ItemModel): boolean {
   return item.type === "systemMessage" && item.eventKind === TOOL_REPAIR_EVENT_KIND;
 }
 
+// An automatic memory refresh: its own collapsed "Refreshed my memory"
+// disclosure, never a generic lifecycle line.
+function isMemoryContextNotice(item: ItemModel): boolean {
+  return item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND;
+}
+
 // A daemon steer: instructions the daemon sent the agent, never a steer the
 // human wrote (source "user", the human-note kind included) and not a message
 // from the session's parent agent (source "parent").
@@ -312,10 +318,11 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
 
-  // A memory refresh is inspectable at every level and is never hidden by the
-  // system-events gate: its compact disclosure is how a reader sees recall
-  // happened. See eligibleDisclosure for its baseline opt-out.
-  if (eventKind === MEMORY_CONTEXT_EVENT_KIND) return "item";
+  // A memory refresh belongs to the actions view: it shows from Tools up, where
+  // a call is a row of its own, and stays out of Chat and Intent, where actions
+  // fold to one-line intent proxies (Jesse, 2026-11-16). The system-events gate
+  // never governs it. See eligibleDisclosure for its baseline opt-out.
+  if (isMemoryContextNotice(item)) return vector.toolCalls ? "item" : "hidden";
 
   // A repair notice, and a coded "no action needed" warning notice (the
   // daemon's context-budget notices arrive this way), show only where
@@ -421,7 +428,7 @@ function eligibleDisclosure(item: ItemModel): boolean {
   // A memory refresh ignores every general expansion baseline, including
   // Full's open-everything baseline; only an explicit reader choice opens it.
   // Keeping it out of the baseline inventory is that posture's other half.
-  if (item.type === "systemMessage" && item.eventKind === MEMORY_CONTEXT_EVENT_KIND) return false;
+  if (isMemoryContextNotice(item)) return false;
   // A visible system item may be a scaffold or a grouped diagnostic row. Keep
   // its source id available to the disclosure layer; grouping happens after
   // this projection and therefore sees only surviving rows.
@@ -481,6 +488,9 @@ function terminalFallbackEntry(
   if (sourceItem.type === "systemMessage" && sourceItem.eventKind === "notes-context" && !sharedNotesVisible(config)) {
     return undefined;
   }
+  // The actions view's hidden refresh never comes back either: it is not news of
+  // a failure, and a turn that shows only intent proxies stays that way.
+  if (isMemoryContextNotice(sourceItem) && !vector.toolCalls) return undefined;
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
 }
 
