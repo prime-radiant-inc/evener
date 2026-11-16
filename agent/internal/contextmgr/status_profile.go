@@ -39,9 +39,14 @@ func (cm *Manager) EstimateStatusForRevision(history []schema.Turn, sysPromptCha
 // point, because that copy was 8.24 MB of the 8.96 MB a sample cost at 10,000
 // turns.
 //
+// history may also be only the turns after a prefix the memo already covers —
+// ObserveHistory names that prefix. The manager derives the prefix from the
+// lengths, so the answer is unchanged and the caller's copy costs the turns
+// appended since the last sample rather than the whole transcript.
+//
 // ok=false means the manager could not answer for the whole history — the caller
-// passed nil for a revision the memo does not cover. It must not treat the zero
-// metrics as an answer; it should copy the history and ask again.
+// passed a copy or nil that leaves turns the memo never walked. It must not treat
+// the zero metrics as an answer; it should copy the history and ask again.
 func (cm *Manager) EstimateStatusForHistory(history []schema.Turn, historyLen, sysPromptChars, historyRevision int) (schema.ContextMetrics, float64, *provider.Profile, bool) {
 	prof, lastTokens, measuredLen, profileGen := cm.profileSnapshot()
 	window, assumed := EffectiveWindow(prof)
@@ -97,20 +102,29 @@ type estimateMemo struct {
 	revision    int
 }
 
-// ObserveHistory reports whether the manager already holds the estimate for the
-// history historyRevision names at historyLen turns.
+// ObserveHistory reports how many leading turns of the history historyRevision
+// names at historyLen turns the manager has already walked.
 //
-// The session asks this under its own lock. A true result means it may pass a
-// nil history to EstimateStatusForHistory and skip copying — the answer is
-// already materialized and exact. A false result means it must copy.
-func (cm *Manager) ObserveHistory(historyRevision, historyLen int) bool {
+// The session asks this under its own lock, and copies only history[covered:].
+// An append leaves the revision alone, so a covered prefix shorter than
+// historyLen is the ordinary post-append case: the walk and the copy both cost
+// the appended turns rather than the whole transcript. covered == historyLen
+// means no copy is needed at all, and a nil history answers exactly.
+//
+// ok=false means the manager holds nothing this revision can use, so the caller
+// must copy the whole history. The estimator re-checks its full key, so a
+// covered prefix it then refuses is answered by the same whole-history path.
+func (cm *Manager) ObserveHistory(historyRevision, historyLen int) (covered int, ok bool) {
 	if historyRevision < 0 {
-		return false
+		return 0, false
 	}
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
 	m := cm.estimate
-	return m.valid && m.revision == historyRevision && m.turns == historyLen
+	cm.mu.Unlock()
+	if !m.valid || m.revision != historyRevision || m.turns > historyLen {
+		return 0, false
+	}
+	return m.turns, true
 }
 
 // estimateUsedTokensMemo is estimateUsedTokensFor with the memo in front of it.
@@ -124,6 +138,9 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 	if measured {
 		base = measuredLen
 	}
+	// How many leading turns of the described history the caller did not copy
+	// because the memo covers them. Index i of history is turn skip+i.
+	skip := historyLen - len(history)
 
 	cm.mu.Lock()
 	memo := cm.estimate
@@ -132,7 +149,13 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 	reusable := memo.valid && historyRevision >= 0 && memo.revision == historyRevision &&
 		memo.base == base && memo.profileGen == profileGen &&
 		memo.lastTokens == lastTokens && memo.measuredLen == measuredLen &&
-		memo.sysPrompt == sysPromptChars && memo.turns <= historyLen
+		memo.sysPrompt == sysPromptChars && memo.turns <= historyLen &&
+		memo.turns >= skip
+	if !reusable && skip > base {
+		// The turns between the measured baseline and the caller's copy start are
+		// in neither the memo nor the copy, so this cannot answer for them.
+		return 0, false
+	}
 
 	parts := llm.TokenParts{}
 	walked := base
@@ -140,9 +163,9 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 		parts = memo.parts
 		walked = memo.turns
 	}
-	if history != nil && len(history) > walked {
-		parts = parts.Add(estimateTokenPartsFor(resolvedTargetOf(prof), history[walked:]))
-		walked = len(history)
+	if history != nil && len(history) > walked-skip {
+		parts = parts.Add(estimateTokenPartsFor(resolvedTargetOf(prof), history[walked-skip:]))
+		walked = skip + len(history)
 	}
 	// A nil history can only answer for turns already walked. Reporting a prefix
 	// as if it were the whole history is the stale-figure defect this memo must

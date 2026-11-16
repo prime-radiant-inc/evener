@@ -31,13 +31,15 @@ func (s *Session) ContextStatus() (ContextMetrics, float64) {
 		return ContextMetrics{}, 0
 	}
 	s.mu.RLock()
-	// When the manager already holds this revision's estimate, hand it no
-	// history at all rather than copying one out from under the lock. The copy
-	// was the largest part of a sample's cost at scale (8.24 MB of 8.96 MB at
-	// 10,000 turns), and its only purpose was to let the estimate run unlocked.
+	// Copy only the turns the manager has not walked: an append leaves the
+	// revision alone, so the ordinary post-append sample copies the appended
+	// tail rather than the transcript. The copy was the largest part of a
+	// sample's cost at scale (8.24 MB of 8.96 MB at 10,000 turns), and its only
+	// purpose is to let the estimate run unlocked.
+	covered, _ := s.contextMgr.ObserveHistory(s.historyRevision, len(s.history))
 	var hist []schema.Turn
-	if !s.contextMgr.ObserveHistory(s.historyRevision, len(s.history)) {
-		hist = append([]schema.Turn{}, s.history...)
+	if covered < len(s.history) {
+		hist = append([]schema.Turn{}, s.history[covered:]...)
 	}
 	histLen := len(s.history)
 	revision := s.historyRevision
