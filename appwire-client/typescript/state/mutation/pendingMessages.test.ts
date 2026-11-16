@@ -472,11 +472,13 @@ test("a refused promote stays suppressed after its entry's consumer settles", ()
     mutationSnapshotCurrent: true,
     recovery: [
       recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
-        payload: {
-          ref: "ref_a",
-          clientMutationId: "promote",
-          index: 0,
-          expectedEntryId: "q1",
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        // The store-produced shape: the promote's optimistic display carries
+        // the promoted row's identity beside its input (threads.ts puts it
+        // there), not the payload.
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
           sourceMutationId: "m_source",
         },
         recoveryReason: "promote: queue index 0 out of range (depth 0)",

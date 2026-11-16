@@ -720,8 +720,11 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       typeof record.payload?.expectedEntryId === "string" && record.method === "turn/promoteQueuedAsSteer"
         ? [record.payload.expectedEntryId]
         : [];
+    const display = record.optimisticDisplay;
+    const displaySource: Record<string, unknown> | undefined =
+      display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
     const sourceMutationId =
-      typeof record.payload?.sourceMutationId === "string" ? record.payload.sourceMutationId : undefined;
+      typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
     if (
       (entryLink.length > 0 && entryLink.every((entryId) => recordedEntryOwners.has(entryId))) ||
       (sourceMutationId !== undefined && recordedLineage.has(`client:${sourceMutationId}`))
