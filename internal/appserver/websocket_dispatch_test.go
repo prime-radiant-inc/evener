@@ -172,8 +172,8 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 func requireSlowMethodDoesNotHoldOrderedRequests[P, R any](t *testing.T, method string, params P, reply R) {
 	t.Helper()
 	server, httpServer, started, release := parkedMethodServer[P](t, method, reply)
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, nil
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		return appwire.ThreadModelSetResponse{}, nil
 	})
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
@@ -187,7 +187,8 @@ func requireSlowMethodDoesNotHoldOrderedRequests[P, R any](t *testing.T, method 
 
 	orderedDone := make(chan error, 1)
 	go func() {
-		orderedDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		orderedDone <- err
 	}()
 	if err := waitFor(t, "an ordered request to answer while "+method+" is parked", orderedDone); err != nil {
 		t.Fatalf("ordered request failed: %v", err)
@@ -448,7 +449,8 @@ func TestServeWebSocketMutationsDispatchSeriallyPerConnection(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		firstDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		firstDone <- err
 	}()
 	waitFor(t, "first request to start", firstStarted)
 
@@ -559,11 +561,12 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 	runMutation := func(marker string) chan error {
 		done := make(chan error, 1)
 		go func() {
-			done <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+			_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
 				Ref:           "local:" + threadID,
 				ModelProvider: "test-provider",
 				Model:         marker,
 			})
+			done <- err
 		}()
 		return done
 	}
@@ -849,7 +852,7 @@ func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives
 
 	// The same connection keeps serving: a routed request and the app-level
 	// ping both still answer.
-	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"}); err != nil {
+	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"}); err != nil {
 		t.Fatalf("routed request after panics failed: %v", err)
 	}
 	var out appwire.EmptyResponse

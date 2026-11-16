@@ -868,14 +868,27 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
-    let candidate = reduceModelControl(hydratedCandidate, {
-      kind: "read",
-      version: response.thread.evener.capabilities.modelControlVersion ?? 0,
-      snapshot: response.thread.evener.modelControl,
-    }).model;
-    // Local overlay preservation must not turn a rejected server read into
-    // accepted history or recovery authority.
-    if (candidate === before) return false;
+    if (hydratedCandidate === before) {
+      const heldControl = before?.modelControl;
+      const incomingControl = response.thread.evener.modelControl;
+      if (
+        before?.modelControlVersion === 1 &&
+        heldControl &&
+        response.thread.evener.capabilities?.modelControlVersion === 1 &&
+        incomingControl &&
+        heldControl.authority.instanceId === incomingControl.authority.instanceId &&
+        heldControl.authority.bootGeneration === incomingControl.authority.bootGeneration
+      ) {
+        const advanced = reduceModelControl(before, { kind: "notification", snapshot: incomingControl }).model;
+        if (advanced !== before) {
+          this.#model = advanced;
+          this.#publish();
+          this.#reclaimBackgroundModel();
+        }
+      }
+      return false;
+    }
+    let candidate = hydratedCandidate;
     if (request.preserveEnded && before?.overlay) {
       for (const item of Object.values(before.overlay)) {
         if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;

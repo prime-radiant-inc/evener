@@ -3,6 +3,7 @@ import {
   encodeTranscriptItem,
   hydrateThread,
   invalidateHistory,
+  type ModelControlSnapshot,
   type ThreadHistoryReadResponse,
   type ThreadHistoryTurnsListResponse,
   type ThreadItem,
@@ -3138,6 +3139,43 @@ it("does not let an old-generation read erase a newer history authority signal",
   expect(owner.acceptRead(oldRead, { lifetime: 1, readId: "old-read", boundary: "old-read-boundary" })).toBe(false);
   expect((await reader.openLocal(40)).status).toBe("recovery-needed");
   reader.dispose();
+  owner.dispose();
+});
+
+it("advances held model control without admitting a stale history read", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const control = (revision: number, lifecycle: "pending" | "rejected"): ModelControlSnapshot => ({
+    authority: { instanceId: threadId, bootGeneration: "1" },
+    revision,
+    active: {
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      reasoningEffortLevels: [],
+      supportsReasoning: false,
+    },
+    desired: {
+      requestSequence: 1,
+      clientMutationId: "11111111-1111-4111-8111-111111111111",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      lifecycle,
+    },
+  });
+  const baseline = read("baseline", 2);
+  baseline.requestGeneration = 2;
+  baseline.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  baseline.thread.evener.modelControl = control(1, "pending");
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "baseline", boundary: "baseline" })).toBe(true);
+
+  const stale = read("stale", 1);
+  stale.requestGeneration = 1;
+  stale.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  stale.thread.evener.modelControl = control(2, "rejected");
+  expect(owner.acceptRead(stale, { lifetime: 1, readId: "stale", boundary: "stale" })).toBe(false);
+  expect(owner.getSnapshot()?.history?.length).toBe(2);
+  expect(owner.getSnapshot()?.modelControl).toEqual(stale.thread.evener.modelControl);
   owner.dispose();
 });
 

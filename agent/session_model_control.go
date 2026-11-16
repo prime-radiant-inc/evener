@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -35,10 +35,10 @@ func (s *Session) validateModelControlAuthorityLocked(request ModelControlReques
 		return nil
 	}
 	if !hasMutation || !hasInstance || !hasGeneration {
-		return fmt.Errorf("model control identity requires client mutation, instance, and boot generation")
+		return errors.New("model control identity requires client mutation, instance, and boot generation")
 	}
 	if request.ExpectedInstanceID != s.id || request.ExpectedBootGeneration != s.bootGeneration {
-		return fmt.Errorf("model control authority does not match the active session generation")
+		return errors.New("model control authority does not match the active session generation")
 	}
 	return nil
 }

@@ -1030,7 +1030,7 @@ export function applyReadResponse<M extends ThreadModel>(
     historyFallback(resp) && model.modelControlVersion === 1
       ? { version: 1, snapshot: model.modelControl }
       : {
-          version: resp.thread.evener.capabilities.modelControlVersion ?? 0,
+          version: resp.thread.evener.capabilities?.modelControlVersion ?? 0,
           snapshot: resp.thread.evener.modelControl,
         };
   return publicModel<M>(reduceModelControl(next, { kind: "read", ...control }).model);
@@ -1337,7 +1337,7 @@ export function hydrateThread(
 ): ThreadModel {
   const fields = threadFields(resp, ref, now);
   const control = {
-    version: resp.thread.evener.capabilities.modelControlVersion ?? 0,
+    version: resp.thread.evener.capabilities?.modelControlVersion ?? 0,
     snapshot: resp.thread.evener.modelControl,
   };
   const olderFrontier = frontier;

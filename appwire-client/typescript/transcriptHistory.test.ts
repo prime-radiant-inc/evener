@@ -66,6 +66,16 @@ function pageOrderingModel(): ThreadModel {
   );
 }
 
+test("a legacy read without capabilities hydrates without model-control authority", () => {
+  const legacy = historyRead();
+  delete (legacy.thread.evener as { capabilities?: typeof legacy.thread.evener.capabilities }).capabilities;
+
+  const model = hydrateThread(legacy, "ref_t", 1000);
+
+  expect(model.modelControlVersion).toBeUndefined();
+  expect(model.modelControl).toBeUndefined();
+});
+
 test("reverse-order normal pages retain a newer tool result without advancing latest completeness", () => {
   const toolTurn = (version: number): Turn => ({
     id: "tool-turn",

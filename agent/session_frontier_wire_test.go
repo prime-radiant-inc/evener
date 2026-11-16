@@ -16,6 +16,9 @@ import (
 // while execution, queue, metadata and work values come from the real runtime.
 type frontierWireSource struct{ s *agent.Session }
 
+func (s frontierWireSource) ModelControlSnapshot() appwire.ModelControlSnapshot {
+	return appwire.ModelControlSnapshot{}
+}
 func (s frontierWireSource) LatestExecutionTurnID() string { return s.s.LatestExecutionTurnID() }
 func (s frontierWireSource) ContextStatus() (server.ContextMetrics, float64) {
 	return server.ContextMetrics{}, 0

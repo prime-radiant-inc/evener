@@ -170,7 +170,8 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_, _, _ = s.envelopeSource.ReasoningInfo()
 	_ = s.envelopeSource.VisionModel()
 	_ = s.envelopeSource.SessionMeta()
-	_ = s.model("test2")
+	modelControl := s.envelopeSource.ModelControlSnapshot()
+	_, _ = s.modelControl(modelControl.Authority)
 	_ = s.visionModel("off")
 	if err := s.name("renamed"); err != nil {
 		t.Error(err)

@@ -4470,7 +4470,7 @@ async function readThreadHydration(
       : hydrateThread(response, ref, now, frontier);
   const model = reduceModelControl(hydrated, {
     kind: "read",
-    version: response.thread.evener.capabilities.modelControlVersion ?? 0,
+    version: response.thread.evener.capabilities?.modelControlVersion ?? 0,
     snapshot: response.thread.evener.modelControl,
   }).model;
   // The response cut retires buffered input from the legacy hydrator because

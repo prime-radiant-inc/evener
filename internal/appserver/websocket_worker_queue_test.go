@@ -155,7 +155,8 @@ func TestServeWebSocketSlowReadWaitsForEarlierSerialRequest(t *testing.T) {
 
 	serialDone := make(chan error, 1)
 	go func() {
-		serialDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		serialDone <- err
 	}()
 	waitFor(t, "serial request to start", serialStarted)
 

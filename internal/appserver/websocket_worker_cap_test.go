@@ -485,7 +485,8 @@ func TestServeWebSocketConcurrentRequestsTakeTheirOwnSlots(t *testing.T) {
 
 	ordered := make(chan error, 1)
 	go func() {
-		ordered <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		ordered <- err
 	}()
 	if err := waitFor(t, "an ordered request to answer beside a full pool", ordered); err != nil {
 		t.Fatalf("ordered request: %v", err)
@@ -624,7 +625,8 @@ func TestServeWebSocketConcurrentRequestPoolsAreSeparate(t *testing.T) {
 	}
 	other := make(chan error, 1)
 	go func() {
-		other <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		other <- err
 	}()
 	if err := waitFor(t, "another pool's request to answer beside a full pool", other); err != nil {
 		t.Fatalf("another pool's request beside a full pool answered %v, want success", err)
@@ -658,7 +660,8 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	answered := make(chan error, 2)
 	set := func() {
 		go func() {
-			answered <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+			_, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+			answered <- err
 		}()
 	}
 	set()

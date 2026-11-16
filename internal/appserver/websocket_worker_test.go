@@ -174,7 +174,7 @@ func TestServeWebSocketDisconnectCancelsExecutingSerialMutationPromptly(t *testi
 	}
 
 	go func() {
-		_ = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+		_, _ = client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
 	}()
 	waitFor(t, "serial mutation to start", handlerStarted)
 
