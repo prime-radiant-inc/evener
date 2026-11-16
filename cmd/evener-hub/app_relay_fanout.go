@@ -17,6 +17,13 @@ func (r *hubRelay) startAcknowledgedFanout(
 		ticker := time.NewTicker(r.idleInterval)
 		defer ticker.Stop()
 		defer r.retireRelayHandle(handle)
+		// departed is the signal that some thread's subscriber count can have
+		// reached zero, so the idle check runs when that happens instead of on
+		// the backstop tick. It says only "look again": retireIdle re-reads the
+		// count, so a close for another thread costs one check and no
+		// retirement, and a missed close costs the tick's delay rather than a
+		// leaked relay.
+		departed := r.server.SubscriberDeparted()
 		type relayTargetState struct {
 			handle       *hubRelayHandle
 			state        *relayKeyState
@@ -449,6 +456,14 @@ func (r *hubRelay) startAcknowledgedFanout(
 				return
 			case <-routeChanged:
 				processPending()
+			case <-departed:
+				// Re-read before checking: a departure that lands while another
+				// case of this iteration runs closes the channel just read, and
+				// selecting on that closed channel again would spin.
+				departed = r.server.SubscriberDeparted()
+				if retireIdle() {
+					return
+				}
 			case <-ticker.C:
 				if retireIdle() {
 					return

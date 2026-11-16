@@ -339,11 +339,15 @@ type relaySupervisor struct {
 	// anchorEntry): the entry a give-up notice anchors after.
 	noticeAnchorEntry   uint64
 	consecutiveFailures int
+	// departed is the subscription registry's "a thread may have gone idle"
+	// signal, read once per generation like the ticker beside it.
+	departed <-chan struct{}
 }
 
 func (s *relaySupervisor) run() {
 	s.ticker = time.NewTicker(s.r.idleInterval)
 	defer s.ticker.Stop()
+	s.departed = s.r.server.SubscriberDeparted()
 	defer s.cleanupRelay()
 	s.argsByCallID = map[string]string{}
 	for {
@@ -415,6 +419,13 @@ func (s *relaySupervisor) run() {
 		select {
 		case <-s.relayCtx.Done():
 			return
+		case <-s.departed:
+			// The subscriber count can have reached zero, so check now rather
+			// than at the next backstop poll.
+			s.departed = s.r.server.SubscriberDeparted()
+			if s.retireIfIdle() {
+				return
+			}
 		case <-s.ticker.C:
 			if s.retireIfIdle() {
 				return
@@ -576,6 +587,13 @@ func (s *relaySupervisor) waitForRetry(delay time.Duration) bool {
 			cancelWait()
 			<-waitDone
 			return true
+		case <-s.departed:
+			s.departed = s.r.server.SubscriberDeparted()
+			if s.retireIfIdle() {
+				cancelWait()
+				<-waitDone
+				return true
+			}
 		case <-s.ticker.C:
 			if s.retireIfIdle() {
 				cancelWait()
@@ -605,6 +623,11 @@ func (s *relaySupervisor) subscribeForRecovery() (hubRelaySubscriptionResult, bo
 			return got, false
 		case <-s.relayCtx.Done():
 			return <-result, true
+		case <-s.departed:
+			s.departed = s.r.server.SubscriberDeparted()
+			if s.retireIfIdle() {
+				return <-result, true
+			}
 		case <-s.ticker.C:
 			if s.retireIfIdle() {
 				return <-result, true
