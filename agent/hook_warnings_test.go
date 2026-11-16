@@ -178,6 +178,62 @@ func TestInitPlugins_SupportedHandlerTypesNoTypeWarning(t *testing.T) {
 	}
 }
 
+// TestInitPlugins_MCPPrefixedMatcherWarns proves a Claude-style
+// mcp__<server>__<tool> hook matcher — the form evener does not use, because
+// dispatch presents MCP tools by their registered <server>__<tool> name —
+// produces one recorded load diagnostic naming the matcher, and that the
+// flagged hook still registers. The registered-form plugin is the negative
+// control: a matcher that will match must stay silent.
+func TestInitPlugins_MCPPrefixedMatcherWarns(t *testing.T) {
+	t.Parallel()
+	claudeForm := writePluginHooks(t, "porting-plugin", `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "mcp__memory__search", "hooks": [{"type": "command", "command": "echo claude-form"}]}
+			]
+		}
+	}`)
+	registeredForm := writePluginHooks(t, "registered-plugin", `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "memory__.*", "hooks": [{"type": "command", "command": "echo registered-form"}]}
+			]
+		}
+	}`)
+
+	// The session itself, so the same run also proves the flagged hook was not
+	// dropped: a diagnostic never refuses a matcher, it only reports one.
+	sess, err := NewSession(llm.NewClient(), NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		SessionConfig{PluginDirs: []string{claudeForm, registeredForm}, testOnly: testConfig{skipGitSnapshot: true}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var found []events.WarningData
+	var registered int
+	for _, w := range drainWarnings(t, sess) {
+		switch w.PluginName {
+		case "porting-plugin":
+			found = append(found, w)
+		case "registered-plugin":
+			registered++
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly 1 diagnostic for the mcp__-form matcher, got %d: %+v", len(found), found)
+	}
+	if found[0].EventName != "PreToolUse" {
+		t.Errorf("EventName = %q, want %q", found[0].EventName, "PreToolUse")
+	}
+	if registered != 0 {
+		t.Errorf("a registered <server>__<tool> matcher must not warn; got %d warnings", registered)
+	}
+	if got := sess.hookRunner.SupportedSummary()[plugin.HookPreToolUse]; got != 2 {
+		t.Errorf("SupportedSummary[PreToolUse] = %d, want 2: both matchers must still register and load", got)
+	}
+}
+
 // TestInitPlugins_ValidHooksProduceNoWarning is the negative control: a plugin
 // whose hooks are all well-formed and target supported events must produce no
 // hook-misconfiguration warning (this is purely additive diagnostics; it must

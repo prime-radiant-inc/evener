@@ -2154,14 +2154,18 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		s.logPluginLoadDiag(p)
 	}
 
-	// Validate every registered matcher ONCE at load time. An invalid-regex
+	// Inspect every registered matcher ONCE at load time. An invalid-regex
 	// matcher gets a single loud diagnostic here; MatchHooks then skips it
 	// silently at dispatch (no per-tool-call storm, and no dispatch-time
-	// EventWarning that would recurse through the Notification hook).
+	// EventWarning that would recurse through the Notification hook). A
+	// tool-event matcher written in Claude's mcp__<server>__<tool> form is
+	// diagnosed here too: it names a target no dispatch produces, because
+	// matchers see the registered <server>__<tool> name. Either way the hook
+	// still registers and loads — a diagnostic is a recovery aid, not a refusal.
 	for _, d := range runner.Validate() {
 		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
 			Source:     "hooks",
-			Title:      "invalid hook matcher",
+			Title:      d.Title,
 			Message:    d.Message,
 			PluginName: d.PluginName,
 			EventName:  d.Event,
