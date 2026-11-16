@@ -1559,6 +1559,11 @@ func (x *Index) releaseRecordBuffers() {
 	x.items.buf, x.items.flushed = nil, 0
 	x.turns.buf, x.turns.flushed = nil, 0
 	x.strings.buf, x.strings.flushed = nil, 0
+	// The turn order is derived from these records and holds a copied ID per
+	// turn, so it is the same idle-retention memory the buffers above are
+	// released for. A re-acquired handle rebuilds it on its first
+	// turn-addressed read.
+	x.turnOrder = turnOrderMemo{}
 }
 
 func randomName() (string, error) {
