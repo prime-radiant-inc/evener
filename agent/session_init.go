@@ -2716,6 +2716,74 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 	}
 }
 
+// retryFailedMCP redials every MCP server whose first connect failed and folds
+// the tools of each one that answers into this session's registry. A server that
+// fails its first connect registers nothing, so the lazy reconnect inside a
+// registered tool's closure can never run for it; this is the only path that
+// makes its tools available without a new session.
+//
+// Recovered tools land in the same registry and the same tool-name policy as a
+// server that connected at startup. Rebuilding the definition cache is what
+// makes them visible: prepareModelRequestWithError reads the cached definitions
+// under s.mu, so a rebuild before a round is prepared reaches that round's
+// request.
+//
+// ctx is the turn's: it bounds each attempt, and its ending abandons the rest of
+// the batch, so a Stop or a turn deadline is not held behind a stalled
+// handshake.
+func (s *Session) retryFailedMCP(ctx context.Context) {
+	if s == nil || s.mcpMgr == nil {
+		return
+	}
+	recovered, _ := s.mcpMgr.RetryFailed(ctx, s.reg)
+	if len(recovered) == 0 {
+		return
+	}
+	var notices []events.WarningData
+	s.mu.Lock()
+	for _, r := range recovered {
+		// A retry must not widen the session's tool policy: the startup
+		// registration is filtered by the allowed/denied/ceiling rules after
+		// initMCP returns, so a late registration applies the same predicate.
+		callable := 0
+		for _, name := range r.Tools {
+			if s.hubToolDenied(name) {
+				s.reg.Remove(name)
+				continue
+			}
+			callable++
+		}
+		// A server whose every tool the policy refuses is connected but offers
+		// this session nothing, and a notice saying its tools are callable would
+		// be false.
+		if callable > 0 {
+			notices = append(notices, firstConnectRecoveryWarning(r.Name))
+		}
+	}
+	s.mcpTools = s.mcpMgr.ToolDefinitions()
+	s.rebuildToolDefsCache()
+	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	s.mu.Unlock()
+	s.reportPromptRenderFailure(promptWarning)
+	for _, notice := range notices {
+		s.emitDiagnosticWarning(notice)
+	}
+}
+
+// firstConnectRecoveryWarning announces a server whose retry connected after its
+// first attempt failed. It carries the reconnected code because the connection
+// was restored, not dropped: clients keep restored connections out of the
+// actionable-failure set.
+func firstConnectRecoveryWarning(name string) events.WarningData {
+	return events.WarningData{
+		Source:  string(diagnostic.SourceMCP),
+		Code:    events.WarningCodeMCPReconnected,
+		Title:   "MCP server available",
+		Hint:    "Its tools are callable from the next round.",
+		Message: fmt.Sprintf("MCP server %q connected on a retry after its first connection attempt failed", name),
+	}
+}
+
 // nameRootScratch names a top-level session's scratch after the session,
 // unless its launcher already did, so the scratch the environment mints is that
 // session's directory in its own tree: kept across the session's ends, reopened
