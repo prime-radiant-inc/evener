@@ -63,7 +63,11 @@ func (x *Index) ReadAt(length int64, fn func(*Snapshot) error) error {
 
 // readAtLocked runs with both the handle and sidecar locks held.
 func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
-	view := &Index{readView: true, transcript: x.transcript, path: x.path,
+	// A current-boundary read is a fresh view per request over the handle's own
+	// table, so it answers from the handle: a memo kept on the view would die
+	// with it. The cut paths below build a view whose table is a private replay
+	// and leave it owning its own memo.
+	view := &Index{readView: true, transcript: x.transcript, path: x.path, derivedOwner: x,
 		meta: x.meta, items: x.items, turns: x.turns, updates: x.updates,
 		strings: x.strings, prelude: x.prelude, builder: x.builder}
 	if length >= x.meta.Length {

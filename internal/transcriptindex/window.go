@@ -145,7 +145,7 @@ func (x *Index) derivedLocked(fromEntryOrdinal int) ([4]int64, int, error) {
 	unavailable := false
 	hit := false
 	err := x.locked(false, func() error {
-		if m := &x.derived; m.valid && m.epoch == x.turns.epoch && m.turns == x.turns.n && m.from == fromEntryOrdinal {
+		if m := x.derivedStore(); m.valid && m.epoch == x.turns.epoch && m.turns == x.turns.n && m.from == fromEntryOrdinal {
 			sum, failed, unavailable, hit = m.usage, m.failed, m.unavailable, true
 			return nil
 		}
@@ -196,7 +196,8 @@ func (x *Index) derivedLocked(fromEntryOrdinal int) ([4]int64, int, error) {
 		return [4]int64{}, 0, err
 	}
 	if !hit {
-		x.derived = derivedMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, from: fromEntryOrdinal, usage: sum, failed: failed, unavailable: unavailable}
+		x.derivedCounter().derivedWalks++
+		*x.derivedStore() = derivedMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, from: fromEntryOrdinal, usage: sum, failed: failed, unavailable: unavailable}
 	}
 	if unavailable {
 		return [4]int64{}, 0, ErrDerivedTotalsUnavailable

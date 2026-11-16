@@ -298,6 +298,9 @@ type Index struct {
 	stale bool
 	// rebuilds counts full builds by this handle, for tests.
 	rebuilds int
+	// derivedWalks counts DerivedTotals full walks by this handle's table, for
+	// tests. A memo hit does not walk, so a repeated read leaves this alone.
+	derivedWalks int
 	// refusing marks a handle opened by OpenRefusing: it runs no full
 	// rebuild and never blocks on the sidecar's lock, in any operation.
 	refusing bool
@@ -314,6 +317,12 @@ type Index struct {
 	// change goes through table.write, which bumps the epoch: stampTurn rewrites
 	// a turn's own slot in place, so the count alone cannot detect a stale sum.
 	derived derivedMemo
+	// derivedOwner is the handle whose derived memo this view answers to. A
+	// current-boundary read wraps itself in a fresh view per request, so a memo
+	// stored on the view would be discarded before the next request could reuse
+	// it and every read of a large history would walk every turn again. The view
+	// writes its answer to both, and reads through to the owner.
+	derivedOwner *Index
 }
 
 // derivedMemo is one DerivedTotals answer with the table state it describes.
@@ -328,6 +337,26 @@ type derivedMemo struct {
 	// or an inexact failure count would find it again, and a past-thread read
 	// must not repeat that walk per request.
 	unavailable bool
+}
+
+// derivedStore is where a view keeps its DerivedTotals answer: the handle that
+// outlives it, so the next request's view can reuse it. A reconstructed cut
+// view keeps its own, because its table is a private replay with an epoch that
+// says nothing about the handle's records.
+func (x *Index) derivedStore() *derivedMemo {
+	if x.derivedOwner != nil {
+		return &x.derivedOwner.derived
+	}
+	return &x.derived
+}
+
+// derivedCounter is the handle whose walk count this view increments, for the
+// same reason derivedStore names one: the view is per request.
+func (x *Index) derivedCounter() *Index {
+	if x.derivedOwner != nil {
+		return x.derivedOwner
+	}
+	return x
 }
 
 // transcriptFile is what the index holds of the transcript file: positioned
