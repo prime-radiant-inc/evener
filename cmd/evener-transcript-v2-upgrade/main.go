@@ -22,6 +22,11 @@ import (
 
 const legacyFormatVersion = 1
 
+// transcriptReadBufferBytes is the scan buffer both transcript passes read
+// through, matching the repo's other transcript readers: one underlying read
+// per 64 KiB instead of bufio's 4 KiB default.
+const transcriptReadBufferBytes = 64 * 1024
+
 // Sentinels for the ways a transcript can fail inspection or conversion, so
 // callers can tell them apart without reading the message.
 var (
@@ -56,6 +61,20 @@ type preparedTranscript struct {
 	data            []byte
 	original        os.FileInfo
 	removedAPICalls int
+}
+
+// transcriptFile is the transcript inspectTranscriptHeader and
+// prepareTranscript read: io.ReadCloser plus the Stat their size and mtime
+// checks need.
+type transcriptFile interface {
+	io.ReadCloser
+	Stat() (os.FileInfo, error)
+}
+
+// openTranscriptFile opens a transcript for reading; a test swaps it to
+// observe the reads a pass issues. Production never assigns it.
+var openTranscriptFile = func(path string) (transcriptFile, error) {
+	return os.Open(path)
 }
 
 func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
@@ -197,7 +216,7 @@ func discoverTranscripts(root string) ([]string, error) {
 }
 
 func inspectTranscriptHeader(path string) (int, os.FileInfo, error) {
-	file, err := os.Open(path)
+	file, err := openTranscriptFile(path)
 	if err != nil {
 		return 0, nil, fmt.Errorf("open: %w", err)
 	}
@@ -206,7 +225,7 @@ func inspectTranscriptHeader(path string) (int, os.FileInfo, error) {
 	if err != nil {
 		return 0, nil, fmt.Errorf("stat: %w", err)
 	}
-	line, complete, bytesRead, err := transcript.ReadLine(bufio.NewReader(file), transcript.DefaultMaxLineBytes)
+	line, complete, bytesRead, err := transcript.ReadLine(bufio.NewReaderSize(file, transcriptReadBufferBytes), transcript.DefaultMaxLineBytes)
 	if err != nil {
 		return 0, nil, fmt.Errorf("record 1: %w", err)
 	}
@@ -235,7 +254,7 @@ func inspectTranscriptHeader(path string) (int, os.FileInfo, error) {
 }
 
 func prepareTranscript(path string) (preparedTranscript, error) {
-	file, err := os.Open(path)
+	file, err := openTranscriptFile(path)
 	if err != nil {
 		return preparedTranscript{}, fmt.Errorf("%s: open: %w", path, err)
 	}
@@ -244,7 +263,7 @@ func prepareTranscript(path string) (preparedTranscript, error) {
 	if err != nil {
 		return preparedTranscript{}, fmt.Errorf("%s: stat: %w", path, err)
 	}
-	reader := bufio.NewReader(file)
+	reader := bufio.NewReaderSize(file, transcriptReadBufferBytes)
 
 	headerLine, complete, bytesRead, err := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 	if err != nil {
