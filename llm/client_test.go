@@ -549,7 +549,7 @@ func TestClient_Stream_LogsARefusedNilStreamAsAFailure(t *testing.T) {
 		t.Fatalf("read api log: %v", err)
 	}
 	var outcome string
-	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(body)), "\n") {
 		if line == "" {
 			continue
 		}
