@@ -401,6 +401,13 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	if err != nil {
 		return nil, RewriteErrorProvider(err, t.name)
 	}
+	// An adapter that reports success with no stream is a broken contract: the
+	// stamping wrapper reads the inner channel on every iteration, so a nil
+	// inner dereferences it and kills the process. Refuse it here, where the
+	// adapter's answer becomes a stream the caller can read.
+	if st == nil {
+		return nil, RewriteErrorProvider(fmt.Errorf("%w: provider %q returned no stream", ErrStreamUnsupported, t.name), t.name)
+	}
 	return newProviderStampStream(st, t.name), nil
 }
 

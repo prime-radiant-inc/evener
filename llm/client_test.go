@@ -477,6 +477,40 @@ func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
 	}
 }
 
+// TestClient_Stream_RefusesANilStreamFromAnAdapter verifies that an adapter
+// returning a nil stream with no error cannot reach the stamping wrapper.
+// pump reads the inner stream's channel on every iteration, so a nil inner
+// dereferences it and kills the process; an adapter is a plugin, and a plugin
+// that reports success with nothing to read is a broken contract, not a
+// stream. The caller gets an error it can act on instead of a crash.
+func TestClient_Stream_RefusesANilStreamFromAnAdapter(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls its neighbours with a shared t.
+	c := NewClient()
+	c.Register(&nilStreamAdapter{name: "openai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatalf("Stream returned a nil stream with no error: st=%v", st)
+	}
+	if st != nil {
+		t.Fatalf("Stream returned a stream alongside its error: %v", st)
+	}
+}
+
+// nilStreamAdapter reports success with no stream, the shape a benchmark-only
+// adapter has.
+type nilStreamAdapter struct{ name string }
+
+func (a *nilStreamAdapter) Name() string { return a.name }
+
+func (a *nilStreamAdapter) Complete(context.Context, Request) (Response, error) {
+	return Response{Provider: a.name, Message: Assistant("done")}, nil
+}
+
+func (a *nilStreamAdapter) Stream(context.Context, Request) (Stream, error) { return nil, nil }
+
 func TestClient_Stream_DoesNotRetryAutomatically(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
