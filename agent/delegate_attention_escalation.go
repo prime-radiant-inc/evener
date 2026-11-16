@@ -89,6 +89,10 @@ func (s *Session) escalateOneUnreachableDelegateAttention(plan delegateFencedAtt
 const (
 	delegateAttentionRestoreLabel  = "restore delegate attention"
 	delegateAttentionEscalateLabel = "escalate unreachable delegate attention"
+	// delegateAttentionDriveLabel names the wake the refusal warning reports:
+	// the drive that would start the delegate's consumption generation, or
+	// the eligibility check that keeps it out of the drive's selection.
+	delegateAttentionDriveLabel = "drive delegate attention"
 )
 
 // delegateAttentionWarning names one failure episode: an action failing for
@@ -108,17 +112,24 @@ type delegateAttentionWarning struct {
 // warning has its own code, so clients show it only at their most detailed
 // level; and the daemon log gets the whole error, recoverable wherever the
 // transcript hides it.
-func (s *Session) warnDelegateAttentionFailed(action, delegateID string, err error) {
-	cause := err.Error()
-	key := delegateAttentionWarning{action: action, delegateID: delegateID}
+// recordDelegateAttentionWarningDetail stores detail as key's warned episode
+// and reports whether this call says something new — a first warning for the
+// episode, or a changed detail — so each warner logs and emits only then.
+func (s *Session) recordDelegateAttentionWarningDetail(key delegateAttentionWarning, detail string) bool {
 	s.delegateAttentionWarnMu.Lock()
 	previous, warned := s.delegateAttentionWarned[key]
 	if s.delegateAttentionWarned == nil {
 		s.delegateAttentionWarned = make(map[delegateAttentionWarning]string)
 	}
-	s.delegateAttentionWarned[key] = cause
+	s.delegateAttentionWarned[key] = detail
 	s.delegateAttentionWarnMu.Unlock()
-	if warned && previous == cause {
+	return !warned || previous != detail
+}
+
+func (s *Session) warnDelegateAttentionFailed(action, delegateID string, err error) {
+	cause := err.Error()
+	key := delegateAttentionWarning{action: action, delegateID: delegateID}
+	if !s.recordDelegateAttentionWarningDetail(key, cause) {
 		return
 	}
 	slog.Warn("delegate attention failed", "action", action, "session", s.ID(), "delegate", delegateID, "error", cause)
@@ -133,6 +144,38 @@ func (s *Session) delegateAttentionWarningResolved(action, delegateID string) {
 	s.delegateAttentionWarnMu.Lock()
 	delete(s.delegateAttentionWarned, delegateAttentionWarning{action: action, delegateID: delegateID})
 	s.delegateAttentionWarnMu.Unlock()
+}
+
+// warnDelegateAttentionRefused reports that predicate refused one of
+// delegateID's attention wakes or drive starts, once per refusal episode. A
+// guard that silently refused left a stranded lane indistinguishable from a
+// quiet one (#6330), so every refusal says which predicate held the wake: the
+// predicate rides the warning's structured RefusedPredicate field (a stable
+// token, never prose) beside the delegate it held. The episode ends when the
+// delegate no longer owes attention (forgetSettledDelegateAttentionWarnings)
+// or the predicate changes, which warns again under the new token. The
+// warning has its own code, so clients show it only at their most detailed
+// level; the daemon log gets the same facts.
+func (s *Session) warnDelegateAttentionRefused(delegateID, predicate string) {
+	if predicate == "" {
+		return
+	}
+	key := delegateAttentionWarning{action: delegateAttentionDriveLabel, delegateID: delegateID}
+	if !s.recordDelegateAttentionWarningDetail(key, predicate) {
+		return
+	}
+	slog.Warn("delegate attention drive refused", "action", delegateAttentionDriveLabel, "session", s.ID(), "delegate", delegateID, "predicate", predicate)
+	// The message names the delegate: clients that render only the warning's
+	// text (web and native systemEventWords) would otherwise show one
+	// identical line for every delegate the same predicate holds, and the
+	// structured fields are the machine contract, not the display.
+	s.emit(events.WarningData{
+		Message:          delegateAttentionDriveLabel + " refused for delegate " + delegateID + ": " + predicate,
+		Source:           "delegate",
+		Code:             events.WarningCodeDelegateAttentionDriveRefused,
+		DelegateID:       delegateID,
+		RefusedPredicate: predicate,
+	})
 }
 
 // forgetSettledDelegateAttentionWarnings ends the failure episode of every

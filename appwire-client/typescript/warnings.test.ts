@@ -14,6 +14,7 @@ import {
   isInformationalWarning,
   WarningCodeContextBudget,
   WarningCodeContextWindowAssumed,
+  WarningCodeDelegateAttentionDriveRefused,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
   WarningCodePluginCompatibility,
@@ -41,6 +42,10 @@ describe("the informational codes are bound to agent/events/payloads.go", () => 
 
   test("the delegate-attention restore code is the daemon's own constant", () => {
     expect(WarningCodeDelegateAttentionRestore).toBe(goWarningCode("WarningCodeDelegateAttentionRestore"));
+  });
+
+  test("the delegate-attention drive-refused code is the daemon's own constant", () => {
+    expect(WarningCodeDelegateAttentionDriveRefused).toBe(goWarningCode("WarningCodeDelegateAttentionDriveRefused"));
   });
 
   test("the context-window-assumed code is the daemon's own constant", () => {
@@ -99,6 +104,24 @@ describe("isInformationalWarning", () => {
           type: "systemMessage",
           eventKind: "warning",
           raw: { warning: { title: "Evener error", code: WarningCodeDelegateAttentionRestore } },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  // A guard predicate holding a delegate's owed attention: the daemon retries
+  // the wake on its own while the attention is owed, so it is detail for Full,
+  // not an alarm at every level.
+  test("true for a delegate-attention drive-refused warning, as an item or a notice", () => {
+    expect(isInformationalWarning(warningItem({ warning: { code: WarningCodeDelegateAttentionDriveRefused } }))).toBe(
+      true,
+    );
+    expect(
+      isInformationalWarning(
+        warningItem({
+          type: "systemMessage",
+          eventKind: "warning",
+          raw: { warning: { title: "Evener error", code: WarningCodeDelegateAttentionDriveRefused } },
         }),
       ),
     ).toBe(true);
