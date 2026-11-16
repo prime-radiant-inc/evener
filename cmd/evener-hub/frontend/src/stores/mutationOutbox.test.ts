@@ -929,6 +929,47 @@ describe("MutationOutbox discovery", () => {
     expect(discoveries).toContainEqual({ targets: [TARGET], reason: "broadcast" });
   });
 
+  test("a retire that removed a recovery row wakes sibling tabs' discovery", async () => {
+    const channels = new Set<TestBroadcastChannel>();
+    const createBroadcastChannel = (name: string) => new TestBroadcastChannel(name, channels);
+    const tabADiscoveries: Array<{ targets: string[]; reason: string }> = [];
+    const tabBDiscoveries: Array<{ targets: string[]; reason: string }> = [];
+    const tabA = new MutationOutbox(
+      new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence("a") }),
+      {
+        getClient: () => READY_CLIENT,
+        onDiscover: (targets, reason) => {
+          tabADiscoveries.push({ targets, reason });
+        },
+        createBroadcastChannel,
+      },
+    );
+    const tabB = new MutationOutbox(new MutationOutboxIndexedDB({ indexedDB, databaseName }), {
+      getClient: () => READY_CLIENT,
+      onDiscover: (targets, reason) => {
+        tabBDiscoveries.push({ targets, reason });
+      },
+      createBroadcastChannel,
+    });
+    await tabA.start();
+    await tabB.start();
+    tabADiscoveries.length = 0;
+    tabBDiscoveries.length = 0;
+
+    // The retire side: this tab deleted the shared recovery row and refreshed
+    // its own projection; only the sibling tabs still cache the stale row.
+    // The wake is the broadcast, not local discovery: the sibling's entries
+    // are what must name the ref, so a local-only regression stays red.
+    tabA.announceCrossTabWork(TARGET);
+    await discovered(() => tabBDiscoveries.some((entry) => entry.reason === "broadcast"));
+    await tabA.stop();
+    await tabB.stop();
+    expect(tabBDiscoveries).toContainEqual({ targets: [TARGET], reason: "broadcast" });
+    // The announcing tab never scheduled local discovery from its own wake:
+    // a regression to local scheduling shows here as a broadcast-reason entry.
+    expect(tabADiscoveries.filter((entry) => entry.reason === "broadcast")).toEqual([]);
+  });
+
   test("a discovery failure cannot report a committed message as a failed submission", async () => {
     const storage = new MutationOutboxIndexedDB({ indexedDB, databaseName });
     const outbox = new MutationOutbox(storage, {

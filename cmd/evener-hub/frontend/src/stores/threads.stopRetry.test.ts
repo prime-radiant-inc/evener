@@ -25,6 +25,7 @@ import {
   acquireBackgroundThread,
   discardRecoveryMutation,
   installHydrationRetrySchedulerForTests,
+  installMutationBroadcastChannelForTests,
   installResumeRetrySchedulerForTests,
   notifyReadyForMutationDispatch,
   removeQueuedMutation,
@@ -612,6 +613,36 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     } finally {
       vi.useRealTimers();
       openSpy.mockRestore();
+    }
+  });
+
+  // The discard deletes a shared recovery row the same way a retire does, so
+  // sibling tabs need the same wake or they keep rendering the row (with its
+  // Retry/Discard affordances) until an unrelated event re-projects.
+  test("a discarded recovery row broadcasts the cross-tab wakeup", async () => {
+    const wakeups: string[] = [];
+    const uninstallChannel = installMutationBroadcastChannelForTests(() => {
+      const channel = new EventTarget();
+      return Object.assign(channel, {
+        postMessage(message: unknown) {
+          const wakeup = message as { version?: number; targetRef?: string };
+          if (wakeup.version === 1 && typeof wakeup.targetRef === "string") wakeups.push(wakeup.targetRef);
+        },
+        close() {},
+      });
+    });
+    try {
+      const indexedDB = new IDBFactory();
+      const databaseName = "evener-mutation-outbox-discard-cross-tab-wakeup";
+      const { storage } = await hydratedFallbackTarget({ indexedDB, databaseName });
+      await nextMacrotask();
+      const row = await storage.enqueueIntent(queueIntent("persisted"));
+      await storage.transferToRecovery(row.clientMutationId, "rejected");
+      expect(await discardRecoveryMutation(row.clientMutationId, "ref_a")).toBe(true);
+      expect(wakeups).toContain("ref_a");
+      storage.close();
+    } finally {
+      uninstallChannel();
     }
   });
 
