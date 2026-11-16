@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -89,20 +90,26 @@ var lintGateCommands = map[string]string{
 // Empty output is the vacuity failure. It means make never reached the point
 // of printing a recipe, so every assertion built on the output would hold
 // against nothing; it fails loudly here instead.
-func makeTargetsDryRun(t *testing.T, makePath string, targets ...string) string {
-	t.Helper()
-	cmd := exec.Command(makePath, append([]string{"-n", "-k"}, targets...)...)
-	// A parent make (this suite runs under `make test`) exports its own flags,
-	// job-server file descriptors and recursion depth. Inheriting them makes
-	// the child warn about an unavailable job server and can change what it
-	// prints, so the child starts from a clean slate.
-	for _, env := range os.Environ() {
-		name, _, _ := strings.Cut(env, "=")
+// cleanMakeEnv is the process environment with a parent make's own flags, job
+// server, and recursion depth removed. A parent make (this suite runs under
+// `make test`) exports them, and inheriting them makes the child warn about an
+// unavailable job server and can change what it prints.
+func cleanMakeEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
 		if name == "MAKEFLAGS" || name == "MFLAGS" || name == "MAKELEVEL" {
 			continue
 		}
-		cmd.Env = append(cmd.Env, env)
+		env = append(env, entry)
 	}
+	return env
+}
+
+func makeTargetsDryRun(t *testing.T, makePath string, targets ...string) string {
+	t.Helper()
+	cmd := exec.Command(makePath, append([]string{"-n", "-k"}, targets...)...)
+	cmd.Env = cleanMakeEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -298,6 +305,85 @@ func TestMakeLintGeneratedRegeneratesAndDiffsHEAD(t *testing.T) {
 var mergedSweepModules = []string{
 	"./...", "./agent/...", "./llm/...", "./auth/...", "./envvars/...",
 	"./invariant/...", "./identifier/...", "./execsupport/...", "./fuzz/...",
+}
+
+// goWorkUseDirs returns the module directories go.work's use block names, as
+// slash-separated paths relative to the repository root with the leading "./"
+// removed (the root module is ".").
+func goWorkUseDirs(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("go.work")
+	if err != nil {
+		t.Fatalf("read go.work: %v", err)
+	}
+	var dirs []string
+	inUse := false
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		switch {
+		case line == "use (":
+			inUse = true
+		case inUse && line == ")":
+			inUse = false
+		case inUse && line != "":
+			dirs = append(dirs, strings.TrimPrefix(line, "./"))
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// TestGoWorkModulesMatchMakeModuleLists closes the gap the mergedSweepModules
+// comment names: a module added to go.work's use list without GO_MODULES
+// belongs to the workspace but sits outside every gate that sweeps it, and
+// nothing failed. The Makefile list is the one the lint, vet, build and test
+// gates expand, so the workspace must not name a module it lacks.
+//
+// FUZZ_GO_MODULES is GO_MODULES plus the fuzz module, so comparing against the
+// fuzz list covers both without restating the relationship.
+func TestGoWorkModulesMatchMakeModuleLists(t *testing.T) {
+	t.Parallel()
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skipf("make is not on PATH (%v), so the module list cannot be read", err)
+	}
+
+	// -p prints every variable; -n makes nothing run. Parse only the two
+	// assignments this check reads, so make's other output cannot interfere.
+	cmd := exec.Command(makePath, "-pn")
+	cmd.Env = cleanMakeEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("make -pn: %v", err)
+	}
+	moduleList := func(name string) []string {
+		t.Helper()
+		for _, line := range strings.Split(string(out), "\n") {
+			// make -p prints `NAME := value` for := definitions and
+			// `NAME = value` for = ones; this file defines its lists with :=.
+			rest, ok := strings.CutPrefix(line, name+" := ")
+			if !ok {
+				rest, ok = strings.CutPrefix(line, name+" = ")
+			}
+			if !ok {
+				continue
+			}
+			dirs := strings.Fields(rest)
+			sort.Strings(dirs)
+			return dirs
+		}
+		t.Fatalf("make -pn printed no %s assignment", name)
+		return nil
+	}
+
+	workspace := goWorkUseDirs(t)
+	makeModules := moduleList("FUZZ_GO_MODULES")
+	if !slices.Equal(workspace, makeModules) {
+		t.Fatalf("go.work use list = %v, FUZZ_GO_MODULES = %v; every workspace module must appear in the Makefile lists, or the gates that sweep them skip it silently", workspace, makeModules)
+	}
 }
 
 // TestLintSweepsAreMergedPerBuildRegime asks make what each heavy lint lane
