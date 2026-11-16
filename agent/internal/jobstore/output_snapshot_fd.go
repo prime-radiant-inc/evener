@@ -162,6 +162,7 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 		RetainedStart:        view.visibleStart,
 		RetainedStartPartial: view.visiblePartial,
 		Truncated:            view.visibleStart > 0 || int64(maxBytes) < verified-view.visibleOffset(),
+		FileBytes:            retainedBytes,
 	}, nil
 }
 
@@ -181,6 +182,7 @@ func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File
 		TotalBytes:           view.total,
 		RetainedStart:        view.visibleStart,
 		RetainedStartPartial: view.visiblePartial,
+		FileBytes:            retainedBytes,
 	}
 	if rangeErr != nil {
 		return snapshot, rangeErr

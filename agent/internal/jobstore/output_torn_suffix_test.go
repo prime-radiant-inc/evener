@@ -171,7 +171,7 @@ func TestOutputGrepAgreesWithSnapshotsOverATornSuffix(t *testing.T) {
 		DurableSHA256:   outputBytesSHA256(logBytes[:10]),
 	})
 
-	matches, err := grepOpenedOutputFile(t, path, regexp.MustCompile("0123"), 1<<20, 0, 1024, func(int64) error { return nil })
+	matches, err := grepOpenedOutputFile(t, path, regexp.MustCompile("0123"), 1<<20, 0, 1024, func(int64, int64) error { return nil })
 	if err != nil {
 		t.Fatalf("grep refused a file the snapshots accept: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestOutputGrepAgreesWithSnapshotsOverATornSuffix(t *testing.T) {
 		t.Fatalf("grep = %+v, want the anchored prefix match at 0", matches)
 	}
 	// The suffix must not be searched either: it is not output.
-	none, err := grepOpenedOutputFile(t, path, regexp.MustCompile("torn"), 1<<20, 0, 1024, func(int64) error { return nil })
+	none, err := grepOpenedOutputFile(t, path, regexp.MustCompile("torn"), 1<<20, 0, 1024, func(int64, int64) error { return nil })
 	if err != nil {
 		t.Fatalf("grep over the torn suffix: %v", err)
 	}

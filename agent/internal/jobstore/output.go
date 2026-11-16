@@ -832,10 +832,12 @@ func readOutputFileView(path string) (outputView, error) {
 // closed output file, reporting lifetime offsets, with the same bounded line
 // handling as OutputStore.GrepLimitLineBytes. The caller owns f and must close
 // it; path locates the metadata sidecars. checkTotal sees the file's lifetime
-// total before any scanning and can refuse it. A file that changes between
-// opening and reading its metadata returns ErrOutputChangedDuringRead; callers
-// that retry must reopen the output first.
-func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total int64) error) ([]Match, error) {
+// total before any scanning and can refuse it; fileBytes is the physical length
+// this read observed, which exceeds the total when the file grew past the bytes
+// its metadata vouches for. A file that changes between opening and reading its
+// metadata returns ErrOutputChangedDuringRead; callers that retry must reopen
+// the output first.
+func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, checkTotal func(total, fileBytes int64) error) ([]Match, error) {
 	if scan, err := grepLimitScans(limitBytes); !scan {
 		return nil, err
 	}
@@ -861,7 +863,7 @@ func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, lim
 // checkTotal refuse it, and seeks f to its visible start. It returns
 // ErrOutputChangedDuringRead when path no longer names f, or f's size no
 // longer matches the view.
-func readOpenOutputFileView(f *os.File, path string, checkTotal func(total int64) error) (outputView, error) {
+func readOpenOutputFileView(f *os.File, path string, checkTotal func(total, fileBytes int64) error) (outputView, error) {
 	opened, err := f.Stat()
 	if err != nil {
 		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
@@ -871,7 +873,7 @@ func readOpenOutputFileView(f *os.File, path string, checkTotal func(total int64
 	if err != nil {
 		return outputView{}, err
 	}
-	if err := checkTotal(view.total); err != nil {
+	if err := checkTotal(view.total, openedSize); err != nil {
 		return outputView{}, err
 	}
 	info, err := f.Stat()
