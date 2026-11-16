@@ -488,6 +488,11 @@ type QueueChangedData struct {
 	CommandNames [][]string `json:"command_names,omitempty"`
 	// Mentions retains FIFO-aligned editing locations independently of names.
 	Mentions [][]appwire.InputMention `json:"mentions,omitempty"`
+	// ImageCounts is FIFO-aligned with Preview and carries each entry's
+	// image count, so a client can refuse a text-only edit of another
+	// client's queued text+image row: the restore seam cannot carry the
+	// images, and the edit's cancel half would destroy them.
+	ImageCounts []int `json:"image_counts,omitempty"`
 	// ConsumedClientMutationIDs names the queued entries THIS push's
 	// transition just consumed (currently: a drain folding the queue into
 	// steering) so a client can settle those optimistic records by positive

@@ -216,6 +216,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				SkillNames:        data.SkillNames,
 				CommandNames:      data.CommandNames,
 				Mentions:          data.Mentions,
+				ImageCounts:       data.ImageCounts,
 			}),
 			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}

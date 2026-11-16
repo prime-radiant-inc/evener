@@ -3429,6 +3429,15 @@ export interface QueueState {
    * and UTF-16 location. It is editing metadata, not activation authority.
    */
   mentions?: InputMention[][];
+  /**
+   * ImageCounts is FIFO-aligned with Preview and carries each entry's
+   * image count, so a client can refuse a text-only edit of another
+   * client's queued text+image row — the images the restore seam cannot
+   * carry would otherwise be destroyed by the edit's cancel half. Absent
+   * on old daemons; clients must treat a missing ImageCounts as
+   * "unknown", falling back to the preview's placeholder grammar.
+   */
+  imageCounts?: number[];
 }
 
 export interface RemovedRow {
@@ -6484,7 +6493,7 @@ export const WIRE_FIELD_KEYS = {
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
-  QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions"],
+  QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
   EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],

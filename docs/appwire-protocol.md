@@ -3533,6 +3533,7 @@ Underlying Go kind: `string` (no struct fields).
 | `skillNames` | [][]string | yes |  |
 | `commandNames` | [][]string | yes |  |
 | `mentions` | [][][appwire.InputMention](#inputmention) | yes |  |
+| `imageCounts` | []int | yes |  |
 
 
 ### `RemovedRow`

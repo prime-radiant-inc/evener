@@ -127,6 +127,7 @@ export function queueEntryAt(
     preview?: readonly string[];
     skillNames?: readonly (readonly string[])[];
     commandNames?: readonly (readonly string[])[];
+    imageCounts?: readonly number[];
   },
   index: number,
 ): {
@@ -144,7 +145,12 @@ export function queueEntryAt(
   // A preview is the daemon's compact label, so a literal text message whose
   // own text IS "[image]" must not classify its row as image-bearing: the
   // placeholder grammar speaks only when no full text says otherwise.
-  const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
+  // The wire's per-entry ImageCounts is authoritative; the preview's
+  // placeholder grammar is the old-daemon fallback, and it speaks only
+  // when no full text says otherwise.
+  const imageCount =
+    queue.imageCounts?.[index] ??
+    (fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0);
   return {
     entryId: queue.ids?.[index],
     clientMutationId: queue.clientMutationIds?.[index],

@@ -104,6 +104,31 @@ test("a daemon queue row and its local pending row project as one message", () =
   });
 });
 
+test("a foreign text+image queue row carries the wire's image count", () => {
+  // No local family: another client queued this entry, so the wire's
+  // FIFO-aligned imageCounts is the only image evidence the projection
+  // can read (#6360). The preview grammar stays silent for a text-bearing
+  // entry, so the count must come from the wire field or be lost.
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q_foreign"],
+      texts: ["look at this"],
+      preview: ["look at this"],
+      imageCounts: [2],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "queue:q_foreign",
+    method: "queue",
+    text: "look at this",
+    imageCount: 2,
+  });
+});
+
 test("a queue row keeps the daemon's mentions when it merges with the local row", () => {
   const model = threadModel({
     queue: {

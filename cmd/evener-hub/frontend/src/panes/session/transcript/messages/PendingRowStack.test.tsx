@@ -724,6 +724,40 @@ test("a foreign image-only queued row renders the image placeholder, not an empt
   expect(edit.getAttribute("aria-disabled")).toBe("true");
 });
 
+// A foreign text+image queue row: the wire's ImageCounts (FIFO-aligned with
+// Texts, #6360) is the only thing that says this row carries images - this
+// client holds no family record for another client's entry, and the preview
+// grammar speaks only for textless entries. The row renders its text, and
+// its Edit must stay refused: the restore seam carries text only, so the
+// press's cancel half would destroy images no local copy can restore.
+test("a foreign text+image queued row refuses its Edit through the wire's image counts", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        mutationStateAuthoritative: true,
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 1,
+          depth: 1,
+          ids: ["q_txt_img"],
+          texts: ["look at this"],
+          preview: ["look at this"],
+          imageCounts: [1],
+        },
+      },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_a");
+  render(<PendingRowStack ref="ref_a" />);
+  const rows = screen.getAllByTestId("user-message-item");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.textContent?.includes("look at this")).toBe(true);
+  const edit = screen.getByRole("button", { name: "Edit message" });
+  expect(edit.getAttribute("aria-disabled")).toBe("true");
+});
+
 // A refused recovery row keeps its gallery: the recovery record's own
 // input still holds the image bytes, and the merged projection's recovery
 // row (built from the family's input) carries them - the row renders the
