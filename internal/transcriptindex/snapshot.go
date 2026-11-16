@@ -67,7 +67,7 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 	// table, so it answers from the handle: a memo kept on the view would die
 	// with it. The cut paths below build a view whose table is a private replay
 	// and leave it owning its own memo.
-	view := &Index{readView: true, transcript: x.transcript, path: x.path, turnOrderOwner: x,
+	view := &Index{readView: true, transcript: x.transcript, path: x.path, derivedOwner: x, turnOrderOwner: x,
 		meta: x.meta, items: x.items, turns: x.turns, updates: x.updates,
 		strings: x.strings, prelude: x.prelude, builder: x.builder}
 	if length >= x.meta.Length {
@@ -80,12 +80,14 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 			view = derived
 		} else {
 			// The replay below replaces the table with a private prefix, so this
-			// view must answer from its own memo: the handle's describes the
+			// view must answer from its own memo: the parent's describes the
 			// full records, and a private replay can reach the same epoch and
-			// turn count describing different ones — a loaded one-turn build
-			// and a replayed one-entry cut are both (epoch=2, turns=1). Sharing
-			// it would answer a historical read with another incarnation's
-			// turn IDs.
+			// turn count from a different prefix, which would let a historical
+			// read and a current read answer each other's totals.
+			view.derivedOwner = nil
+			// The turn order is the same argument: the handle's describes the
+			// full records, and a private replay can reach its epoch and turn
+			// count describing different ones.
 			view.turnOrderOwner = nil
 			view.meta = meta{Incarnation: x.meta.Incarnation}
 			view.prelude = nil

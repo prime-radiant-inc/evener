@@ -429,7 +429,7 @@ type table struct {
 	// anything derived from these records keys on it, because a record's slot
 	// and the table's count both stay put while its contents change: stampTurn
 	// rewrites a turn's own slot as that turn's later entries arrive, so n
-	// alone cannot tell a reader whether what it read is still what is there.
+	// alone cannot tell a reader whether what it summed is still what is there.
 	epoch uint64
 	buf   []byte // nil: reads and writes go straight to the file
 	// flushed is how much of buf the file already holds, as a floor an
@@ -467,8 +467,8 @@ func (t *table) read(slot uint64, count int) ([]byte, error) {
 
 func (t *table) write(slot uint64, record []byte) error {
 	// Every record change passes through here, including the in-place rewrite
-	// of a turn's own slot, so this is the one place a memo of these records
-	// has to learn that what it read may have changed.
+	// of a turn's own slot, so this is the one place a derived memo has to learn
+	// that what it summed may have changed.
 	t.epoch++
 	if t.buf != nil {
 		if err := t.buffer(slot); err != nil {
