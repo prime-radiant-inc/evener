@@ -707,17 +707,26 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     if (!record) continue;
     const cancelFailure = record.method === "turn/cancelQueued";
     const clearFailure = record.method === "thread/clear";
-    // A promotion names the queue entry it tried to promote in its payload.
-    // After a refusal that record keeps the payload, and the entry itself may
-    // already be DELIVERED - the drain that won the race recorded a mutation
-    // owning it - so the refused row's entry link is the one identity that can
-    // say this message is already on screen. The row renders (as the
-    // one-rendering rule demands) until that link proves delivery.
+    // A promotion names the queue entry it tried to promote in its payload,
+    // and the row's own identity when the entry has one. After a refusal the
+    // record keeps the payload, and the entry may already be DELIVERED - the
+    // drain that won the race consumed it. While the winning consumer is
+    // still a pending mutation, its recorded self owns the entry; once it
+    // settles, the transcript item that replaced the entry speaks in the
+    // consumed input's lineage (the SOURCE mutation's id). Both proofs say
+    // the message is already on screen; neither exists while the entry is
+    // still queued, so the row renders as refused work until delivery.
     const entryLink =
       typeof record.payload?.expectedEntryId === "string" && record.method === "turn/promoteQueuedAsSteer"
         ? [record.payload.expectedEntryId]
         : [];
-    if (entryLink.length > 0 && entryLink.every((entryId) => recordedEntryOwners.has(entryId))) continue;
+    const sourceMutationId =
+      typeof record.payload?.sourceMutationId === "string" ? record.payload.sourceMutationId : undefined;
+    if (
+      (entryLink.length > 0 && entryLink.every((entryId) => recordedEntryOwners.has(entryId))) ||
+      (sourceMutationId !== undefined && recordedLineage.has(`client:${sourceMutationId}`))
+    )
+      continue;
     let rowId = id;
     if (recovery) {
       rowId = cancelFailure ? `${id}:cancel-failure:${recovery.clientMutationId}` : recoveryRowId(recovery);

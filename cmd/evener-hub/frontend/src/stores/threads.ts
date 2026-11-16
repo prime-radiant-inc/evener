@@ -485,6 +485,7 @@ export interface ThreadsStoreState {
     index: number,
     expectedEntryId: string,
     display: PromoteDisplayInput,
+    sourceMutationId?: string,
   ): Promise<void>;
   // Removes the queued follow-up at index so it is never consumed (issue
   // #23; also the removal half of the composer's edit-and-recompose flow).
@@ -8952,7 +8953,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
+  async promoteQueuedAsSteer(ref, index, expectedEntryId, display, sourceMutationId) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
     // turn id that would only add a second way to fail. The optimistic input
@@ -8966,6 +8967,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       {
         method: COMPOSER_METHODS.promote,
+        // The promoted row's own identity: the queue entry's source
+        // mutation when one exists. A refused promote's recovery row
+        // suppresses through this id after the entry's consumer settles
+        // (the recorded lineage speaks in it), where expectedEntryId's
+        // ownership mapping no longer exists.
+        ...(sourceMutationId !== undefined ? { sourceMutationId } : {}),
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.images ?? []).map((image) => ({

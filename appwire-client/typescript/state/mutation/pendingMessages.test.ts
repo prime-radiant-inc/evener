@@ -439,6 +439,53 @@ test("a refused promote does not render when its queue entry is already delivere
   expect(rows).toEqual([]);
 });
 
+// The settled state (roborev round 1): the winning drain incorporated, so
+// pendingMutations no longer holds the consumer and its entry ownership
+// vanished with it. The transcript item that replaced the entry is all the
+// proof left, and it speaks in the consumed input's lineage - the entry's
+// SOURCE mutation identity, not the promote's. The refused row must stay
+// suppressed there too, or the duplicate returns on the next read.
+test("a refused promote stays suppressed after its entry's consumer settles", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued text",
+            clientMutationId: "consumer",
+            conversationInputIds: ["client:m_source"],
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: {
+          ref: "ref_a",
+          clientMutationId: "promote",
+          index: 0,
+          expectedEntryId: "q1",
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+      }),
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
 test("a carried row stays while its recorded owner is still only pending", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },
