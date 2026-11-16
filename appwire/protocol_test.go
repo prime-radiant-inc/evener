@@ -472,6 +472,31 @@ func TestNavigationReadMethodIsHubScoped(t *testing.T) {
 	t.Fatalf("method catalog missing %q", MethodEvenerNavigationRead)
 }
 
+func TestModelControlProtocolCatalog(t *testing.T) {
+	for _, method := range Methods {
+		if method.Name != MethodThreadModelSet {
+			continue
+		}
+		if _, ok := method.Result.(ThreadModelSetResponse); !ok {
+			t.Fatalf("thread model set result type = %T, want ThreadModelSetResponse", method.Result)
+		}
+		goto notification
+	}
+	t.Fatalf("method catalog missing %q", MethodThreadModelSet)
+
+notification:
+	for _, entry := range Notifications {
+		if entry.Name != NotifyThreadModelControlChanged {
+			continue
+		}
+		if _, ok := entry.Payload.(ThreadModelControlChangedParams); !ok {
+			t.Fatalf("model control notification payload type = %T, want ThreadModelControlChangedParams", entry.Payload)
+		}
+		return
+	}
+	t.Fatalf("notification catalog missing %q", NotifyThreadModelControlChanged)
+}
+
 func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {
 	tests := []struct {
 		method string

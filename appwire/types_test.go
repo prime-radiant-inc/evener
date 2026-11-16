@@ -1313,6 +1313,27 @@ func TestThreadModelChangedParamsContextFieldsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestThreadModelChangedParamsRemainsLegacyShape(t *testing.T) {
+	raw, err := json.Marshal(ThreadModelChangedParams{
+		ThreadID:      "th_1",
+		Ref:           "local:th_1",
+		ModelProvider: "work",
+		Model:         "gpt-5.5",
+	})
+	if err != nil {
+		t.Fatalf("marshal ThreadModelChangedParams: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode ThreadModelChangedParams: %v", err)
+	}
+	for _, field := range []string{"modelControlVersion", "disposition", "modelControl"} {
+		if _, ok := fields[field]; ok {
+			t.Errorf("legacy thread/model/changed unexpectedly carries %q", field)
+		}
+	}
+}
+
 // TestAuthDevicePollResponse_StatusOmittedUnlessAuthorized locks in that
 // Status is now a pointer: encoding/json can genuinely omit a nil pointer,
 // so "pending"/"expired" polls (which never set Status) no longer ship a

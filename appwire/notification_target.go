@@ -37,6 +37,11 @@ func (p ThreadModelChangedParams) WithNotificationTarget(threadID, ref string) N
 	return p
 }
 
+func (p ThreadModelControlChangedParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
+	p.ThreadID, p.Ref = threadID, ref
+	return p
+}
+
 func (p ThreadModelRetryParams) WithNotificationTarget(threadID, ref string) NotificationTargeted {
 	p.ThreadID, p.Ref = threadID, ref
 	return p

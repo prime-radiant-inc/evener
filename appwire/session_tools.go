@@ -351,6 +351,7 @@ type SessionControlResponse struct {
 	Resume        *ThreadResumeResponse             `json:"resume,omitempty"`
 	Fork          *ThreadForkResponse               `json:"fork,omitempty"`
 	Clear         *ThreadClearResponse              `json:"clear,omitempty"`
+	Model         *ThreadModelSetResponse           `json:"model,omitempty"`
 	DrainQueue    *TurnDrainAsSteerResponse         `json:"drain_queue,omitempty"`
 	PromoteQueued *TurnPromoteQueuedAsSteerResponse `json:"promote_queued,omitempty"`
 	CancelQueued  *TurnCancelQueuedResponse         `json:"cancel_queued,omitempty"`

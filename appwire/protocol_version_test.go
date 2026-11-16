@@ -27,6 +27,12 @@ func TestProtocolVersionNumber(t *testing.T) {
 	}
 }
 
+func TestModelControlVersionNumber(t *testing.T) {
+	if ModelControlVersion1 != 1 {
+		t.Fatalf("ModelControlVersion1 = %d, want 1", ModelControlVersion1)
+	}
+}
+
 func TestOlderAndNewerProtocolVersion(t *testing.T) {
 	for _, tc := range []struct {
 		version string

@@ -954,6 +954,7 @@ export interface EvenerThread {
   contextAssumed?: boolean;
   compactionThreshold?: number;
   capabilities: ThreadCapabilities;
+  modelControl?: ModelControlSnapshot;
   diagnostics?: EvenerDiagnostics;
   /**
    * ContextWindowSource says where contextWindow came from: "live",
@@ -2533,6 +2534,33 @@ export interface MobilePairingResponse {
   authUrl: string;
 }
 
+export interface ModelControlActive {
+  modelProvider: string;
+  model: string;
+  reasoningEffortLevels: string[];
+  supportsReasoning: boolean;
+}
+
+export interface ModelControlAuthority {
+  instanceId: string;
+  bootGeneration: string;
+}
+
+export interface ModelControlDesired {
+  requestSequence: number;
+  clientMutationId?: string;
+  modelProvider: string;
+  model: string;
+  lifecycle: string;
+}
+
+export interface ModelControlSnapshot {
+  authority: ModelControlAuthority;
+  revision: number;
+  active: ModelControlActive;
+  desired?: ModelControlDesired;
+}
+
 export interface ModelDescriptor {
   provider: string;
   model: string;
@@ -3874,6 +3902,7 @@ export interface SessionControlResponse {
   resume?: ThreadResumeResponse;
   fork?: ThreadForkResponse;
   clear?: ThreadClearResponse;
+  model?: ThreadModelSetResponse;
   drain_queue?: TurnDrainAsSteerResponse;
   promote_queued?: TurnPromoteQueuedAsSteerResponse;
   cancel_queued?: TurnCancelQueuedResponse;
@@ -4572,6 +4601,7 @@ export interface ThreadCapabilities {
    */
   askFence?: boolean;
   voicePresentationContextV1?: boolean;
+  modelControlVersion?: number;
   send: boolean;
   steer: boolean;
   interrupt: boolean;
@@ -5011,6 +5041,12 @@ export interface ThreadModelChangedParams {
   compactionThreshold?: number;
 }
 
+export interface ThreadModelControlChangedParams {
+  threadId: string;
+  ref: string;
+  modelControl: ModelControlSnapshot;
+}
+
 export interface ThreadModelRetryParams {
   threadId: string;
   ref: string;
@@ -5030,6 +5066,15 @@ export interface ThreadModelSetParams {
   ref: string;
   modelProvider: string;
   model: string;
+  clientMutationId?: string;
+  expectedInstanceId?: string;
+  expectedBootGeneration?: string;
+}
+
+export interface ThreadModelSetResponse {
+  modelControlVersion?: number;
+  disposition?: string;
+  modelControl?: ModelControlSnapshot;
 }
 
 export interface ThreadNameChangedParams {
@@ -6045,6 +6090,7 @@ export const NOTIFICATION_NAMES = [
   "thread/conversation-provenance/changed",
   "evener/thread/name/changed",
   "thread/model/changed",
+  "thread/model/controlChanged",
   "thread/reasoning-effort/changed",
   "thread/vision-model/changed",
   "warning",
@@ -6527,7 +6573,7 @@ export interface MethodTypes {
   "thread/resume": { params: ThreadResumeParams; result: ThreadResumeResponse };
   "thread/fork": { params: ThreadForkParams; result: ThreadForkResponse };
   "thread/clear": { params: ThreadClearParams; result: ThreadClearResponse };
-  "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
+  "thread/model/set": { params: ThreadModelSetParams; result: ThreadModelSetResponse };
   "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
   "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };
@@ -6671,6 +6717,7 @@ export interface NotificationTypes {
   "thread/conversation-provenance/changed": ConversationProvenanceChangedParams;
   "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
+  "thread/model/controlChanged": ThreadModelControlChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;
   "thread/vision-model/changed": ThreadVisionModelChangedParams;
   "warning": WarningParams;

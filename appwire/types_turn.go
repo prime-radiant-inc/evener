@@ -1147,10 +1147,69 @@ type ThreadClearResponse struct {
 	Receipt MutationReceipt `json:"receipt"`
 }
 
+const ModelControlVersion1 uint = 1
+
+type ModelControlAuthority struct {
+	InstanceID     string `json:"instanceId"`
+	BootGeneration string `json:"bootGeneration"`
+}
+
+type ModelControlActive struct {
+	ModelProvider         string   `json:"modelProvider"`
+	Model                 string   `json:"model"`
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels"`
+	SupportsReasoning     bool     `json:"supportsReasoning"`
+}
+
+type ModelControlLifecycle string
+
+const (
+	ModelControlLifecyclePending  ModelControlLifecycle = "pending"
+	ModelControlLifecycleApplied  ModelControlLifecycle = "applied"
+	ModelControlLifecycleRejected ModelControlLifecycle = "rejected"
+)
+
+type ModelControlDesired struct {
+	RequestSequence  uint64                `json:"requestSequence"`
+	ClientMutationID string                `json:"clientMutationId,omitempty"`
+	ModelProvider    string                `json:"modelProvider"`
+	Model            string                `json:"model"`
+	Lifecycle        ModelControlLifecycle `json:"lifecycle"`
+}
+
+type ModelControlSnapshot struct {
+	Authority ModelControlAuthority `json:"authority"`
+	Revision  uint64                `json:"revision"`
+	Active    ModelControlActive    `json:"active"`
+	Desired   *ModelControlDesired  `json:"desired,omitempty"`
+}
+
+type ModelControlDisposition string
+
+const (
+	ModelControlDispositionAccepted   ModelControlDisposition = "accepted"
+	ModelControlDispositionSuperseded ModelControlDisposition = "superseded"
+)
+
 type ThreadModelSetParams struct {
-	Ref           string `json:"ref"`
-	ModelProvider string `json:"modelProvider"`
-	Model         string `json:"model"`
+	Ref                    string `json:"ref"`
+	ModelProvider          string `json:"modelProvider"`
+	Model                  string `json:"model"`
+	ClientMutationID       string `json:"clientMutationId,omitempty"`
+	ExpectedInstanceID     string `json:"expectedInstanceId,omitempty"`
+	ExpectedBootGeneration string `json:"expectedBootGeneration,omitempty"`
+}
+
+type ThreadModelSetResponse struct {
+	ModelControlVersion uint                    `json:"modelControlVersion,omitempty"`
+	Disposition         ModelControlDisposition `json:"disposition,omitempty"`
+	ModelControl        *ModelControlSnapshot   `json:"modelControl,omitempty"`
+}
+
+type ThreadModelControlChangedParams struct {
+	ThreadID     string               `json:"threadId"`
+	Ref          string               `json:"ref"`
+	ModelControl ModelControlSnapshot `json:"modelControl"`
 }
 
 // ThreadNameSetParams renames a thread (user-chosen title).

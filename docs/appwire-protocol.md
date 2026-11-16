@@ -217,7 +217,7 @@ no router (reserved).
 | `thread/resume` | hub | [ThreadResumeParams](#threadresumeparams) | [ThreadResumeResponse](#threadresumeresponse) | Resumes an existing session and attaches its relay. |
 | `thread/fork` | hub | [ThreadForkParams](#threadforkparams) | [ThreadForkResponse](#threadforkresponse) | Forks a thread from a source item (sourceItemKey), either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local evener threads only; mutually exclusive with sourceItemKey/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
 | `thread/clear` | both | [ThreadClearParams](#threadclearparams) | [ThreadClearResponse](#threadclearresponse) | Clears the thread's conversation when no turn, queued, or approval work is unresolved. |
-| `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [EmptyResponse](#emptyresponse) | Changes the session's model/provider. |
+| `thread/model/set` | both | [ThreadModelSetParams](#threadmodelsetparams) | [ThreadModelSetResponse](#threadmodelsetresponse) | Changes the session's model/provider and returns the canonical model-control snapshot when supported. |
 | `evener/thread/name/set` | both | [ThreadNameSetParams](#threadnamesetparams) | [EmptyResponse](#emptyresponse) | Sets a user-chosen session title (rename). |
 | `thread/reasoning-effort/set` | both | [ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | [EmptyResponse](#emptyresponse) | Sets reasoning effort, normalizing and validating the value. |
 | `thread/vision-model/set` | both | [ThreadVisionModelSetParams](#threadvisionmodelsetparams) | [EmptyResponse](#emptyresponse) | Sets the vision side-channel routing ("", "off", or a model ref). |
@@ -366,6 +366,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 | `thread/conversation-provenance/changed` | [ConversationProvenanceChangedParams](#conversationprovenancechangedparams) | Authoritative conversational admission, retirement or request coverage changed. |
 | `evener/thread/name/changed` | [ThreadNameChangedParams](#threadnamechangedparams) | The session title changed (generated or user-renamed). |
 | `thread/model/changed` | [ThreadModelChangedParams](#threadmodelchangedparams) | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
+| `thread/model/controlChanged` | [ThreadModelControlChangedParams](#threadmodelcontrolchangedparams) | The daemon's canonical model-control snapshot changed. |
 | `thread/reasoning-effort/changed` | [ThreadReasoningEffortChangedParams](#threadreasoningeffortchangedparams) | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
 | `thread/vision-model/changed` | [ThreadVisionModelChangedParams](#threadvisionmodelchangedparams) | The session's vision side-channel routing changed mid-session (thread/vision-model/set). |
 | `warning` | [WarningParams](#warningparams) | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |
@@ -1310,6 +1311,7 @@ Underlying Go kind: `string` (no struct fields).
 | `contextAssumed` | bool | yes |  |
 | `compactionThreshold` | int | yes |  |
 | `capabilities` | [appwire.ThreadCapabilities](#threadcapabilities) |  |  |
+| `modelControl` | \*[appwire.ModelControlSnapshot](#modelcontrolsnapshot) | yes |  |
 | `diagnostics` | \*[appwire.EvenerDiagnostics](#evenerdiagnostics) | yes |  |
 | `contextWindowSource` | string | yes |  |
 | `queue` | [appwire.QueueState](#queuestate) |  |  |
@@ -2849,6 +2851,55 @@ Underlying Go kind: `struct` (no struct fields).
 | `authUrl` | string |  |  |
 
 
+### `ModelControlActive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `modelProvider` | string |  |  |
+| `model` | string |  |  |
+| `reasoningEffortLevels` | []string |  |  |
+| `supportsReasoning` | bool |  |  |
+
+
+### `ModelControlAuthority`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `instanceId` | string |  |  |
+| `bootGeneration` | string |  |  |
+
+
+### `ModelControlDesired`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `requestSequence` | uint64 |  |  |
+| `clientMutationId` | string | yes |  |
+| `modelProvider` | string |  |  |
+| `model` | string |  |  |
+| `lifecycle` | [appwire.ModelControlLifecycle](#modelcontrollifecycle) |  |  |
+
+
+### `ModelControlDisposition`
+
+Underlying Go kind: `string` (no struct fields).
+
+
+### `ModelControlLifecycle`
+
+Underlying Go kind: `string` (no struct fields).
+
+
+### `ModelControlSnapshot`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `authority` | [appwire.ModelControlAuthority](#modelcontrolauthority) |  |  |
+| `revision` | uint64 |  |  |
+| `active` | [appwire.ModelControlActive](#modelcontrolactive) |  |  |
+| `desired` | \*[appwire.ModelControlDesired](#modelcontroldesired) | yes |  |
+
+
 ### `ModelDescriptor`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3896,6 +3947,7 @@ Underlying Go kind: `string` (no struct fields).
 | `resume` | \*[appwire.ThreadResumeResponse](#threadresumeresponse) | yes |  |
 | `fork` | \*[appwire.ThreadForkResponse](#threadforkresponse) | yes |  |
 | `clear` | \*[appwire.ThreadClearResponse](#threadclearresponse) | yes |  |
+| `model` | \*[appwire.ThreadModelSetResponse](#threadmodelsetresponse) | yes |  |
 | `drain_queue` | \*[appwire.TurnDrainAsSteerResponse](#turndrainassteerresponse) | yes |  |
 | `promote_queued` | \*[appwire.TurnPromoteQueuedAsSteerResponse](#turnpromotequeuedassteerresponse) | yes |  |
 | `cancel_queued` | \*[appwire.TurnCancelQueuedResponse](#turncancelqueuedresponse) | yes |  |
@@ -4651,6 +4703,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `askFence` | bool | yes |  |
 | `voicePresentationContextV1` | bool | yes |  |
+| `modelControlVersion` | uint | yes |  |
 | `send` | bool |  |  |
 | `steer` | bool |  |  |
 | `interrupt` | bool |  |  |
@@ -4874,6 +4927,15 @@ Underlying Go kind: `string` (no struct fields).
 | `compactionThreshold` | int | yes |  |
 
 
+### `ThreadModelControlChangedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | string |  |  |
+| `ref` | string |  |  |
+| `modelControl` | [appwire.ModelControlSnapshot](#modelcontrolsnapshot) |  |  |
+
+
 ### `ThreadModelRetryParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -4899,6 +4961,18 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `modelProvider` | string |  |  |
 | `model` | string |  |  |
+| `clientMutationId` | string | yes |  |
+| `expectedInstanceId` | string | yes |  |
+| `expectedBootGeneration` | string | yes |  |
+
+
+### `ThreadModelSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `modelControlVersion` | uint | yes |  |
+| `disposition` | [appwire.ModelControlDisposition](#modelcontroldisposition) | yes |  |
+| `modelControl` | \*[appwire.ModelControlSnapshot](#modelcontrolsnapshot) | yes |  |
 
 
 ### `ThreadNameChangedParams`

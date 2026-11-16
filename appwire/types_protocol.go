@@ -317,6 +317,9 @@ const (
 	// NotifyThreadModelChanged pushes a mid-session model/provider switch so
 	// clients converge without re-reading the thread. See ThreadModelChangedParams.
 	NotifyThreadModelChanged = "thread/model/changed"
+	// NotifyThreadModelControlChanged carries the daemon's whole canonical model
+	// control snapshot for clients that advertise model-control version 1.
+	NotifyThreadModelControlChanged = "thread/model/controlChanged"
 	// NotifyThreadReasoningEffortChanged pushes a mid-session reasoning-effort
 	// change. See ThreadReasoningEffortChangedParams.
 	NotifyThreadReasoningEffortChanged = "thread/reasoning-effort/changed"

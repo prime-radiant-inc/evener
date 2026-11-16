@@ -634,8 +634,10 @@ func (c *Client) ThreadClear(ctx context.Context, params ThreadClearParams) (Thr
 	return out, err
 }
 
-func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams) error {
-	return c.request(ctx, MethodThreadModelSet, params, nil)
+func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams) (ThreadModelSetResponse, error) {
+	var out ThreadModelSetResponse
+	err := c.request(ctx, MethodThreadModelSet, params, &out)
+	return out, err
 }
 
 func (c *Client) ThreadNameSet(ctx context.Context, params ThreadNameSetParams) error {

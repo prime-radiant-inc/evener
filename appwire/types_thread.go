@@ -99,19 +99,20 @@ type EvenerThread struct {
 	Profile   string `json:"profile,omitempty"`
 	// TurnCount is the daemon's total completed model-response count. It stays
 	// independent of Turns so a bounded metadata read never loads the transcript.
-	TurnCount           int                `json:"turnCount,omitempty"`
-	ActiveTurnID        string             `json:"activeTurnId,omitempty"`
-	QuietForMS          *int64             `json:"quietForMs,omitempty"`
-	ProbeState          ThreadProbeState   `json:"probeState,omitempty"`
-	Crashed             bool               `json:"crashed,omitempty"`
-	ContextPressure     float64            `json:"contextPressure,omitempty"`
-	ContextUsed         int                `json:"contextUsed,omitempty"`
-	ContextWindow       int                `json:"contextWindow,omitempty"`
-	ContextRemaining    int                `json:"contextRemaining,omitempty"`
-	ContextAssumed      bool               `json:"contextAssumed,omitempty"`
-	CompactionThreshold int                `json:"compactionThreshold,omitempty"`
-	Capabilities        ThreadCapabilities `json:"capabilities"`
-	Diagnostics         *EvenerDiagnostics `json:"diagnostics,omitempty"`
+	TurnCount           int                   `json:"turnCount,omitempty"`
+	ActiveTurnID        string                `json:"activeTurnId,omitempty"`
+	QuietForMS          *int64                `json:"quietForMs,omitempty"`
+	ProbeState          ThreadProbeState      `json:"probeState,omitempty"`
+	Crashed             bool                  `json:"crashed,omitempty"`
+	ContextPressure     float64               `json:"contextPressure,omitempty"`
+	ContextUsed         int                   `json:"contextUsed,omitempty"`
+	ContextWindow       int                   `json:"contextWindow,omitempty"`
+	ContextRemaining    int                   `json:"contextRemaining,omitempty"`
+	ContextAssumed      bool                  `json:"contextAssumed,omitempty"`
+	CompactionThreshold int                   `json:"compactionThreshold,omitempty"`
+	Capabilities        ThreadCapabilities    `json:"capabilities"`
+	ModelControl        *ModelControlSnapshot `json:"modelControl,omitempty"`
+	Diagnostics         *EvenerDiagnostics    `json:"diagnostics,omitempty"`
 
 	// ContextWindowSource says where contextWindow came from: "live",
 	// "overlay", "config", "snapshot" or "assumed".
@@ -612,6 +613,7 @@ type ThreadCapabilities struct {
 	// AskFence supports pair-fenced answers and paged pending-ask reads.
 	AskFence                   bool `json:"askFence,omitempty"`
 	VoicePresentationContextV1 bool `json:"voicePresentationContextV1,omitempty"`
+	ModelControlVersion        uint `json:"modelControlVersion,omitempty"`
 	Send                       bool `json:"send"`
 	Steer                      bool `json:"steer"`
 	Interrupt                  bool `json:"interrupt"`
