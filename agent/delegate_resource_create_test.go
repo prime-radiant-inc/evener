@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	tooldefs "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -1734,10 +1735,33 @@ func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
 
 func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testing.T) {
 	t.Parallel()
-	root, _, _ := newDelegateResourceBootstrapSession(t)
+	root, client, _ := newDelegateResourceBootstrapSession(t)
+	adapter := newTask6TranscriptBarrierAdapter()
+	client.Register(adapter)
+	t.Cleanup(adapter.releaseRun)
+
 	parentResult := executeTask6RegisteredDelegate(context.Background(), t, root, "registered parent", 1)
 	parentID, _ := parentResult["delegate_id"].(string)
 	parentChildID, _ := parentResult["child_session_id"].(string)
+	parent := root.subagents.get(parentChildID)
+	if parent == nil || parent.sess == nil {
+		t.Fatalf("registered parent child session %q is not retained", parentChildID)
+	}
+	// A nested create is admitted against the parent's exact open generation, so
+	// the fixture holds that generation open by parking the parent's run at its
+	// provider boundary. A run allowed to settle retires the binding, and any
+	// lease sampled from it is stale by construction.
+	select {
+	case <-adapter.entered:
+	// TRIPWIRE: scripted in-process adapter, no real I/O; the provider
+	// request normally arrives in well under a second. 30s only fires on
+	// a genuine hang, not scheduler contention under a loaded suite.
+	case <-time.After(30 * time.Second):
+		t.Fatal("registered parent run did not reach the provider boundary")
+	}
+	parent.mu.Lock()
+	parentDone := parent.done
+	parent.mu.Unlock()
 
 	root.delegateController.mu.Lock()
 	parentLive := root.delegateController.live[parentID]
@@ -1747,10 +1771,6 @@ func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testin
 	}
 	parentLease := parentLive.binding.lease
 	root.delegateController.mu.Unlock()
-	parent := root.subagents.get(parentChildID)
-	if parent == nil || parent.sess == nil {
-		t.Fatalf("registered parent child session %q is not retained", parentChildID)
-	}
 	leaseContext := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, parentLease)
 	childResult := executeTask6RegisteredDelegate(leaseContext, t, parent.sess, "registered nested child", 0)
 	childID, _ := childResult["delegate_id"].(string)
@@ -1762,9 +1782,25 @@ func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testin
 	if aggregate.Descriptor.OwnerSessionID != root.ID() {
 		t.Fatalf("nested owner session = %q, want root %q", aggregate.Descriptor.OwnerSessionID, root.ID())
 	}
+
+	// The same lease stops being current the moment its run settles, and the
+	// controller must refuse it: an admission that ignored the generation would
+	// spawn this nested child anyway.
+	adapter.releaseRun()
+	select {
+	case <-parentDone:
+	// TRIPWIRE: the released scripted run settles without further I/O; 30s
+	// only fires on a genuine hang.
+	case <-time.After(30 * time.Second):
+		t.Fatal("registered parent run did not settle after release")
+	}
+	refused := task6RegisteredDelegateCall(leaseContext, t, parent.sess, "registered nested child past its lease", 0)
+	if !refused.IsError || !errors.Is(refused.Err, errDelegateStaleLease) {
+		t.Fatalf("nested create with a settled generation's lease = error %v, want errDelegateStaleLease", refused.Err)
+	}
 }
 
-func executeTask6RegisteredDelegate(ctx context.Context, t *testing.T, session *Session, task string, allowance int) map[string]any {
+func task6RegisteredDelegateCall(ctx context.Context, t *testing.T, session *Session, task string, allowance int) tooldefs.ExecResult {
 	t.Helper()
 	arguments := map[string]any{"prompt": task}
 	if allowance != 0 {
@@ -1774,11 +1810,16 @@ func executeTask6RegisteredDelegate(ctx context.Context, t *testing.T, session *
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := session.reg.ExecuteCall(ctx, session.currentEnv(), llm.ToolCallData{
+	return session.reg.ExecuteCall(ctx, session.currentEnv(), llm.ToolCallData{
 		ID:        "task6-registered-" + strings.ReplaceAll(task, " ", "-"),
 		Name:      "delegate",
 		Arguments: raw,
 	})
+}
+
+func executeTask6RegisteredDelegate(ctx context.Context, t *testing.T, session *Session, task string, allowance int) map[string]any {
+	t.Helper()
+	call := task6RegisteredDelegateCall(ctx, t, session, task, allowance)
 	if call.IsError {
 		t.Fatalf("registered delegate returned error: %s", call.Output)
 	}
