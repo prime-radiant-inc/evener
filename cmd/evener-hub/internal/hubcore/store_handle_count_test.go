@@ -1,17 +1,17 @@
 package hubcore
 
 import (
-	"os"
-
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"github.com/spf13/afero"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
 )
