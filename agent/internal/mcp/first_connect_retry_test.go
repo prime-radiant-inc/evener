@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // TestRetryFailed_FirstConnectFailureRecovers pins the recovery contract #6126
@@ -317,15 +318,26 @@ func TestRetryFailed_CancellationBoundsTheBatch(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var recovered []ServerRecovery
+	var outs []ServerOutcome
+	retried := make(chan struct{})
 	go func() {
-		// Wait for the retry's dial to be in flight, so cancellation lands on the
-		// attempt rather than before it.
-		for stalledCalls.Load() < 2 {
-			time.Sleep(time.Millisecond)
-		}
-		cancel()
+		defer close(retried)
+		recovered, outs = mgr.RetryFailed(ctx, reg)
 	}()
-	recovered, outs := mgr.RetryFailed(ctx, reg)
+	// Cancel only once the retry's dial is in flight, so the cancellation lands
+	// on the attempt rather than before it.
+	testwait.Until(t, "the retry's dial to start", func() bool { return stalledCalls.Load() >= 2 })
+	cancel()
+	testwait.Until(t, "RetryFailed to return after cancellation", func() bool {
+		select {
+		case <-retried:
+			return true
+		default:
+			return false
+		}
+	})
 	if len(recovered) != 0 || len(outs) != 1 || outs[0].Stage != "connect" {
 		t.Fatalf("RetryFailed = (%+v, %+v), want one connect-stage outcome and no recovery", recovered, outs)
 	}
