@@ -52,8 +52,8 @@ func (h *keeperHandle) get(path string, fsys afero.Fs, open func() (*sql.DB, err
 	// the connect and a single trailing Stat would record the replacement's
 	// identity for a pool connected to the predecessor, and every later check
 	// would then pass over a handle reading a file nothing writes any more.
-	// The identity is cached only when the path named the same file throughout
-	// the open.
+	// The identity is cached only when the path named one file throughout the
+	// open, which takes an identity on both sides of it.
 	before, beforeErr := fsys.Stat(path)
 	db, err := open()
 	if err != nil {
@@ -67,7 +67,17 @@ func (h *keeperHandle) get(path string, fsys afero.Fs, open func() (*sql.DB, err
 		h.retired = append(h.retired, db)
 		return db, nil
 	}
-	if beforeErr == nil && !os.SameFile(before, after) {
+	if beforeErr != nil {
+		// The path named no file before the open, so the open created the one
+		// this pool connected to and there is no before-identity to hold it to.
+		// A replacement landing in that window would otherwise be recorded as
+		// the identity of a pool on the file the open created. Decline for the
+		// same reason as a detected swap; the next call finds the file present
+		// and caches it then.
+		h.retired = append(h.retired, db)
+		return db, nil
+	}
+	if !os.SameFile(before, after) {
 		// The path named one file before the open and another after it, so this
 		// pool is on the predecessor while the path now names the replacement.
 		// Hand the connection out but do not cache this identity; retire it so

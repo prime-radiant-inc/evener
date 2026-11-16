@@ -231,6 +231,75 @@ func TestKeeperHandleDoesNotCacheAFileReplacedDuringOpen(t *testing.T) {
 	}
 }
 
+// TestKeeperHandleDoesNotCacheAFileCreatedThenReplacedInOpen pins the same
+// hazard reached through the absent-file branch: when the path names no file
+// before the open, the open creates the one its pool connects to, so there is
+// no before-identity to hold that pool to the path. A replacement landing in
+// that window must not be recorded as its identity either — caching it would
+// make every later check pass over a pool on a file the path no longer names.
+func TestKeeperHandleDoesNotCacheAFileCreatedThenReplacedInOpen(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "index.db")
+	var handle keeperHandle
+	t.Cleanup(func() { _ = handle.close() })
+	fsys := afero.NewOsFs()
+	opens := 0
+	open := func() (*sql.DB, error) {
+		opens++
+		db, err := sql.Open("sqlite", sqliteDSN(dbPath))
+		if err != nil {
+			return nil, err
+		}
+		if err := db.Ping(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if opens == 1 {
+			if _, err := db.Exec(createArchiveTable); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			// The path was absent before this open, so this pool created the
+			// file. Replace it so the path names a different inode before the
+			// trailing Stat runs.
+			if err := os.Remove(dbPath); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			replacement, err := sql.Open("sqlite", sqliteDSN(dbPath))
+			if err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			if _, err := replacement.Exec(createArchiveTable); err != nil {
+				_ = replacement.Close()
+				_ = db.Close()
+				return nil, err
+			}
+			if err := replacement.Close(); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+		}
+		return db, nil
+	}
+
+	first, err := handle.get(dbPath, fsys, open)
+	if err != nil {
+		t.Fatalf("first get = %v", err)
+	}
+	second, err := handle.get(dbPath, fsys, open)
+	if err != nil {
+		t.Fatalf("second get = %v", err)
+	}
+	if first == second {
+		t.Fatal("the second get reused the pool created across the replacement: its identity was cached against a file it is not connected to")
+	}
+	if _, err := first.Exec(`SELECT 1`); err != nil {
+		t.Fatalf("the retired pool was closed while a caller may hold it: %v", err)
+	}
+}
+
 // TestKeeperHandleCloseReleasesRetiredHandles pins that the pools a swap
 // retires are released on Close. database/sql keeps no finalizer, so a retired
 // pool that is never closed holds its opener goroutine and its connections for
