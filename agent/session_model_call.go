@@ -134,6 +134,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	profile = s.profile
 	sys = s.cachedSystemPrompt
 	toolDefs := s.cachedToolDefs
+	toolDefsJSONBytes := s.cachedToolDefsJSONBytes
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
@@ -313,8 +314,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	history = projectToolResultMediaFor(profile, history)
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
-	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-	untrimmedReq := s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
+	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
+	untrimmedReq := s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort, toolDefsJSONBytes)
 	s.mu.Lock()
 	s.roundFallbackMessages = untrimmedReq.Messages
 	s.mu.Unlock()
@@ -378,8 +379,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			untrimmedHistory = append(untrimmedHistory, message)
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
-		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-		untrimmedReq = s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
+		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
+		untrimmedReq = s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort, toolDefsJSONBytes)
 		s.mu.Lock()
 		s.roundFallbackMessages = untrimmedReq.Messages
 		s.mu.Unlock()
@@ -1345,7 +1346,12 @@ func protocolInjectsNativeWebSearch(protocol string) bool {
 // buildModelRequest assembles the llm.Request for one round: it lays out the
 // system prompt + history into messages (honoring SystemPromptAsUser), then
 // applies tools, provider options, reasoning effort, and model metadata.
-func (s *Session) buildModelRequest(profile *provider.Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string) llm.Request {
+//
+// toolDefsJSONBytes is toolDefs' serialized length, and travels beside the list
+// rather than being read from the session so the two cannot disagree: the
+// request prices its tools from it, which keeps the estimate's value identical
+// while sparing every round a re-serialization of the whole schema list (#6406).
+func (s *Session) buildModelRequest(profile *provider.Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string, toolDefsJSONBytes int) llm.Request {
 	var messages []llm.Message
 	if s.cfg.SystemPromptAsUser {
 		// Combine system prompt with the first user-role message into one
@@ -1367,10 +1373,11 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 
 	idleTimeout, _ := ParseProviderIdleTimeout(s.cfg.ProviderIdleTimeout) // validated at session construction/restore
 	req := llm.Request{
-		Model:    profile.Model(),
-		Provider: profile.ID(),
-		Messages: messages,
-		Tools:    toolDefs,
+		Model:          profile.Model(),
+		Provider:       profile.ID(),
+		Messages:       messages,
+		Tools:          toolDefs,
+		ToolsJSONBytes: toolDefsJSONBytes,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
 		// model that cannot honor it with no legal way to stop, and evener targets
 		// arbitrary gateways and models where that capability is unknowable in

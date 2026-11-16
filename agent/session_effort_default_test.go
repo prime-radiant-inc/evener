@@ -112,7 +112,7 @@ func TestBuildModelRequest_AppliesRequestEffortRule(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &Session{}
-			req := s.buildModelRequest(tc.profile, "sys", []llm.Message{llm.User("hi")}, nil, tc.configured)
+			req := s.buildModelRequest(tc.profile, "sys", []llm.Message{llm.User("hi")}, nil, tc.configured, 0)
 			switch {
 			case tc.want == "" && req.ReasoningEffort != nil:
 				t.Fatalf("ReasoningEffort = %q, want none on the request", *req.ReasoningEffort)
