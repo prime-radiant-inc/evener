@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -743,17 +744,21 @@ func TestClientBindsLargeResponseToItsOwnRequest(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		// The serving side reports its own failures. It must not touch t: it can
+		// outlive the subtest, and a report that lands after the subtest ended
+		// panics the package instead of failing this test.
+		serverErr := make(chan error, 1)
 		go func() {
 			server := NewStreamTransport(b)
 			requests := make([]Request, 0, 2)
 			for range 2 {
 				msg, err := server.Recv(ctx)
 				if err != nil {
-					t.Errorf("server recv: %v", err)
+					serverErr <- fmt.Errorf("server recv: %w", err)
 					return
 				}
 				if msg.Request == nil {
-					t.Errorf("server got %+v, want a request", msg)
+					serverErr <- fmt.Errorf("server got %+v, want a request", msg)
 					return
 				}
 				requests = append(requests, *msg.Request)
@@ -761,14 +766,15 @@ func TestClientBindsLargeResponseToItsOwnRequest(t *testing.T) {
 			for i, req := range slices.Backward(requests) {
 				result, err := answer(requests[i])
 				if err != nil {
-					t.Errorf("build answer: %v", err)
+					serverErr <- fmt.Errorf("build answer: %w", err)
 					return
 				}
 				if err := server.Send(ctx, ResponseMessage(req.ID, result)); err != nil {
-					t.Errorf("server send: %v", err)
+					serverErr <- fmt.Errorf("server send: %w", err)
 					return
 				}
 			}
+			serverErr <- nil
 		}()
 
 		client := NewClient(NewStreamTransport(a))
@@ -780,13 +786,28 @@ func TestClientBindsLargeResponseToItsOwnRequest(t *testing.T) {
 		go func() { outs <- callB(ctx, client) }()
 
 		for range 2 {
-			got := <-outs
-			if got.err != nil {
-				t.Fatalf("request: %v", got.err)
+			select {
+			case got := <-outs:
+				if got.err != nil {
+					t.Fatalf("request: %v", got.err)
+				}
+				if got.got != got.observed {
+					t.Fatalf("result names request %q, want this caller's own %q: a result was decoded into another request's target", got.got, got.observed)
+				}
+			case <-ctx.Done():
+				t.Fatalf("both requests did not complete: %v", ctx.Err())
 			}
-			if got.got != got.observed {
-				t.Fatalf("result names request %q, want this caller's own %q: a result was decoded into another request's target", got.got, got.observed)
+		}
+		// A serving side that failed did not prove what this test claims. The
+		// wait is bounded so a serving side that cannot finish fails the test
+		// rather than hanging the package.
+		select {
+		case err := <-serverErr:
+			if err != nil {
+				t.Fatal(err)
 			}
+		case <-ctx.Done():
+			t.Fatalf("server did not finish: %v", ctx.Err())
 		}
 	}
 
