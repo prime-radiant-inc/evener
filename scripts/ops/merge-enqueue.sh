@@ -43,38 +43,28 @@ done
 case "$wait" in ''|*[!0-9]*) echo "--wait takes whole seconds, got: $wait" >&2; usage ;; esac
 wait=$((10#$wait))  # decimal: bash arithmetic reads a leading 0 as octal
 
-# status prints "STATE MERGE_SHA POSITION QUEUE_STATE HEAD BASE" from one query, so the
-# PR's state, its queue entry and its head are read at the same instant ("-"
-# for absent values). It exits nonzero when the query fails, and so does the
-# script. HEAD and BASE name the merge-group run's queue branch:
-# gh-readonly-queue/<BASE>/pr-<N>-<HEAD>.
+# status prints "ID STATE MERGE_SHA POSITION QUEUE_STATE BASE" from one query,
+# so the PR's state, its queue entry and its base branch are read at the same
+# instant ("-" for absent values). It exits nonzero when the query fails, and
+# so does the script. BASE names the merge-group run's queue branch:
+# gh-readonly-queue/<BASE>/pr-<N>-<base tip>.
 status() {
   local out
-  if ! out=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id state headRefOid baseRefName mergeCommit{oid} mergeQueueEntry{position state}}}}' \
+  if ! out=$(gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){pullRequest(number:$p){id state baseRefName mergeCommit{oid} mergeQueueEntry{position state}}}}' \
     -f o="${repo%%/*}" -f n="${repo##*/}" -F p="$pr" \
-    --jq '.data.repository.pullRequest | "\(.id) \(.state) \(.mergeCommit.oid // "-") \(.mergeQueueEntry.position // "-") \(.mergeQueueEntry.state // "-") \(.headRefOid // "-") \(.baseRefName // "-")"' 2>&1); then
+    --jq '.data.repository.pullRequest | "\(.id) \(.state) \(.mergeCommit.oid // "-") \(.mergeQueueEntry.position // "-") \(.mergeQueueEntry.state // "-") \(.baseRefName // "-")"' 2>&1); then
     echo "MERGEQ lookup failed: $out" >&2
     exit 2
   fi
   echo "$out"
 }
 
-# refresh sets id, st, sha, pos, qstate, head and base from status, stopping the
+# refresh sets id, st, sha, pos, qstate and base from status, stopping the
 # script if the lookup failed (a failure inside "$(...)" alone would not).
-# It also snapshots the head and base of the last read where the PR was still
-# queued: a push between the drop and its detection changes the head, but the
-# queued head's run is the one to inspect, and that is the run drop_outcome
-# must name. Each field is snapshotted independently and only when real: a
-# placeholder in one field must not discard the real value of the other, nor
-# win over a real value the detecting read reports.
 refresh() {
   local s
   s=$(status) || exit 2
-  read -r id st sha pos qstate head base <<<"$s"
-  if [ "$pos" != "-" ]; then
-    if [ -n "${head:-}" ] && [ "$head" != "-" ] && [ "$head" != "null" ]; then qhead=$head; fi
-    if [ -n "${base:-}" ] && [ "$base" != "-" ] && [ "$base" != "null" ]; then qbase=$base; fi
-  fi
+  read -r id st sha pos qstate base <<<"$s"
 }
 
 # merged_sha prints the merge commit and succeeds when the PR's own state says
@@ -107,35 +97,38 @@ queue_drop_reason() {
     --jq '.data.repository.pullRequest.timelineItems.nodes[0] | if . == null then "" else "\(.createdAt | fromdateiso8601) \(.reason // "")" end'
 }
 
-# merge_group_ref names how to reach this PR head's merge-group run: its run id
-# and URL when one resolves for the queue branch, otherwise the queue branch
-# name itself so the operator can list it. It never fails the script: a run
-# lookup that errors or finds nothing falls back to the branch name, and a
-# head/base the status read did not supply falls back to the generic run.
+# A merge-group run's headBranch is gh-readonly-queue/<base>/pr-<N>-<base tip>:
+# GitHub puts the base tip the queue tested on top of, not the PR head, so the
+# exact branch cannot be built before the run exists and the suffix is matched
+# on its prefix. The prefix is passed through the environment rather than
+# interpolated into the jq program, whose literals a branch name can break.
+#
+# merge_group_ref names how to reach this PR's merge-group run: its run id and
+# URL when the most recent match resolves, otherwise the queue branch prefix so
+# the operator can list it. It never fails the script: a run lookup that errors
+# or finds nothing falls back to the prefix, and a base the status read did not
+# supply falls back to the generic run.
 merge_group_ref() {
-  local branch out
-  if [ -z "${head:-}" ] || [ -z "${base:-}" ] || [ "$head" = "-" ] || [ "$base" = "-" ] || [ "$head" = "null" ] || [ "$base" = "null" ]; then
+  local prefix out
+  if [ -z "${base:-}" ] || [ "$base" = "-" ] || [ "$base" = "null" ]; then
     printf 'the merge-group run for this PR'
     return
   fi
-  branch="gh-readonly-queue/${base}/pr-${pr}-${head}"
-  out=$(gh run list --repo "$repo" --branch "$branch" --limit 1 \
-    --json databaseId,url,conclusion \
-    --jq '.[0] | if . == null then "" else "merge-group run \(.databaseId) (\(.conclusion // "unknown")): \(.url)" end' 2>/dev/null) || out=""
-  if [ -n "$out" ]; then printf '%s' "$out"; else printf 'the merge-group run for queue branch %s' "$branch"; fi
+  prefix="gh-readonly-queue/${base}/pr-${pr}-"
+  out=$(QUEUE_PREFIX="$prefix" gh run list --repo "$repo" --event merge_group --limit 100 \
+    --json databaseId,url,conclusion,headBranch \
+    --jq '[.[] | select(.headBranch | startswith(env.QUEUE_PREFIX))][0] | if . == null then "" else "merge-group run \(.databaseId) (\(.conclusion // "unknown")): \(.url)" end' 2>/dev/null) || out=""
+  if [ -n "$out" ]; then printf '%s' "$out"; else printf 'the merge-group run for queue branch prefix %s' "$prefix"; fi
 }
 
 # drop_outcome prints the one outcome line for a queue drop, keyed on the
 # queue's own removal reason so a green entry dropped by a batch rebuild is not
 # read as a failed PR. A removal event older than the drop it is meant to
 # explain is a stale prior event, not this drop's reason. Every branch names
-# the merge-group run for this head, so the lane can go straight to it instead
-# of hunting through the Actions API.
+# this PR's merge-group run, so the lane can go straight to it instead of
+# hunting through the Actions API.
 drop_outcome() {
   local event created reason run
-  # Name the run for the head that was queued when it dropped, not the head
-  # the detecting read happens to see (see refresh).
-  head=${qhead:-$head}; base=${qbase:-$base}
   run=$(merge_group_ref)
   if ! event=$(queue_drop_reason 2>/dev/null); then
     printf 'MERGEQ dropped: PR left the queue without merging (state=%s); could not read the queue removal reason; see %s before re-enqueueing\n' "$st" "$run"

@@ -323,8 +323,8 @@ loading them, since each opens a socket the moment its body runs.
   on top of main and the PRs ahead of it and merges it when the required
   checks pass there, so do not merge `origin/main` into the branch just to
   catch up. Pushing to a queued PR removes it from the queue. `MERGEQ
-  dropped` names the queue's own removal reason and the merge-group run
-  for that head. `failed_checks` means a required check failed in the
+  dropped` names the queue's own removal reason and the PR's merge-group
+  run. `failed_checks` means a required check failed in the
   merge group; that candidate is not always your PR, so read the
   merge-group run named in the `MERGEQ dropped` line and re-enqueue when
   the failed lanes are unrelated to your change or look transient.
