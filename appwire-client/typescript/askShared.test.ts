@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
+import { answeredAskUserReply, answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 
 // Direct unit coverage for the shared ask_user parsing helper (extracted
@@ -259,6 +259,86 @@ test("answeredAskUserSuffix returns undefined for an errored call", () => {
   const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), error: "denied" });
   const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"' });
   expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+// answeredAskUserReply names the reply a client may drop from the raw
+// transcript because the recap already shows all of it (#6328): the same
+// reply answeredAskUserSuffix recaps, and nothing when the recap carries
+// only part of it.
+
+test("answeredAskUserReply names the reply whose answer the recap carries in full", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const composed = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"' });
+  expect(answeredAskUserReply(threadModel([ask, composed]), ask)).toBe(composed);
+  // Free prose is a reply only where the server stamped the link
+  // (answerToTurnIds names the QUESTION's turn).
+  const prose = userMessage({ text: "yes, ship it", answerToTurnIds: ["turn_1"] });
+  expect(answeredAskUserReply(threadModel([ask, prose]), ask)).toBe(prose);
+});
+
+test("answeredAskUserReply declines a multi-line reply the recap would cut", () => {
+  // The suffix keeps the first line and an ellipsis; lines 2..N survive only
+  // in the raw row, so nothing may call this reply recapped.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: "yes, ship it\nbut wait for the migration first", answerToTurnIds: ["turn_1"] });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(" — answered: yes, ship it …");
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserReply declines a composed reply carrying a note the recap strips", () => {
+  // The suffix restates the answers alone; a note is extra text only the raw
+  // row holds, so dropping that row would lose the condition.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes" — note: "wait for the migration"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserReply declines a composed reply with a line that is not an answer", () => {
+  // An edited draft can carry commentary beside the answer lines; the recap
+  // shows the answers, not the commentary.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: '[answers]\nWait for the migration.\n1. [Deploy?] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserReply declines a marker line that carries more than the marker", () => {
+  // "[answers] Wait for the migration" puts the condition on the marker line,
+  // which the recap never restates.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: '[answers] Wait for the migration\n1. [Deploy?] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserReply declines answers to two questions that share a header", () => {
+  // Two questions may legally share a header. The recap parses by header and
+  // keeps only the last, so it cannot stand in for both answer lines.
+  const twin = { ...ONE_QUESTION[0], question: "Should I deploy the docs too?" };
+  const ask = item({ argumentsJSON: askUserArgs([ONE_QUESTION[0], twin]) });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Deploy?] → "No"' });
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserReply declines an answer another actor wrote", () => {
+  // The recap says "You answered"; a Manager's answer is not the human's, and
+  // hiding its row would attribute an automated decision to the person.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    actor: { kind: "manager", managerRef: "local:manager" },
+  });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserReply names a composed reply the human wrote", () => {
+  // The structural rule's positive case: the composer's own output, one line
+  // per question, numbered from one, no note.
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', actor: { kind: "user" } });
+  expect(answeredAskUserReply(threadModel([ask, reply]), ask)).toBe(reply);
 });
 
 test("answeredAskUserSuffix returns undefined when the call carries no parseable questions", () => {
