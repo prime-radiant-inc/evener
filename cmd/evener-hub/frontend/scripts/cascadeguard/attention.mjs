@@ -290,6 +290,46 @@ export function socketInvalidations({ frames, socketId, afterAt, generationId })
     .map((frame) => frame.params.sequence);
 }
 
+// The needs-you offsets the closing connection left the page without.
+//
+// A reply on the wire is not a delivery: the client detaches a retired socket's
+// handlers, so an answer that arrives after the close lands is dropped and the
+// entry keeps the base it read from. The page's own next read is what says so.
+// A retry of a lost read carries the base that read used, because the base is
+// the revision the entry still holds; a read of an entry whose answer was taken
+// carries the revision that answer moved it to. The store re-forces exactly the
+// entries a close left stale, so those offsets - and no others - are the ones a
+// reconnect at an equal sequence may read again.
+export function lostTierRead({ frames, lostSocketId, reconnectSocketId }) {
+  const tierRead = (frame) =>
+    frame.direction === "Network.webSocketFrameSent" &&
+    frame.method === "evener/navigation/read" &&
+    frame.params?.resource === "section" &&
+    frame.params?.section === "needs_you";
+  const baseOf = (frame) => {
+    const base = frame.params?.base;
+    return base ? `${base.generationId}/${base.revision}/${base.etag}` : "none";
+  };
+  const offsetOf = (frame) => frame.params?.offset ?? 0;
+  // Only the last read a connection sent at an offset can be the one it lost:
+  // an earlier one at that offset was superseded on the same connection.
+  const lastSentBy = (socketId) => {
+    const last = new Map();
+    for (const frame of frames)
+      if (tierRead(frame) && frame.requestId === socketId) last.set(offsetOf(frame), baseOf(frame));
+    return last;
+  };
+  const lost = lastSentBy(lostSocketId);
+  return [
+    ...new Set(
+      frames
+        .filter((frame) => tierRead(frame) && frame.requestId === reconnectSocketId)
+        .filter((frame) => lost.has(offsetOf(frame)) && lost.get(offsetOf(frame)) === baseOf(frame))
+        .map(offsetOf),
+    ),
+  ];
+}
+
 export function reconnectReadyDecision({ consumed, reconnected, deliveredTierReads, retryableOffsets = [] }) {
   const where = `consumed ${consumed?.sequence} generation ${consumed?.generationId}, ` +
     `reconnected ${reconnected?.sequence} generation ${reconnected?.generationId}`;
@@ -1267,27 +1307,20 @@ export async function attentionJourney(ctx) {
     reads: tierReadPositions,
     firstInvalidationAt: firstInvalidationAfterHandshake === -1 ? null : firstInvalidationAfterHandshake,
   }).map((entry) => entry.read);
-  // A tier read the page sent on the connection that closed and never had
-  // answered was lost with that socket, and the entry it was refreshing stays
-  // stale - the one condition under which the retained branch re-forces it.
-  // Offsets are the coarsest honest key here, so a read recorded at an offset
-  // blesses a retry of that offset and nothing more; the row identity asserted
-  // below is the backstop, because a tier that lost its rows cannot render them.
-  const lostTierOffsets = [
-    ...new Set(
-      frames
-        .filter(
-          (frame) =>
-            frame.direction === "Network.webSocketFrameSent" &&
-            frame.method === "evener/navigation/read" &&
-            frame.params?.resource === "section" &&
-            frame.params?.section === "needs_you" &&
-            frame.requestId === consumedAtCut.socketId &&
-            !answered(frame),
-        )
-        .map((frame) => frame.params?.offset ?? 0),
-    ),
-  ];
+  // A tier read whose answer the page lost with the socket that closed leaves
+  // its entry stale, which is the one condition under which the retained branch
+  // re-forces it. Whether an answer was delivered is not readable from the wire
+  // - the CDP log shows the hub's reply whether or not the retired socket's
+  // detached handlers still accepted it - so it is read from the page: the
+  // reconnect's own retry of that offset carries the base the lost read used.
+  // Offsets are the coarsest honest key here, so a lost read blesses a retry of
+  // that offset and nothing more; the row identity asserted below is the
+  // backstop, because a tier that lost its rows cannot render them.
+  const lostTierOffsets = lostTierRead({
+    frames,
+    lostSocketId: consumedAtCut.socketId,
+    reconnectSocketId: reconnectHandshake.socketId,
+  });
   const readyBranch = reconnectReadyDecision({
     consumed,
     reconnected,

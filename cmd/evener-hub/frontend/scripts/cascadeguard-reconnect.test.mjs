@@ -12,6 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  lostTierRead,
   readyDispatchTierReads,
   reconnectReadyDecision,
   reconnectSequences,
@@ -297,5 +298,136 @@ test("another connection's invalidation is not this page's consumed sequence", (
       deliveredTierReads: [],
     }),
     "reloaded",
+  );
+});
+
+// The failing run's own shape: the closing socket sent needs-you reads at
+// offsets 0 and 50 and the hub's deltas were never applied, because the close
+// landed first and the client had already detached that socket's handlers. The
+// page retries both offsets on the reconnect with the bases it still holds.
+// Those retries are the store's own re-force of two stale entries, so the
+// retained branch must bless exactly those offsets and no others.
+const tierReadSent = ({ id, socket, offset, base }) => ({
+  direction: "Network.webSocketFrameSent",
+  requestId: socket,
+  id,
+  method: "evener/navigation/read",
+  params: base
+    ? { resource: "section", section: "needs_you", offset, limit: 50, base }
+    : { resource: "section", section: "needs_you", offset, limit: 50 },
+});
+const baseAt = (revision) => ({ generationId: "generation-a", revision, etag: `"etag-${revision}"` });
+// The hub's answer to a read, as CDP logs it on the connection that asked.
+// Present for the old socket's reads below on purpose: the wire carries the
+// reply whether or not the page could still accept it.
+const tierReadReply = ({ id, socket }) => ({
+  direction: "Network.webSocketFrameReceived",
+  requestId: socket,
+  id,
+  result: { data: { entities: [], containers: [] }, status: "ok", representation: "delta" },
+});
+// The rule a9113483bf shipped: a tier read the closing socket sent and the
+// wire never answered is the one considered lost.
+const answered = (frames, request) =>
+  frames.some(
+    (frame) =>
+      frame.direction === "Network.webSocketFrameReceived" &&
+      frame.id === request.id &&
+      Object.hasOwn(frame, "result") &&
+      !frame.error,
+  );
+const answeredRuleOffsets = (frames, socketId) => [
+  ...new Set(
+    frames
+      .filter(
+        (frame) =>
+          frame.direction === "Network.webSocketFrameSent" &&
+          frame.method === "evener/navigation/read" &&
+          frame.params?.resource === "section" &&
+          frame.params?.section === "needs_you" &&
+          frame.requestId === socketId &&
+          !answered(frames, frame),
+      )
+      .map((frame) => frame.params?.offset ?? 0),
+  ),
+];
+
+test("a read whose answer the close dropped is the offset the reconnect may retry", () => {
+  const frames = [
+    tierReadSent({ id: 1, socket: "socket-old", offset: 0, base: baseAt(46) }),
+    tierReadSent({ id: 2, socket: "socket-old", offset: 50, base: baseAt(46) }),
+    // The hub answered both on the wire, before the close landed. The page
+    // still holds revision 46 for each entry, which is what says the answers
+    // never reached it.
+    tierReadReply({ id: 1, socket: "socket-old" }),
+    tierReadReply({ id: 2, socket: "socket-old" }),
+    // The reconnect retries both with the base the lost reads used, because
+    // that is the revision the entries still hold.
+    tierReadSent({ id: 3, socket: "socket-new", offset: 0, base: baseAt(46) }),
+    tierReadSent({ id: 4, socket: "socket-new", offset: 50, base: baseAt(46) }),
+  ];
+  assert.deepEqual(
+    lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+    [0, 50],
+  );
+  // The wire cannot tell a delivered answer from a dropped one, so the rule
+  // a9113483bf shipped saw nothing lost here and rejected both retries. That
+  // is the failing run: two stale entries re-forced by the store, called a
+  // reload.
+  assert.deepEqual(answeredRuleOffsets(frames, "socket-old"), []);
+  const reads = [
+    { offset: 0, label: "offset 0 (3)" },
+    { offset: 50, label: "offset 50 (4)" },
+  ];
+  assert.equal(
+    reconnectReadyDecision({
+      consumed: { ...consumed, sequence: 112 },
+      reconnected: reconnectedAt({ sequence: 112 }),
+      deliveredTierReads: reads,
+      retryableOffsets: lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+    }),
+    "retained",
+  );
+});
+
+test("a retry that moved its base was an answered read, not a lost one", () => {
+  // Both reads were answered and applied before the cut, so the reconnect's
+  // retry of offset 0 carries the revision that answer moved the entry to. The
+  // entry is not stale, the store starts no such read, and a read that did
+  // arrive anyway is not a retry any lost read licenses.
+  const frames = [
+    tierReadSent({ id: 1, socket: "socket-old", offset: 0, base: baseAt(46) }),
+    tierReadSent({ id: 2, socket: "socket-old", offset: 50, base: baseAt(46) }),
+    tierReadSent({ id: 3, socket: "socket-new", offset: 0, base: baseAt(47) }),
+    tierReadSent({ id: 4, socket: "socket-new", offset: 50, base: baseAt(48) }),
+  ];
+  assert.deepEqual(
+    lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+    [],
+  );
+  assert.throws(
+    () =>
+      reconnectReadyDecision({
+        consumed: { ...consumed, sequence: 112 },
+        reconnected: reconnectedAt({ sequence: 112 }),
+        deliveredTierReads: [{ offset: 0, label: "offset 0 (3)" }],
+        retryableOffsets: lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+      }),
+    rejectedWith(["offset 0 (3)"], [], "deepStrictEqual"),
+  );
+});
+
+test("only the last read a closing connection sent at an offset can be lost", () => {
+  // A tier entry read twice on the same connection: the first was superseded,
+  // so its base is not a base the page still holds. Matching on any earlier
+  // send would license a retry the entry never earned.
+  const frames = [
+    tierReadSent({ id: 1, socket: "socket-old", offset: 0, base: baseAt(20) }),
+    tierReadSent({ id: 2, socket: "socket-old", offset: 0, base: baseAt(46) }),
+    tierReadSent({ id: 3, socket: "socket-new", offset: 0, base: baseAt(20) }),
+  ];
+  assert.deepEqual(
+    lostTierRead({ frames, lostSocketId: "socket-old", reconnectSocketId: "socket-new" }),
+    [],
   );
 });
