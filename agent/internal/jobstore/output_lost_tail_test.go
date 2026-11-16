@@ -113,6 +113,45 @@ func TestOutputReadersSurviveALostTailCutMidRecord(t *testing.T) {
 	}
 }
 
+// Recovery records a terminal byte count durably, so the count must never name
+// bytes the log cannot back. A process-only crash leaves batched appends in the
+// page cache with an anchor that does not cover them; committing before the
+// count turns those bytes into vouched output instead of a durable claim a
+// later power loss would invalidate.
+func TestOutputCommitCoversTheCountItReports(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	store, err := OpenOutput(path, 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	store.metaSyncInterval = time.Hour // leave the append's barrier owed, as a crash does
+	if _, err := store.Append([]byte("unflushed\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	before, _, err := readOutputMeta(afero.NewOsFs(), outputMetaPath(path))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if before.DurableFileSize == nil || *before.DurableFileSize != 0 {
+		t.Fatalf("anchor before commit = %v, want 0: the append's barrier is still owed", before.DurableFileSize)
+	}
+
+	total, err := CommitOutput(path)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if total != int64(len("unflushed\n")) {
+		t.Fatalf("committed total = %d, want %d", total, len("unflushed\n"))
+	}
+	after, _, err := readOutputMeta(afero.NewOsFs(), outputMetaPath(path))
+	if err != nil {
+		t.Fatalf("read metadata after commit: %v", err)
+	}
+	if after.DurableFileSize == nil || *after.DurableFileSize != total {
+		t.Fatalf("anchor after commit = %v, want %d: the recorded count must be durable", after.DurableFileSize, total)
+	}
+}
+
 // A log that something replaced is not a lost tail, and must still be refused:
 // the tolerance above is about bytes the crash could not save, not about a file
 // whose content disagrees with every anchor.

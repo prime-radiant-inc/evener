@@ -787,6 +787,11 @@ func TestOutputRejectsStaleMetadataForPrunedRetainedFile(t *testing.T) {
 	}
 }
 
+// Output is exposed only when a checksum vouches for it. A process-only crash
+// can leave bytes in the log that the sidecar never recorded: they were never
+// vouched for, so recovery drops them as the lost tail instead of validating
+// them. What survives is the recorded window, reported with its own lifetime
+// total.
 func TestOutputRecoversStaleMetadataAfterInterruptedAppend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, int64(len("keep\n")))
@@ -806,23 +811,26 @@ func TestOutputRecoversStaleMetadataAfterInterruptedAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats after stale sidecar append: %v", err)
 	}
-	if total != int64(len("drop\nkeep\nmore\n")) || retainedStart != int64(len("drop\n")) {
-		t.Fatalf("stats total=%d retainedStart=%d, want recovered appended output", total, retainedStart)
+	// The appended bytes are past the recorded window, so they are the lost
+	// tail: the recovered job ends where the sidecar's checksum vouched.
+	if total != int64(len("drop\nkeep\n")) || retainedStart != int64(len("drop\n")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want the recorded window %d/%d",
+			total, retainedStart, len("drop\nkeep\n"), len("drop\n"))
 	}
 
-	reopened, err := OpenOutput(path, int64(len("keep\nmore\n")))
+	reopened, err := OpenOutput(path, int64(len("keep\n")))
 	if err != nil {
 		t.Fatalf("reopen after stale sidecar append: %v", err)
 	}
-	data, total, truncated, err := reopened.Tail(1024)
+	data, total, _, err := reopened.Tail(1024)
 	if err != nil {
 		t.Fatalf("tail after recovery: %v", err)
 	}
-	if string(data) != "keep\nmore\n" {
-		t.Fatalf("tail after recovery = %q, want retained output plus appended bytes", data)
+	if string(data) != "keep\n" {
+		t.Fatalf("tail after recovery = %q, want the recorded retained output %q", data, "keep\n")
 	}
-	if total != int64(len("drop\nkeep\nmore\n")) || !truncated {
-		t.Fatalf("tail total=%d truncated=%v, want recovered lifetime and truncated", total, truncated)
+	if total != int64(len("drop\nkeep\n")) {
+		t.Fatalf("tail total=%d, want the recorded lifetime %d", total, len("drop\nkeep\n"))
 	}
 }
 

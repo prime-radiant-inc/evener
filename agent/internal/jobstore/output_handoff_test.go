@@ -146,6 +146,7 @@ func TestOutputFlushReportsAFailedCloseBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	store.metaSyncInterval = time.Hour // hold the tick off; the close owes the barrier
 	if _, err := store.Append([]byte("output that must be durable\n")); err != nil {
 		t.Fatalf("append: %v", err)
 	}

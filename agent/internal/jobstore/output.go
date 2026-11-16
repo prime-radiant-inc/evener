@@ -2,7 +2,6 @@ package jobstore
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -785,6 +784,31 @@ func grepLimitScans(limitBytes int) (bool, error) {
 	return limitBytes > 0, nil
 }
 
+// CommitOutput pays a recovered output file's barriers and commits its metadata,
+// then reports the durable lifetime byte count. Recovery calls it before
+// recording a terminal byte count: batched appends can still sit in the page
+// cache after a process-only crash, and a recorded count the log cannot yet
+// back makes checkOutputTotalForRecord reject the output forever after a later
+// power loss.
+func CommitOutput(path string) (int64, error) {
+	if _, err := os.Stat(path); err != nil {
+		return 0, err
+	}
+	store, err := OpenOutput(path, 0)
+	if err != nil {
+		return 0, err
+	}
+	if err := store.Flush(); err != nil {
+		_ = store.Close()
+		return 0, err
+	}
+	if err := store.Close(); err != nil {
+		return 0, err
+	}
+	total, _, err := OutputFileStats(path)
+	return total, err
+}
+
 // OutputFileStats returns durable lifetime output metadata for a closed output
 // file: the total bytes ever written and the first lifetime offset readers may
 // see. If no metadata exists, the file is treated as unpruned.
@@ -1407,32 +1431,33 @@ func readValidOutputMetaFs(fs afero.Fs, path string, outputPath string, retained
 		if ok, err := outputFileHasPrefixSHA256(fs, outputPath, metaRetained, meta.RetainedSHA256); err != nil {
 			return outputMeta{}, false, err
 		} else if !ok {
+			// The window the sidecar names is damaged, but an anchor may still
+			// vouch for an intact prefix. Refusing here fails OutputFileStats and
+			// aborts session restore over output that is recoverable, so try the
+			// anchor the way the equal-length path does.
+			if hasDurableAnchorMeta(meta) {
+				return acceptLostOutputTail(fs, outputPath, meta, retained)
+			}
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
-		// The suffix is output only up to its last complete record. An append
-		// outside the store writes whole records, which is the shape the pin for
-		// that behavior recovers, so it keeps working. A power crash instead
-		// leaves a partial trailing record, and hashing those bytes would present
-		// them as validated output: the ruling loses a tail, it never blesses one.
-		//
-		// Only an anchored sidecar is held to that. An unanchored sidecar predates
-		// the anchor contract, so it keeps the older adopt-whole behavior rather
-		// than lose bytes nothing can vouch for or against.
-		end := retained
 		if hasDurableAnchorMeta(meta) {
-			end, err = outputFileLastRecordEnd(fs, outputPath, retained, metaRetained)
-			if err != nil {
-				return outputMeta{}, false, err
-			}
-			if end < metaRetained {
-				end = metaRetained
-			}
+			// Bytes are output only when a checksum vouches for them, and the
+			// sidecar's own checksum just vouched for exactly this window. A
+			// suffix past it was never recorded, so it is the lost tail.
+			// Newline termination is not evidence: a torn page can zero a block
+			// and leave the trailing newline, and validating on it would present
+			// corruption as output.
+			meta.TotalBytes = meta.RetainedStart + metaRetained
+			return meta, true, nil
 		}
-		hash, err := outputFileHashPrefix(fs, outputPath, end)
+		// An unanchored sidecar predates the anchor contract, so it keeps the
+		// older adopt-whole behavior rather than lose bytes nothing can vouch for
+		// or against.
+		hash, err := outputFileSHA256(fs, outputPath)
 		if err != nil {
 			return outputMeta{}, false, err
 		}
-		meta.TotalBytes = meta.RetainedStart + end
+		meta.TotalBytes = meta.RetainedStart + retained
 		meta.RetainedSHA256 = hash
 		return meta, true, nil
 	}
@@ -1549,53 +1574,6 @@ func outputFileHasPrefixSHA256(fs afero.Fs, path string, n int64, want string) (
 		return false, fmt.Errorf("jobstore: hash output metadata: %w", err)
 	}
 	return hex.EncodeToString(h.Sum(nil)) == want, nil
-}
-
-// outputFileLastRecordEnd is the offset just past the last record boundary in
-// the file, searched no further back than floor. The suffix past floor is the
-// output nothing vouched for, so the search is bounded by it rather than by the
-// file. A file with no boundary in that range reports floor.
-func outputFileLastRecordEnd(fs afero.Fs, path string, size, floor int64) (int64, error) {
-	if size <= floor {
-		return size, nil
-	}
-	f, err := fs.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("jobstore: open output for record boundary: %w", err)
-	}
-	defer func() {
-		_ = f.Close()
-	}()
-	const chunk = 8 << 10
-	buf := make([]byte, chunk)
-	for end := size; end > floor; {
-		start := max(end-chunk, floor)
-		n := int(end - start)
-		if _, err := f.ReadAt(buf[:n], start); err != nil && !errors.Is(err, io.EOF) {
-			return 0, fmt.Errorf("jobstore: read output record boundary: %w", err)
-		}
-		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
-			return start + int64(i) + 1, nil
-		}
-		end = start
-	}
-	return floor, nil
-}
-
-// outputFileHashPrefix is outputFileSHA256 over the first n bytes.
-func outputFileHashPrefix(fs afero.Fs, path string, n int64) (string, error) {
-	f, err := fs.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("jobstore: open output for metadata hash: %w", err)
-	}
-	defer func() {
-		_ = f.Close()
-	}()
-	h := sha256.New()
-	if _, err := io.CopyN(h, f, n); err != nil {
-		return "", fmt.Errorf("jobstore: hash output metadata: %w", err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func outputFileHasSuffixSHA256(fs afero.Fs, path string, start int64, n int64, want string) (bool, error) {

@@ -326,10 +326,13 @@ func executeDelegateShellRepair(plan delegateShellRepairPlan, now time.Time) (er
 		if outputPath == "" {
 			outputPath = filepath.Join(filepath.Dir(plan.storePath), "jobs", jobID+".log")
 		}
-		if total, _, statErr := jobstore.OutputFileStats(outputPath); statErr == nil {
+		// Commit recovered output before recording its count, for the same reason
+		// the live reconciliation path does: a count this log cannot back is
+		// rejected forever once a later power loss drops the unflushed bytes.
+		if total, commitErr := jobstore.CommitOutput(outputPath); commitErr == nil {
 			finish.OutputBytes = total
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
+		} else if !errors.Is(commitErr, os.ErrNotExist) {
+			return commitErr
 		}
 		events = append(events, finish)
 		notificationKind := jobstore.EventJobNotificationPending

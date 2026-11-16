@@ -267,3 +267,37 @@ func TestOutputOlderSidecarDoesNotAdoptATornSuffix(t *testing.T) {
 		t.Fatalf("page content = %q, want %q: the torn suffix is not output", page.Content, vouched)
 	}
 }
+
+// A sidecar window can be damaged between the durable anchor and the end the
+// sidecar names. The anchor still vouches for the prefix that survived, so
+// recovery reports it instead of refusing: refusing fails OutputFileStats and
+// aborts session restore over output that is recoverable.
+func TestOutputAnchorRecoversWhenTheRecordedWindowIsDamaged(t *testing.T) {
+	vouched := []byte("keep\n")
+	// The log is longer than the window the sidecar names, so this takes the
+	// longer-log arm. The sidecar's own checksum for that window does not match,
+	// which is the case that used to refuse before trying the anchor.
+	logBytes := []byte("keep\nXXXXXXXXXXXX")
+	path := tornSuffixFile(t, logBytes, outputMeta{
+		TotalBytes:      int64(len(vouched)),
+		RetainedStart:   0,
+		RetainedSHA256:  outputBytesSHA256([]byte("not these bytes")),
+		DurableFileSize: new(int64(len(vouched))),
+		DurableSHA256:   outputBytesSHA256(vouched),
+	})
+
+	total, retainedStart, err := OutputFileStats(path)
+	if err != nil {
+		t.Fatalf("OutputFileStats with a damaged recorded window: %v", err)
+	}
+	if total != int64(len(vouched)) || retainedStart != 0 {
+		t.Fatalf("OutputFileStats = %d/%d, want %d/0: the anchored prefix", total, retainedStart, len(vouched))
+	}
+	page, err := readOutputPageSnapshotAtPath(path, nil, 1<<20)
+	if err != nil {
+		t.Fatalf("page snapshot: %v", err)
+	}
+	if !bytes.Equal(page.Content, vouched) {
+		t.Fatalf("page content = %q, want %q", page.Content, vouched)
+	}
+}
