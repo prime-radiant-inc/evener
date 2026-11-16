@@ -179,7 +179,10 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // message must not resurrect as refused work). Render-side suppression
   // alone would resurrect the row once a bounded transcript window drops the
   // delivery proof; an edited composition survives every sweep. Returns the
-  // retired records' ids.
+  // retired records' ids. A host whose storage can hold same-wire superseded
+  // siblings of the recovery (the web outbox's mint leaves them) retires
+  // them in the same write, by its own wire-family rule, so a delayed
+  // terminal refusal of a sibling cannot resurrect the composition.
   retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]>;
   // The optional marker a refusal that never reached the daemon sets: the
   // wire may still be applied by an outstanding attempt, so a host that

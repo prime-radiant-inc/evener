@@ -1865,12 +1865,13 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
   async retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]> {
     if (settledSourceIds.size === 0) return [];
     const retired = await this.#write<string[]>(
-      [RECOVERY_STORE],
+      [RECOVERY_STORE, OUTBOX_STORE],
       "retireDeliveredPromoteRecoveries",
       async (transaction) => {
         const store = transaction.objectStore(RECOVERY_STORE);
         const records = await requestResult<MutationRecoveryRecord[]>(store.getAll());
         const retiredIds: string[] = [];
+        const sweptRetiredIds: string[] = [];
         for (const record of records) {
           if (record.targetRef !== targetRef && record.displayedRef !== targetRef) continue;
           if (record.recoveryKind !== "rejected") continue;
@@ -1882,9 +1883,25 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           const sourceMutationId =
             typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
           if (sourceMutationId === undefined || !settledSourceIds.has(sourceMutationId)) continue;
+          // The recovery's same-wire outbox siblings retire in the same
+          // transaction (discardRecovery's rule): a superseded predecessor a
+          // retry left behind would otherwise transferToRecovery a fresh
+          // refused copy for the already-delivered message off its own delayed
+          // terminal refusal. Their ids publish through the retiredIds
+          // channel, not the return: callers gate on the recoveries they
+          // owned, while the runtime's delivery registrations clear by swept
+          // key exactly as every other wire-family sweep publishes them.
+          sweptRetiredIds.push(
+            ...(await this.#retireWireSiblings(transaction, effectiveWireId(record), {
+              excludeKeys: new Set([record.clientMutationId]),
+              sweepOptimistic: false,
+              sweepRecovery: false,
+            })),
+          );
           await requestResult(store.delete(record.clientMutationId));
           retiredIds.push(record.clientMutationId);
         }
+        if (sweptRetiredIds.length > 0) this.#retiredIdsListener?.(sweptRetiredIds);
         return retiredIds;
       },
     );

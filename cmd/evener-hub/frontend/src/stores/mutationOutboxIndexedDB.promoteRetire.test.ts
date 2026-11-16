@@ -29,13 +29,18 @@ describe("MutationOutboxIndexedDB retireDeliveredPromoteRecoveries", () => {
 
   async function refusedPromote(
     storage: MutationOutboxIndexedDB,
-    overrides: { compositionRevision?: number; sourceMutationId?: string } = {},
+    overrides: { compositionRevision?: number; sourceMutationId?: string; wireId?: string } = {},
   ): Promise<MutationRecoveryRecord> {
     const record = await storage.enqueueIntent({
       targetRef: TARGET,
       threadId: "thread-1",
       method: "turn/promoteQueuedAsSteer",
-      payload: { ref: TARGET, index: 0, expectedEntryId: "q1" },
+      payload: {
+        ref: TARGET,
+        index: 0,
+        expectedEntryId: "q1",
+        ...(overrides.wireId !== undefined ? { clientMutationId: overrides.wireId } : {}),
+      },
       attachments: [],
       optimisticDisplay: {
         method: "turn/promoteQueuedAsSteer",
@@ -99,6 +104,69 @@ describe("MutationOutboxIndexedDB retireDeliveredPromoteRecoveries", () => {
       delivered.clientMutationId,
     );
     reopened.close();
+  });
+
+  // A promotion retry keeps a same-wire superseded predecessor in the outbox
+  // (an uncertain wire's resend inherits the wire identity). When the sweep
+  // retires the recovery for delivery, the predecessor must retire in the
+  // same transaction: a delayed terminal refusal of that predecessor would
+  // otherwise transferToRecovery a fresh refused row for the already
+  // delivered message (roborev round 11, finding 2 - discardRecovery's own
+  // rule).
+  // An uncertain promote retry leaves its superseded predecessor in the outbox
+  // while the retry's own refusal becomes a recovery of the SAME wire (the
+  // mint inherits the predecessor's id). When the sweep retires that recovery
+  // for delivery, the predecessor must retire in the same transaction
+  // (discardRecovery's rule): a delayed terminal refusal of the predecessor
+  // would otherwise transferToRecovery a fresh refused row for the
+  // already-delivered message (roborev round 11, finding 2).
+  test("retiring a delivered promote recovery retires its same-wire outbox sibling in the same transaction", async () => {
+    const storage = store();
+    // A: the promote whose response was lost -> delivery-uncertain.
+    const a = await storage.enqueueIntent({
+      targetRef: TARGET,
+      threadId: "thread-1",
+      method: "turn/promoteQueuedAsSteer",
+      payload: { ref: TARGET, index: 0, expectedEntryId: "q1" },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/promoteQueuedAsSteer",
+        input: [{ type: "text", text: "queued text" }],
+        sourceMutationId: "m_source",
+      },
+    });
+    await storage.markAttempted(a.clientMutationId);
+    await storage.markUnknown(a.clientMutationId, "blockedUnknown");
+    // Retry mints B under A's wire id; A settles terminal superseded, keeping
+    // its id and attempt evidence for its real attempt's late outcome.
+    const capture = await storage.getOutboxWithStopEpoch(a.clientMutationId);
+    const b = await storage.mintRetryFromRow(a.clientMutationId, {
+      record: capture.record,
+      stopEpoch: capture.stopEpoch,
+      displayedStopEpoch: 0,
+    });
+    if (!b) throw new Error("mint failed");
+    // B's attempt is refused -> recovery R (key B, wire A).
+    await storage.markAttempted(b.clientMutationId);
+    await storage.transferToRecovery(b.clientMutationId, "rejected");
+    const [recovery] = await storage.listRecovery(TARGET);
+    if (!recovery) throw new Error("recovery never seeded");
+    const retiredIds: string[] = [];
+    storage.setRetiredIdsListener((ids) => retiredIds.push(...ids));
+
+    const retired = await storage.retireDeliveredPromoteRecoveries(TARGET, new Set(["m_source"]));
+
+    expect(retired).toEqual([recovery.clientMutationId]);
+    // The superseded predecessor left the outbox with the recovery, and its
+    // key reached the retiredIds channel the runtime's registrations clear
+    // through.
+    const survivingOutbox = await storage.listOutbox(TARGET);
+    expect(survivingOutbox.map((row) => row.clientMutationId)).not.toContain(a.clientMutationId);
+    expect(retiredIds).toContain(a.clientMutationId);
+    expect((await storage.listRecovery(TARGET)).map((row) => row.clientMutationId)).not.toContain(
+      recovery.clientMutationId,
+    );
+    storage.close();
   });
 });
 
