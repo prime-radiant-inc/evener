@@ -1,9 +1,12 @@
 package hubcore
 
 import (
+	"os"
+
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"github.com/spf13/afero"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -23,6 +26,7 @@ var (
 	countingOpens      atomic.Int64
 	countingExecs      atomic.Int64
 	countingQueries    atomic.Int64
+	countingStats      atomic.Int64
 )
 
 // countingDriver records opens, execs and queries and delegates everything
@@ -90,11 +94,24 @@ func (c *countingConn) QueryContext(ctx context.Context, query string, args []dr
 	return nil, driver.ErrSkip
 }
 
+// countingFs counts the stat calls the stores make through their afero seam.
+// SQLite's own file access bypasses afero, so a stat counted here is one the
+// store code asked for — the keeper's file-identity check is the only one the
+// shared handle adds, and it must stay small enough to be noise against the
+// connect and DDL the handle removes.
+type countingFs struct{ afero.Fs }
+
+func (f countingFs) Stat(name string) (os.FileInfo, error) {
+	countingStats.Add(1)
+	return f.Fs.Stat(name)
+}
+
 // countTotals is a snapshot of the counters.
 type countTotals struct {
 	opens   int64
 	execs   int64
 	queries int64
+	stats   int64
 }
 
 func (c countTotals) statements() int64 { return c.execs + c.queries }
@@ -103,6 +120,7 @@ func countReset() {
 	countingOpens.Store(0)
 	countingExecs.Store(0)
 	countingQueries.Store(0)
+	countingStats.Store(0)
 }
 
 func countRead() countTotals {
@@ -110,6 +128,7 @@ func countRead() countTotals {
 		opens:   countingOpens.Load(),
 		execs:   countingExecs.Load(),
 		queries: countingQueries.Load(),
+		stats:   countingStats.Load(),
 	}
 }
 
@@ -177,6 +196,14 @@ func newNavigationBuildStores(t *testing.T) navigationBuildStores {
 	seen := NewSessionSeenStore(dbPath)
 	seen.openDB = countingOpen
 	seen.now = func() time.Time { return seenClock }
+	// The stat counter rides the same seam, so the per-call file-identity check
+	// is measured beside the opens and statements it trades against.
+	countFs := countingFs{Fs: afero.NewOsFs()}
+	archive.SetFs(countFs)
+	favorite.SetFs(countFs)
+	pins.SetFs(countFs)
+	seen.fs = countFs
+	indexStore.SetFs(countFs)
 
 	return navigationBuildStores{
 		archive:    archive,
@@ -230,14 +257,14 @@ func TestStoreReadsOpenOneHandlePerProcess(t *testing.T) {
 	countReset()
 	stores.build(t)
 	first := countRead()
-	t.Logf("navigation build 1: opens=%d execs=%d queries=%d statements=%d",
-		first.opens, first.execs, first.queries, first.statements())
+	t.Logf("navigation build 1: opens=%d execs=%d queries=%d statements=%d stats=%d",
+		first.opens, first.execs, first.queries, first.statements(), first.stats)
 
 	countReset()
 	stores.build(t)
 	second := countRead()
-	t.Logf("navigation build 2: opens=%d execs=%d queries=%d statements=%d",
-		second.opens, second.execs, second.queries, second.statements())
+	t.Logf("navigation build 2: opens=%d execs=%d queries=%d statements=%d stats=%d",
+		second.opens, second.execs, second.queries, second.statements(), second.stats)
 
 	// One handle per store: archive, favorite, pin sections (its two reads
 	// share the one handle) and seen markers.
@@ -257,6 +284,14 @@ func TestStoreReadsOpenOneHandlePerProcess(t *testing.T) {
 	const wantedQueries = 5
 	if second.queries != wantedQueries {
 		t.Fatalf("second navigation build ran %d queries, want %d: only the wanted reads may remain", second.queries, wantedQueries)
+	}
+	// The keeper stat()s each store's file once per call to notice a replaced
+	// index.db. That is the whole cost the shared handle adds, so it is pinned:
+	// one per store read (archive's read is a cache hit and stats nothing).
+	const keeperStats = 5
+	if second.stats > keeperStats {
+		t.Fatalf("second navigation build made %d stat calls, want at most %d: the file-identity check must stay one stat per read",
+			second.stats, keeperStats)
 	}
 }
 
