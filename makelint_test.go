@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/modfile"
 
 	"primeradiant.com/evener/internal/devtool/repoaudit"
 )
@@ -307,30 +310,24 @@ var mergedSweepModules = []string{
 	"./invariant/...", "./identifier/...", "./execsupport/...", "./fuzz/...",
 }
 
-// goWorkUseDirs returns the module directories go.work's use block names, as
-// slash-separated paths relative to the repository root with the leading "./"
-// removed (the root module is ".").
+// goWorkUseDirs returns the module directories go.work's use directives name,
+// "./" removed (the root module is "."). modfile.ParseWork is the parser the
+// go command itself uses, so a single-line `use ./x` counts the same as an
+// entry in a `use (` block — a hand-rolled scan that only understood the block
+// form would pass while the workspace named a module those lists lack.
 func goWorkUseDirs(t *testing.T) []string {
 	t.Helper()
 	data, err := os.ReadFile("go.work")
 	if err != nil {
 		t.Fatalf("read go.work: %v", err)
 	}
-	var dirs []string
-	inUse := false
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if i := strings.Index(line, "//"); i >= 0 {
-			line = strings.TrimSpace(line[:i])
-		}
-		switch {
-		case line == "use (":
-			inUse = true
-		case inUse && line == ")":
-			inUse = false
-		case inUse && line != "":
-			dirs = append(dirs, strings.TrimPrefix(line, "./"))
-		}
+	work, err := modfile.ParseWork("go.work", data, nil)
+	if err != nil {
+		t.Fatalf("parse go.work: %v", err)
+	}
+	dirs := make([]string, 0, len(work.Use))
+	for _, use := range work.Use {
+		dirs = append(dirs, path.Clean(strings.TrimPrefix(use.Path, "./")))
 	}
 	sort.Strings(dirs)
 	return dirs
@@ -361,7 +358,7 @@ func TestGoWorkModulesMatchMakeModuleLists(t *testing.T) {
 	}
 	moduleList := func(name string) []string {
 		t.Helper()
-		for _, line := range strings.Split(string(out), "\n") {
+		for line := range strings.SplitSeq(string(out), "\n") {
 			// make -p prints `NAME := value` for := definitions and
 			// `NAME = value` for = ones; this file defines its lists with :=.
 			rest, ok := strings.CutPrefix(line, name+" := ")
