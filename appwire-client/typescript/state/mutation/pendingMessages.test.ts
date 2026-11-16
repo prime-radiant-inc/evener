@@ -406,6 +406,39 @@ test("a carried row leaves once a recorded mutation owns its queue entry", () =>
   expect(rows).toEqual([]);
 });
 
+// The refused-promote duplicate (the live-hub race Jesse reported): the
+// queue drained before the promote's press landed, so the daemon rejected
+// the promote (queue index out of range) and its record moved to recovery.
+// The drain that won the race DELIVERED the entry: the message is already a
+// transcript item. The refused recovery row must not render a second copy
+// of delivered content - its payload names the queue entry it tried to
+// promote, and a recorded mutation owns that entry.
+test("a refused promote does not render when its queue entry is already delivered", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [pending("consumer", "turn/drainAsSteer", "queued text", { queueEntryIds: ["q1"] })],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued text", clientMutationId: "consumer" }],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+      }),
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
 test("a carried row stays while its recorded owner is still only pending", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },
