@@ -326,17 +326,32 @@ func legacyDelegateFailures(events []jobstore.Event) []StateFailure {
 // test shrinks it to prove the bound.
 var legacyFailureScanMaxBytes int64 = 1 << 20
 
+// scanLegacyFailuresJournal is the legacy-failure fold's journal scan seam,
+// following scanJobJournal's convention (agent/jobs_activity_past.go).
+// Production never assigns it; a test swaps it to observe what the fold asks
+// for.
+var scanLegacyFailuresJournal = jobstore.ScanEvents
+
 // legacyDelegateFailuresBounded reads a session's jobs journal bounded by
 // legacyFailureScanMaxBytes and folds the retired-state failures
-// legacyDelegateFailures computes. jobstore reports ErrScanLimitExceeded
-// alongside the events decoded so far; the fold keeps them, because the
-// failures are a summary of retired state, not an inventory that must be
-// complete. Surfaces that already read the whole journal for their own
-// listings — the jobs and watches reports — fold those events directly
-// instead of paying this second read.
+// legacyDelegateFailures computes. MaxLineBytes is set to the same bound
+// because jobstore consults MaxBytes only once a whole line is read: left
+// unset, one line would buffer up to jobstore.DefaultMaxLineBytes (128 MiB)
+// before this 1 MiB scan stopped. Both of jobstore's refusals —
+// ErrScanLimitExceeded, which carries the events decoded so far, and
+// ErrLineTooLong, which carries none — are absorbed, because the failures are
+// a summary of retired state rather than an inventory that must be complete.
+// A single line over the bound therefore costs this summary, exactly as
+// records past the window already do, but never the session row that carries
+// it. Surfaces that already read the whole journal for their own listings —
+// the jobs and watches reports — fold those events directly instead of paying
+// this second read.
 func legacyDelegateFailuresBounded(ctx context.Context, path string) ([]StateFailure, error) {
-	events, err := jobstore.ScanEvents(ctx, path, jobstore.ScanLimits{MaxBytes: legacyFailureScanMaxBytes})
-	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) {
+	events, err := scanLegacyFailuresJournal(ctx, path, jobstore.ScanLimits{
+		MaxBytes:     legacyFailureScanMaxBytes,
+		MaxLineBytes: legacyFailureScanMaxBytes,
+	})
+	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) && !errors.Is(err, jobstore.ErrLineTooLong) {
 		return nil, err
 	}
 	return legacyDelegateFailures(events), nil

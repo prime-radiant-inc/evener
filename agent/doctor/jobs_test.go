@@ -1,6 +1,8 @@
 package doctor
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -362,6 +366,70 @@ func TestJobs_LegacyDelegateFailures(t *testing.T) {
 			t.Errorf("rendered failures missing %q; got:\n%s", want, out)
 		}
 	}
+}
+
+// The bounded legacy-failure fold caps a single line at its own window, not
+// just the whole file. jobstore consults MaxBytes only after a whole line is
+// read, so a MaxBytes-only scan of a journal whose head line is huge pays that
+// line's full cost — up to jobstore.DefaultMaxLineBytes, 128 MiB — before the
+// window is ever consulted. A refused line contributes no events, so the fold
+// reports no failures for a journal it could not read into, and never fails the
+// session row that carries it: the failures are a summary of retired state, not
+// an inventory that must be complete.
+// Not parallel: overrides legacyFailureScanMaxBytes and the scan seam.
+func TestJobLegacyFailuresBoundedCapsASingleLine(t *testing.T) {
+	t.Run("requests a line cap within the byte window", func(t *testing.T) {
+		origScan := scanLegacyFailuresJournal
+		var got jobstore.ScanLimits
+		scanLegacyFailuresJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+			got = limits
+			return nil, nil
+		}
+		t.Cleanup(func() { scanLegacyFailuresJournal = origScan })
+
+		if _, err := legacyDelegateFailuresBounded(context.Background(), filepath.Join(t.TempDir(), "jobs.jsonl")); err != nil {
+			t.Fatalf("legacyDelegateFailuresBounded: %v", err)
+		}
+		if got.MaxBytes != legacyFailureScanMaxBytes {
+			t.Fatalf("MaxBytes = %d, want the head window %d", got.MaxBytes, legacyFailureScanMaxBytes)
+		}
+		if got.MaxLineBytes <= 0 || got.MaxLineBytes > got.MaxBytes {
+			t.Fatalf("MaxLineBytes = %d with MaxBytes = %d; a line cap within the byte window is what stops one line buffering up to jobstore.DefaultMaxLineBytes", got.MaxLineBytes, got.MaxBytes)
+		}
+	})
+
+	// The line cap's refusal is absorbed like the byte ceiling's, proved
+	// through the sessions-row caller that carries the result: pairing the caps
+	// moves a journal with an oversized in-window line from
+	// ErrScanLimitExceeded (partial events, no error) to ErrLineTooLong (no
+	// events, error), and that must cost the failures summary, not the row.
+	// Not parallel: overrides legacyFailureScanMaxBytes.
+	t.Run("an oversized journal line costs the summary, not the row", func(t *testing.T) {
+		origMax := legacyFailureScanMaxBytes
+		legacyFailureScanMaxBytes = 1 << 12
+		t.Cleanup(func() { legacyFailureScanMaxBytes = origMax })
+
+		base := t.TempDir()
+		bucket := stateHomeBucket(base, hash1)
+		sid := newSessionsTestSID(t)
+		writeSessionsFixtureSession(t, bucket, sid,
+			transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+			[]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}})},
+			schema.SessionMeta{}, legacyFailureJournalEvents(sid, time.Unix(100, 0).UTC()), time.Unix(2, 0).UTC())
+
+		// A line past the window, written raw because it is far larger than any
+		// event the Store itself would append for this fixture.
+		jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
+		appendRawLine(t, jobsPath, fmt.Sprintf(`{"kind":"job_started","seq":99,"job_id":"job_huge","type":"shell","command":"%s"}`+"\n", strings.Repeat("x", 4<<12)))
+
+		res, err := ListSessions(context.Background(), base, SessionsOpts{})
+		if err != nil {
+			t.Fatalf("ListSessions: %v", err)
+		}
+		if len(res.Sessions) != 1 || len(res.Unreadable) != 0 {
+			t.Fatalf("sessions = %d, unreadable = %+v; an oversized journal line must not cost the row", len(res.Sessions), res.Unreadable)
+		}
+	})
 }
 
 // When a session's meta names a job-tree root, its delegates come from the
