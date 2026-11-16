@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -100,10 +101,16 @@ func TestWithCommunicateOutputSchema(t *testing.T) {
 			"bad":        make(chan int),
 		}}}}
 		q, err := WithCommunicateOutputSchema(p, map[string]any{"type": "string"})
-		if err != nil {
-			t.Fatalf("valid schema should bind without error: %v", err)
+		if err == nil {
+			t.Fatal("unmarshalable tool parameters should fail the bind")
 		}
-		if q.toolDefs[0].Parameters["bad"] == nil {
+		if _, ok := errors.AsType[*json.UnsupportedTypeError](err); !ok {
+			t.Errorf("bind error does not carry the marshal failure: %v", err)
+		}
+		if q != nil {
+			t.Error("a failed bind should return no profile")
+		}
+		if p.toolDefs[0].Parameters["bad"] == nil {
 			t.Error("parameters were mutated despite marshal error")
 		}
 	})
