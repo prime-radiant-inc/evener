@@ -7,6 +7,7 @@ import { compareBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
+import { reduceModelControl } from "./modelControl";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
 export { comparePositions } from "./model";
@@ -1025,7 +1026,14 @@ export function applyReadResponse<M extends ThreadModel>(
       next = mergeVersionedPage(next, next.history, deferred, false);
     }
   }
-  return publicModel<M>(next);
+  const control =
+    historyFallback(resp) && model.modelControlVersion === 1
+      ? { version: 1, snapshot: model.modelControl }
+      : {
+          version: resp.thread.evener.capabilities.modelControlVersion ?? 0,
+          snapshot: resp.thread.evener.modelControl,
+        };
+  return publicModel<M>(reduceModelControl(next, { kind: "read", ...control }).model);
 }
 
 // Splits turns already merged into TurnModel[] back into a HistoryFragment
@@ -1200,7 +1208,11 @@ export function applyReadModel<M extends ThreadModel>(
       next = mergeVersionedPage(next, next.history, deferred, false);
     }
   }
-  return publicModel<M>(next);
+  const control =
+    fallback && model.modelControlVersion === 1
+      ? { version: 1, snapshot: model.modelControl }
+      : { version: fresh.modelControlVersion ?? 0, snapshot: fresh.modelControl };
+  return publicModel<M>(reduceModelControl(next, { kind: "read", ...control }).model);
 }
 
 type PageDisposition = "discard" | "defer" | "invalidate" | "merge";
@@ -1324,14 +1336,23 @@ export function hydrateThread(
   frontier: OlderFrontier = frontierFromCursor(resp),
 ): ThreadModel {
   const fields = threadFields(resp, ref, now);
+  const control = {
+    version: resp.thread.evener.capabilities.modelControlVersion ?? 0,
+    snapshot: resp.thread.evener.modelControl,
+  };
   const olderFrontier = frontier;
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   if (!resp.snapshot) {
-    return {
-      ...fields,
-      olderFrontier,
-      turns: mergeToolCallsByCallId((resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute))),
-    };
+    return reduceModelControl(
+      {
+        ...fields,
+        olderFrontier,
+        turns: mergeToolCallsByCallId(
+          (resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute)),
+        ),
+      },
+      { kind: "read", ...control },
+    ).model;
   }
   const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
   const generation = resp.requestGeneration ?? 0;
@@ -1342,11 +1363,12 @@ export function hydrateThread(
     deferredPages: [],
     turns: mergeHistory([], fresh),
   };
-  return withDisplay(
+  const model = withDisplay(
     { ...fields, olderFrontier, turns: [], ...runningTurn(resp.thread) },
     history,
     overlayRecord(resp.overlay),
   );
+  return reduceModelControl(model, { kind: "read", ...control }).model;
 }
 
 /** The first and last item positions of a read response's fresh window: the

@@ -29,7 +29,7 @@ import {
   hydrateThread,
   mergeOlderItemPage,
 } from "./transcriptHistory";
-import type { AnyNotification, EvenerDelegateInfo, ThreadReadResponse, Turn } from "./types.gen";
+import type { AnyNotification, EvenerDelegateInfo, ModelControlSnapshot, ThreadReadResponse, Turn } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
 import { RAW_WARNING_FRAME_MAX_CHARS } from "./warningFold";
 import { WarningCodeContextBudget } from "./warnings";
@@ -1512,6 +1512,109 @@ test("thread/model/changed updates contextUsed, contextWindow, contextPressure, 
   expect(model.contextPressure).toBe(1);
   expect(model.contextAssumed).toBe(false);
   expect(model.compactionThreshold).toBe(0);
+});
+
+test("version-1 model control keeps canonical metadata while legacy model changes still update fallback context", () => {
+  const current: ModelControlSnapshot = {
+    authority: { instanceId: "instance-1", bootGeneration: "boot-1" },
+    revision: 4,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: ["minimal", "high"],
+      supportsReasoning: true,
+    },
+  };
+  let model: ThreadModel = {
+    ...testHydrate(),
+    modelControlVersion: 1,
+    modelControl: current,
+    modelProvider: current.active.modelProvider,
+    model: current.active.model,
+    reasoningEffortLevels: current.active.reasoningEffortLevels,
+    supportsReasoning: current.active.supportsReasoning,
+  };
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        modelProvider: "deepseek",
+        model: "deepseek-v4",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+        contextUsed: 80_000,
+        contextWindow: 400_000,
+        contextPressure: 0.2,
+        contextAssumed: true,
+        compactionThreshold: 200_000,
+      },
+    },
+    2000,
+  );
+
+  expect(model.modelControl).toEqual(current);
+  expect(model).toMatchObject({
+    modelProvider: "openai",
+    model: "gpt-5.5",
+    reasoningEffortLevels: ["minimal", "high"],
+    supportsReasoning: true,
+    contextUsed: 80_000,
+    contextWindow: 400_000,
+    contextPressure: 0.2,
+    contextAssumed: true,
+    compactionThreshold: 200_000,
+    lastFrameAt: 2000,
+  });
+});
+
+test("thread/model/controlChanged applies a newer whole snapshot", () => {
+  const initial: ModelControlSnapshot = {
+    authority: { instanceId: "instance-1", bootGeneration: "boot-1" },
+    revision: 1,
+    active: {
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      reasoningEffortLevels: ["low", "high"],
+      supportsReasoning: true,
+    },
+  };
+  const updated: ModelControlSnapshot = {
+    ...initial,
+    revision: 2,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: ["minimal", "high"],
+      supportsReasoning: true,
+    },
+  };
+  let model: ThreadModel = {
+    ...testHydrate(),
+    modelControlVersion: 1,
+    modelControl: initial,
+  };
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/controlChanged",
+      params: { threadId: "thr_t", ref: "ref_t", modelControl: updated },
+    },
+    2000,
+  );
+
+  expect(model.modelControl).toEqual(updated);
+  expect(model).toMatchObject({
+    modelProvider: "openai",
+    model: "gpt-5.5",
+    reasoningEffortLevels: ["minimal", "high"],
+    supportsReasoning: true,
+    lastFrameAt: 2000,
+  });
 });
 
 // Warnings reach the model: the reducer's `case "warning"` (see reducer.ts
@@ -4028,6 +4131,7 @@ const SCALAR_ONLY_NOTIFICATIONS = [
   "thread/conversation-provenance/changed",
   "thread/status/changed",
   "thread/model/changed",
+  "thread/model/controlChanged",
   "thread/reasoning-effort/changed",
   "evener/goal/updated",
   "evener/notes/updated",

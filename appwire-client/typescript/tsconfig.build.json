@@ -73,6 +73,7 @@
     "hubOverview.ts",
     "hubUpdate.ts",
     "model.ts",
+    "modelControl.ts",
     "chunkview.ts",
     "bootGeneration.ts",
     "reducer.ts",

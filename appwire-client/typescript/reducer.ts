@@ -5,6 +5,7 @@
 // produces the same (possibly reference-equal, for no-op cases) output.
 
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { reduceModelControl } from "./modelControl";
 import {
   buildDisplayTurn,
   classifySignal,
@@ -269,6 +270,7 @@ const THREAD_SCALAR_ONLY_METHODS: ReadonlySet<string> = new Set([
   "thread/conversation-provenance/changed",
   "thread/status/changed",
   "thread/model/changed",
+  "thread/model/controlChanged",
   "thread/reasoning-effort/changed",
   "evener/goal/updated",
   "evener/notes/updated",
@@ -402,12 +404,8 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // model, describing the NEW model's full reasoning profile - not a
       // partial patch, so an omitted/empty ladder on the new payload
       // replaces (not preserves) whatever the old model's picker showed.
-      return {
+      const context = {
         ...model,
-        modelProvider: n.params.modelProvider,
-        model: n.params.model,
-        reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
-        supportsReasoning: n.params.supportsReasoning ?? false,
         contextUsed: n.params.contextUsed ?? (n.params.contextWindow !== undefined ? 0 : model.contextUsed),
         contextWindow: n.params.contextWindow ?? model.contextWindow,
         contextPressure: n.params.contextPressure ?? (n.params.contextWindow !== undefined ? 0 : model.contextPressure),
@@ -415,6 +413,23 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         compactionThreshold: n.params.compactionThreshold ?? 0,
         lastFrameAt: now,
       };
+      if (model.modelControlVersion === 1) return context;
+      return {
+        ...context,
+        modelProvider: n.params.modelProvider,
+        model: n.params.model,
+        reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
+        supportsReasoning: n.params.supportsReasoning ?? false,
+      };
+    }
+
+    case "thread/model/controlChanged": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const result = reduceModelControl(model, { kind: "notification", snapshot: n.params.modelControl });
+      const live = { ...result.model, lastFrameAt: now };
+      return (
+        result.decision === "invalidate" ? { ...live, history: invalidated(model.history ?? EMPTY_HISTORY) } : live
+      ) as M;
     }
 
     case "thread/reasoning-effort/changed": {

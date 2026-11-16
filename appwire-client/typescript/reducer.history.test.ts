@@ -24,6 +24,7 @@ import { itemTextPresence } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryChanges,
+  ModelControlSnapshot,
   OverlayItem,
   Thread,
   ThreadCapabilities,
@@ -75,6 +76,121 @@ function thread(turns: Turn[], activeTurnId?: string): Thread {
     },
   };
 }
+
+function modelControlSnapshot(
+  revision: number,
+  authority = { instanceId: "instance-1", bootGeneration: "boot-1" },
+): ModelControlSnapshot {
+  return {
+    authority,
+    revision,
+    active: {
+      modelProvider: revision === 1 ? "anthropic" : "openai",
+      model: revision === 1 ? "claude-sonnet-4-5" : "gpt-5.5",
+      reasoningEffortLevels: revision === 1 ? ["low", "high"] : ["minimal", "high"],
+      supportsReasoning: true,
+    },
+  };
+}
+
+test("accepted reads install, replace, and remove model-control authority atomically", () => {
+  const firstThread = thread([]);
+  firstThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
+  firstThread.evener.modelControl = modelControlSnapshot(1);
+  let model = hydrateThread(
+    {
+      thread: firstThread,
+      bootGeneration: "boot-1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+    },
+    REF,
+    NOW,
+  );
+
+  expect(model.modelControlVersion).toBe(1);
+  expect(model.modelControl).toEqual(firstThread.evener.modelControl);
+  expect(model).toMatchObject({ modelProvider: "anthropic", model: "claude-sonnet-4-5" });
+
+  const replacementThread = thread([]);
+  replacementThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
+  replacementThread.evener.modelControl = modelControlSnapshot(1, {
+    instanceId: "instance-2",
+    bootGeneration: "boot-2",
+  });
+  model = applyReadResponse(
+    model,
+    {
+      thread: replacementThread,
+      bootGeneration: "boot-2",
+      epoch: 2,
+      snapshot: { incarnation: "inc-2", length: 0 },
+    },
+    NOW + 1,
+  );
+
+  expect(model.modelControl?.authority).toEqual({ instanceId: "instance-2", bootGeneration: "boot-2" });
+  expect(model.modelControl?.revision).toBe(1);
+
+  const legacyThread = thread([]);
+  legacyThread.modelProvider = "deepseek/deepseek-v4";
+  model = applyReadResponse(
+    model,
+    {
+      thread: legacyThread,
+      bootGeneration: "boot-3",
+      epoch: 3,
+      snapshot: { incarnation: "inc-3", length: 0 },
+    },
+    NOW + 2,
+  );
+
+  expect(model).not.toHaveProperty("modelControlVersion");
+  expect(model).not.toHaveProperty("modelControl");
+  expect(model).toMatchObject({
+    modelProvider: "deepseek/deepseek-v4",
+    model: "deepseek/deepseek-v4",
+  });
+});
+
+test("a fallback read updates context without replacing model-control identity", () => {
+  const liveThread = thread([]);
+  liveThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
+  liveThread.evener.modelControl = modelControlSnapshot(4);
+  let model = hydrateThread(
+    {
+      thread: liveThread,
+      bootGeneration: "boot-1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+    },
+    REF,
+    NOW,
+  );
+  const [issued, requestGeneration] = issue(model);
+  const fallback = read([], { requestGeneration, bootGeneration: "daemonless", authoritative: false });
+  fallback.thread.modelProvider = "saved/stale-model";
+  fallback.thread.evener.contextUsed = 80_000;
+  fallback.thread.evener.contextWindow = 400_000;
+  fallback.thread.evener.contextPressure = 0.2;
+  Object.assign(fallback, {
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+    asOf: "2026-11-16T00:00:00Z",
+  });
+
+  model = applyReadResponse(issued, fallback, NOW + 1);
+
+  expect(model.modelControl).toEqual(liveThread.evener.modelControl);
+  expect(model.modelControl?.revision).toBe(4);
+  expect(model).toMatchObject({
+    modelProvider: "openai",
+    model: "gpt-5.5",
+    contextUsed: 80_000,
+    contextWindow: 400_000,
+    contextPressure: 0.2,
+  });
+});
 
 function itemKey(turnId: string, ordinal: number, part = 0): string {
   return `apptranscript-item-v2:${turnId}:${ordinal}:${part}`;
