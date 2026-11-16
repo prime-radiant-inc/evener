@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"strconv"
 	"strings"
@@ -39,8 +40,43 @@ type failureEntry struct {
 	count    int
 	snippets []string
 
-	bodyHash  string
+	bodyHash  repetitionHash
 	bodyCount int
+}
+
+// repetitionHash is the byte-identical-repetition fingerprint of one tool
+// result body.
+//
+// It is a hash/maphash value rather than a truncated SHA-256 because of what the
+// fingerprint is FOR: it answers "is this the same result body the model already
+// returned", so the ledger can nudge and then park a model repeating itself. It
+// is never a commitment, never leaves the process, and nothing verifies it. A
+// per-process random seed makes a collision something the model cannot engineer;
+// against a deterministic truncated SHA-256 a model could in principle craft a
+// 64-bit prefix collision (about 2^32 work) and suppress its own repetition
+// nudge. It is also far cheaper: no SHA-256 compression over a multi-megabyte
+// tool result.
+//
+// The type exists so this value cannot be confused with the semantic dispatch
+// fingerprints, which stay SHA-256 (breaker.go's dispatchKey) and are compared
+// against the durable transcript.
+type repetitionHash uint64
+
+// repetitionSeed seeds every repetition fingerprint in this process. It is made
+// once, at first use, because two fingerprints are only comparable when they
+// share a seed: a fresh seed per call would make every body look distinct and
+// the repetition nudge would never fire. maphash.Hash values are not copied
+// after use, so each call builds its own and only the seed is shared.
+var repetitionSeed = maphash.MakeSeed()
+
+// hashResultBody returns the repetition fingerprint of one tool result body. It
+// streams the body through the hash without copying it: a multi-megabyte result
+// pays no body-sized allocation here.
+func hashResultBody(body string) repetitionHash {
+	var h maphash.Hash
+	h.SetSeed(repetitionSeed)
+	_, _ = h.WriteString(body) // maphash.Hash.WriteString never returns an error
+	return repetitionHash(h.Sum64())
 }
 
 // failureLedger records consecutive identical-failure streaks per dispatch
@@ -424,7 +460,7 @@ func (l *failureLedger) record(key dispatchKey, isErr bool, output string) (fail
 	}
 	l.order = l.touch(l.order, l.entries, key.exact)
 
-	bodyHash := shortHash([]byte(output))
+	bodyHash := hashResultBody(output)
 	if e.bodyHash == bodyHash {
 		e.bodyCount++
 	} else {
