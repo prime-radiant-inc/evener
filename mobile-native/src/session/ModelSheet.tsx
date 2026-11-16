@@ -4,7 +4,7 @@
 // effort choices and errors scroll with the models so large text cannot
 // consume the list's viewport. The session screen provides the session and
 // its controls through modelHosts.
-import { type ModelDescriptor, sessionEffortLevels } from "@evener/appwire-client";
+import { type ModelDescriptor, modelControlDisplay, sessionEffortLevels } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
 import { type SectionList, Text, View } from "react-native";
@@ -75,7 +75,12 @@ function ModelSheetBody({
 	}, [controls]);
 	const busy = !controls || !ready || state?.pending != null;
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
-	const current = vision ? session.visionModel : session.modelProvider;
+	const modelTarget = modelControlDisplay(session);
+	const current = vision
+		? session.visionModel
+		: session.modelControlVersion === 1
+			? `${modelTarget.modelProvider}/${modelTarget.model}`
+			: modelTarget.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
 	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const revealError = () => {

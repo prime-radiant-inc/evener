@@ -21,6 +21,7 @@ import type {
 	AnyNotification,
 	EmptyResponse,
 	InputItem,
+	ModelControlSnapshot,
 	MutationReceipt,
 	Thread,
 	ThreadCapabilities,
@@ -99,6 +100,58 @@ function makeThread(over: Partial<Thread> = {}): Thread {
 
 function makeReadResponse(thread: Thread, olderCursor?: string): ThreadReadResponse {
 	return { thread, olderCursor };
+}
+
+const MODEL_AUTHORITY_A = { instanceId: "instance-a", bootGeneration: "7" } as const;
+const MODEL_AUTHORITY_B = { instanceId: "instance-b", bootGeneration: "8" } as const;
+
+function modelControl(
+	revision: number,
+	{
+		authority = MODEL_AUTHORITY_A,
+		active = "claude-sonnet-5",
+		desired,
+		lifecycle = "pending",
+	}: {
+		authority?: ModelControlSnapshot["authority"];
+		active?: string;
+		desired?: string;
+		lifecycle?: string;
+	} = {},
+): ModelControlSnapshot {
+	return {
+		authority,
+		revision,
+		active: {
+			modelProvider: "anthropic",
+			model: active,
+			reasoningEffortLevels: ["low", "high"],
+			supportsReasoning: true,
+		},
+		...(desired
+			? {
+					desired: {
+						requestSequence: revision,
+						clientMutationId: `request-${revision}`,
+						modelProvider: "openai",
+						model: desired,
+						lifecycle,
+					},
+				}
+			: {}),
+	};
+}
+
+function controlledThread(snapshot = modelControl(1), authority = snapshot.authority): Thread {
+	return makeThread({
+		modelProvider: `${snapshot.active.modelProvider}/${snapshot.active.model}`,
+		evener: {
+			...makeThread().evener,
+			instanceId: authority.instanceId,
+			capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
+			modelControl: snapshot,
+		},
+	});
 }
 
 function makeReceipt(
@@ -921,17 +974,216 @@ describe("ConversationService", () => {
 			expect(call?.params).toMatchObject({ ref: "ref-1" });
 		});
 
-		it("changeModel calls thread/model/set", async () => {
+		it("an old daemon receives the legacy model request without speculative state", async () => {
 			const { client, service } = setup();
 			client.on("thread/model/set", () => EMPTY_RESPONSE);
 			await service.open("ref-1");
+			const notifications: AnyNotification[] = [];
+			service.subscribeNotifications((notification) => notifications.push(notification));
 			await service.changeModel("openai", "gpt-4");
 			const call = client.calls.find((c) => c.method === "thread/model/set");
-			expect(call?.params).toMatchObject({
+			expect(call?.params).toEqual({
 				ref: "ref-1",
 				modelProvider: "openai",
 				model: "gpt-4",
 			});
+			expect(notifications).toEqual([]);
+		});
+
+		it("a capable daemon receives a UUID and expected authority, and its typed response is adopted", async () => {
+			const initial = modelControl(1);
+			const accepted = modelControl(2, { desired: "gpt-5.5" });
+			const { client, service } = setup({ thread: controlledThread(initial) });
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: accepted,
+			}));
+			await service.open("ref-1");
+			const notifications: AnyNotification[] = [];
+			service.subscribeNotifications((notification) => {
+				if (notification.method === "thread/model/controlChanged") notifications.push(notification);
+			});
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: ALL_TRUE_CAPS,
+				},
+			});
+
+			await service.changeModel("openai", "gpt-5.5");
+
+			expect(client.calls.find((call) => call.method === "thread/model/set")?.params).toEqual({
+				ref: "ref-1",
+				modelProvider: "openai",
+				model: "gpt-5.5",
+				clientMutationId: "cmid-1",
+				expectedInstanceId: MODEL_AUTHORITY_A.instanceId,
+				expectedBootGeneration: MODEL_AUTHORITY_A.bootGeneration,
+			});
+			expect(notifications).toEqual([
+				{
+					method: "thread/model/controlChanged",
+					params: { ref: "ref-1", threadId: "thread-1", modelControl: accepted },
+				},
+			]);
+		});
+
+		it("quarantines model-control pushes until a capable read establishes authority, then replays them", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			const delivered: AnyNotification[] = [];
+			service.subscribeNotifications((notification) => delivered.push(notification));
+			let resolveRead!: (response: ThreadReadResponse) => void;
+			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
+
+			const read = service.readProjection("ref-1");
+			await Promise.resolve();
+			const pushed = modelControl(3, { desired: "gpt-5.5" });
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: pushed },
+			});
+			expect(delivered).toEqual([]);
+			resolveRead(makeReadResponse(controlledThread(modelControl(2))));
+
+			const projection = await read;
+			expect(projection.conversation.modelControl).toEqual(pushed);
+			expect(projection.conversation.modelProvider).toBe("anthropic");
+		});
+
+		it("an opaque push cannot enable model-control on a legacy read", async () => {
+			const { client, service } = setup();
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			let resolveRead!: (response: ThreadReadResponse) => void;
+			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
+			const read = service.readProjection("ref-1");
+			await Promise.resolve();
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: modelControl(2) },
+			});
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
+				},
+			});
+			resolveRead(makeReadResponse(makeThread()));
+			const projection = await read;
+			expect(projection.conversation.modelControl).toBeUndefined();
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "active" },
+					capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
+				},
+			});
+			client.on("thread/model/set", () => EMPTY_RESPONSE);
+			await service.changeModel("openai", "gpt-4");
+			expect(client.calls.findLast((call) => call.method === "thread/model/set")?.params).toEqual({
+				ref: "ref-1",
+				modelProvider: "openai",
+				model: "gpt-4",
+			});
+		});
+
+		it("drops a typed response after a replacement read installs another authority", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			const delivered: AnyNotification[] = [];
+			service.subscribeNotifications((notification) => delivered.push(notification));
+			let resolveSet!: (response: {
+				modelControlVersion: number;
+				disposition: string;
+				modelControl: ModelControlSnapshot;
+			}) => void;
+			client.on(
+				"thread/model/set",
+				() =>
+					new Promise<{
+						modelControlVersion: number;
+						disposition: string;
+						modelControl: ModelControlSnapshot;
+					}>((resolve) => (resolveSet = resolve)),
+			);
+			const oldRequest = service.changeModel("openai", "gpt-5.5");
+			await Promise.resolve();
+			client.on("thread/read", () =>
+				makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B }))),
+			);
+			await service.readProjection("ref-1");
+			resolveSet({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { desired: "gpt-5.5" }),
+			});
+			await oldRequest;
+			expect(delivered).toEqual([]);
+
+			client.on("thread/model/set", () => EMPTY_RESPONSE);
+			await service.changeModel("openai", "gpt-5.5");
+			expect(client.calls.findLast((call) => call.method === "thread/model/set")?.params).toMatchObject({
+				expectedInstanceId: MODEL_AUTHORITY_B.instanceId,
+				expectedBootGeneration: MODEL_AUTHORITY_B.bootGeneration,
+			});
+		});
+
+		it("an unsupported replacement read atomically downgrades model control and discards quarantined pushes", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			let resolveRead!: (response: ThreadReadResponse) => void;
+			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
+			const read = service.readProjection("ref-1");
+			await Promise.resolve();
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: modelControl(4) },
+			});
+			resolveRead(makeReadResponse(makeThread({ modelProvider: "legacy/new-model" })));
+			const projection = await read;
+
+			expect(projection.conversation).toMatchObject({ modelProvider: "legacy/new-model", model: "legacy/new-model" });
+			expect(projection.conversation.modelControlVersion).toBeUndefined();
+			expect(projection.conversation.modelControl).toBeUndefined();
+		});
+
+		it("a clear response retires model-control authority until a replacement read", async () => {
+			const initial = controlledThread(modelControl(1));
+			const { client, service } = setup({ thread: initial });
+			await service.open("ref-1");
+			const replacement = controlledThread(modelControl(2), MODEL_AUTHORITY_B);
+			replacement.id = "replacement-thread";
+			replacement.evener.ref = "ref-1";
+			client.on("thread/clear", (params) => ({
+				ref: "ref-1",
+				thread: replacement,
+				receipt: {
+					clientMutationId: params.clientMutationId,
+					disposition: "applied",
+					threadId: replacement.id,
+					instanceId: MODEL_AUTHORITY_B.instanceId,
+					projectionState: "reflected",
+				},
+			}));
+
+			const projection = service.adoptClear(await service.clear());
+
+			expect(projection.conversation.modelControlVersion).toBeUndefined();
+			expect(projection.conversation.modelControl).toBeUndefined();
+			client.on("thread/model/set", () => EMPTY_RESPONSE);
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
 
 		it("setReasoningEffort calls thread/reasoning-effort/set", async () => {

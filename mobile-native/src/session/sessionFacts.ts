@@ -8,6 +8,7 @@ import {
 	formatTokenCount,
 	hostIdOf,
 	loadedPluginNames,
+	modelControlDisplay,
 	sessionEffortLevels,
 	type ModelDescriptor,
 	type ThreadModel,
@@ -125,12 +126,17 @@ function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | 
 /** The composer's chip: the model's name, then its effort when the model has
  * levels. */
 export function modelChipLabel(
-	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning">,
+	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning"> &
+		Partial<Pick<ThreadModel, "model" | "modelControlVersion" | "modelControl">>,
 	catalog: readonly ModelDescriptor[] | undefined,
 	/** The session's Board row's model_name, when the fleet has the row. */
 	rowName?: string,
 ): string {
-	const name = modelName(session.modelProvider, catalog, rowName);
+	const target = modelControlDisplay(session as ThreadModel);
+	const modelProvider =
+		session.modelControlVersion === 1 ? `${target.modelProvider}/${target.model}` : target.modelProvider;
+	const namesActiveModel = target.modelProvider === session.modelProvider && target.model === session.model;
+	const name = modelName(modelProvider, catalog, namesActiveModel ? rowName : undefined);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;
 }

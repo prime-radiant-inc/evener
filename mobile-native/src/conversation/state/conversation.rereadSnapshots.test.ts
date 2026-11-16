@@ -2,7 +2,13 @@
 // Covers generation safety, notification routing, draft preservation,
 // conflict restore, and no auto-retry.
 
-import type { AnyNotification, MutationReceipt, Thread, ThreadItem } from "@evener/appwire-client";
+import type {
+	AnyNotification,
+	ModelControlSnapshot,
+	MutationReceipt,
+	Thread,
+	ThreadItem,
+} from "@evener/appwire-client";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileConversation, MobileTimelineItem } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
@@ -40,7 +46,104 @@ import {
 	yieldMicrotask,
 } from "./conversationTestUtils";
 
+const MODEL_AUTHORITY_A = { instanceId: "instance-a", bootGeneration: "7" } as const;
+const MODEL_AUTHORITY_B = { instanceId: "instance-b", bootGeneration: "8" } as const;
+
+function modelControl(
+	revision: number,
+	authority: ModelControlSnapshot["authority"],
+	active: string,
+	desired?: { model: string; lifecycle: string },
+): ModelControlSnapshot {
+	return {
+		authority,
+		revision,
+		active: {
+			modelProvider: "anthropic",
+			model: active,
+			reasoningEffortLevels: ["low", "high"],
+			supportsReasoning: true,
+		},
+		...(desired
+			? {
+					desired: {
+						requestSequence: revision,
+						clientMutationId: `request-${revision}`,
+						modelProvider: "openai",
+						model: desired.model,
+						lifecycle: desired.lifecycle,
+					},
+				}
+			: {}),
+	};
+}
+
+function modelConversation(snapshot: ModelControlSnapshot): MobileConversation {
+	return makeConversation({
+		instanceId: snapshot.authority.instanceId,
+		modelControlVersion: 1,
+		modelControl: snapshot,
+		modelProvider: snapshot.active.modelProvider,
+		model: snapshot.active.model,
+		reasoningEffortLevels: [...snapshot.active.reasoningEffortLevels],
+		supportsReasoning: snapshot.active.supportsReasoning,
+	});
+}
+
 describe("ConversationStore", () => {
+	describe("model-control snapshots", () => {
+		it("adopts a live whole-snapshot update through the shared notification reducer", async () => {
+			const service = new FakeConversationService();
+			const store = createConversationStore();
+			service.readProjectionResult = {
+				conversation: modelConversation(modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5")),
+				olderCursor: null,
+			};
+			await store.getState().openProjected(service, "ref-1");
+			const pending = modelControl(2, MODEL_AUTHORITY_A, "claude-sonnet-5", {
+				model: "gpt-5.5",
+				lifecycle: "pending",
+			});
+
+			store.getState().applyNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: pending },
+			});
+
+			expect(store.getState().conversation).toMatchObject({
+				modelControl: pending,
+				modelProvider: "anthropic",
+				model: "claude-sonnet-5",
+			});
+		});
+
+		it("a reconnect read replaces an old desired model with the new daemon authority", async () => {
+			const service = new FakeConversationService();
+			const store = createConversationStore();
+			service.readProjectionResult = {
+				conversation: modelConversation(
+					modelControl(3, MODEL_AUTHORITY_A, "claude-sonnet-5", {
+						model: "gpt-5.5",
+						lifecycle: "applied",
+					}),
+				),
+				olderCursor: null,
+			};
+			await store.getState().openProjected(service, "ref-1");
+			const replacement = modelControl(1, MODEL_AUTHORITY_B, "claude-opus-4-6");
+			service.readProjectionResult = { conversation: modelConversation(replacement), olderCursor: null };
+
+			await store.getState().rehydrate(service);
+
+			expect(store.getState().conversation).toMatchObject({
+				instanceId: MODEL_AUTHORITY_B.instanceId,
+				modelControl: replacement,
+				modelProvider: "anthropic",
+				model: "claude-opus-4-6",
+			});
+		});
+	});
+
 	// --- Fix round 1: I1/I2/M1 rejection items ----------------------------------
 
 	// --- the drain scheduler: per-key exact completion ------------------------

@@ -23,6 +23,8 @@ import type {
 	InputItem,
 	MethodName,
 	MethodTypes,
+	ModelControlAuthority,
+	ModelControlRequestFence,
 	ModelListParams,
 	ModelListResponse,
 	MutationReceipt,
@@ -33,11 +35,19 @@ import type {
 	ThreadForkResponse,
 	ThreadItemPosition,
 	ThreadReadResponse,
+	ThreadModel,
 	ThreadTurnsListResponse,
 	TranscriptDisplayConfigV1,
 	TurnCancelQueuedResponse,
 } from "@evener/appwire-client";
-import { acquireThreadSubscription, hydrateThread, isStaleCursorError } from "@evener/appwire-client";
+import {
+	acquireThreadSubscription,
+	applyNotification,
+	hydrateThread,
+	isStaleCursorError,
+	modelControlAuthority,
+	reduceModelControl,
+} from "@evener/appwire-client";
 import type { MobileConversation } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
 
@@ -289,6 +299,13 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 		}
 		caps.voiceArm = voiceArm;
 	}
+	const modelControlVersion = obj.modelControlVersion;
+	if (modelControlVersion !== undefined) {
+		if (modelControlVersion !== 1) {
+			throw new Error('ConversationService: capability "modelControlVersion" is not supported');
+		}
+		caps.modelControlVersion = 1;
+	}
 	return caps;
 }
 
@@ -522,8 +539,14 @@ export function createConversationService<ReadLease = unknown>(
 		ref: string;
 		threadId: string | null;
 		pushed: { threadId: string; caps: ThreadCapabilities } | null;
+		modelControl: Array<{
+			notification: Extract<AnyNotification, { method: "thread/model/controlChanged" }>;
+			receivedAt: number;
+		}>;
 	} | null = null;
 	let capabilities: ThreadCapabilities | null = null;
+	let acceptedModel: ThreadModel | null = null;
+	let notificationHandler: ((notification: AnyNotification) => void) | null = null;
 	let notificationUnsub: (() => void) | null = null;
 	type PendingProjection = {
 		ref: string;
@@ -556,6 +579,7 @@ export function createConversationService<ReadLease = unknown>(
 			ref: threadRef,
 			threadId: ref === threadRef ? threadId : null,
 			pushed: null,
+			modelControl: [],
 		};
 		// Starting a new open invalidates the prior epoch and clears BOTH ref
 		// and capabilities before the await, so the service is truly fail-closed
@@ -570,17 +594,43 @@ export function createConversationService<ReadLease = unknown>(
 		instanceId = null;
 		threadId = null;
 		capabilities = null;
+		acceptedModel = null;
 		return epoch;
 	}
 
 	function readWithPushedCapabilities(thread: Thread, epoch: number): Thread {
-		extractCapabilities(thread.evener.capabilities);
+		const readCapabilities = extractCapabilities(thread.evener.capabilities);
 		const pushed = opening?.pushed;
 		if (openEpoch !== epoch || pushed?.threadId !== thread.id) return thread;
+		const capabilities = { ...pushed.caps };
+		if (readCapabilities.modelControlVersion === 1) capabilities.modelControlVersion = 1;
+		else delete capabilities.modelControlVersion;
 		return {
 			...thread,
-			evener: { ...thread.evener, capabilities: pushed.caps },
+			evener: { ...thread.evener, capabilities },
 		};
+	}
+
+	function sameAuthority(left: ModelControlAuthority, right: ModelControlAuthority): boolean {
+		return left.instanceId === right.instanceId && left.bootGeneration === right.bootGeneration;
+	}
+
+	function replayOpeningModelControl(model: ThreadModel, responseThreadId: string, epoch: number): ThreadModel {
+		if (openEpoch !== epoch || opening === null) return model;
+		const authority = modelControlAuthority(model);
+		if (!authority) return model;
+		let next = model;
+		for (const buffered of opening.modelControl) {
+			const params = buffered.notification.params;
+			if (
+				params.threadId === responseThreadId &&
+				params.ref === opening.ref &&
+				sameAuthority(authority, params.modelControl.authority)
+			) {
+				next = applyNotification(next, buffered.notification, buffered.receivedAt);
+			}
+		}
+		return next;
 	}
 
 	function requireRef(): string {
@@ -630,14 +680,15 @@ export function createConversationService<ReadLease = unknown>(
 				response.thread.evener.instanceId ?? response.thread.id,
 				"thread instance id",
 			);
-			const conversation = projectConversation(
+			const hydrated = replayOpeningModelControl(
 				{
 					...hydrateThread({ ...response, thread }, threadRef, now()),
 					instanceId: readInstanceId,
 				},
-				undefined,
-				displayConfig(),
+				response.thread.id,
+				epoch,
 			);
+			const conversation = projectConversation(hydrated, undefined, displayConfig());
 			const caps = extractCapabilities(thread.evener.capabilities);
 			const readModelScope = { harness: thread.source, cwd: thread.cwd };
 			if (openEpoch === epoch) {
@@ -646,6 +697,7 @@ export function createConversationService<ReadLease = unknown>(
 				threadId = response.thread.id;
 				ref = threadRef;
 				capabilities = caps;
+				acceptedModel = conversation;
 				opening = null;
 			}
 			// Reconcile the host's durable dispatch gate only for a read whose
@@ -701,14 +753,15 @@ export function createConversationService<ReadLease = unknown>(
 					response.thread.evener.instanceId ?? response.thread.id,
 					"thread instance id",
 				);
-				const conversation = projectConversation(
+				const hydrated = replayOpeningModelControl(
 					{
 						...hydrateThread({ ...response, thread }, threadRef, now()),
 						instanceId: readInstanceId,
 					},
-					undefined,
-					displayConfig(),
+					response.thread.id,
+					epoch,
 				);
+				const conversation = projectConversation(hydrated, undefined, displayConfig());
 				const olderCursor = response.olderCursor ?? null;
 				const caps = extractCapabilities(thread.evener.capabilities);
 				const readModelScope = { harness: thread.source, cwd: thread.cwd };
@@ -718,6 +771,7 @@ export function createConversationService<ReadLease = unknown>(
 					threadId = response.thread.id;
 					ref = threadRef;
 					capabilities = caps;
+					acceptedModel = conversation;
 					opening = null;
 				}
 				// Reconcile the host's durable dispatch gate only after the projection
@@ -788,7 +842,23 @@ export function createConversationService<ReadLease = unknown>(
 			if (notificationUnsub !== null) {
 				notificationUnsub();
 			}
+			notificationHandler = handler;
 			const unsubscribe = client.onNotification((notification) => {
+				if (notification.method === "thread/model/controlChanged") {
+					const params = notification.params;
+					const committed = ref !== null && params.ref === ref && params.threadId === threadId;
+					const pending =
+						opening !== null &&
+						params.ref === opening.ref &&
+						(opening.threadId === null || params.threadId === opening.threadId);
+					if (pending && opening !== null) {
+						opening.modelControl.push({ notification, receivedAt: now() });
+						return;
+					}
+					if (committed && acceptedModel !== null) {
+						acceptedModel = applyNotification(acceptedModel, notification, now());
+					}
+				}
 				if (notification.method === "thread/status/changed") {
 					const params = notification.params;
 					const committed = ref !== null && params.ref === ref && params.threadId === threadId;
@@ -800,7 +870,11 @@ export function createConversationService<ReadLease = unknown>(
 						// Preserve pushes during hydration without permitting mutations until its read succeeds.
 						try {
 							const next = extractCapabilities(params.capabilities);
-							if (committed) capabilities = next;
+							delete next.modelControlVersion;
+							if (committed) {
+								if (capabilities?.modelControlVersion === 1) next.modelControlVersion = 1;
+								capabilities = next;
+							}
 							if (pending && opening) opening.pushed = { threadId: params.threadId, caps: next };
 						} catch {
 							return;
@@ -814,6 +888,7 @@ export function createConversationService<ReadLease = unknown>(
 				if (notificationUnsub === unsubscribe) {
 					unsubscribe();
 					notificationUnsub = null;
+					notificationHandler = null;
 				}
 			};
 		},
@@ -893,20 +968,19 @@ export function createConversationService<ReadLease = unknown>(
 			const thread = response.thread;
 			beginOpen(response.ref);
 			const replacementInstance = nonemptyString(thread.evener.instanceId, "replacement instance id");
-			const conversation = projectConversation(
-				{
-					...hydrateThread({ thread }, response.ref, now()),
-					instanceId: replacementInstance,
-				},
-				undefined,
-				displayConfig(),
-			);
+			const hydrated = {
+				...hydrateThread({ thread }, response.ref, now()),
+				instanceId: replacementInstance,
+			};
+			const retired = reduceModelControl(hydrated, { kind: "read", version: 0 }).model;
+			const conversation = projectConversation(retired, undefined, displayConfig());
 			const caps = extractCapabilities(thread.evener.capabilities);
 			modelScope = { harness: thread.source, cwd: thread.cwd };
 			instanceId = replacementInstance;
 			threadId = thread.id;
 			ref = response.ref;
 			capabilities = caps;
+			acceptedModel = conversation;
 			opening = null;
 			return { conversation, olderCursor: null };
 		},
@@ -972,10 +1046,52 @@ export function createConversationService<ReadLease = unknown>(
 		async changeModel(modelProvider, model) {
 			requireCap("changeModel", "changeModel");
 			const threadRef = requireRef();
-			await client.request("thread/model/set", {
+			if (capabilities?.modelControlVersion !== 1) {
+				await client.request("thread/model/set", { ref: threadRef, modelProvider, model });
+				return;
+			}
+			if (acceptedModel === null) throw new Error("ConversationService: model control is not established");
+			const authority = modelControlAuthority(acceptedModel);
+			if (!authority) throw new Error("ConversationService: model control is not established");
+			const expectedThreadId = nonemptyString(threadId, "thread id");
+			const fence: ModelControlRequestFence = {
+				authority,
+				clientGeneration: openEpoch,
+				readGeneration: openEpoch,
+			};
+			const clientMutationId = idFactory();
+			const response = await client.request("thread/model/set", {
 				ref: threadRef,
 				modelProvider,
 				model,
+				clientMutationId,
+				expectedInstanceId: authority.instanceId,
+				expectedBootGeneration: authority.bootGeneration,
+			});
+			if (response.modelControlVersion !== 1 || !response.modelControl) return;
+			const currentAuthority = acceptedModel === null ? undefined : modelControlAuthority(acceptedModel);
+			if (
+				openEpoch !== fence.clientGeneration ||
+				openEpoch !== fence.readGeneration ||
+				ref !== threadRef ||
+				threadId !== expectedThreadId ||
+				currentAuthority === undefined ||
+				!sameAuthority(fence.authority, currentAuthority) ||
+				!sameAuthority(fence.authority, response.modelControl.authority)
+			) {
+				return;
+			}
+			acceptedModel = reduceModelControl(acceptedModel, {
+				kind: "response",
+				snapshot: response.modelControl,
+			}).model;
+			notificationHandler?.({
+				method: "thread/model/controlChanged",
+				params: {
+					threadId: expectedThreadId,
+					ref: threadRef,
+					modelControl: response.modelControl,
+				},
 			});
 		},
 
@@ -1044,6 +1160,8 @@ export function createConversationService<ReadLease = unknown>(
 			instanceId = null;
 			threadId = null;
 			capabilities = null;
+			acceptedModel = null;
+			notificationHandler = null;
 		},
 	};
 }

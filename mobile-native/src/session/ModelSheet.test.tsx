@@ -227,6 +227,36 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: false });
 	});
 
+	it("checks the accepted pending target from the shared model-control snapshot", () => {
+		provide(
+			conversation({
+				model: "claude-sonnet-5",
+				modelProvider: "anthropic",
+				modelControlVersion: 1,
+				modelControl: {
+					authority: { instanceId: "instance-a", bootGeneration: "7" },
+					revision: 2,
+					active: {
+						modelProvider: "anthropic",
+						model: "claude-sonnet-5",
+						reasoningEffortLevels: ["low", "medium", "high"],
+						supportsReasoning: true,
+					},
+					desired: {
+						requestSequence: 2,
+						clientMutationId: "request-2",
+						modelProvider: "anthropic",
+						model: "claude-haiku-5",
+						lifecycle: "pending",
+					},
+				},
+			}),
+		);
+		const tree = sheet();
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+	});
+
 	it("changes the model, closes, and the session says it applies from the next turn", async () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();

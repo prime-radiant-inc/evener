@@ -1,4 +1,4 @@
-import type { ModelDescriptor, ThreadCapabilities } from "@evener/appwire-client";
+import type { ModelControlSnapshot, ModelDescriptor, ThreadCapabilities } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import {
 	canDeleteSavedSession,
@@ -140,6 +140,53 @@ describe("the model chip (spec 8.5)", () => {
 	const catalog: ModelDescriptor[] = [
 		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision" },
 	];
+	const controlledCatalog: ModelDescriptor[] = [
+		{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+		{ provider: "openai", model: "gpt-5.5", displayName: "GPT 5.5" },
+	];
+	const controlledSession = (lifecycle: string) => {
+		const snapshot: ModelControlSnapshot = {
+			authority: { instanceId: "instance-a", bootGeneration: "7" },
+			revision: 2,
+			active: {
+				modelProvider: "anthropic",
+				model: "claude-sonnet-5",
+				reasoningEffortLevels: ["low", "high"],
+				supportsReasoning: true,
+			},
+			desired: {
+				requestSequence: 2,
+				clientMutationId: "request-2",
+				modelProvider: "openai",
+				model: "gpt-5.5",
+				lifecycle,
+			},
+		};
+		return {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			modelControlVersion: 1,
+			modelControl: snapshot,
+			reasoningEffort: "high",
+			reasoningEffortLevels: ["low", "high"],
+			supportsReasoning: true,
+		};
+	};
+
+	it.each([
+		["pending", "GPT 5.5 · High"],
+		["applied", "GPT 5.5 · High"],
+		["rejected", "Claude Sonnet 5 · High"],
+	])("shows the shared %s model-control target", (lifecycle, expected) => {
+		expect(modelChipLabel(controlledSession(lifecycle), controlledCatalog, "Stale Board model")).toBe(expected);
+	});
+
+	it("keeps the Board-row name for the active model, but not for a complete pending target", () => {
+		expect(modelChipLabel(controlledSession("rejected"), undefined, "Claude from Board")).toBe(
+			"Claude from Board · High",
+		);
+		expect(modelChipLabel(controlledSession("pending"), undefined, "Claude from Board")).toBe("gpt-5.5 · High");
+	});
 	it("names the model the way the catalog does, with its effort", () => {
 		expect(
 			modelChipLabel(
