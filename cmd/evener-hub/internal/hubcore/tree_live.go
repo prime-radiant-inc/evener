@@ -36,7 +36,7 @@ type treeLive struct {
 	reportedBy            map[string]string
 	runningSubagentStates map[string]string
 	childQuotaWaits       map[string]*appwire.ThreadFailure // in-process children waiting out a usage limit
-	metaMap               map[string]schema.SessionMeta
+	metaMap               map[string]*schema.SessionMeta
 	sessionIsIndexed      map[string]bool
 }
 
@@ -78,10 +78,13 @@ func newTreeLive(metas []schema.SessionMeta, live []LiveEntry, sessionIsIndexed 
 			}
 		}
 	}
-	metaMap := make(map[string]schema.SessionMeta, len(metas))
-	for _, m := range metas {
-		if m.ID != "" {
-			metaMap[m.ID] = m
+	// The map holds pointers into metas, which this build owns a stable slice
+	// of for its whole life: a meta is large, and copying each one into the map
+	// costs more than everything else the tree build allocates.
+	metaMap := make(map[string]*schema.SessionMeta, len(metas))
+	for i := range metas {
+		if metas[i].ID != "" {
+			metaMap[metas[i].ID] = &metas[i]
 		}
 	}
 
@@ -219,7 +222,10 @@ func (lv *treeLive) lastMessageFor(id string) string {
 	if entry, live := lv.liveMap[id]; live {
 		return entry.LastMessage
 	}
-	return lv.metaMap[id].LastMessage
+	if m, ok := lv.metaMap[id]; ok {
+		return m.LastMessage
+	}
+	return ""
 }
 
 // modelFor resolves the model a session's rows name (S17): a live
@@ -237,7 +243,10 @@ func (lv *treeLive) modelFor(id string) string {
 			return entry.Model // the model its daemon started on
 		}
 	}
-	return lv.metaMap[id].Model
+	if m, ok := lv.metaMap[id]; ok {
+		return m.Model
+	}
+	return ""
 }
 
 // turnEndedAtFor resolves a live session's last turn end from the same live
@@ -343,7 +352,7 @@ func (lv *treeLive) workingRoots(metas []schema.SessionMeta, roots *RootIndex, i
 	// parentOf is a subagent's parent: its meta's link, else the live session
 	// that lists it as running.
 	parentOf := func(id string) string {
-		if m := lv.metaMap[id]; m.IsSubagent && m.ParentSessionID != "" {
+		if m, ok := lv.metaMap[id]; ok && m.IsSubagent && m.ParentSessionID != "" {
 			return m.ParentSessionID
 		}
 		return lv.reportedBy[id]

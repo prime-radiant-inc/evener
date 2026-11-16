@@ -6,10 +6,44 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 )
+
+// TestTruncateTitleCapsByRune pins the cap's exact cut, including the runes it
+// must not split, because the walk that finds the cut reads the string in place
+// instead of materializing every rune of a title that is mostly past the limit.
+func TestTruncateTitleCapsByRune(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"short ascii", "abc", "abc"},
+		{"exactly the cap", strings.Repeat("a", maxTitleRunes), strings.Repeat("a", maxTitleRunes)},
+		{"one past the cap", strings.Repeat("a", maxTitleRunes+1), strings.Repeat("a", maxTitleRunes-1) + "…"},
+		{"multibyte exactly the cap", strings.Repeat("界", maxTitleRunes), strings.Repeat("界", maxTitleRunes)},
+		{"multibyte one past the cap", strings.Repeat("界", maxTitleRunes+1), strings.Repeat("界", maxTitleRunes-1) + "…"},
+		{"four-byte runes", strings.Repeat("😀", maxTitleRunes+40), strings.Repeat("😀", maxTitleRunes-1) + "…"},
+		// 199 runes of the source, then the ellipsis: widths must not shift the cut.
+		{"mixed rune widths", strings.Repeat("a界😀x", 100), strings.Repeat("a界😀x", 49) + "a界😀" + "…"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateTitle(test.in)
+			if got != test.want {
+				t.Fatalf("truncateTitle = %q, want %q", got, test.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateTitle returned invalid UTF-8 %q from valid input", got)
+			}
+		})
+	}
+}
 
 // Sessions with identical timestamps order by their displayed (truncated)
 // title, case-folded, then by raw title, then by ID. Titles that differ only
