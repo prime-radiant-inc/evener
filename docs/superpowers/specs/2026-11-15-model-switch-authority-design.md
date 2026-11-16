@@ -1,7 +1,7 @@
 # Model-Switch Authority Is One Revisioned Snapshot
 
 Date: 2026-11-16
-Status: Implemented
+Status: Draft revision
 
 ## Summary
 
@@ -13,7 +13,7 @@ Add one ephemeral, daemon-owned `ModelControlSnapshot`. It contains:
 - the complete active model metadata;
 - the optional accepted desired-model intent and its lifecycle.
 
-The model-set response, a typed notification, and `thread/read` carry the same whole snapshot. Browser and native clients replace it atomically only when its authority matches and its revision is newer. They never merge individual model-control fields from different carriers.
+The model-set response, a typed notification, and `thread/read` carry the same whole snapshot. Browser and native clients reconcile it through one shared client state: `uninitialized`, `ready`, `recovering`, or `unsupported`. Only `ready` contains mutation authority. Clients never merge individual model-control fields from different carriers and never fall back to an identity-free model mutation.
 
 Direct refusal and supersession remain results for the request that caused them. They do not become shared state. A deferred rejection is shared because it changes an already accepted desired intent, and it retains that request's exact `clientMutationId`.
 
@@ -30,9 +30,9 @@ The state must remain correct when:
 - an accepted queued switch rejects at the turn boundary or quota-retry safe point;
 - response, notification, and read arrive in any order;
 - the client disconnects and recovers through `thread/read`;
-- the selected model is already active and no legacy `thread/model/changed` event is emitted;
-- an old client mutates a session that already has new model-control state;
-- either side is an older Evener version.
+- the selected model is already active and no `thread/model/changed` event is emitted;
+- a client temporarily loses usable authority while a replacement read is in flight;
+- either side is an older or unsupported Evener version.
 
 The daemon session that admits and applies switches is the only component that knows all of those facts. It must publish one answer rather than making clients combine an attempt record, accepted-pick record, canonical-event floor, and independently delivered canonical metadata.
 
@@ -45,9 +45,9 @@ The daemon session that admits and applies switches is the only component that k
 - Permanently replace an older desired intent when a newer request is accepted, regardless of its originating client.
 - Settle a deferred rejection against the exact accepted mutation and recover that result after reconnect.
 - Make same-model acceptance observable without relying on `thread/model/changed`.
-- Route legacy mutations through the same state machine so they cannot leave stale new-protocol state behind.
+- Require supported authority for every model mutation.
 - Keep browser and native reconciliation identical.
-- Preserve conservative behavior through older hubs and daemons.
+- Keep sessions through older hubs and daemons usable while disabling model changes.
 
 ## Non-goals
 
@@ -58,6 +58,7 @@ The daemon session that admits and applies switches is the only component that k
 - Do not expose request history.
 - Do not speculate in the client before daemon acceptance.
 - Do not infer request identity from FIFO order, target value, timing, warning text, or transport request ID.
+- Do not make model-control recovery invalidate otherwise valid transcript history.
 
 ## Anti-goals
 
@@ -67,7 +68,7 @@ The change fails even when its common path looks right if:
 - a direct refusal can erase or resurrect a different accepted intent;
 - reconnect produces a different answer within the same authority and revision;
 - a delayed carrier can combine old active metadata with a new desired intent;
-- an old-client mutation can leave a stale new-client intent recoverable through `thread/read`;
+- a client without current supported authority can send a model mutation;
 - one client can keep displaying its local belief after another client's accepted choice becomes authoritative;
 - a provider/model pair is reconstructed by splitting a qualified string;
 - clients parse human-readable errors or warnings to reconcile state.
@@ -75,7 +76,7 @@ The change fails even when its common path looks right if:
 ## Constraints
 
 - `agent.Session` already assigns model-pick sequence numbers, admits queued switches, applies them at turn boundaries and quota-retry safe points, and learns deferred failures. It owns the snapshot state machine.
-- `thread/model/set` currently returns `EmptyResponse`. A new typed response must remain compatible with an older daemon's `{}`.
+- `thread/model/set` currently returns `EmptyResponse`. The typed response still decodes an older daemon's `{}`, but new clients never send that daemon a model mutation because its read cannot establish supported authority.
 - Older hubs typed-decode and re-encode model requests, responses, and reads but relay unknown notifications opaquely. A client must not enable half of this protocol from a forwarded notification alone.
 - `thread/read` already carries `BootGeneration`, and its thread carries `InstanceID`. Revisions are comparable only inside that identity pair.
 - Live thread snapshots are materialized through the server envelope. The model-control snapshot needs a typed facet updated through `refreshFacets` and read by `appThread`; a callback fallback during read would violate the envelope's single-writer rule and could sample a different transition.
@@ -85,15 +86,29 @@ The change fails even when its common path looks right if:
 
 ## Approaches
 
-### Selected: one focused model-control snapshot
+### Selected server authority: one focused model-control snapshot
 
 One revision orders one immutable value containing active model metadata and the accepted desired intent. Every carrier transports that value whole. A newer value replaces an older one atomically.
 
 Jesse selected this approach after review showed that independently merging latest-attempt, latest-accepted, active-sequence-floor, and canonical-metadata authorities creates ordering exceptions. The focused snapshot is slightly broader at each transition but much smaller as a consistency model.
 
-### Rejected: separate attempt and accepted-pick records
+### Selected client authority: one explicit control state
 
-Separate records directly represent “pick 1 accepted, pick 2 refused,” but they also require independent merge rules, an active-model sequence floor, and separate canonical metadata ordering. Review found two concrete failures: a same-model apply could suppress the only delayed metadata event, and a legacy request could bypass the new authority and leave stale state recoverable. Adding more cross-record rules would repeat the design mistake.
+Browser and native share a discriminated state with four exhaustive cases: `uninitialized`, `ready(snapshot)`, `recovering(lastSafeDisplay)`, and `unsupported(lastCanonicalDisplay, observedVersion)`. The shared reducer returns both the next state and whether one replacement read must start. Only `ready` may compose a model mutation.
+
+Jesse selected this after PAR reproduced three consequences of representing protocol version and snapshot as independent optional fields: a conflict could lose its reread, a capable client could mistake recovery for a no-snapshot mutation path and send without identity, and native could abort the whole conversation on an unknown version. The explicit state makes those invalid combinations unrepresentable.
+
+### Rejected client alternative: optional fields plus guards
+
+A shared mutation guard and another recovery flag would make a smaller diff, but the invalid combinations would remain representable in every `ThreadModel`. Each read owner, notification owner, and mutation caller would still need to interpret optional-field combinations as unsupported, recovering, or ready.
+
+### Rejected client alternative: opaque server lease
+
+An opaque token could replace the instance and boot fields, but the client would still need the same `ready` and `recovering` distinction. The existing authority pair already provides an unforgeable comparison domain for this purpose, so another wire identity adds machinery without strengthening the guarantee.
+
+### Rejected server alternative: separate attempt and accepted-pick records
+
+Separate records directly represent “pick 1 accepted, pick 2 refused,” but they also require independent merge rules, an active-model sequence floor, and separate canonical metadata ordering. Review found concrete failures where a same-model apply could suppress the only delayed metadata event and independent records could reinstall stale state. Adding more cross-record rules would repeat the design mistake.
 
 ### Rejected: bounded request ledger
 
@@ -133,7 +148,7 @@ ModelControlSnapshot
     supportsReasoning
   desired, optional
     requestSequence
-    clientMutationId, optional only for legacy callers
+    clientMutationId
     modelProvider
     model
     lifecycle: pending | applied | rejected
@@ -167,17 +182,15 @@ A new accepted request permanently replaces the previous desired record. A later
 
 ### Request identity and admission order
 
-`ThreadModelSetParams` gains optional `clientMutationId`, `expectedInstanceId`, and `expectedBootGeneration`. After a version-1 read, browser and native clients generate a secure UUID and send all three fields. A partial set is malformed.
+`ThreadModelSetParams` gains wire-optional `clientMutationId`, `expectedInstanceId`, and `expectedBootGeneration` so an older encoded request can still be decoded and refused deliberately. Every accepted model mutation requires all three. After a version-1 read, browser and native clients generate a secure UUID and send them. A partial or absent set is unsupported and is refused before sequence assignment.
 
 The daemon atomically verifies its serving boot, resolves the stable ref, verifies the session instance, and binds the mutation to that authority before admission begins. It never performs a precheck followed by a second live-session lookup. A capable request composed before clear or restart therefore cannot mutate the replacement session.
-
-The identity fields remain optional for legacy callers. A request with all three absent is a legacy mutation. It still enters the same session state machine and, if accepted, advances the snapshot revision and replaces the desired record. Its desired record has no `clientMutationId`. This is required: accepting a legacy mutation without advancing the snapshot would let a fresh read reinstall stale authority.
 
 After shape and authority validation, the session assigns a monotonically increasing `requestSequence` before model admission starts. Assignment is serialized with model-control state. The sequence decides which concurrently validating request may be accepted; it is not a second client merge authority.
 
 A request whose validation finishes after a newer request started is superseded and cannot alter the snapshot. A direct admission failure also cannot alter it. Both outcomes belong only to their originating calls. This preserves an already accepted desired intent when a newer invalid choice is refused.
 
-Once assigned, admission continues to a per-call terminal result if the transport disconnects. If the daemon exits, the new boot's identity discards the unfinished work.
+Once assigned, admission continues to a per-call terminal result if the transport disconnects. An accepted disposition requires a snapshot transition; shutdown before that transition returns an error or superseded result, never accepted with an unchanged snapshot. If the daemon exits, the new boot's identity discards the unfinished work.
 
 ## Server transitions
 
@@ -200,8 +213,7 @@ The shared transitions are:
 2. **Accepted immediate apply:** commit the profile, increment revision, replace `active` with complete metadata, and replace `desired` with the request in `applied` as one session transition.
 3. **Queued apply:** only if the pending request still matches, commit the profile, increment revision, replace `active`, and move that exact `desired` to `applied` as one transition.
 4. **Deferred rejection:** only if the pending request still matches, increment revision, keep `active`, and move that exact `desired` to `rejected`.
-5. **Same-model acceptance:** increment revision and publish an `applied` snapshot even when the profile values are unchanged and no legacy model-change event is emitted.
-6. **Legacy acceptance:** perform the same pending or applied transition, replacing any prior desired record; only the mutation ID is absent.
+5. **Same-model acceptance:** increment revision and publish an `applied` snapshot even when the profile values are unchanged and no model-change event is emitted.
 
 Every active-model change after authority startup must pass through one of these transitions. A future path that changes the canonical profile must update the snapshot in the same atomic session transition. Startup profile resolution happens before the authority begins.
 
@@ -220,13 +232,13 @@ The snapshot facet is written only by `refreshFacets` and read only by `appThrea
 | `thread/model/set` direct refusal | Existing per-call RPC failure; only that call settles and shared state is unchanged |
 | `thread/model/controlChanged` | New typed notification carrying `ref`, `threadId`, and the full snapshot |
 | `thread/read` | Capability version plus the full snapshot from the envelope facet |
-| `thread/model/changed` | Retained for old clients; capable clients do not use it as model-control authority |
+| `thread/model/changed` | Retained as canonical display information for clients without supported authority; `ready` and `recovering` clients do not use it as model-control authority |
 
 The response, notification, and read serialize the same `ModelControlSnapshot` type. A carrier may observe a later revision than the request that triggered it, but it never constructs a partial request-specific snapshot.
 
 Every hub hop must stop discarding the model-set response. The shared `appsource.Source` contract, `LocalDaemonSource`, `RemoteHubSource` and its remote result forwarding, the resume wrapper, the hub application method, and the browser-facing RPC all return the typed response to browser and native callers. This is required scope, not an optional optimization. Without it, the initiating composer would wait for notification delivery and the three carriers would not implement one protocol.
 
-Existing `thread/model/changed` remains for legacy clients and retains its existing context-status update for capable clients. After a version-1 read, the shared reducer treats `ModelControlSnapshot` as the only writer of model provider, model, and reasoning capability. It does not let a delayed legacy event overwrite those snapshot-owned fields. Effective context policy and usage remain separate because fallback may change them without a canonical model transition.
+Existing `thread/model/changed` remains for canonical display on unsupported clients and retains its existing context-status update for supported clients. After a version-1 read, the shared reducer treats `ModelControlSnapshot` as the only writer of model provider, model, and reasoning capability. It does not let a delayed event overwrite those snapshot-owned fields. Effective context policy and usage remain separate because fallback may change them without a canonical model transition.
 
 ### End-to-end flow
 
@@ -254,33 +266,62 @@ Response and notification may arrive in either order. Whole-snapshot revision co
 
 ## Shared client reconciliation
 
-The AppWire TypeScript package owns one pure reducer used by browser and native clients. It stores `ModelControlSnapshot` separately from unrelated thread state and derives the displayed model from it.
+The AppWire TypeScript package owns one pure reducer used by browser and native clients. Model control is one discriminated state, not a capability field plus an independently optional snapshot:
 
-The subscription starts before its establishing read. Until that read is accepted, each client quarantines model-control responses and notifications with the other notifications belonging to that in-flight read. If the read installs version 1, the client replays matching-authority quarantined carriers over the read snapshot in arrival order. If the read is rejected or does not advertise version 1, it discards the quarantine. A notification that races ahead of its capability-establishing read therefore cannot be lost or accidentally enable the protocol.
+```text
+ModelControlClientState
+  uninitialized
+    canonicalDisplay
+  ready
+    snapshot
+  recovering
+    lastSafeDisplay
+  unsupported
+    canonicalDisplay
+    observedVersion, optional
+```
+
+`uninitialized` means no accepted read has classified the connection. `ready` is the only state with mutation authority. `recovering` means a supported authority was invalidated and only a fresh accepted read may establish the next state. `unsupported` means an accepted read omitted version 1 or advertised a version this client does not implement. Sessions remain readable in every state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Uninitialized
+    Uninitialized --> Ready: accepted version 1 read with complete snapshot
+    Uninitialized --> Unsupported: accepted read without supported version
+    Ready --> Ready: newer or duplicate same-authority carrier
+    Ready --> Recovering: authority mismatch or equal-revision conflict
+    Recovering --> Ready: replacement version 1 read with complete snapshot
+    Recovering --> Unsupported: replacement read without supported version
+    Unsupported --> Ready: later accepted version 1 read with complete snapshot
+    Ready --> Unsupported: accepted read without supported version
+```
+
+The reducer returns the next state, its carrier decision, and a `replacementReadRequired` effect. Entering `recovering` emits that effect once for the recovery episode. The thread binding owns at most one establishing or replacement-read promise and installs it in the same serialized action that exposes the new state, so a racing mutation can wait for that exact read. More conflicting carriers cannot create a read loop. A repeated malformed version-1 read leaves the client in `recovering`, reports the protocol failure, and waits for the existing reconnect or explicit retry path rather than immediately rearming itself. Model-control recovery never marks valid transcript history invalid.
+
+The subscription starts before its establishing or replacement read. Notifications belonging to that read are quarantined under its read generation. If the accepted read enters `ready`, the client replays matching-authority quarantined carriers over the read snapshot in arrival order. If the read enters `unsupported` or is rejected, it discards the quarantine. A notification cannot establish or restore authority by itself.
 
 For an accepted read, response, or notification:
 
-1. Apply the existing read-generation and boot-generation admission fences first.
-2. Treat every accepted read as authoritative for capability presence. Version 1 atomically installs its complete snapshot. Absence of version 1 atomically removes any previously installed capability and model-control snapshot before the read's legacy model fields become visible.
-3. If no model-control capability has been installed by an accepted read, quarantine carriers for an in-flight establishing read as described above; otherwise ignore response and notification snapshots and preserve legacy canonical behavior.
-4. Require exact `instanceId` and `bootGeneration` equality before comparing revision.
-5. On a current-generation notification identity mismatch, invalidate the thread, remove the old model-control snapshot, and use the existing replacement-read path. Never order opaque instance IDs.
-6. Before a model-set response enters the shared reducer, compare the authority captured when its request was issued with the currently installed authority and client/read generation. If replacement has retired that request authority, discard the response. A delayed old response must not invalidate a freshly installed replacement. A response still current at admission follows the ordinary mismatch rule.
-7. Within one authority, replace the whole snapshot only when its revision is strictly newer.
-8. Treat equal revision and equal content as a duplicate.
-9. Treat equal revision with different content as a protocol inconsistency: invalidate and reread rather than choosing fields.
-10. Ignore lower revisions.
-11. An accepted replacement read installs the new authority and its complete snapshot before any old-authority carrier can be considered.
-12. Preserve a newer live snapshot when a read that began earlier completes through the existing read-generation fences.
+1. Apply the existing client, read-generation, boot-generation, and instance fences first.
+2. Treat every accepted read as authoritative for protocol state. Version 1 with a complete snapshot whose authority matches the read's thread instance and boot generation enters `ready`. An absent or unknown version enters `unsupported`. Version 1 with a missing snapshot or mismatched snapshot authority enters or remains `recovering`.
+3. In `uninitialized`, quarantine carriers only for the in-flight establishing read; otherwise ignore them.
+4. In `unsupported`, ignore model-control responses and notifications. Only a later accepted read can enter `ready`.
+5. In `ready`, require exact `instanceId` and `bootGeneration` equality before comparing revision. Never order opaque identity values.
+6. On a current-generation identity mismatch or equal-revision content conflict, enter `recovering`, preserve `lastSafeDisplay`, and request one replacement read.
+7. Before a model-set response enters the reducer, compare its captured request authority and client/read generations with the current `ready` state. Discard a response whose authority retired. A delayed response cannot invalidate a replacement.
+8. Within one authority, replace the whole snapshot only when its revision is strictly newer; equal content is a duplicate and lower revision is ignored.
+9. In `recovering`, only an accepted read may leave the state. Carriers associated with its in-flight read remain quarantined for replay after that read.
+10. An unsupported model-set response received while `ready` enters `recovering` and requests one replacement read. It cannot leave the client ready to repeat a request against a path that contradicted its capability read.
+11. Preserve a newer live snapshot when a read that began earlier completes through the existing generation fences.
 
-The display projection is:
+Display follows the state:
 
-- `desired.pending` or `desired.applied`: show the desired target;
-- `desired.rejected` or no desired record: show the active target.
+- `ready` with `desired.pending` or `desired.applied`: show the desired target;
+- `ready` with `desired.rejected` or no desired record: show the active target;
+- `recovering`: keep the last safe display without claiming it is current authority;
+- `uninitialized` or `unsupported`: show canonical read/event fields.
 
-A response's direct refusal settles only its own local call. It never rolls back shared display state. A superseded call merges the response's current whole snapshot, which may describe another client's accepted intent.
-
-No component-local pending label may override this projection.
+A response's direct refusal settles only its own local call. It never rolls back shared display state. A superseded call may merge the response's current whole snapshot only if its captured authority is still `ready`. An unsupported response is a path inconsistency and follows the recovery rule above. No component-local pending label may override this projection.
 
 ## Browser and native behavior
 
@@ -292,13 +333,15 @@ After a version-1 read, each client:
 - merges response, notification, and read through the shared reducer;
 - renders the shared display projection.
 
-Without version 1, each client sends the legacy request and follows existing canonical `thread/model/changed` behavior. It does not speculate locally.
+The model selector is enabled only in `ready`. If a call races with entry into `uninitialized` or `recovering`, it waits for the already in-flight establishing or replacement read and composes the request only if that read reaches `ready` for the same thread binding. If the binding retires or the read reaches `unsupported`, the call fails locally without sending. No state sends an identity-free request.
+
+Without version 1, each client continues to display canonical model events but disables model changes. It does not speculate locally.
 
 The browser thread store owns the shared snapshot so two views of one thread converge even when one view issued the request. Per-call transport bookkeeping remains local but cannot override shared authority.
 
 The native conversation service uses the same reducer and display projection. Its model label keeps the existing Board-row fallback when catalog metadata is incomplete.
 
-`thread/clear` invalidates the old authority. Because its response carries no boot generation, a client waits for a fresh accepted `thread/read` before sending another identity-bearing model mutation.
+`thread/clear` enters `recovering` and invalidates the old authority. Because its response carries no boot generation, a client waits for a fresh accepted `thread/read` before enabling another model mutation.
 
 ## Compatibility and rollout
 
@@ -306,19 +349,19 @@ Add a `modelControlVersion` capability and full `modelControl` snapshot to `thre
 
 All wire changes are additive:
 
-- optional request mutation and expected-authority fields;
+- wire-optional but semantically required request mutation and expected-authority fields;
 - a typed response that decodes `{}` as unsupported;
 - optional read capability and snapshot fields;
 - one new notification;
-- no required change to the legacy model-change notification.
+- no required change to the existing canonical model-change notification.
 
-A new client enables the protocol only after an accepted version-1 read. Every later accepted read re-evaluates that capability. A read without version 1 atomically disables the protocol and clears its snapshot, including when a same-ref connection moves from a new hub to an older hub, daemon, or daemonless source. An older typed hub drops the version while re-encoding the read, so an opaquely relayed new notification cannot enable half the protocol. The client discards its pre-read quarantine and retains conservative legacy behavior.
+A new client enables model changes only after an accepted version-1 read with a complete snapshot. Every later accepted read re-evaluates that support. A read without version 1 atomically enters `unsupported` and clears mutation authority, including when a same-ref connection moves from a new hub to an older hub, daemon, or daemonless source. An older typed hub drops the version while re-encoding the read, so an opaquely relayed new notification cannot enable half the protocol. The client discards its pre-read quarantine, continues canonical display updates, and disables the selector.
 
-A new client talking to an old daemon receives `{}` and no read capability. It continues showing the canonical model until the legacy model-change notification arrives.
+A new client talking to an old daemon receives no read capability. It continues showing the canonical model and keeps model changes disabled. It never sends `thread/model/set`, so the old daemon's `{}` response is only a decoding compatibility case, not an active mutation path.
 
-An old client talking to a new daemon ignores additive fields and the unknown notification. The new daemon still routes its legacy request through the snapshot state machine and emits the legacy model-change event when the active model changes.
+An old client talking to a new daemon ignores additive fields and the unknown notification. Its identity-free `thread/model/set` is refused before sequence assignment; no model-control state changes. Other session operations remain usable.
 
-A new daemon behind new remote and controller hubs preserves request identity and the typed response through every source and RPC hop, preserves the read capability and snapshot, and relays the typed notification. A new controller connected to an old remote hub receives no capability and uses the conservative path.
+A new daemon behind new remote and controller hubs preserves request identity and the typed response through every source and RPC hop, preserves the read capability and snapshot, and relays the typed notification. A new controller connected to an old remote hub receives no capability, keeps the session usable, and disables model changes.
 
 This replacement supersedes PR #6345. Do not merge or close #6345 until this replacement passes its behavior gates and Jesse separately authorizes that repository action. Revalidate rather than copying code from that branch.
 
@@ -331,24 +374,29 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Accepted pick rejects at boundary or quota retry | New snapshot keeps active metadata and marks that exact desired mutation rejected; display falls back active |
 | Older validation finishes after newer request starts | Older call is superseded and cannot publish a snapshot transition |
 | Older deferred result arrives after newer acceptance | Desired identity no longer matches, so it cannot change the newer snapshot |
-| Same-model pick is accepted | Revision advances and desired becomes applied even without a legacy model-change event |
+| Same-model pick is accepted | Revision advances and desired becomes applied even without a canonical model-change event |
 | Old active-model event arrives after a newer snapshot | Capable reducer cannot use it to overwrite snapshot-owned metadata |
 | Older response arrives after a newer notification | Lower snapshot revision is ignored |
 | Initial notification revision 2 arrives while capability read revision 1 is in flight | Client quarantines it, installs version 1 from the read, then replays revision 2 |
 | Equal revision arrives with different content | Protocol inconsistency invalidates and rereads |
 | Caller disconnects after request sequence assignment | Session admission reaches a per-call terminal outcome; shared state changes only if accepted |
-| Legacy request follows a version-1 accepted intent | If accepted, it advances the snapshot and replaces the old desired record, with no mutation ID |
+| Mutation is attempted while client state is `uninitialized` or `recovering` | Caller waits for the current read and sends only if the same thread binding reaches `ready` |
+| Accepted read omits version 1 or advertises an unknown version | Client enters `unsupported`, keeps canonical display usable, and disables model changes |
+| Version-1 read omits its complete snapshot or carries mismatched authority | Client enters or remains `recovering`, reports the protocol failure, and does not start an immediate reread loop |
 | Client reconnects through a capable path | One read restores active metadata and desired lifecycle from the whole snapshot |
-| Accepted replacement read omits version 1 | Client atomically clears capability and snapshot, discards quarantined new-protocol carriers, and resumes legacy behavior |
+| Accepted replacement read omits version 1 | Client atomically enters `unsupported`, clears mutation authority, discards quarantined model-control carriers, and retains canonical display behavior |
 | Thread is cleared | Client drops old snapshot and waits for replacement read before authority-aware mutation |
 | Daemon boot or thread instance changes | Identity reset happens before revision comparison; replacement read installs the new authority |
 | Request carries stale expected identity | Atomic binding refuses it before sequence assignment; replacement session is untouched |
+| Request omits mutation or expected identity | Session refuses it before sequence assignment; no model-control state changes |
 | Slow admission finishes after clear | Origin identity cannot update the replacement envelope or client authority |
 | Old model-set response arrives after replacement read | Request-generation fence proves its captured authority retired, so the response is discarded without invalidating the replacement |
 | Successful response is followed immediately by read | Synchronous envelope commit makes read return that revision or newer |
+| Session closes after request admission | Call returns an error or superseded result; it cannot report accepted with an unchanged snapshot |
+| A `ready` client's request returns unsupported | Client enters `recovering`, fails the local call, and starts one replacement read |
 | Old hub forwards notification but drops read fields | No version is installed, so notification is ignored |
 | Old daemon returns `{}` | No version is installed and no desired intent is invented |
-| New daemon serves old client | Old client ignores new protocol and follows legacy canonical changes |
+| New daemon serves old client | Identity-free request is refused; the old client may continue reading canonical changes from other supported sources |
 | Fallback with a different context window answers | Canonical active model snapshot is unchanged; existing context status reports the answering profile's effective policy |
 
 ## Testing strategy
@@ -367,7 +415,8 @@ Use real `Session` model switching with controlled profile resolution and safe p
 - application at quota retry and turn boundary;
 - an older deferred result unable to change a newer desired intent;
 - same-model acceptance advancing revision without `EventModelChanged`;
-- legacy acceptance replacing a prior identity-bearing desired intent;
+- missing, partial, and stale request identity refused before sequence assignment;
+- shutdown after admission never returning accepted with an unchanged snapshot;
 - complete canonical active metadata captured in the same transition as profile commit;
 - fallback changing effective context policy without changing canonical model-control state.
 
@@ -383,19 +432,21 @@ Use a scripted provider with real session, event, envelope, RPC, and snapshot pa
 - success follows the same-origin envelope commit, so an immediate read cannot be older;
 - an idle-tail rejection reaches notification and read with exact mutation identity;
 - cached-envelope overlap cannot install an older revision;
-- same-model acceptance publishes the new notification and read state without a legacy model-change event;
-- a legacy accepted mutation advances revision and replaces prior desired state;
+- same-model acceptance publishes the new notification and read state without a canonical model-change event;
+- an identity-free mutation is refused without advancing revision or replacing desired state;
 - daemonless and old-daemon reads omit the capability;
 - clear, boot replacement, and instance replacement invalidate before accepting new authority;
 - stale expected identity cannot mutate a concurrent replacement;
 - slow admission retains origin identity across clear;
 - `{}` decodes as a valid unsupported response;
+- forwarded hub capability expectations include version 1 and the complete snapshot;
 - generated protocol and TypeScript types are current.
 
 ### Shared TypeScript reducer
 
 Table-test:
 
+- every `ModelControlClientState` transition and its `replacementReadRequired` effect;
 - response before notification and notification before response;
 - lower revision after higher revision;
 - equal duplicate and equal conflicting content;
@@ -403,14 +454,17 @@ Table-test:
 - pick 1 accepted, pick 2 refused, then pick 1 rejected;
 - local pick followed by foreign accepted pick;
 - same-model applied snapshot correcting stale client metadata;
-- delayed legacy model-change payload unable to overwrite snapshot-owned metadata;
+- delayed canonical model-change payload unable to overwrite ready snapshot-owned metadata;
 - fallback-derived context policy remaining authoritative while canonical model metadata stays in the snapshot;
-- legacy mutation snapshot replacing identity-bearing state;
 - same-authority reconnect and replacement-authority reset;
 - current-generation notification identity mismatch invalidation before revision comparison;
+- equal-revision conflict requesting exactly one replacement read even when transcript history was previously discarded;
 - delayed response from a retired request authority discarded without invalidating the replacement;
-- capable full snapshot versus unsupported absent fields;
-- accepted capable-to-unsupported read atomically clearing capability and snapshot;
+- complete, read-identity-matching version-1 snapshot entering `ready`, and absent or unknown version entering `unsupported` without aborting the conversation;
+- malformed version-1 read entering `recovering` without an immediate retry loop;
+- unsupported response from a `ready` request entering `recovering` and requesting one replacement read;
+- `uninitialized`, `recovering`, and `unsupported` rejecting mutation eligibility;
+- accepted capable-to-unsupported read atomically clearing mutation authority;
 - revision-2 notification quarantined during the revision-1 capability read, then replayed;
 - unsupported establishing read discarding its quarantined model-control carriers.
 
@@ -425,14 +479,16 @@ Drive the real store and composer with the AppWire test client. Prove:
 - same-model acceptance settles through response or notification;
 - old-hub split carriers never create a desired display;
 - a notification arriving during the capability-establishing read is replayed over that read;
-- a capable-to-old-hub read clears the old desired display and resumes legacy events;
+- a capable-to-old-hub read clears the old desired display, preserves canonical display, and disables the selector;
+- an authority mismatch while its replacement read is held cannot send an identity-free request, then enables a request bound to the fresh authority after that read;
+- a model-control conflict recovers even when transcript history has already been discarded;
 - a delayed response issued under a replaced authority cannot clear the replacement snapshot;
 - clear removes the old snapshot and waits for replacement read;
 - two views retain independent request fences while converging on shared state.
 
 ### Native
 
-Cover mutation UUID and expected-authority generation, typed-response forwarding, shared reducer behavior, live notification, establishing-read quarantine and replay, capable-to-unsupported downgrade, delayed retired-authority response, reconnect recovery, old-hub and old-daemon fallback, clear-before-read behavior, and Board-row label fallback.
+Cover mutation UUID and expected-authority generation, typed-response forwarding, shared reducer behavior, live notification, establishing-read quarantine and replay, capable-to-unsupported downgrade, unknown-version conversation usability with model changes disabled, delayed retired-authority response, reconnect recovery, old-hub and old-daemon read-only behavior, clear-before-read behavior, and Board-row label fallback.
 
 ### Repository gates
 
@@ -447,15 +503,22 @@ Run `make generate` and commit generated AppWire TypeScript and `docs/appwire-pr
 5. Deferred rejection settles the exact accepted mutation, survives reconnect, and falls back to active.
 6. Same-model acceptance advances shared state without requiring `thread/model/changed`.
 7. Response, notification, and read cannot be combined into a mixed-revision value.
-8. A legacy accepted mutation advances the same snapshot and cannot leave stale desired state recoverable.
-9. Delayed legacy model events cannot regress snapshot-owned active metadata, while fallback-owned effective context status remains independent.
-10. A stale-authority request cannot mutate a replacement session, and a retired session cannot update the replacement projection.
-11. A read begun after a successful response observes that same-authority revision or newer.
-12. Restart, clear, and replacement discard old authority before revision comparison.
-13. New clients enable the protocol only after a version-1 read and disable it on any accepted read that omits the version; old clients, hubs, and daemons retain conservative behavior.
-14. No client infers identity from order, target, timing, or warning text.
-15. Default tests exercise real Evener paths below a scripted provider boundary without network or credentials.
+8. Only `ready` clients send model mutations; every sent request carries a mutation ID and exact expected authority.
+9. `uninitialized`, `recovering`, and `unsupported` never send an identity-free mutation. Sessions remain readable and canonically displayed while model changes are unavailable.
+10. Each recovery episode requests at most one replacement read, and a malformed replacement does not create an immediate retry loop.
+11. Model-control recovery is independent of transcript-history retention or invalidation.
+12. Delayed canonical model events cannot regress snapshot-owned active metadata, while fallback-owned effective context status remains independent.
+13. A stale-authority request cannot mutate a replacement session, and a retired session cannot update the replacement projection.
+14. A read begun after a successful response observes that same-authority revision or newer.
+15. Restart, clear, and replacement discard old authority before revision comparison.
+16. New clients enter `ready` only after a complete version-1 read whose snapshot authority matches the read, and enter `unsupported` on an accepted absent or unknown version without aborting the conversation.
+17. An accepted response always represents an accepted snapshot transition; shutdown cannot return accepted with unchanged state.
+18. New daemons refuse missing or partial mutation authority before sequence assignment without making other session operations unavailable.
+19. No client infers identity from order, target, timing, or warning text.
+20. Default tests exercise real Evener paths below a scripted provider boundary without network or credentials.
 
 ## Builder decisions left open
 
-The implementation plan may choose Go and TypeScript symbol names, file boundaries, helper names, and whether the existing Go client gains a public typed-response method or uses an internal shared request helper. It may coalesce notification delivery because every published carrier contains a complete snapshot and reconnect recovers the latest revision. It may not split snapshot fields into independently merged authorities, omit the hub response path, treat legacy mutation as an authority bypass, or change the field ownership defined above.
+The implementation plan may choose Go and TypeScript symbol names, file boundaries, helper names, and whether the existing Go client gains a public typed-response method or uses an internal shared request helper. It may coalesce notification delivery because every published carrier contains a complete snapshot and reconnect recovers the latest revision.
+
+The builder must use one explicit discriminated client state and may not represent mutation authority as independently optional capability and snapshot fields. The builder may not split snapshot fields into independently merged authorities, omit the hub response path, send or accept an identity-free mutation, treat canonical display events as mutation authority, tie model-control recovery to transcript-history state, or change the field ownership defined above.
