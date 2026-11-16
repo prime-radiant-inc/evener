@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -214,41 +215,102 @@ func TestRetryFailed_RecoveredConnSurvivesLaterDrop(t *testing.T) {
 	_ = ss2 // the second server's session exists only to serve the redial
 }
 
-// TestRetryFailed_CancellationStopsBatch pins that a cancelled attempt abandons
-// the rest of the batch: the caller runs this on its own turn's path, so a Stop
-// must not wait out a stalled handshake on every remaining server, and a
-// cancellation must not be recorded as the server being down.
-func TestRetryFailed_CancellationStopsBatch(t *testing.T) {
-	_, ct := newReconnectTestServer(t, "later", "probe", "reply")
-	var laterDialed, stalledCalls atomic.Int32
-	dials := []func(context.Context) (mcpsdk.Transport, error){
-		// The first server fails its first connect outright, then never answers a
-		// retry: only the caller's cancellation ends that attempt.
-		func(ctx context.Context) (mcpsdk.Transport, error) {
-			if stalledCalls.Add(1) == 1 {
+// TestRetryFailed_DialsConcurrently pins the batch's cost invariant: its total
+// dial time is ONE reconnectDialTimeout, not one per server. The caller runs it
+// on the turn path, so a serial batch of stalled servers would delay every
+// round — and, once the batch outlasts reconnectBackoff, would find the earlier
+// servers' windows already elapsed and pay the whole batch again each round.
+//
+// The proof is overlap rather than elapsed wall time: every dial announces
+// itself before blocking, and the test releases the batch only after all of them
+// have arrived. A serial loop deadlocks here until the test's own timeout, so
+// there is no duration assertion to flake in CI.
+func TestRetryFailed_DialsConcurrently(t *testing.T) {
+	const servers = 4
+	var arrived atomic.Int32
+	var calls [4]atomic.Int32
+	arrivedAll := make(chan struct{})
+	release := make(chan struct{})
+	dials := make([]func(context.Context) (mcpsdk.Transport, error), servers)
+	for i := range servers {
+		dials[i] = func(ctx context.Context) (mcpsdk.Transport, error) {
+			// The initial connect fails fast; only the retry dial blocks, so the
+			// batch under test is the only thing waiting on release.
+			if calls[i].Add(1) == 1 {
 				return nil, errors.New("first connect: server not ready")
 			}
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-		func(context.Context) (mcpsdk.Transport, error) {
-			if laterDialed.Add(1) == 1 {
-				return nil, errors.New("first connect: server not ready")
+			if arrived.Add(1) == servers {
+				close(arrivedAll)
 			}
-			return ct, nil
-		},
+			select {
+			case <-release:
+				return nil, errors.New("released without a server")
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 	}
-	configs := []mcpconfig.ServerConfig{{Name: "stalled", Type: "stdio"}, {Name: "later", Type: "stdio"}}
+	configs := make([]mcpconfig.ServerConfig, servers)
+	for i := range configs {
+		configs[i] = mcpconfig.ServerConfig{Name: fmt.Sprintf("s%d", i), Type: "stdio"}
+	}
 	mgr, outcomes := NewManager(context.Background(), configs, dials)
-	if len(outcomes) != 2 {
-		t.Fatalf("NewManager outcomes = %+v, want both servers failing their first connect", outcomes)
+	if len(outcomes) != servers {
+		t.Fatalf("NewManager outcomes = %+v, want every server failing its first connect", outcomes)
 	}
 	defer mgr.Close()
-
 	now := time.Unix(1000, 0)
 	for i := range mgr.conns {
 		mgr.conns[i].now = func() time.Time { return now }
 	}
+	if outs := mgr.RegisterTools(tool.NewRegistry()); len(outs) != 0 {
+		t.Fatalf("RegisterTools = %+v, want nothing registered", outs)
+	}
+
+	retried := make(chan struct{})
+	go func() {
+		defer close(retried)
+		mgr.RetryFailed(context.Background(), tool.NewRegistry())
+	}()
+
+	// Every dial must be in flight at once. A serial batch never closes
+	// arrivedAll, because its first dial blocks until the test releases it.
+	select {
+	case <-arrivedAll:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatalf("only %d of %d dials started together; the batch is serial", arrived.Load(), servers)
+	}
+	close(release)
+	select {
+	case <-retried:
+	case <-time.After(30 * time.Second):
+		t.Fatal("RetryFailed did not return after the dials were released")
+	}
+}
+
+// TestRetryFailed_CancellationBoundsTheBatch pins the two cancellation
+// contracts the concurrent batch must keep: ctx ending releases a stalled dial
+// without waiting out reconnectDialTimeout, and a cancelled attempt opens no
+// backoff window, because a cancellation says nothing about the server's
+// health.
+func TestRetryFailed_CancellationBoundsTheBatch(t *testing.T) {
+	var stalledCalls atomic.Int32
+	dial := func(ctx context.Context) (mcpsdk.Transport, error) {
+		if stalledCalls.Add(1) == 1 {
+			return nil, errors.New("first connect: server not ready")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	mgr, outcomes := NewManager(context.Background(), []mcpconfig.ServerConfig{{Name: "stalled", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){dial})
+	if len(outcomes) != 1 {
+		t.Fatalf("NewManager outcomes = %+v, want one connect-stage failure", outcomes)
+	}
+	defer mgr.Close()
+	now := time.Unix(1000, 0)
+	mgr.conns[0].now = func() time.Time { return now }
 	reg := tool.NewRegistry()
 	if outs := mgr.RegisterTools(reg); len(outs) != 0 {
 		t.Fatalf("RegisterTools = %+v, want nothing registered", outs)
@@ -256,18 +318,17 @@ func TestRetryFailed_CancellationStopsBatch(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		// Wait for the retry's dial to be in flight, so cancellation lands on the
+		// attempt rather than before it.
+		for stalledCalls.Load() < 2 {
+			time.Sleep(time.Millisecond)
+		}
 		cancel()
 	}()
 	recovered, outs := mgr.RetryFailed(ctx, reg)
-	if len(recovered) != 0 || len(outs) != 1 {
-		t.Fatalf("RetryFailed = (%+v, %+v), want one stalled attempt and no recovery", recovered, outs)
+	if len(recovered) != 0 || len(outs) != 1 || outs[0].Stage != "connect" {
+		t.Fatalf("RetryFailed = (%+v, %+v), want one connect-stage outcome and no recovery", recovered, outs)
 	}
-	if laterDialed.Load() > 1 {
-		t.Fatal("the batch kept dialing servers after the caller's context ended")
-	}
-	// The cancelled attempt says nothing about the server's health, so no
-	// backoff window was opened and the next turn may try again.
 	mgr.conns[0].mu.Lock()
 	windowOpen := mgr.conns[0].clock().Before(mgr.conns[0].backoffUntil)
 	mgr.conns[0].mu.Unlock()

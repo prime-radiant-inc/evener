@@ -542,11 +542,14 @@ type ServerRecovery struct {
 //
 // This is the only path that can heal a server whose initial connect failed:
 // the lazy reconnect in a registered tool's closure cannot run for a server
-// that registered no tools. Each attempt is bounded by reconnectDialTimeout
-// derived from ctx, and ctx ending stops the batch: the caller runs this on its
-// own turn's path, so a cancellation (a Stop, or the turn's own deadline) must
-// not wait out a stalled handshake on every remaining server. A conn that closed
-// in the meantime is skipped, and its freshly-connected session is discarded.
+// that registered no tools. The caller runs it on its own turn's path, so the
+// batch's total dial cost is ONE reconnectDialTimeout, not one per server: every
+// eligible conn dials concurrently. That is also what keeps the retry
+// converging — a serial batch long enough to outlast reconnectBackoff would find
+// the earlier servers' windows already elapsed and pay the whole batch again on
+// the next call. ctx ending stops the batch before further dials start. A conn
+// that closed in the meantime is skipped, and its freshly-connected session is
+// discarded.
 //
 // A failed attempt sets the same reconnectBackoff window a failed lazy reconnect
 // does, so a caller that retries once per turn does not pay a dial timeout on
@@ -557,25 +560,42 @@ type ServerRecovery struct {
 // Registration reuses registerConn, so a recovered server's tools obey the same
 // collision rule as at init: a name another server (or a built-in) already owns
 // fails that server's registration and is reported rather than replacing the
-// existing tool. The manager knows no tool-name policy: a caller that applied
-// one at startup applies it to ServerRecovery.Tools, whose names are already
-// registered by the time this returns.
+// existing tool. Registration therefore stays serial, in config order, and only
+// the dialing parallelizes. The manager knows no tool-name policy: a caller that
+// applied one at startup applies it to ServerRecovery.Tools, whose names are
+// already registered by the time this returns.
 func (m *Manager) RetryFailed(ctx context.Context, reg *tool.Registry) ([]ServerRecovery, []ServerOutcome) {
 	if m == nil {
 		return nil, nil
 	}
-	var recovered []ServerRecovery
-	var outcomes []ServerOutcome
+	// Dial phase. Each goroutine writes its own index and wg.Wait establishes
+	// happens-before, so these slices need no mutex (the same shape NewManager
+	// uses for conns).
+	attempted := make([]bool, len(m.conns))
+	errs := make([]error, len(m.conns))
+	var wg sync.WaitGroup
 	for i := range m.conns {
 		if ctx.Err() != nil {
 			break
 		}
-		c := &m.conns[i]
-		attempted, err := c.connectIfRetryable(ctx, m.client)
-		if !attempted {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			attempted[i], errs[i] = m.conns[i].connectIfRetryable(ctx, m.client)
+		}(i)
+	}
+	wg.Wait()
+
+	// Register phase: serial and in config order, because registerConn enforces
+	// the collision rule against the shared registry.
+	var recovered []ServerRecovery
+	var outcomes []ServerOutcome
+	for i := range m.conns {
+		if !attempted[i] {
 			continue
 		}
-		if err != nil {
+		c := &m.conns[i]
+		if err := errs[i]; err != nil {
 			outcomes = append(outcomes, ServerOutcome{Name: c.name, Stage: "connect", Err: err})
 			continue
 		}
