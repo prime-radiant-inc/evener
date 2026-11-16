@@ -6,6 +6,7 @@ import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
 import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
+import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
 
@@ -618,7 +619,7 @@ async function nativePositioningInterruption(input) {
   const releasePoint = observation.releasePoint;
   const oldOffset = wantedReadingOffset(before, after);
   const oldTarget = Math.max(0, Math.min(after.scrollTop + after.offset - oldOffset, Math.max(0, after.scrollHeight - after.viewport)));
-  const retainedNewer = after.entry === releasePoint.entry && Math.abs(after.offset - releasePoint.offset) <= 2;
+  const retainedNewer = retainsNewerReadingPoint(releasePoint, after);
   observation.staleReplay = !retainedNewer && after.entry === before.entry && Math.abs(after.scrollTop - oldTarget) <= 2;
   observation.oldTarget = oldTarget;
   await capture(`${input}-interruption-released`);
