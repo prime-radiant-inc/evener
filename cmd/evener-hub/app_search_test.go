@@ -16,17 +16,17 @@ import (
 )
 
 // newSearchPastIndex builds a PastIndex for a test, in-memory or FTS-backed.
-type newSearchPastIndex func(projectsRoot, dbPath string) *hubcore.PastIndex
+type newSearchPastIndex func(t *testing.T, projectsRoot, dbPath string) *hubcore.PastIndex
 
 var searchPastIndexes = []struct {
 	name     string
 	newIndex newSearchPastIndex
 }{
-	{"memory", func(projectsRoot, _ string) *hubcore.PastIndex {
-		return hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	{"memory", func(t *testing.T, projectsRoot, _ string) *hubcore.PastIndex {
+		return closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(projectsRoot, "*")))
 	}},
-	{"fts", func(projectsRoot, dbPath string) *hubcore.PastIndex {
-		return hubcore.NewPastIndexWithDB(filepath.Join(projectsRoot, "*"), dbPath)
+	{"fts", func(t *testing.T, projectsRoot, dbPath string) *hubcore.PastIndex {
+		return closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(projectsRoot, "*"), dbPath))
 	}},
 }
 
@@ -52,7 +52,7 @@ func TestHubSearchBoundsThePastFetch(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			past := tc.newIndex(projectsRoot, filepath.Join(root, "index.db"))
+			past := tc.newIndex(t, projectsRoot, filepath.Join(root, "index.db"))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
@@ -104,11 +104,11 @@ func TestHubSearchFindsAScopedMatchPastThePageSize(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			past := tc.newIndex(projectsRoot, filepath.Join(root, "index.db"))
+			past := tc.newIndex(t, projectsRoot, filepath.Join(root, "index.db"))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
-			archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+			archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "index.db")))
 			if err := archive.Set("", "session", archivedID, true, now); err != nil {
 				t.Fatal(err)
 			}
@@ -160,7 +160,7 @@ func TestHubSearchLivePromptMatchUsesTheFTSRule(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndexWithDB(filepath.Join(projectsRoot, "*"), filepath.Join(root, "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(projectsRoot, "*"), filepath.Join(root, "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

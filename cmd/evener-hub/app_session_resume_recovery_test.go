@@ -22,7 +22,7 @@ func TestAutomaticResumePreservesRecoveryMutationError(t *testing.T) {
 			stateDir := filepath.Join(t.TempDir(), "recovery-0000000000")
 			sessionID := buildRPCParentSession(t, stateDir)
 			ref := localAppRef(sessionID)
-			past := hubcore.NewPastIndex(stateDir)
+			past := closeOnCleanup(t, hubcore.NewPastIndex(stateDir))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}

@@ -124,7 +124,7 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err != nil {
 		tb.Fatalf("bench fixture sidecar did not build: %v", err)
 	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := closeOnCleanup(tb, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 	if _, err := idx.Rebuild(); err != nil {
 		tb.Fatal(err)
 	}

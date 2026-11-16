@@ -84,7 +84,7 @@ func newEndedRenameFixture(t *testing.T, projectDir string) endedRenameFixture {
 	if err := schema.SaveSessionMeta(stateDir, original); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "before"}); err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndexWithDB(stateDir, filepath.Join(root, "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(stateDir, filepath.Join(root, "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
 // is the key navigation change hints use for that project's resources.
 func TestRenameEndedSessionHintsItsOwnProject(t *testing.T) {
 	fixture := newEndedRenameFixture(t, "project-x-0123456789")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(filepath.Dir(fixture.stateDir), "*"), filepath.Join(t.TempDir(), "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(filepath.Dir(fixture.stateDir), "*"), filepath.Join(t.TempDir(), "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

@@ -25,8 +25,8 @@ func newPinSubagentFixture(t *testing.T) pinSubagentFixture {
 	t.Helper()
 	now := timeNowForTest()
 	dir := t.TempDir()
-	pins := hubcore.NewPinSectionStore(filepath.Join(dir, "pins.db"))
-	favorites := hubcore.NewFavoriteStore(filepath.Join(dir, "favorites.db"))
+	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(dir, "pins.db")))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(dir, "favorites.db")))
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: pins, Favorite: favorites})
 	web.injectMetasForTest([]schema.SessionMeta{
 		{ID: "01ROOT", UpdatedAt: now},
@@ -111,7 +111,7 @@ func TestNavigationDropsFavoritesOnSubagents(t *testing.T) {
 
 func TestNavigationDropsPinOnLiveSubagentWithoutMeta(t *testing.T) {
 	now := timeNowForTest()
-	pins := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	web := NewWebServer(hubcore.WebConfig{
 		Past:        hubcore.NewPastIndex(""),
 		PinSections: pins,
@@ -168,7 +168,7 @@ func TestUnpinRemovesARemoteSubagentPin(t *testing.T) {
 	cache.Store([]appwire.Thread{
 		{ID: "th_sub", Source: "host-a", Evener: appwire.EvenerThread{Ref: "host-a:th_sub", Kind: "subagent", ParentRef: "host-a:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 	})
-	pins := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: pins, RemoteThreadCache: cache})
 	if _, _, err := pins.CreateOrReuseAndAssign("Research", "host-a", "th_sub", timeNowForTest()); err != nil {
 		t.Fatal(err)

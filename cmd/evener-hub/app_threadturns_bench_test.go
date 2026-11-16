@@ -70,7 +70,7 @@ func seedCompletedTurnsPastThread(tb testing.TB, rounds int) (hubcore.WebConfig,
 		tb.Fatal(err)
 	}
 	indexPastTranscriptForTest(tb, stateDir, sessionID)
-	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	index := closeOnCleanup(tb, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 	if _, err := index.Rebuild(); err != nil {
 		tb.Fatal(err)
 	}

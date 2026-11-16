@@ -28,7 +28,7 @@ import (
 )
 
 func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	var attentionPokes int
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:       store,
@@ -63,7 +63,7 @@ func TestHubArchiveSetAppWirePersistsSessionDecision(t *testing.T) {
 // committed decision and defer the receipt instead of failing: a 503 would
 // invite a retry of a mutation that already applied.
 func TestArchiveSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	var attentionPokes int
 	cfg := testWebConfig(t, hubcore.WebConfig{
 		Archive:       store,
@@ -158,7 +158,7 @@ func TestHubArchiveSetAppWireValidatesAndUnarchivesProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := hubcore.NewArchiveStore(filepath.Join(root, "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive: store,
 	}))
@@ -196,7 +196,7 @@ func TestHubArchiveSetAppWireRejectsProjectPathMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
-		Archive: hubcore.NewArchiveStore(filepath.Join(root, "archive.db")),
+		Archive: closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "archive.db"))),
 	}))
 
 	_, err = dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -302,7 +302,7 @@ func archiveTestHubWithTimeout(t *testing.T, entry rendezvous.Entry, prober forc
 	writeRendezvous(t, runDir, entry)
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	hub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
 		RunDir:            runDir,
 		Roster:            roster,
@@ -393,7 +393,7 @@ func TestArchiveSetNeverLengthensShorterConfiguredDeadline(t *testing.T) {
 // best-effort: a session with no resident daemon archives fine, because the
 // common archived session has nothing running to retarget.
 func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	hub, web := newHubRPCTestServerWithWeb(t, testWebConfig(t, hubcore.WebConfig{
 		Archive:           archive,
 		DaemonIdleTimeout: time.Hour,
@@ -414,7 +414,7 @@ func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
 func TestArchiveSetRemovesTheSessionsScratchTree(t *testing.T) {
 	tmp := testfs.CanonicalTempDir(t)
 	t.Setenv("TMPDIR", tmp)
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	sessionID := hubtest.SessionID(t)
 	projects := t.TempDir()
 	project, err := identifier.ResolveProject(t.TempDir())
@@ -487,7 +487,7 @@ func TestReconcileArchivedScratchFollowsEveryArchiveRule(t *testing.T) {
 		"archived project":    {project: other, updated: now},
 		"live and archived":   {project: project, updated: now, decision: new(true), live: true, keeps: true},
 	}
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	if err := archive.Set("", "project", other.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +541,7 @@ func TestArchiveSetKicksTheScratchReconcile(t *testing.T) {
 	}
 	kicks := 0
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
-		Archive:          hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")),
+		Archive:          closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))),
 		ScratchReconcile: func() { kicks++ },
 	}))
 	sessionID := hubtest.SessionID(t)
@@ -579,7 +579,7 @@ func TestReconcileFindsAnArchivedTreeInTheDaemonsTempDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -607,7 +607,7 @@ func TestScratchReconcilerRunServesAKick(t *testing.T) {
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
 	past := newRebuiltPastIndex(t, filepath.Join(projects, "*"))
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	if err := archive.Set("", "session", sessionID, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 			if _, ok := roster.Find(sessionID); !ok {
 				t.Fatalf("the daemon %q was not confirmed into the roster", sessionID)
 			}
-			archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+			archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 			if err := archive.Set("", "session", sessionID, archived, time.Now()); err != nil {
 				t.Fatal(err)
 			}
@@ -654,7 +654,7 @@ func TestDaemonExitRemovesOnlyAnArchivedSessionsScratchTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), sessionID, project.CanonicalPath, time.Now())
-			past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(projects, "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
@@ -943,7 +943,7 @@ func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
 // archive must not resolve it against the controller's filesystem. Each host's
 // decision is keyed by its own source, distinct from the controller key.
 func TestHubArchiveSetAppWireKeysNonLocalProjectBySource(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:          store,
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
@@ -992,7 +992,7 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 		}},
 	})
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
-		Archive:           hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")),
+		Archive:           closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))),
 		RemoteThreadCache: cache,
 		RemoteHosts:       []hostreg.Host{{Name: "host-a"}},
 		RemoteHostClient:  unusedRemoteHostClient,
@@ -1026,7 +1026,7 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 // would persist a successful but permanently inert decision row that no read
 // path addresses.
 func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:          store,
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
@@ -1078,7 +1078,7 @@ func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
 // no source, and no navigation row, can ever address. The same request against a
 // wired hub succeeds.
 func TestHubArchiveSetRejectsConfiguredHostWithoutRemoteClient(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
 	params := appwire.ArchiveParams{
 		Kind:     appwire.ArchiveTargetProject,
@@ -1111,7 +1111,7 @@ func TestHubArchiveSetRejectsConfiguredHostWithoutRemoteClient(t *testing.T) {
 // host-qualified ref, so a non-local source must be rejected instead of
 // silently writing an inert controller-key row.
 func TestHubArchiveSetAppWireRejectsSessionSource(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:     store,
 		RemoteHosts: []hostreg.Host{{Name: "host-a"}},
@@ -1134,7 +1134,7 @@ func TestHubArchiveSetAppWireRejectsSessionSource(t *testing.T) {
 // a client that sends the canonical ref neither misses the row nor splits the
 // decision into a second inert key.
 func TestHubArchiveSetAppWireNormalizesLocalSessionRef(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive: store,
 	}))
@@ -1198,7 +1198,7 @@ func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
 			Evener:      appwire.EvenerThread{Ref: "host-a:t1"},
 		}},
 	})
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{
 		Archive:           store,
 		RemoteThreadCache: cache,
@@ -1282,7 +1282,7 @@ func TestValidateDecisionSourcePrefersLiveRegistry(t *testing.T) {
 // rather than returning Unavailable after the write; with no navigation
 // surface there is also no rebuild to claim as deferred.
 func TestArchiveSetAcknowledgesAPersistedDecisionWithoutNavigation(t *testing.T) {
-	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	store := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	attentionPokes := 0
 	cfg := testWebConfig(t, hubcore.WebConfig{
 		Archive:       store,

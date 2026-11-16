@@ -71,7 +71,7 @@ func TestNavigationPreservesKnownFavoritesDuringOwnershipFailure(t *testing.T) {
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), SessionID: id, ThreadID: id, WorkingDir: t.TempDir()})
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: id, status: "idle"})
 	roster.Refresh()
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db")))
 	if err := favorites.Set("", "session", id, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}

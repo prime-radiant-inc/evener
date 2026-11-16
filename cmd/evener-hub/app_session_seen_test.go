@@ -12,7 +12,7 @@ import (
 
 func newSessionSeenWeb(t *testing.T) (*WebServer, *hubcore.SessionSeenStore) {
 	t.Helper()
-	store := hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "index.db")))
 	return NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), SessionSeen: store}), store
 }
 
@@ -172,7 +172,7 @@ func TestRunMainWiresNavigationInvalidationToArchiveAndFavorite(t *testing.T) {
 // handler must report the committed mark and defer the receipt instead of
 // failing a completed mutation.
 func TestSessionSeenSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
-	store := hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "index.db")))
 	navigation := newChurningNavigationService(t)
 	store.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{}) })
 	now := time.Unix(1_700_000_000, 0).UTC()

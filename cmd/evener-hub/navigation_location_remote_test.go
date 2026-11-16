@@ -66,7 +66,7 @@ func newRemoteLocationFixture(t *testing.T, entries ...hubcore.LiveEntry) *remot
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*"))
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(stateRoot, "projects", "*")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

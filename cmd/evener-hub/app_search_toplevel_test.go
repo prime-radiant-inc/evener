@@ -251,7 +251,7 @@ func TestHubSearchExcludesLiveSubagentFoldedInMidQuery(t *testing.T) {
 	}
 	// No Rebuild: the index starts stale, and the query's probes do the
 	// folding — exactly the first query after a hub restart.
-	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(projectsRoot, "*")))
 	roster := hubcore.NewRosterWithEntries(
 		hubcore.LiveEntry{PID: 1, SessionID: subID, WorkingDir: "/projects/alpha", Status: appwire.ThreadStatusActive},
 	)

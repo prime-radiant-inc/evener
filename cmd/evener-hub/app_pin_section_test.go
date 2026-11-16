@@ -22,7 +22,7 @@ func topLevelMeta(id string) schema.SessionMeta {
 func newPinNavigationAppWireWeb(t *testing.T, withSection bool) (*WebServer, *hubcore.PinSection) {
 	t.Helper()
 	past := hubcore.NewPastIndex("")
-	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	store := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store})
 	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a"), topLevelMeta("session-b")})
 	if _, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
@@ -104,7 +104,7 @@ func assertAppWirePinNoNavigation(t *testing.T, web *WebServer, mutation appwire
 func TestHubSessionPinAssignAndUnpinPreserveCanonicalIdempotentReceipts(t *testing.T) {
 	attentionCalls := 0
 	past := hubcore.NewPastIndex("")
-	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	store := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store, PokeAttention: func() { attentionCalls++ }})
 	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a"), topLevelMeta("session-b")})
 	if _, err := web.navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
@@ -195,7 +195,7 @@ func TestHubPinSectionRenameAndDeletePreserveCanonicalReceipts(t *testing.T) {
 }
 
 func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
-	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	store := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	dormant, _, err := store.CreateOrReuseAndAssign("Dormant", "", "02wMz5Txv1C3Hut0M8GCeB", time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestHubPinningRequiresConfiguredStore(t *testing.T) {
 // handler must report the committed pin and defer the receipt instead of
 // failing a completed mutation.
 func TestHubSessionPinAssignDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
-	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	store := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	navigation := newChurningNavigationService(t)
 	store.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{}) })
 	attentionPokes := 0

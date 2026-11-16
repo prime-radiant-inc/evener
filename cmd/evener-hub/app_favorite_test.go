@@ -45,7 +45,7 @@ func TestHubFavoriteSetPersistsProjectAndPublishesNavigation(t *testing.T) {
 	source.changeTitle("changed")
 
 	attentionCalls := 0
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db")))
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
 		Favorite: favorites,
 		PokeAttention: func() {
@@ -88,7 +88,7 @@ func TestHubFavoriteSetPersistsProjectAndPublishesNavigation(t *testing.T) {
 }
 
 func TestHubFavoriteSetRejectsObsoleteOrInvalidKinds(t *testing.T) {
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Favorite: hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))}, nil, nil, nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Favorite: closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db")))}, nil, nil, nil)
 	tests := []struct {
 		name   string
 		params appwire.FavoriteSetParams
@@ -126,7 +126,7 @@ func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
 // A non-local favorite source must name a configured host; an unknown source
 // would write a successful but permanently inert favorite row.
 func TestHubFavoriteSetRejectsUnknownSource(t *testing.T) {
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db")))
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
 		Favorite:         favorites,
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
@@ -160,7 +160,7 @@ func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
 	if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
 		t.Fatal(err)
 	}
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db")))
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
 		Favorite:         favorites,
 		RemoteHosts:      []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
@@ -209,7 +209,7 @@ func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
 // completed mutation.
 func TestHubFavoriteSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) {
 	navigation := newChurningNavigationService(t)
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db")))
 	favorites.SetOnChange(func() { navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	attentionPokes := 0
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
@@ -241,7 +241,7 @@ func TestHubFavoriteSetDefersNavigationReceiptWhenRefreshTimesOut(t *testing.T) 
 // not a deferral: the handler logs it once and reports it, while leaving the
 // favorite decision durable.
 func TestHubFavoriteSetReportsAPermanentNavigationFailureOnce(t *testing.T) {
-	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	favorites := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db")))
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	navigation := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
 		cfg.Generation = func() (string, error) { return "", errors.New("entropy unavailable") }

@@ -44,7 +44,7 @@ func TestProjectDeleteRejectsRecomputedIDMismatchAndNoProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	for name, params := range map[string]appwire.ProjectDeleteParams{
 		"mismatch":   {Key: project.ID, WorkingDir: filepath.Join(root, "other")},
@@ -78,12 +78,12 @@ func TestProjectDeleteRefusesNonLocalSource(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	seedProjectDeleteDecisions(t, archive, hubcore.NewFavoriteStore(dbPath), project.ID, webTestSessionID)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	seedProjectDeleteDecisions(t, archive, closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath)), project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{
 		Past:             past,
 		Roster:           hubcore.NewRosterWithEntries(),
@@ -166,12 +166,12 @@ func TestProjectDeleteRefusesBareDeleteOfMergedProject(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	seedProjectDeleteDecisions(t, archive, hubcore.NewFavoriteStore(dbPath), project.ID, webTestSessionID)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	seedProjectDeleteDecisions(t, archive, closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath)), project.ID, webTestSessionID)
 	// The same canonical ID and path on a host: the tree reports the project as
 	// owned by "" (this hub) and host-a, which is the state the rail renders as
 	// project.sources.
@@ -312,11 +312,11 @@ func TestProjectDeleteRemovesPinsOnlyForDeletedSessions(t *testing.T) {
 	writeSession(t, stateDir, deletedID, project.CanonicalPath)
 	writeSession(t, stateDir, skippedID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	pins := hubcore.NewPinSectionStore(dbPath)
+	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(dbPath))
 	section, _, err := pins.CreateOrReuseAndAssign("Research", "", deletedID, timeNowForTest())
 	if err != nil {
 		t.Fatal(err)
@@ -364,11 +364,11 @@ func TestProjectDeleteReportsPinStoreCleanupError(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	pins := hubcore.NewPinSectionStore(dbPath)
+	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(dbPath))
 	if _, _, err := pins.CreateOrReuseAndAssign("Research", "", webTestSessionID, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
@@ -449,10 +449,10 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	_, _ = past.Rebuild()
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	if err := archive.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
@@ -631,10 +631,10 @@ func TestProjectDeleteRejectsKeyWorkingDirMismatch(t *testing.T) {
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	_, _ = past.Rebuild()
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 	_, err = dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: wrongDir})
@@ -661,10 +661,10 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	_, _ = past.Rebuild()
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: webTestSessionID, Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: roster})
@@ -709,12 +709,12 @@ func TestProjectDeleteRemovesCrashedSessionAndStaleRendezvous(t *testing.T) {
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 
 	runDir := filepath.Join(root, "run")
@@ -903,12 +903,12 @@ func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
@@ -952,12 +952,12 @@ func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
@@ -1073,10 +1073,10 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	_, _ = past.Rebuild()
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
@@ -1411,7 +1411,7 @@ func TestProjectDeleteDeletionStateResumesEveryCleanupArtifact(t *testing.T) {
 				ThreadID:  webTestSessionID,
 				SessionID: webTestSessionID,
 			})
-			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
@@ -1499,7 +1499,7 @@ func TestProjectDeleteDeletionStateResumesEveryCleanupArtifact(t *testing.T) {
 			}
 
 			failStep = false
-			restoredPast := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			restoredPast := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := restoredPast.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
@@ -1534,12 +1534,12 @@ func TestProjectDeletePreservesDecisionsWhenSessionDirectoryRemovalFails(t *test
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
@@ -1579,12 +1579,12 @@ func TestProjectDeletePreservesDecisionsWhenAPILogRemovalFails(t *testing.T) {
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 
@@ -1640,12 +1640,12 @@ func TestProjectDeleteRetainsSkippedDecisionsAndRemovesOnlyDeletedDecisions(t *t
 	writeSession(t, stateDir, deletedID, project.CanonicalPath)
 	writeSession(t, stateDir, skippedID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, deletedID, skippedID)
 	if err := archive.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
@@ -1710,12 +1710,12 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
 	favorite.SetFs(failingMkdirAllFS{Fs: afero.NewOsFs(), err: errors.New("favorite delete setup failure")})
 	pokes := 0
@@ -1786,12 +1786,12 @@ func TestProjectDeleteDoesNotScrubProjectRowsWhenPastIndexNoLongerHasTheSessions
 	sessionID := projectDeleteCanonicalSessionIDs[0]
 	writeSession(t, stateDir, sessionID, project.CanonicalPath)
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, sessionID)
 	if err := archive.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
@@ -1863,7 +1863,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -1959,7 +1959,7 @@ func TestDeletionPreservesSuccessWhenPostCleanupRosterScanFails(t *testing.T) {
 			stateDir := filepath.Join(root, "projects", project.ID)
 			id := projectDeleteCanonicalSessionIDs[0]
 			writeSession(t, stateDir, id, project.CanonicalPath)
-			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}

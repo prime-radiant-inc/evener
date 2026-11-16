@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -154,6 +156,81 @@ func TestKeeperHandleSwapDoesNotCloseAHandleInUse(t *testing.T) {
 	}
 }
 
+// TestKeeperHandleDoesNotCacheAFileReplacedDuringOpen pins the ordering hazard:
+// if the identity is taken only after the connect, a replacement landing in
+// between is recorded as the identity of a pool still connected to the
+// predecessor. Every later check then passes, and the handle keeps reading a
+// file nothing writes any more until something closes the store.
+func TestKeeperHandleDoesNotCacheAFileReplacedDuringOpen(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "index.db")
+	seed := closeOnCleanup(t, NewArchiveStore(dbPath))
+	now := time.Unix(1_700_000_000, 0)
+	if err := seed.Set("", "session", "in-predecessor", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var handle keeperHandle
+	t.Cleanup(func() { _ = handle.close() })
+	fsys := afero.NewOsFs()
+	opens := 0
+	open := func() (*sql.DB, error) {
+		opens++
+		db, err := sql.Open("sqlite", sqliteDSN(dbPath))
+		if err != nil {
+			return nil, err
+		}
+		// Force the connect now, then replace the file, so the pool below is
+		// on the predecessor while the path names the successor.
+		if err := db.Ping(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if opens == 1 {
+			// Replace the file with a different inode while the pool above is
+			// connected to the predecessor. Deleting alone would leave the path
+			// unstatable, which the handle already declines to cache.
+			if err := os.Remove(dbPath); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			replacement, err := sql.Open("sqlite", sqliteDSN(dbPath))
+			if err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+			if _, err := replacement.Exec(createArchiveTable); err != nil {
+				_ = replacement.Close()
+				_ = db.Close()
+				return nil, err
+			}
+			if err := replacement.Close(); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+		}
+		return db, nil
+	}
+
+	first, err := handle.get(dbPath, fsys, open)
+	if err != nil {
+		t.Fatalf("first get = %v", err)
+	}
+	second, err := handle.get(dbPath, fsys, open)
+	if err != nil {
+		t.Fatalf("second get = %v", err)
+	}
+	if first == second {
+		t.Fatal("the second get reused the pool opened across the replacement: its identity was cached against a file it is not connected to")
+	}
+	if _, err := first.Exec(`SELECT 1`); err != nil {
+		t.Fatalf("the retired pool was closed while a caller may hold it: %v", err)
+	}
+}
+
 // TestKeeperHandleCloseReleasesRetiredHandles pins that the pools a swap
 // retires are released on Close. database/sql keeps no finalizer, so a retired
 // pool that is never closed holds its opener goroutine and its connections for
@@ -184,6 +261,9 @@ func TestKeeperHandleCloseReleasesRetiredHandles(t *testing.T) {
 	if len(retired) == 0 {
 		t.Fatal("the replacement retired no handle: the rest of this test would prove nothing")
 	}
+	if store.handle.db != nil && store.handle.db == retired[0] {
+		t.Fatal("the replaced handle is still the current one")
+	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close = %v", err)
 	}
@@ -191,6 +271,12 @@ func TestKeeperHandleCloseReleasesRetiredHandles(t *testing.T) {
 		if err := db.Ping(); err == nil {
 			t.Fatalf("retired handle %d is still open after Close: retired pools accumulate for the process lifetime", i)
 		}
+	}
+	if store.handle.db != nil {
+		t.Fatal("Close left a handle in the field")
+	}
+	if len(store.handle.retired) != 0 {
+		t.Fatalf("Close left %d retired handles in the field", len(store.handle.retired))
 	}
 }
 

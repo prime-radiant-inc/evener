@@ -18,7 +18,7 @@ import (
 // source-qualified pin key can keep the three apart.
 func newSharedBareIDPinWeb(t *testing.T) (*WebServer, *hubcore.PinSectionStore) {
 	t.Helper()
-	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	store := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	cache := &hubcore.RemoteThreadCache{}
 	cache.Store([]appwire.Thread{
 		{ID: "th_1", Source: "host-a", Evener: appwire.EvenerThread{Ref: "host-a:th_1"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},

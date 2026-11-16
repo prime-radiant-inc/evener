@@ -224,7 +224,7 @@ func runDocumentFileLinksBrowser(t *testing.T, runner string) {
 			t.Fatal(err)
 		}
 	}
-	web.cfg.Past = hubcore.NewPastIndex(filepath.Join(metadataRoot, "projects", "*"))
+	web.cfg.Past = closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(metadataRoot, "projects", "*")))
 	if _, err := web.cfg.Past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

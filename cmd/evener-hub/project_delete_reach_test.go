@@ -77,13 +77,13 @@ func newReachFixture(t *testing.T) reachFixture {
 	subagent(f.stateB, f.childB, f.rootB, f.b.CanonicalPath)
 
 	f.dbPath = filepath.Join(f.root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(f.root, "projects", "*"), f.dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(f.root, "projects", "*"), f.dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	f.archive = hubcore.NewArchiveStore(f.dbPath)
-	f.favorite = hubcore.NewFavoriteStore(f.dbPath)
-	f.pins = hubcore.NewPinSectionStore(f.dbPath)
+	f.archive = closeOnCleanup(t, hubcore.NewArchiveStore(f.dbPath))
+	f.favorite = closeOnCleanup(t, hubcore.NewFavoriteStore(f.dbPath))
+	f.pins = closeOnCleanup(t, hubcore.NewPinSectionStore(f.dbPath))
 	f.web = NewWebServer(hubcore.WebConfig{
 		HubStateRoot: f.root, StateDir: f.root, Past: past, Archive: f.archive,
 		Favorite: f.favorite, PinSections: f.pins, Roster: hubcore.NewRosterWithEntries(),

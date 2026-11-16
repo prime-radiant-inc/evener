@@ -42,7 +42,7 @@ func TestManagerLegacySavedSessionRemainsOrdinary(t *testing.T) {
 	stateDir := filepath.Join(root, "legacy-0123456789")
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
 	writeSession(t, stateDir, id, root)
-	past := hubcore.NewPastIndex(stateDir)
+	past := closeOnCleanup(t, hubcore.NewPastIndex(stateDir))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
