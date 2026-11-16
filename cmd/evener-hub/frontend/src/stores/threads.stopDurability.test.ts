@@ -21,6 +21,7 @@ import { SessionEntryCache } from "./sessionEntryCache";
 import { blockedUpgradeRequest, wedgeDatabaseOpens } from "./testing/stalledIndexedDB";
 import {
   installHydrationRetrySchedulerForTests,
+  installMutationBroadcastChannelForTests,
   notifyReadyForMutationDispatch,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -633,95 +634,115 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
   // ref afterward, and a bounded-history reload that drops the delivery item
   // would resurrect the duplicate row for good.
   test("a refused promote landing after its entry's delivery settles immediately", async () => {
-    const { storage, fake } = await hydratedFallbackTarget({
-      indexedDB: new IDBFactory(),
-      databaseName: "evener-mutation-outbox-promote-delivery-order",
-    });
-    // The model a storage-change hook reads: the drain's recorded item
-    // carries the consumed entry's lineage, and the queue is empty (the
-    // entry is gone - delivered).
-    fake.on("thread/read", (params) =>
-      readResponse(params.ref ?? "ref_a", {
-        turns: [
-          {
-            id: "turn_1",
-            status: "completed",
-            itemsView: "full",
-            items: [
-              {
-                id: "item_1",
-                turnId: "turn_1",
-                type: "userMessage",
-                text: "queued message",
-                status: "completed",
-                clientMutationId: "drain_consumer",
-                conversationInputIds: ["client:queue_source"],
-              },
-            ],
-          },
-        ],
-        evener: {
-          ref: params.ref ?? "ref_a",
-          capabilities: CAPABILITIES,
-          queue: { revision: 8, depth: 0, ids: [] },
-          activeTurnId: "turn_1",
+    const wakeups: string[] = [];
+    const uninstallChannel = installMutationBroadcastChannelForTests(() => {
+      const channel = new EventTarget();
+      return Object.assign(channel, {
+        postMessage(message: unknown) {
+          const wakeup = message as { version?: number; targetRef?: string };
+          if (wakeup.version === 1 && typeof wakeup.targetRef === "string") wakeups.push(wakeup.targetRef);
         },
-      }),
-    );
-    await threadsStore.getState().refreshThread("ref_a");
-    // Establish the ordering: the tracked model must hold the delivery
-    // evidence BEFORE the press, or the test proves nothing about the
-    // refusal-after-delivery sequence.
-    await flushIndexedDBUntil(() => {
-      const model = threadsStore.getState().threads.get("ref_a");
-      const recorded = model?.turns.some((turn) =>
-        turn.items.some((item) => item.conversationInputIds?.includes("client:queue_source")),
-      );
-      return recorded === true;
-    });
-    await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
-    // The press: Steer-now on the (already delivered) entry. The daemon
-    // rejects the promote with its journaled conflict - the exact refusal of
-    // the live report - and the dispatcher moves the record to recovery.
-    fake.on("turn/promoteQueuedAsSteer", (params) => {
-      throw new WireError("promote: queue index 0 out of range (depth 0)", -32011, {
-        clientMutationId: params.clientMutationId,
-        mutationOutcome: "notAccepted",
-        retryDisposition: "none",
-        cause: "journaledRejection",
+        close() {},
       });
     });
-    // The transfer is the recovery's creation moment, and the settle this
-    // test proves can retire the row inside the same dispatch cycle - a
-    // later read may legitimately never observe the transient recovery row.
-    // Record the transfer BEFORE the press so the whole dispatch-refusal
-    // cycle is captured, not polled for after the fact.
-    const transfers: string[] = [];
-    const realTransfer = storage.transferToRecovery.bind(storage);
-    storage.transferToRecovery = async (clientMutationId, ...rest) => {
-      const transferred = await realTransfer(clientMutationId, ...rest);
-      if (transferred) transfers.push(clientMutationId);
-      return transferred;
-    };
-    await threadsStore
-      .getState()
-      .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "queued message" }, "queue_source");
-    // The press's durable row exists before the rejection; await its
-    // settlement so the assertion observes the transfer, not a store that
-    // has not run it yet.
-    await flushUntilArrived("the refused promote's outbox row to dispatch", async () => {
-      const outbox = await storage.listOutbox("ref_a");
-      return outbox.length === 0;
-    });
-    await flushUntilArrived("the refused promote's recovery to settle", async () => {
-      const recoveries = await storage.listRecovery("ref_a");
-      return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
-    });
-    expect(transfers.length).toBe(1);
-    expect(
-      (await storage.listRecovery("ref_a")).filter((record) => record.method === "turn/promoteQueuedAsSteer"),
-    ).toEqual([]);
-    storage.close();
+    try {
+      const { storage, fake } = await hydratedFallbackTarget({
+        indexedDB: new IDBFactory(),
+        databaseName: "evener-mutation-outbox-promote-delivery-order",
+      });
+      // The model a storage-change hook reads: the drain's recorded item
+      // carries the consumed entry's lineage, and the queue is empty (the
+      // entry is gone - delivered).
+      fake.on("thread/read", (params) =>
+        readResponse(params.ref ?? "ref_a", {
+          turns: [
+            {
+              id: "turn_1",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                {
+                  id: "item_1",
+                  turnId: "turn_1",
+                  type: "userMessage",
+                  text: "queued message",
+                  status: "completed",
+                  clientMutationId: "drain_consumer",
+                  conversationInputIds: ["client:queue_source"],
+                },
+              ],
+            },
+          ],
+          evener: {
+            ref: params.ref ?? "ref_a",
+            capabilities: CAPABILITIES,
+            queue: { revision: 8, depth: 0, ids: [] },
+            activeTurnId: "turn_1",
+          },
+        }),
+      );
+      await threadsStore.getState().refreshThread("ref_a");
+      // Establish the ordering: the tracked model must hold the delivery
+      // evidence BEFORE the press, or the test proves nothing about the
+      // refusal-after-delivery sequence.
+      await flushIndexedDBUntil(() => {
+        const model = threadsStore.getState().threads.get("ref_a");
+        const recorded = model?.turns.some((turn) =>
+          turn.items.some((item) => item.conversationInputIds?.includes("client:queue_source")),
+        );
+        return recorded === true;
+      });
+      await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
+      // The press: Steer-now on the (already delivered) entry. The daemon
+      // rejects the promote with its journaled conflict - the exact refusal of
+      // the live report - and the dispatcher moves the record to recovery.
+      fake.on("turn/promoteQueuedAsSteer", (params) => {
+        throw new WireError("promote: queue index 0 out of range (depth 0)", -32011, {
+          clientMutationId: params.clientMutationId,
+          mutationOutcome: "notAccepted",
+          retryDisposition: "none",
+          cause: "journaledRejection",
+        });
+      });
+      // The transfer is the recovery's creation moment, and the settle this
+      // test proves can retire the row inside the same dispatch cycle - a
+      // later read may legitimately never observe the transient recovery row.
+      // Record the transfer BEFORE the press so the whole dispatch-refusal
+      // cycle is captured, not polled for after the fact.
+      const transfers: string[] = [];
+      const realTransfer = storage.transferToRecovery.bind(storage);
+      storage.transferToRecovery = async (clientMutationId, ...rest) => {
+        const transferred = await realTransfer(clientMutationId, ...rest);
+        if (transferred) transfers.push(clientMutationId);
+        return transferred;
+      };
+      await threadsStore
+        .getState()
+        .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "queued message" }, "queue_source");
+      // The press's durable row exists before the rejection; await its
+      // settlement so the assertion observes the transfer, not a store that
+      // has not run it yet.
+      await flushUntilArrived("the refused promote's outbox row to dispatch", async () => {
+        const outbox = await storage.listOutbox("ref_a");
+        return outbox.length === 0;
+      });
+      await flushUntilArrived("the refused promote's recovery to settle", async () => {
+        const recoveries = await storage.listRecovery("ref_a");
+        return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+      });
+      expect(transfers.length).toBe(1);
+      expect(
+        (await storage.listRecovery("ref_a")).filter((record) => record.method === "turn/promoteQueuedAsSteer"),
+      ).toEqual([]);
+      // Two broadcasts name the ref: the press's enqueue announce, and the
+      // storage-change hook settle that retired the recovery (the same wake a
+      // sibling tab needs to drop its stale row). One entry means the retire
+      // never announced.
+      expect(wakeups).toEqual(["ref_a", "ref_a"]);
+      storage.close();
+    } finally {
+      uninstallChannel();
+    }
   });
 
   // The live-frame settle (roborev round 6, finding 2): a foreign consumer's
@@ -815,6 +836,95 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     unsubscribePersistence();
     expect(persistedRefs.some((refs) => refs.includes("ref_a"))).toBe(true);
     storage.close();
+  });
+
+  // The cross-tab half of the settle (issue #6520): the tab that retires the
+  // recovery refreshed its own projection through notifyMutationPersistence,
+  // but sibling tabs cache the stale row with nothing local to clear it. The
+  // retire must also announce on the outbox's broadcast channel, so the
+  // siblings' discovery re-projects and drops the stale row.
+  test("a settle that retires the refused promote broadcasts the cross-tab wakeup", async () => {
+    const wakeups: Array<{ version: number; targetRef: string }> = [];
+    const uninstallChannel = installMutationBroadcastChannelForTests(() => {
+      const channel = new EventTarget();
+      return Object.assign(channel, {
+        postMessage(message: unknown) {
+          const wakeup = message as { version?: number; targetRef?: string };
+          if (wakeup.version === 1 && typeof wakeup.targetRef === "string") {
+            wakeups.push({ version: wakeup.version, targetRef: wakeup.targetRef });
+          }
+        },
+        close() {},
+      });
+    });
+    try {
+      const { storage, fake } = await hydratedFallbackTarget({
+        indexedDB: new IDBFactory(),
+        databaseName: "evener-mutation-outbox-promote-cross-tab-wakeup",
+      });
+      const staleRead = () =>
+        readResponse("ref_a", {
+          turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+          evener: {
+            ref: "ref_a",
+            capabilities: CAPABILITIES,
+            queue: { revision: 8, depth: 0, ids: [] },
+          },
+        });
+      fake.on("thread/read", () => staleRead());
+      await threadsStore.getState().refreshThread("ref_a");
+      await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
+      fake.on("turn/promoteQueuedAsSteer", (params) => {
+        throw new WireError("promote: queue index 0 out of range (depth 0)", -32011, {
+          clientMutationId: params.clientMutationId,
+          mutationOutcome: "notAccepted",
+          retryDisposition: "none",
+          cause: "journaledRejection",
+        });
+      });
+      await threadsStore
+        .getState()
+        .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "queued message" }, "queue_source");
+      await flushUntilArrived("the refused promote's outbox row to dispatch", async () => {
+        const outbox = await storage.listOutbox("ref_a");
+        return outbox.length === 0;
+      });
+      await flushUntilArrived("the refused promote's recovery to exist", async () => {
+        const recoveries = await storage.listRecovery("ref_a");
+        return recoveries.some((record) => record.method === "turn/promoteQueuedAsSteer");
+      });
+      // The press's own enqueue already announced this ref; the retire owes
+      // its OWN broadcast, so count from the settle moment onward.
+      wakeups.length = 0;
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "ref_a",
+          threadId: "thr_ref_a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [
+            {
+              id: "item_delivered",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "queued message",
+              status: "completed",
+              clientMutationId: "queue_source",
+            },
+          ],
+        },
+      } as Parameters<typeof fake.emitNotification>[0]);
+      await flushUntilArrived("the refused promote's recovery to settle from the frame", async () => {
+        const recoveries = await storage.listRecovery("ref_a");
+        return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+      });
+      expect(wakeups).toContainEqual({ version: 1, targetRef: "ref_a" });
+      storage.close();
+    } finally {
+      uninstallChannel();
+    }
   });
 
   // A source that is still QUEUED is not delivered (roborev round 7): the

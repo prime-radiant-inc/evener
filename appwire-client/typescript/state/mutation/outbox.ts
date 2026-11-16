@@ -390,6 +390,21 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
   }
 
+  // Wake sibling tabs into discovery for work this tab already settled locally:
+  // a retire deletes shared rows (a recovery this tab will never re-project),
+  // and only the siblings still cache the stale projection. Best effort, like
+  // a commit's announce: a sibling that is not ready drops the wake, and the
+  // row's deletion means no storage scan re-names the ref afterwards, so the
+  // sibling's own reconnect re-read or pane remount is what clears the row.
+  announceCrossTabWork(targetRef: string): void {
+    tryOrUndefined(() =>
+      this.#channel?.postMessage({
+        version: 1,
+        targetRef,
+      } satisfies MutationOutboxWakeup),
+    );
+  }
+
   async connectionReady(): Promise<void> {
     if (!this.#mayDiscover("ready")) return;
     try {
