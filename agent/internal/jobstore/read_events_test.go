@@ -185,13 +185,14 @@ func TestScanEvents_WithinLimitsDecodesNormally(t *testing.T) {
 // Not parallel: overrides the scan open seam.
 func TestScanEventsFromLargeBufferReadsFewTimes(t *testing.T) {
 	origOpen := openScanEventsFile
-	var reads int
+	var counting *agenttest.CountingReadSeekCloser
 	openScanEventsFile = func(path string) (io.ReadSeekCloser, error) {
 		file, err := origOpen(path)
 		if err != nil {
 			return nil, err
 		}
-		return &countingScanFile{ReadSeekCloser: file, reads: &reads}, nil
+		counting = &agenttest.CountingReadSeekCloser{ReadSeekCloser: file}
+		return counting, nil
 	}
 	t.Cleanup(func() { openScanEventsFile = origOpen })
 
@@ -217,21 +218,12 @@ func TestScanEventsFromLargeBufferReadsFewTimes(t *testing.T) {
 	// The slack covers the EOF probe that ends every scan plus at most one
 	// fill stranded by a line boundary; a 4 KiB regression still pays
 	// dozens of reads over this bound.
-	if reads > wantReads+2 {
-		t.Fatalf("scan read the %d byte journal with %d underlying reads; a 64 KiB buffer pays about %d", info.Size(), reads, wantReads)
+	if counting == nil {
+		t.Fatal("scan open seam was never called, so no read could be counted")
 	}
-}
-
-// countingScanFile counts the underlying reads a scan issues, so a test can
-// pin a buffer's read granularity without timing anything.
-type countingScanFile struct {
-	io.ReadSeekCloser
-	reads *int
-}
-
-func (c *countingScanFile) Read(p []byte) (int, error) {
-	*c.reads++
-	return c.ReadSeekCloser.Read(p)
+	if counting.Reads > wantReads+2 {
+		t.Fatalf("scan read the %d byte journal with %d underlying reads; a 64 KiB buffer pays about %d", info.Size(), counting.Reads, wantReads)
+	}
 }
 
 func TestScanEvents_Missing(t *testing.T) {
