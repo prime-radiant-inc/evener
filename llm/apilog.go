@@ -74,6 +74,14 @@ type APILogger struct {
 	sessionsDir   string
 	sessionFiles  map[string]*os.File
 	quarantineErr error
+	// unsyncedFiles holds the open files with bytes written but not yet
+	// fsynced. An append that does not sync marks its file dirty; the next
+	// boundary — the group's settlement record, or Close — syncs it. Under the
+	// durability ruling a power crash may lose this tail; the bytes the OS
+	// holds still survive the process dying, so the loss is bounded by the
+	// window between an attempt record and its settlement, not by the process
+	// lifetime.
+	unsyncedFiles map[*os.File]struct{}
 	// discardRecords is the ownership-only mode: appends admitted through the
 	// sink are dropped instead of persisted. The middleware, group binding, and
 	// per-session locks all keep working, so attempt identity and turn protocol
@@ -210,7 +218,12 @@ func (l *APILogger) ReleaseSession(sessionID string) error {
 	if f == nil {
 		return nil
 	}
-	return apiLogFileClose(f)
+	// Releasing a session is a batch boundary for its file: sync what the
+	// appends left dirty, then close. Without this an orderly release would
+	// lose the tail the durability ruling lets only a crash lose.
+	syncErr := l.syncFileLocked(f)
+	closeErr := apiLogFileClose(f)
+	return errors.Join(syncErr, closeErr)
 }
 
 func ensurePrivateAPILogDirectory(path string) error {
@@ -356,7 +369,7 @@ func (l *APILogger) AppendAttempt(ctx context.Context, rec apilog.APIAttemptReco
 		Operation: "append_attempt", SessionID: apiLogSessionID(ctx),
 		AttemptGroupID: rec.AttemptGroupID, AttemptID: rec.AttemptID,
 	}
-	if err := l.appendCanonicalRecord(ctx, rec, failure); err != nil {
+	if err := l.appendCanonicalRecord(ctx, rec, failure, false); err != nil {
 		failure.Err = err
 		return l.observeClosedAppend(ctx, failure)
 	}
@@ -368,7 +381,10 @@ func (l *APILogger) AppendSettlement(ctx context.Context, rec apilog.APIAttemptG
 	failure := APILogFailure{
 		Operation: "append_settlement", SessionID: apiLogSessionID(ctx), AttemptGroupID: rec.AttemptGroupID,
 	}
-	if err := l.appendCanonicalRecord(ctx, rec, failure); err != nil {
+	// syncNow makes the settlement the group's durability boundary: it syncs
+	// the file, carrying along the attempt records written since the previous
+	// settlement. One barrier per logical request instead of one per record.
+	if err := l.appendCanonicalRecord(ctx, rec, failure, true); err != nil {
 		failure.Err = err
 		return l.observeClosedAppend(ctx, failure)
 	}
@@ -405,7 +421,10 @@ func (l *APILogger) observeClosedAppend(ctx context.Context, failure APILogFailu
 	return markAPILogErrorObserved(failure.Err)
 }
 
-func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.APILogRecord, failure APILogFailure) error {
+// appendCanonicalRecord writes one record. syncNow makes the append a batch
+// boundary: the write and its fsync happen under one hold of the lock, so no
+// release can close the file between them.
+func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.APILogRecord, failure APILogFailure, syncNow bool) error {
 	if l.discardRecords {
 		// Ownership-only mode: nothing reaches storage, so nothing is admitted,
 		// opened, or written. Returning before admission keeps Close/Release
@@ -461,10 +480,25 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.API
 		observation = &observedFailure
 		return appendErr
 	}
-	if err := apiLogFileSync(f); err != nil {
-		observedFailure, appendErr := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("sync API-log record: %w", err))
-		observation = &observedFailure
-		return appendErr
+	// The record is now in the OS's hands: the write completed, so the bytes
+	// survive this process dying. An attempt record stops here and leaves the
+	// file dirty, so its fsync rides the group's settlement or Close. A power
+	// crash can lose that tail; the frames already on disk stay a valid prefix,
+	// which is the no-corruption half the durability ruling protects.
+	if l.unsyncedFiles == nil {
+		l.unsyncedFiles = make(map[*os.File]struct{})
+	}
+	l.unsyncedFiles[f] = struct{}{}
+	if syncNow {
+		// The settlement boundary: one barrier carries every attempt written
+		// since the previous settlement, so a logical request costs one fsync
+		// rather than one per record. Under the same hold of the lock, so no
+		// release can close f between the write and this sync.
+		if err := l.syncFileLocked(f); err != nil {
+			observedFailure, appendErr := l.quarantineCanonicalAppendLocked(ctx, failure, err)
+			observation = &observedFailure
+			return appendErr
+		}
 	}
 	l.mu.Unlock()
 	return nil
@@ -489,6 +523,28 @@ func (l *APILogger) admitCanonicalAppend() error {
 	return nil
 }
 
+// syncFileLocked fsyncs f when an append has left it dirty, and clears the
+// marker. It is the batch boundary every orderly shutdown reaches: Close for
+// each open file, ReleaseSession for the file it hands back. A file with
+// nothing unsynced costs no barrier, which is why a second Close or a
+// session released twice stays free.
+func (l *APILogger) syncFileLocked(f *os.File) error {
+	if f == nil {
+		return nil
+	}
+	if _, dirty := l.unsyncedFiles[f]; !dirty {
+		return nil
+	}
+	// Clear the marker before syncing. The entry is keyed by pointer, so a
+	// closed file's address could otherwise come back as a different, clean
+	// file that inherits the stale dirty state.
+	delete(l.unsyncedFiles, f)
+	if err := apiLogFileSync(f); err != nil {
+		return fmt.Errorf("sync API-log record: %w", err)
+	}
+	return nil
+}
+
 // Close stops new appends, waits for admitted appends, and closes every
 // canonical API-log file owned by the logger.
 func (l *APILogger) Close() error {
@@ -499,10 +555,19 @@ func (l *APILogger) Close() error {
 
 	l.mu.Lock()
 	firstErr := l.quarantineErr
+	// The batch boundary: every file an append marked dirty is fsynced once
+	// here, so an orderly shutdown loses nothing while a crash between appends
+	// can lose only the tail.
+	syncFile := func(f *os.File) {
+		if err := l.syncFileLocked(f); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	closeFile := func(f *os.File) {
 		if f == nil {
 			return
 		}
+		syncFile(f)
 		if err := apiLogFileClose(f); err != nil && firstErr == nil {
 			firstErr = err
 		}
