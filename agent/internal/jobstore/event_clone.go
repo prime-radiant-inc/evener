@@ -81,6 +81,7 @@ func cloneCausal(p *provenance.Causal) *provenance.Causal {
 	out := *p
 	out.WatchKeys = cloneSlice(p.WatchKeys)
 	out.Chain = cloneSlice(p.Chain)
+	out.FireKeys = cloneSlice(p.FireKeys)
 	return &out
 }
 
