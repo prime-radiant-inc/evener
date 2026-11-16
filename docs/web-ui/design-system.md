@@ -147,8 +147,12 @@ losing the conversation that made the evidence relevant.
   transcript resting at its end stays there through the fold. The fold runs
   after a completed click outside the card, never at the press: the card is in
   flow, so folding mid-press would move the pressed control out from under the
-  pointer and swallow its click. A press that never becomes a click — selecting
-  text, dragging a scroll — leaves the card as it was. A phone's
+  pointer and swallow its click. The listener reads that click in the capture
+  phase, because a transcript control may consume its own click with
+  `stopPropagation`, and folds on the task after it, so the card's height
+  change cannot land under the control's own handlers. A press that never
+  becomes a click — selecting text, dragging a scroll — leaves the card as it
+  was. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
   picker. A desktop card under 620px keeps the stacked control row and the folded

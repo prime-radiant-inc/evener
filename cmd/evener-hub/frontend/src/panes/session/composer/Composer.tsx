@@ -412,6 +412,22 @@ function ComposerWithSubmission({
     // A click only fires when press and release share a target, so a drag or a
     // cancelled press leaves the composer alone (Jesse's ruling: fold only
     // ever on a click).
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+    let foldTimer: ReturnType<typeof setTimeout> | null = null;
+    // Bumped by every press that can end a hold (pointerdown, pointercancel,
+    // and the release timer), so a deferred fold can tell that its own press
+    // was superseded and drop out.
+    let outsidePressSeq = 0;
+    function cancelRelease(): void {
+      if (releaseTimer === null) return;
+      clearTimeout(releaseTimer);
+      releaseTimer = null;
+    }
+    function cancelFold(): void {
+      if (foldTimer === null) return;
+      clearTimeout(foldTimer);
+      foldTimer = null;
+    }
     const onPointerDown = (event: PointerEvent) => {
       const anchor = formAnchorRef.current;
       const root = composerRootRef.current;
@@ -425,61 +441,74 @@ function ComposerWithSubmission({
       // at the click, where it has settled.
       cancelRelease();
       outsidePressRef.current = true;
+      outsidePressSeq += 1;
     };
+    // The click resolves the hold and folds the card, only after the click has
+    // finished dispatching. It is captured, not bubbled, because transcript
+    // controls that call stopPropagation() on their own click never reach a
+    // bubble listener and would otherwise leave the card expanded. The fold
+    // itself waits for a later task: the card is in flow, so dropping it inside
+    // dispatch would move layout under the control's own handlers.
     const onClick = (event: MouseEvent) => {
       if (!outsidePressRef.current) return;
-      // The click resolves the hold; the pointerup timer only covers a press
-      // that never clicked, so clearing one that is pending here is harmless.
+      // The pointerup timer only covers a press that never clicked, so
+      // cancelling it here is harmless.
       cancelRelease();
-      outsidePressRef.current = false;
-      const anchor = formAnchorRef.current;
-      const root = composerRootRef.current;
-      if (!anchor || !root) return;
+      const press = outsidePressSeq;
       const target = event.target as Node | null;
-      // A click that somehow lands back inside the composer is not an exit,
-      // and one that arrives after editing already ended has nothing to do.
-      if (isComposerOwned(root, target)) return;
-      if (!anchor.hasAttribute("data-composer-editing")) return;
-      // Focus that still sits in the editor is a transcript pan, not an editing
-      // exit; only a real focus loss ends it.
-      const active = doc.activeElement;
-      if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
-      anchor.removeAttribute("data-composer-editing");
-      // The ended-session card's writing height followed the editor's focus
-      // through the press; the click is where it rests again.
-      setFollowUpFocused(false);
-      // Focus has settled by now, so the resting row can follow it.
-      reconcileEditorEngagement();
+      cancelFold();
+      // The hold stays armed across the deferral, so a blur or frame
+      // reconciliation that runs between here and the fold still sees it.
+      foldTimer = setTimeout(() => {
+        foldTimer = null;
+        if (outsidePressSeq !== press) return;
+        outsidePressRef.current = false;
+        const anchor = formAnchorRef.current;
+        const root = composerRootRef.current;
+        if (!anchor || !root) return;
+        // A click that somehow lands back inside the composer is not an exit,
+        // and one that arrives after editing already ended has nothing to do.
+        if (isComposerOwned(root, target)) return;
+        if (!anchor.hasAttribute("data-composer-editing")) return;
+        // Focus that still sits in the editor is a transcript pan, not an
+        // editing exit; only a real focus loss ends it.
+        const active = doc.activeElement;
+        if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
+        anchor.removeAttribute("data-composer-editing");
+        // The ended-session card's writing height followed the editor's focus
+        // through the press; the click is where it rests again.
+        setFollowUpFocused(false);
+        // Focus has settled by now, so the resting row can follow it.
+        reconcileEditorEngagement();
+      }, 0);
     };
     const onPointerCancel = () => {
+      outsidePressSeq += 1;
+      cancelFold();
       outsidePressRef.current = false;
     };
     // A press that ends without a click (a text-selection drag, a scroll drag)
     // leaves the hold armed. The click of a real press is dispatched
     // synchronously after pointerup, so this release runs only when none came.
-    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-    function cancelRelease(): void {
-      if (releaseTimer === null) return;
-      clearTimeout(releaseTimer);
-      releaseTimer = null;
-    }
     const onPointerUp = () => {
       if (!outsidePressRef.current) return;
       releaseTimer = setTimeout(() => {
         releaseTimer = null;
+        outsidePressSeq += 1;
         outsidePressRef.current = false;
       }, 0);
     };
     doc.addEventListener("pointerdown", onPointerDown, true);
-    doc.addEventListener("click", onClick);
+    doc.addEventListener("click", onClick, true);
     doc.addEventListener("pointerup", onPointerUp, true);
     doc.addEventListener("pointercancel", onPointerCancel, true);
     return () => {
       doc.removeEventListener("pointerdown", onPointerDown, true);
-      doc.removeEventListener("click", onClick);
+      doc.removeEventListener("click", onClick, true);
       doc.removeEventListener("pointerup", onPointerUp, true);
       doc.removeEventListener("pointercancel", onPointerCancel, true);
       cancelRelease();
+      cancelFold();
       outsidePressRef.current = false;
     };
   }, [reconcileEditorEngagement]);

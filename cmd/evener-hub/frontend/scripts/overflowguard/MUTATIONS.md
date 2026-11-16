@@ -270,3 +270,32 @@ and the same at 1400px.
 `{"disclosure":"Context summary · 104 chars","heldEditing":true,"toggled":true,"foldedAfterClick":"true","dragHeldCard":true}`.
 
 **Verified:** 2026-11-16. **Expect:** fail.
+
+### The pressed disclosure's own state is the toggle oracle
+
+The toggle assertion first read "some disclosure differs from the pressed
+one's initial state". The harness holds five turn-block disclosures in mixed
+states (before the press: `[false,false,false,true,false]`), so a sibling
+already in the other state satisfied that predicate even when the pressed
+disclosure never changed. The guard now records the pressed disclosure's index
+in the `details` list and asserts that node's own `open` flipped, plus that the
+siblings' states are unchanged. The result line reports
+`pressedOpenBefore`/`pressedOpenAfter`/`siblingOpensBefore` so a passing run
+shows the flip was real.
+
+**Mutation performed:** `disabled` on the scaffold `Disclosure` in
+`src/panes/session/transcript/messages/SystemNoticeItem.tsx`, so the pressed
+summary's `requestToggle` never runs and its own `open` never flips.
+
+**Result with the old predicate:** PASS at both widths while the result line
+read `"pressedOpenAfter":false` — the vacuous pass this finding named.
+
+**Result with the pressed-identity predicate:** FAIL at both widths,
+`composer outside-press click 390px ... FAIL - page eval threw: composer
+condition timed out: document.querySelectorAll('[data-testid="turn-block"]
+details')[1].open !== false`, and the same at 1400px.
+
+**Result after restore:** PASS at both widths, with `"pressedOpenAfter":true`
+and `"toggled":true`.
+
+**Verified:** 2026-11-16. **Expect:** fail.

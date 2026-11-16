@@ -938,6 +938,60 @@ test("a press that never becomes a click never folds the composer", async () => 
   expect(card.hasAttribute("data-folded")).toBe(false);
 });
 
+test("a clicked control that stops its click's propagation still folds the composer", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_press_stop"));
+  await threadsStore.getState().ensureThread("ref_press_stop");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_press_stop"
+        paneId="pane_press_stop"
+        source={createTestComposerSource("ref_press_stop")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_press_stop");
+  await flushPendingTurnsProjectionForTests();
+
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const card = screen.getByTestId("composer-input-card");
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  // The delegate activity toggle and the file-reference link both consume
+  // their own click, so a listener in the bubble phase never sees it.
+  const control = document.createElement("button");
+  control.type = "button";
+  control.addEventListener("click", (event) => event.stopPropagation());
+  document.body.append(control);
+  try {
+    await act(async () => {
+      editor.focus();
+    });
+    await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+
+    await act(async () => {
+      fireEvent.pointerDown(control);
+      editor.blur();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    await waitForMacrotaskInActScope();
+    // The press still holds editing open, as it must: the click has not landed.
+    expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(control);
+    });
+    // The click's own handler stopped propagation, and folding waits for
+    // dispatch to finish, so the fold arrives on a later task.
+    await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
+    expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+  } finally {
+    control.remove();
+  }
+});
+
 test("a non-primary press holds no composer editing state", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_non_primary"));

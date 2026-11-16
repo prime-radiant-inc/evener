@@ -484,14 +484,23 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     const aim = await evaluate(
       send,
       `(() => {
-      const summaries = [...document.querySelectorAll('[data-testid="turn-block"] details > summary')];
-      for (const node of summaries) {
+      const all = [...document.querySelectorAll('[data-testid="turn-block"] details')];
+      const siblingsOpen = all.map((details) => details.open);
+      for (const [index, details] of all.entries()) {
+        const node = details.querySelector(':scope > summary');
+        if (!node) continue;
         const r = node.getBoundingClientRect();
         const x = r.left + r.width / 2, y = r.top + r.height / 2;
         if (r.height <= 0 || r.width <= 0) continue;
         if (!node.contains(document.elementFromPoint(x, y))) continue;
-        const details = node.closest('details');
-        return { x, y, open: details.open, label: (node.textContent || '').trim().slice(0, 40) };
+        return {
+          index,
+          x,
+          y,
+          open: details.open,
+          others: siblingsOpen.filter((_, sibling) => sibling !== index),
+          label: (node.textContent || '').trim().slice(0, 40),
+        };
       }
       return null;
     })()`,
@@ -515,17 +524,27 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     assert.ok(held.hit, "the pressed disclosure must still sit under the pointer before release");
 
     await mouse(send, { x: aim.x, y: aim.y }, "mouseReleased");
-    const toggledExpr = `[...document.querySelectorAll('[data-testid="turn-block"] details')].some(d => d.open !== ${aim.open})`;
+    // The pressed disclosure's own state must flip. Comparing any disclosure
+    // against the pressed one's initial state would pass on a sibling that
+    // already sat in the other state, telling nothing about the click that
+    // was pressed.
+    const pressed = `document.querySelectorAll('[data-testid="turn-block"] details')[${aim.index}]`;
+    const toggledExpr = `${pressed}.open !== ${aim.open}`;
     await until(send, toggledExpr);
     const settled = await evaluate(
       send,
       `({
       toggled: ${toggledExpr},
+      pressedOpenAfter: ${pressed}.open,
+      othersUnchanged: [...document.querySelectorAll('[data-testid="turn-block"] details')]
+        .filter((_, index) => index !== ${aim.index})
+        .every((d, index) => d.open === ${JSON.stringify(aim.others)}[index]),
       folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
       editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
     })`,
     );
     assert.ok(settled.toggled, "the transcript disclosure must receive its click");
+    assert.ok(settled.othersUnchanged, "the click must toggle only the pressed disclosure");
     assert.equal(settled.folded, "true", "the card folds after the click lands on an empty composer");
     assert.equal(settled.editing, false, "the click ends editing");
 
@@ -554,6 +573,13 @@ export async function verifyComposerOutsidePressClick(endpoint, url, width) {
     await mouse(send, { x: dragStart.x + 120, y: dragStart.y + 40 }, "mouseReleased");
     return {
       disclosure: aim.label,
+      // The pressed disclosure's own state is what the click must flip; the
+      // siblings' states are reported because a predicate that only compared
+      // "some disclosure differs from the pressed one" was satisfied by a
+      // sibling already in the other state.
+      pressedOpenBefore: aim.open,
+      siblingOpensBefore: aim.others,
+      pressedOpenAfter: settled.pressedOpenAfter,
       heldEditing: held.editing,
       toggled: settled.toggled,
       foldedAfterClick: settled.folded,
