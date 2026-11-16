@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -84,6 +86,51 @@ func TestDefaultToolSummaryMatchesSpawnCeiling(t *testing.T) {
 			if !strings.Contains(entry.DefaultTools, "`read_transcript`") {
 				t.Fatalf("available_agents explorer DefaultTools = %q, want read_transcript", entry.DefaultTools)
 			}
+		}
+	}
+}
+
+// TestToolSummaryAdvertisesWhatTheDefaultGrantGrants proves the roster against a
+// real spawn instead of against the roster's own predicate: for every allowance,
+// each role's advertised tool set is the registry of a delegate this session
+// actually starts with no delegation_allowance.
+func TestToolSummaryAdvertisesWhatTheDefaultGrantGrants(t *testing.T) {
+	t.Parallel()
+	for _, allowance := range []int{1, 2, 3} {
+		for _, role := range []string{"default", "subagent", "explorer"} {
+			t.Run(fmt.Sprintf("allowance=%d/%s", allowance, role), func(t *testing.T) {
+				t.Parallel()
+				root, _, _ := newDelegateResourceBootstrapSession(t)
+				root.mu.Lock()
+				root.delegationAllowance = allowance
+				root.mu.Unlock()
+				if _, ok := root.pluginAgents[role]; !ok {
+					t.Fatalf("session has no %q agent: the roster comparison would test a zero role", role)
+				}
+
+				advertised := root.defaultToolNamesForAgent(root.pluginAgents[role])
+				result := root.createDelegate(context.Background(), delegateArgs{Task: "probe", AgentType: role})
+				if result.Err != nil {
+					t.Fatalf("createDelegate: %v", result.Err)
+				}
+				root.delegateController.mu.Lock()
+				live := root.delegateController.live[result.DelegateID]
+				root.delegateController.mu.Unlock()
+				if live == nil || live.binding == nil || live.binding.runtime == nil {
+					t.Fatal("no live child session")
+				}
+				child := live.binding.runtime
+				registered := child.reg.RegisteredNames()
+				got := make([]string, 0, len(registered))
+				for name := range registered {
+					got = append(got, name)
+				}
+				sort.Strings(got)
+				childTools := child.providerVisibleToolNames(got)
+				if !slices.Equal(advertised, childTools) {
+					t.Fatalf("advertised tools = %v, child registry = %v (child allowance %d)", advertised, childTools, child.delegationAllowance)
+				}
+			})
 		}
 	}
 }

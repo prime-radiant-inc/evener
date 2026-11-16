@@ -196,7 +196,8 @@ func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 	if got := availableAgentEntriesForTest(t, agents, 0, nil); len(got) != 0 {
 		t.Fatalf("available agents should be hidden at allowance=0, got %+v", got)
 	}
-	// At allowance=1 (grantable) delegate-listing types are included.
+	// At allowance=1 the session may still start delegates, so its roles are
+	// listed even though none of them can delegate in turn.
 	entries := availableAgentEntriesForTest(t, agents, 1, nil)
 	for _, name := range []string{"coordinator", "reviewer"} {
 		if !slices.ContainsFunc(entries, func(e agentEntry) bool { return e.Name == name }) {
