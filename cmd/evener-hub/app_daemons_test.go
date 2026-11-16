@@ -495,11 +495,11 @@ func TestDaemonResidentInventoryRows(t *testing.T) {
 	roster.Refresh()
 
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
 	if err := archive.Set("", "session", archivedSession, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -1040,7 +1040,7 @@ func TestDaemonRetireCheckedBeforeAnOverlappingArchive(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db")))
 	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster, Archive: archive, DaemonIdleTimeout: time.Hour}
 	hub := newHubRPCTestServer(t, cfg)
 	defer hub.Close()
@@ -1102,7 +1102,7 @@ func TestDaemonArchivedRowDisablesRetire(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
-	archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "index.db")))
 	if err := archive.Set("", "session", entry.SessionID, true, time.Now()); err != nil {
 		t.Fatalf("archive session: %v", err)
 	}

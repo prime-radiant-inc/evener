@@ -25,6 +25,11 @@ type SessionSeenStore struct {
 	openDB   func(driverName, dataSourceName string) (*sql.DB, error)
 	now      func() time.Time
 	onChange func()
+
+	// handle is the store's process-lifetime connection, created by the first
+	// call and reused by every later one, so a call pays the connect, the DDL
+	// and the schema check once per process instead of once per call.
+	handle keeperHandle
 }
 
 // NewSessionSeenStore returns a store backed by the SQLite file at dbPath. An
@@ -105,9 +110,6 @@ CREATE TABLE IF NOT EXISTS session_seen_epoch (
 )`
 
 func (s *SessionSeenStore) open() (*sql.DB, error) {
-	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
-		return nil, err
-	}
 	db, err := s.openDB("sqlite", sqliteDSN(s.dbPath))
 	if err != nil {
 		return nil, err
@@ -125,17 +127,36 @@ func (s *SessionSeenStore) open() (*sql.DB, error) {
 	return db, nil
 }
 
+// db returns the store's shared handle, creating it on first use. The parent
+// directory is ensured on every call, as the per-call open did, so a
+// scaffolding failure still surfaces from the call that hit it.
+func (s *SessionSeenStore) db() (*sql.DB, error) {
+	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
+		return nil, err
+	}
+	return s.handle.get(s.dbPath, s.fs, s.open)
+}
+
+// Close releases the store's shared handle and forgets it, so a later call
+// reopens instead of using a closed handle. The hub calls it on shutdown; a
+// store that never opened one closes nothing.
+func (s *SessionSeenStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.handle.close()
+}
+
 // Snapshot reads the epoch, recording it on the store's first read, and every
 // record.
 func (s *SessionSeenStore) Snapshot() (SessionSeenSnapshot, error) {
 	if s == nil || s.dbPath == "" {
 		return SessionSeenSnapshot{}, nil
 	}
-	db, err := s.open()
+	db, err := s.db()
 	if err != nil {
 		return SessionSeenSnapshot{}, err
 	}
-	defer func() { _ = db.Close() }()
 	ctx := context.Background()
 	epoch, err := s.epoch(ctx, db)
 	if err != nil {
@@ -218,11 +239,10 @@ func (s *SessionSeenStore) MarkBatch(marks []SessionSeenMark) (bool, error) {
 	if s == nil || s.dbPath == "" || len(marks) == 0 {
 		return false, nil
 	}
-	db, err := s.open()
+	db, err := s.db()
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = db.Close() }()
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -267,11 +287,10 @@ func (s *SessionSeenStore) write(query string, args ...any) (bool, error) {
 	if s == nil || s.dbPath == "" {
 		return false, nil
 	}
-	db, err := s.open()
+	db, err := s.db()
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = db.Close() }()
 	result, err := db.ExecContext(context.Background(), query, args...)
 	if err != nil {
 		return false, err

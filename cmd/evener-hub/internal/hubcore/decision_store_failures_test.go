@@ -17,7 +17,7 @@ import (
 func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 	t.Run("setters callbacks and empty paths", func(t *testing.T) {
 		calls := 0
-		a := NewArchiveStore("").SetFs(afero.NewMemMapFs())
+		a := closeOnCleanup(t, NewArchiveStore("").SetFs(afero.NewMemMapFs()))
 		a.SetOnChange(func() { calls++ })
 		a.fireChange()
 		if err := a.Set("", "session", "s", true, time.Time{}); err != nil {
@@ -30,7 +30,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 			t.Fatalf("Decisions = %v, %v", got, err)
 		}
 
-		f := NewFavoriteStore("").SetFs(afero.NewMemMapFs())
+		f := closeOnCleanup(t, NewFavoriteStore("").SetFs(afero.NewMemMapFs()))
 		f.SetOnChange(func() { calls++ })
 		f.fireChange()
 		if err := f.Set("", "session", "s", true, time.Time{}); err != nil {
@@ -46,7 +46,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 			t.Fatalf("callbacks = %d", calls)
 		}
 
-		idx := NewPastIndex("glob").SetFs(afero.NewMemMapFs())
+		idx := closeOnCleanup(t, NewPastIndex("glob").SetFs(afero.NewMemMapFs()))
 		if idx.StateGlob() != "glob" {
 			t.Fatal(idx.StateGlob())
 		}
@@ -54,7 +54,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 
 	errBoom := errors.New("boom")
 	t.Run("filesystem errors", func(t *testing.T) {
-		a := NewArchiveStore("x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom, statErr: errors.New("stat")})
+		a := closeOnCleanup(t, NewArchiveStore("x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom, statErr: errors.New("stat")}))
 		if err := a.Set("", "session", "s", true, time.Time{}); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		f := NewFavoriteStore("x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom, statErr: errors.New("stat")})
+		f := closeOnCleanup(t, NewFavoriteStore("x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom, statErr: errors.New("stat")}))
 		if err := f.Set("", "session", "s", true, time.Time{}); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		i := NewPastIndexWithDB("", "x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom})
+		i := closeOnCleanup(t, NewPastIndexWithDB("", "x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom}))
 		if err := i.rebuildFTS(nil); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
@@ -91,10 +91,14 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 			name string
 			run  func(string) error
 		}{
-			{"archive set", func(p string) error { return NewArchiveStore(p).Set("", "session", "s", true, time.Now()) }},
-			{"archive delete", func(p string) error { return NewArchiveStore(p).Delete("", "session", "s") }},
-			{"favorite set", func(p string) error { return NewFavoriteStore(p).Set("", "session", "s", true, time.Now()) }},
-			{"favorite delete", func(p string) error { return NewFavoriteStore(p).Delete("", "session", "s") }},
+			{"archive set", func(p string) error {
+				return closeOnCleanup(t, NewArchiveStore(p)).Set("", "session", "s", true, time.Now())
+			}},
+			{"archive delete", func(p string) error { return closeOnCleanup(t, NewArchiveStore(p)).Delete("", "session", "s") }},
+			{"favorite set", func(p string) error {
+				return closeOnCleanup(t, NewFavoriteStore(p)).Set("", "session", "s", true, time.Now())
+			}},
+			{"favorite delete", func(p string) error { return closeOnCleanup(t, NewFavoriteStore(p)).Delete("", "session", "s") }},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if err := tc.run(dir); err == nil {
@@ -119,7 +123,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 					t.Fatal(err)
 				}
 				if table == "archive" {
-					s := NewArchiveStore(p)
+					s := closeOnCleanup(t, NewArchiveStore(p))
 					if err := s.Set("", "session", "s", true, time.Now()); err == nil {
 						t.Fatal("expected set error")
 					}
@@ -130,7 +134,7 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 						t.Fatal("expected query error")
 					}
 				} else {
-					s := NewFavoriteStore(p)
+					s := closeOnCleanup(t, NewFavoriteStore(p))
 					if err := s.Set("", "session", "s", true, time.Now()); err == nil {
 						t.Fatal("expected set error")
 					}
@@ -162,10 +166,10 @@ func fuzzScenarioDecisionStoresSurfaceStorageFailures(t *testing.T) {
 			}
 			_ = db.Close()
 			if table == "archive" {
-				if _, err := NewArchiveStore(p).Decisions(); err == nil {
+				if _, err := closeOnCleanup(t, NewArchiveStore(p)).Decisions(); err == nil {
 					t.Fatal("expected scan error")
 				}
-			} else if _, err := NewFavoriteStore(p).Favorites(); err == nil {
+			} else if _, err := closeOnCleanup(t, NewFavoriteStore(p)).Favorites(); err == nil {
 				t.Fatal("expected scan error")
 			}
 		}

@@ -31,7 +31,7 @@ func TestSessionDeleteCanceledWhileOwnershipHeldReportsError(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
@@ -86,12 +86,12 @@ func TestSessionDeleteCanceledWhileOwnershipHeldReportsError(t *testing.T) {
 func TestSessionDeleteCanceledBeforeNoPastScrubReportsError(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "index.db")
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(dbPath)
-	favorite := hubcore.NewFavoriteStore(dbPath)
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 	seedProjectDeleteDecisions(t, archive, favorite, "no-project", webTestSessionID)
 	web := NewWebServer(hubcore.WebConfig{
 		StateDir: root, Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries(),

@@ -90,7 +90,7 @@ func TestSharedStoresOpenWithSynchronousNormal(t *testing.T) {
 		}},
 		{"past_fts", synchronousNormal, func(t *testing.T, dbPath string) int {
 			t.Helper()
-			index := NewPastIndexWithDB("", dbPath)
+			index := closeOnCleanup(t, NewPastIndexWithDB("", dbPath))
 			level := -1
 			// The FTS writer opens, uses, and closes its own connection, so
 			// observe the handle it was handed and read the pragma there.
@@ -141,7 +141,7 @@ func TestSharedStoresOpenWithSynchronousNormal(t *testing.T) {
 func TestArchiveStoreSetWaitsForConcurrentWriter(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
-	store := NewArchiveStore(dbPath)
+	store := closeOnCleanup(t, NewArchiveStore(dbPath))
 	if err := store.Set("", "session", "seed", true, time.Unix(1, 0)); err != nil {
 		t.Fatalf("seed Set: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestArchiveStoreRoundTripsPathWithURIDelimiters(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "seed#7?x%20")
 	dbPath := filepath.Join(dir, "index.db")
-	store := NewArchiveStore(dbPath)
+	store := closeOnCleanup(t, NewArchiveStore(dbPath))
 	if err := store.Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -207,19 +207,19 @@ func TestSharedStoresOpenDatabaseInWALMode(t *testing.T) {
 	}{
 		{"archive", func(t *testing.T, dbPath string) {
 			t.Helper()
-			if err := NewArchiveStore(dbPath).Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
+			if err := closeOnCleanup(t, NewArchiveStore(dbPath)).Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
 				t.Fatalf("archive Set: %v", err)
 			}
 		}},
 		{"favorite", func(t *testing.T, dbPath string) {
 			t.Helper()
-			if err := NewFavoriteStore(dbPath).Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
+			if err := closeOnCleanup(t, NewFavoriteStore(dbPath)).Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
 				t.Fatalf("favorite Set: %v", err)
 			}
 		}},
 		{"pin_section", func(t *testing.T, dbPath string) {
 			t.Helper()
-			if _, _, err := NewPinSectionStore(dbPath).CreateOrReuseAndAssign("inbox", "", "s1", time.Unix(1, 0)); err != nil {
+			if _, _, err := closeOnCleanup(t, NewPinSectionStore(dbPath)).CreateOrReuseAndAssign("inbox", "", "s1", time.Unix(1, 0)); err != nil {
 				t.Fatalf("pin section assign: %v", err)
 			}
 		}},

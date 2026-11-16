@@ -985,7 +985,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 			workingDir := t.TempDir()
 			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}

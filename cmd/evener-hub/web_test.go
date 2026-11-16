@@ -492,7 +492,7 @@ func TestWeb_APIHealth(t *testing.T) {
 	web := newTestWebServerWithConfig(t, hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		RunDir:  "/tmp/evener-run",
-		Past:    hubcore.NewPastIndex("/tmp/state/projects/*"),
+		Past:    closeOnCleanup(t, hubcore.NewPastIndex("/tmp/state/projects/*")),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	req.Host = "127.0.0.1:9180"

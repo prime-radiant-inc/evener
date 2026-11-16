@@ -103,6 +103,14 @@ type PastIndex struct {
 	ftsSeq   int64
 	lastSeq  int64
 
+	// readHandle_ is the index's process-lifetime read connection, created by
+	// the first FTS read and reused by every later one, so a search pays the
+	// connect and the DSN pragmas once per process instead of once per search.
+	// Publications do not use it: writeFTSTx opens its own IMMEDIATE connection
+	// so a concurrent sibling-store commit cannot fail its write upgrade.
+	// The trailing underscore leaves the name readHandle to the accessor.
+	readHandle_ keeperHandle
+
 	// skipped maps every path the last Rebuild refused to index to the reason
 	// it was refused, so the next Rebuild can report only what is newly
 	// unindexable (see reportSkips).
@@ -1041,6 +1049,26 @@ func (i *PastIndex) writeFTSTx(fn func(*sql.Tx) error) error {
 	return chmodSQLiteIndexFilesFS(i.fs, i.dbPath)
 }
 
+// readHandle returns the index's shared read handle, creating it on first use.
+// The DDL the FTS writers install is not repeated here: a read only ever runs
+// after a publish created the tables, and a search on a database without them
+// fails the same way it did per call, falling back to the in-memory scan.
+func (i *PastIndex) readHandle() (*sql.DB, error) {
+	return i.readHandle_.get(i.dbPath, i.fs, func() (*sql.DB, error) {
+		return i.openDB("sqlite", sqliteDSN(i.dbPath))
+	})
+}
+
+// Close releases the index's shared read handle and forgets it, so a later
+// read reopens instead of using a closed handle. The hub calls it on shutdown;
+// an index that never read closes nothing.
+func (i *PastIndex) Close() error {
+	if i == nil {
+		return nil
+	}
+	return i.readHandle_.close()
+}
+
 func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	return i.writeFTSTx(func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil { //nolint:noctx
@@ -1088,11 +1116,10 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	if !available || i.dbPath == "" {
 		return nil, false
 	}
-	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
+	db, err := i.readHandle()
 	if err != nil {
 		return nil, false
 	}
-	defer func() { _ = db.Close() }()
 	// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
 	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? ORDER BY CAST(sort_rank AS INTEGER) ASC`, query) //nolint:noctx
 	if err != nil {
@@ -1221,11 +1248,10 @@ func (i *PastIndex) ftsMatchIDs(q string, ids []string) ([]string, bool) {
 	if !available || i.dbPath == "" {
 		return nil, false
 	}
-	db, err := i.openDB("sqlite", sqliteDSN(i.dbPath))
+	db, err := i.readHandle()
 	if err != nil {
 		return nil, false
 	}
-	defer func() { _ = db.Close() }()
 	var out []string
 	for start := 0; start < len(ids); start += ftsDeleteChunk {
 		end := min(start+ftsDeleteChunk, len(ids))

@@ -26,9 +26,9 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 
 	root := t.TempDir()
 	cache := &hubcore.RemoteThreadCache{}
-	archive := hubcore.NewArchiveStore(filepath.Join(root, "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "archive.db")))
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
-		Past:              hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+		Past:              closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))),
 		RemoteThreadCache: cache,
 	})
 	defer hub.Close()
