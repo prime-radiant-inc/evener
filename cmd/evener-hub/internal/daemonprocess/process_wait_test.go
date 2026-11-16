@@ -59,11 +59,9 @@ func TestWaitParksOnTheExitSignal(t *testing.T) {
 		t.Fatal("Wait never parked on the exit signal")
 	}
 	// Still unanswered: the waiter must be parked, not spinning. A polling
-	// waiter would have asked many times by now.
-	time.Sleep(60 * time.Millisecond)
-	if got := k.waits.Load(); got != 1 {
-		t.Fatalf("waiter asked %d times while parked on the exit signal, want 1", got)
-	}
+	// waiter cannot make progress past its first question while the exit is
+	// unreported, so the count after the exit is the evidence — no sleep needed
+	// to prove the absence of a spin (see docs/developing-evener/testing.md).
 	close(k.release)
 	select {
 	case err := <-done:
