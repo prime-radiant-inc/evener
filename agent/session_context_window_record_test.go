@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -216,6 +217,8 @@ func TestContextStatus_DescribesTheFallbackThatServedTheRound(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	sess.SetBootGeneration("7")
+	modelControlBeforeFallback := sess.ModelControlSnapshot()
 	go func() {
 		for range sess.Events() {
 		}
@@ -230,5 +233,9 @@ func TestContextStatus_DescribesTheFallbackThatServedTheRound(t *testing.T) {
 	}
 	if metrics.Used < 50_000 || pressure != float64(metrics.Used)/float64(metrics.Window) {
 		t.Fatalf("used %d and pressure %v must both be measured against the fallback window %d", metrics.Used, pressure, metrics.Window)
+	}
+	modelControlAfterFallback := sess.ModelControlSnapshot()
+	if !reflect.DeepEqual(modelControlAfterFallback, modelControlBeforeFallback) {
+		t.Fatalf("fallback context changed model authority: before=%+v after=%+v", modelControlBeforeFallback, modelControlAfterFallback)
 	}
 }

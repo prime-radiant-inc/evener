@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -466,6 +467,10 @@ func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 	if requests[1].Model != "gpt-5.4" {
 		t.Fatalf("the queued message ran on model %q; a rejected later pick must not cancel the accepted queued switch (%q)", requests[1].Model, "gpt-5.4")
 	}
+	snapshot := s.ModelControlSnapshot()
+	if snapshot.Desired == nil || snapshot.Desired.Model != "gpt-5.4" || snapshot.Desired.Lifecycle != appwire.ModelControlLifecycleApplied {
+		t.Fatalf("model control after the direct refusal = %+v, want the earlier accepted intent applied", snapshot)
+	}
 }
 
 // TestSupersededLoopTopApplicationAppliesTheNewerQueuedPick pins the loop's
@@ -819,5 +824,9 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	}
 	if got := s.Profile().Model(); got != "gpt-5.4" {
 		t.Fatalf("profile model = %q, want the committed switch's model %q; the failed queued pick must not swap", got, "gpt-5.4")
+	}
+	snapshot := s.ModelControlSnapshot()
+	if snapshot.Active.Model != "gpt-5.4" || snapshot.Desired == nil || snapshot.Desired.Model != "glm-test" || snapshot.Desired.Lifecycle != appwire.ModelControlLifecycleRejected {
+		t.Fatalf("model control after deferred failure = %+v, want gpt-5.4 active and glm-test rejected", snapshot)
 	}
 }

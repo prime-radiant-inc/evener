@@ -65,6 +65,7 @@ import (
 // closes the direction that was left open.
 type EnvelopeSampling interface {
 	LatestExecutionTurnID() string
+	ModelControlSnapshot() appwire.ModelControlSnapshot
 	// ContextStatus returns the context pair from one shared history snapshot
 	// and one profile/measurement snapshot, not a globally atomic session
 	// instant.

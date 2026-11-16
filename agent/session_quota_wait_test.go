@@ -273,6 +273,10 @@ func TestModelSwitchWhileWaitingForQuotaRetriesOnTheNewModel(t *testing.T) {
 	if switchAt < 0 || answerAt < switchAt {
 		t.Fatalf("history has the switch at %d and the last answer at %d, want the switch recorded before the new model's answer", switchAt, answerAt)
 	}
+	snapshot := s.ModelControlSnapshot()
+	if snapshot.Active.Model != "gpt-5.4" || snapshot.Desired == nil || snapshot.Desired.Model != "gpt-5.4" || snapshot.Desired.Lifecycle != appwire.ModelControlLifecycleApplied {
+		t.Fatalf("model control after quota-wait switch = %+v, want gpt-5.4 applied", snapshot)
+	}
 }
 
 // A user message while waiting tries the provider once: the user may know

@@ -103,6 +103,13 @@ func (s *Session) HasPendingAsk() bool {
 func (s *Session) SetBootGeneration(generation string) {
 	s.mu.Lock()
 	s.bootGeneration = generation
+	s.modelControlRequestSequence = 0
+	s.pendingModel = pendingModelSwitch{}
+	s.modelControl = appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: s.id, BootGeneration: generation},
+		Revision:  1,
+		Active:    modelControlActive(s.profile),
+	}
 	publish := s.transcriptFrontier.publish
 	s.mu.Unlock()
 	if publish != nil {

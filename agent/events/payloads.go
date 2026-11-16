@@ -561,6 +561,12 @@ type ModelChangedData struct {
 	CompactionThreshold int     `json:"compaction_threshold,omitempty"`
 }
 
+// ModelControlChangedData carries one immutable, complete model-control
+// snapshot. Consumers replace their prior value atomically.
+type ModelControlChangedData struct {
+	Snapshot appwire.ModelControlSnapshot
+}
+
 // ReasoningEffortChangedData is the payload for an EventReasoningEffortChanged
 // event: SetReasoningEffort committed a new effort value (already normalized;
 // empty means unset/default).

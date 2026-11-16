@@ -84,6 +84,9 @@ const (
 	EventSessionNameChanged EventKind = "SESSION_NAME_CHANGED"
 	// EventModelChanged reports that SetModel committed a provider/model switch.
 	EventModelChanged EventKind = "MODEL_CHANGED"
+	// EventModelControlChanged carries the complete canonical model-control
+	// snapshot after one accepted shared transition.
+	EventModelControlChanged EventKind = "MODEL_CONTROL_CHANGED"
 	// EventReasoningEffortChanged reports that SetReasoningEffort committed a
 	// reasoning-effort change.
 	EventReasoningEffortChanged EventKind = "REASONING_EFFORT_CHANGED"
