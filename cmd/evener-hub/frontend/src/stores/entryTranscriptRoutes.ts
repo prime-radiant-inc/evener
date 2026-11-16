@@ -35,7 +35,7 @@ import { withDeadline } from "./withDeadline";
 
 /** The slice of the thread store this module reads and writes. */
 export interface EntryRouteStoreState {
-  threads: Map<string, ThreadModel>;
+  threads: ReadonlyMap<string, ThreadModel>;
   localOpenings: Map<string, number>;
   deletedRefs: Set<string>;
   clearInFlight: unknown;
