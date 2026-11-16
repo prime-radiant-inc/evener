@@ -73,7 +73,7 @@ func findJob(r JobReport, jobID string) *JobView {
 // the log defines — not a map order that shuffles between runs.
 func TestJobs_ListsFoldedRecordsInAppendOrder(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestJobs_ListsFoldedRecordsInAppendOrder(t *testing.T) {
 // only route to — status, reason, exit code, output bytes, and both timestamps.
 func TestJobs_TerminalStateOfOneJob(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestJobs_TerminalStateOfOneJob(t *testing.T) {
 
 func TestJobs_JobIDFilter(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{JobID: timeoutJobID})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{JobID: timeoutJobID})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestJobs_MissingJobsFileIsCleanAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := Jobs(base, sidA, JobOpts{})
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs on a session that never ran jobs: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestJobs_EmptyJobsFileIsCleanAnswer(t *testing.T) {
 	base := t.TempDir()
 	writeSession(t, stateHomeBucket(base, hash1), sidA)
 
-	r, err := Jobs(base, sidA, JobOpts{})
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs on an empty jobs.jsonl: %v", err)
 	}
@@ -187,8 +187,8 @@ func TestJobs_MalformedLineHandlingMatchesWatches(t *testing.T) {
 		writeSession(t, bucket, sidA)
 		writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), valid+"\n{\"kind\":\"job_fin")
 
-		r, err := Jobs(base, sidA, JobOpts{})
-		_, watchErr := Watches(base, sidA, WatchOpts{})
+		r, err := Jobs(t.Context(), base, sidA, JobOpts{})
+		_, watchErr := Watches(t.Context(), base, sidA, WatchOpts{})
 		if (err == nil) != (watchErr == nil) {
 			t.Fatalf("jobs err = %v but watches err = %v; the two readers must agree", err, watchErr)
 		}
@@ -206,8 +206,8 @@ func TestJobs_MalformedLineHandlingMatchesWatches(t *testing.T) {
 		writeSession(t, bucket, sidA)
 		writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), "{not json}\n"+valid+"\n")
 
-		_, err := Jobs(base, sidA, JobOpts{})
-		_, watchErr := Watches(base, sidA, WatchOpts{})
+		_, err := Jobs(t.Context(), base, sidA, JobOpts{})
+		_, watchErr := Watches(t.Context(), base, sidA, WatchOpts{})
 		if (err == nil) != (watchErr == nil) {
 			t.Fatalf("jobs err = %v but watches err = %v; the two readers must agree", err, watchErr)
 		}
@@ -219,7 +219,7 @@ func TestJobs_MalformedLineHandlingMatchesWatches(t *testing.T) {
 
 func TestJobs_RenderTellsTheTerminalStory(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, _ := Jobs(base, sid, JobOpts{})
+	r, _ := Jobs(t.Context(), base, sid, JobOpts{})
 	out := RenderJobs(r)
 
 	for _, want := range []string{
@@ -253,7 +253,7 @@ func TestEmptyJobsMessage(t *testing.T) {
 // jobs" — it ran jobs, just not that one.
 func TestJobs_UnknownJobIDMessageIsUnambiguous(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{JobID: absentJobID})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{JobID: absentJobID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func jobsFixtureWithDelegate(t *testing.T) (base, sid string) {
 // RenderJobs prints every optional field a job or delegate carries.
 func TestJobs_RenderAllFormattingBranches(t *testing.T) {
 	base, sid := jobsFixtureWithDelegate(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestJobs_RenderAllFormattingBranches(t *testing.T) {
 // failures naming them, and rendered with the report.
 func TestJobs_LegacyDelegateFailures(t *testing.T) {
 	base, sid := jobsFixtureWithDelegate(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestJobs_JobTreeRootSessionIDRedirect(t *testing.T) {
 		}}},
 	})
 
-	r, err := Jobs(base, childSID, JobOpts{})
+	r, err := Jobs(t.Context(), base, childSID, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestJobs_DelegateDiagnosticsTornTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := Jobs(base, sidA, JobOpts{})
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestJobs_DelegateChildRefMatchesRootProjScheme(t *testing.T) {
 		},
 	})
 
-	report, err := Jobs(base, rootSID, JobOpts{})
+	report, err := Jobs(t.Context(), base, rootSID, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}

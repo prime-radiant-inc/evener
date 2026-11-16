@@ -715,7 +715,7 @@ func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
 	}
 	saveFindMeta(t, bucket, findMetaSpec{id: sid, name: "coordinates", updated: time.Now().UTC()})
 
-	whole, err := doctor.Transcript(stateHome, sid, doctor.TranscriptOpts{})
+	whole, err := doctor.Transcript(t.Context(), stateHome, sid, doctor.TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +741,7 @@ func TestDoctorTranscriptTurnNumbersAgreeWithReadTranscript(t *testing.T) {
 			continue
 		}
 		window := fmt.Sprintf("%d-%d", *row.Turn, *row.Turn)
-		narrowed, err := doctor.Transcript(stateHome, sid, doctor.TranscriptOpts{Range: window})
+		narrowed, err := doctor.Transcript(t.Context(), stateHome, sid, doctor.TranscriptOpts{Range: window})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -1361,7 +1361,7 @@ func TestTerminalCatchupWatchIDAndInspectHistory(t *testing.T) {
 
 	// Also verify that doctor_evener(command="watches") sees it in jobs.jsonl.
 	_ = os.WriteFile(schema.SessionTranscriptPath(s.stateDir, s.ID()), []byte("{}\n"), 0o644)
-	docReport, err := doctor.Watches(s.stateDir, s.ID(), doctor.WatchOpts{WatchID: matched.WatchID})
+	docReport, err := doctor.Watches(t.Context(), s.stateDir, s.ID(), doctor.WatchOpts{WatchID: matched.WatchID})
 	if err != nil {
 		t.Fatalf("doctor.Watches: %v", err)
 	}
@@ -1462,7 +1462,7 @@ func TestSourceSelfPersistsAsSelfAndRendersSelf(t *testing.T) {
 	}
 
 	_ = os.WriteFile(schema.SessionTranscriptPath(s.stateDir, s.ID()), []byte("{}\n"), 0o644)
-	docReport, err := doctor.Watches(s.stateDir, s.ID(), doctor.WatchOpts{})
+	docReport, err := doctor.Watches(t.Context(), s.stateDir, s.ID(), doctor.WatchOpts{})
 	if err != nil {
 		t.Fatalf("doctor.Watches: %v", err)
 	}

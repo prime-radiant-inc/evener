@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -36,7 +37,7 @@ func extractRunProse(stateDir string) (runProse, error) {
 		return runProse{}, err
 	}
 	var p runProse
-	err = walkTranscripts(stateDir, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull}, func(tr doctor.TranscriptResult) error {
+	err = walkTranscripts(context.Background(), stateDir, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull}, func(tr doctor.TranscriptResult) error {
 		var echoes echoSuppressor
 		for _, turn := range tr.Turns {
 			turnSeq := echoes.observe(turn.Kind, turn.Text)

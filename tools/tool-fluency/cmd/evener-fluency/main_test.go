@@ -164,7 +164,7 @@ func TestAllTranscriptToolCountsIncludesChildSessions(t *testing.T) {
 		}),
 	})
 
-	got, err := allTranscriptToolCounts(stateDir)
+	got, err := allTranscriptToolCounts(t.Context(), stateDir)
 	if err != nil {
 		t.Fatalf("allTranscriptToolCounts: %v", err)
 	}

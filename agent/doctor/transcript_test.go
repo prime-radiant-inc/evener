@@ -110,7 +110,7 @@ func countFixture(t *testing.T) (base, sid string) {
 func TestCount_StructuralVsMentions(t *testing.T) {
 	base, sid := countFixture(t)
 
-	rf, err := Count(base, sid, "read_file")
+	rf, err := Count(t.Context(), base, sid, "read_file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestCount_StructuralVsMentions(t *testing.T) {
 		t.Errorf("read_file calls = %d, want 1", rf.Calls)
 	}
 
-	ds, err := Count(base, sid, "delegate_send")
+	ds, err := Count(t.Context(), base, sid, "delegate_send")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
-	ug, err := Count(base, sid, "update_goal")
+	ug, err := Count(t.Context(), base, sid, "update_goal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestCount_SkipsCompactionFoldCopies(t *testing.T) {
 		t.Errorf("update_goal calls = %d, want 1", ug.Calls)
 	}
 
-	ds, err := Count(base, sid, "delegate_send")
+	ds, err := Count(t.Context(), base, sid, "delegate_send")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestCount_MatchesProviderWireAndCanonicalToolNames(t *testing.T) {
 		{query: "run_shell_command", wantCalls: 2, wantMentions: 1},
 		{query: "exec_command", wantCalls: 2, wantMentions: 1},
 	} {
-		got, err := Count(base, sid, tc.query)
+		got, err := Count(t.Context(), base, sid, tc.query)
 		if err != nil {
 			t.Fatalf("Count(%q): %v", tc.query, err)
 		}
@@ -240,21 +240,21 @@ func TestCount_PreservesCustomResultToolAndCustomSameNamedTools(t *testing.T) {
 		Config: schema.ConfigSnapshot{ResultToolName: "run_shell_command"},
 	})
 
-	shellCount, err := Count(base, sid, "shell")
+	shellCount, err := Count(t.Context(), base, sid, "shell")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if shellCount.Calls != 1 {
 		t.Errorf("Count(shell).Calls = %d, want 1 (excluding custom result tool run_shell_command)", shellCount.Calls)
 	}
-	resCount, err := Count(base, sid, "run_shell_command")
+	resCount, err := Count(t.Context(), base, sid, "run_shell_command")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resCount.Calls != 1 {
 		t.Errorf("Count(run_shell_command).Calls = %d, want 1 (the session's result tool)", resCount.Calls)
 	}
-	grepCount, err := Count(base, sid, "grep")
+	grepCount, err := Count(t.Context(), base, sid, "grep")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool(t *test
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
-	got, err := Count(base, sid, "grep_search")
+	got, err := Count(t.Context(), base, sid, "grep_search")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool(t *test
 		t.Errorf("Count(grep_search).Calls = %d, want 1 (the exact resolved tool, not the sum with canonical grep)", got.Calls)
 	}
 
-	builtin, err := Count(base, sid, "grep")
+	builtin, err := Count(t.Context(), base, sid, "grep")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestCount_PrefersExactResolvedToolNameWhenWireAliasNamesACustomTool(t *test
 
 func TestCount_RenderDisambiguates(t *testing.T) {
 	base, sid := countFixture(t)
-	ds, _ := Count(base, sid, "delegate_send")
+	ds, _ := Count(t.Context(), base, sid, "delegate_send")
 	out := RenderCount(ds)
 	if !strings.Contains(out, "0 calls") {
 		t.Errorf("render should say 0 calls: %q", out)
@@ -320,7 +320,7 @@ func TestCount_RenderDisambiguates(t *testing.T) {
 
 func TestTranscript_OutlineAndElision(t *testing.T) {
 	base, sid := countFixture(t)
-	r, err := Transcript(base, sid, TranscriptOpts{Format: "outline"})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{Format: "outline"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestTranscript_OutlineAndElision(t *testing.T) {
 
 func TestTranscript_RangeLastN(t *testing.T) {
 	base, sid := countFixture(t)
-	r, err := Transcript(base, sid, TranscriptOpts{Range: "last:1"})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{Range: "last:1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestTranscript_RangeLastN(t *testing.T) {
 
 func TestTranscript_ResultToolDefaultsToCommunicate(t *testing.T) {
 	base, sid := countFixture(t)
-	r, _ := Transcript(base, sid, TranscriptOpts{})
+	r, _ := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if r.ResultTool != "communicate" {
 		t.Errorf("ResultTool = %q, want communicate", r.ResultTool)
 	}
@@ -381,7 +381,7 @@ func TestTranscript_RendersToolResultPreviews(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestTranscript_ToolCallShowsExplicitIntent(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestTranscript_ToolCallShowsRejectedRawArguments(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestTranscript_ToolCallShowsRejectedRawArguments(t *testing.T) {
 		}}),
 	}
 	writeRichSession(t, bucket, sidB, legacy, nil, schema.SessionMeta{})
-	lr, err := Transcript(base, sidB, TranscriptOpts{})
+	lr, err := Transcript(t.Context(), base, sidB, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestTranscript_ToolCallIntentFallsBackToPurpose(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func salvagedLoopFixture(t *testing.T) (base, sid, turnText, resultText string) 
 func TestTranscript_TextMaxDefaultTruncates(t *testing.T) {
 	base, sid, turnText, resultText := salvagedLoopFixture(t)
 
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestTranscript_TextMaxDefaultTruncates(t *testing.T) {
 func TestTranscript_TextMaxFullRendersEveryByte(t *testing.T) {
 	base, sid, turnText, resultText := salvagedLoopFixture(t)
 
-	r, err := Transcript(base, sid, TranscriptOpts{TextMax: TextMaxFull})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{TextMax: TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestTranscript_TextMaxHonoursAnExplicitCap(t *testing.T) {
 	base, sid, turnText, _ := salvagedLoopFixture(t)
 	const textMax = 512
 
-	r, err := Transcript(base, sid, TranscriptOpts{TextMax: textMax})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{TextMax: textMax})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +613,7 @@ func TestTranscript_ToolResultPreviewKeepsEdgeWhitespace(t *testing.T) {
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 
 	// --full-text: byte-exact, whole.
-	full, err := Transcript(base, sid, TranscriptOpts{TextMax: TextMaxFull})
+	full, err := Transcript(t.Context(), base, sid, TranscriptOpts{TextMax: TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestTranscript_ToolResultPreviewKeepsEdgeWhitespace(t *testing.T) {
 	}
 
 	// Default cap: same fidelity — the cap elides the tail, it does not tidy.
-	capped, err := Transcript(base, sid, TranscriptOpts{})
+	capped, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestTranscript_ResultToolFromMeta(t *testing.T) {
 	}
 	writeRichSession(t, bucket, sid, turns, nil, meta)
 
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +718,7 @@ func TestTranscriptRange_StartAndSpan(t *testing.T) {
 		{"2-1", 0, -1},   // N > M selects nothing
 		{"99-98", 0, -1}, // even past the end
 	} {
-		r, err := Transcript(base, sid, TranscriptOpts{Range: tc.spec})
+		r, err := Transcript(t.Context(), base, sid, TranscriptOpts{Range: tc.spec})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -732,7 +732,7 @@ func TestTranscriptRange_StartAndSpan(t *testing.T) {
 // transcript renders, and the result and its rendering say why.
 func TestTranscriptRange_MalformedSpecFallsBackWithWarning(t *testing.T) {
 	base, sid := countFixture(t)
-	r, err := Transcript(base, sid, TranscriptOpts{Range: "garbage"})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{Range: "garbage"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +755,7 @@ func TestRenderTranscript_OutlineToolResults(t *testing.T) {
 		}}),
 	}
 	writeRichSession(t, bucket, sidB, turns, nil, schema.SessionMeta{})
-	r, err := Transcript(base, sidB, TranscriptOpts{Format: "outline"})
+	r, err := Transcript(t.Context(), base, sidB, TranscriptOpts{Format: "outline"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -773,7 +773,7 @@ func TestRenderTranscript_OutlineToolResults(t *testing.T) {
 // ordinary tool call.
 func TestRenderTranscript_MarkdownResultLabel(t *testing.T) {
 	base, sid := countFixture(t)
-	r, err := Transcript(base, sid, TranscriptOpts{})
+	r, err := Transcript(t.Context(), base, sid, TranscriptOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}

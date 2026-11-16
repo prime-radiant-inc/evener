@@ -749,7 +749,7 @@ func TestReconstructKeepsFailureAndHookMessagesReadable(t *testing.T) {
 				if _, err := reconstructSession(context.Background(), "02wLIRxqmq3AUo6vl2OW37", dbPath, meta, "", output); err != nil {
 					t.Fatal(err)
 				}
-				view, err := agentdoctor.Transcript(output, "02wLIRxqmq3AUo6vl2OW37", agentdoctor.TranscriptOpts{})
+				view, err := agentdoctor.Transcript(t.Context(), output, "02wLIRxqmq3AUo6vl2OW37", agentdoctor.TranscriptOpts{})
 				if err != nil {
 					t.Fatal(err)
 				}

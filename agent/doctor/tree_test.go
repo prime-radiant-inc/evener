@@ -57,7 +57,7 @@ func treeFixture(t *testing.T, descriptorMutate ...func(*delegatestore.Descripto
 
 func TestTree_DelegateEdgeCrossBucket(t *testing.T) {
 	base, rootSID := treeFixture(t)
-	root, err := Tree(base, rootSID, TreeOpts{})
+	root, err := Tree(t.Context(), base, rootSID, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestTree_SameBucketChildRefMatchesRootProjScheme(t *testing.T) {
 		},
 	})
 
-	root, err := Tree(base, rootSID, TreeOpts{})
+	root, err := Tree(t.Context(), base, rootSID, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,14 +145,14 @@ func TestTree_SameBucketChildRefMatchesRootProjScheme(t *testing.T) {
 func TestTree_ObserversOptIn(t *testing.T) {
 	base, rootSID := treeFixture(t)
 
-	without, _ := Tree(base, rootSID, TreeOpts{Observers: false})
+	without, _ := Tree(t.Context(), base, rootSID, TreeOpts{Observers: false})
 	for _, c := range without.Children {
 		if c.Edge == "observer" {
 			t.Error("observer edge should not appear without Observers opt-in")
 		}
 	}
 
-	with, _ := Tree(base, rootSID, TreeOpts{Observers: true})
+	with, _ := Tree(t.Context(), base, rootSID, TreeOpts{Observers: true})
 	var sawObserver bool
 	for _, c := range with.Children {
 		if c.Edge == "observer" && c.SessionID == obsSID {
@@ -180,7 +180,7 @@ func TestTree_DepthLimit(t *testing.T) {
 		}}},
 	})
 
-	root, _ := Tree(base, rootSID, TreeOpts{Depth: 1})
+	root, _ := Tree(t.Context(), base, rootSID, TreeOpts{Depth: 1})
 	if len(root.Children) != 1 {
 		t.Fatalf("depth 1 should still list immediate children, got %d", len(root.Children))
 	}
@@ -206,7 +206,7 @@ func TestTree_DisposedDelegate(t *testing.T) {
 		{Kind: delegatestore.EventDelegateResumabilityClosed, DelegateID: "del1", ResumabilityClosed: &delegatestore.ResumabilityClosed{Reason: "disposed"}},
 	})
 
-	root, err := Tree(base, rootSID, TreeOpts{})
+	root, err := Tree(t.Context(), base, rootSID, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestTree_DisposedDelegate(t *testing.T) {
 
 func TestTree_Render(t *testing.T) {
 	base, rootSID := treeFixture(t)
-	root, _ := Tree(base, rootSID, TreeOpts{Observers: true})
+	root, _ := Tree(t.Context(), base, rootSID, TreeOpts{Observers: true})
 	out := RenderTree(root)
 	if !strings.Contains(out, childSID) || !strings.Contains(out, "explorer") {
 		t.Errorf("render missing delegate child:\n%s", out)
@@ -241,7 +241,7 @@ func TestTree_Render(t *testing.T) {
 // addressed by session id), and an unnamed delegate's node has no label slot.
 func TestTree_DelegateNameLabel(t *testing.T) {
 	base, rootSID := treeFixture(t, func(d *delegatestore.Descriptor) { d.Name = "tree-label" })
-	root, err := Tree(base, rootSID, TreeOpts{})
+	root, err := Tree(t.Context(), base, rootSID, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestTree_DelegateNameLabel(t *testing.T) {
 	// The unmutated fixture's delegate has no name: its node projects the
 	// zero label, which renders as absent.
 	fixtureBase, fixtureRoot := treeFixture(t)
-	fixtureRootTree, _ := Tree(fixtureBase, fixtureRoot, TreeOpts{})
+	fixtureRootTree, _ := Tree(t.Context(), fixtureBase, fixtureRoot, TreeOpts{})
 	if len(fixtureRootTree.Children) != 1 || fixtureRootTree.Children[0].Name != "" {
 		t.Errorf("unnamed child = %#v, want an empty label", fixtureRootTree.Children)
 	}
@@ -289,7 +289,7 @@ func TestTree_JobsUnreadable(t *testing.T) {
 	if err := writeDirAt(filepath.Join(bucket, "sessions", sidA, "jobs.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	root, err := Tree(base, sidA, TreeOpts{})
+	root, err := Tree(t.Context(), base, sidA, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestTree_BoundedJobsScan(t *testing.T) {
 	// a full scan fails the node on it, the bounded scan never reaches it.
 	appendRawLine(t, jobsPath, "{not json}\n")
 
-	root, err := Tree(base, sidA, TreeOpts{})
+	root, err := Tree(t.Context(), base, sidA, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestTree_DelegateChildTranscriptMissing(t *testing.T) {
 			AgentType: "ghost", ToolNameCeiling: []string{"communicate"}, Resumable: true,
 		}}},
 	})
-	root, err := Tree(base, sidA, TreeOpts{})
+	root, err := Tree(t.Context(), base, sidA, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
