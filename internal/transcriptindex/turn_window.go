@@ -182,22 +182,19 @@ func (x *Index) turnOrder(position, count int) ([]turnBoundary, error) {
 }
 
 // preludeBoundary returns the header prelude's boundary, or nil when the
-// covered transcript has no header or an indexed turn_system summary already
-// represents that same turn. It reads the first turn summary at most.
+// covered transcript has no header or a turn summary already represents that
+// same turn. The check is by id across every summary, which the turn-slot
+// table answers as a lookup; a table that cannot name it reads the turn table.
 func (x *Index) preludeBoundary() (*turnBoundary, error) {
 	if x.prelude == nil {
 		return nil, nil
 	}
 	if x.turns.n > 0 {
-		record, err := x.turnRecordAt(0)
+		_, found, err := x.turnSlotOf(x.prelude.ID)
 		if err != nil {
 			return nil, err
 		}
-		id, err := x.strings.get(record.ID)
-		if err != nil {
-			return nil, err
-		}
-		if string(id) == x.prelude.ID {
+		if found {
 			return nil, nil
 		}
 	}
@@ -258,20 +255,24 @@ func (x *Index) selectTurnRange(selector appwire.ThreadTurnWindow) (int, int, Tu
 }
 
 // turnPosition names the transcript position of the last turn whose id is id.
-// The turn-slot table answers it with a lookup; a table that cannot name the
-// id falls back to reading the turn table, so the answer is exactly the one a
-// backwards scan gives.
+// The header prelude is a position of its own that no turn record holds, so it
+// is checked before the table. Every other id is answered by the turn-slot
+// table; a table that cannot name it falls back to reading the turn table, so
+// the answer is exactly the one a backwards scan gives.
 func (x *Index) turnPosition(id string) (int, bool, error) {
+	prelude, err := x.preludeBoundary()
+	if err != nil {
+		return 0, false, err
+	}
+	if prelude != nil && prelude.id == id {
+		return 0, true, nil
+	}
 	slot, found, err := x.turnSlotOf(id)
 	if err != nil {
 		return 0, false, err
 	}
 	if !found {
 		return 0, false, nil
-	}
-	prelude, err := x.preludeBoundary()
-	if err != nil {
-		return 0, false, err
 	}
 	position := int(slot)
 	if prelude != nil {
@@ -301,19 +302,19 @@ func (x *Index) candidatesForTurnSlots(r *reader, selected []turnBoundary) ([]ap
 	// selected turn that accounts no entry (Version 0, an interrupted open)
 	// cannot narrow the span another selected turn needs.
 	var lo, hi uint64
-	any := false
+	spanned := false
 	for _, turn := range selected {
 		if !turn.indexed {
 			continue
 		}
 		slots[turn.slot] = true
-		if !any {
-			lo, hi, any = turn.first, turn.version, true
+		if !spanned {
+			lo, hi, spanned = turn.first, turn.version, true
 		} else {
 			lo, hi = min(lo, turn.first), max(hi, turn.version)
 		}
 	}
-	if !any {
+	if !spanned {
 		return nil, nil
 	}
 	start, err := x.items.search(func(buf []byte) bool { return decodeItem(buf).Entry < lo })
@@ -343,7 +344,7 @@ func (x *Index) candidatesForTurnSlots(r *reader, selected []turnBoundary) ([]ap
 			return nil, x.fail(err)
 		}
 		for i := range count {
-			itemSlot := base + uint64(i)
+			itemSlot := base + i
 			item := decodeItem(buf[i*itemRecordSize:])
 			included := item.Entry <= hi && slots[item.Turn]
 			if included && !inRun {
