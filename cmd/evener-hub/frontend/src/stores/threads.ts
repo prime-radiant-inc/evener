@@ -6329,9 +6329,9 @@ async function publishAndReconcileThreadHydration(
         // - but the transcript window is bounded, so the proof can age out on
         // a later read. Settle the unedited recovery durably now (an edited
         // composition is the user's own unsent work and survives): the
-        // delivered source is every identity the response reflects: a
-        // recorded item's own id (normal consumption), a lineage id
-        // (inherited input), or the queue's own clientMutationId.
+        // delivered source speaks as a recorded item's own id (normal
+        // consumption) or as a lineage id (inherited input) - never as the
+        // queue's own id, which means still queued, not delivered.
         if (mutationStateAuthoritative) {
           const evidence = deliveredSourceIds(published);
           await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
