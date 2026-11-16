@@ -95,6 +95,27 @@ func TestProject_ModelChanged(t *testing.T) {
 	}
 }
 
+func TestProject_ModelControlChanged(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	snapshot := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: "th1", BootGeneration: "7"},
+		Revision:  3,
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{"low", "high"}, SupportsReasoning: true},
+		Desired:   &appwire.ModelControlDesired{RequestSequence: 2, ClientMutationID: "pick-2", ModelProvider: "openai", Model: "gpt-5.5", Lifecycle: appwire.ModelControlLifecycleApplied},
+	}
+	out := p.Project(events.SessionEvent{Kind: events.EventModelControlChanged, Data: events.ModelControlChangedData{Snapshot: snapshot}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyThreadModelControlChanged {
+		t.Fatalf("want one model-control notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.ThreadModelControlChangedParams)
+	if !ok {
+		t.Fatalf("params type = %T", out[0].Params)
+	}
+	if params.ThreadID != "th1" || params.Ref != "local:th1" || !reflect.DeepEqual(params.ModelControl, snapshot) {
+		t.Fatalf("params = %+v, want whole snapshot %+v", params, snapshot)
+	}
+}
+
 func TestProject_ReasoningEffortChanged(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{

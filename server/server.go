@@ -341,7 +341,7 @@ type Server struct {
 	compactFunc              func(context.Context) error
 	clearFunc                func(context.Context, appwire.ThreadClearParams) error
 	clearJournal             threadClearJournalFile
-	modelFunc                func(string) error
+	modelControlBindFunc     func(appwire.ModelControlAuthority) (ModelControlBinding, error)
 	visionModelFunc          func(string) error
 	nameFunc                 func(string) error
 	reasoningEffortFunc      func(string) error
@@ -541,21 +541,6 @@ func (s *Server) UpdateSessionInfo(sessionID, model, profile string) {
 	s.mu.Unlock()
 }
 
-// UpdateSessionInfoFrom sets session identity fields from a sample that runs
-// under the server lock. A caller whose read raced a newer model-changed
-// projection - the daemon's model-set hook reading the profile while a turn
-// boundary commits a queued switch - would otherwise install a stale snapshot
-// after the projection already installed the new model, regressing the cache
-// with no corrective event behind it. Sampling inside the write's critical
-// section installs whatever the session reports at write time, so the cache
-// can only move forward.
-func (s *Server) UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string)) {
-	s.mu.Lock()
-	model, profile := sample()
-	s.updateSessionInfoLocked(sessionID, model, profile)
-	s.mu.Unlock()
-}
-
 func (s *Server) updateSessionInfoLocked(sessionID, model, profile string) {
 	s.status.SessionID = sessionID
 	s.status.Model = model
@@ -675,10 +660,19 @@ func (s *Server) SetClearFunc(fn func(context.Context, appwire.ThreadClearParams
 	s.mu.Unlock()
 }
 
-// SetModelFunc sets the function called by thread/model/set.
-func (s *Server) SetModelFunc(fn func(string) error) {
+// ModelControlBinding fixes one model-set admission to the session and envelope
+// source that own the authority resolved by the daemon.
+type ModelControlBinding struct {
+	Set      func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error)
+	Envelope ThreadEnvelopeSource
+}
+
+// SetModelControlBindFunc installs the authority resolver used by
+// thread/model/set. The resolver runs while the daemon's identity lock is held,
+// so the returned binding cannot straddle a thread/clear replacement.
+func (s *Server) SetModelControlBindFunc(fn func(appwire.ModelControlAuthority) (ModelControlBinding, error)) {
 	s.mu.Lock()
-	s.modelFunc = fn
+	s.modelControlBindFunc = fn
 	s.mu.Unlock()
 }
 

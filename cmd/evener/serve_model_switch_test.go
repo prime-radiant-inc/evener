@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -52,13 +53,9 @@ func waitServeTurn(ctx context.Context, turns <-chan string, want string) error 
 // the real `serve` daemon with a scripted provider, connects an appwire
 // client over the websocket RPC exactly like the TUI does, and drives a model
 // switch through the real thread/model/set RPC handler
-// (Server.handleAppThreadModelSet → the SetModelFunc closure installed in
-// serve.go). It then asserts thread/read reports the NEW model IMMEDIATELY —
-// with no turn ever started — which is only true if serve.go's closure calls
-// srv.UpdateSessionInfo synchronously after sess.SetModel succeeds. Deleting
-// that UpdateSessionInfo line (while leaving sess.SetModel(model) itself
-// intact) makes this test fail, because status.Model would then only refresh
-// on the next EventSessionStart, which never fires again mid-session.
+// (Server.handleAppThreadModelSet → the authority-bound Session closure
+// installed in serve.go). It then asserts the response and immediate read carry
+// the same complete canonical snapshot, with no turn ever started.
 func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	installServeScriptedProvider(t, &scriptedProvider{
 		name: "openai",
@@ -126,14 +123,18 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 	if before.Thread.ModelProvider != "gpt-initial" {
 		t.Fatalf("initial thread/read ModelProvider = %q, want %q", before.Thread.ModelProvider, "gpt-initial")
 	}
+	if before.Thread.Evener.ModelControl == nil || before.Thread.Evener.Capabilities.ModelControlVersion != appwire.ModelControlVersion1 {
+		t.Fatalf("initial model control = %+v, capabilities = %+v", before.Thread.Evener.ModelControl, before.Thread.Evener.Capabilities)
+	}
 
 	// Drive the switch through the REAL wired path: the thread/model/set RPC
-	// handler, which invokes serve.go's SetModelFunc closure.
-	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+	// handler, which invokes serve.go's authority-bound Session closure.
+	response, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "openai",
 		Model:         "gpt-switched",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)
 	}
 
@@ -143,9 +144,11 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 	if err != nil {
 		t.Fatalf("ThreadRead (after): %v", err)
 	}
-	if after.Thread.ModelProvider != "gpt-switched" {
-		t.Fatalf("thread/read ModelProvider after switch = %q, want %q (G2: daemon's cached session info must refresh synchronously, with no intervening turn)",
-			after.Thread.ModelProvider, "gpt-switched")
+	if response.ModelControl == nil || after.Thread.Evener.ModelControl == nil || !reflect.DeepEqual(*response.ModelControl, *after.Thread.Evener.ModelControl) {
+		t.Fatalf("response/read model control differ: response=%+v read=%+v", response.ModelControl, after.Thread.Evener.ModelControl)
+	}
+	if after.Thread.Evener.ModelControl.Active.Model != "gpt-switched" {
+		t.Fatalf("thread/read model after switch = %+v, want gpt-switched", after.Thread.Evener.ModelControl)
 	}
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
@@ -271,7 +274,7 @@ func TestServeModelSwitch_SubscribedClientLearnsSwitchAtRest(t *testing.T) {
 	}
 	frames := collectServeModelSwitchFrames(client, ref)
 
-	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "openai",
 		Model:         "gpt-switched",
@@ -393,7 +396,7 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 
 	// The pick mid-turn: accepted now, applied at the boundary. This is the
 	// call that used to answer Conflict "session is processing".
-	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
 		Ref:           ref,
 		ModelProvider: "openai",
 		Model:         "gpt-queued",
@@ -616,7 +619,7 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatal("thread/read ChangeModel = false, want true after provider failure")
 	}
 
-	if err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
+	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
 		Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol",
 	}); err != nil {
 		t.Fatalf("ThreadModelSet after provider failure: %v", err)

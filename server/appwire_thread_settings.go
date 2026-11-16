@@ -41,36 +41,60 @@ func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.Thr
 	return appwire.EmptyResponse{}, nil
 }
 
-func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
-		return appwire.EmptyResponse{}, err
+func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+	params.Model = strings.TrimSpace(params.Model)
+	params.ModelProvider = strings.TrimSpace(params.ModelProvider)
+	if params.Model == "" {
+		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("model is required")
 	}
-	model := strings.TrimSpace(params.Model)
-	if model == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("model is required")
+	hasMutation := params.ClientMutationID != ""
+	hasInstance := params.ExpectedInstanceID != ""
+	hasGeneration := params.ExpectedBootGeneration != ""
+	if (hasMutation || hasInstance || hasGeneration) && (!hasMutation || !hasInstance || !hasGeneration) {
+		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("model control identity requires client mutation, instance, and boot generation")
 	}
-	if provider := strings.TrimSpace(params.ModelProvider); provider != "" {
-		model = provider + "/" + model
-	}
+
 	s.mu.RLock()
-	fn := s.modelFunc
+	if err := s.requireRootMutationTargetLocked(params.Ref, ""); err != nil {
+		s.mu.RUnlock()
+		return appwire.ThreadModelSetResponse{}, err
+	}
+	authority := appwire.ModelControlAuthority{InstanceID: s.appThreadID, BootGeneration: s.appBootGeneration}
+	if hasInstance && (params.ExpectedInstanceID != authority.InstanceID || params.ExpectedBootGeneration != authority.BootGeneration) {
+		s.mu.RUnlock()
+		return appwire.ThreadModelSetResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "thread instance is stale")
+	}
+	bind := s.modelControlBindFunc
+	if bind == nil {
+		s.mu.RUnlock()
+		return appwire.ThreadModelSetResponse{}, appwire.Unavailable("model change not available")
+	}
+	binding, err := bind(authority)
 	s.mu.RUnlock()
+	if err != nil {
+		return appwire.ThreadModelSetResponse{}, err
+	}
 	// No processing gate: while a turn runs, the session queues the switch and
 	// applies it at the turn boundary (Session.SetModel's queue path), so a
 	// pick made in the composer lands on the next turn instead of erroring.
 	// The running turn still finishes on the model it started with.
-	if fn == nil {
-		return appwire.EmptyResponse{}, appwire.Unavailable("model change not available")
+	if binding.Set == nil || binding.Envelope == nil {
+		return appwire.ThreadModelSetResponse{}, appwire.Unavailable("model change not available")
 	}
-	if err := fn(model); err != nil {
+	response, err := binding.Set(params)
+	if err != nil {
 		// Every SetModel failure is mapped to InvalidParams deliberately: the
 		// hook's error modes today are all validation-shaped (unknown model,
 		// not a member of the instance's catalog, unresolvable ref). Revisit
 		// this blanket mapping if SetModel grows I/O failure modes (e.g. a live
 		// ListModels fetch failing), which would deserve a distinct code.
-		return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams(err.Error())
 	}
-	return appwire.EmptyResponse{}, nil
+	if snapshot := s.refreshModelControlFacet(authority, binding.Envelope); snapshot != nil {
+		response.ModelControlVersion = appwire.ModelControlVersion1
+		response.ModelControl = snapshot
+	}
+	return response, nil
 }
 
 func (s *Server) handleAppThreadVisionModelSet(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
@@ -134,6 +158,12 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 }
 
 func (s *Server) requireRootMutationTarget(rawRef, threadID string) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.requireRootMutationTargetLocked(rawRef, threadID)
+}
+
+func (s *Server) requireRootMutationTargetLocked(rawRef, threadID string) error {
 	target := strings.TrimSpace(threadID)
 	if strings.TrimSpace(rawRef) != "" {
 		ref, err := appwire.ParseRef(rawRef)
@@ -143,17 +173,15 @@ func (s *Server) requireRootMutationTarget(rawRef, threadID string) error {
 		if ref.SourceID != "local" {
 			return appwire.SessionUnavailable("thread is unavailable")
 		}
-		s.mu.RLock()
 		root := s.appThreadID
 		stableRef := s.appRef
-		s.mu.RUnlock()
 		if stableRef != "" && strings.TrimSpace(rawRef) == stableRef {
 			target = root
 		} else {
 			target = ref.ThreadID
 		}
 	}
-	root := s.appProjectionThreadID()
+	root := s.appThreadID
 	if target != "" && target != root {
 		return appwire.SessionUnavailable("thread is not served by this daemon: " + target)
 	}

@@ -1496,7 +1496,8 @@ func (s *LocalDaemonSource) ShutdownThread(ctx context.Context, params appwire.T
 
 func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) error {
 	return localForwardVoid(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) error {
-		return client.ThreadModelSet(ctx, params)
+		_, err := client.ThreadModelSet(ctx, params)
+		return err
 	})
 }
 

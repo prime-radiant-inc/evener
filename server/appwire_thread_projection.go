@@ -41,6 +41,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	ref := s.appRef
 	processing := s.processing
 	envelope := s.appEnvelope
+	modelControl := cloneModelControlSnapshot(envelope.ModelControl)
 	activeTurnID := s.appActiveTurnID
 
 	if sourceID == "" {
@@ -131,6 +132,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			CompactionThreshold:    metrics.CompactionThreshold,
 			ContextWindowSource:    metrics.WindowSource,
 			Capabilities:           s.appCapabilitiesLocked(status.State, processing),
+			ModelControl:           modelControl,
 			Diagnostics:            threadDiagnostics,
 			Queue:                  queue,
 			PendingMutations:       pendingMutations,
@@ -450,7 +452,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	// handleAppTurnSteer dispatches through.
 	steerAvailable := s.retrySafeTurns.Steer != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
-	return appwire.ThreadCapabilities{
+	capabilities := appwire.ThreadCapabilities{
 		AskFence:                   true,
 		VoicePresentationContextV1: s.retrySafeTurns.Start != nil && steerAvailable,
 		Send:                       !active && !closed,
@@ -492,7 +494,7 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		Clear:             clearAvailable,
 		ForkFromTurn:      false,
 		Shutdown:          s.shutdownFunc != nil,
-		ChangeModel:       s.modelFunc != nil && !closed,
+		ChangeModel:       s.modelControlBindFunc != nil && !closed,
 		ChangeVisionModel: s.visionModelFunc != nil && !closed,
 		Rename:            s.nameFunc != nil && !closed,
 		// Queue answers "can this harness queue work", not "is a turn running
@@ -528,6 +530,10 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		CommandInput: s.skillInputSupportedLocked(),
 		WindowRead:   true,
 	}
+	if s.appEnvelope.ModelControl != nil && completeModelControlSnapshot(*s.appEnvelope.ModelControl) {
+		capabilities.ModelControlVersion = appwire.ModelControlVersion1
+	}
+	return capabilities
 }
 
 func (s *Server) ensureAppProjectorLocked(threadID string) {

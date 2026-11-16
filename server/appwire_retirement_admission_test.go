@@ -187,7 +187,19 @@ func retirementEngineServer(t *testing.T, adapters ...llm.ProviderAdapter) (*Ser
 	s := NewServer(ServerConfig{})
 	s.SetAppIdentity("local", root.ID())
 	s.SetReasoningEffortFunc(root.SetReasoningEffort)
-	s.SetModelFunc(root.SetModel)
+	modelSource := &stubThreadEnvelopeSource{modelControl: root.ModelControlSnapshot()}
+	s.SetModelControlBindFunc(func(appwire.ModelControlAuthority) (ModelControlBinding, error) {
+		return ModelControlBinding{Envelope: modelSource, Set: func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+			response, err := root.SetModelControl(agent.ModelControlRequest{
+				ModelProvider: params.ModelProvider,
+				Model:         params.Model,
+			})
+			if response.ModelControl != nil {
+				modelSource.modelControl = *response.ModelControl
+			}
+			return response, err
+		}}, nil
+	})
 	s.SetVisionModelFunc(root.SetVisionModel)
 	s.SetCompactFunc(root.Compact)
 	s.SetNameFunc(root.Rename)

@@ -110,10 +110,9 @@ type serveServer interface {
 	// one seam the daemon samples at change time. See server/thread_envelope.go.
 	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
 	RefreshThreadEnvelope()
-	SetModelFunc(func(string) error)
+	SetModelControlBindFunc(func(appwire.ModelControlAuthority) (server.ModelControlBinding, error))
 	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
-	UpdateSessionInfoFrom(sessionID string, sample func() (model, profile string))
 	SetNameFunc(func(string) error)
 	SetReasoningEffortFunc(func(string) error)
 	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
@@ -892,8 +891,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// Writing it here, from data the daemon already has locally, closes the
 	// window synchronously for every session this daemon starts with --
 	// fresh and resumed alike, since both publish through the same buffered
-	// EventSessionStart. This mirrors SetModelFunc's closure, which already
-	// makes this exact synchronous call after a runtime model switch.
+	// EventSessionStart. Model switches use their focused envelope facet instead
+	// of rewriting this legacy status cache in the response path.
 	p := sess.Profile()
 	srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
 	srv.SetState(sess.WireState())

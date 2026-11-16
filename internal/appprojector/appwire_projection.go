@@ -300,6 +300,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ContextAssumed:        data.ContextAssumed,
 			CompactionThreshold:   data.CompactionThreshold,
 		})}
+	case events.EventModelControlChanged:
+		data := eventData[events.ModelControlChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadModelControlChanged, appwire.ThreadModelControlChangedParams{
+			ThreadID:     p.threadID,
+			Ref:          p.ref,
+			ModelControl: data.Snapshot,
+		})}
 	case events.EventReasoningEffortChanged:
 		data := eventData[events.ReasoningEffortChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadReasoningEffortChanged, appwire.ThreadReasoningEffortChangedParams{

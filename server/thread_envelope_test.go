@@ -902,6 +902,11 @@ func (c *countingThreadEnvelopeSource) calls() int {
 	return c.n
 }
 
+func (c *countingThreadEnvelopeSource) ModelControlSnapshot() appwire.ModelControlSnapshot {
+	c.hit()
+	return appwire.ModelControlSnapshot{}
+}
+
 func (c *countingThreadEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
 	c.hit()
 	return ContextMetrics{}, 0

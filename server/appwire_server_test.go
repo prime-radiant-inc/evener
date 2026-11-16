@@ -577,27 +577,26 @@ func TestServerAppWireTurnInterruptCancelsTheRunningTurn(t *testing.T) {
 	}
 }
 
-func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
+func TestServerAppWireThreadModelSetPreservesProviderAndModel(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	var got string
-	srv.SetModelFunc(func(model string) error {
-		got = model
-		return nil
+	var got appwire.ThreadModelSetParams
+	setModelControlTestHook(t, srv, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		got = params
+		return appwire.ThreadModelSetResponse{}, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           "local:th_1",
+		Ref:           "local:s1",
 		ModelProvider: "openai",
 		Model:         "gpt-5",
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
-	if got != "openai/gpt-5" {
-		t.Fatalf("model=%q, want openai/gpt-5", got)
+	if got.ModelProvider != "openai" || got.Model != "gpt-5" {
+		t.Fatalf("target=%+v, want separate openai and gpt-5 fields", got)
 	}
 }
 

@@ -42,6 +42,7 @@ import (
 // refreshFacets always stores a freshly sampled value and never mutates one in
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
+	ModelControl           *appwire.ModelControlSnapshot
 	LatestExecutionTurnID  string
 	ConversationProvenance *appwire.ConversationProvenanceState
 	PendingAsk             *appwire.PendingAskState
@@ -144,6 +145,7 @@ type threadEnvelope struct {
 // agent.EnvelopeSampling, so a new value has to be declared there, where the
 // rule is written and where agent's own suite proves it.
 type ThreadEnvelopeSource interface {
+	ModelControlSnapshot() appwire.ModelControlSnapshot
 	LatestExecutionTurnID() string
 	// ContextStatus returns the context pair from one shared history snapshot
 	// and one profile/measurement snapshot, not a globally atomic session
@@ -198,13 +200,15 @@ const (
 	// (MODEL_CHANGED) re-sample it too.
 	facetTurnFailure
 	facetFrontier
+	facetModelControl
 )
 
 // facetAll is every facet. Used for the seed at identity install, which is the
 // one moment every value changes at once because the session itself changed.
 const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 	facetGoal | facetWork | facetFailures | facetAsk | facetEscalations |
-	facetReasoning | facetVision | facetMeta | facetTurnFailure | facetFrontier
+	facetReasoning | facetVision | facetMeta | facetTurnFailure | facetFrontier |
+	facetModelControl
 
 // facetsByEvent maps a session event to the envelope facets it can have moved.
 //
@@ -299,6 +303,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// Values whose events are not direct task/goal carriers.
 	events.EventSessionNameChanged:     facetMeta,
 	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics | facetTurnFailure,
+	events.EventModelControlChanged:    facetModelControl,
 	events.EventReasoningEffortChanged: facetReasoning,
 	events.EventVisionModelChanged:     facetVision,
 
@@ -388,6 +393,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
 	urlsCarrierGeneration := s.appEnvelope.urlsCarrierGeneration
 	ref := s.appRef
+	bootGeneration := s.appBootGeneration
 	s.mu.RUnlock()
 	if src == nil {
 		return
@@ -401,6 +407,10 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 
 	var next threadEnvelope
+	if facets&facetModelControl != 0 {
+		snapshot := src.ModelControlSnapshot()
+		next.ModelControl = &snapshot
+	}
 	if facets&facetFrontier != 0 {
 		next.LatestExecutionTurnID = src.LatestExecutionTurnID()
 	}
@@ -506,7 +516,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	// failure count and escalation cards under its successor's identity, with
 	// nothing afterwards to correct it. The fix is NOT to sample under the gate:
 	// that is the I/O this change exists to move off it.
-	if s.appThreadID == threadID && s.appSourceID == sourceID && s.appEnvelopeSourceGeneration == sourceGeneration {
+	if s.appThreadID == threadID && s.appSourceID == sourceID && s.appBootGeneration == bootGeneration && s.appEnvelopeSourceGeneration == sourceGeneration {
 		assignFacets := facets
 		if assignFacets&facetTasks != 0 && s.appEnvelope.taskCarrierGeneration != taskCarrierGeneration {
 			assignFacets &^= facetTasks
@@ -531,6 +541,42 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	s.commitConversationProvenance(threadID, sourceID, ref, next.ConversationProvenance)
 }
 
+func (s *Server) refreshModelControlFacet(authority appwire.ModelControlAuthority, src ThreadEnvelopeSource) *appwire.ModelControlSnapshot {
+	if src == nil {
+		return nil
+	}
+	snapshot := src.ModelControlSnapshot()
+	if snapshot.Authority != authority || !completeModelControlSnapshot(snapshot) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appThreadID != authority.InstanceID || s.appBootGeneration != authority.BootGeneration {
+		return nil
+	}
+	next := threadEnvelope{ModelControl: &snapshot}
+	s.appEnvelope.assign(facetModelControl, next, false, false, false)
+	return cloneModelControlSnapshot(s.appEnvelope.ModelControl)
+}
+
+func completeModelControlSnapshot(snapshot appwire.ModelControlSnapshot) bool {
+	return snapshot.Authority.InstanceID != "" && snapshot.Authority.BootGeneration != "" &&
+		snapshot.Revision != 0 && snapshot.Active.ModelProvider != "" && snapshot.Active.Model != ""
+}
+
+func cloneModelControlSnapshot(snapshot *appwire.ModelControlSnapshot) *appwire.ModelControlSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	clone := *snapshot
+	clone.Active.ReasoningEffortLevels = append([]string(nil), snapshot.Active.ReasoningEffortLevels...)
+	if snapshot.Desired != nil {
+		desired := *snapshot.Desired
+		clone.Desired = &desired
+	}
+	return &clone
+}
+
 // assign copies exactly the named facets out of next. notesStale and urlsStale
 // name the overlapping-carrier cases: a notes carrier or a URLs carrier
 // committed after this sample was taken, so the sampled fields that carrier
@@ -546,6 +592,11 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 // sampled and then dropped, which is far easier to see in six lines of
 // assignment than spread across the sampler.
 func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdStale, notesStale, urlsStale bool) {
+	if facets&facetModelControl != 0 && next.ModelControl != nil && completeModelControlSnapshot(*next.ModelControl) {
+		if e.ModelControl == nil || e.ModelControl.Authority != next.ModelControl.Authority || e.ModelControl.Revision <= next.ModelControl.Revision {
+			e.ModelControl = cloneModelControlSnapshot(next.ModelControl)
+		}
+	}
 	if facets&facetFrontier != 0 {
 		e.LatestExecutionTurnID = next.LatestExecutionTurnID
 	}

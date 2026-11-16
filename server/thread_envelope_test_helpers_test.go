@@ -13,6 +13,8 @@ import (
 //
 // Zero value reports the same thing a daemon with nothing to say reports.
 type stubThreadEnvelopeSource struct {
+	modelControl     appwire.ModelControlSnapshot
+	parkModelControl func()
 	contextPressure  float64
 	contextMetrics   ContextMetrics
 	detailedStatus   DetailedStatus
@@ -41,6 +43,14 @@ type stubThreadEnvelopeSource struct {
 	// parkAfterMeta runs after SessionMeta has copied its return value, allowing a
 	// test to hold an old goal sample in flight while a direct carrier commits.
 	parkAfterMeta func()
+}
+
+func (s *stubThreadEnvelopeSource) ModelControlSnapshot() appwire.ModelControlSnapshot {
+	snapshot := s.modelControl
+	if s.parkModelControl != nil {
+		s.parkModelControl()
+	}
+	return snapshot
 }
 
 func (s *stubThreadEnvelopeSource) LatestExecutionTurnID() string { return "" }

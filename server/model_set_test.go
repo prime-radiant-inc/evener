@@ -9,6 +9,18 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+func setModelControlTestHook(t *testing.T, s *Server, fn func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error)) *stubThreadEnvelopeSource {
+	t.Helper()
+	installModelControlIdentity(t, s, "s1", "1", "local:s1")
+	snapshot := modelControlSnapshot("s1", "1", 1, "gpt-old")
+	source := &stubThreadEnvelopeSource{modelControl: snapshot}
+	s.SetThreadEnvelopeSource(source)
+	s.SetModelControlBindFunc(func(appwire.ModelControlAuthority) (ModelControlBinding, error) {
+		return ModelControlBinding{Set: fn, Envelope: source}, nil
+	})
+	return source
+}
+
 // While a turn runs, the protocol layer must NOT refuse a model switch: the
 // session's SetModel queues it for the turn boundary (the composer's pick-
 // mid-turn contract), so the handler relays to the hook and succeeds. The
@@ -16,7 +28,10 @@ import (
 func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	called := false
-	s.SetModelFunc(func(string) error { called = true; return nil })
+	setModelControlTestHook(t, s, func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		called = true
+		return appwire.ThreadModelSetResponse{}, nil
+	})
 	s.SetProcessing(true)
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"}); err != nil {
@@ -30,7 +45,9 @@ func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	hookErr := errors.New("unknown instance: nope")
-	s.SetModelFunc(func(string) error { return hookErr })
+	setModelControlTestHook(t, s, func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		return appwire.ThreadModelSetResponse{}, hookErr
+	})
 
 	_, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
 	if err == nil {
@@ -44,28 +61,35 @@ func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 	}
 }
 
-func TestHandleAppThreadModelSet_SuccessReturnsEmptyResponse(t *testing.T) {
+func TestHandleAppThreadModelSet_SuccessReturnsTypedResponse(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	var got string
 	called := false
-	s.SetModelFunc(func(m string) error { got = m; called = true; return nil })
+	source := setModelControlTestHook(t, s, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		got = params.Model
+		called = true
+		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted}, nil
+	})
 
 	resp, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
 	if err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
-	if resp != (appwire.EmptyResponse{}) {
-		t.Fatalf("expected EmptyResponse, got %#v", resp)
+	if resp.ModelControlVersion != appwire.ModelControlVersion1 || resp.ModelControl == nil || resp.ModelControl.Revision != source.modelControl.Revision {
+		t.Fatalf("typed response = %#v", resp)
 	}
 	if !called || got != "claude-x" {
 		t.Fatalf("hook not called as expected: called=%v got=%q", called, got)
 	}
 }
 
-func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) {
+func TestHandleAppThreadModelSet_PreservesQualifiedModelAndProviderFields(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	var got string
-	s.SetModelFunc(func(m string) error { got = m; return nil })
+	var got appwire.ThreadModelSetParams
+	setModelControlTestHook(t, s, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		got = params
+		return appwire.ThreadModelSetResponse{}, nil
+	})
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
 		ModelProvider: "openrouter",
@@ -73,21 +97,21 @@ func TestHandleAppThreadModelSet_JoinsSlashedModelUnconditionally(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
-	if got != "openrouter/anthropic/claude-x" {
-		t.Fatalf("expected joined ref %q, got %q", "openrouter/anthropic/claude-x", got)
+	if got.ModelProvider != "openrouter" || got.Model != "anthropic/claude-x" {
+		t.Fatalf("target changed: %+v", got)
 	}
 }
 
 func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.4", Profile: "openai"})
-	s.SetModelFunc(func(m string) error {
-		// Mirrors serve.go: the hook itself refreshes the cached session info
-		// synchronously after a successful switch, rather than waiting for the
-		// next EventSessionStart (which never fires again mid-session).
-		s.UpdateSessionInfo("s1", m, "anthropic")
-		return nil
+	source := setModelControlTestHook(t, s, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		snapshot := modelControlSnapshot("s1", "1", 2, params.Model)
+		snapshot.Active.ModelProvider = params.ModelProvider
+		source := envelopeSourceFor(s)
+		source.modelControl = snapshot
+		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &snapshot}, nil
 	})
+	_ = source
 
 	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{ModelProvider: "anthropic", Model: "claude-opus-4-6"}); err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
@@ -97,8 +121,8 @@ func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
 	if err != nil {
 		t.Fatalf("handleAppThreadRead: %v", err)
 	}
-	if thread.Thread.ModelProvider != "anthropic/claude-opus-4-6" {
-		t.Fatalf("thread/read ModelProvider = %q, want anthropic/claude-opus-4-6 with no intervening turn", thread.Thread.ModelProvider)
+	if thread.Thread.Evener.ModelControl == nil || thread.Thread.Evener.ModelControl.Active.ModelProvider != "anthropic" || thread.Thread.Evener.ModelControl.Active.Model != "claude-opus-4-6" {
+		t.Fatalf("thread/read ModelControl = %+v, want the new snapshot with no intervening turn", thread.Thread.Evener.ModelControl)
 	}
 }
 

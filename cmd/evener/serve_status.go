@@ -159,6 +159,10 @@ type liveThreadEnvelopeSource struct {
 	session func() agent.EnvelopeSampling
 }
 
+func (l liveThreadEnvelopeSource) ModelControlSnapshot() appwire.ModelControlSnapshot {
+	return l.session().ModelControlSnapshot()
+}
+
 func (l liveThreadEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
 	metrics, pressure := l.session().ContextStatus()
 	return server.ContextMetrics{
