@@ -69,7 +69,8 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 	// and leave it owning its own memo.
 	view := &Index{readView: true, transcript: x.transcript, path: x.path, derivedOwner: x,
 		meta: x.meta, items: x.items, turns: x.turns, updates: x.updates,
-		strings: x.strings, prelude: x.prelude, builder: x.builder}
+		strings: x.strings, prelude: x.prelude, builder: x.builder,
+		turnSlots: x.turnSlots, preludeOwner: x}
 	if length >= x.meta.Length {
 		x.cutView = nil
 	} else if cached := x.cutView; cached != nil && x.cutLength == length && cached.meta.Incarnation == x.meta.Incarnation {
@@ -89,6 +90,8 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 			view.prelude = nil
 			view.items = table{size: itemRecordSize, buf: []byte{}}
 			view.turns = table{size: turnRecordSize, buf: []byte{}}
+			view.turnSlots = nil
+			view.preludeOwner = nil
 			view.updates = table{size: updateRecordSize, buf: []byte{}}
 			view.strings = blob{buf: []byte{}}
 			view.builder = newBuilder(view)
