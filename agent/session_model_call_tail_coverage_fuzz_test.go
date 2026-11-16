@@ -77,7 +77,7 @@ func FuzzModelCallTailCoverage(f *testing.F) {
 
 		// SystemPromptAsUser with no leading user message takes the prepend branch.
 		s.cfg.SystemPromptAsUser = true
-		built := s.buildModelRequest(s.currentProfile(), "tail system", []llm.Message{llm.Assistant("prior")}, nil, "")
+		built := s.buildModelRequest(s.currentProfile(), "tail system", []llm.Message{llm.Assistant("prior")}, nil, "", 0)
 		if len(built.Messages) != 2 || built.Messages[0].Role != llm.RoleUser || built.Messages[0].Text() != "tail system" {
 			t.Fatalf("system-as-user request = %#v", built.Messages)
 		}

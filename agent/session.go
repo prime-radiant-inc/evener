@@ -1349,6 +1349,11 @@ type Session struct {
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
+	// cachedToolDefsJSONBytes is cachedToolDefs' serialized length, measured
+	// where the defs are built so the token estimator can price them without
+	// re-serializing the list every round (#6406). It is written only where
+	// cachedToolDefs is, and must describe exactly the list beside it.
+	cachedToolDefsJSONBytes int
 
 	systemPromptOverride string
 	cachedSystemPrompt   string

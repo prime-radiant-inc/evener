@@ -80,8 +80,11 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 	tokens := estimateMessagesInputTokens(t, req.Messages)
 	if len(req.Tools) > 0 {
-		b, _ := json.Marshal(req.Tools)
-		tokens += len(b) / 4
+		toolBytes := req.ToolsJSONBytes
+		if toolBytes <= 0 {
+			toolBytes = ToolsJSONBytes(req.Tools)
+		}
+		tokens += toolBytes / 4
 	}
 	if req.ResponseFormat != nil {
 		b, _ := json.Marshal(req.ResponseFormat)
@@ -94,6 +97,21 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 		Provider: req.Provider,
 		Model:    req.Model,
 	}
+}
+
+// ToolsJSONBytes returns the byte length of defs' serialized form: the length
+// the local estimate bills a tool list by. A caller that builds one tool list
+// and prices many requests over it can measure the list once and stamp
+// Request.ToolsJSONBytes, which leaves the estimate byte-identical while
+// skipping the marshal on every request (#6406). An empty list is 0, and a
+// list the encoder rejects is 0 too — the same share today's estimate bills
+// for it, since json.Marshal returns no bytes alongside its error.
+func ToolsJSONBytes(defs []ToolDefinition) int {
+	if len(defs) == 0 {
+		return 0
+	}
+	b, _ := json.Marshal(defs)
+	return len(b)
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for

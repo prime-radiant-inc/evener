@@ -93,18 +93,18 @@ func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
 	msgs := []llm.Message{llm.User("hi")}
 
 	off := &Session{env: netEnv(t, false)}
-	if off.buildModelRequest(profile, "sys", msgs, nil, "").WebSearch {
+	if off.buildModelRequest(profile, "sys", msgs, nil, "", 0).WebSearch {
 		t.Errorf("net=off must disable provider-native web search even when the profile supports it")
 	}
 
 	on := &Session{env: netEnv(t, true)}
-	if !on.buildModelRequest(profile, "sys", msgs, nil, "").WebSearch {
+	if !on.buildModelRequest(profile, "sys", msgs, nil, "", 0).WebSearch {
 		t.Errorf("net=on must keep provider-native web search available")
 	}
 
 	// Unsandboxed: the profile capability passes through unchanged (byte-identical).
 	plain := &Session{env: execenv.NewLocalExecutionEnvironment(t.TempDir())}
-	if !plain.buildModelRequest(profile, "sys", msgs, nil, "").WebSearch {
+	if !plain.buildModelRequest(profile, "sys", msgs, nil, "", 0).WebSearch {
 		t.Errorf("an unsandboxed session must pass the profile web-search capability through unchanged")
 	}
 }
