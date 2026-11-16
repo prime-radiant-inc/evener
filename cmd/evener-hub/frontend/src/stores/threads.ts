@@ -1988,8 +1988,9 @@ async function retireDeliveredPromoteRecoveriesForRefs(
   for (const targetRef of targetRefs) {
     const settled = settledSourceIds(trackedThreadModel(targetRef));
     if (settled.size === 0) continue;
+    let retired: string[] = [];
     try {
-      await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, settled);
+      retired = await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, settled);
     } catch {
       continue;
     }
@@ -1998,12 +1999,11 @@ async function retireDeliveredPromoteRecoveriesForRefs(
     // hears it, so a cached recovery row would render again until some later
     // read re-projects. The dispatcher's own onStorageChange fired BEFORE
     // this retire ran, so the notification it carried read the row still
-    // present. The notify is unconditional in the settled evidence: another
-    // tab's sweep may have deleted the row first (this call returns nothing)
-    // while THIS tab's cached projection still holds it, and only a fresh
-    // projection read clears the tab-local cache. A no-op refresh is
-    // idempotent.
-    notifyMutationPersistence([targetRef]);
+    // present. Only a retirement that removed something owes a fresh one:
+    // the gate keeps ordinary frames from waking the projection refresh for
+    // every session with mere transcript evidence (which would start the
+    // mutation runtime in hosts that never opened it).
+    if (retired.length > 0) notifyMutationPersistence([targetRef]);
     if (!isCurrentMutationRuntime(runtime)) return;
   }
 }
@@ -6200,10 +6200,8 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     const evidence = settledSourceIds(model);
     void runtime.storage
       .retireDeliveredPromoteRecoveries(ref, evidence)
-      .then(() => {
-        // Unconditional in the evidence: another tab's sweep may have deleted
-        // the row first while this tab's cached projection still holds it.
-        notifyMutationPersistence([ref]);
+      .then((retired) => {
+        if (retired.length > 0) notifyMutationPersistence([ref]);
       })
       .catch(() => {
         // A later authoritative read runs the same retirement.
@@ -6352,11 +6350,8 @@ async function publishAndReconcileThreadHydration(
         // queue's own id, which means still queued, not delivered.
         if (mutationStateAuthoritative) {
           const evidence = settledSourceIds(published);
-          await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
-          // Unconditional in the evidence: another tab's sweep may have
-          // deleted the row first while this tab's cached projection still
-          // holds it.
-          notifyMutationPersistence([ref]);
+          const retired = await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
+          if (retired.length > 0) notifyMutationPersistence([ref]);
         }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
@@ -7951,10 +7946,8 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
   const evidence = settledSourceIds(model);
   void runtime.storage
     .retireDeliveredPromoteRecoveries(ref, evidence)
-    .then(() => {
-      // Unconditional in the evidence: another tab's sweep may have deleted
-      // the row first while this tab's cached projection still holds it.
-      notifyMutationPersistence([ref]);
+    .then((retired) => {
+      if (retired.length > 0) notifyMutationPersistence([ref]);
     })
     .catch(() => {
       // A later accepted snapshot runs the same retirement.

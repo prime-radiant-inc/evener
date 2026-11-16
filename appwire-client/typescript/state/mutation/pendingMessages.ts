@@ -456,8 +456,20 @@ function mergePendingRows<A extends MutationAttachmentRef>(
   // Lineage shares display identity, but only the consuming command owns its
   // actions. A retained source recovery must not make that command editable.
   const consumer = isSteeringRow(row) ? row : isSteeringRow(existing) ? existing : undefined;
+  // Two refused promotions of one still-queued entry (two tabs steering
+  // through the same index shift) share the entry's lineage: the queue-shaped
+  // row is the message, and an unedited refused promote merging into it must
+  // not re-stamp its refused identity over the queue's - the twin would
+  // render as refused work with no controls (the queue-row merge fixes one
+  // recovery; this pass sees the rest).
+  const queueRowOverRefusedPromote =
+    row.method === "queue" &&
+    existing.method === "promote" &&
+    existing.state === "refused" &&
+    (row.state === "queued" || row.state === "held");
   return {
     ...existing,
+    ...(queueRowOverRefusedPromote ? { method: row.method, state: row.state } : {}),
     ...(isSteeringRow(row)
       ? {
           method: row.method,

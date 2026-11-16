@@ -627,6 +627,49 @@ test("a refused promote whose entry is still queued renders as the queue's row w
   });
 });
 
+// Two distinct refused promotions of the same still-queued entry - two tabs
+// steering during the same index shift - leave two recoveries. The queue's
+// presentation must win for BOTH: each unedited recovery merges into the
+// queue row, and neither may render as a second refused row (roborev round
+// 10, finding 1).
+test("two refused promotions of one still-queued entry leave one queue row, not a refused twin", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 9,
+      ids: ["q1"],
+      clientMutationIds: ["m_source"],
+      texts: ["queued text"],
+      preview: ["queued text"],
+    },
+    pendingMutations: [],
+    turns: [],
+  });
+  const refusedPromote = (id: string) =>
+    recovery(id, "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+      payload: { ref: "ref_a", clientMutationId: id, index: 0, expectedEntryId: "q1" },
+      optimisticDisplay: {
+        method: "turn/promoteQueuedAsSteer",
+        input: textInput("queued text"),
+        sourceMutationId: "m_source",
+      },
+      recoveryReason: "promote: queue index 0 out of range (depth 1)",
+    });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [refusedPromote("promote_a"), refusedPromote("promote_b")],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    method: "queue",
+    state: "queued",
+    queueIndex: 0,
+    queueEntryId: "q1",
+  });
+});
+
 test("a carried row stays while its recorded owner is still only pending", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },
