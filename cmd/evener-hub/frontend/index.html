@@ -9,8 +9,9 @@
          rule), so iOS Safari has nothing to auto-zoom into; global.css's
          (any-pointer: coarse) touch-action: pan-x pan-y drops double-tap
          and pinch zoom where touch-action carries the viewport (Chromium),
-         and usePinchVeto prevents Safari's gesturestart, which is what iOS
-         respects for pinch; viewport-fit=cover makes
+         and pinchVeto prevents Safari's gesturestart under the same coarse
+         gate (main.tsx), which is what iOS respects for pinch;
+         viewport-fit=cover makes
          the env(safe-area-inset-*) paddings in the mobile shell nonzero.
          interactive-widget=resizes-content
          makes Chromium/Android shrink the layout viewport when the on-screen

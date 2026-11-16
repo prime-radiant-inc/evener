@@ -19,7 +19,7 @@ const VAR_NAME = "--keyboard-inset";
  * bottom. Pinch zoom (scale > 1) shrinks the visual viewport without occluding
  * anything, so it reports 0 — a guard, not the mechanism. Touch screens
  * cannot zoom this app at all (fields hold the 16px floor; touch-action and
- * usePinchVeto spend the zoom gestures), so a scale past 1 is a desktop zoom
+ * pinchVeto spend the zoom gestures), so a scale past 1 is a desktop zoom
  * gesture — trackpad pinch still moves it — and the shell that spends the
  * inset is the phone's.
  */

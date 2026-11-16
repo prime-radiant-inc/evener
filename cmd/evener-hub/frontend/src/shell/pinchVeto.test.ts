@@ -1,15 +1,24 @@
-import { renderHook } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import { installPinchVeto, usePinchVeto } from "./usePinchVeto";
+import { installPinchVeto, installTouchPinchVeto } from "./pinchVeto";
 
 // Safari begins every pinch with a cancelable gesturestart (and follows with
 // gesturechange); vetoing them is the one mechanism iOS Safari respects for
-// blocking viewport pinch — see usePinchVeto.ts's header. The dispatches here
-// use cancelable Events exactly like a real gesture would arrive.
+// blocking viewport pinch — see pinchVeto.ts's header. jsdom dispatches are a
+// stand-in for the device's GestureEvent, so these tests pin what the install
+// functions do, not engine behavior.
 function dispatchSafariGesture(type: "gesturestart" | "gesturechange"): boolean {
   const event = new Event(type, { cancelable: true });
   document.dispatchEvent(event);
   return event.defaultPrevented;
+}
+
+// A window whose pointer answer the caller picks; the gate reads
+// matchMedia("(any-pointer: coarse)") and nothing else.
+function fakeWindow(coarse: boolean): { matchMedia(query: string): { matches: boolean }; document: Document } {
+  return {
+    matchMedia: (query: string) => ({ matches: coarse && query === "(any-pointer: coarse)" }),
+    document,
+  };
 }
 
 test("installPinchVeto vetoes Safari's pinch gestures while installed", () => {
@@ -35,23 +44,19 @@ test("the veto listens non-passively, or preventDefault would be ignored", () =>
   spy.mockRestore();
 });
 
-test("usePinchVeto installs the veto for the component's lifetime", () => {
-  // If the effect forgot to return installPinchVeto's remover, React would
-  // never run it and the veto would survive the unmount below.
-  const { result, unmount } = renderHook(() => usePinchVeto());
-  expect(result.current).toBeUndefined();
+test("installTouchPinchVeto installs the veto on a touch screen", () => {
+  const remove = installTouchPinchVeto(fakeWindow(true));
   expect(dispatchSafariGesture("gesturestart")).toBe(true);
-  unmount();
+  remove();
   expect(dispatchSafariGesture("gesturestart")).toBe(false);
 });
 
-test("a remount leaves a working veto: removal round-trips the exact listeners", () => {
-  // React StrictMode double-invokes effects (mount, clean up, remount); a
-  // removal that misses the registered listener would stack duplicates.
-  const { unmount } = renderHook(() => usePinchVeto());
-  unmount();
-  const { unmount: unmountAgain } = renderHook(() => usePinchVeto());
-  expect(dispatchSafariGesture("gesturestart")).toBe(true);
-  unmountAgain();
+test("installTouchPinchVeto stays off without a touch screen, so desktop zoom keeps working", () => {
+  // Safari fires gesture events for trackpad pinches as well (the sources
+  // disagree on when; the gate does not care), and a desktop Mac has no touch
+  // screen, so the coarse query excludes exactly those machines.
+  const remove = installTouchPinchVeto(fakeWindow(false));
+  expect(dispatchSafariGesture("gesturestart")).toBe(false);
+  remove();
   expect(dispatchSafariGesture("gesturestart")).toBe(false);
 });

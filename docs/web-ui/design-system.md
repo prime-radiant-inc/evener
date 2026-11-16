@@ -1319,14 +1319,19 @@ gone the same way (Jesse 2026-11-15): `global.css` spends
 where touch-action carries the viewport (Chromium, Android). iOS Safari does
 not honor touch-action for the viewport pinch — the same accessibility stance
 that makes it ignore `maximum-scale` (Jesse's Duo test after the rule first
-shipped) — so AppShell also installs `usePinchVeto`, which prevents Safari's
-non-standard `gesturestart`/`gesturechange` events; those fire for touch
-input only, so desktop zoom is untouched by construction. The enlargement
-paths that remain on touch screens are the in-app font-size preference
-(S/M/L/XL) and the OS Magnifier. The viewport meta itself still never locks
-zoom: modern iOS ignores `maximum-scale` for pinch anyway, so a meta lock
-would add nothing the veto and the coarse query do not already own, and
-`src/styles/viewport-pin.test.ts` fails if it comes back. An auto-growing textarea has a real content-driven
+shipped) — so the app entry point (`main.tsx`) installs the
+`shell/pinchVeto.ts` veto, which prevents Safari's non-standard
+`gesturestart`/`gesturechange` events. Safari has also been reported to
+fire those for desktop trackpad pinches, so the veto installs only where
+the coarse query says a touch screen exists, and desktop zoom keeps every
+path. The enlargement paths that remain on touch screens are the in-app
+font-size preference (S/M/L/XL) and the OS Magnifier; a reader who arrives
+already zoomed keeps that zoom and recovers through Safari's Page Zoom
+setting, since the veto removes the pinch way back. The viewport meta
+itself still never locks zoom: modern iOS ignores `maximum-scale` for
+pinch anyway, so a meta lock would add nothing the veto and the coarse
+query do not already own, and `src/styles/viewport-pin.test.ts` fails if
+it comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
