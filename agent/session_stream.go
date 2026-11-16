@@ -697,6 +697,14 @@ func escapeWidth(s string) (int, bool) {
 		}
 		return len(s) - len(tail), true
 	}
+	if s[1] == '/' {
+		// JSON allows a solidus to be escaped, and scanPartialJSONStringBody
+		// accepts it, but strconv.UnquoteChar is a Go rune unquoter and rejects
+		// it. Without this case the splitter would read \/ as an incomplete
+		// escape and buffer it forever, freezing the preview at the bytes before
+		// it.
+		return 2, true
+	}
 	_, _, tail, err := strconv.UnquoteChar(s, '"')
 	if err != nil {
 		return 0, false

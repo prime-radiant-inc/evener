@@ -33,6 +33,38 @@ func previewDeltas(chunks []string) []string {
 	return out
 }
 
+// TestCommunicatePreviewDecoderHandlesEscapedSlash pins the one escape the
+// splitter cannot hand to strconv.UnquoteChar. JSON allows `\/`, and the
+// scanner accepts it, but UnquoteChar is a Go rune unquoter and rejects it —
+// so a splitter without an explicit case reads `\/` as an incomplete escape and
+// stalls the preview at the text before it.
+//
+// It asserts the decoded TEXT against the whole-message scanner result, not the
+// incremental decoder against itself: a test comparing two uses of the same
+// broken decoder passes while every user sees a frozen preview.
+func TestCommunicatePreviewDecoderHandlesEscapedSlash(t *testing.T) {
+	t.Parallel()
+	const args = `{"message":"a\/b then more"}`
+	want, _, terminated := scanPartialJSONStringBody(`a\/b then more"`)
+	if !terminated || want != "a/b then more" {
+		t.Fatalf("test setup: scanner decoded %q terminated=%v", want, terminated)
+	}
+	var d communicatePreviewDecoder
+	d.field = "message"
+	// One byte per delta: every split lands somewhere, including between the
+	// backslash and the slash.
+	for i := range len(args) {
+		d.message(args[:i+1])
+	}
+	got, ok := d.message(args)
+	if !ok {
+		t.Fatal("decoder never found the message field")
+	}
+	if got != want {
+		t.Fatalf("preview message = %q, want %q", got, want)
+	}
+}
+
 // TestCommunicatePreviewDecoderMatchesWholeMessageFeed is the equivalence the
 // issue asks for: splitting the argument JSON into one byte per delta must
 // produce exactly the same preview deltas as feeding the whole message at once.
