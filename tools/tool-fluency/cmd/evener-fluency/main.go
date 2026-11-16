@@ -1000,13 +1000,19 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 		// probe, so the harness removes the session's tree once it is done.
 		_ = sandbox.RemoveSessionScratchTree(id)
 	}
-	if counts, err := allTranscriptToolCounts(ctx, stateDir); err == nil {
+	// Collection reads transcripts the finished probe already wrote, so it
+	// runs under its own context: ctx's deadline bounds the probe, and a probe
+	// that ends at that deadline still has readable transcripts whose counts
+	// and metrics belong on the result. Error classification below keeps using
+	// ctx, which is the context that actually cancelled the run.
+	collectCtx := context.Background()
+	if counts, err := allTranscriptToolCounts(collectCtx, stateDir); err == nil {
 		res.ModelToolCounts = counts
 	}
 	// Phase-discipline metrics (#187): read from the root session's transcript
 	// rather than through the enumeration the counts above walk, and reported
 	// per the probe's metrics block.
-	applyProbeMetrics(ctx, &res, probe, stateDir, wireNames)
+	applyProbeMetrics(collectCtx, &res, probe, stateDir, wireNames)
 	applyAskExchanges(&res, probe)
 	if err != nil {
 		res.Error = err.Error()

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,6 +41,57 @@ func subagentMeta(t *testing.T, stateDir, sid, parent string) {
 // transcripts so a caller comparing prompting arms reads them out of
 // result.json instead of hand-reading transcripts.
 //
+// A probe's execution deadline bounds the probe run, not the collection of a
+// transcript it already wrote. Here the probe is killed at its deadline after
+// its transcript landed, so collection meets an expired execution deadline;
+// the metrics the manifest asked for must still be reported, and the readable
+// transcript must not be reported as unavailable.
+func TestRunProbeCollectsMetricsAfterTheExecutionDeadlineExpires(t *testing.T) {
+	dir := t.TempDir()
+	const rootID = "02wMz5Txv1C3Hut0M8GCeB"
+	outDir := filepath.Join(dir, "out")
+	// runProbe derives stateDir from outDir/slug/rep, so the transcript written
+	// here is the one the probe's own collection reads.
+	stateDir := filepath.Join(outDir, "deadline", "rep-01", "state")
+	rootMeta(t, stateDir, rootID)
+	writeFluencyTranscript(t, stateDir, rootID, []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				fluencyToolCall("read_file", `{"file_path":"configpath/resolve.go"}`),
+			},
+		}),
+	})
+
+	// The child outlives the deadline by a wide margin, so the probe is always
+	// killed by its timeout rather than racing it.
+	bin := filepath.Join(dir, "slow-evener")
+	mustWrite(t, bin, "#!/bin/sh\nsleep 5\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runConfig{
+		model: "openai/m", harness: "cli", outDir: outDir,
+		evenerBin: bin, timeout: 300 * time.Millisecond, reasoningEffort: "low",
+	}
+	probe := probeFile{ID: "deadline", Prompt: "p", Metrics: metricsSpec{WantsInvestigativeCallCount: true}}
+
+	res := runProbe(cfg, probe, 1, map[string]bool{}, nil)
+
+	got, ok := res.Metrics["investigative_call_count"]
+	if !ok {
+		t.Fatalf("metrics = %#v, want investigative_call_count from the readable transcript (findings: %#v)", res.Metrics, res.Findings)
+	}
+	if got != 1 {
+		t.Errorf("investigative_call_count = %v, want 1", got)
+	}
+	for _, f := range res.Findings {
+		if f.Title == "phase metrics unavailable" {
+			t.Errorf("readable transcript reported unavailable: %+v", f)
+		}
+	}
+}
+
 // mustWireNamesForModel derives the run's wire map exactly as the runner
 // does, for tests that exercise provider-visible tool names.
 func mustWireNamesForModel(t *testing.T, modelRef string) map[string]string {
