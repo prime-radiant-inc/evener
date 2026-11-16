@@ -65,6 +65,25 @@ refresh() {
   read -r id st sha pos qstate <<<"$s"
 }
 
+# merged_sha prints the merge commit and succeeds when the PR's own state says
+# MERGED. The queue snapshot can lag a merge by an interval or more, so a
+# timeout verdict read from it alone reports a PR that already merged; the PR's
+# own state is what decides whether the wait is over. A failed lookup reports
+# not-merged, and the queue read that follows surfaces a real failure.
+merged_sha() {
+  local out
+  out=$(gh pr view "$pr" --repo "$repo" --json state,mergeCommit \
+    --jq 'select(.state == "MERGED") | .mergeCommit.oid // "-"' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# exit_if_merged ends the run with the merged outcome when the PR has merged.
+exit_if_merged() {
+  local merged
+  if merged=$(merged_sha); then echo "MERGEQ merged sha=$merged"; exit 0; fi
+}
+
 # queue_drop_reason prints "<createdAt-epoch> <reason>" for the latest removal
 # event, or an empty line when the timeline has none yet, and fails when the
 # lookup itself fails so that is not read as "no reason". The queue reports why
@@ -110,6 +129,7 @@ drop_outcome() {
 
 refresh
 if [ "$st" = "MERGED" ]; then echo "MERGEQ merged sha=$sha"; exit 0; fi
+exit_if_merged
 if [ "$pos" = "-" ]; then
   if ! out=$(gh api graphql -f query='mutation($id:ID!,$jump:Boolean!){enqueuePullRequest(input:{pullRequestId:$id,jump:$jump}){mergeQueueEntry{position}}}' \
     -f id="$id" -F jump="$jump" 2>&1); then
@@ -131,6 +151,7 @@ while :; do
   left=$(( deadline - $(date +%s) ))
   [ "$left" -gt 0 ] || break
   sleep $(( left < 30 ? left : 30 ))
+  exit_if_merged
   refresh
   if [ "$st" = "MERGED" ]; then echo "MERGEQ merged sha=$sha"; exit 0; fi
   if [ "$pos" = "-" ]; then
@@ -138,5 +159,15 @@ while :; do
     exit 1
   fi
 done
+# The loop's last read lands on the deadline, and the queue can finish in the
+# moment after it. A timeout verdict printed from that read reports a merge that
+# already happened, so observe once more before calling it.
+exit_if_merged
+refresh
+if [ "$st" = "MERGED" ]; then echo "MERGEQ merged sha=$sha"; exit 0; fi
+if [ "$pos" = "-" ]; then
+  drop_outcome
+  exit 1
+fi
 echo "MERGEQ timeout position=$pos state=$qstate"
 exit 1
