@@ -295,6 +295,16 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 	var refreshes atomic.Int32
 	previousRefresh := hubRosterRefresh
 	hubRosterRefresh = func(ctx context.Context, r *hubcore.Roster) error {
+		// A refresh before the read's first live attempt is that read's own
+		// discovery prologue, not recovery: nothing has failed yet. The
+		// scenario's change belongs to the recovery refresh, which runs only
+		// after a live read fails. Injected earlier it publishes the child and
+		// drops the daemon together, so the first live attempt dials a server
+		// already refusing upgrades and the saved-history fallback is never
+		// eligible.
+		if reads.Load() == 0 {
+			return nil
+		}
 		refreshes.Add(1)
 		if scenario == "absent" {
 			// A retried read finds the registration already gone.
