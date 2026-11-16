@@ -664,7 +664,8 @@ test("phrases a housekeeping call as its step line does", () => {
 });
 
 test("update_goal produces distinct summaries across active, unconfigured, and terminal states", () => {
-  const activeComplete = toolStepSummary(housekeeping("update_goal", { status: "complete" }, "Goal marked complete."));
+  const activeStep = housekeeping("update_goal", { status: "complete" }, "Goal marked complete.");
+  const activeComplete = toolStepSummary(activeStep);
   const noGoal = toolStepSummary(
     housekeeping(
       "update_goal",
@@ -679,20 +680,21 @@ test("update_goal produces distinct summaries across active, unconfigured, and t
       "The goal for this session is already terminal (complete); nothing recorded — this tool only updates an active goal.",
     ),
   );
-  const alreadyBlocked = toolStepSummary(
-    housekeeping(
-      "update_goal",
-      { status: "complete" },
-      "The goal for this session is already terminal (blocked); nothing recorded — this tool only updates an active goal.",
-    ),
+  const alreadyBlockedStep = housekeeping(
+    "update_goal",
+    { status: "complete" },
+    "The goal for this session is already terminal (blocked); nothing recorded — this tool only updates an active goal.",
   );
+  const alreadyBlocked = toolStepSummary(alreadyBlockedStep);
 
   // All 4 summaries must be distinct.
   const summaries = new Set([activeComplete, noGoal, alreadyComplete, alreadyBlocked]);
   expect(summaries.size).toBe(4);
 
-  // An already-blocked goal called with status: "complete" must NOT claim "Marked the goal complete".
-  expect(alreadyBlocked).not.toContain("Marked the goal complete");
+  // An already-blocked goal called with status: "complete" must not report a
+  // status it did not set: its verb says the goal was left alone, where an
+  // active goal's verb names the status the call recorded.
+  expect(toolStepWords(alreadyBlockedStep).verb).not.toBe(toolStepWords(activeStep).verb);
 });
 
 // A call whose arguments the hub didn't send can't say it only clears a
