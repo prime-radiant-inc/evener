@@ -117,7 +117,11 @@ func (relayTimerClock) Wait(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-var hubRelayIdleInterval = 250 * time.Millisecond
+// hubRelayIdleInterval is the backstop for retiring an idle relay: prompt
+// retirement rides the subscription registry's departure signal, and this
+// poll only catches a departure that signal missed. Polling it instead of
+// waiting on that signal cost four map scans a second per acknowledged relay.
+var hubRelayIdleInterval = 1 * time.Second
 
 // hubRelayPendingDeliveryLimit bounds unresolved targeted frames per canonical
 // listener. At the limit the listener applies upstream backpressure; it never
