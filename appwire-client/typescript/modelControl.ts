@@ -15,7 +15,19 @@ export interface ModelControlRequestFence {
 }
 
 function sameAuthority(left: ModelControlAuthority, right: ModelControlAuthority): boolean {
-  return left.instanceId === right.instanceId && left.bootGeneration === right.bootGeneration;
+  return sameModelControlAuthority(left, right);
+}
+
+export function sameModelControlAuthority(
+  left: ModelControlAuthority | undefined,
+  right: ModelControlAuthority | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.instanceId === right.instanceId &&
+    left.bootGeneration === right.bootGeneration
+  );
 }
 
 export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {

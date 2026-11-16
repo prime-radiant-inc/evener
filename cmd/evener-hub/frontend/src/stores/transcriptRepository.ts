@@ -27,6 +27,7 @@ import {
   reduceModelControl,
   resolvePendingEscalation,
   type SnapshotIdentity,
+  sameModelControlAuthority,
   type ThreadItem,
   type ThreadItemPosition,
   type ThreadModel,
@@ -877,8 +878,7 @@ export class TranscriptRepository {
         heldControl &&
         response.thread.evener.capabilities?.modelControlVersion === 1 &&
         incomingControl &&
-        heldControl.authority.instanceId === incomingControl.authority.instanceId &&
-        heldControl.authority.bootGeneration === incomingControl.authority.bootGeneration
+        sameModelControlAuthority(heldControl.authority, incomingControl.authority)
       ) {
         const advanced = reduceModelControl(before, { kind: "notification", snapshot: incomingControl }).model;
         if (advanced !== before) {
@@ -1136,11 +1136,7 @@ export class TranscriptRepository {
       } else if (notification.method === "thread/model/controlChanged") {
         const held = this.#model?.modelControl;
         const incoming = notification.params.modelControl;
-        if (
-          held &&
-          held.authority.instanceId === incoming.authority.instanceId &&
-          held.authority.bootGeneration === incoming.authority.bootGeneration
-        ) {
+        if (held && sameModelControlAuthority(held.authority, incoming.authority)) {
           this.accept(notification, context);
         }
       } else if (

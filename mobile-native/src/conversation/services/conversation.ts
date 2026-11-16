@@ -47,6 +47,7 @@ import {
 	isStaleCursorError,
 	modelControlAuthority,
 	reduceModelControl,
+	sameModelControlAuthority,
 } from "@evener/appwire-client";
 import type { MobileConversation } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
@@ -612,7 +613,7 @@ export function createConversationService<ReadLease = unknown>(
 	}
 
 	function sameAuthority(left: ModelControlAuthority, right: ModelControlAuthority): boolean {
-		return left.instanceId === right.instanceId && left.bootGeneration === right.bootGeneration;
+		return sameModelControlAuthority(left, right);
 	}
 
 	function replayOpeningModelControl(model: ThreadModel, responseThreadId: string, epoch: number): ThreadModel {

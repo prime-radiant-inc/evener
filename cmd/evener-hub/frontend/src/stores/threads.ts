@@ -67,6 +67,7 @@ import {
   resolvePendingEscalation,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
+  sameModelControlAuthority as sharedSameModelControlAuthority,
   type ThreadSubscriptionLease,
   WireError,
   wireThreadSubscriptions,
@@ -4622,12 +4623,7 @@ function sameModelControlAuthority(
   left: ModelControlAuthority | undefined,
   right: ModelControlAuthority | undefined,
 ): boolean {
-  return (
-    left !== undefined &&
-    right !== undefined &&
-    left.instanceId === right.instanceId &&
-    left.bootGeneration === right.bootGeneration
-  );
+  return sharedSameModelControlAuthority(left, right);
 }
 
 async function sendMutationIntent(intent: MutationIntent): Promise<void> {

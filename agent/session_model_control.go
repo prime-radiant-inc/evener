@@ -102,7 +102,7 @@ func (s *Session) advanceModelControlLocked(profile *provider.Profile, fence mod
 }
 
 func (s *Session) emitModelControlChanged(snapshot appwire.ModelControlSnapshot) {
-	s.emit(events.ModelControlChangedData{Snapshot: cloneModelControlSnapshot(snapshot)})
+	s.emit(events.ModelControlChangedData{Snapshot: snapshot})
 }
 
 func (s *Session) modelControlDesiredMatchesLocked(fence modelSwitchFence, lifecycle appwire.ModelControlLifecycle) bool {

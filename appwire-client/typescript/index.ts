@@ -527,7 +527,12 @@ export {
   withGroupHeads,
 } from "./modelCatalogView";
 export type { ModelControlCarrier, ModelControlDecision, ModelControlRequestFence } from "./modelControl";
-export { modelControlAuthority, modelControlDisplay, reduceModelControl } from "./modelControl";
+export {
+  modelControlAuthority,
+  modelControlDisplay,
+  reduceModelControl,
+  sameModelControlAuthority,
+} from "./modelControl";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
