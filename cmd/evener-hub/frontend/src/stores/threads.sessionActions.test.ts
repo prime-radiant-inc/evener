@@ -7,6 +7,8 @@ import {
   type AnyNotification,
   ErrorTranscriptHistoryFailed,
   hydrateThread,
+  type ModelControlSnapshot,
+  modelControlDisplay,
   type NotesHumanSetResponse,
   RequestTimeoutError,
   type ThreadReadResponse,
@@ -60,6 +62,57 @@ import {
 let restoreHydrationRetryScheduler: (() => void) | null = null;
 
 let cache: SessionEntryCache;
+
+function modelControlSnapshot(
+  revision: number,
+  options: {
+    instanceId?: string;
+    bootGeneration?: string;
+    activeProvider?: string;
+    activeModel?: string;
+    desiredProvider?: string;
+    desiredModel?: string;
+    lifecycle?: string;
+    clientMutationId?: string;
+  } = {},
+): ModelControlSnapshot {
+  const desired =
+    options.desiredProvider && options.desiredModel
+      ? {
+          requestSequence: revision,
+          ...(options.clientMutationId ? { clientMutationId: options.clientMutationId } : {}),
+          modelProvider: options.desiredProvider,
+          model: options.desiredModel,
+          lifecycle: options.lifecycle ?? "pending",
+        }
+      : undefined;
+  return {
+    authority: {
+      instanceId: options.instanceId ?? "thr_ref_a",
+      bootGeneration: options.bootGeneration ?? "1",
+    },
+    revision,
+    active: {
+      modelProvider: options.activeProvider ?? "anthropic",
+      model: options.activeModel ?? "claude-sonnet-4-5",
+      reasoningEffortLevels: ["low", "high"],
+      supportsReasoning: true,
+    },
+    ...(desired ? { desired } : {}),
+  };
+}
+
+function capableModelRead(ref: string, snapshot: ModelControlSnapshot): ThreadReadResponse {
+  return readResponse(ref, {
+    modelProvider: snapshot.active.modelProvider,
+    evener: {
+      ref,
+      capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+      modelControl: snapshot,
+      queue: { revision: 0 },
+    },
+  });
+}
 
 beforeEach(async () => {
   resetConnectionStoreForTests();
@@ -690,6 +743,257 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     const call = fake.calls.find((c) => c.method === "thread/model/set");
     expect(call?.params).toEqual({ ref: "ref_a", modelProvider: "anthropic", model: "claude-opus-4-1" });
+  });
+
+  test("a capable setModel sends captured authority and shows only the accepted response", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(1);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
+
+    const response = deferred<{
+      modelControlVersion: number;
+      disposition: string;
+      modelControl: ModelControlSnapshot;
+    }>();
+    const request = nextHandledRequest(fake, "thread/model/set", () => response.promise);
+    const setting = threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    expect(await request).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      clientMutationId: "11111111-1111-4111-8111-111111111111",
+      expectedInstanceId: "thr_ref_a",
+      expectedBootGeneration: "1",
+    });
+    expect(modelControlDisplay(threadsStore.getState().threads.get("ref_a")!)).toEqual({
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+    });
+
+    const accepted = modelControlSnapshot(2, {
+      desiredProvider: "openai",
+      desiredModel: "gpt-5.5",
+      clientMutationId: "11111111-1111-4111-8111-111111111111",
+    });
+    response.resolve({ modelControlVersion: 1, disposition: "accepted", modelControl: accepted });
+    await setting;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(accepted);
+    expect(modelControlDisplay(threadsStore.getState().threads.get("ref_a")!)).toEqual({
+      modelProvider: "openai",
+      model: "gpt-5.5",
+    });
+  });
+
+  test("a direct setModel refusal preserves the accepted shared snapshot", async () => {
+    const fake = connectFakeClient();
+    const accepted = modelControlSnapshot(2, {
+      desiredProvider: "openai",
+      desiredModel: "gpt-5.5",
+      clientMutationId: "11111111-1111-4111-8111-111111111111",
+    });
+    fake.on("thread/read", () => capableModelRead("ref_a", accepted));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/model/set", () => {
+      throw new WireError("model unavailable", -32013, { evenerErrorInfo: "conflict" });
+    });
+
+    await expect(threadsStore.getState().setModel("ref_a", "missing", "model")).rejects.toBeInstanceOf(ConflictError);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(accepted);
+  });
+
+  test("foreign model-control notifications converge tracked and watched views and rejected reads show active", async () => {
+    const fake = connectFakeClient();
+    let snapshot = modelControlSnapshot(1);
+    fake.on("thread/read", () => capableModelRead("ref_a", snapshot));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    snapshot = modelControlSnapshot(2, {
+      desiredProvider: "google",
+      desiredModel: "gemini-3-pro",
+      clientMutationId: "22222222-2222-4222-8222-222222222222",
+    });
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: snapshot },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(snapshot);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.modelControl).toEqual(snapshot);
+
+    snapshot = modelControlSnapshot(3, {
+      desiredProvider: "google",
+      desiredModel: "gemini-3-pro",
+      lifecycle: "rejected",
+      clientMutationId: "22222222-2222-4222-8222-222222222222",
+    });
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: snapshot },
+    });
+    expect(modelControlDisplay(threadsStore.getState().threads.get("ref_a")!)).toEqual({
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+    });
+
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(snapshot);
+    expect(modelControlDisplay(threadsStore.getState().threads.get("ref_a")!)).toEqual({
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+    });
+  });
+
+  test("same-model response and notification settle without a legacy model-change event", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(1);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+    const responseSnapshot = modelControlSnapshot(2, {
+      desiredProvider: "anthropic",
+      desiredModel: "claude-sonnet-4-5",
+      lifecycle: "applied",
+      clientMutationId: "33333333-3333-4333-8333-333333333333",
+    });
+    fake.on("thread/model/set", () => ({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: responseSnapshot,
+    }));
+
+    await threadsStore.getState().setModel("ref_a", "anthropic", "claude-sonnet-4-5");
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl?.revision).toBe(2);
+
+    const notificationSnapshot = modelControlSnapshot(3, {
+      desiredProvider: "anthropic",
+      desiredModel: "claude-sonnet-4-5",
+      lifecycle: "applied",
+      clientMutationId: "33333333-3333-4333-8333-333333333333",
+    });
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: notificationSnapshot },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl?.revision).toBe(3);
+  });
+
+  test("a model-control notification ahead of the establishing read replays only for that read authority", async () => {
+    const fake = connectFakeClient();
+    const read = deferred<ThreadReadResponse>();
+    const started = nextHandledRequest(fake, "thread/read", () => read.promise);
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await started;
+    const pushed = modelControlSnapshot(2, {
+      desiredProvider: "openai",
+      desiredModel: "gpt-5.5",
+      clientMutationId: "44444444-4444-4444-8444-444444444444",
+    });
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: pushed },
+    });
+    read.resolve(capableModelRead("ref_a", modelControlSnapshot(1)));
+    await ensuring;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(pushed);
+  });
+
+  test("an unsupported establishing read discards a split model-control notification", async () => {
+    const fake = connectFakeClient();
+    const read = deferred<ThreadReadResponse>();
+    const started = nextHandledRequest(fake, "thread/read", () => read.promise);
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await started;
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        modelControl: modelControlSnapshot(2, { desiredProvider: "openai", desiredModel: "gpt-5.5" }),
+      },
+    });
+    read.resolve(readResponse("ref_a", { modelProvider: "legacy-canonical" }));
+    await ensuring;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model).toMatchObject({
+      modelProvider: "legacy-canonical",
+      model: "legacy-canonical",
+    });
+    expect(model).not.toHaveProperty("modelControlVersion");
+    expect(model).not.toHaveProperty("modelControl");
+  });
+
+  test("an accepted unsupported refresh downgrades a capable model atomically", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/read", () => readResponse("ref_a", { modelProvider: "legacy-after-downgrade" }));
+
+    await threadsStore.getState().refreshThread("ref_a");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model).toMatchObject({
+      modelProvider: "legacy-after-downgrade",
+      model: "legacy-after-downgrade",
+    });
+    expect(model).not.toHaveProperty("modelControlVersion");
+    expect(model).not.toHaveProperty("modelControl");
+  });
+
+  test("a response issued before a replacement read cannot invalidate its new authority", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(1);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+    const response = deferred<{
+      modelControlVersion: number;
+      disposition: string;
+      modelControl: ModelControlSnapshot;
+    }>();
+    const started = nextHandledRequest(fake, "thread/model/set", () => response.promise);
+    const setting = threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    await started;
+
+    const replacement = modelControlSnapshot(1, {
+      instanceId: "replacement-instance",
+      bootGeneration: "2",
+      activeProvider: "google",
+      activeModel: "gemini-3-pro",
+    });
+    const replacementRead = deferred<ThreadReadResponse>();
+    const replacementReadStarted = nextHandledRequest(fake, "thread/read", () => replacementRead.promise);
+    const refreshing = threadsStore.getState().refreshThread("ref_a");
+    await replacementReadStarted;
+
+    response.resolve({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: modelControlSnapshot(9, { desiredProvider: "openai", desiredModel: "gpt-5.5" }),
+    });
+    await setting;
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(initial);
+
+    replacementRead.resolve({
+      ...capableModelRead("ref_a", replacement),
+      bootGeneration: "2",
+      thread: testThread("ref_a", {
+        id: "replacement-instance",
+        modelProvider: "google",
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+          modelControl: replacement,
+          queue: { revision: 0 },
+        },
+      }),
+    });
+    await refreshing;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toEqual(replacement);
   });
 
   test("setVisionModel sends thread/vision-model/set with {ref, visionModel}", async () => {
@@ -1376,6 +1680,42 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       clientMutationId: expect.any(String),
     });
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
+  });
+
+  test("clearThread removes model-control authority until a replacement read is accepted", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => capableModelRead("ref_a", modelControlSnapshot(1)));
+    await threadsStore.getState().ensureThread("ref_a");
+    const untrustedClearSnapshot = modelControlSnapshot(1, {
+      instanceId: "replacement-instance",
+      activeProvider: "google",
+      activeModel: "gemini-3-pro",
+    });
+    fake.on("thread/clear", (params) =>
+      clearResponse(
+        params,
+        testThread("ref_a", {
+          id: "replacement-instance",
+          modelProvider: "google",
+          evener: {
+            ref: "ref_a",
+            capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+            modelControl: untrustedClearSnapshot,
+            queue: { revision: 0 },
+          },
+        }),
+      ),
+    );
+    await threadsStore.getState().clearThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControl).toBeUndefined();
+
+    fake.on("thread/model/set", () => ({}));
+    await threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    expect(fake.calls.filter((call) => call.method === "thread/model/set").at(-1)?.params).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+    });
   });
 
   test("clearThread updates a watched model tracking the same ref too", async () => {

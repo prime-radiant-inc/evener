@@ -120,6 +120,17 @@ test("picking reports the entry to the caller and closes the picker without chan
   expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
+test("a caller replacement immediately replaces both the visible label and picker value", async () => {
+  const user = userEvent.setup();
+  const { props, rerender } = renderTrigger();
+
+  rerender(<ModelSwitchTrigger {...props} label="openai/gpt-5.5" value="openai/gpt-5.5" />);
+  expect(screen.getByTestId("trigger-value").textContent).toBe("openai/gpt-5.5");
+
+  await user.click(screen.getByTestId("trigger"));
+  expect(((await screen.findByRole("combobox")) as HTMLInputElement).value).toBe("openai/gpt-5.5");
+});
+
 test("the panel pre-fills and marks the caller's value, which need not be the label", async () => {
   const user = userEvent.setup();
   renderTrigger({ label: "(default)", value: "openai/gpt-5.5" });

@@ -23,6 +23,8 @@ import type {
   JobOutputPage,
   MethodName,
   MethodTypes,
+  ModelControlAuthority,
+  ModelControlRequestFence,
   ModelListResponse,
   SnapshotIdentity,
   TaskListResponse,
@@ -56,10 +58,12 @@ import {
   isTranscriptHistoryFailedError,
   isTranscriptIndexRebuildingError,
   mergeOlderItemPage,
+  modelControlAuthority,
   mutationErrorData,
   notificationRoutingKey,
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
+  reduceModelControl,
   resolvePendingEscalation,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
@@ -2148,7 +2152,13 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // retryBlockedMutation's press-time refusal is what closes that residue.
   await discardCanceledMutations(targetRef);
   const now = Date.now();
-  const model = hydrateThread({ thread: response.thread }, targetRef, now);
+  // thread/clear does not carry the boot generation needed to establish a new
+  // model-control authority. Keep its canonical metadata, but retire capability
+  // and snapshot until a replacement thread/read proves both.
+  const model = reduceModelControl(hydrateThread({ thread: response.thread }, targetRef, now), {
+    kind: "read",
+    version: 0,
+  }).model;
   // The session-content clear's cache hook: the cleared model is a bare
   // hydrate with no history, so it would never match the write gates;
   // deleting the record in the same step is what keeps a cleared session's
@@ -4319,6 +4329,22 @@ interface ThreadHydration {
 // asks), has no signal, and records a history failure on the watched model.
 type HydrationRead = { kind: "thread"; signal?: AbortSignal } | { kind: "watched"; includeTurns: boolean };
 
+function replayQuarantinedModelControl(
+  model: ThreadModel,
+  notifications: readonly ReceivedTranscriptUpdate[],
+): ThreadModel {
+  const authority = modelControlAuthority(model);
+  if (!authority) return model;
+  let replayed = model;
+  for (const update of notifications) {
+    const notification = update.notification;
+    if (notification.method !== "thread/model/controlChanged") continue;
+    if (!sameModelControlAuthority(authority, notification.params.modelControl.authority)) continue;
+    replayed = applyNotification(replayed, notification, update.now);
+  }
+  return replayed;
+}
+
 async function readThreadHydration(
   client: AppwireClientLike,
   ref: string,
@@ -4429,7 +4455,7 @@ async function readThreadHydration(
   // watched read never asked for history: its absent cursor is not a
   // source-named end of older history (#5585).
   const frontier = includeTurns ? frontierFromCursor(response) : "unknown";
-  const model =
+  const hydrated =
     !discardHeldHistory && pending.baseModel?.history !== undefined
       ? tracked
         ? applyCacheGapRule(
@@ -4442,6 +4468,11 @@ async function readThreadHydration(
           )
         : applyReadResponse(pending.baseModel, response, now, frontier)
       : hydrateThread(response, ref, now, frontier);
+  const model = reduceModelControl(hydrated, {
+    kind: "read",
+    version: response.thread.evener.capabilities.modelControlVersion ?? 0,
+    snapshot: response.thread.evener.modelControl,
+  }).model;
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -4450,7 +4481,7 @@ async function readThreadHydration(
   // can be enriched under recorded coverage, never replacing response-owned
   // overlay slots or replaying their already-represented deltas.
   const fixtureNotifications = pending.notifications.slice();
-  const cutModel = withoutResolvedEscalations(ref, pending, model);
+  const cutModel = replayQuarantinedModelControl(withoutResolvedEscalations(ref, pending, model), fixtureNotifications);
   applyHydrationResponseCut(pending, ref, cutModel);
   return {
     model: cutModel,
@@ -4585,6 +4616,18 @@ function trackedThreadModel(ref: string): ThreadModel | undefined {
 
 function threadInstanceID(model: ThreadModel | undefined): string | undefined {
   return model?.instanceId ?? model?.threadId;
+}
+
+function sameModelControlAuthority(
+  left: ModelControlAuthority | undefined,
+  right: ModelControlAuthority | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.instanceId === right.instanceId &&
+    left.bootGeneration === right.bootGeneration
+  );
 }
 
 async function sendMutationIntent(intent: MutationIntent): Promise<void> {
@@ -8991,7 +9034,61 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
-    await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
+    const current = trackedThreadModel(ref);
+    const authority = current ? modelControlAuthority(current) : undefined;
+    if (!authority) {
+      await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
+      return;
+    }
+
+    const client = requireClient();
+    const fence: ModelControlRequestFence = {
+      authority,
+      clientGeneration: getReadyEpoch(),
+      readGeneration: threadReadSequences.get(ref) ?? 0,
+    };
+    let response: MethodTypes["thread/model/set"]["result"];
+    try {
+      response = await client.request("thread/model/set", {
+        ref,
+        modelProvider,
+        model,
+        clientMutationId: crypto.randomUUID(),
+        expectedInstanceId: authority.instanceId,
+        expectedBootGeneration: authority.bootGeneration,
+      });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+    if (response.modelControlVersion !== 1 || !response.modelControl) return;
+
+    const state = threadsStore.getState();
+    if (
+      getWiredClient() !== client ||
+      getReadyEpoch() !== fence.clientGeneration ||
+      (threadReadSequences.get(ref) ?? 0) !== fence.readGeneration ||
+      !sameModelControlAuthority(response.modelControl.authority, fence.authority)
+    )
+      return;
+    const threadModel = state.threads.get(ref);
+    const watchedModel = state.watchedThreads.get(ref);
+    const admittedThread =
+      threadModel && sameModelControlAuthority(modelControlAuthority(threadModel), fence.authority)
+        ? threadModel
+        : undefined;
+    const admittedWatched =
+      watchedModel && sameModelControlAuthority(modelControlAuthority(watchedModel), fence.authority)
+        ? watchedModel
+        : undefined;
+    putThreadModels(
+      ref,
+      admittedThread
+        ? reduceModelControl(admittedThread, { kind: "response", snapshot: response.modelControl }).model
+        : undefined,
+      admittedWatched
+        ? reduceModelControl(admittedWatched, { kind: "response", snapshot: response.modelControl }).model
+        : undefined,
+    );
   },
 
   async setReasoningEffort(ref, level) {

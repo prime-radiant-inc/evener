@@ -23,6 +23,7 @@ import {
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
+  reduceModelControl,
   resolvePendingEscalation,
   type SnapshotIdentity,
   type ThreadItem,
@@ -844,7 +845,7 @@ export class TranscriptRepository {
   ): boolean {
     if (this.#sealed || !this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
     const before = this.#model;
-    let candidate = before
+    const hydratedCandidate = before
       ? applyReadResponse(before, response, this.#now())
       : (() => {
           const hydrated = hydrateThread(response, this.#binding.ref, this.#now());
@@ -867,6 +868,11 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    let candidate = reduceModelControl(hydratedCandidate, {
+      kind: "read",
+      version: response.thread.evener.capabilities.modelControlVersion ?? 0,
+      snapshot: response.thread.evener.modelControl,
+    }).model;
     // Local overlay preservation must not turn a rejected server read into
     // accepted history or recovery authority.
     if (candidate === before) return false;
@@ -1112,6 +1118,8 @@ export class TranscriptRepository {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
     for (const notification of notifications) {
       if (notification.method === "history/updated") {
+        this.accept(notification, context);
+      } else if (notification.method === "thread/model/controlChanged") {
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&

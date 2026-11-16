@@ -1,4 +1,4 @@
-import type { ModelListResponse, ThreadModel } from "@evener/appwire-client";
+import type { ModelControlSnapshot, ModelListResponse, ThreadModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -71,6 +71,26 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   };
 }
 
+function modelControlSnapshot(lifecycle: string): ModelControlSnapshot {
+  return {
+    authority: { instanceId: "thr_a", bootGeneration: "1" },
+    revision: 2,
+    active: {
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      reasoningEffortLevels: [],
+      supportsReasoning: false,
+    },
+    desired: {
+      requestSequence: 2,
+      clientMutationId: "11111111-1111-4111-8111-111111111111",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      lifecycle,
+    },
+  };
+}
+
 function modelListResponse(): ModelListResponse {
   return {
     data: [
@@ -104,6 +124,28 @@ test("shows the current model label alongside a Change-model trigger", () => {
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   expect(trigger()).toBeTruthy();
   expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("shows the accepted desired model from the authoritative snapshot while legacy fields remain active", () => {
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({ modelControlVersion: 1, modelControl: modelControlSnapshot("pending") })}
+    />,
+  );
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("openai/gpt-5.5");
+});
+
+test("shows the active model after the authoritative snapshot rejects its desired model", () => {
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({ modelControlVersion: 1, modelControl: modelControlSnapshot("rejected") })}
+    />,
+  );
+
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
 // The visible label is the model id, and the trigger's action ("change

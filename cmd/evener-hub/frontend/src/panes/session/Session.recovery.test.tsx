@@ -1,4 +1,4 @@
-import type { ThreadReadResponse } from "@evener/appwire-client";
+import type { ModelControlSnapshot, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -118,6 +118,38 @@ function readOnlyEntityThread(ref: string, text: string): ThreadReadResponse {
   });
 }
 
+function modelControlRead(ref: string, lifecycle: string): ThreadReadResponse {
+  const snapshot: ModelControlSnapshot = {
+    authority: { instanceId: `thr_${ref}`, bootGeneration: "1" },
+    revision: lifecycle === "pending" ? 1 : 2,
+    active: {
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      reasoningEffortLevels: [],
+      supportsReasoning: false,
+    },
+    desired: {
+      requestSequence: 1,
+      clientMutationId: "11111111-1111-4111-8111-111111111111",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      lifecycle,
+    },
+  };
+  return {
+    ...readResponse(ref, {
+      modelProvider: "anthropic/claude-sonnet-4-5",
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+        modelControl: snapshot,
+        queue: { revision: 0 },
+      },
+    }),
+    bootGeneration: "1",
+  };
+}
+
 // jsdom performs no real layout (every element's offsetHeight is 0, no
 // ResizeObserver) - VirtualList's own test suite stubs this for the exact
 // same reason (see widgets/virtuallist/virtuallist.test.tsx's file-level
@@ -207,6 +239,36 @@ test("offers explicit resume after restart even without pending messages", async
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(resumeTransport).toHaveBeenCalledWith("ref_a", { beforeRequest: expect.any(Function) });
+});
+
+test("a reconnect read replaces an accepted desired model with the active model after rejection", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const fake = connectReadyFakeClient();
+  const ref = "local:model-control-recovery";
+  let lifecycle = "pending";
+  fake.on("thread/read", ({ requestGeneration }) => ({
+    ...modelControlRead(ref, lifecycle),
+    requestGeneration,
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <SessionChromeModule.SessionChrome ref={ref} />
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  expect((await screen.findByTestId("model-switch-value")).textContent).toBe("openai/gpt-5.5");
+
+  lifecycle = "rejected";
+  act(() => {
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+  });
+
+  await waitFor(() => expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5"));
 });
 
 test.each(["success", "refused"])(

@@ -17,7 +17,7 @@
 // model's profile for free.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { sessionActionError } from "@evener/appwire-client";
+import { modelControlDisplay, sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { onConnectionNotification } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
@@ -41,14 +41,16 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // so a user never has to know whether their session is "running" to pick its
   // next model. A pick made while a turn runs is accepted and queued by the
   // session for the turn boundary (agent/session.go's SetModel queue path), so
-  // the next turn - typically the message being typed - runs on it; the label
-  // keeps showing the running turn's model until thread/model/changed lands
-  // from the boundary. A genuinely refused pick (unknown model, unresolvable
+  // the next turn - typically the message being typed - runs on it. The shared
+  // model-control snapshot makes an accepted desired model visible immediately
+  // and later replaces it with the active model if the daemon rejects it. A
+  // genuinely refused pick (unknown model, unresolvable
   // ref) still surfaces as a toast from handlePick. Gating on a client-side
   // turn predicate here made the client guess at an answer only the daemon has,
   // and it took the switch away from every cold session too.
   const disabled = !model.capabilities.changeModel;
-  const currentModelLabel = modelLabel(model.modelProvider, model.model);
+  const displayed = modelControlDisplay(model);
+  const currentModelLabel = modelLabel(displayed.modelProvider, displayed.model);
 
   const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
     return modelListToCatalog(await threadsStore.getState().listModels(refresh));
