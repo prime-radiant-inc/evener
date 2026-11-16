@@ -76,6 +76,36 @@ and hub handlers route the typed reads, and the shared TypeScript store owns
 observed demand and recovery. Navigation carries compact session summaries.
 Rendering adapters do not own network requests or lifecycle state.
 
+Runtime model selection follows a focused authority path:
+
+```mermaid
+flowchart LR
+    Session[Agent Session, model-control authority] --> Envelope[Daemon thread envelope]
+    Envelope --> Response[Typed model-set response]
+    Envelope --> Notice[Model-control notification]
+    Envelope --> Read[Capable thread read]
+    Response --> Hub[Local or remote hub path]
+    Notice --> Hub
+    Read --> Hub
+    Hub --> Reducer[Shared TypeScript whole-snapshot reducer]
+    Reducer --> Browser[Browser thread store]
+    Reducer --> Native[Native conversation service]
+```
+
+The Session owns the authority identity, revision, active model metadata, and
+accepted desired-model lifecycle. The daemon commits each transition to its
+thread envelope before exposing a successful response. Local and remote hub
+paths forward the typed response and the other two carriers without deriving
+model state. Browser and native clients establish capability only from an
+accepted read, then atomically replace whole snapshots with matching authority
+and newer revision. A later read without version 1 removes that capability and
+returns the client to the legacy canonical-change path.
+
+The model-control revision does not own current reasoning effort or effective
+context status. Those projections keep their existing carriers because the
+profile that answers through fallback may change the effective window, pressure,
+and usage without changing the selected canonical model.
+
 ## Placing responsibilities
 
 1. **Reusable outside this repo?** → a library module (`llm/`, `agent/`, `auth/`).

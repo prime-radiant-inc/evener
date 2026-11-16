@@ -925,6 +925,40 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
   fast (prompt and tool surfaces differ too much to fall back silently);
   same-surface is allowed.
 
+### Runtime model-control authority
+
+`agent.Session` owns the complete version-1 model-control snapshot. Its
+`authority` identifies the thread instance and daemon boot, its `revision`
+orders transitions within that authority, `active` holds the committed model
+and reasoning capability, and optional `desired` holds the latest accepted
+model choice as `pending`, `applied`, or `rejected`. The server envelope is the
+only live-thread projection of that Session value; `thread/read` samples the
+envelope rather than calling back into Session state.
+
+Three carriers transport the same whole snapshot: the typed
+`thread/model/set` response, `thread/model/controlChanged`, and a capable
+`thread/read`. Hubs preserve the typed response through local daemons, remote
+hubs, cold-session resume, and browser-facing RPC. Browser and native clients
+run all three through the shared TypeScript reducer. A read advertising
+`modelControlVersion = 1` establishes or replaces authority; a later accepted
+read without version 1 clears it. Responses and notifications must match the
+established authority, and a newer revision replaces the whole snapshot rather
+than merging fields. The composer shows an accepted pending or applied
+`desired` target immediately, while the running turn continues on `active`; a
+rejected desired target falls back to `active`.
+
+Capable requests carry a mutation UUID and the expected instance and boot
+identity. Without an accepted version-1 read, clients send the legacy request
+shape, do not invent a pending display, and wait for canonical legacy model
+changes. New daemons still route accepted legacy requests through the snapshot
+state machine so a later capable read cannot recover stale intent.
+
+The snapshot owns model provider, model, and the active model's reasoning
+capability. Current reasoning effort and effective context status remain under
+their existing owners. In particular, usage, effective context window,
+pressure, assumed state, compaction threshold, and window source may follow a
+fallback profile without changing the canonical active model.
+
 ## Tool choice: Evener never forces it
 
 Agent requests use `tool_choice: auto` for gateway compatibility. Forcing a tool
@@ -994,9 +1028,11 @@ pre-dispatch `max_output_tokens` budget error.
 "Set reasoning effort" command → the `thread/reasoning-effort/set` appwire
 method → `Session.SetReasoningEffort`, validated and clamped against the
 *current* model's ladder before it's applied. A successful change broadcasts
-`thread/reasoning-effort/changed` (mirrored by `thread/model/set` →
-`thread/model/changed` for a runtime model switch itself) so every
-subscribed client's chip/header updates without re-reading the thread.
+`thread/reasoning-effort/changed`. Runtime model selection uses the versioned
+model-control snapshot above; `thread/model/changed` remains the compatibility
+carrier for clients without version 1 and retains its context-status fields for
+capable clients. Every subscribed client therefore updates without a follow-up
+read on the healthy live path.
 Unlike a model switch, a reasoning-effort change does not append a
 transcript marker.
 

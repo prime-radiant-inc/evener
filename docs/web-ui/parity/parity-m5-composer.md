@@ -203,6 +203,16 @@ only (floor §1.12).
 
 ## H. Model switch + reasoning effort (`model-switch.js`)
 
+The rows below record the legacy implementation that M5 replaced. The current
+browser no longer disables model selection merely because a turn is running.
+After a version-1 `thread/read`, it sends a mutation UUID and expected authority,
+then folds the typed response, `thread/model/controlChanged`, and later reads
+through the shared whole-snapshot reducer. The composer displays an accepted
+pending or applied desired target immediately; a rejected target displays the
+active model. An accepted read without version 1 removes that authority and
+returns to the legacy canonical-notification behavior described below. Current
+reasoning effort and context status retain their independent carriers.
+
 - [ ] The model-trigger button(s) are disabled whenever `EvenerThreadState.isBusy` is true, tracked via `thread/status/changed` + `turn/started` + `turn/completed` notifications rather than by depending on `renderer.js`'s own subscription ordering — `cmd/evener-hub/assets/model-switch.js:1-11,54-69,304-333`.
 - [ ] Opening the picker is a hard no-op while busy (defense in depth beyond the disabled attribute) — `cmd/evener-hub/assets/model-switch.js:216-218`.
 - [ ] Model list is fetched once and cached (`modelsCache`); a failed fetch clears the cache so the NEXT open retries rather than repeating the same rejected promise — `cmd/evener-hub/assets/model-switch.js:71-83`.

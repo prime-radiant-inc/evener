@@ -142,6 +142,21 @@ Manager argument preparation and tool dispatch share an opt-in exact decoder for
 fence revisions and page bounds, including pre-tool hook views and replacements.
 Other arguments keep their numeric decoding.
 
+For runtime model selection, **S09** owns one ephemeral, revisioned
+model-control snapshot under the thread instance and daemon boot authority.
+**S08** publishes each Session transition into the live thread envelope, which
+is the read source of truth; no read-time callback resamples Session state.
+**S05–S06** carry that same whole snapshot in the typed model-set response,
+`thread/model/controlChanged`, and capable `thread/read`, preserving responses
+through local, remote, resume, and browser-facing hub paths. **S02–S03** use the
+shared reducer to establish or downgrade capability from accepted reads, fence
+responses and notifications to the installed authority, replace only with a
+newer revision, and render accepted desired state ahead of the still-active
+model. Without version 1 they send the legacy request shape and wait for the
+canonical legacy change. Context status remains a separate projection because
+a fallback may change the effective window and pressure without changing the
+selected model.
+
 For [history serving facts](history-content.md#serving-facts-and-status-comparison),
 **S10** owns saved-index coverage and the execution frontier of each immutable
 view. **S09** owns the Session's commit-time execution stamp, including unsynced

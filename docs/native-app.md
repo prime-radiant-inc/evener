@@ -70,6 +70,23 @@ Backgrounding the app is not a stop request to the agent. On returning, let it r
 
 For a code change, use the phone to inspect progress and ask questions, then review the actual diff and run the acceptance checks on the project host. A readable transcript is not proof that the change has been merged or deployed.
 
+### Change the model while a session works
+
+When the connected daemon advertises model-control version 1, the phone can
+accept a model choice while the current turn is running. The current provider
+call finishes on the active model, while the composer and Session sheet show the
+accepted desired model that the next safe call will use. The conversation
+service reconciles the model-set response, live model-control notifications,
+and reconnect reads through the same whole-snapshot reducer as the browser.
+Another client's newer choice, a deferred rejection, a reconnect, or a daemon
+replacement therefore replaces the display only through daemon authority.
+
+If a fresh read does not advertise version 1, the phone clears the snapshot,
+sends the legacy model-set request, and keeps showing the canonical model until
+the daemon reports a legacy model change. The Board row keeps its existing name
+fallback when model-catalog metadata is incomplete. Reasoning effort and context
+status continue to update independently from model-control state.
+
 ## Share text into a session
 
 The app appears in the iOS share sheet for text and web links, so you can send a

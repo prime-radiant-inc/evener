@@ -1,7 +1,7 @@
 # Model-Switch Authority Is One Revisioned Snapshot
 
 Date: 2026-11-16
-Status: Proposed
+Status: Implemented
 
 ## Summary
 
