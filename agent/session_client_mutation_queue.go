@@ -195,6 +195,11 @@ func (s *Session) AcceptClientMutationQueueAs(params appwire.TurnQueueParams, ac
 // committed store generation. It may over-report (the claims under the lease
 // re-decide on the generation they commit against) but never under-reports: a
 // store not yet opened may hold a durable queue, so it counts as work.
+//
+// It reads the generation in place. This runs once per serve-loop iteration
+// since the queued-input probe landed, and the journal only ever grows, so
+// taking a snapshot here would deep-copy every mutation the session has ever
+// accepted to answer a question about a few scalars and two list heads.
 func (s *Session) hasPendingUserInputToRun() bool {
 	s.clientMutationsInitMu.Lock()
 	store := s.clientMutations
@@ -202,15 +207,24 @@ func (s *Session) hasPendingUserInputToRun() bool {
 	if store == nil {
 		return true
 	}
-	snapshot := store.snapshot()
-	if queueHeadClaimable(&snapshot) {
-		return true
-	}
-	if !s.hasPendingUserSteering() || s.steeringParkedNow() || !steeringCarrierRailOpen(&snapshot) {
-		return false
-	}
-	_, turnID := claimableSteeringCarrier(&snapshot, s.steeringInFlightSample())
-	return turnID != ""
+	// The in-flight sample comes from s.mu, and store.read holds stateMu, so
+	// both samples are taken before the store read rather than inside it: the
+	// store's serializer must never wait on s.mu.
+	inFlight := s.steeringInFlightSample()
+	steeringRunnable := s.hasPendingUserSteering() && !s.steeringParkedNow()
+	runnable := false
+	store.read(func(snapshot *clientMutationSnapshot) {
+		if queueHeadClaimable(snapshot) {
+			runnable = true
+			return
+		}
+		if !steeringRunnable || !steeringCarrierRailOpen(snapshot) {
+			return
+		}
+		_, turnID := claimableSteeringCarrier(snapshot, inFlight)
+		runnable = turnID != ""
+	})
+	return runnable
 }
 
 // ProcessPendingUserInput runs input the user has already given but the session

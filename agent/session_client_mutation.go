@@ -1593,41 +1593,50 @@ func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	if s == nil || s.clientMutations == nil {
 		return "", false
 	}
-	snapshot := s.clientMutations.snapshot()
-	// Resolve the ordered head once, and only when no fence blocks the claim.
-	// startClaimable tracks claimability separately from the head's turn id so a
-	// start with an empty turn id still returns ("", false) exactly as before.
+	// The generation is read in place: this runs once per serve-loop iteration
+	// beside the queued-input probe, and the journal only grows.
 	startTurnID := ""
 	startClaimable := false
-	if snapshot.InterruptFence == nil {
-		if startIDs := s.claimableClientMutationStartIDs(&snapshot); len(startIDs) > 0 {
-			startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
-			startClaimable = true
+	runnable := false
+	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
+		// Resolve the ordered head once, and only when no fence blocks the
+		// claim. startClaimable tracks claimability separately from the head's
+		// turn id so a start with an empty turn id still returns ("", false)
+		// exactly as before.
+		if snapshot.InterruptFence == nil {
+			if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
+				startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
+				startClaimable = true
+			}
 		}
-	}
-	// The start branch is settled BEFORE the queue branches, because the claim
-	// path claims the ordered start head whenever a start is claimable, fence
-	// aside. Answering from the map's order instead could name a claimable queue
-	// entry while the claim takes a start, arming cancellation for the wrong turn.
-	if startClaimable {
-		return startTurnID, startTurnID != ""
-	}
-	for _, pending := range snapshot.PendingExecutions {
-		if pending.Method == clientMutationMethodQueue &&
-			pending.ExecutionState == "incorporated" &&
-			pending.TurnID != "" &&
-			snapshot.ActiveTurnID == pending.TurnID {
-			return pending.TurnID, true
+		// The start branch is settled BEFORE the queue branches, because the
+		// claim path claims the ordered start head whenever a start is
+		// claimable, fence aside. Answering from the map's order instead could
+		// name a claimable queue entry while the claim takes a start, arming
+		// cancellation for the wrong turn.
+		if startClaimable {
+			runnable = startTurnID != ""
+			return
 		}
-	}
-	if len(snapshot.InputQueue) > 0 {
-		record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
-		runnable := record.Method == clientMutationMethodQueue &&
-			record.StableTurnID != "" &&
-			snapshot.ActiveTurnID == record.StableTurnID
-		return record.StableTurnID, runnable
-	}
-	return "", false
+		for _, pending := range snapshot.PendingExecutions {
+			if pending.Method == clientMutationMethodQueue &&
+				pending.ExecutionState == "incorporated" &&
+				pending.TurnID != "" &&
+				snapshot.ActiveTurnID == pending.TurnID {
+				startTurnID = pending.TurnID
+				runnable = true
+				return
+			}
+		}
+		if len(snapshot.InputQueue) > 0 {
+			record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
+			runnable = record.Method == clientMutationMethodQueue &&
+				record.StableTurnID != "" &&
+				snapshot.ActiveTurnID == record.StableTurnID
+			startTurnID = record.StableTurnID
+		}
+	})
+	return startTurnID, runnable
 }
 
 type clientMutationFaults struct {
@@ -2115,6 +2124,21 @@ func (s *clientMutationStore) steeringHeld() bool {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.state.SteeringHeld
+}
+
+// read runs read over the committed generation without cloning it. The answer
+// must be a question about the generation and nothing else: read is called
+// under stateMu.RLock, so it may not take another lock or retain a reference it
+// wrote through.
+//
+// A published generation is immutable -- mutate builds its successor on a
+// clone and commitStateLocked replaces the whole snapshot -- so a reader that
+// only inspects fields sees exactly what snapshot() would have handed it, at
+// no allocation.
+func (s *clientMutationStore) read(read func(*clientMutationSnapshot)) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	read(&s.state)
 }
 
 func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {
