@@ -32,6 +32,11 @@ import (
 // newline is framing and does not count toward this limit.
 const DefaultMaxLineBytes = 128 << 20
 
+// maxRetainedEntryBuf bounds the encode buffer a writer keeps between appends:
+// a batch at or above it is dropped rather than held, so one tool result that
+// fills most of a line does not pin that memory for the session's life.
+const maxRetainedEntryBuf = 1 << 20
+
 // FormatVersion is the only transcript format this package writes or accepts.
 const FormatVersion = 2
 
@@ -419,6 +424,13 @@ type Writer struct {
 	// behind a gap the filesystem zero-fills.
 	positionUnknown bool
 
+	// entryBuf is the buffer the append in flight encodes its entries into,
+	// kept across appends so a session's steady state pays for the growth once.
+	// Its bytes are written before the append returns and nothing retained
+	// refers to them, so the next append may overwrite them. An append that
+	// grew it past maxRetainedEntryBuf drops it rather than keeping it.
+	entryBuf bytes.Buffer
+
 	// failures counts the session's failed tool calls as they are written, for
 	// the live figure a running session reports. Nil until TrackFailures
 	// installs it, and a nil counter reports ABSENT rather than zero: a writer
@@ -747,17 +759,22 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollbac
 	w.tailMove = w.tail.moved()
 
 	firstSeq := w.tail.nextSeq
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
+	w.entryBuf.Reset()
+	enc := json.NewEncoder(&w.entryBuf) // Encode writes the trailing newline per entry
 	batch := make([]Record, len(turns))
 	for i, turn := range turns {
-		start := buf.Len()
+		start := w.entryBuf.Len()
 		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
 			return nil, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
-		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(buf.Len() - start), Turn: turn}
+		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(w.entryBuf.Len() - start), Turn: turn}
 	}
-	data := buf.Bytes()
+	data := w.entryBuf.Bytes()
+	if w.entryBuf.Cap() >= maxRetainedEntryBuf {
+		// One entry this large would pin its buffer for the writer's life.
+		// data keeps the bytes alive until the write below returns.
+		w.entryBuf = bytes.Buffer{}
+	}
 	// The batch's sequence numbers are spent from here on, whatever becomes of
 	// its lines. A rolled-back line was in the file for a moment, and a reader
 	// in another process may have seen it; reusing its Seq would give that
