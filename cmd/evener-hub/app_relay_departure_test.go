@@ -15,6 +15,14 @@ import (
 // departure signal can end the relay. Before it, retirement waited for the
 // 250 ms tick, and an idle relay paid a map scan four times a second until it
 // came.
+//
+// The bound below is a hang guard, not a latency assertion. With the backstop
+// an hour away, retirement happening at all proves the departure path ran, so
+// what this test pins is which path retires the relay and not how quickly.
+// A tight deadline would measure the scheduler instead: a contended CI worker
+// can take longer than a second to schedule the fan-out goroutine after the
+// departure closes its channel, and that delay says nothing about the code
+// under test.
 func TestHubRelayRetiresOnItsLastSubscribersDeparture(t *testing.T) {
 	previousInterval := hubRelayIdleInterval
 	hubRelayIdleInterval = time.Hour
@@ -53,7 +61,12 @@ func TestHubRelayRetiresOnItsLastSubscribersDeparture(t *testing.T) {
 
 	select {
 	case <-retired:
-	case <-time.After(time.Second):
-		t.Fatal("the relay outlived its last subscriber by more than a second with the backstop poll an hour away: retirement still waits for the tick instead of the departure")
+	case <-time.After(relayDepartureHangGuard):
+		t.Fatal("the relay never retired after its last subscriber departed, with the backstop poll an hour away: retirement still waits for the tick instead of the departure")
 	}
 }
+
+// relayDepartureHangGuard bounds only "the relay never retired at all". The
+// backstop interval is an hour in this test, so a retirement inside this window
+// cannot be the tick's: it is the departure path or nothing.
+const relayDepartureHangGuard = 30 * time.Second
