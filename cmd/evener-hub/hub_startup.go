@@ -309,7 +309,8 @@ func (r *hubRuntime) acquireProcessLock() (func(), error) {
 
 // openStores resolves the runtime paths and opens the roster, the past index
 // and the stores that sit beside it, the hub's tokens, and the message search
-// index. The returned cleanup closes the search index.
+// index. The returned cleanup closes the search index and the index.db stores'
+// shared handles.
 func (r *hubRuntime) openStores() (func(), error) {
 	cfg := r.cfg
 	r.runDir = cfg.RunDir
@@ -394,7 +395,17 @@ func (r *hubRuntime) openStores() (func(), error) {
 		// registry's single lane for the shared repair.
 		search.SetRepairAsker(transcriptIndexRepairs.askFromRefresher)
 	}
-	return closeSearch, nil
+	return func() {
+		closeSearch()
+		// The index.db stores hold one shared handle each; closing them is
+		// shutdown hygiene, and a store that never touched its handle closes
+		// nothing. Order does not matter — each handle is its own connection.
+		for _, closer := range []interface{ Close() error }{
+			r.past, r.archive, r.favorite, r.pinSections, r.sessionSeen,
+		} {
+			_ = closer.Close()
+		}
+	}, nil
 }
 
 // loadProviders loads the credential store and the provider registry, and

@@ -1,0 +1,203 @@
+package hubcore
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/schema"
+)
+
+// TestStoreCloseReleasesTheSharedHandle pins the shutdown contract the keeper
+// handles add: Close releases the handle, is safe on a store that never opened
+// one, and is safe to call twice, so the hub's cleanup can close every store
+// unconditionally.
+func TestStoreCloseReleasesTheSharedHandle(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	now := time.Unix(1_700_000_000, 0)
+
+	never := NewArchiveStore(dbPath)
+	if err := never.Close(); err != nil {
+		t.Fatalf("Close on a store that never opened = %v, want nil", err)
+	}
+
+	archive := NewArchiveStore(dbPath)
+	if err := archive.Set("", "session", "before-close", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatalf("archive Close = %v", err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatalf("second archive Close = %v, want nil: Close stays idempotent", err)
+	}
+
+	favorite := NewFavoriteStore(dbPath)
+	if err := favorite.Set("", "session", "closed", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Close(); err != nil {
+		t.Fatalf("favorite Close = %v", err)
+	}
+
+	pins := NewPinSectionStore(dbPath)
+	if _, err := pins.Sections(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pins.Close(); err != nil {
+		t.Fatalf("pin Close = %v", err)
+	}
+
+	seen := NewSessionSeenStore(dbPath)
+	if _, err := seen.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	if err := seen.Close(); err != nil {
+		t.Fatalf("seen Close = %v", err)
+	}
+}
+
+// TestStoreUseAfterCloseReopens pins that a close is not a poison pill: the
+// handle is a cache, so the next call opens a fresh one. Callers that outlive
+// the hub's cleanup — a test harness that reads a store after runMain returns,
+// or a shutdown that races an in-flight caller — keep working, the way they
+// did when every call opened its own handle.
+func TestStoreUseAfterCloseReopens(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	now := time.Unix(1_700_000_000, 0)
+
+	archive := NewArchiveStore(dbPath)
+	if err := archive.Set("", "session", "a", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Set("", "session", "b", true, now); err != nil {
+		t.Fatalf("Set after Close = %v, want a fresh handle", err)
+	}
+	if got, err := archive.Decisions(); err != nil || !got[ArchiveKey{Kind: "session", ID: "b"}] {
+		t.Fatalf("Decisions after Close = %v, %v, want the new row", got, err)
+	}
+
+	favorite := NewFavoriteStore(dbPath)
+	if err := favorite.Set("", "session", "a", true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := favorite.Set("", "session", "b", true, now); err != nil {
+		t.Fatalf("favorite Set after Close = %v, want a fresh handle", err)
+	}
+
+	pins := NewPinSectionStore(dbPath)
+	if _, err := pins.Sections(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pins.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pins.Sections(); err != nil {
+		t.Fatalf("Sections after Close = %v, want a fresh handle", err)
+	}
+
+	seen := NewSessionSeenStore(dbPath)
+	if _, err := seen.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	if err := seen.Close(); err != nil {
+		t.Fatal(err)
+	}
+	seen.now = func() time.Time { return now.Add(time.Hour) }
+	if _, err := seen.MarkBatch([]SessionSeenMark{{SessionID: "s", SeenThrough: now}}); err != nil {
+		t.Fatalf("MarkBatch after Close = %v, want a fresh handle", err)
+	}
+}
+
+// TestKeeperHandleReopensWhenTheFileIsReplaced pins the one way a cached
+// handle could serve data no per-call open would have: an index.db deleted and
+// recreated underneath the hub is a new inode, and a handle still bound to the
+// old one would answer every later read from a file nothing writes any more.
+// A search must see the recreated file, which is what Search's FTS path reads.
+func TestKeeperHandleReopensWhenTheFileIsReplaced(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	base := time.Unix(1_700_000_000, 0)
+	const alpha = "02wMz5Txv1C3Hut0M8GCeB"
+	const bravo = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{
+		ID: alpha, Name: "alpha", UpdatedAt: base,
+		OriginalPrompt: "alpha needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"},
+	})
+	dbPath := filepath.Join(root, "index.db")
+	index := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := index.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := index.searchFTS("needle"); !ok {
+		t.Fatal("the first search did not use the FTS table")
+	}
+
+	// Lose the file and its sidecars outside the index's lock, the way an
+	// operator restoring a backup or a crashed checkpoint can.
+	for _, p := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	// A session published after the loss lands in the recreated file.
+	writeMeta(t, proj, schema.SessionMeta{
+		ID: bravo, Name: "bravo", UpdatedAt: base.Add(time.Minute),
+		OriginalPrompt: "bravo needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"},
+	})
+	if _, err := index.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// ok=false would be the pre-change behavior (the query fails on a file the
+	// handle no longer names, and Search falls back to the memory scan). A
+	// stale handle is the dangerous one: ok=true with the new row missing.
+	if got, ok := index.searchFTS("bravo"); ok && len(got) == 0 {
+		t.Fatal("the FTS read served the replaced file's predecessor: a post-loss publish is invisible behind the cached handle")
+	}
+	found := index.Search("bravo needle", 10, 0)
+	if len(found) == 0 || found[0].ID != bravo {
+		t.Fatalf("Search after index.db was replaced = %+v, want the session published after the loss", found)
+	}
+}
+
+// TestPastIndexCloseReleasesTheReadHandle pins the past index's half: a close
+// after a search releases the handle it opened, and a close before any search
+// is a no-op.
+func TestPastIndexCloseReleasesTheReadHandle(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "index.db")
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	writeMeta(t, proj, schema.SessionMeta{
+		ID:             "02wMz5Txv1C3Hut0M8GCeB",
+		Name:           "closeable",
+		UpdatedAt:      time.Unix(1_700_000_000, 0),
+		OriginalPrompt: "closable needle",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/w"},
+	})
+
+	never := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if err := never.Close(); err != nil {
+		t.Fatalf("Close before any search = %v, want nil", err)
+	}
+
+	index := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := index.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := index.searchFTS("closable"); !ok {
+		t.Fatal("searchFTS did not serve the indexed session")
+	}
+	if err := index.Close(); err != nil {
+		t.Fatalf("past index Close = %v", err)
+	}
+	if _, ok := index.searchFTS("closable"); !ok {
+		t.Fatal("searchFTS after Close did not serve the indexed session: a close must not poison the read path")
+	}
+}
