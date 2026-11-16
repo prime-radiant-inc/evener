@@ -1595,48 +1595,52 @@ func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	}
 	// The generation is read in place: this runs once per serve-loop iteration
 	// beside the queued-input probe, and the journal only grows.
+	turnID, runnable := "", false
+	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
+		turnID, runnable = s.runnableClientMutationStartTurnIn(snapshot)
+	})
+	return turnID, runnable
+}
+
+// runnableClientMutationStartTurnIn is runnableClientMutationStartTurnID's
+// whole decision over one generation. It touches no lock and nothing outside
+// the snapshot it is handed, which is what lets the caller read a generation in
+// place.
+func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnapshot) (string, bool) {
 	startTurnID := ""
 	startClaimable := false
-	runnable := false
-	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
-		// Resolve the ordered head once, and only when no fence blocks the
-		// claim. startClaimable tracks claimability separately from the head's
-		// turn id so a start with an empty turn id still returns ("", false)
-		// exactly as before.
-		if snapshot.InterruptFence == nil {
-			if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
-				startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
-				startClaimable = true
-			}
+	// Resolve the ordered head once, and only when no fence blocks the claim.
+	// startClaimable tracks claimability separately from the head's turn id so a
+	// start with an empty turn id still returns ("", false) exactly as before.
+	if snapshot.InterruptFence == nil {
+		if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
+			startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
+			startClaimable = true
 		}
-		// The start branch is settled BEFORE the queue branches, because the
-		// claim path claims the ordered start head whenever a start is
-		// claimable, fence aside. Answering from the map's order instead could
-		// name a claimable queue entry while the claim takes a start, arming
-		// cancellation for the wrong turn.
-		if startClaimable {
-			runnable = startTurnID != ""
-			return
+	}
+	// The start branch is settled BEFORE the queue branches, because the claim
+	// path claims the ordered start head whenever a start is claimable, fence
+	// aside. Answering from the map's order instead could name a claimable queue
+	// entry while the claim takes a start, arming cancellation for the wrong turn.
+	if startClaimable {
+		return startTurnID, startTurnID != ""
+	}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.Method == clientMutationMethodQueue &&
+			pending.ExecutionState == "incorporated" &&
+			pending.TurnID != "" &&
+			snapshot.ActiveTurnID == pending.TurnID {
+			return pending.TurnID, true
 		}
-		for _, pending := range snapshot.PendingExecutions {
-			if pending.Method == clientMutationMethodQueue &&
-				pending.ExecutionState == "incorporated" &&
-				pending.TurnID != "" &&
-				snapshot.ActiveTurnID == pending.TurnID {
-				startTurnID = pending.TurnID
-				runnable = true
-				return
-			}
-		}
-		if len(snapshot.InputQueue) > 0 {
-			record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
-			runnable = record.Method == clientMutationMethodQueue &&
-				record.StableTurnID != "" &&
-				snapshot.ActiveTurnID == record.StableTurnID
-			startTurnID = record.StableTurnID
-		}
-	})
-	return startTurnID, runnable
+	}
+	if len(snapshot.InputQueue) > 0 {
+		record := snapshot.Journal[snapshot.InputQueue[0].ClientMutationID]
+		runnable := record.Method == clientMutationMethodQueue &&
+			record.StableTurnID != "" &&
+			snapshot.ActiveTurnID == record.StableTurnID
+		return record.StableTurnID, runnable
+	}
+	return "", false
 }
 
 type clientMutationFaults struct {
