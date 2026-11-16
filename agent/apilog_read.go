@@ -663,30 +663,99 @@ func decodeAPILogSummaries(ctx context.Context, path, root, rangeArg string) ([]
 	if err := ctx.Err(); err != nil {
 		return nil, 0, false, err
 	}
+	totalRecords, partialTail, err := countAPILogRecords(ctx, path, root)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	// The range is resolved against the whole file's record count so a page's
+	// selection, and its normalized range, are the same as a whole-file read's.
+	start, end, _, _ := selectAPILogRange(rangeArg, totalRecords)
+	if end < start {
+		return nil, totalRecords, partialTail, nil
+	}
+	summaries, err := decodeAPILogPage(ctx, path, root, start, end)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return summaries, totalRecords, partialTail, nil
+}
+
+// decodeAPILogPage decodes only the records in the inclusive [start, end]
+// record-number window, and stops at the window's end. A record inside the
+// window that fails to decode fails the page, with the decoder's own line and
+// offset; a record outside it is only stepped over, so it cannot fail a page
+// that does not show it.
+func decodeAPILogPage(ctx context.Context, path, root string, start, end int) ([]apiLogRecordSummary, error) {
 	f, err := openAPILogFile(path, root)
 	if err != nil {
-		return nil, 0, false, fmt.Errorf("open API log: %w", err)
+		return nil, fmt.Errorf("open API log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
 	decoder := apilog.NewDecoder(apiLogContextReader{ctx: ctx, reader: f}, maxAPILogLineBytes)
-	retention := newAPILogSummaryRetention(rangeArg)
-	for recordNumber := 0; ; recordNumber++ {
+	summaries := make([]apiLogRecordSummary, 0, min(end-start+1, maxAPILogRecords))
+	for recordNumber := 0; recordNumber <= end; recordNumber++ {
 		if err := ctx.Err(); err != nil {
-			return nil, 0, false, err
+			return nil, err
+		}
+		if recordNumber < start {
+			if err := decoder.SkipRecord(); err != nil {
+				return summaries, apiLogPageScanError(err)
+			}
+			continue
 		}
 		record, err := decoder.Next()
+		if err != nil {
+			return summaries, apiLogPageScanError(err)
+		}
+		summary, err := summarizeAPILogRecord(recordNumber, record)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+// apiLogPageScanError maps a decoder result that ended a page scan to the
+// error the whole-file read reported for the same condition. EOF and a partial
+// tail end the page early without an error: the range was resolved against the
+// file's own record count, so either can only mean the file changed under the
+// scan.
+func apiLogPageScanError(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, apilog.ErrPartialTail) {
+		return nil
+	}
+	return fmt.Errorf("read API log: %w", err)
+}
+
+// countAPILogRecords reports how many complete records the log holds and
+// whether it ends in a partial fragment, without decoding any record. It walks
+// the same framing the decoder does, so the count and the partial-tail verdict
+// match a read that decodes every record.
+func countAPILogRecords(ctx context.Context, path, root string) (int, bool, error) {
+	f, err := openAPILogFile(path, root)
+	if err != nil {
+		return 0, false, fmt.Errorf("open API log: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	decoder := apilog.NewDecoder(apiLogContextReader{ctx: ctx, reader: f}, maxAPILogLineBytes)
+	records := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, false, err
+		}
+		err := decoder.SkipRecord()
 		switch {
 		case errors.Is(err, io.EOF):
-			return retention.result(), recordNumber, false, nil
+			return records, false, nil
 		case errors.Is(err, apilog.ErrPartialTail):
-			return retention.result(), recordNumber, true, nil
+			return records, true, nil
 		case err != nil:
-			return nil, 0, false, fmt.Errorf("read API log: %w", err)
+			return 0, false, fmt.Errorf("read API log: %w", err)
 		}
-		if err := retention.add(recordNumber, record); err != nil {
-			return nil, 0, false, err
-		}
+		records++
 	}
 }
 
