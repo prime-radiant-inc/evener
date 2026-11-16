@@ -34,6 +34,14 @@ type relayClaim struct {
 	relayHandle             *hubRelayHandle
 	cancelRelay             context.CancelFunc
 	stopInitialCancellation func() bool
+	// departed is the registry's "a thread may have gone idle" signal, taken
+	// before this claim registers its subscription. Taking it here rather than
+	// in the supervisor's run goroutine is what makes a departure reliable: a
+	// departure closes the channel that exists at that moment and installs a
+	// replacement, so a supervisor that read the channel after a departure had
+	// already closed it would wait on the replacement and never learn the
+	// thread went idle.
+	departed <-chan struct{}
 }
 
 func (r *hubRelay) startRelayOnce(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
@@ -123,6 +131,7 @@ func (r *hubRelay) claimRelayHandle(ctx context.Context, target relayStartTarget
 	var relayHandle *hubRelayHandle
 	var cancelRelay context.CancelFunc
 	var stopInitialCancellation func() bool
+	var departed <-chan struct{}
 	for {
 		r.mu.Lock()
 		existing := r.relayed[relayKey]
@@ -143,6 +152,12 @@ func (r *hubRelay) claimRelayHandle(ctx context.Context, target relayStartTarget
 			relayCtx = appsource.WithRelayIdentity(relayCtx, relayKey)
 			relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay}
 			r.relayed[relayKey] = relayHandle
+			// Read the departure signal before the subscription below can take
+			// the thread's live interest from zero to one: any departure after
+			// this read closes this channel, and any departure before it is
+			// already reflected in the subscriber count the supervisor checks
+			// first.
+			departed = r.server.SubscriberDeparted()
 			stopInitialCancellation = context.AfterFunc(ctx, func() {
 				var cancel context.CancelFunc
 				r.mu.Lock()
@@ -196,7 +211,7 @@ func (r *hubRelay) claimRelayHandle(ctx context.Context, target relayStartTarget
 			return relayClaim{}, true, nil
 		}
 	}
-	return relayClaim{relayCtx: relayCtx, relayHandle: relayHandle, cancelRelay: cancelRelay, stopInitialCancellation: stopInitialCancellation}, false, nil
+	return relayClaim{relayCtx: relayCtx, relayHandle: relayHandle, cancelRelay: cancelRelay, stopInitialCancellation: stopInitialCancellation, departed: departed}, false, nil
 }
 
 // publishRelay subscribes the source, registers the subscriber and publishes
@@ -339,15 +354,11 @@ type relaySupervisor struct {
 	// anchorEntry): the entry a give-up notice anchors after.
 	noticeAnchorEntry   uint64
 	consecutiveFailures int
-	// departed is the subscription registry's "a thread may have gone idle"
-	// signal, read once per generation like the ticker beside it.
-	departed <-chan struct{}
 }
 
 func (s *relaySupervisor) run() {
 	s.ticker = time.NewTicker(s.r.idleInterval)
 	defer s.ticker.Stop()
-	s.departed = s.r.server.SubscriberDeparted()
 	defer s.cleanupRelay()
 	s.argsByCallID = map[string]string{}
 	for {
