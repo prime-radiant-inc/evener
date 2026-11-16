@@ -107,9 +107,44 @@ func TestWaitReportsCancellationWhileParked(t *testing.T) {
 	}
 }
 
-// TestWaitRefusesAClosedProcessWhileParked covers the Close that races the wait.
-// A handle closed while the waiter is parked must not be read for.
-func TestWaitRefusesAClosedProcessWhileParked(t *testing.T) {
+// TestCloseEndsAnActiveWait covers the Close that races a parked waiter. Close
+// releases the descriptor the waiter is parked on, so the waiter must be woken
+// by the Close rather than left polling a number a later open could reuse for a
+// descriptor that is not this daemon's.
+func TestCloseEndsAnActiveWait(t *testing.T) {
+	t.Parallel()
+	k := &signalingProcess{release: make(chan struct{}), parked: make(chan struct{})}
+	k.facts = validIdentity()
+	p, err := (controller{bind: func(int) (processHandle, error) { return k, nil }}).Open(validTarget())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- p.Wait(context.Background()) }()
+	select {
+	case <-k.parked:
+	case <-time.After(5 * time.Second): // TRIPWIRE: proves the waiter parks; only fires on a genuine hang.
+		t.Fatal("Wait never parked on the exit signal")
+	}
+	// Close while the waiter is parked, and never report the exit: the only way
+	// the wait can end is the Close.
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an active wait ended successfully on a Close that reported no exit")
+		}
+	case <-time.After(5 * time.Second): // TRIPWIRE: Close must wake the waiter; only fires on a genuine hang.
+		t.Fatal("Close did not end the active wait")
+	}
+}
+
+// TestWaitRefusesAClosedProcess keeps the plain case: a wait started after Close
+// is refused rather than answered.
+func TestWaitRefusesAClosedProcess(t *testing.T) {
 	t.Parallel()
 	k := &signalingProcess{release: make(chan struct{}), parked: make(chan struct{})}
 	k.facts = validIdentity()

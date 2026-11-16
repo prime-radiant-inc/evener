@@ -167,6 +167,9 @@ type process struct {
 	target     Target
 	generation string
 	closed     bool
+	// closedCh is closed by Close, so a parked Wait is woken rather than left
+	// polling a descriptor Close is about to release.
+	closedCh chan struct{}
 }
 
 // validate refuses a target no inspection could be bound to.
@@ -270,13 +273,31 @@ func (p *process) Wait(ctx context.Context) error {
 	// knows the process is gone should not poll for it. Everywhere else the
 	// ticker stays, because re-reading identity is the only exit proof there is
 	// and it cannot block.
+	// A wait belongs to this handle, so Close ends it. Without that, a Close
+	// that lands while the waiter is parked releases the descriptor underneath
+	// it, and a later open reusing that number leaves the waiter polling a
+	// descriptor that is not the daemon's.
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return os.ErrClosed
 	}
 	handle := p.handle
+	if p.closedCh == nil {
+		p.closedCh = make(chan struct{})
+	}
+	closedCh := p.closedCh
 	p.mu.Unlock()
+	waitCtx, stopWait := context.WithCancel(ctx)
+	defer stopWait()
+	go func() {
+		select {
+		case <-closedCh:
+			stopWait()
+		case <-waitCtx.Done():
+		}
+	}()
+	ctx = waitCtx
 	if waiter, ok := handle.(exitWaiter); ok {
 		if err := waiter.waitExit(ctx); err != nil && !errors.Is(err, ErrExited) {
 			return err
@@ -323,5 +344,9 @@ func (p *process) Close() error {
 		return nil
 	}
 	p.closed = true
+	if p.closedCh != nil {
+		close(p.closedCh)
+		p.closedCh = nil
+	}
 	return p.handle.close()
 }
