@@ -1768,7 +1768,10 @@ async function reconnect({ expectRefs } = {}) {
   const expected = expectRefs ?? fixture.refs;
   const sockets = await read(`(() => {
     const sockets = window.__cascadeSockets.filter(s => s.readyState === WebSocket.OPEN && new URL(s.url).pathname === '/rpc');
-    for (const socket of sockets) socket.close(4000, 'cascade guard transport boundary');
+    for (const socket of sockets) {
+      socket.__guardCutSocket = true;
+      socket.close(4000, 'cascade guard transport boundary');
+    }
     return sockets.length;
   })()`);
   assert.equal(sockets, 1, "one actual shared hub socket is closed");
@@ -1964,7 +1967,47 @@ try {
         button:event.target.closest('button')?.textContent.slice(0, 100) ?? null });
     }, true);
     window.WebSocket = class extends Native {
-      constructor(...args) { super(...args); window.__cascadeSockets.push(this); }
+      constructor(...args) {
+        super(...args);
+        // What this socket's client handler actually took, not what the network
+        // log recorded. close() nulls the client's onmessage before the socket
+        // finishes closing, so a frame arriving in that gap is logged by CDP but
+        // dropped by the client: this listener still fires for it, so the test
+        // is whether onmessage was attached at dispatch. This listener is added
+        // before the client ever sets onmessage, so it runs first and sees the
+        // current value. A frame recorded here is one the page consumed.
+        // Invalidations are counted from this connection's own initialize
+        // response, which is the window the branch comparison is defined over.
+        this.__deliveredInvalidations = [];
+        this.__deliveredReplyIds = [];
+        this.__deliveredHandshakeId = null;
+        const initializeIds = new Set();
+        const nativeSend = this.send.bind(this);
+        this.send = function (data) {
+          try {
+            const request = JSON.parse(data);
+            if (request?.method === 'initialize') initializeIds.add(request.id);
+          } catch {}
+          return nativeSend(data);
+        };
+        this.addEventListener('message', (event) => {
+          if (this.onmessage === null) return;
+          let message;
+          try { message = JSON.parse(event.data); } catch { return; }
+          if (message?.id != null && initializeIds.has(message.id)) {
+            this.__deliveredHandshakeId = message.id;
+            return;
+          }
+          if (message?.id != null) {
+            this.__deliveredReplyIds.push(message.id);
+            return;
+          }
+          if (this.__deliveredHandshakeId !== null && message?.method === 'evener/navigation/invalidated') {
+            this.__deliveredInvalidations.push(message.params ?? {});
+          }
+        });
+        window.__cascadeSockets.push(this);
+      }
     };
   })()` });
   await navigateTo(driver.page, fixture.url);
