@@ -102,6 +102,52 @@ func TestOutputAppendBatchesBarriersToTheFinish(t *testing.T) {
 	}
 }
 
+// The tick is what bounds how stale a running job's recovery anchor can be: an
+// append pays the log barrier once the interval has elapsed, so a long-running
+// job's anchor trails its output by at most one interval rather than growing
+// unbounded. An append inside the interval pays none.
+func TestOutputAppendPaysTheBarrierOnceTheSyncIntervalElapses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	census := &outputSyncCensus{Fs: afero.NewOsFs(), outputPath: path, metaPath: outputMetaPath(path)}
+	store, err := openOutputFs(census, path, 0)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	store.metaSyncInterval = time.Hour
+	atOpen := *census
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	}()
+
+	if _, err := store.Append([]byte("first\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	afterFirst := *census
+	if got := afterFirst.output - atOpen.output; got != 0 {
+		t.Fatalf("an append inside the sync interval paid %d log fsyncs, want none", got)
+	}
+
+	// Age the anchor past the interval without sleeping: the tick reads
+	// lastMetaSync, so moving it back is the interval elapsing.
+	store.lastMetaSync = time.Now().Add(-2 * time.Hour)
+	if _, err := store.Append([]byte("second\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if got := census.output - afterFirst.output; got != 1 {
+		t.Fatalf("an append after the sync interval paid %d log fsyncs, want exactly 1", got)
+	}
+	// The barrier re-anchors the pace, so the next append owes nothing again.
+	reAnchored := *census
+	if _, err := store.Append([]byte("third\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if got := census.output - reAnchored.output; got != 0 {
+		t.Fatalf("the append after a barrier paid %d log fsyncs, want none", got)
+	}
+}
+
 // The parent-directory barrier commits a rename, so an append pays none and the
 // barrier pays one — once, not once per 32 KiB chunk (#6402).
 func TestOutputMetaDirectoryBarrierOnlyOnTheCreatingWrite(t *testing.T) {
