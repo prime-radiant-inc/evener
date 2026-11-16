@@ -119,6 +119,44 @@ func TestToolCallEndCarriesABoundedExcerptOfTheOutput(t *testing.T) {
 	if !strings.HasPrefix(full, data.Output) {
 		t.Fatal("the excerpt is not the head of the output the deltas streamed")
 	}
+
+	// A delta boundary must not fall inside a rune. JSON encoding turns an
+	// invalid fragment into replacement characters, and the end event carries
+	// only an excerpt, so a split delta is lost for good. Reassemble from the
+	// encoded bytes, since that is where the damage appears.
+	t.Run("multibyte", func(t *testing.T) {
+		t.Parallel()
+		multibyte := strings.Repeat("€", 2_000) // 6,000 bytes: the first 4,000-byte boundary lands mid-rune
+		sess, stop := imageToolSession(t, "read_file", func() (any, error) {
+			return tool.TextResult{Output: multibyte, FullOutput: multibyte}, nil
+		})
+
+		sess.execTool(context.Background(), llm.ToolCallData{
+			ID: "call_multibyte", Name: "read_file", Arguments: json.RawMessage(`{"path":"/tmp/x"}`), Type: "function",
+		}, "")
+		collected := stop()
+
+		var streamed strings.Builder
+		for _, event := range collected {
+			delta, ok := event.Data.(events.ToolCallOutputDeltaData)
+			if !ok || delta.CallID != "call_multibyte" {
+				continue
+			}
+			encoded, err := json.Marshal(delta.Delta)
+			if err != nil {
+				t.Fatalf("marshal delta: %v", err)
+			}
+			var decoded string
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatalf("unmarshal delta: %v", err)
+			}
+			streamed.WriteString(decoded)
+		}
+		if got := streamed.String(); got != multibyte {
+			t.Fatalf("reassembled deltas carried %d runes, want the whole %d-rune output; %d replacement characters",
+				len([]rune(got)), len([]rune(multibyte)), strings.Count(got, "\uFFFD"))
+		}
+	})
 }
 
 // TestToolCallEndSendsAShortOutputWhole keeps the single-copy guarantee from
