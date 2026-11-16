@@ -2002,8 +2002,13 @@ async function retireDeliveredPromoteRecoveriesForRefs(
     // present. Only a retirement that removed something owes a fresh one:
     // the gate keeps ordinary frames from waking the projection refresh for
     // every session with mere transcript evidence (which would start the
-    // mutation runtime in hosts that never opened it).
-    if (retired.length > 0) notifyMutationPersistence([targetRef]);
+    // mutation runtime in hosts that never opened it). Sibling tabs hold the
+    // same stale cache with no local retire to clear it, so the wake goes to
+    // them; this tab's own refresh is the notifyMutationPersistence above.
+    if (retired.length > 0) {
+      notifyMutationPersistence([targetRef]);
+      runtime.outbox.announceCrossTabWork(targetRef);
+    }
     if (!isCurrentMutationRuntime(runtime)) return;
   }
 }
@@ -4104,6 +4109,9 @@ export async function discardRecoveryMutation(
     // The removed row's id is resolved: a later settle of a replacement, or
     // unreadable storage, must not keep blocking fallback sends behind it.
     noteHandledMutation(clientMutationId);
+    // The deleted row was shared: sibling tabs cache it with no local
+    // discard to clear, so they get the same wake a retire sends.
+    runtime.outbox.announceCrossTabWork(targetRef);
     notifyMutationPersistence([targetRef]);
   }
   return discarded;
@@ -5654,6 +5662,19 @@ export function observePendingHydrationRetirementsForTests(
   };
 }
 
+// Test-only: the mutation runtime's outbox broadcasts its cross-tab wakeups on
+// the channel this factory returns, so a store test can install a recording
+// channel and assert a retire that removed rows announced to sibling tabs.
+export function installMutationBroadcastChannelForTests(
+  create: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined,
+): () => void {
+  const previous = createMutationBroadcastChannelForTests;
+  createMutationBroadcastChannelForTests = create;
+  return () => {
+    createMutationBroadcastChannelForTests = previous;
+  };
+}
+
 function retirePendingHydration(
   ref: string,
   pending: PendingThreadHydration,
@@ -6201,7 +6222,10 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
     void runtime.storage
       .retireDeliveredPromoteRecoveries(ref, evidence)
       .then((retired) => {
-        if (retired.length > 0) notifyMutationPersistence([ref]);
+        if (retired.length > 0) {
+          notifyMutationPersistence([ref]);
+          runtime.outbox.announceCrossTabWork(ref);
+        }
       })
       .catch(() => {
         // A later authoritative read runs the same retirement.
@@ -6351,7 +6375,10 @@ async function publishAndReconcileThreadHydration(
         if (mutationStateAuthoritative) {
           const evidence = settledSourceIds(published);
           const retired = await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
-          if (retired.length > 0) notifyMutationPersistence([ref]);
+          if (retired.length > 0) {
+            notifyMutationPersistence([ref]);
+            runtime.outbox.announceCrossTabWork(ref);
+          }
         }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
@@ -7947,7 +7974,10 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
   void runtime.storage
     .retireDeliveredPromoteRecoveries(ref, evidence)
     .then((retired) => {
-      if (retired.length > 0) notifyMutationPersistence([ref]);
+      if (retired.length > 0) {
+        notifyMutationPersistence([ref]);
+        runtime.outbox.announceCrossTabWork(ref);
+      }
     })
     .catch(() => {
       // A later accepted snapshot runs the same retirement.

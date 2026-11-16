@@ -364,60 +364,6 @@ func TestAPILogAttemptSettlementLookup(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// apiLogSummaryRetention
-// ---------------------------------------------------------------------------
-
-func TestAPILogSummaryRetention(t *testing.T) {
-	t.Run("tail mode retains last N", func(t *testing.T) {
-		r := newAPILogSummaryRetention("last:5")
-		for i := range 10 {
-			if err := r.add(i, apilog.APIAttemptRecord{AttemptID: "a"}); err != nil {
-				t.Fatalf("add %d: %v", i, err)
-			}
-		}
-		// In tail mode with < maxAPILogRecords, all are kept.
-		result := r.result()
-		if len(result) != 10 {
-			t.Fatalf("expected 10 records, got %d", len(result))
-		}
-	})
-	t.Run("start mode retains first N", func(t *testing.T) {
-		r := newAPILogSummaryRetention("start:5")
-		for i := range 10 {
-			if err := r.add(i, apilog.APIAttemptRecord{AttemptID: "a"}); err != nil {
-				t.Fatalf("add %d: %v", i, err)
-			}
-		}
-		result := r.result()
-		if len(result) > maxAPILogRecords {
-			t.Fatalf("expected at most %d records, got %d", maxAPILogRecords, len(result))
-		}
-	})
-	t.Run("exact range retains specified records", func(t *testing.T) {
-		r := newAPILogSummaryRetention("2-4")
-		for i := range 10 {
-			if err := r.add(i, apilog.APIAttemptRecord{AttemptID: "a"}); err != nil {
-				t.Fatalf("add %d: %v", i, err)
-			}
-		}
-		result := r.result()
-		// Should keep records 2-4.
-		if len(result) == 0 {
-			t.Fatal("expected some records")
-		}
-		if result[0].RecordNumber != 2 {
-			t.Fatalf("expected first record at 2, got %d", result[0].RecordNumber)
-		}
-	})
-	t.Run("summarize nil record errors", func(t *testing.T) {
-		r := newAPILogSummaryRetention("last:5")
-		// A nil APILogRecord panics in summarizeAPILogRecord before reaching
-		// the default branch; this is not a valid decoder output, so we skip it.
-		_ = r
-	})
-}
-
-// ---------------------------------------------------------------------------
 // summarizeAPILogRecord
 // ---------------------------------------------------------------------------
 

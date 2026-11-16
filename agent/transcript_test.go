@@ -2295,6 +2295,87 @@ func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
 	}
 }
 
+// TestReadSessionTranscriptAPILogPageSurfacesCorruptionInItsWindow pins which
+// corrupt records fail a paged read: one inside the requested page's window
+// fails the read with the decoder's own line and offset, while one outside the
+// window is stepped over. A page decodes only the records it shows, so
+// corruption elsewhere in the log cannot fail it.
+func TestReadSessionTranscriptAPILogPageSurfacesCorruptionInItsWindow(t *testing.T) {
+	const corruptLine = "{not-json}\n"
+	// Each case corrupts one record of a 30-record log and reads record 10's
+	// own page, so the corrupt record falls before, inside, or after the
+	// window [10, 10].
+	for _, tc := range []struct {
+		name        string
+		corruptAt   int
+		wantErrLine string
+	}{
+		{name: "corruption before the page is stepped over", corruptAt: 2},
+		{name: "corruption at the page start fails the page", corruptAt: 10, wantErrLine: "API log line 11 at offset"},
+		{name: "corruption after the page is stepped over", corruptAt: 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newBucket(t)
+			sessionID := identifier.MustNewSessionID()
+			writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+			records := make([]apilog.APILogRecord, 0, 30)
+			for i := range 30 {
+				attempt := testAPIAttemptRecord(fmt.Sprintf("ag_window_%03d", i), 1, nil, nil)
+				attempt.ProviderInstance = "p"
+				attempt.RequestModel = "m"
+				attempt.Request.Method = "P"
+				attempt.Request.Endpoint = "e"
+				attempt.Response = nil
+				attempt.Outcome = apilog.AttemptTransportFail
+				records = append(records, attempt)
+			}
+			path := writeTestAPILog(t, dir, sessionID, records...)
+			rewriteAPILogLine(t, path, tc.corruptAt, corruptLine)
+
+			deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+			result := executeReadSessionTranscript(t, deps, map[string]any{"source": apiLogSource, "range": "10-10"})
+			if tc.wantErrLine == "" {
+				if result.IsError {
+					t.Fatalf("page read failed on corruption outside its window: %s", result.Output)
+				}
+				var emitted map[string]any
+				if err := json.Unmarshal([]byte(result.Output), &emitted); err != nil {
+					t.Fatalf("decode emitted API summary: %v", err)
+				}
+				page := emitted["records"].([]any)
+				if len(page) != 1 {
+					t.Fatalf("page records = %d, want 1", len(page))
+				}
+				if got := page[0].(map[string]any)["record_number"]; got != float64(10) {
+					t.Fatalf("page record_number = %v, want 10", got)
+				}
+				return
+			}
+			if !result.IsError || !strings.Contains(result.Output, tc.wantErrLine) {
+				t.Fatalf("page read on corruption inside its window = %q, want error containing %q", result.Output, tc.wantErrLine)
+			}
+		})
+	}
+}
+
+// rewriteAPILogLine replaces the zero-based line at lineNumber in an API log,
+// so a corrupt record can sit at a chosen position relative to a page window.
+func rewriteAPILogLine(t *testing.T, path string, lineNumber int, replacement string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read API log: %v", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	if lineNumber >= len(lines) {
+		t.Fatalf("API log has %d lines, cannot rewrite line %d", len(lines), lineNumber)
+	}
+	lines[lineNumber] = strings.TrimSuffix(replacement, "\n")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatalf("write API log: %v", err)
+	}
+}
+
 type cancelingAPILogReadCloser struct {
 	io.ReadCloser
 	cancel    context.CancelFunc
