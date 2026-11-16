@@ -6,14 +6,14 @@ import "primeradiant.com/evener/agent/provenance"
 // currently being processed, or nil when the active set is empty. Emitted events
 // are stamped with this value (see sendEvent).
 func (s *Session) activeCausalProvenance() *provenance.Causal {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return provenance.Clone(provenance.NilIfEmpty(&s.activeProvenance))
 }
 
 func (s *Session) completedCausalProvenance() *provenance.Causal {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return provenance.Clone(provenance.NilIfEmpty(&s.completedInputProvenance))
 }
 

@@ -57,6 +57,192 @@ import (
 // held-lock analysis over the whole package, which is a different and much
 // noisier tool than these four assertions.
 
+// TestSessionReadLockIsALeaf pins the invariant that makes mu's read lock safe
+// to share with the emit path.
+//
+// mu is a read/write lock. activeCausalProvenance and ContextStatus take it as
+// READERS so the per-event provenance stamp and the per-sample history copy stop
+// serializing each other; that is the whole point of the conversion. Sharing
+// costs readers the write lock's loud guarantee: a goroutine that already holds
+// the read lock and emits re-enters as a SECOND reader, which parks only while a
+// writer is pending — Go read locks are not recursive, and a pending writer
+// blocks new readers — so the violation becomes the silent wedge this file
+// exists to prevent instead of an immediate hang.
+//
+// The compensation is this assertion: a read lock stays a leaf. Its holder takes
+// no other lock except one classified below, and does not emit. The danger is a
+// cycle: a reader parked on lock L while a holder of L waits for mu's write lock
+// behind the reader. So a lock may appear under a read section only when its
+// holder cannot reach Session — which is a fact to state, not to assume, exactly
+// as envelopeSamplingPermittedLocks requires for the sampling surface.
+var readLockPermittedCollaboratorLocks = map[string]string{
+	"contextMgr": "contextmgr does not import package agent, and its one Session callback " +
+		"(OnCompactionTurn) runs only with no cm.mu held, so no cm.mu holder can wait on mu",
+}
+
+// Known residual, the same shape as the emitDiagnosticWarning note above: these
+// are direct-call assertions. A reader that reaches another lock or an emitter
+// through a helper is not caught, which would take the interprocedural analysis
+// this file deliberately does not attempt. It covers today's readers completely
+// because both have tiny bodies — a clone, or a slice copy and a call to the
+// context manager outside the lock — and neither can reach an emit.
+func TestSessionReadLockIsALeaf(t *testing.T) {
+	t.Parallel()
+	files := agentSourceFiles(t)
+
+	readers := 0
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if !sessionReadLockUse(fn) {
+				continue
+			}
+			readers++
+			name := methodName(fn)
+			if unclassified := unclassifiedReaderLock(fn); unclassified != "" {
+				t.Errorf("%s takes s.mu's read lock and also takes another lock, or mu as a writer: "+
+					"a read lock must stay a leaf, because a reader that waits on a second lock "+
+					"can park behind it while a writer waits on the reader, and emit's own read "+
+					"lock turns that into the daemon wedge. %s is not classified as a collaborator "+
+					"whose holder cannot reach Session: add it to readLockPermittedCollaboratorLocks "+
+					"with the structural reason, or take the lock outside the read section", name, unclassified)
+			}
+			for _, emits := range []string{"emit", "emitWithProvenance", "emitDiagnosticWarning", "sendEvent", "sendEventContext"} {
+				if callsOwnMethodOnTheSameGoroutine(fn, emits) {
+					t.Errorf("%s takes s.mu's read lock and calls %s: "+
+						"a reader that emits re-enters the lock as a second reader and wedges "+
+						"as soon as a writer is pending", name, emits)
+				}
+			}
+		}
+	}
+	if readers == 0 {
+		t.Fatal("no method takes s.mu's read lock any more; this guard has stopped checking anything")
+	}
+}
+
+// sessionReadLockUse reports whether fn acquires the receiver's own mu as a
+// reader.
+func sessionReadLockUse(fn *ast.FuncDecl) bool {
+	recv := methodReceiverName(fn)
+	if recv == "" {
+		return false
+	}
+	takes := false
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "RLock" {
+			return true
+		}
+		field, ok := sel.X.(*ast.SelectorExpr)
+		if ok && field.Sel.Name == "mu" && exprText(field.X) == recv {
+			takes = true
+		}
+		return true
+	})
+	return takes
+}
+
+// unclassifiedReaderLock returns the first lock acquisition in fn that the
+// read-lock rule does not permit: the receiver's own mu taken as a writer, or a
+// lock on any value not listed in readLockPermittedCollaboratorLocks. It returns
+// "" when every acquisition is permitted.
+func unclassifiedReaderLock(fn *ast.FuncDecl) string {
+	recv := methodReceiverName(fn)
+	unclassified := ""
+	ast.Inspect(fn, func(n ast.Node) bool {
+		if unclassified != "" {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || (sel.Sel.Name != "Lock" && sel.Sel.Name != "RLock" && sel.Sel.Name != "TryLock") {
+			return true
+		}
+		field, ok := sel.X.(*ast.SelectorExpr)
+		if !ok || field.Sel.Name != "mu" {
+			unclassified = exprText(sel.X)
+			return false
+		}
+		if exprText(field.X) == recv {
+			if sel.Sel.Name != "RLock" {
+				unclassified = recv + ".mu (write lock)"
+			}
+			return true
+		}
+		if _, ok := readLockPermittedCollaboratorLocks[exprText(field.X)]; !ok {
+			unclassified = exprText(field.X) + ".mu"
+		}
+		return true
+	})
+	return unclassified
+}
+
+// callsOwnMethodOnTheSameGoroutine is callsOnTheSameGoroutine restricted to
+// calls on fn's own receiver, so a reader is not failed for another value's
+// method that happens to share a name.
+func callsOwnMethodOnTheSameGoroutine(fn *ast.FuncDecl, method string) bool {
+	recv := methodReceiverName(fn)
+	if recv == "" {
+		return false
+	}
+	var spawned []*ast.GoStmt
+	ast.Inspect(fn, func(n ast.Node) bool {
+		if g, ok := n.(*ast.GoStmt); ok {
+			spawned = append(spawned, g)
+		}
+		return true
+	})
+	found := false
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != method || exprText(sel.X) != recv {
+			return true
+		}
+		for _, g := range spawned {
+			if g.Pos() <= call.Pos() && call.End() <= g.End() {
+				return true
+			}
+		}
+		found = true
+		return false
+	})
+	return found
+}
+
+// methodReceiverName returns the receiver identifier of a method, or "" when fn
+// is not a method with exactly one named receiver of one pointer or value
+// parameter.
+func methodReceiverName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 || len(fn.Recv.List[0].Names) != 1 {
+		return ""
+	}
+	return fn.Recv.List[0].Names[0].Name
+}
+
+// methodName renders a method for a failure message, tolerating a function with
+// no receiver instead of panicking on one.
+func methodName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return fn.Name.Name
+	}
+	return "(*" + receiverTypeName(fn.Recv.List[0].Type) + ")." + fn.Name.Name
+}
+
 // TestEmitReacquiresSessionMu pins the first guard: emit's own first act must
 // take Session.mu, so emitting from inside a Session.mu critical section
 // deadlocks immediately instead of wedging the daemon later.

@@ -350,7 +350,20 @@ type Session struct {
 	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
-	mu sync.Mutex
+	//
+	// mu is a read/write lock. Every mutation of a guarded field takes Lock;
+	// a pure read may take RLock only when it touches guarded fields and
+	// nothing else, never mutates what it reads, and takes no other lock
+	// except one classified in session_emit_lock_guard_test.go as a
+	// collaborator whose holder cannot reach Session. Two readers are the emit
+	// stamp (activeCausalProvenance) and the context sample (ContextStatus),
+	// which run on every event and every sample; sharing keeps them from
+	// serializing each other. Readers are still excluded by any writer, so a
+	// read observes one whole state and never a write in progress. Go read
+	// locks are not recursive: a path that takes RLock and then reaches
+	// another Session RLock or Lock can wedge when a writer is pending, so no
+	// reader may call another.
+	mu sync.RWMutex
 	// retirementController is process-owned and published atomically so admission
 	// never nests the controller mutex with a Session lock. Nil leaves ordinary
 	// non-daemon sessions unchanged; descendants inherit it before starting work.
