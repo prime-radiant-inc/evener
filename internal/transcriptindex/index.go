@@ -301,15 +301,9 @@ type Index struct {
 	turnSlots *turnSlotTable
 	// turnSlotsNamed is how many turn records the table names.
 	turnSlotsNamed uint64
-	// preludeAnswered and preludeIndexed cache whether a turn summary already
-	// represents the header prelude, which every turn-addressed read asks
-	// several times. The answer is cached against the turn count it was taken
-	// at, so an extension recomputes it.
-	preludeAnswered uint64
-	preludeIndexed  bool
-	meta            meta
-	prelude         *appwire.Turn
-	builder         builder
+	meta           meta
+	prelude        *appwire.Turn
+	builder        builder
 	// updatesName is the update log file updates has open.
 	updatesName string
 	// builderStale reports records another handle extended, which the

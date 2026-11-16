@@ -57,25 +57,6 @@ func BenchmarkResolveTurnWindow(b *testing.B) {
 
 // BenchmarkDerivedTotals times one whole-session derived-totals read on
 // sessions whose turn counts differ by 8x.
-func BenchmarkDerivedTotals(b *testing.B) {
-	for _, turns := range []int{500, 4_000} {
-		b.Run(fmt.Sprintf("turns=%d", turns), func(b *testing.B) {
-			dir := b.TempDir()
-			path := writeDerivedTotalsSession(b, dir, turns)
-			x := openIndex(b, path, filepath.Join(dir, "index"))
-			b.Cleanup(func() { _ = x.Close() })
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				if _, _, err := x.DerivedTotals(0); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-	}
-}
-
-// writeDerivedTotalsSession writes turns turns carrying usage into dir.
 func writeDerivedTotalsSession(t testing.TB, dir string, turns int) string {
 	t.Helper()
 	lines := make([]fixtureLine, 0, 2*turns)

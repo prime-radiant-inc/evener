@@ -9,10 +9,10 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TestCacheIdleHandleDropsAndReopensItsSidecars pins the memory bound: a
-// released handle keeps neither sidecar open, and the handle that re-acquires
-// it reads from them again rather than scanning the turn table for the rest of
-// its life.
+// TestCacheIdleHandleDropsAndReopensItsSidecars pins the memory bound the cache
+// names: a released handle keeps no sidecar open, and the handle that
+// re-acquires it reads from the table again rather than scanning the turn
+// table for the rest of its life.
 func TestCacheIdleHandleDropsAndReopensItsSidecars(t *testing.T) {
 	lines := make([]fixtureLine, 0, 40)
 	for i := range 20 {
@@ -30,24 +30,21 @@ func TestCacheIdleHandleDropsAndReopensItsSidecars(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if x.turnSlots == nil || x.totals.file == nil {
-		t.Fatal("a fresh build holds no sidecars")
+	if x.turnSlots == nil {
+		t.Fatal("a fresh build holds no slot table")
 	}
 	c.Release(x)
 
-	// Idle: both files are closed, and nothing borrows them.
+	// Idle: the file is closed, and nothing borrows it.
 	if x.turnSlots != nil {
 		t.Fatal("a released handle kept its slot table open")
 	}
-	if x.totals.file != nil {
-		t.Fatal("a released handle kept its totals file open")
-	}
 	if x.cutView != nil {
-		t.Fatal("a released handle kept a cut view that borrows the sidecars")
+		t.Fatal("a released handle kept a cut view that borrows the sidecar")
 	}
 
-	// Re-acquired: the next read reopens both, so the read is served from them
-	// rather than from a walk of every turn summary.
+	// Re-acquired: the next read reopens it, so the read is served from the
+	// table rather than from a walk of every turn summary.
 	again, err := c.Acquire(path)
 	if err != nil {
 		t.Fatal(err)
@@ -59,13 +56,7 @@ func TestCacheIdleHandleDropsAndReopensItsSidecars(t *testing.T) {
 	if again.turnSlots == nil {
 		t.Fatal("a read after re-acquire did not reopen the slot table")
 	}
-	if _, _, err := again.DerivedTotals(0); err != nil {
-		t.Fatalf("DerivedTotals: %v", err)
-	}
-	if again.totals.file == nil {
-		t.Fatal("a read after re-acquire did not reopen the totals file")
-	}
-	if again.totals.n != again.turns.n {
-		t.Fatalf("reopened totals covers %d turns, table holds %d", again.totals.n, again.turns.n)
+	if again.turnSlotsNamed != again.turns.n {
+		t.Fatalf("reopened table names %d turns, table holds %d", again.turnSlotsNamed, again.turns.n)
 	}
 }

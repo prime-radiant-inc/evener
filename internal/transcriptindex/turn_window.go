@@ -181,20 +181,26 @@ func (x *Index) turnOrder(position, count int) ([]turnBoundary, error) {
 // covered transcript has no header or a turn summary already represents that
 // same turn. The check is by id across every summary, which the turn-slot
 // table answers as a lookup; a table that cannot name it reads the turn table.
+//
+// The answer is kept on the owning handle rather than the view, because a
+// current-boundary read is a fresh view per request: a memo on the view would
+// be recomputed — by walking the turn table — on every read of a large
+// history. The epoch is the turn table's, since an in-place rewrite can newly
+// index the prelude's id with the count unchanged.
 func (x *Index) preludeBoundary() (*turnBoundary, error) {
 	if x.prelude == nil {
 		return nil, nil
 	}
 	if x.turns.n > 0 {
-		if x.preludeAnswered != x.turns.n {
+		memo := x.preludeStore()
+		if !memo.valid || memo.epoch != x.turns.epoch || memo.turns != x.turns.n {
 			_, found, err := x.turnSlotOf(x.prelude.ID)
 			if err != nil {
 				return nil, err
 			}
-			x.preludeIndexed, x.preludeAnswered = found, x.turns.n
+			*memo = preludeMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, indexed: found}
 		}
-		found := x.preludeIndexed
-		if found {
+		if memo.indexed {
 			return nil, nil
 		}
 	}

@@ -10,10 +10,10 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// TestOldBuildWithoutSidecarsServesAndGainsThem pins both sidecars as derived
-// state: a build written before either file existed must serve every read
-// through the turn table, and its next commit must mint both files, without
-// the rebuild a corrupt sidecar would force.
+// TestOldBuildWithoutSidecarsServesAndGainsThem pins the slot table as derived
+// state: a build written before the file existed must serve every read through
+// the turn table, and its next commit must mint the table, without the rebuild
+// a corrupt sidecar would force.
 func TestOldBuildWithoutSidecarsServesAndGainsThem(t *testing.T) {
 	path := writeFixture(t, fixture{header: transcript.Header{SessionID: "old_build"}, lines: []fixtureLine{
 		entryLine(opens("turn_a", schema.TurnSpanExecution, user("first question"))),
@@ -26,21 +26,17 @@ func TestOldBuildWithoutSidecarsServesAndGainsThem(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "index")
 	x := openIndex(t, path, dir)
 
-	// Stand for a build that predates both files: drop them and the meta that
-	// names the table, exactly as the older writer left the build.
+	// Stand for a build that predates the file: drop it and the meta that names
+	// the table, exactly as the older writer left the build.
 	if name := x.meta.TurnSlotsFile; name != "" {
 		if err := os.Remove(filepath.Join(dir, x.build, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Remove(filepath.Join(dir, x.build, totalsName)); err != nil {
-		t.Fatal(err)
-	}
 	x.closeTurnSlots()
-	x.closeTotals()
 	x.meta.TurnSlotsFile, x.meta.TurnSlotsCapacity = "", 0
-	// publishMeta alone, not writeMeta: writeMeta is the commit that mints
-	// the sidecars, so going through it would leave this a current build.
+	// publishMeta alone, not writeMeta: writeMeta is the commit that mints the
+	// table, so going through it would leave this a current build.
 	if err := x.publishMeta(); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +44,7 @@ func TestOldBuildWithoutSidecarsServesAndGainsThem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reopened, the old build answers both reads from the turn table.
+	// Reopened, the old build answers the read from the turn table.
 	reopened := openIndex(t, path, dir)
 	t.Cleanup(func() { _ = reopened.Close() })
 	if reopened.turnSlots != nil {
@@ -56,21 +52,14 @@ func TestOldBuildWithoutSidecarsServesAndGainsThem(t *testing.T) {
 	}
 	window, err := reopened.ResolveTurnWindow(appwire.ThreadTurnWindow{Turn: "turn_b"})
 	if err != nil {
-		t.Fatalf("ResolveTurnWindow on a build without sidecars: %v", err)
+		t.Fatalf("ResolveTurnWindow on a build without the table: %v", err)
 	}
 	if len(window.TurnIDs) != 1 || window.TurnIDs[0] != "turn_b" {
 		t.Fatalf("turn window ids = %v, want [turn_b]", window.TurnIDs)
 	}
-	usage, failures, err := reopened.DerivedTotals(0)
-	if err != nil {
-		t.Fatalf("DerivedTotals on a build without sidecars: %v", err)
-	}
-	if usage == nil || usage.InputTokens != 8 || usage.OutputTokens != 3 || failures != 0 {
-		t.Fatalf("derived totals = %+v, %d, want input 8 output 3 failures 0", usage, failures)
-	}
 
-	// The next commit mints both files, so the build gains them with no
-	// rebuild: one O(turns) migration, then extensions are incremental again.
+	// The next commit mints the table, so the build gains it with no rebuild:
+	// one O(turns) migration, then extensions are incremental again.
 	appended := []fixtureLine{
 		entryLine(opens("turn_c", schema.TurnSpanExecution, user("third question"))),
 		entryLine(inTurn("turn_c", assistant(text("third answer")))),
@@ -87,11 +76,5 @@ func TestOldBuildWithoutSidecarsServesAndGainsThem(t *testing.T) {
 	}
 	if reopened.turnSlots == nil {
 		t.Fatal("commit did not mint the slot table")
-	}
-	if reopened.totals.file == nil {
-		t.Fatal("commit did not mint the totals file")
-	}
-	if reopened.totals.n != reopened.turns.n {
-		t.Fatalf("totals covers %d turns, table holds %d", reopened.totals.n, reopened.turns.n)
 	}
 }

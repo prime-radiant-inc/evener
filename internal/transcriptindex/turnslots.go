@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
@@ -145,37 +146,14 @@ func (x *Index) turnSlotOf(id string) (uint64, bool, error) {
 	if ok {
 		return found, true, nil
 	}
-	return x.findTurnSlot(id)
-}
-
-// findTurnSlot answers turnSlotOf from the turn table alone: the last turn with
-// the id wins, which is the record a reopened turn's entries joined. It is the
-// fallback for a table that cannot name the id, and the whole answer for a view
-// that holds no table.
-func (x *Index) findTurnSlot(id string) (uint64, bool, error) {
-	const chunk = uint64(256)
-	for end := x.turns.n; end > 0; {
-		start := end - min(end, chunk)
-		buf, err := x.turns.read(start, int(end-start))
-		if err != nil {
-			return 0, false, err
-		}
-		for slot := end; slot > start; slot-- {
-			record := decodeTurn(buf[(slot-1-start)*turnRecordSize:])
-			if int(record.ID.Len) != len(id) {
-				continue
-			}
-			name, err := x.strings.get(record.ID)
-			if err != nil {
-				return 0, false, err
-			}
-			if string(name) == id {
-				return slot - 1, true, nil
-			}
-		}
-		end = start
+	// The reverse scan findTurn already implements is the fallback: a table
+	// that cannot name the id reads the turn table, newest first, exactly as a
+	// walk would.
+	fallback, indexed, err := x.findTurn(context.Background(), id)
+	if err != nil {
+		return 0, false, err
 	}
-	return 0, false, nil
+	return fallback, indexed, nil
 }
 
 // turnRecordAt decodes the turn summary at slot.
