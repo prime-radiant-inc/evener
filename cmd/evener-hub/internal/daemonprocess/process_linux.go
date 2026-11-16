@@ -2,6 +2,7 @@ package daemonprocess
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -46,14 +47,41 @@ func (p *linuxProcess) kill() error {
 	return err
 }
 func (p *linuxProcess) exited() (bool, error) {
-	return p.exitedWith(unix.Poll)
+	return p.exitPoll(unix.Poll, 0)
 }
 
+// waitExit parks on the pidfd until it reports the exit, so an explicit waiter
+// costs one wakeup instead of one per tick. The poll timeout is only how often
+// the caller's cancellation is re-checked: a pidfd has no interruptible receive,
+// so cancellation has to be noticed between waits.
+func (p *linuxProcess) waitExit(ctx context.Context) error {
+	const cancelPollMillis = 200
+	for {
+		gone, err := p.exitPoll(unix.Poll, cancelPollMillis)
+		if err != nil {
+			return err
+		}
+		if gone {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+}
+
+// exitedWith is exitPoll with the poll function injected for tests.
 func (p *linuxProcess) exitedWith(poll func([]unix.PollFd, int) (int, error)) (bool, error) {
+	return p.exitPoll(poll, 0)
+}
+
+// exitPoll polls the pidfd for readiness, which is this platform's proof of
+// exit, and reports whether the process is gone.
+func (p *linuxProcess) exitPoll(poll func([]unix.PollFd, int) (int, error), timeoutMillis int) (bool, error) {
 	fds := []unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}
 	var err error
 	for {
-		_, err = poll(fds, 0)
+		_, err = poll(fds, timeoutMillis)
 		if !errors.Is(err, unix.EINTR) {
 			break
 		}
