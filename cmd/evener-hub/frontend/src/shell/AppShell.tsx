@@ -60,6 +60,7 @@ import { isSinglePaneRoute } from "./singlePane";
 import { useBrowserConnection } from "./useBrowserConnection";
 import { isMobileViewport } from "./useIsMobile";
 import { useKeyboardInset } from "./useKeyboardInset";
+import { usePinchVeto } from "./usePinchVeto";
 import {
   conversationOpenParentRef,
   documentPaneState,
@@ -655,6 +656,9 @@ function AppShellContent({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // Keeps --keyboard-inset current for the mobile .shell rule; see
   // useKeyboardInset.ts's header for the why.
   useKeyboardInset();
+  // Vetoes Safari's pinch on touch screens; see usePinchVeto.ts's header for
+  // why the CSS rule alone cannot carry iOS.
+  usePinchVeto();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
   // chrome - the rail (which carries the search/settings entry points, floor

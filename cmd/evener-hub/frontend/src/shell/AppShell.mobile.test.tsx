@@ -190,6 +190,23 @@ test("AppShell mounts useKeyboardInset, so a visualViewport resize sets --keyboa
   vi.unstubAllGlobals();
 });
 
+// --- usePinchVeto wiring (pins the AppShell -> hook call) ------------------
+// The hook's own tests pin that a vetoed gesturestart and gesturechange stay
+// defaultPrevented, but nothing connects them through the real component.
+// Safari is the only engine that fires these events (for touch input only),
+// so jsdom dispatches stand in for the device, and this test only pins that
+// the shell installs the veto while mounted.
+test("AppShell mounts usePinchVeto, so a Safari pinch gesture is vetoed while the shell lives", () => {
+  const gesture = new Event("gesturestart", { cancelable: true });
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  document.dispatchEvent(gesture);
+  expect(gesture.defaultPrevented).toBe(true);
+  unmount();
+  const after = new Event("gesturestart", { cancelable: true });
+  document.dispatchEvent(after);
+  expect(after.defaultPrevented).toBe(false);
+});
+
 test("ordinary mobile toolbar Back publishes only the Welcome transition", async () => {
   vi.stubGlobal("innerWidth", 390);
   installMobileViewport();
