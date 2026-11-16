@@ -2727,11 +2727,15 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 // makes them visible: prepareModelRequestWithError reads the cached definitions
 // under s.mu, so a rebuild before a round is prepared reaches that round's
 // request.
-func (s *Session) retryFailedMCP() {
+//
+// ctx is the turn's: it bounds each attempt, and its ending abandons the rest of
+// the batch, so a Stop or a turn deadline is not held behind a stalled
+// handshake.
+func (s *Session) retryFailedMCP(ctx context.Context) {
 	if s == nil || s.mcpMgr == nil {
 		return
 	}
-	recovered, _ := s.mcpMgr.RetryFailed(s.reg)
+	recovered, _ := s.mcpMgr.RetryFailed(ctx, s.reg)
 	if len(recovered) == 0 {
 		return
 	}

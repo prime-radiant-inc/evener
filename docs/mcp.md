@@ -144,6 +144,15 @@ application error. Transport reconnects and failure handling are not a guarantee
 that a failed call had no external effect; check the service before repeating a
 side-effecting operation.
 
+A server that fails to connect while the session starts registers no tools, so
+it cannot recover through the lazy reconnect that an already-registered tool
+performs. The session redials it at the start of each round instead: a server
+that now answers is registered and its tools are available from that round on,
+and a server still down is retried once per backoff window rather than on every
+round. Recovery applies the same tool-name policy as startup and emits an
+informational notice naming the server. Pressing Stop, or the turn's own
+deadline, cancels a retry in progress and abandons the rest of that batch.
+
 Evener owns the stdio transport lifetime and closes connections at session
 teardown. Removing a configuration entry does not cancel a call already in
 progress or undo work the remote service performed.

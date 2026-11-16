@@ -55,7 +55,7 @@ func TestRetryFailed_FirstConnectFailureRecovers(t *testing.T) {
 		t.Fatal("a server that failed its first connect registered a tool")
 	}
 
-	recovered, outs := mgr.RetryFailed(reg)
+	recovered, outs := mgr.RetryFailed(ctx, reg)
 	if len(outs) != 0 {
 		t.Fatalf("RetryFailed outcomes = %+v, want none", outs)
 	}
@@ -75,7 +75,7 @@ func TestRetryFailed_FirstConnectFailureRecovers(t *testing.T) {
 	// The conn is connected now: a second retry has nothing to do and must not
 	// dial again.
 	callsAfterRecovery := dialCalls.Load()
-	if recovered, outs := mgr.RetryFailed(reg); len(recovered) != 0 || len(outs) != 0 {
+	if recovered, outs := mgr.RetryFailed(ctx, reg); len(recovered) != 0 || len(outs) != 0 {
 		t.Fatalf("second RetryFailed = (%+v, %+v), want no work", recovered, outs)
 	}
 	if got := dialCalls.Load(); got != callsAfterRecovery {
@@ -118,14 +118,14 @@ func TestRetryFailed_FailedRetryBacksOff(t *testing.T) {
 
 	// First retry: the server is still down, so the attempt fails and is
 	// reported as a connect-stage outcome.
-	recovered, outs := mgr.RetryFailed(reg)
+	recovered, outs := mgr.RetryFailed(ctx, reg)
 	if len(recovered) != 0 || len(outs) != 1 || outs[0].Stage != "connect" {
 		t.Fatalf("RetryFailed while down = (%+v, %+v), want one connect-stage outcome", recovered, outs)
 	}
 	callsAfterFirstRetry := dialCalls.Load()
 
 	// Inside the backoff window: no dial, no outcome, still nothing registered.
-	if recovered, outs := mgr.RetryFailed(reg); len(recovered) != 0 || len(outs) != 0 {
+	if recovered, outs := mgr.RetryFailed(ctx, reg); len(recovered) != 0 || len(outs) != 0 {
 		t.Fatalf("RetryFailed inside backoff = (%+v, %+v), want no attempt", recovered, outs)
 	}
 	if got := dialCalls.Load(); got != callsAfterFirstRetry {
@@ -139,7 +139,7 @@ func TestRetryFailed_FailedRetryBacksOff(t *testing.T) {
 	// server and registers its tool.
 	serverUp = true
 	now = now.Add(reconnectBackoff + time.Second)
-	recovered, outs = mgr.RetryFailed(reg)
+	recovered, outs = mgr.RetryFailed(ctx, reg)
 	if len(outs) != 0 {
 		t.Fatalf("RetryFailed after recovery outcomes = %+v, want none", outs)
 	}
@@ -151,5 +151,127 @@ func TestRetryFailed_FailedRetryBacksOff(t *testing.T) {
 	}
 	if out, isErr := execProbe(ctx, reg, t); isErr || out != "late-reply" {
 		t.Fatalf("recovered tool = (%q, isErr=%v), want (%q, false)", out, isErr, "late-reply")
+	}
+}
+
+// TestRetryFailed_RecoveredConnSurvivesLaterDrop pins that a recovered conn is
+// as complete as one that connected at init: after its connection drops, the
+// lazy reconnect in the registered tool's closure must redial it. A conn built
+// from a failed first connect has no client, so recovery must install the
+// manager's shared one along with the session.
+func TestRetryFailed_RecoveredConnSurvivesLaterDrop(t *testing.T) {
+	ctx := context.Background()
+
+	ss1, ct1 := newReconnectTestServer(t, "s", "probe", "first-reply")
+	ss2, ct2 := newReconnectTestServer(t, "s", "probe", "second-reply")
+	transports := []mcpsdk.Transport{ct1, ct2}
+	var dialCalls atomic.Int32
+	dial := func(context.Context) (mcpsdk.Transport, error) {
+		n := dialCalls.Add(1)
+		if n == 1 {
+			return nil, errors.New("first connect: server not ready")
+		}
+		if int(n)-2 >= len(transports) {
+			return nil, errors.New("redial refused")
+		}
+		return transports[n-2], nil
+	}
+
+	now := time.Unix(1000, 0)
+	mgr, outcomes := newManagerWithClock(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){dial},
+		func() time.Time { return now })
+	if len(outcomes) != 1 {
+		t.Fatalf("NewManager outcomes = %+v, want one connect-stage failure", outcomes)
+	}
+	defer mgr.Close()
+
+	reg := tool.NewRegistry()
+	if outs := mgr.RegisterTools(reg); len(outs) != 0 {
+		t.Fatalf("RegisterTools = %+v, want nothing registered for a failed conn", outs)
+	}
+	recovered, outs := mgr.RetryFailed(ctx, reg)
+	if len(recovered) != 1 || len(outs) != 0 {
+		t.Fatalf("RetryFailed = (%+v, %+v), want one recovery", recovered, outs)
+	}
+	if out, isErr := execProbe(ctx, reg, t); isErr || out != "first-reply" {
+		t.Fatalf("recovered tool = (%q, isErr=%v), want (%q, false)", out, isErr, "first-reply")
+	}
+
+	// Drop the recovered connection. The next call must redial through the same
+	// lazy path an init-connected server uses, and reach the NEW session.
+	if err := ss1.Close(); err != nil {
+		t.Fatalf("server-side close: %v", err)
+	}
+	now = now.Add(reconnectBackoff + time.Second)
+	out, isErr := execProbe(ctx, reg, t)
+	if isErr || out != "second-reply" {
+		t.Fatalf("post-drop call = (%q, isErr=%v), want (%q, false) via a lazy reconnect", out, isErr, "second-reply")
+	}
+	if got := dialCalls.Load(); got != 3 {
+		t.Fatalf("dial factory called %d times, want 3 (first connect, retry, lazy reconnect)", got)
+	}
+	_ = ss2 // the second server's session exists only to serve the redial
+}
+
+// TestRetryFailed_CancellationStopsBatch pins that a cancelled attempt abandons
+// the rest of the batch: the caller runs this on its own turn's path, so a Stop
+// must not wait out a stalled handshake on every remaining server, and a
+// cancellation must not be recorded as the server being down.
+func TestRetryFailed_CancellationStopsBatch(t *testing.T) {
+	_, ct := newReconnectTestServer(t, "later", "probe", "reply")
+	var laterDialed, stalledCalls atomic.Int32
+	dials := []func(context.Context) (mcpsdk.Transport, error){
+		// The first server fails its first connect outright, then never answers a
+		// retry: only the caller's cancellation ends that attempt.
+		func(ctx context.Context) (mcpsdk.Transport, error) {
+			if stalledCalls.Add(1) == 1 {
+				return nil, errors.New("first connect: server not ready")
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		func(context.Context) (mcpsdk.Transport, error) {
+			if laterDialed.Add(1) == 1 {
+				return nil, errors.New("first connect: server not ready")
+			}
+			return ct, nil
+		},
+	}
+	configs := []mcpconfig.ServerConfig{{Name: "stalled", Type: "stdio"}, {Name: "later", Type: "stdio"}}
+	mgr, outcomes := NewManager(context.Background(), configs, dials)
+	if len(outcomes) != 2 {
+		t.Fatalf("NewManager outcomes = %+v, want both servers failing their first connect", outcomes)
+	}
+	defer mgr.Close()
+
+	now := time.Unix(1000, 0)
+	for i := range mgr.conns {
+		mgr.conns[i].now = func() time.Time { return now }
+	}
+	reg := tool.NewRegistry()
+	if outs := mgr.RegisterTools(reg); len(outs) != 0 {
+		t.Fatalf("RegisterTools = %+v, want nothing registered", outs)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	recovered, outs := mgr.RetryFailed(ctx, reg)
+	if len(recovered) != 0 || len(outs) != 1 {
+		t.Fatalf("RetryFailed = (%+v, %+v), want one stalled attempt and no recovery", recovered, outs)
+	}
+	if laterDialed.Load() > 1 {
+		t.Fatal("the batch kept dialing servers after the caller's context ended")
+	}
+	// The cancelled attempt says nothing about the server's health, so no
+	// backoff window was opened and the next turn may try again.
+	mgr.conns[0].mu.Lock()
+	windowOpen := mgr.conns[0].clock().Before(mgr.conns[0].backoffUntil)
+	mgr.conns[0].mu.Unlock()
+	if windowOpen {
+		t.Fatal("a cancelled retry opened a backoff window, which would delay the next turn's attempt")
 	}
 }

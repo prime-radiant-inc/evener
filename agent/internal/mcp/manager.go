@@ -543,14 +543,16 @@ type ServerRecovery struct {
 // This is the only path that can heal a server whose initial connect failed:
 // the lazy reconnect in a registered tool's closure cannot run for a server
 // that registered no tools. Each attempt is bounded by reconnectDialTimeout
-// from context.Background(), independent of the caller's context, for the same
-// reason reconnect's dial is: a healed server serves every later turn, not only
-// the one that happened to trigger the attempt. A conn that closed in the
-// meantime is skipped, and its freshly-connected session is discarded.
+// derived from ctx, and ctx ending stops the batch: the caller runs this on its
+// own turn's path, so a cancellation (a Stop, or the turn's own deadline) must
+// not wait out a stalled handshake on every remaining server. A conn that closed
+// in the meantime is skipped, and its freshly-connected session is discarded.
 //
 // A failed attempt sets the same reconnectBackoff window a failed lazy reconnect
 // does, so a caller that retries once per turn does not pay a dial timeout on
-// every turn against a server that is still down.
+// every turn against a server that is still down. An attempt cut short by ctx
+// ending is not a failed attempt and sets no window: the server was never shown
+// to be down.
 //
 // Registration reuses registerConn, so a recovered server's tools obey the same
 // collision rule as at init: a name another server (or a built-in) already owns
@@ -558,15 +560,18 @@ type ServerRecovery struct {
 // existing tool. The manager knows no tool-name policy: a caller that applied
 // one at startup applies it to ServerRecovery.Tools, whose names are already
 // registered by the time this returns.
-func (m *Manager) RetryFailed(reg *tool.Registry) ([]ServerRecovery, []ServerOutcome) {
+func (m *Manager) RetryFailed(ctx context.Context, reg *tool.Registry) ([]ServerRecovery, []ServerOutcome) {
 	if m == nil {
 		return nil, nil
 	}
 	var recovered []ServerRecovery
 	var outcomes []ServerOutcome
 	for i := range m.conns {
+		if ctx.Err() != nil {
+			break
+		}
 		c := &m.conns[i]
-		attempted, err := c.connectIfRetryable(m.client)
+		attempted, err := c.connectIfRetryable(ctx, m.client)
 		if !attempted {
 			continue
 		}
@@ -601,7 +606,7 @@ func (c *conn) toolNames() []string {
 // or its last failed attempt's backoff window has not elapsed. A dial failure is
 // recorded on c (so Servers() keeps naming the most recent cause), starts a
 // backoff window, and is returned.
-func (c *conn) connectIfRetryable(client *mcpsdk.Client) (attempted bool, err error) {
+func (c *conn) connectIfRetryable(ctx context.Context, client *mcpsdk.Client) (attempted bool, err error) {
 	c.mu.Lock()
 	if !c.connectFailed || c.closed || c.reconnecting || c.clock().Before(c.backoffUntil) {
 		c.mu.Unlock()
@@ -617,13 +622,15 @@ func (c *conn) connectIfRetryable(client *mcpsdk.Client) (attempted bool, err er
 		c.mu.Unlock()
 	}()
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), reconnectDialTimeout)
+	dialCtx, cancel := context.WithTimeout(ctx, reconnectDialTimeout)
 	defer cancel()
 
 	connected := connectOne(dialCtx, client, cfg, dial)
 	if connected.status != "connected" {
 		c.mu.Lock()
-		if !c.closed {
+		// A cancellation is not evidence the server is down, so it neither
+		// rewrites the recorded cause nor starts a backoff window.
+		if !c.closed && ctx.Err() == nil {
 			c.lastErr = connected.lastErr
 			c.lastErrAt = time.Now()
 			c.backoffUntil = c.clock().Add(reconnectBackoff)
@@ -631,14 +638,19 @@ func (c *conn) connectIfRetryable(client *mcpsdk.Client) (attempted bool, err er
 		c.mu.Unlock()
 		return true, connected.lastErr
 	}
-	c.commit(connected.session, connected.tools, connected.origNames)
+	c.commit(client, connected.session, connected.tools, connected.origNames)
 	return true, nil
 }
 
-// commit installs a freshly-connected session and the tools discovered on it,
-// unless c was closed while the dial was in flight — then the new session is
-// closed instead of leaked, and c stays failed.
-func (c *conn) commit(session *mcpsdk.ClientSession, tools []llm.ToolDefinition, origNames map[string]string) {
+// commit installs the client, the freshly-connected session, and the tools
+// discovered on it, unless c was closed while the dial was in flight — then the
+// new session is closed instead of leaked, and c stays failed.
+//
+// The client is installed with the session because it is what a LATER reconnect
+// needs: a conn built by failedConn has no client, so without this the lazy
+// reconnect after a recovered connection drops would call Connect on a nil
+// client.
+func (c *conn) commit(client *mcpsdk.Client, session *mcpsdk.ClientSession, tools []llm.ToolDefinition, origNames map[string]string) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -648,6 +660,7 @@ func (c *conn) commit(session *mcpsdk.ClientSession, tools []llm.ToolDefinition,
 		return
 	}
 	old := c.session
+	c.client = client
 	c.session = session
 	c.tools = tools
 	c.origNames = origNames
