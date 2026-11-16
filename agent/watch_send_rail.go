@@ -357,6 +357,11 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		}}); err != nil {
 			return false, err
 		}
+		// The durable pending state now names the rendered frame, so every
+		// later attempt at this delivery must deliver that frame too: a retry
+		// that re-persisted the original text would leave the durable pending
+		// state conflicting with the row the receiver already holds.
+		jm.rememberRenderedWatchSendFrame(cfg, noticed)
 	}
 	// The receiver's turn that consumes the frame adopts the frame's lineage.
 	controller.attentionCauses.remember(attentionID, state.Provenance)
@@ -460,9 +465,35 @@ func stableWatchAttentionID(state jobstore.WatchSendState) string {
 // carries it.
 func (jm *jobManager) renderWatchSendFrame(cfg *watchConfig, state jobstore.WatchSendState) string {
 	if fires := jm.watchSendBackstopFires(cfg, state); fires > 0 {
-		return watchBackstopNotice(cfg.watchID, fires) + "\n" + state.Frame
+		notice := watchBackstopNotice(cfg.watchID, fires) + "\n"
+		// A frame already led by this watch's notice was rendered by an
+		// earlier attempt, and its rendered text is what is durable: leading
+		// it again would deliver the notice twice.
+		if strings.HasPrefix(state.Frame, notice) {
+			return state.Frame
+		}
+		return notice + state.Frame
 	}
 	return state.Frame
+}
+
+// rememberRenderedWatchSendFrame replaces the runtime pending state of a frame
+// whose delivered content differs from the text its pending event carried, so
+// a retry of the same delivery reuses the rendered frame instead of the
+// original. The frame's identity — delivery id and update sequence — is the
+// pending state's, and a pending state that has since moved on is left alone.
+func (jm *jobManager) rememberRenderedWatchSendFrame(cfg *watchConfig, rendered jobstore.WatchSendState) {
+	if cfg == nil {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	current := cfg.pending[rendered.Key]
+	if current == nil || current.DeliveryID != rendered.DeliveryID || current.UpdateSeq != rendered.UpdateSeq {
+		return
+	}
+	pending := rendered
+	cfg.pending[rendered.Key] = &pending
 }
 
 // stableWatchNotificationContent is the attention content a stable receiver

@@ -35,9 +35,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // finishStalePolicy is how an entry point surfaces a stale-lease guard
@@ -90,6 +92,9 @@ type finishIntent struct {
 	finish  delegateFinish
 	packet  *delegatestore.TerminalPacket
 	runtime *Session
+	// cause rides every decision this intent reduces to, so the report's
+	// queue registers it whatever delivery plan the report gets.
+	cause reportCause
 	// runErrorKnown/runErr bind the sampled run error to a settlement claim
 	// (BeginRunFinalization).
 	runErrorKnown bool
@@ -144,6 +149,11 @@ type finishDecision struct {
 	// deliveryID).
 	releaseGeneration bool
 	deliveryID        string
+	// cause is the producing run's lineage, registered as the cause of the
+	// attention deliveryID queues. A report queued behind an undelivered
+	// head gets no delivery plan, so registering beside a plan loses the
+	// lineage on exactly that path; it is registered here, at the queue.
+	cause reportCause
 	// bumpEvidence increments the evidence version.
 	bumpEvidence bool
 	// captureSnapshot appends the lease's delegate update plan.
@@ -225,6 +235,7 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 		if decision.closure {
 			plans.updates[0] = closurePlan
 		}
+		c.registerReportCauseLocked(decision.lease, decision.deliveryID, decision.cause)
 	}
 	if decision.bumpEvidence {
 		c.evidenceVersion++
@@ -233,6 +244,36 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 		plans.updates = append(plans.updates, c.capturedPlanLocked(decision.lease.delegateID))
 	}
 	return plans, cancel
+}
+
+// reportCause is the lineage a finished generation's report carries onward:
+// the producing session and the run's cumulative cause. The zero value means
+// the finish has no producing run (a start failure or a runtime-lost
+// recovery), and registers nothing.
+type reportCause struct {
+	sessionID string
+	lineage   *provenance.Causal
+}
+
+// registerReportCauseLocked records cause as the cause of the attention a
+// queued report delivery resolves to. Registration follows the queue, not a
+// delivery plan: a report queued behind an undelivered head gets no plan, and
+// its attention still needs the lineage. A finish that queues no delivery — a
+// stop covering the owner's subtree, a no-action completion, a path with no
+// producing run — registers nothing, so no cause outlives the attention it
+// was meant for. The caller holds c.mu.
+func (c *delegateTreeController) registerReportCauseLocked(lease delegateLease, deliveryID string, cause reportCause) {
+	if deliveryID == "" || cause.lineage == nil {
+		return
+	}
+	aggregate := c.durable[lease.delegateID]
+	if aggregate == nil || !slices.ContainsFunc(aggregate.PendingDeliveries, func(pending delegatestore.PendingDelivery) bool {
+		return pending.DeliveryID == deliveryID
+	}) {
+		return
+	}
+	attentionID := delegateAttentionID(deliveryID)
+	c.attentionCauses.remember(attentionID, provenance.WithMessage(cause.lineage, cause.sessionID, attentionID))
 }
 
 // stopTracksFinalizationLocked reports whether a covering subtree stop is
@@ -610,6 +651,7 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		releaseGeneration: true,
 		lease:             lease,
 		deliveryID:        deliveryID,
+		cause:             intent.cause,
 	}
 }
 
@@ -658,6 +700,7 @@ func (c *delegateTreeController) reduceStoppedGenerationFinishIntent(intent fini
 		releaseGeneration: true,
 		lease:             lease,
 		deliveryID:        deliveryID,
+		cause:             intent.cause,
 	}
 }
 

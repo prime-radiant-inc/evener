@@ -1232,6 +1232,24 @@ func TestDelegateWatch_RestartReplaysANoticeBearingFrameUnchanged(t *testing.T) 
 	if row.Text() == stableWatchNotificationContent(pending.state.Frame) {
 		t.Fatal("the delivered row carries no notice, so the restart replay cannot conflict")
 	}
+	// The frame is still pending — only its acknowledgement failed — so the
+	// next drain delivers it again, and this time its notice append fails.
+	// The retry must persist and deliver the frame it already rendered: a
+	// retry that rewrites the durable pending state with the original text
+	// and only then re-renders the notice leaves the original text durable
+	// in that window, conflicting with the row the receiver already holds.
+	noticeAppendFailure := errors.New("notice append failed on the retry")
+	fixture.sourceJM.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventWatchSendPending && event.WatchSend != nil &&
+			event.WatchSend.DeliveryID == pending.state.DeliveryID && event.WatchSend.Frame != pending.state.Frame {
+			return noticeAppendFailure
+		}
+		return originalAppend(event)
+	}
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); !errors.Is(err, noticeAppendFailure) {
+		t.Fatalf("retried notice-bearing delivery error = %v, want %v", err, noticeAppendFailure)
+	}
+	fixture.sourceJM.appendEvent = originalAppend
 
 	fixture.sourceJM.releaseStableWatchReceipt(pending.state.DeliveryID)
 	if err := fixture.sourceJM.closeStoreOnly(); err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/internal/testwait"
@@ -362,6 +363,53 @@ func TestTerminalReportsCarryTheParentLoopToTheRunawayGuard(t *testing.T) {
 	}
 	if !slices.Equal(depths, want) {
 		t.Fatalf("fire depths per exchange = %v, want %v with the chain stopped at the cap", depths, want)
+	}
+}
+
+// A generation's report queues behind any delivery its parent has not taken,
+// and the finish path makes no delivery plan for it then: the head is the
+// earlier delivery. The report's cause must still be registered when it is
+// queued, because the parent turn that later consumes it adopts that cause as
+// its lineage. Registering only alongside a delivery plan loses the lineage
+// exactly on the held path, and the parent's reply then restarts the runaway
+// count at zero.
+func TestHeldReportCarriesItsCauseWithoutADeliveryPlan(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(false, "PROGRESS: scanning") },
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("FINAL_REPORT") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmDelegateUnservedRoot(t, root, fixture)
+	// The root is mid-turn, so the update stays queued and the report lands
+	// behind it.
+	root.mu.Lock()
+	root.state = SessionProcessing
+	root.mu.Unlock()
+	// The frame is a watch fire: the generation it starts is watch-triggered,
+	// and that fire is the lineage its report must carry onward.
+	const watchID, watchGeneration = "watch_held_report", "wg_held_report"
+	const frameID = "attention:frame-0"
+	root.delegateController.attentionCauses.remember(frameID, provenance.WithWatch(nil, watchID, watchGeneration, jobstore.NewWatchSendDeliveryID(), root.ID(), ""))
+	armStableSupervisionAttention(t, sub, frameID, "begin")
+	root.drivePendingDelegateAttention()
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	pending := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID).PendingDeliveries
+	if len(pending) != 2 {
+		t.Fatalf("queued deliveries = %#v, want the update and the report behind it", pending)
+	}
+	if pending[1].Packet.Kind == delegatestore.PacketUpdate {
+		t.Fatalf("the queued second delivery is an update, not the report: %#v", pending)
+	}
+	reportID := delegateAttentionID(pending[1].DeliveryID)
+	cause := root.delegateController.attentionCauses.union([]string{reportID})
+	if cause == nil {
+		t.Fatalf("queued report %q registered no cause", reportID)
+	}
+	if depth := provenance.SelfInfluenceDepth(cause, watchID, watchGeneration, func(string) bool { return true }); depth != 1 {
+		t.Fatalf("queued report's cause exposes the watch fire at depth %d, want 1: %#v", depth, cause)
 	}
 }
 

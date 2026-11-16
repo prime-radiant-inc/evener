@@ -2259,6 +2259,10 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	var announcements delegateMutationPlans
 	if f.stableRun && a.sess.delegateController != nil {
 		f.finish.endedAt = finalizeTime
+		// The report this finish queues carries this run's lineage, whatever
+		// delivery plan it gets: a report queued behind an undelivered head
+		// has no plan to register it from.
+		f.finish.cause = reportCause{sessionID: a.sess.id, lineage: a.runProvenance}
 		var plans delegateMutationPlans
 		var finishErr error
 		if f.noActionClaim != nil {
@@ -2417,18 +2421,6 @@ func attentionRunPresentedItsReport(err error) bool {
 // finished before the delegate is ready for a send, and no successor starts
 // ahead of the result.
 func (a *subagent) announceFinishedGeneration(lease delegateLease, announcements delegateMutationPlans) {
-	// A terminal report reaches its parent as attention the way an update
-	// does, and its cause — the producing generation's lineage plus the
-	// report itself — must ride with it. Without it a delegate that answers
-	// every frame with a report restarts the parent's runaway count at zero
-	// on each exchange.
-	for _, plan := range announcements.deliveries {
-		if plan.controller == nil || plan.deliveryID == "" || plan.packet.Kind == delegatestore.PacketUpdate {
-			continue
-		}
-		attentionID := delegateAttentionID(plan.deliveryID)
-		plan.controller.attentionCauses.remember(attentionID, provenance.WithMessage(a.runProvenance, a.sess.id, attentionID))
-	}
 	if err := a.sess.executeDelegateMutationPlans(announcements); err != nil {
 		a.sess.emit(warningDataFromError("delegate result delivery incomplete", err))
 	}
