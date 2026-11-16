@@ -553,6 +553,11 @@ func delegateToolNameCeilingFromRegistered(registered map[string]bool, reg *tool
 		for _, name := range rootOnlySubagentTools() {
 			delete(selected, name)
 		}
+		// model_list browses the model catalog for delegate(model=...): session
+		// init registers it only for a session with a delegation budget
+		// (hasConfiguredDelegateCapability), so a non-delegating ceiling that
+		// names it advertises a tool its spawn withholds.
+		delete(selected, "model_list")
 	}
 	if isolation == "worktree" && !canDelegate {
 		delete(selected, "manage_worktree")

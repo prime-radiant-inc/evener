@@ -395,11 +395,15 @@ func (s *Session) readMemoryIndex(scope string) memoryProjection {
 }
 
 func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
+	return formatToolNamesForPrompt(s.defaultToolNamesForAgent(agent))
+}
+
+func (s *Session) defaultToolNamesForAgent(agent plugin.Agent) []string {
 	var registered map[string]bool
 	if s.reg != nil {
 		registered = s.reg.RegisteredNames()
 	}
-	return s.defaultToolSummaryForAgentFromRegistered(registered, agent)
+	return s.defaultToolsForAgent(registered, agent)
 }
 
 func delegateToolNameCeiling(reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
