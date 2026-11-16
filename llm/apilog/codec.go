@@ -64,6 +64,34 @@ func NewDecoder(r io.Reader, maxLineBytes int, opts ...DecoderOption) *Decoder {
 }
 
 func (d *Decoder) Next() (APILogRecord, error) {
+	line, err := d.nextLine(true)
+	if err != nil {
+		return nil, err
+	}
+	record, err := decodeRecord(line, d.mode)
+	if err != nil {
+		return nil, fmt.Errorf("API log line %d at offset %d: %w", d.recordLine, d.recordOffset, err)
+	}
+	return record, nil
+}
+
+// SkipRecord advances past one record without decoding it, for a caller that
+// needs a record's position but not its contents: decoding parses and
+// validates every field and provider body a record carries. Framing failures
+// -- a reader error, an over-length line, an unterminated final fragment --
+// surface exactly as Next reports them, at the same line and offset.
+// Record content is never parsed, so a corrupt record is not reported by a
+// skip: only a caller that decodes the record can reject it.
+func (d *Decoder) SkipRecord() error {
+	_, err := d.nextLine(false)
+	return err
+}
+
+// nextLine reads the next record line, or reports the framing condition that
+// ends the scan: io.EOF at a clean end, ErrPartialTail on an unterminated final
+// fragment, and the over-length error for a line past maxLineBytes. keep=false
+// discards the line's bytes as they arrive instead of accumulating them.
+func (d *Decoder) nextLine(keep bool) ([]byte, error) {
 	if d.done {
 		return nil, io.EOF
 	}
@@ -71,13 +99,13 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	lineOffset := d.offset
 	d.recordLine = lineNumber
 	d.recordOffset = lineOffset
-	line, complete, tooLong, err := d.readLine()
+	line, size, complete, tooLong, err := d.readLine(keep)
 	if err != nil {
 		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, err)
 	}
 	if !complete {
 		d.done = true
-		if len(line) == 0 && !tooLong {
+		if size == 0 && !tooLong {
 			return nil, io.EOF
 		}
 		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, ErrPartialTail)
@@ -86,25 +114,22 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	if tooLong {
 		return nil, fmt.Errorf("API log line %d at offset %d exceeds %d bytes", lineNumber, lineOffset, d.maxLineBytes)
 	}
-	record, err := decodeRecord(line, d.mode)
-	if err != nil {
-		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, err)
-	}
-	return record, nil
+	return line, nil
 }
 
 // RecordOffset returns the byte offset of the record most recently returned
-// or failed by Next: the start of a successfully decoded record, or the
-// start of the record Next failed on (a rejected complete record, or a
-// partial final fragment). It is meaningless before the first call to Next.
+// or failed by Next, or most recently skipped by SkipRecord: the start of a
+// successfully decoded record, or the start of the record that failed (a
+// rejected complete record, or a partial final fragment). It is meaningless
+// before the first call to Next or SkipRecord.
 func (d *Decoder) RecordOffset() int64 { return d.recordOffset }
 
 // RecordLine returns the 1-based record number matching RecordOffset.
 func (d *Decoder) RecordLine() int { return d.recordLine }
 
-func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
+func (d *Decoder) readLine(keep bool) (line []byte, size int, complete, tooLong bool, err error) {
 	if d.maxLineBytes <= 0 {
-		return nil, false, false, errors.New("maximum line bytes must be positive")
+		return nil, 0, false, false, errors.New("maximum line bytes must be positive")
 	}
 	for {
 		fragment, readErr := d.reader.ReadSlice('\n')
@@ -114,22 +139,23 @@ func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
 			content = content[:len(content)-1]
 		}
 		if !tooLong {
-			if len(line)+len(content) > d.maxLineBytes {
+			if size+len(content) > d.maxLineBytes {
 				tooLong = true
-			} else {
+			} else if keep {
 				line = append(line, content...)
 			}
 		}
+		size += len(content)
 
 		switch {
 		case readErr == nil:
-			return line, true, tooLong, nil
+			return line, size, true, tooLong, nil
 		case errors.Is(readErr, bufio.ErrBufferFull):
 			continue
 		case errors.Is(readErr, io.EOF):
-			return line, false, tooLong, nil
+			return line, size, false, tooLong, nil
 		default:
-			return nil, false, tooLong, readErr
+			return nil, 0, false, tooLong, readErr
 		}
 	}
 }
