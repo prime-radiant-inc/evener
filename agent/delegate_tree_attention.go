@@ -636,7 +636,10 @@ func (c *delegateTreeController) hasPendingDelegateAttention() bool {
 // cold-restore drive then also skips parked delegates
 // (coldRestoreDriveCandidateLocked), a park it does not know about, so a
 // parked delegate's own runtime can still reserve and the escalation still
-// reaches it.
+// reaches it. Every guard that makes this false must be classified in
+// delegateAttentionRefusalLocked — as a refusal token, or as one of its
+// documented deliberate silences — or that guard's refusals go invisible
+// again (#6330).
 func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID string) bool {
 	if !c.idleRestorableLocked(delegateID) {
 		return false
@@ -651,12 +654,137 @@ func (c *delegateTreeController) delegateAttentionWakeEligibleLocked(delegateID 
 	if c.finalizingLocked(delegateID) != nil {
 		return false
 	}
-	for _, record := range c.reservations {
-		if record.delegateID == delegateID {
-			return record.trigger == delegatestore.TriggerAttention
-		}
+	if record := c.reservationForDelegateLocked(delegateID); record != nil {
+		return record.trigger == delegatestore.TriggerAttention
 	}
 	return true
+}
+
+// reservationForDelegateLocked returns the delegate's one start reservation,
+// if any. Admission refuses a second reservation for the same delegate
+// (ReserveAttention and the send path both decline when a record exists), so
+// one record per delegate is an invariant both wake predicates rely on: the
+// record found is the delegate's reservation.
+func (c *delegateTreeController) reservationForDelegateLocked(delegateID string) *delegateStartRecord {
+	for _, record := range c.reservations {
+		if record != nil && record.delegateID == delegateID {
+			return record
+		}
+	}
+	return nil
+}
+
+// The guard predicates that refuse a delegate attention wake. These are stable
+// machine tokens carried by the refusal warning's structured field, never
+// prose: a lane stranded by a refusal must be distinguishable from a quiet
+// one by which predicate held it (#6330), and tests pin the token.
+const (
+	// delegateAttentionRefusedBinding: the delegate's live runtime still
+	// holds an open generation binding — a finishing generation that has not
+	// released, or one the recovery latch holds.
+	delegateAttentionRefusedBinding = "binding"
+	// delegateAttentionRefusedRecoveryRequired: the delegate's last
+	// generation failed its finish and is held behind the recovery latch.
+	delegateAttentionRefusedRecoveryRequired = "recovery_required"
+	// delegateAttentionRefusedFinalizing: a finished generation is still
+	// finalizing on the delegate's runtime.
+	delegateAttentionRefusedFinalizing = "finalizing"
+	// delegateAttentionRefusedReservation: a non-attention start is
+	// reserved for the delegate (a send), which owns its next generation.
+	delegateAttentionRefusedReservation = "reservation"
+	// delegateAttentionRefusedStartBlocked: the drive guard refused — the
+	// delegate's runtime has a run, drive or finalizer in flight, or worktree
+	// disposal holds it.
+	delegateAttentionRefusedStartBlocked = "start_blocked"
+	// delegateAttentionRefusedFatalRunGated: the delegate's runtime is gated
+	// after a failed turn.
+	delegateAttentionRefusedFatalRunGated = "fatal_run_gated"
+)
+
+// delegateAttentionRefusal is one delegate that owes attention and the guard
+// predicate refusing its wake right now.
+type delegateAttentionRefusal struct {
+	delegateID string
+	predicate  string
+}
+
+// pendingDelegateAttentionRefusals names every delegate that owes attention
+// whose wake a guard predicate refuses, so the drive can warn which predicate
+// holds each one (#6330). States that are deliberate or self-consuming are
+// not refusals: a run still open is presenting what it owes, a closing,
+// stopping, parked (the undeliverable warning already said so) or reclaimed
+// delegate is owned by its teardown or escalation (which says so in its own
+// warning), and an ancestor chain that is not restorable yet is a transitive
+// wait. The caller holds no lock.
+func (c *delegateTreeController) pendingDelegateAttentionRefusals() []delegateAttentionRefusal {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	refusals := make([]delegateAttentionRefusal, 0, len(c.attention))
+	for delegateID, state := range c.attention {
+		if state == nil || len(state.wakeIDs) == 0 || state.parked {
+			continue
+		}
+		if predicate := c.delegateAttentionRefusalLocked(delegateID); predicate != "" {
+			refusals = append(refusals, delegateAttentionRefusal{delegateID: delegateID, predicate: predicate})
+		}
+	}
+	sort.Slice(refusals, func(i, j int) bool { return refusals[i].delegateID < refusals[j].delegateID })
+	return refusals
+}
+
+// delegateAttentionRefusalLocked names the guard predicate refusing
+// delegateID's attention wake eligibility right now — one of the
+// delegateAttentionRefused* tokens, or empty when nothing holds the wake. The
+// deliberate silences: an eligible delegate (the leading check pins this
+// classifier to delegateAttentionWakeEligibleLocked, so a guard later added
+// there cannot leave a state this one warns about), a run still open that is
+// presenting what it owes, a delegate owned by its teardown or escalation (a
+// closing, stopping or reclaimed one — their own paths report), a delegate
+// with neither a durable aggregate nor a live runtime (the post-restart
+// window before generation recovery rebuilds them, a transitive wait), and a
+// delegate the drive parked (the undeliverable warning already said so). The
+// caller holds c.mu.
+func (c *delegateTreeController) delegateAttentionRefusalLocked(delegateID string) string {
+	if c.delegateAttentionWakeEligibleLocked(delegateID) {
+		return ""
+	}
+	aggregate := c.durable[delegateID]
+	if aggregate == nil {
+		return ""
+	}
+	live := c.live[delegateID]
+	// A recovery latched below keeps its refusal visible even in states that
+	// otherwise read as teardown or a consuming run: the durable generation
+	// never settled, so nothing else will ever present the owed attention.
+	recovery := live != nil && live.recoveryRequired
+	if c.closing || aggregate.PendingStopSeq != 0 || !aggregate.Resumable || aggregate.Phase == delegatestore.PhaseClosed || aggregate.Phase == delegatestore.PhaseStopping || c.reclamationCoversLocked(delegateID) {
+		if recovery {
+			return delegateAttentionRefusedRecoveryRequired
+		}
+		return ""
+	}
+	if live != nil && live.binding != nil {
+		if aggregate.CurrentRunOpen && !recovery {
+			// An open run presents what it owes in its own requests.
+			return ""
+		}
+		return delegateAttentionRefusedBinding
+	}
+	if recovery {
+		return delegateAttentionRefusedRecoveryRequired
+	}
+	if c.finalizingLocked(delegateID) != nil {
+		return delegateAttentionRefusedFinalizing
+	}
+	if record := c.reservationForDelegateLocked(delegateID); record != nil && record.trigger != delegatestore.TriggerAttention {
+		return delegateAttentionRefusedReservation
+	}
+	// Nothing holds the wake: the delegate is idle and restorable, so the
+	// drive selects it, or its teardown or escalation owns the attention.
+	return ""
 }
 
 // hasRunnableDelegateAttention reports whether the root driver has actionable
