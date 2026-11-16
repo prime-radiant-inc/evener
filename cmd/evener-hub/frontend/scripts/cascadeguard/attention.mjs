@@ -250,6 +250,22 @@ export function rowUsable({ exists, ariaDisabled, hit }) {
   return exists && ariaDisabled !== "true" && hit;
 }
 
+// The needs-you reads the reconnect's own ready dispatch started.
+//
+// At an equal sequence the ready dispatch starts no read, and that is the whole
+// no-reload property. It is not the only thing that reads the tier, though: an
+// invalidation that arrives after the handshake - the seen marker an opened
+// target's own mutation publishes, for one - legitimately refreshes the pages it
+// names. A read sent after that invalidation is caused by it, not by the ready
+// dispatch, so attributing it to the reconnect would reject valid invalidation
+// recovery. Frame order is what separates them: the ready dispatch's reads are
+// sent before the first invalidation that follows the handshake.
+export function readyDispatchTierReads({ reads, firstInvalidationAt }) {
+  if (reads.length === 0) return [];
+  if (firstInvalidationAt === null || firstInvalidationAt === undefined) return reads;
+  return reads.filter((read) => read.at < firstInvalidationAt);
+}
+
 export function reconnectReadyDecision({ consumed, reconnected, deliveredTierReads, retryableOffsets = [] }) {
   const where = `consumed ${consumed?.sequence} generation ${consumed?.generationId}, ` +
     `reconnected ${reconnected?.sequence} generation ${reconnected?.generationId}`;
@@ -1144,6 +1160,7 @@ export async function attentionJourney(ctx) {
       .map((frame) => frame.params.sequence);
     return {
       handshakeId: response.id,
+      frame: response,
       generationId: capability.generationId,
       handshakeSequence: capability.sequence,
       invalidations,
@@ -1181,6 +1198,23 @@ export async function attentionJourney(ctx) {
   const tierReads = navigationReads.filter(
     (frame) => frame.params?.resource === "section" && frame.params?.section === "needs_you",
   );
+  // An invalidation delivered after the reconnect's handshake can legitimately
+  // refresh the tier - the seen marker an opened target publishes is one, and it
+  // is asynchronous, so its timing is not this leg's to control. Reads sent after
+  // that point are caused by it, so only the ones the ready dispatch itself
+  // started are subject to the no-reload property.
+  const firstInvalidationAfterHandshake = frames.findIndex(
+    (frame, at) =>
+      at > frames.indexOf(reconnectHandshake.frame) &&
+      frame.direction === "Network.webSocketFrameReceived" &&
+      frame.method === "evener/navigation/invalidated" &&
+      frame.params?.generationId === reconnectHandshake.generationId,
+  );
+  const tierReadPositions = tierReads.map((read) => ({ read, at: frames.indexOf(read) }));
+  const readyTierReads = readyDispatchTierReads({
+    reads: tierReadPositions,
+    firstInvalidationAt: firstInvalidationAfterHandshake === -1 ? null : firstInvalidationAfterHandshake,
+  }).map((entry) => entry.read);
   // A tier read the page sent and never had answered was lost with the socket
   // that carried it, and the entry it was refreshing stays stale - the one
   // condition under which the retained branch re-forces it. Offsets are the
@@ -1205,7 +1239,7 @@ export async function attentionJourney(ctx) {
   const readyBranch = reconnectReadyDecision({
     consumed,
     reconnected,
-    deliveredTierReads: tierReads.map((frame) => ({
+    deliveredTierReads: readyTierReads.map((frame) => ({
       offset: frame.params?.offset ?? 0,
       label: `offset ${frame.params?.offset ?? 0} (${frame.id})`,
     })),
@@ -1271,18 +1305,23 @@ export async function attentionJourney(ctx) {
   await wait(`document.querySelector(${q(`${NEXT}`)}) !== null`, "the control resolves the retained tier's next target");
   const clickableRow = renderedRows[0];
   // The row's own facts come from the page; whether they add up to a choice a
-  // reader can take is rowUsable's rule, which the unit cases pin.
+  // reader can take is rowUsable's rule, which the unit cases pin. The wait
+  // carries that rule rather than merely the row's existence: a legitimate
+  // reload or retry can leave the retained rows disabled while it is in flight,
+  // and a wait that stopped at existence would assert usability mid-refresh.
   const clickableFacts = await wait(`(() => {
+    const rowUsable = ${rowUsable.toString()};
     const row = document.querySelector(${q(`${ROW}[data-ref="${clickableRow}"]`)});
     if (!row) return null;
     row.scrollIntoView({ block: "nearest", inline: "nearest" });
     const r = row.getBoundingClientRect();
-    return {
+    const facts = {
       exists: true,
       ariaDisabled: row.getAttribute("aria-disabled"),
       hit: row.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)),
     };
-  })()`, "the retained row this leg reopens is still rendered after the reconnect");
+    return rowUsable(facts) ? facts : null;
+  })()`, "the retained row this leg reopens is rendered, enabled and hit-testable after the reconnect");
   assert.ok(rowUsable(clickableFacts),
     "a retained needs-you row is a real, selectable target after the reconnect");
   await key("Escape", 27);

@@ -11,7 +11,12 @@
 // Is Not a Test Oracle").
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconnectReadyDecision, reconnectSequences, rowUsable } from "./cascadeguard/attention.mjs";
+import {
+  readyDispatchTierReads,
+  reconnectReadyDecision,
+  reconnectSequences,
+  rowUsable,
+} from "./cascadeguard/attention.mjs";
 
 // The handshake the loaded tier belongs to. A reconnect reports a handshake of
 // its own, so every case below gives the reconnect a distinct handshake id.
@@ -173,4 +178,60 @@ test("a disabled row is not a usable choice even when it is hit-tested", () => {
   assert.equal(rowUsable({ exists: true, ariaDisabled: null, hit: true }), true);
   assert.equal(rowUsable({ exists: true, ariaDisabled: null, hit: false }), false);
   assert.equal(rowUsable({ exists: false, ariaDisabled: null, hit: false }), false);
+});
+
+// The reviewer's first timing: both handshakes advertise 7, and a sequence-8
+// invalidation naming needs_you arrives during subscription recovery - the seen
+// marker an opened target's own mutation publishes, which is asynchronous. The
+// page reads the tier because of that invalidation, which is correct invalidation
+// recovery, and the store retains rather than reloading. Charging that read to
+// the ready dispatch would reject a healthy reconnect.
+test("a tier read caused by a later invalidation is not a ready-dispatch reload", () => {
+  const invalidationRead = { offset: 0, label: "offset 0 (request-invalidation)", at: 12 };
+  const readyOnly = readyDispatchTierReads({ reads: [invalidationRead], firstInvalidationAt: 11 });
+  assert.deepEqual(readyOnly, []);
+  // Attributed correctly, the equal-sequence reconnect takes the retained branch
+  // even though the tier was read after the handshake.
+  assert.equal(
+    reconnectReadyDecision({
+      consumed: { ...consumed, sequence: 7 },
+      reconnected: reconnectedAt({ sequence: 7 }),
+      deliveredTierReads: readyOnly,
+    }),
+    "retained",
+  );
+});
+
+// A ready-dispatch read that precedes a later invalidation is still the ready
+// dispatch's, so the partition keeps it and the assertion still fires.
+test("a ready-dispatch read before the invalidation is still caught", () => {
+  const readyRead = { offset: 50, label: "offset 50 (request-ready)", at: 10 };
+  const laterRead = { offset: 0, label: "offset 0 (request-invalidation)", at: 12 };
+  const readyOnly = readyDispatchTierReads({ reads: [readyRead, laterRead], firstInvalidationAt: 11 });
+  assert.deepEqual(readyOnly.map((read) => read.label), [readyRead.label]);
+  assert.throws(
+    () =>
+      reconnectReadyDecision({
+        consumed: { ...consumed, sequence: 7 },
+        reconnected: reconnectedAt({ sequence: 7 }),
+        deliveredTierReads: readyOnly,
+      }),
+    rejectedWith(["offset 50 (request-ready)"], [], "deepStrictEqual"),
+  );
+});
+
+// A ready-dispatch read is still caught: with no invalidation to blame, every
+// read after the handshake belongs to the ready dispatch.
+test("with no later invalidation every tier read is the ready dispatch's", () => {
+  const reads = [{ offset: 0, label: "offset 0 (request-1)", at: 9 }];
+  assert.deepEqual(readyDispatchTierReads({ reads, firstInvalidationAt: null }), reads);
+  assert.throws(
+    () =>
+      reconnectReadyDecision({
+        consumed: { ...consumed, sequence: 7 },
+        reconnected: reconnectedAt({ sequence: 7 }),
+        deliveredTierReads: reads,
+      }),
+    rejectedWith(["offset 0 (request-1)"], [], "deepStrictEqual"),
+  );
 });
