@@ -159,3 +159,94 @@ func TestContextStatusMemoInvalidatesOnProfileAndMeasurementChange(t *testing.T)
 		assertMemoIsExact(t, s, "after swap back")
 	})
 }
+
+// TestContextStatusTailCopyIsExact proves the copy a sample takes after an
+// append answers exactly what a copy of the whole transcript answers. The
+// session copies only the turns the memo has not walked, so a skipped prefix
+// that disagrees with the memo's own prefix would show up here as a different
+// total, not as a tolerance.
+func TestContextStatusTailCopyIsExact(t *testing.T) {
+	s := newSession(t)
+	text := "0123456789"
+	for i := range 8 {
+		var turn schema.Turn
+		if i%2 == 0 {
+			turn = schema.NewTurn(schema.TurnUserInput, llm.User(text))
+		} else {
+			turn = schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
+		}
+		s.recordTurn(turn, turn)
+
+		s.mu.Lock()
+		covered, ok := s.contextMgr.ObserveHistory(s.historyRevision, len(s.history))
+		full := append([]schema.Turn{}, s.history...)
+		revision := s.historyRevision
+		s.mu.Unlock()
+		if !ok {
+			// Only the first append has nothing to reuse; every later one starts
+			// from a prefix a previous sample walked.
+			if i > 0 {
+				t.Fatalf("append %d: the manager holds no covered prefix after a warm sample", i)
+			}
+			covered = 0
+		}
+		if covered > len(full) {
+			t.Fatalf("append %d: covered prefix %d exceeds history %d", i, covered, len(full))
+		}
+
+		// Warm the memo from the whole transcript, then ask again through the
+		// tail slice the session would copy. The two answers must be identical.
+		wantMetrics, wantPressure, _, ok := s.contextMgr.EstimateStatusForHistory(full, len(full), 0, revision)
+		if !ok {
+			t.Fatalf("append %d: the manager could not answer from the whole transcript", i)
+		}
+		gotMetrics, gotPressure, _, ok := s.contextMgr.EstimateStatusForHistory(full[covered:], len(full), 0, revision)
+		if !ok {
+			t.Fatalf("append %d: the manager could not answer from the tail copy after a covered prefix of %d", i, covered)
+		}
+		if gotMetrics != wantMetrics || gotPressure != wantPressure {
+			t.Fatalf("append %d: tail copy (covered %d) answered %+v/%v, whole transcript answered %+v/%v",
+				i, covered, gotMetrics, gotPressure, wantMetrics, wantPressure)
+		}
+	}
+}
+
+// TestContextStatusTailCopyRefusesAnUncoveredPrefix proves the tail path cannot
+// silently report a prefix. A slice that starts after the memo's own baseline
+// leaves turns in neither the memo nor the copy, so the manager must refuse and
+// let the caller copy the whole transcript.
+func TestContextStatusTailCopyRefusesAnUncoveredPrefix(t *testing.T) {
+	s := newSession(t)
+	text := contextStatusText()
+	for range 4 {
+		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(text))
+		s.recordTurn(turn, turn)
+	}
+	s.mu.Lock()
+	full := append([]schema.Turn{}, s.history...)
+	revision := s.historyRevision
+	s.mu.Unlock()
+
+	// Nothing has been walked yet, so a tail starting past the beginning skips
+	// turns no memo covers.
+	if _, _, _, ok := s.contextMgr.EstimateStatusForHistory(full[2:], len(full), 0, revision); ok {
+		t.Fatal("the manager answered from a tail whose skipped prefix it never walked")
+	}
+	// The whole transcript is still answerable, and the session's own sample
+	// recovers through that path.
+	wantMetrics, wantPressure, _, ok := s.contextMgr.EstimateStatusForHistory(full, len(full), 0, revision)
+	if !ok {
+		t.Fatal("the manager could not answer from the whole transcript")
+	}
+	gotMetrics, gotPressure := s.ContextStatus()
+	// WindowSource is the session's own addition to the manager's answer, so it
+	// is compared through the fields the two share.
+	if gotMetrics.Used != wantMetrics.Used || gotMetrics.Window != wantMetrics.Window ||
+		gotMetrics.Remaining != wantMetrics.Remaining || gotMetrics.Assumed != wantMetrics.Assumed ||
+		gotMetrics.CompactionThreshold != wantMetrics.CompactionThreshold {
+		t.Fatalf("ContextStatus answered %+v, whole transcript answered %+v", gotMetrics, wantMetrics)
+	}
+	if gotPressure != wantPressure {
+		t.Fatalf("ContextStatus pressure = %v, whole transcript = %v", gotPressure, wantPressure)
+	}
+}

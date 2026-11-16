@@ -165,6 +165,70 @@ func TestContextStatusAllocationCeiling10000Turns(t *testing.T) {
 
 // checkContextStatusInvariants applies the identities every sample must hold,
 // independent of which mutation has landed.
+
+// TestContextStatusPostAppendAllocationCeiling10000Turns is the budget for the
+// shape the daemon actually samples: a round appends a turn, and the bridge
+// samples on the event that announces it. By then the memo has walked every turn
+// before the append, and an append rewrites none of them, so the sample owes a
+// copy of the appended tail only — never of the whole transcript.
+//
+// The appends here are direct writes to s.history, which is what the production
+// append does to the value the sample reads: a turn at the end, no revision
+// bump. The slice is grown to its final capacity before the measured window, so
+// an append's own reallocation is not charged to the sample.
+//
+// This test must stay serial (no t.Parallel) because runtime.MemStats describes
+// the whole process.
+func TestContextStatusPostAppendAllocationCeiling10000Turns(t *testing.T) {
+	const (
+		turns  = 10_000
+		rounds = 20
+	)
+	s, profile := newContextStatusLargeFixture(turns)
+	if got := s.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("fixture LastInputTokens = %d, want 0 (no recorded measurement)", got)
+	}
+	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant(contextStatusText()))
+	s.mu.Lock()
+	grown := make([]schema.Turn, len(s.history), len(s.history)+rounds)
+	copy(grown, s.history)
+	s.history = grown
+	s.mu.Unlock()
+
+	// The sample a previous round took walks every turn, which is the state the
+	// measured sample starts from.
+	_, _ = s.ContextStatus()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	var metrics ContextMetrics
+	var pressure float64
+	for range rounds {
+		s.mu.Lock()
+		s.history = append(s.history, turn)
+		s.mu.Unlock()
+		metrics, pressure = s.ContextStatus()
+	}
+	runtime.ReadMemStats(&after)
+	bytesPerSample := float64(after.TotalAlloc-before.TotalAlloc) / float64(rounds)
+	t.Logf("a post-append ContextStatus sample at %d turns allocates %.0f bytes", turns, bytesPerSample)
+	if bytesPerSample > 256*1024 {
+		t.Fatalf("a post-append sample allocates %.0f bytes, ceiling %d: the copy grows with history, not with the appended tail",
+			bytesPerSample, 256*1024)
+	}
+
+	// Fixture-authored output for the last sample, which must still be exact.
+	const wantUsed = (turns + rounds) * contextStatusMessageChars / 4
+	wantWindow := profile.ContextWindowSize()
+	if metrics.Used != wantUsed {
+		t.Fatalf("Used = %d, want %d", metrics.Used, wantUsed)
+	}
+	if metrics.Window != wantWindow || metrics.Assumed {
+		t.Fatalf("Window/Assumed = %d/%v, want %d/false", metrics.Window, metrics.Assumed, wantWindow)
+	}
+	checkContextStatusInvariants(t, metrics, pressure)
+	assertMemoIsExact(t, s, "after the measured appends")
+}
 func checkContextStatusInvariants(t *testing.T, metrics ContextMetrics, pressure float64) {
 	t.Helper()
 	wantRemaining := max(metrics.Window-metrics.Used, 0)
