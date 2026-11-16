@@ -487,7 +487,8 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 // appendEnvironmentContext's EventEnvironment, which publishes under the door
 // so the entry is in history before the event exists, and pays a single emit
 // for it; the effects this function runs stay outside because they are
-// unbounded work that re-enters the locks the door holds. superseded reports that a NEWER fold publication has
+// unbounded work that re-enters the locks the door holds.
+// superseded reports that a NEWER fold publication has
 // already flushed its deferred effects: the last-write-wins compaction naming
 // is skipped so a stale parked flush cannot overwrite the newer fold's; the
 // compaction-turn event still runs because it describes published work.
