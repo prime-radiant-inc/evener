@@ -112,11 +112,6 @@ var (
 // the log cut and publish never run. Test seam only; nil in production.
 var testKillAfterRecordWrites func() error
 
-// testKillAfterTurnFlush dies in writeMeta's durability gap: the turn records
-// are flushed, and the totals file that summarizes them is not yet written.
-// Test seam only.
-var testKillAfterTurnFlush func() error
-
 // testKillAfterItemUpdateLog, when set, runs in addContributor right after
 // its update-log row is written and before the item record's own in-place
 // overwrite: it stands for the process being killed at exactly that point,
@@ -1595,8 +1590,6 @@ func (x *Index) openFiles(create bool) error {
 	}
 	if err := x.strings.load(); err != nil {
 		return err
-	}
-	if create {
 	}
 	return nil
 }

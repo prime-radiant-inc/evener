@@ -54,23 +54,3 @@ func BenchmarkResolveTurnWindow(b *testing.B) {
 		})
 	}
 }
-
-// BenchmarkDerivedTotals times one whole-session derived-totals read on
-// sessions whose turn counts differ by 8x.
-func writeDerivedTotalsSession(t testing.TB, dir string, turns int) string {
-	t.Helper()
-	lines := make([]fixtureLine, 0, 2*turns)
-	for i := range turns {
-		id := fmt.Sprintf("turn_%d", i)
-		lines = append(lines,
-			entryLine(opens(id, schema.TurnSpanExecution, withUsage(user(fmt.Sprintf("question %d", i)), 5, 2, 0, 7))),
-			entryLine(inTurn(id, withUsage(assistant(text(fmt.Sprintf("answer %d", i))), 3, 1, 0, 4))),
-		)
-	}
-	header, encoded := fixture{header: transcript.Header{SessionID: "derived_totals_bench"}, lines: lines}.encode(t)
-	path := filepath.Join(dir, "session.transcript.jsonl")
-	if err := os.WriteFile(path, append(header, joinLines(encoded)...), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
