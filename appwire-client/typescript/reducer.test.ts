@@ -1416,6 +1416,7 @@ test("thread/model/changed updates modelProvider/model and the new reasoning-eff
         model: "claude-opus-4-1",
         reasoningEffortLevels: ["low", "medium", "high"],
         supportsReasoning: true,
+        defaultReasoningEffort: "high",
       },
     },
     2000,
@@ -1425,10 +1426,11 @@ test("thread/model/changed updates modelProvider/model and the new reasoning-eff
   expect(model.model).toBe("claude-opus-4-1");
   expect(model.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
   expect(model.supportsReasoning).toBe(true);
+  expect(model.defaultReasoningEffort).toBe("high");
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to empty/false when the new payload omits them - it describes the NEW model completely, not a partial patch onto the old one", () => {
+test("thread/model/changed resets reasoningEffortLevels/supportsReasoning/defaultReasoningEffort to empty/false/absent when the new payload omits them - it describes the NEW model completely, not a partial patch onto the old one", () => {
   let model = testHydrate({
     evener: {
       ref: "ref_t",
@@ -1436,8 +1438,10 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
       queue: { revision: 0 },
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsReasoning: true,
+      defaultReasoningEffort: "medium",
     },
   });
+  expect(model.defaultReasoningEffort).toBe("medium");
 
   model = applyNotification(
     model,
@@ -1450,6 +1454,8 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
 
   expect(model.reasoningEffortLevels).toEqual([]);
   expect(model.supportsReasoning).toBe(false);
+  // The old model's default must not survive as a claim about the new one.
+  expect(model.defaultReasoningEffort).toBeUndefined();
 });
 
 test("thread/model/changed updates contextUsed, contextWindow, contextPressure, contextAssumed, and compactionThreshold in both directions", () => {

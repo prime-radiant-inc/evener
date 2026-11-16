@@ -124,3 +124,64 @@ func TestBuildModelRequest_AppliesRequestEffortRule(t *testing.T) {
 		})
 	}
 }
+
+// DefaultReasoningEffort is what clients show for an unset ("(default)")
+// session effort, so it must name what that session's requests actually
+// carry: for every profile shape it equals the effort buildModelRequest puts
+// on a request whose configured effort is empty.
+func TestDefaultReasoningEffort_NamesTheUnsetRequestEffort(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		profile *provider.Profile
+		want    string
+	}{
+		{
+			name:    "the model's stated default",
+			profile: reasoningProfile("gateway-model", registry.Caps{EffortValues: []string{"low", "medium", "high"}, DefaultEffort: new("high")}),
+			want:    "high",
+		},
+		{
+			name:    "a hand-written stated default is normalized",
+			profile: reasoningProfile("gateway-model", registry.Caps{EffortValues: []string{"low", "medium", "high"}, DefaultEffort: new("High")}),
+			want:    "high",
+		},
+		{
+			name:    "the medium fallback clamped to the model's levels",
+			profile: reasoningProfile("glm-5.3", registry.Caps{EffortValues: []string{"high", "max"}}),
+			want:    "high",
+		},
+		{
+			name:    "the medium fallback when the model names no levels",
+			profile: reasoningProfile("house-model", registry.Caps{}),
+			want:    "medium",
+		},
+		{
+			name:    "a stated off",
+			profile: reasoningProfile("gateway-model", registry.Caps{EffortValues: []string{"none", "low", "high"}, DefaultEffort: new("none")}),
+			want:    "none",
+		},
+		{
+			name:    "nothing for a model that does not reason",
+			profile: nonReasoningProfile(t, "tiny-chat"),
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{}
+			req := s.buildModelRequest(tc.profile, "sys", []llm.Message{llm.User("hi")}, nil, "", 0)
+			sent := ""
+			if req.ReasoningEffort != nil {
+				sent = *req.ReasoningEffort
+			}
+			got := profileDefaultReasoningEffort(tc.profile)
+			if got != sent {
+				t.Fatalf("DefaultReasoningEffort = %q, but an unset request carries %q", got, sent)
+			}
+			if got != tc.want {
+				t.Fatalf("DefaultReasoningEffort = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

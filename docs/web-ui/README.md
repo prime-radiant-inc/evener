@@ -470,6 +470,17 @@ Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
 and applying the choice. Closing the desktop picker restores focus to its
 trigger, including after a selection.
 
+## Reasoning-effort control
+
+The effort control beside the model picker shows the effort the session runs
+at. A session that follows its model's default shows the tier that default
+resolves to (the thread's `defaultReasoningEffort`, replaced on every model
+switch), the same way it shows a tier the user picked. Opened, the list keeps
+the unset option as `<tier> (default)`, so following the default stays distinct
+from pinning that tier. When the daemon or the model's row cannot resolve the
+tier, both read `(default)`. The new-session form applies the same rule to the
+effort its launch configuration resolves.
+
 ## Directory fields
 
 All directory selection uses the [shared directory-picker contract](design-system.md#directory-selection-one-shared-interaction). Read it before adding or changing a path field; older plans and parity checklists describe retired interactions.

@@ -9,7 +9,9 @@ import {
   type AdvancedValues,
   basename,
   collectAdvancedOverrides,
+  effortDefaultLabel,
   effortLabel,
+  effortReadout,
   errorText,
   FALLBACK_EFFORT_LEVELS,
   findBuiltinArgument,
@@ -1996,12 +1998,13 @@ function SpawnForm({
     reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
       ? reasoningEffort
       : null;
-  // The effort a session started now would inherit: prepended onto the empty
-  // option's "(default)" once launch/resolve has landed with one.
+  // The effort a session started now would inherit, once launch/resolve has
+  // landed with one: the open list names it on the empty option's
+  // "(default)", and the closed readout shows it as the effort itself.
   const resolvedEffortDefault =
     typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
   const effortOptions = [
-    { value: "", label: resolvedEffortDefault !== "" ? `${resolvedEffortDefault} (default)` : "(default)" },
+    { value: "", label: effortDefaultLabel(resolvedEffortDefault) },
     ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: effortLabel("none", effortLevels) },
@@ -2736,11 +2739,13 @@ function SpawnForm({
                       .effortTrigger): the current value IS the visible control -
                       a real native <select> laid over its own readout at zero
                       opacity - so the row stays one quiet line instead of
-                      growing a bordered box. The readout renders the SELECTED
-                      option's own label - including the resolved default's
-                      ("high (default)"), never the bare value - so what the
-                      user sees is what the select holds. Same ladder contract
-                      the removed FormRow select kept: the selected model's own
+                      growing a bordered box. The readout names the effort the
+                      select holds; an unset effort whose resolved default is
+                      known shows that tier ("high"), the effort a session
+                      started now would run at, while the open list keeps
+                      "high (default)" so following the default stays distinct
+                      from pinning it. Same ladder contract the removed
+                      FormRow select kept: the selected model's own
                       levels, the fallback ladder when the catalog can't say,
                       and a disabled control when the model cannot reason at all
                       (effortDisabled) rather than no control - pre-launch the
@@ -2755,8 +2760,7 @@ function SpawnForm({
                       ·
                     </span>
                     <span className={CLASS.effortValue} data-testid="spawn-effort-value" aria-hidden="true">
-                      {effortOptions.find((option) => option.value === reasoningEffort)?.label ??
-                        effortLabel(reasoningEffort, effortLevels)}
+                      {effortReadout(reasoningEffort, effortLevels, resolvedEffortDefault)}
                     </span>
                     <span className={CLASS.effortChevron} aria-hidden="true">
                       <Chevron direction="down" />

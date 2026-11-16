@@ -590,8 +590,9 @@ func TestAppThread_OverlaysPendingAskFunc(t *testing.T) {
 
 // TestAppThread_CarriesReasoningInfoFromLiveSessionState verifies (Task 4e)
 // that a cold-attached client's thread snapshot carries reasoningEffort,
-// reasoningEffortLevels, and supportsReasoning from reasoningInfoFn with no
-// prior thread/model/changed or thread/reasoning-effort/changed notification.
+// reasoningEffortLevels, supportsReasoning and defaultReasoningEffort from the
+// envelope source with no prior thread/model/changed or
+// thread/reasoning-effort/changed notification.
 func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	seedStatus(srv, StatusInfo{SessionID: "s1", State: "idle"})
@@ -599,6 +600,7 @@ func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 		e.reasoningEffort = "high"
 		e.reasoningLevels = []string{"low", "medium", "high"}
 		e.supportsReason = true
+		e.defaultReasoningEffort = "medium"
 	})
 
 	thread := srv.appThread()
@@ -610,6 +612,9 @@ func TestAppThread_CarriesReasoningInfoFromLiveSessionState(t *testing.T) {
 	}
 	if !thread.Evener.SupportsReasoning {
 		t.Fatal("SupportsReasoning = false, want true")
+	}
+	if thread.Evener.DefaultReasoningEffort != "medium" {
+		t.Fatalf("DefaultReasoningEffort = %q, want medium", thread.Evener.DefaultReasoningEffort)
 	}
 }
 

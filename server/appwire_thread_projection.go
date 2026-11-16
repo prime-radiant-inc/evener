@@ -90,6 +90,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
+	defaultReasoningEffort := envelope.DefaultReasoningEffort
 	visionModel := envelope.VisionModel
 	manager := envelope.Manager
 	lastTurnEndedAt := envelope.LastTurnEndedAt
@@ -151,6 +152,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ReasoningEffort:        reasoningEffort,
 			ReasoningEffortLevels:  reasoningEffortLevels,
 			SupportsReasoning:      supportsReasoning,
+			DefaultReasoningEffort: defaultReasoningEffort,
 			VisionModel:            visionModel,
 			Manager:                manager,
 			LastTurnEndedAt:        lastTurnEndedAt,

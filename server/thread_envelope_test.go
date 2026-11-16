@@ -204,15 +204,20 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 				e.reasoningEffort = "high"
 				e.reasoningLevels = []string{"low", "high"}
 				e.supportsReason = true
+				e.defaultReasoningEffort = "low"
 			},
 			event: events.SessionEvent{
 				Kind: events.EventModelChanged, SessionID: "th_1",
-				Data: events.ModelChangedData{NewModel: "m2", SupportsReasoning: true},
+				Data: events.ModelChangedData{NewModel: "m2", SupportsReasoning: true, DefaultReasoningEffort: "low"},
 			},
 			want: func(t *testing.T, thread appwire.Thread) {
 				if thread.Evener.ReasoningEffort != "high" || !thread.Evener.SupportsReasoning {
 					t.Fatalf("reasoning = (%q, %v), want the new profile's settings",
 						thread.Evener.ReasoningEffort, thread.Evener.SupportsReasoning)
+				}
+				if thread.Evener.DefaultReasoningEffort != "low" {
+					t.Fatalf("defaultReasoningEffort = %q, want the new profile's unset effort low",
+						thread.Evener.DefaultReasoningEffort)
 				}
 			},
 		},
@@ -925,9 +930,9 @@ func (c *countingThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	return schema.SessionMeta{}
 }
 func (c *countingThreadEnvelopeSource) FailedToolCalls() (int, bool) { c.hit(); return 0, false }
-func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
+func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool, string) {
 	c.hit()
-	return "", nil, false
+	return "", nil, false, ""
 }
 
 func (c *countingThreadEnvelopeSource) LatestExecutionTurnID() string { c.hit(); return "" }
