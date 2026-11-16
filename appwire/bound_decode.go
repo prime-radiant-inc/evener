@@ -94,6 +94,12 @@ func decodeResponseInto(data, idToken []byte, storage any) (Message, bool) {
 		// ordinary path decodes the frame again and reports it from there.
 		return Message{}, false
 	}
+	// A null result clears the interface rather than reaching a target's own
+	// unmarshaler, which may reject the null or keep it. The ordinary path calls
+	// that unmarshaler, so it decides.
+	if probe.Result == nil {
+		return Message{}, false
+	}
 	if probe.JSONRPC != nil || len(probe.Error) > 0 || probe.Method != "" {
 		return Message{}, false
 	}
@@ -111,10 +117,11 @@ func decodeResponseInto(data, idToken []byte, storage any) (Message, bool) {
 	return Message{Response: &resp}, true
 }
 
-// responseFrameIDToken returns the raw id token of a response frame, reading only
-// the members before its result. A frame that carries a method, ends before a
-// result, or repeats its id is answered false and stays on the ordinary path:
-// finding such an id costs the full scan this decode exists to avoid.
+// responseFrameIDToken returns the raw id token of a response frame, and reports
+// false for every envelope the ordinary decoder would read differently: a method
+// member, a repeated id, and a result that is missing or repeated. A repeated
+// result merges its members into one value here, where the ordinary decoder keeps
+// only the last, so such a frame stays on the ordinary path.
 func responseFrameIDToken(data []byte) ([]byte, bool) {
 	dec := jsontext.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.ReadToken()
@@ -122,20 +129,21 @@ func responseFrameIDToken(data []byte) ([]byte, bool) {
 		return nil, false
 	}
 	var id []byte
+	results := 0
 	for {
 		key, err := dec.ReadToken()
 		if err != nil {
 			return nil, false
 		}
 		if key.Kind() == jsontext.KindEndObject {
-			return nil, false
+			break
 		}
 		switch key.String() {
 		case "result":
-			if id == nil {
+			results++
+			if err := dec.SkipValue(); err != nil {
 				return nil, false
 			}
-			return id, true
 		case "id":
 			if id != nil {
 				return nil, false
@@ -156,4 +164,8 @@ func responseFrameIDToken(data []byte) ([]byte, bool) {
 			}
 		}
 	}
+	if id == nil || results != 1 {
+		return nil, false
+	}
+	return id, true
 }

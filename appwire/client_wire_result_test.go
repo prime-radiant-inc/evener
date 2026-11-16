@@ -85,6 +85,47 @@ func TestClientRequestDecodesWireResultWithoutRounding(t *testing.T) {
 	}
 }
 
+// An envelope the direct decode cannot reproduce exactly stays on the ordinary
+// decode: every repeated member merges in one pass where the ordinary decoder
+// keeps the last, and a null result clears the field instead of reaching the
+// target's unmarshaler, which decides whether the null is acceptable.
+func TestDecodeFrameBoundFallsBackOnAmbiguousEnvelope(t *testing.T) {
+	pad := strings.Repeat("x", boundFrameMinSize)
+	repeated := `{"id":1,"result":{"thread":{"id":"first"}},"result":{"thread":{"id":"last"}},"pad":"` + pad + `"}`
+	nullable := `{"id":1,"result":null,"pad":"` + pad + `"}`
+
+	var plain Message
+	if err := decodeFrame(&plain, []byte(repeated)); err != nil {
+		t.Fatalf("ordinary decode of a repeated result: %v", err)
+	}
+	var storage ThreadReadResponse
+	msg, bound, err := decodeFrameBound([]byte(repeated), func([]byte) any { return &storage })
+	if err != nil {
+		t.Fatalf("bound decode of a repeated result: %v", err)
+	}
+	if bound != nil {
+		t.Fatalf("bound=%v, want the ordinary decode: one pass merges repeated results", bound != nil)
+	}
+	if got, want := string(msg.Response.Result.(json.RawMessage)), string(plain.Response.Result.(json.RawMessage)); got != want {
+		t.Fatalf("result = %s, ordinary decode got %s", got, want)
+	}
+
+	// HostPlanResult refuses a result carrying no arm, which a null is. A null
+	// handed to the field's interface clears it instead of reaching that
+	// unmarshaler, so only the ordinary decode can report the refusal.
+	var plan HostPlanResult
+	if err := json.Unmarshal([]byte(`null`), &plan); err == nil {
+		t.Fatal("HostPlanResult accepted a null result")
+	}
+	var planStorage HostPlanResult
+	if _, bound, _ := decodeFrameBound([]byte(nullable), func([]byte) any { return &planStorage }); bound != nil {
+		t.Fatalf("bound=%v, want the ordinary decode to report the refusal", bound != nil)
+	}
+	if planStorage.HostPlanPlanned != nil || planStorage.HostPlanNoToken != nil {
+		t.Fatalf("target = %+v, want it left alone", planStorage)
+	}
+}
+
 // BenchmarkMessageDecodeLargeResponse measures one large response frame decoded
 // into its typed result, shaped like a probe's thread/read answer whose
 // diagnostics carry every retained delegate's task text. The frame is built once,
