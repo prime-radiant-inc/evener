@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,118 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// The hub-scale tree fixture below is 150 roots of 26 subagents: 3,900 session
+// rows besides the roots, spread across 20 projects.
+const (
+	// navigationTreeAllocationBudgetBytes is the per-build byte ceiling. It is
+	// an allocation bound, not a time bound: elapsed time measures the host and
+	// its load, so a wall-clock ceiling cannot fail for the reason this test
+	// exists, while allocated bytes are the work the build actually does.
+	//
+	// The measured cost is about 9.0 MB, and the spread across runs on a busy
+	// host is under 0.1%, so the ceiling leaves room for the tree's output to
+	// grow while still failing on a return of the per-row metadata value copies
+	// (about 14.7 MB) or of a whole-title rune copy per row (about 27.7 MB).
+	navigationTreeAllocationBudgetBytes = 12 << 20
+	// navigationTreeAllocationBudgetAllocs is the per-build allocation count
+	// ceiling. It catches per-row small allocations that a byte ceiling this
+	// wide would not notice.
+	navigationTreeAllocationBudgetAllocs = 8000
+	// navigationTreeAllocationRuns is how many builds testing.AllocsPerRun
+	// averages the count over.
+	navigationTreeAllocationRuns = 5
+)
+
+// navigationTreeMetaFixture is the hub-scale session shape the sidebar tree is
+// built from: many roots carrying prompt-derived titles, each with many
+// subagents, spread across a few projects. It returns the metas and the project
+// map a hub would have resolved for them at ingestion.
+func navigationTreeMetaFixture(tb testing.TB) ([]schema.SessionMeta, map[string]identifier.Project, time.Time) {
+	tb.Helper()
+	const roots, subagentsPerRoot, projectsCount = 150, 26, 20
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	// A prompt-derived title runs past the sidebar's rune cap, as a real one
+	// does; the cap is what a build has to cut, not carry.
+	prompt := strings.Repeat("investigate the flaky navigation build and report ", 20)
+	metas := make([]schema.SessionMeta, 0, roots*(subagentsPerRoot+1))
+	for r := range roots {
+		rootID := fmt.Sprintf("root-%04d", r)
+		workingDir := fmt.Sprintf("/workspace/project-%d", r%projectsCount)
+		build := func(id, parent string, subagent bool, i int) schema.SessionMeta {
+			m := schema.SessionMeta{
+				ID: id, ParentSessionID: parent, IsSubagent: subagent,
+				OriginalPrompt: fmt.Sprintf("%s %d", prompt, i),
+				CreatedAt:      now.Add(-time.Duration(i) * time.Minute),
+				UpdatedAt:      now.Add(-time.Duration(i%7) * time.Minute),
+			}
+			m.EnvInfo.WorkingDir = workingDir
+			return m
+		}
+		metas = append(metas, build(rootID, "", false, r))
+		for s := range subagentsPerRoot {
+			m := build(fmt.Sprintf("%s-sub-%03d", rootID, s), rootID, true, r+s)
+			m.JobTreeRootSessionID = rootID
+			metas = append(metas, m)
+		}
+	}
+	projects := make(map[string]identifier.Project, projectsCount)
+	for p := range projectsCount {
+		path := fmt.Sprintf("/workspace/project-%d", p)
+		projects[path] = identifier.Project{ID: fmt.Sprintf("project-%d", p), CanonicalPath: path}
+	}
+	return metas, projects, now
+}
+
+// TestNavigationTreeBuildStaysWithinAllocationBudget pins the hub-scale tree
+// build's allocation cost, in bytes and in count. Neither number reads the
+// clock: allocated bytes are the work the build actually does, and they
+// reproduce run to run however busy the host is, whereas a ratio of elapsed
+// times moves with the scheduler and cannot fail for the reason this test
+// exists. testing.AllocsPerRun averages the count over several runs with
+// GOMAXPROCS pinned, so another goroutine's allocations move the mean by a
+// fraction of one run instead of by all of themselves.
+func TestNavigationTreeBuildStaysWithinAllocationBudget(t *testing.T) {
+	metas, projects, now := navigationTreeMetaFixture(t)
+	// The fixture's rows must actually be in the tree, or the measurement could
+	// pass by building nothing.
+	if got, want := countTreeSessions(hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)), 150; got != want {
+		t.Fatalf("tree holds %d top-level rows, want %d", got, want)
+	}
+	// Every measurement is preceded by one unmeasured build: whatever a first
+	// build allocates and a later one does not — lazily built package state,
+	// sort scratch growing to its steady size — lands outside the window.
+	measurement := testing.Benchmark(func(b *testing.B) {
+		hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+		b.ReportAllocs()
+		for b.Loop() {
+			hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+		}
+	})
+	allocs := testing.AllocsPerRun(navigationTreeAllocationRuns, func() {
+		hubcore.BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+	})
+	bytesPerBuild := measurement.AllocedBytesPerOp()
+	t.Logf("hub-scale tree build: %d bytes and %.0f allocs per build, budgets %d bytes and %d allocs",
+		bytesPerBuild, allocs, navigationTreeAllocationBudgetBytes, navigationTreeAllocationBudgetAllocs)
+	if bytesPerBuild > navigationTreeAllocationBudgetBytes {
+		t.Fatalf("tree build allocated %d bytes per build, budget %d", bytesPerBuild, navigationTreeAllocationBudgetBytes)
+	}
+	if allocs > navigationTreeAllocationBudgetAllocs {
+		t.Fatalf("tree build made %.0f allocations per build, budget %d", allocs, navigationTreeAllocationBudgetAllocs)
+	}
+}
+
+// countTreeSessions counts the top-level rows of every project tier.
+func countTreeSessions(tree hubcore.Tree) int {
+	total := 0
+	for _, projects := range [][]hubcore.TreeProject{tree.Projects, tree.ArchivedProjects} {
+		for _, project := range projects {
+			total += len(project.Current) + len(project.Recent) + len(project.Archived)
+		}
+	}
+	return total
+}
 
 func mustSessionID(tb testing.TB) string {
 	tb.Helper()

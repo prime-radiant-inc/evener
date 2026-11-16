@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -527,12 +528,29 @@ const maxTitleRunes = 200
 
 // truncateTitle caps s at maxTitleRunes runes, appending an ellipsis when it
 // truncates. Rune-safe: never splits a multi-byte character.
+//
+// A title is usually far longer than the cap, and this runs once per sort key
+// and once per row, so it walks the string's runes in place rather than
+// materializing a rune slice of the whole title. Text that is not valid UTF-8
+// takes the rune-slice path, because converting its bytes to runes is what
+// renders the replacement characters the row shows.
 func truncateTitle(s string) string {
-	r := []rune(s)
-	if len(r) <= maxTitleRunes {
+	if !utf8.ValidString(s) {
+		r := []rune(s)
+		if len(r) <= maxTitleRunes {
+			return s
+		}
+		return string(r[:maxTitleRunes-1]) + "…"
+	}
+	if utf8.RuneCountInString(s) <= maxTitleRunes {
 		return s
 	}
-	return string(r[:maxTitleRunes-1]) + "…"
+	offset := 0
+	for range maxTitleRunes - 1 {
+		_, size := utf8.DecodeRuneInString(s[offset:])
+		offset += size
+	}
+	return s[:offset] + "…"
 }
 
 // ShortID renders an unnamed session ID compactly.
@@ -837,21 +855,27 @@ func supersededSessionIDs(live []LiveEntry) map[string]struct{} {
 }
 
 func replacementMetadataSources(metas []schema.SessionMeta, live []LiveEntry) map[string]schema.SessionMeta {
-	byID := make(map[string]schema.SessionMeta, len(metas))
-	for _, meta := range metas {
-		if meta.ID == "" {
-			continue
-		}
-		current, exists := byID[meta.ID]
-		if !exists || sessionMetaLess(meta, current) {
-			byID[meta.ID] = meta
-		}
-	}
 	sources := make(map[string]schema.SessionMeta)
+	// Only a live entry that supersedes another thread's session needs the
+	// retired metadata, so the by-ID index is built on the first such entry
+	// rather than for every capture.
+	var byID map[string]schema.SessionMeta
 	for _, entry := range live {
 		currentID, ref, ok := liveWorkspaceIdentity(entry)
 		if !ok || ref.ThreadID == currentID {
 			continue
+		}
+		if byID == nil {
+			byID = make(map[string]schema.SessionMeta, len(metas))
+			for _, meta := range metas {
+				if meta.ID == "" {
+					continue
+				}
+				current, exists := byID[meta.ID]
+				if !exists || sessionMetaLess(meta, current) {
+					byID[meta.ID] = meta
+				}
+			}
 		}
 		if source, ok := byID[ref.ThreadID]; ok {
 			sources[currentID] = source
@@ -879,18 +903,21 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	sortSessionMetas(metas, SessionOrderLess)
 	metas = dedupeMetasByID(metas)
 
+	// roots: the shared lineage nesting (subagents, plus fork-superseded
+	// parents) attention.go's tierEligible also draws from — see
+	// nestedSessionIDs — so a session can't be top-level here and
+	// tier-eligible there, or vice versa.
+	roots := NewRootIndex(metas)
 	b := &treeBuilder{
 		live:             live,
 		decisions:        decisions,
 		now:              now,
 		resolvedProjects: resolvedProjects,
 		lv:               newTreeLive(metas, live, sessionIsIndexed),
-		// roots: the shared lineage nesting (subagents, plus fork-superseded
-		// parents) attention.go's tierEligible also draws from — see
-		// nestedSessionIDs — so a session can't be top-level here and
-		// tier-eligible there, or vice versa.
-		roots:            NewRootIndex(metas),
-		childrenByParent: make(map[string][]schema.SessionMeta),
+		roots:            roots,
+		// At most one entry per fork continuation, which is how many parents
+		// groupTopLevel can nest children under.
+		childrenByParent: make(map[string][]schema.SessionMeta, len(roots.forkChildren)),
 	}
 	accums := b.groupTopLevel(metas)
 	workingRoots := b.lv.workingRoots(metas, b.roots, b.isSubagent)
@@ -984,7 +1011,7 @@ func (b *treeBuilder) markArchivedTree(nodes []TreeNode, projectKeyFor func(Tree
 // that are not grouped under one project: Live and Needs you.
 func (b *treeBuilder) nodeProjectKey(node TreeNode) string {
 	if m, ok := b.lv.metaMap[node.ID]; ok {
-		return projectKeyForPath(EffectiveWorkingDir(m), b.resolvedProjects)
+		return projectKeyForPath(EffectiveWorkingDir(*m), b.resolvedProjects)
 	}
 	if entry, ok := b.lv.liveMap[node.ID]; ok {
 		return projectKeyForPath(entry.WorkingDir, b.resolvedProjects)
@@ -1314,8 +1341,8 @@ func (b *treeBuilder) liveTier() []TreeNode {
 			liveNodes = append(liveNodes, b.lv.sessionNode(le, nil))
 			continue
 		}
-		kind := nodeKind(metaValue)
-		node := b.buildNode(metaValue, kind, &projectAccum{name: projectName(metaValue)}, map[string]bool{})
+		kind := nodeKind(*metaValue)
+		node := b.buildNode(*metaValue, kind, &projectAccum{name: projectName(*metaValue)}, map[string]bool{})
 		// buildNode attaches every child the metadata knows about, including
 		// non-live subagents and forks. The Live tier is only live sessions.
 		node = pruneLiveSubtree(node, b.lv.liveMap)
@@ -1383,11 +1410,7 @@ func (b *treeBuilder) needsYouTier() []TreeNode {
 		if lvl := promotedAttentionLevel(st, le.PendingAsk, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
 			continue
 		}
-		metaValue, hasMeta := b.lv.metaMap[le.SessionID]
-		var meta *schema.SessionMeta
-		if hasMeta {
-			meta = &metaValue
-		}
+		meta := b.lv.metaMap[le.SessionID]
 		// Same tierEligible call attention.go's AttentionSummary uses for its
 		// own inclusion check: only top-level (not a subagent, not a
 		// fork-superseded parent nested under its active continuation) and not
@@ -1440,7 +1463,7 @@ func ProjectNameLess(a, b TreeProject) bool {
 
 // sortLiveNodes orders the Live tier by attention rank, highest first, then by
 // the Hub session ordering contract.
-func sortLiveNodes(liveNodes []TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) {
+func sortLiveNodes(liveNodes []TreeNode, metaMap map[string]*schema.SessionMeta, liveMap map[string]LiveEntry) {
 	sort.SliceStable(liveNodes, func(i, j int) bool {
 		a, b := &liveNodes[i], &liveNodes[j]
 		ri, rj := hubapi.AttentionRank(a.State, a.AskPending, a.ApprovalPending), hubapi.AttentionRank(b.State, b.AskPending, b.ApprovalPending)
@@ -1608,11 +1631,11 @@ func sortedDecisionSources(sources map[string]bool) []string {
 	return out
 }
 
-func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) bool {
+func treeNodeLess(a, b TreeNode, metaMap map[string]*schema.SessionMeta, liveMap map[string]LiveEntry) bool {
 	ma, aHasMeta := metaMap[a.ID]
 	mb, bHasMeta := metaMap[b.ID]
 	if aHasMeta && bHasMeta {
-		return sessionMetaLess(ma, mb)
+		return sessionMetaLess(*ma, *mb)
 	}
 	if !aHasMeta && !bHasMeta {
 		la, aLive := liveMap[a.ID]
