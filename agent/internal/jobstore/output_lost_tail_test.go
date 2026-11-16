@@ -21,6 +21,7 @@ func TestOutputReadersSurviveALostUnsyncedTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	store.metaSyncInterval = time.Hour // the append after the barrier must not get its own barrier
 	saved := []byte("line one\nline two\n")
 	if _, err := store.Append(saved); err != nil {
 		t.Fatalf("append saved: %v", err)
@@ -79,6 +80,7 @@ func TestOutputReadersSurviveALostTailCutMidRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	store.metaSyncInterval = time.Hour // the append after the barrier must not get its own barrier
 	saved := []byte("line one\n")
 	if _, err := store.Append(saved); err != nil {
 		t.Fatalf("append saved: %v", err)

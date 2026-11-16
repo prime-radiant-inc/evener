@@ -232,3 +232,38 @@ func (c *countingOutputOpenFS) Open(name string) (afero.File, error) {
 	}
 	return c.Fs.Open(name)
 }
+
+// A sidecar older than the log is what an append outside the store leaves
+// behind, and such an append writes whole records: the pin above recovers
+// "more\n". A power crash leaves the opposite shape, a partial trailing record.
+// That difference is a discriminator, so recovery can adopt a complete-record
+// suffix and must refuse a torn one instead of hashing it and calling it
+// validated output.
+func TestOutputOlderSidecarDoesNotAdoptATornSuffix(t *testing.T) {
+	vouched := []byte("keep\n")
+	logBytes := append(append([]byte{}, vouched...), []byte("keepmore")...)
+	path := tornSuffixFile(t, logBytes, outputMeta{
+		TotalBytes:      int64(len(vouched)),
+		RetainedStart:   0,
+		RetainedSHA256:  outputBytesSHA256(vouched),
+		DurableFileSize: new(int64(len(vouched))),
+		DurableSHA256:   outputBytesSHA256(vouched),
+	})
+
+	total, retainedStart, err := OutputFileStats(path)
+	if err != nil {
+		t.Fatalf("OutputFileStats with an older sidecar and a torn suffix: %v", err)
+	}
+	if total != int64(len(vouched)) || retainedStart != 0 {
+		t.Fatalf("OutputFileStats = %d/%d, want %d/0: the vouched prefix, not the torn suffix",
+			total, retainedStart, len(vouched))
+	}
+
+	page, err := readOutputPageSnapshotAtPath(path, nil, 1<<20)
+	if err != nil {
+		t.Fatalf("page snapshot: %v", err)
+	}
+	if !bytes.Equal(page.Content, vouched) {
+		t.Fatalf("page content = %q, want %q: the torn suffix is not output", page.Content, vouched)
+	}
+}
