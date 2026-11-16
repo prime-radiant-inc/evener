@@ -1315,14 +1315,23 @@ through the ramp rather than per-field: `tokens.css`'s below-900px block sets
 any touch device — the iPhone Duo's 951pt inner display in landscape crosses
 the 899px boundary and still runs iOS Safari. Double-tap and pinch zoom are
 gone the same way (Jesse 2026-11-15): `global.css` spends
-`touch-action: pan-x pan-y` under `(any-pointer: coarse)`, so every touch
-screen pans and never zooms, matching the native app, which has no zoom on
-any display. Desktop zoom is untouched by construction: touch-action governs
-touch input only. The enlargement paths that remain on touch screens are the
-in-app font-size preference (S/M/L/XL) and the OS Magnifier. The viewport
-meta itself still never locks zoom: modern iOS ignores `maximum-scale` for
-pinch anyway, so a meta lock would add nothing the coarse query does not
-already own, and `src/styles/viewport-pin.test.ts` fails if it comes back. An auto-growing textarea has a real content-driven
+`touch-action: pan-x pan-y` under `(any-pointer: coarse)`, which blocks both
+where touch-action carries the viewport (Chromium, Android). iOS Safari does
+not honor touch-action for the viewport pinch — the same accessibility stance
+that makes it ignore `maximum-scale` (Jesse's Duo test after the rule first
+shipped) — so the app entry point (`main.tsx`) installs the
+`shell/pinchVeto.ts` veto, which prevents Safari's non-standard
+`gesturestart`/`gesturechange` events. Safari has also been reported to
+fire those for desktop trackpad pinches, so the veto installs only where
+the coarse query says a touch screen exists, and desktop zoom keeps every
+path. The enlargement paths that remain on touch screens are the in-app
+font-size preference (S/M/L/XL) and the OS Magnifier; a reader who arrives
+already zoomed keeps that zoom and recovers through Safari's Page Zoom
+setting, since the veto removes the pinch way back. The viewport meta
+itself still never locks zoom: modern iOS ignores `maximum-scale` for
+pinch anyway, so a meta lock would add nothing the veto and the coarse
+query do not already own, and `src/styles/viewport-pin.test.ts` fails if
+it comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
