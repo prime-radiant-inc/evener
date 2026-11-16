@@ -603,13 +603,10 @@ jobs:
           ACK_INPUT: ${{ github.event.inputs.acknowledged }}
         run: |
           set -euo pipefail
-          # A pull request checks out refs/pull/N/merge: the branch already
-          # merged into its base branch. The merge base of that checkout and the
-          # base branch's head fetched now is the tree the merge was built from,
-          # so the diff holds only this pull request's module changes. The
-          # event's base.sha is where the branch was cut, and comparing with it
-          # reported every dependency the base branch changed since as this pull
-          # request's own (#6396).
+          # A pull request checks out refs/pull/N/merge, so the merge base with
+          # the base branch's head now is the tree the merge was built from. The
+          # event's base.sha is where the branch was cut, which counted the base
+          # branch's own dependency changes as this pull request's (#6396).
           base="$DISPATCH_BASE"
           if [ -n "$PR_BASE_REF" ]; then
             base="$(git merge-base HEAD "origin/$PR_BASE_REF")"

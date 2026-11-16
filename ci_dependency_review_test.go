@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/gittest"
 )
 
 // The go-dependency-review job checks out refs/pull/N/merge: the pull request
@@ -17,7 +19,14 @@ import (
 // request's own change, so a long-lived pull request failed the required static
 // lane on modules it never touched (#6396).
 func TestCIDependencyReviewComparesWithTheBaseBranchMergeBase(t *testing.T) {
-	script := dependencyReviewCompareScript(t)
+	script, env := dependencyReviewCompareStep(t)
+	// The script resolves origin/$PR_BASE_REF, so the step must fill it from the
+	// pull request's base branch. A wrong expression here (the head branch, or
+	// an empty value) would pass the rest of this test, which supplies the
+	// variable itself.
+	if got := env["PR_BASE_REF"]; got != "${{ github.event.pull_request.base.ref }}" {
+		t.Fatalf("the compare step's PR_BASE_REF = %q, want the pull request's base branch ref", got)
+	}
 	repo, branchPoint, baseNow := dependencyReviewCheckout(t)
 
 	args := runDependencyReviewCompare(t, repo, script, map[string]string{
@@ -88,6 +97,15 @@ func TestCIDependencyReviewComparesNothingOutsideAPullRequest(t *testing.T) {
 // invokes evener-go-deps.
 func dependencyReviewCompareScript(t *testing.T) string {
 	t.Helper()
+	script, _ := dependencyReviewCompareStep(t)
+	return script
+}
+
+// dependencyReviewCompareStep returns the run script and the env of the step
+// that invokes evener-go-deps, so a case can check how the workflow fills the
+// variables the script reads.
+func dependencyReviewCompareStep(t *testing.T) (string, map[string]string) {
+	t.Helper()
 	workflow := readWorkflow(t, ".github/workflows/ci.yml")
 	job, ok := workflow.Jobs["go-dependency-review"]
 	if !ok {
@@ -95,11 +113,11 @@ func dependencyReviewCompareScript(t *testing.T) string {
 	}
 	for _, step := range job.Steps {
 		if strings.Contains(step.Run, "cmd/evener-go-deps") {
-			return step.Run
+			return step.Run, step.Env
 		}
 	}
 	t.Fatal("go-dependency-review has no step that runs cmd/evener-go-deps")
-	return ""
+	return "", nil
 }
 
 // dependencyReviewCheckout builds the shape the job checks out: a base branch
@@ -108,31 +126,28 @@ func dependencyReviewCompareScript(t *testing.T) string {
 // point the event's base.sha names, and the base branch's head.
 func dependencyReviewCheckout(t *testing.T) (repo, branchPoint, baseNow string) {
 	t.Helper()
-	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
-		t.Setenv(name, "ci-dependency-review@test")
-	}
 	repo = t.TempDir()
-	gitOutput(t, repo, "init", "-q", "-b", "main")
+	gittest.Run(t, repo, "init", "-q", "-b", "main")
 	commit := func(message string) string {
 		t.Helper()
-		gitOutput(t, repo, "add", "-A")
-		gitOutput(t, repo, "commit", "-q", "-m", message)
-		return gitOutput(t, repo, "rev-parse", "HEAD")
+		gittest.Run(t, repo, "add", "-A")
+		gittest.Run(t, repo, "commit", "-q", "-m", message)
+		return gittest.Run(t, repo, "rev-parse", "HEAD")
 	}
 	writeTestFile(t, filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644)
 	branchPoint = commit("branch point")
-	gitOutput(t, repo, "checkout", "-q", "-b", "pr")
+	gittest.Run(t, repo, "checkout", "-q", "-b", "pr")
 	writeTestFile(t, filepath.Join(repo, "pr.txt"), []byte("pr\n"), 0o644)
 	commit("pull request change")
-	gitOutput(t, repo, "checkout", "-q", "main")
+	gittest.Run(t, repo, "checkout", "-q", "main")
 	writeTestFile(t, filepath.Join(repo, "main.txt"), []byte("main\n"), 0o644)
 	baseNow = commit("base branch moves")
-	gitOutput(t, repo, "checkout", "-q", "-b", "merge", "main")
-	gitOutput(t, repo, "merge", "-q", "--no-ff", "-m", "merge the pull request", "pr")
+	gittest.Run(t, repo, "checkout", "-q", "-b", "merge", "main")
+	gittest.Run(t, repo, "merge", "-q", "--no-ff", "-m", "merge the pull request", "pr")
 	// actions/checkout fetches the base branch's head now; the merge commit's
 	// own ancestry is what it was built from.
-	gitOutput(t, repo, "update-ref", "refs/remotes/origin/main", baseNow)
-	if got := gitOutput(t, repo, "merge-base", "HEAD", "origin/main"); got != baseNow {
+	gittest.Run(t, repo, "update-ref", "refs/remotes/origin/main", baseNow)
+	if got := gittest.Run(t, repo, "merge-base", "HEAD", "origin/main"); got != baseNow {
 		t.Fatalf("merge base of the merge commit and origin/main = %s, want its first parent %s", got, baseNow)
 	}
 	return repo, branchPoint, baseNow
@@ -140,7 +155,8 @@ func dependencyReviewCheckout(t *testing.T) (repo, branchPoint, baseNow string) 
 
 // runDependencyReviewCompare runs the step's script in repo with a `go` shim
 // that records its arguments, so the test reads the base the step hands
-// evener-go-deps without building it.
+// evener-go-deps without building it. The script runs with gittest's
+// environment so the host's git configuration cannot change what it resolves.
 func runDependencyReviewCompare(t *testing.T, repo, script string, env map[string]string) []string {
 	t.Helper()
 	shim := t.TempDir()
@@ -148,7 +164,7 @@ func runDependencyReviewCompare(t *testing.T, repo, script string, env map[strin
 	writeTestFile(t, filepath.Join(shim, "go"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$GO_ARGS_LOG\"\n"), 0o755)
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = repo
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gittest.Env(),
 		"PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"GO_ARGS_LOG="+log,
 	)
