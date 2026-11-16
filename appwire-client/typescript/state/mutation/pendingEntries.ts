@@ -345,6 +345,25 @@ export function reflectedMutationIds(model: ThreadModel | undefined): Set<string
   return ids;
 }
 
+// Every delivered SOURCE identity a model proves: the mutation ids it
+// reflects (a queue entry's own id while queued, a recorded item's own id
+// after normal consumption - the Go transcript projection omits lineage for
+// that path), plus the conversation-input lineage a recorded replacement
+// item carries (a promotion or drain inheriting its consumed entry's
+// input). The one delivered-evidence truth every promote-recovery settle
+// reads, so no call site computes a partial set of its own.
+export function deliveredSourceIds(model: ThreadModel | undefined): Set<string> {
+  const ids = reflectedMutationIds(model);
+  for (const turn of model?.turns ?? []) {
+    for (const item of turn.items ?? []) {
+      for (const inputId of item.conversationInputIds ?? []) {
+        if (inputId.startsWith("client:")) ids.add(inputId.slice("client:".length));
+      }
+    }
+  }
+  return ids;
+}
+
 function outboxEntry(
   record: PendingRecord,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,

@@ -732,7 +732,8 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         : undefined;
     if (
       (entryLink.length > 0 && entryLink.every((entryId) => recordedEntryOwners.has(entryId))) ||
-      (sourceMutationId !== undefined && recordedLineage.has(`client:${sourceMutationId}`))
+      (sourceMutationId !== undefined &&
+        (isDelivered(sourceMutationId) || recordedLineage.has(`client:${sourceMutationId}`)))
     )
       continue;
     let rowId = id;

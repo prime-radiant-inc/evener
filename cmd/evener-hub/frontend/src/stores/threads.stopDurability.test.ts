@@ -668,7 +668,17 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
         },
       }),
     );
-    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().refreshThread("ref_a");
+    // Establish the ordering: the tracked model must hold the delivery
+    // evidence BEFORE the press, or the test proves nothing about the
+    // refusal-after-delivery sequence.
+    await flushIndexedDBUntil(() => {
+      const model = threadsStore.getState().threads.get("ref_a");
+      const recorded = model?.turns.some((turn) =>
+        turn.items.some((item) => item.conversationInputIds?.includes("client:queue_source")),
+      );
+      return recorded === true;
+    });
     await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
     // The press: Steer-now on the (already delivered) entry. The daemon
     // rejects the promote with its journaled conflict - the exact refusal of
@@ -681,19 +691,119 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
         cause: "journaledRejection",
       });
     });
+    // The transfer is the recovery's creation moment, and the settle this
+    // test proves can retire the row inside the same dispatch cycle - a
+    // later read may legitimately never observe the transient recovery row.
+    // Record the transfer BEFORE the press so the whole dispatch-refusal
+    // cycle is captured, not polled for after the fact.
+    const transfers: string[] = [];
+    const realTransfer = storage.transferToRecovery.bind(storage);
+    storage.transferToRecovery = async (clientMutationId, ...rest) => {
+      const transferred = await realTransfer(clientMutationId, ...rest);
+      if (transferred) transfers.push(clientMutationId);
+      return transferred;
+    };
     await threadsStore
       .getState()
       .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "queued message" }, "queue_source");
-    // The transfer reached recovery; the storage-change hook must have
-    // settled it against the delivery evidence the model already holds, so
-    // no refused promote record survives.
+    // The press's durable row exists before the rejection; await its
+    // settlement so the assertion observes the transfer, not a store that
+    // has not run it yet.
+    await flushUntilArrived("the refused promote's outbox row to dispatch", async () => {
+      const outbox = await storage.listOutbox("ref_a");
+      return outbox.length === 0;
+    });
     await flushUntilArrived("the refused promote's recovery to settle", async () => {
       const recoveries = await storage.listRecovery("ref_a");
       return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
     });
+    expect(transfers.length).toBe(1);
     expect(
       (await storage.listRecovery("ref_a")).filter((record) => record.method === "turn/promoteQueuedAsSteer"),
     ).toEqual([]);
+    storage.close();
+  });
+
+  // The live-frame settle (roborev round 6, finding 2): a foreign consumer's
+  // delivery can appear FIRST as an accepted history frame. No local consumer
+  // record exists, so no storage-change callback fires - the frame's own
+  // publication must settle the refused promote against the evidence the
+  // frame's items carry.
+  test("a refused promote settles from a live accepted frame that first shows the delivery", async () => {
+    const { storage, fake } = await hydratedFallbackTarget({
+      indexedDB: new IDBFactory(),
+      databaseName: "evener-mutation-outbox-promote-live-frame-settle",
+    });
+    // The stale model: no delivery evidence, with history state the frame can
+    // fold into. The runtime's read handler answers every later refresh with
+    // the same stale shape, so a read cannot be what settles the row.
+    const staleRead = () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 8, depth: 0, ids: [] },
+        },
+      });
+    fake.on("thread/read", () => staleRead());
+    await threadsStore.getState().refreshThread("ref_a");
+    await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
+    fake.on("turn/promoteQueuedAsSteer", (params) => {
+      throw new WireError("promote: queue index 0 out of range (depth 0)", -32011, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+        cause: "journaledRejection",
+      });
+    });
+    const transfers: string[] = [];
+    const realTransfer = storage.transferToRecovery.bind(storage);
+    storage.transferToRecovery = async (clientMutationId, ...rest) => {
+      const transferred = await realTransfer(clientMutationId, ...rest);
+      if (transferred) transfers.push(clientMutationId);
+      return transferred;
+    };
+    await threadsStore
+      .getState()
+      .promoteQueuedAsSteer("ref_a", 0, "entry_1", { text: "queued message" }, "queue_source");
+    await flushUntilArrived("the refused promote's outbox row to dispatch", async () => {
+      const outbox = await storage.listOutbox("ref_a");
+      return outbox.length === 0;
+    });
+    // The recovery exists and nothing local can settle it: the stale model
+    // holds no delivery evidence, and the stale read answers any refresh.
+    await flushUntilArrived("the refused promote's recovery to exist", async () => {
+      const recoveries = await storage.listRecovery("ref_a");
+      return recoveries.some((record) => record.method === "turn/promoteQueuedAsSteer");
+    });
+    // The accepted frame: another client's drain delivered the entry. Normal
+    // consumption records the source's own id as the item's id, no lineage.
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            id: "item_delivered",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "queued message",
+            status: "completed",
+            clientMutationId: "queue_source",
+          },
+        ],
+      },
+    } as Parameters<typeof fake.emitNotification>[0]);
+    await flushUntilArrived("the refused promote's recovery to settle from the frame", async () => {
+      const recoveries = await storage.listRecovery("ref_a");
+      return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+    });
+    expect(transfers.length).toBe(1);
     storage.close();
   });
 

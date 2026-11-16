@@ -536,6 +536,52 @@ test("an edited refused promote renders its own composition after its entry's so
   expect(rows[0]).toMatchObject({ id: "promote:edited:promote:2", state: "refused" });
 });
 
+// Normal queue consumption records the source mutation id as the delivered
+// userMessage's own clientMutationId, with no conversationInputIds (the
+// daemon's Go projection omits lineage for that path). The suppression and
+// the retirement evidence must both read THAT shape: the recorded item's own
+// identity is the proof the entry delivered (roborev round 5, finding 1).
+test("a refused promote suppresses through a recorded item's own mutation id, no lineage needed", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued text",
+            // Normal consumption: the source's own id is the item's id. No
+            // conversationInputIds.
+            clientMutationId: "m_source",
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+      }),
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
 test("a carried row stays while its recorded owner is still only pending", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },
