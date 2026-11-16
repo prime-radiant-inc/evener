@@ -197,13 +197,16 @@ func (x *Index) recordTurnSlot(id string, slot uint64) error {
 		return nil
 	}
 	start := turnSlotHash(id) % t.capacity
+	// One bucket index per step, exactly as scan walks: a window read covers
+	// turnSlotsProbeRead buckets from the current index, and the next window
+	// starts where this one ended.
 	for inspected := uint64(0); inspected < t.capacity; {
-		buckets, err := t.readBuckets((start+inspected)%t.capacity, turnSlotsProbeRead)
+		buckets, err := t.readBuckets((start+inspected)%t.capacity, min(turnSlotsProbeRead, t.capacity-inspected))
 		if err != nil {
 			return err
 		}
-		for offset, value := range buckets {
-			index := (start + inspected + uint64(offset)) % t.capacity
+		for _, value := range buckets {
+			index := (start + inspected) % t.capacity
 			if value == turnSlotsEmpty {
 				return t.writeBucket(index, uint32(slot))
 			}
@@ -294,6 +297,8 @@ func (x *Index) writeTurnSlots(capacity uint64) error {
 	if x.turnSlots != nil {
 		_ = x.turnSlots.file.Close()
 	}
+	// A cached cut view borrows the table being replaced; it must not outlive it.
+	x.cutView, x.cutLength = nil, 0
 	x.turnSlots = &turnSlotTable{file: f, name: name, capacity: capacity}
 	x.meta.TurnSlotsFile, x.meta.TurnSlotsCapacity = name, capacity
 	x.turnSlotsNamed = 0
@@ -355,4 +360,7 @@ func (x *Index) closeTurnSlots() {
 	}
 	x.turnSlots = nil
 	x.turnSlotsNamed = 0
+	// A cached cut view borrows the table, and readAtLocked reuses it whenever
+	// the length and incarnation still match, so it must not outlive the file.
+	x.cutView, x.cutLength = nil, 0
 }

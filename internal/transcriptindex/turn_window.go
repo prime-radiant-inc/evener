@@ -85,14 +85,10 @@ func (x *Index) resolveTurnWindow(r *reader, selector appwire.ThreadTurnWindow) 
 		Incarnation: x.meta.Incarnation,
 		Length:      x.meta.Length,
 	}
-	selectedSlots := make(map[uint32]bool, len(selected))
 	selectedIDs := make(map[string]bool, len(selected))
 	for i, turn := range selected {
 		result.TurnIDs[i] = turn.id
 		selectedIDs[turn.id] = true
-		if turn.indexed {
-			selectedSlots[turn.slot] = true
-		}
 	}
 
 	if x.prelude != nil && selectedIDs[x.prelude.ID] {
@@ -190,10 +186,14 @@ func (x *Index) preludeBoundary() (*turnBoundary, error) {
 		return nil, nil
 	}
 	if x.turns.n > 0 {
-		_, found, err := x.turnSlotOf(x.prelude.ID)
-		if err != nil {
-			return nil, err
+		if x.preludeAnswered != x.turns.n {
+			_, found, err := x.turnSlotOf(x.prelude.ID)
+			if err != nil {
+				return nil, err
+			}
+			x.preludeIndexed, x.preludeAnswered = found, x.turns.n
 		}
+		found := x.preludeIndexed
 		if found {
 			return nil, nil
 		}

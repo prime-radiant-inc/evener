@@ -112,6 +112,11 @@ var (
 // the log cut and publish never run. Test seam only; nil in production.
 var testKillAfterRecordWrites func() error
 
+// testKillAfterTurnFlush dies in writeMeta's durability gap: the turn records
+// are flushed, and the totals file that summarizes them is not yet written.
+// Test seam only.
+var testKillAfterTurnFlush func() error
+
 // testKillAfterItemUpdateLog, when set, runs in addContributor right after
 // its update-log row is written and before the item record's own in-place
 // overwrite: it stands for the process being killed at exactly that point,
@@ -296,9 +301,15 @@ type Index struct {
 	turnSlots *turnSlotTable
 	// turnSlotsNamed is how many turn records the table names.
 	turnSlotsNamed uint64
-	meta           meta
-	prelude        *appwire.Turn
-	builder        builder
+	// preludeAnswered and preludeIndexed cache whether a turn summary already
+	// represents the header prelude, which every turn-addressed read asks
+	// several times. The answer is cached against the turn count it was taken
+	// at, so an extension recomputes it.
+	preludeAnswered uint64
+	preludeIndexed  bool
+	meta            meta
+	prelude         *appwire.Turn
+	builder         builder
 	// updatesName is the update log file updates has open.
 	updatesName string
 	// builderStale reports records another handle extended, which the
@@ -982,7 +993,9 @@ func (x *Index) leftoverUpdatesToCommittedSlots() ([]int64, bool, error) {
 		}
 		if row.Slot < committed {
 			offsets = append(offsets, row.Offset)
-			turnAdvanced = turnAdvanced || row.Kind == updatedTurn
+			if row.Kind == updatedTurn {
+				turnAdvanced = true
+			}
 		}
 	}
 	return offsets, turnAdvanced, nil
