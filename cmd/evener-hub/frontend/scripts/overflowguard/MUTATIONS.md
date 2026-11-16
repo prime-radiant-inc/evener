@@ -237,3 +237,30 @@ that is the safe direction and that nothing in `src/` triggers today. Opacity
 is deliberately excluded — it is not inherited, so an element-local check
 would be ancestor-blind in exactly the way bsq9 is about, and opacity 0 is a
 legitimate resting state here (kata hk8v).
+
+## Outside press holds the composer until its click lands (`verifyComposerOutsidePressClick()`)
+
+The composer card is in flow. Its outside-press listener used to clear
+`data-composer-editing` at `pointerdown`, which shrank the card from its
+expanded height to one row before mouseup. A transcript button or disclosure
+under the pointer then moved away and the browser delivered the click to an
+ancestor: the user clicked the control and nothing happened. The guard drives
+trusted `Input.dispatchMouseEvent` at a real disclosure below the card, holds
+the press long enough for a fold to land, and asserts editing survived the
+hold, the disclosure toggled on release, and the card folded only after the
+click. A second case drags inside transcript text and asserts the card did not
+fold mid-gesture.
+
+**Mutation performed:** reverted the deferral in
+`src/panes/session/composer/Composer.tsx` — the `pointerdown` listener cleared
+`data-composer-editing` immediately again, and the click/pointerup handling
+that defers it was removed.
+
+**Result before restore:** FAIL at both widths, `composer outside-press click
+390px ... FAIL - editing must survive the outside press until its click lands`
+and the same at 1400px.
+
+**Result after restore:** PASS at both widths,
+`{"disclosure":"Context summary · 104 chars","heldEditing":true,"toggled":true,"foldedAfterClick":"true","dragHeldCard":true}`.
+
+**Verified:** 2026-11-16. **Expect:** fail.

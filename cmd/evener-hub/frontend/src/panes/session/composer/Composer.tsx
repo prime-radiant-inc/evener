@@ -229,6 +229,12 @@ function ComposerWithSubmission({
   // Identifies the press that owns the hold, so a stale release's deferred
   // clear cannot clear a later press's hold.
   const composerPressSeqRef = useRef(0);
+  // Whether the press in flight began outside the composer and is waiting for
+  // its click. The card is in flow, so ending editing at the press would shrink
+  // it before mouseup and move the pressed control out from under the pointer,
+  // swallowing that control's click. The fold waits for the click instead; a
+  // press that never clicks never ends editing.
+  const outsidePressRef = useRef(false);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
@@ -322,6 +328,9 @@ function ComposerWithSubmission({
       const root = composerRootRef.current;
       if (!anchor || !root) return;
       if (composerPointerRef.current) return;
+      // An outside press holds editing until its click lands; see
+      // outsidePressRef.
+      if (outsidePressRef.current) return;
       const active = anchor.ownerDocument.activeElement;
       if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]')))
         return;
@@ -336,10 +345,17 @@ function ComposerWithSubmission({
   const reconcileEditorEngagement = (): void => {
     const root = composerRootRef.current;
     if (!root) return;
+    // The same hold as endComposerEditingSoon: a fold mid-press reflows the
+    // card and loses the pressed control's click.
+    if (outsidePressRef.current) return;
     const active = root.ownerDocument.activeElement;
     if (active && (root.contains(active) || active.closest('[role="menu"], [role="listbox"], [role="dialog"]'))) return;
     setEditorEngaged(false);
   };
+  // The outside-press effect subscribes once, so it reads the current
+  // reconcile through a ref rather than re-subscribing every render.
+  const reconcileEditorEngagementRef = useRef(reconcileEditorEngagement);
+  reconcileEditorEngagementRef.current = reconcileEditorEngagement;
   const holdComposerPress = (event: ReactPointerEvent<HTMLDivElement>): void => {
     // Only the primary press can hold editing: a right or middle press fires
     // pointerdown but no click, so a hold armed here could never be released.
@@ -379,12 +395,20 @@ function ComposerWithSubmission({
     if (!doc) return undefined;
     // A press outside the composer (its portaled menus included) ends editing
     // when focus has already left the editor: touch may leave focus on body,
-    // so no blur follows. A press while the editor still holds focus is a
-    // transcript pan, not an editing exit; the blur path handles a real loss.
+    // so no blur follows.
+    //
+    // The exit runs on the completed click, not the press: the card is in flow,
+    // so clearing at the press shrinks it before mouseup and the control under
+    // the pointer moves away before it can receive its click. widgets/internal/
+    // useDismissOnOutsidePress.ts states the same rule for in-flow collapses.
+    // A click only fires when press and release share a target, so a drag or a
+    // cancelled press leaves the composer alone (Jesse's ruling: fold only
+    // ever on a click).
     const onPointerDown = (event: PointerEvent) => {
       const anchor = formAnchorRef.current;
       const root = composerRootRef.current;
       if (!anchor || !root || !anchor.hasAttribute("data-composer-editing")) return;
+      if (event.button !== 0) return;
       const target = event.target as Element | null;
       if (
         target &&
@@ -392,15 +416,71 @@ function ComposerWithSubmission({
         (root.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
       )
         return;
+      // The hold arms even while the editor still holds focus: the browser moves
+      // focus as the press's default action, after this listener runs, so that
+      // focus is the one the press is about to leave. Whether it left is decided
+      // at the click, where it has settled.
+      cancelRelease();
+      outsidePressRef.current = true;
+    };
+    const onClick = (event: MouseEvent) => {
+      if (!outsidePressRef.current) return;
+      // The click is dispatched with its pointerup, so it wins this race; the
+      // cancel keeps a release already scheduled from outliving the fold.
+      cancelRelease();
+      outsidePressRef.current = false;
+      const anchor = formAnchorRef.current;
+      const root = composerRootRef.current;
+      if (!anchor || !root) return;
+      const target = event.target as Element | null;
+      // A click that somehow lands back inside the composer is not an exit,
+      // and one that arrives after editing already ended has nothing to do.
+      if (
+        target &&
+        typeof target.closest === "function" &&
+        (root.contains(target) || target.closest('[role="menu"], [role="listbox"], [role="dialog"]'))
+      )
+        return;
+      if (!anchor.hasAttribute("data-composer-editing")) return;
+      // Focus that still sits in the editor is a transcript pan, not an editing
+      // exit; only a real focus loss ends it.
       const active = doc.activeElement;
-      // Only the editor itself holds editing through an outside press. Focus on
-      // a composer button (a menu trigger FocusScope restored, Attach after the
-      // file picker) is leaving the composer too, keyboard down or not.
       if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
       anchor.removeAttribute("data-composer-editing");
+      // Focus has settled by now, so the resting row can follow it.
+      reconcileEditorEngagementRef.current();
+    };
+    const onPointerCancel = () => {
+      outsidePressRef.current = false;
+    };
+    // A press that ends without a click (a text-selection drag, a scroll drag)
+    // leaves the hold armed. The click of a real press is dispatched
+    // synchronously after pointerup, so this release runs only when none came.
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+    function cancelRelease(): void {
+      if (releaseTimer === null) return;
+      clearTimeout(releaseTimer);
+      releaseTimer = null;
+    }
+    const onPointerUp = () => {
+      if (!outsidePressRef.current) return;
+      releaseTimer = setTimeout(() => {
+        releaseTimer = null;
+        outsidePressRef.current = false;
+      }, 0);
     };
     doc.addEventListener("pointerdown", onPointerDown, true);
-    return () => doc.removeEventListener("pointerdown", onPointerDown, true);
+    doc.addEventListener("click", onClick);
+    doc.addEventListener("pointerup", onPointerUp, true);
+    doc.addEventListener("pointercancel", onPointerCancel, true);
+    return () => {
+      doc.removeEventListener("pointerdown", onPointerDown, true);
+      doc.removeEventListener("click", onClick);
+      doc.removeEventListener("pointerup", onPointerUp, true);
+      doc.removeEventListener("pointercancel", onPointerCancel, true);
+      cancelRelease();
+      outsidePressRef.current = false;
+    };
   }, []);
 
   // The session menu's turn-verb items press the same handlers the row

@@ -446,3 +446,165 @@ export async function verifyComposerGesture(endpoint, url, width, gesture, { dri
     }
   }
 }
+
+/**
+ * An outside press must not fold the composer before its click lands.
+ *
+ * The card is in flow, so a fold at pointerdown shrinks it before mouseup and
+ * the control under the pointer moves away before it receives its click: the
+ * user clicks a transcript button or disclosure and nothing happens. A trusted
+ * press-release over a real disclosure is the only oracle that can see this -
+ * the loss depends on browser hit-testing at release, which no synthetic event
+ * reproduces. The drag case pins the other half of the rule: a press that ends
+ * without a click leaves the card alone.
+ */
+export async function verifyComposerOutsidePressClick(endpoint, url, width) {
+  let browser, context, page;
+  try {
+    browser = await connectBrowser(endpoint);
+    context = (await browser.send("Target.createBrowserContext")).result.browserContextId;
+    const target = (await browser.send("Target.createTarget", { url: "about:blank", browserContextId: context })).result
+      .targetId;
+    page = await connectPage(endpoint, target);
+    const { send } = page;
+    await applyViewport(send, { width, height: 900, mobile: width < 900, touch: width < 900 });
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+
+    // Open the editor and settle on the expanded card. A trusted tap on the
+    // editor would itself move the footer, so focus it programmatically.
+    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
+    await waitForComposerSettled(send);
+
+    // Aim at a transcript disclosure that sits below the card, so the fold's
+    // height change is what moves it.
+    const aim = await evaluate(
+      send,
+      `(() => {
+      const summaries = [...document.querySelectorAll('[data-testid="turn-block"] details > summary')];
+      for (const node of summaries) {
+        const r = node.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        if (r.height <= 0 || r.width <= 0) continue;
+        if (!node.contains(document.elementFromPoint(x, y))) continue;
+        const details = node.closest('details');
+        return { x, y, open: details.open, top: r.top, label: (node.textContent || '').trim().slice(0, 40) };
+      }
+      return null;
+    })()`,
+    );
+    assert.ok(aim, "no reachable transcript disclosure in the harness");
+
+    // Press, hold long enough that a mid-press fold would have landed, then
+    // release. Editing must survive the hold: the fold waits for the click.
+    await send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: aim.x,
+      y: aim.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await delay(400);
+    const held = await evaluate(
+      send,
+      `({
+      editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
+      folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
+      hit: !!document.elementFromPoint(${aim.x}, ${aim.y})?.closest('summary'),
+    })`,
+    );
+    assert.ok(held.editing, "editing must survive the outside press until its click lands");
+    assert.equal(held.folded, null, "the card must not fold mid-press");
+    assert.ok(held.hit, "the pressed disclosure must still sit under the pointer before release");
+
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: aim.x,
+      y: aim.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    await until(
+      send,
+      `[...document.querySelectorAll('[data-testid="turn-block"] details')].some(d => d.open !== ${aim.open})`,
+    );
+    const settled = await evaluate(
+      send,
+      `({
+      toggled: [...document.querySelectorAll('[data-testid="turn-block"] details')].some(d => d.open !== ${aim.open}),
+      folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
+      editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
+    })`,
+    );
+    assert.ok(settled.toggled, "the transcript disclosure must receive its click");
+    assert.equal(settled.folded, "true", "the card folds after the click lands on an empty composer");
+    assert.equal(settled.editing, false, "the click ends editing");
+
+    // A press-drag produces no click and must leave the card as it was.
+    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
+    await waitForComposerSettled(send);
+    const dragStart = await evaluate(
+      send,
+      `(() => {
+      const node = document.querySelector('[data-testid="turn-block"] p');
+      const r = node.getBoundingClientRect();
+      return { x: r.left + 4, y: r.top + Math.min(8, r.height / 2) };
+    })()`,
+    );
+    await send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: dragStart.x,
+      y: dragStart.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: dragStart.x + 120,
+      y: dragStart.y + 40,
+      button: "left",
+      buttons: 1,
+    });
+    await delay(200);
+    const midDrag = await evaluate(
+      send,
+      `({
+      folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
+      editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
+    })`,
+    );
+    assert.equal(midDrag.folded, null, "a text-selection drag must not fold the card mid-gesture");
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: dragStart.x + 120,
+      y: dragStart.y + 40,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    return {
+      disclosure: aim.label,
+      heldEditing: held.editing,
+      toggled: settled.toggled,
+      foldedAfterClick: settled.folded,
+      dragHeldCard: midDrag.folded === null,
+    };
+  } finally {
+    try {
+      page?.close();
+    } finally {
+      try {
+        if (context) await browser.send("Target.disposeBrowserContext", { browserContextId: context });
+      } finally {
+        browser?.close();
+      }
+    }
+  }
+}
