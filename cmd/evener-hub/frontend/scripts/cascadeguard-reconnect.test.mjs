@@ -16,6 +16,7 @@ import {
   reconnectReadyDecision,
   reconnectSequences,
   rowUsable,
+  socketInvalidations,
 } from "./cascadeguard/attention.mjs";
 
 // The handshake the loaded tier belongs to. A reconnect reports a handshake of
@@ -233,5 +234,68 @@ test("with no later invalidation every tier read is the ready dispatch's", () =>
         deliveredTierReads: reads,
       }),
     rejectedWith(["offset 0 (request-1)"], [], "deepStrictEqual"),
+  );
+});
+
+// The reviewer's timing: the page takes a live-only invalidation while the old
+// socket is still closing, so it has consumed 8 by the time the reconnect
+// advertises 8. The store retains - equal sequences - and so must the decision.
+// Reading the page's side from the closed connection's own frames is what makes
+// that number 8; a reader that snapshotted 7 before starting the close reports
+// a reload for a healthy reconnect.
+test("an invalidation the page took while the close was in flight is consumed", () => {
+  // Frames as the connection saw them: its handshake, then a live-only
+  // invalidation that lands while the reader is still asking the page what it
+  // consumed. `beforeAt` is the moment the reader noticed the cut, before that
+  // invalidation arrived.
+  const socketFrames = [
+    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "initialize", id: 1, result: { navigation: { generationId: "generation-a", sequence: 7 } } },
+    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "evener/navigation/invalidated", params: { generationId: "generation-a", sequence: 8 } },
+  ];
+  const snapshottedEarly = socketInvalidations({
+    frames: socketFrames,
+    socketId: "socket-old",
+    afterAt: 0,
+    generationId: "generation-a",
+  });
+  const consumedAfterTheClose = reconnectSequences({ handshakeSequence: 7, invalidations: snapshottedEarly });
+  assert.equal(consumedAfterTheClose.consumed, 8);
+  // With the page's side read from its own connection, the reconnect that
+  // advertises 8 is the equal-sequence reconnect the store retains, and it is
+  // taken as retained rather than as a reload.
+  assert.equal(
+    reconnectReadyDecision({
+      consumed: { ...consumed, sequence: consumedAfterTheClose.consumed },
+      reconnected: reconnectedAt({ sequence: 8 }),
+      deliveredTierReads: [],
+    }),
+    "retained",
+  );
+  // The stale snapshot is what the fix removes: it stays at 7, so a decision
+  // fed that number would have called the same reconnect a reload.
+  assert.equal(reconnectSequences({ handshakeSequence: 7, invalidations: [] }).consumed, 7);
+});
+
+// Attribution is by connection, so another socket's invalidations never advance
+// this page's consumed sequence - and a reconnect that really did move past it
+// is still a reload.
+test("another connection's invalidation is not this page's consumed sequence", () => {
+  const socketFrames = [
+    { direction: "Network.webSocketFrameReceived", requestId: "socket-old", method: "initialize", id: 1, result: { navigation: { generationId: "generation-a", sequence: 7 } } },
+    { direction: "Network.webSocketFrameReceived", requestId: "socket-new", method: "evener/navigation/invalidated", params: { generationId: "generation-a", sequence: 9 } },
+  ];
+  assert.deepEqual(
+    socketInvalidations({ frames: socketFrames, socketId: "socket-old", afterAt: 0, generationId: "generation-a" }),
+    [],
+  );
+  // A reconnect advertising a sequence genuinely past the consumed one is a
+  // reload, so the connection scoping does not blunt the reload branch.
+  assert.equal(
+    reconnectReadyDecision({
+      consumed: { ...consumed, sequence: 7 },
+      reconnected: reconnectedAt({ sequence: 9 }),
+      deliveredTierReads: [],
+    }),
+    "reloaded",
   );
 });

@@ -266,6 +266,30 @@ export function readyDispatchTierReads({ reads, firstInvalidationAt }) {
   return reads.filter((read) => read.at < firstInvalidationAt);
 }
 
+// Every invalidation one socket received after the handshake that carried it,
+// attributed by connection rather than by the moment a reader noticed the cut.
+//
+// Closing the old socket is not instant, and the page keeps consuming
+// invalidations until it lands. A reader that snapshotted the consumed sequence
+// when it started closing can therefore miss one the page did consume, and
+// comparing a reconnect's advertisement against that stale number calls a
+// healthy equal-sequence reconnect a reload. Frames carry the connection CDP
+// observed them on, so scoping by it is exact however late the reader looks -
+// which is why a closed socket's frames can be read after the reconnect, when
+// they are final.
+export function socketInvalidations({ frames, socketId, afterAt, generationId }) {
+  return frames
+    .slice(afterAt + 1)
+    .filter(
+      (frame) =>
+        frame.direction === "Network.webSocketFrameReceived" &&
+        frame.method === "evener/navigation/invalidated" &&
+        frame.requestId === socketId &&
+        frame.params?.generationId === generationId,
+    )
+    .map((frame) => frame.params.sequence);
+}
+
 export function reconnectReadyDecision({ consumed, reconnected, deliveredTierReads, retryableOffsets = [] }) {
   const where = `consumed ${consumed?.sequence} generation ${consumed?.generationId}, ` +
     `reconnected ${reconnected?.sequence} generation ${reconnected?.generationId}`;
@@ -1126,11 +1150,12 @@ export async function attentionJourney(ctx) {
   // reconnectReadyDecision name which branch the observed handshakes require.
 
   // The navigation handshake recorded before `to`: the last initialize response
-  // there, with the raw sequence it advertised and every invalidation of that
-  // generation recorded after it. Which of those numbers decides the branch is
-  // reconnectSequences' rule, not this reader's. Invalidations are matched by
-  // generation rather than socket, which is exact here because each read is
-  // scoped to one side of the cut.
+  // there, with the raw sequence it advertised, the connection that carried it,
+  // and every invalidation of that generation recorded after it. Which of those
+  // numbers decides the branch is reconnectSequences' rule, not this reader's.
+  // The reader also returns the socket so its side's invalidations can be
+  // recounted from the frames once they are final, rather than frozen at
+  // whatever moment the caller happened to look.
   const handshakeBefore = (to) => {
     const initializeIds = new Set(
       frames
@@ -1161,6 +1186,7 @@ export async function attentionJourney(ctx) {
     return {
       handshakeId: response.id,
       frame: response,
+      socketId: response.requestId,
       generationId: capability.generationId,
       handshakeSequence: capability.sequence,
       invalidations,
@@ -1168,10 +1194,10 @@ export async function attentionJourney(ctx) {
   };
   const beforeReconnect = frames.length;
   const retainedTierRows = allRows;
-  // Each side contributes the value the store's comparison uses: the page's own
-  // accumulated sequence at the cut, and the raw sequence the reconnect
-  // advertises. Invalidations that arrive during subscription recovery advance
-  // the page afterwards but are not part of that comparison.
+  // The connection the tier was loaded under, identified now so its frames can
+  // be attributed later. Its sequence is not read yet: the page keeps consuming
+  // invalidations until the close lands, and the ones it took are only final
+  // once the socket is gone.
   const consumedAtCut = handshakeBefore(beforeReconnect);
   assert.ok(consumedAtCut, "the tier was loaded under a navigation handshake this driver saw");
   // Only conversation owners still mounted have a subscription to recover;
@@ -1189,12 +1215,37 @@ export async function attentionJourney(ctx) {
   await wait(`${driver.paneScopeExpr(rootRef)} !== null`, "the source pane survives a real socket reconnect");
   const reconnectHandshake = handshakeBefore(frames.length);
   assert.ok(reconnectHandshake, "the reconnect reported a navigation handshake this driver saw");
-  // The page had consumed everything before the cut, so its side took every
-  // invalidation there; the reconnect's side is only what it advertised, with
-  // invalidations arriving during subscription recovery excluded.
-  const consumed = { ...consumedAtCut, sequence: reconnectSequences(consumedAtCut).consumed };
+  // Each side contributes the value the store's comparison uses: the sequence
+  // the page had consumed on the connection that closed, and the raw sequence
+  // the reconnect advertises. The page's side is recounted from the closed
+  // connection's own frames, so an invalidation it took while the close was in
+  // flight is included; the reconnect's side excludes invalidations arriving
+  // during subscription recovery, which are later than that comparison.
+  assert.notEqual(reconnectHandshake.socketId, consumedAtCut.socketId,
+    "the reconnect's handshake arrived on a connection of its own");
+  const consumed = {
+    ...consumedAtCut,
+    sequence: reconnectSequences({
+      handshakeSequence: consumedAtCut.handshakeSequence,
+      invalidations: socketInvalidations({
+        frames,
+        socketId: consumedAtCut.socketId,
+        afterAt: frames.indexOf(consumedAtCut.frame),
+        generationId: consumedAtCut.generationId,
+      }),
+    }).consumed,
+  };
   const reconnected = { ...reconnectHandshake, sequence: reconnectSequences(reconnectHandshake).advertised };
-  const navigationReads = sent(beforeReconnect).filter((frame) => frame.method === "evener/navigation/read");
+  // Reads are attributed to the connection that carried them, so a read the
+  // closing socket still had in flight is not counted as the reconnect's and a
+  // read the reconnect sent is counted however late this reader looks. The
+  // no-reload property governs the ready dispatch, which runs on the new socket.
+  const navigationReads = frames.filter(
+    (frame) =>
+      frame.direction === "Network.webSocketFrameSent" &&
+      frame.method === "evener/navigation/read" &&
+      frame.requestId === reconnectHandshake.socketId,
+  );
   const tierReads = navigationReads.filter(
     (frame) => frame.params?.resource === "section" && frame.params?.section === "needs_you",
   );
@@ -1208,6 +1259,7 @@ export async function attentionJourney(ctx) {
       at > frames.indexOf(reconnectHandshake.frame) &&
       frame.direction === "Network.webSocketFrameReceived" &&
       frame.method === "evener/navigation/invalidated" &&
+      frame.requestId === reconnectHandshake.socketId &&
       frame.params?.generationId === reconnectHandshake.generationId,
   );
   const tierReadPositions = tierReads.map((read) => ({ read, at: frames.indexOf(read) }));
@@ -1215,22 +1267,22 @@ export async function attentionJourney(ctx) {
     reads: tierReadPositions,
     firstInvalidationAt: firstInvalidationAfterHandshake === -1 ? null : firstInvalidationAfterHandshake,
   }).map((entry) => entry.read);
-  // A tier read the page sent and never had answered was lost with the socket
-  // that carried it, and the entry it was refreshing stays stale - the one
-  // condition under which the retained branch re-forces it. Offsets are the
-  // coarsest honest key here, so a read recorded at an offset blesses a retry
-  // of that offset and nothing more; the row identity asserted below is the
-  // backstop, because a tier that lost its rows cannot render them.
+  // A tier read the page sent on the connection that closed and never had
+  // answered was lost with that socket, and the entry it was refreshing stays
+  // stale - the one condition under which the retained branch re-forces it.
+  // Offsets are the coarsest honest key here, so a read recorded at an offset
+  // blesses a retry of that offset and nothing more; the row identity asserted
+  // below is the backstop, because a tier that lost its rows cannot render them.
   const lostTierOffsets = [
     ...new Set(
       frames
-        .slice(0, beforeReconnect)
         .filter(
           (frame) =>
             frame.direction === "Network.webSocketFrameSent" &&
             frame.method === "evener/navigation/read" &&
             frame.params?.resource === "section" &&
             frame.params?.section === "needs_you" &&
+            frame.requestId === consumedAtCut.socketId &&
             !answered(frame),
         )
         .map((frame) => frame.params?.offset ?? 0),
