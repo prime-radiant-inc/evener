@@ -214,6 +214,42 @@ function inside(boxValue, viewport, label, slack = 0.5) {
 // offset-zero read the hub answers. This returns which branch must hold, so a
 // caller asserts the branch the handshakes actually name instead of assuming
 // the retained one.
+// The sequence a reconnect's ready dispatch compares, and the sequence the page
+// had consumed at the cut.
+//
+// The store compares the value the reconnect advertises with the last sequence
+// the page consumed (state/navigation/store.ts:899), and the advertised value is
+// the raw `initialize` sequence: invalidations that arrive while subscriptions
+// recover are later than that comparison, so folding them in would report a
+// reload the store never performs.
+//
+// The page's own side is different. Before the cut, every invalidation the page
+// received advanced the sequence it had consumed, so that side is the highest
+// sequence seen - the handshake's own or any invalidation after it. A value
+// behind the consumed one is a protocol error and is never a retained
+// reconnect.
+export function reconnectSequences({ handshakeSequence, invalidations = [] }) {
+  return {
+    // What the page had consumed: the handshake and every invalidation after it
+    // on the same side of the cut.
+    consumed: invalidations.reduce((max, sequence) => Math.max(max, sequence), handshakeSequence),
+    // What a reconnect advertises, and therefore what the store compares: the
+    // raw handshake sequence alone.
+    advertised: handshakeSequence,
+  };
+}
+
+// Whether a rendered needs-you row is a choice a reader can actually take.
+//
+// A row whose refresh failed keeps its place in the list but is no longer
+// selectable, which the component marks aria-disabled (NextNeedsYou.tsx:486).
+// Such a row is still painted, still inside the panel and still the element
+// under its own centre, so a hit test alone would call a tier usable while every
+// choice in it refuses activation.
+export function rowUsable({ exists, ariaDisabled, hit }) {
+  return exists && ariaDisabled !== "true" && hit;
+}
+
 export function reconnectReadyDecision({ consumed, reconnected, deliveredTierReads, retryableOffsets = [] }) {
   const where = `consumed ${consumed?.sequence} generation ${consumed?.generationId}, ` +
     `reconnected ${reconnected?.sequence} generation ${reconnected?.generationId}`;
@@ -1073,13 +1109,12 @@ export async function attentionJourney(ctx) {
   // no-reload property of the retained branch, and lets
   // reconnectReadyDecision name which branch the observed handshakes require.
 
-  // The navigation sequence this driver saw delivered: the last initialize
-  // handshake received before the cut, advanced by every invalidation of that
-  // generation recorded before it. Invalidations are matched by generation, not
-  // by socket, which is exact here because each read is scoped to one side of
-  // the close. A notification the hub published while the socket was closing is
-  // absent, which is what decides whether the ready dispatch retains its loaded
-  // pages or reloads them.
+  // The navigation handshake recorded before `to`: the last initialize response
+  // there, with the raw sequence it advertised and every invalidation of that
+  // generation recorded after it. Which of those numbers decides the branch is
+  // reconnectSequences' rule, not this reader's. Invalidations are matched by
+  // generation rather than socket, which is exact here because each read is
+  // scoped to one side of the cut.
   const handshakeBefore = (to) => {
     const initializeIds = new Set(
       frames
@@ -1098,21 +1133,30 @@ export async function attentionJourney(ctx) {
       .at(-1);
     if (!response) return null;
     const capability = response.result.navigation;
-    const delivered = frames
-      .slice(0, to)
+    const invalidations = frames
+      .slice(frames.indexOf(response) + 1, to)
       .filter(
         (frame) =>
           frame.direction === "Network.webSocketFrameReceived" &&
           frame.method === "evener/navigation/invalidated" &&
           frame.params?.generationId === capability.generationId,
       )
-      .reduce((max, frame) => Math.max(max, frame.params.sequence), capability.sequence);
-    return { handshakeId: response.id, generationId: capability.generationId, sequence: delivered };
+      .map((frame) => frame.params.sequence);
+    return {
+      handshakeId: response.id,
+      generationId: capability.generationId,
+      handshakeSequence: capability.sequence,
+      invalidations,
+    };
   };
   const beforeReconnect = frames.length;
   const retainedTierRows = allRows;
-  const consumed = handshakeBefore(beforeReconnect);
-  assert.ok(consumed, "the tier was loaded under a navigation handshake this driver saw");
+  // Each side contributes the value the store's comparison uses: the page's own
+  // accumulated sequence at the cut, and the raw sequence the reconnect
+  // advertises. Invalidations that arrive during subscription recovery advance
+  // the page afterwards but are not part of that comparison.
+  const consumedAtCut = handshakeBefore(beforeReconnect);
+  assert.ok(consumedAtCut, "the tier was loaded under a navigation handshake this driver saw");
   // Only conversation owners still mounted have a subscription to recover;
   // the cascade readers the hops and the explicit Close disposed must not be
   // required to re-subscribe.
@@ -1126,7 +1170,13 @@ export async function attentionJourney(ctx) {
   // no clock to race.
   await reconnect({ expectRefs: mountedOwners });
   await wait(`${driver.paneScopeExpr(rootRef)} !== null`, "the source pane survives a real socket reconnect");
-  const reconnected = handshakeBefore(frames.length);
+  const reconnectHandshake = handshakeBefore(frames.length);
+  assert.ok(reconnectHandshake, "the reconnect reported a navigation handshake this driver saw");
+  // The page had consumed everything before the cut, so its side took every
+  // invalidation there; the reconnect's side is only what it advertised, with
+  // invalidations arriving during subscription recovery excluded.
+  const consumed = { ...consumedAtCut, sequence: reconnectSequences(consumedAtCut).consumed };
+  const reconnected = { ...reconnectHandshake, sequence: reconnectSequences(reconnectHandshake).advertised };
   const navigationReads = sent(beforeReconnect).filter((frame) => frame.method === "evener/navigation/read");
   const tierReads = navigationReads.filter(
     (frame) => frame.params?.resource === "section" && frame.params?.section === "needs_you",
@@ -1220,13 +1270,21 @@ export async function attentionJourney(ctx) {
   // control's next target, and a retained row is still a real clickable row.
   await wait(`document.querySelector(${q(`${NEXT}`)}) !== null`, "the control resolves the retained tier's next target");
   const clickableRow = renderedRows[0];
-  await wait(`(() => {
+  // The row's own facts come from the page; whether they add up to a choice a
+  // reader can take is rowUsable's rule, which the unit cases pin.
+  const clickableFacts = await wait(`(() => {
     const row = document.querySelector(${q(`${ROW}[data-ref="${clickableRow}"]`)});
     if (!row) return null;
     row.scrollIntoView({ block: "nearest", inline: "nearest" });
     const r = row.getBoundingClientRect();
-    return row.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) ? true : null;
-  })()`, "a retained needs-you row is a real clickable target after the reconnect");
+    return {
+      exists: true,
+      ariaDisabled: row.getAttribute("aria-disabled"),
+      hit: row.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)),
+    };
+  })()`, "the retained row this leg reopens is still rendered after the reconnect");
+  assert.ok(rowUsable(clickableFacts),
+    "a retained needs-you row is a real, selectable target after the reconnect");
   await key("Escape", 27);
   await wait(`document.querySelector(${q(LIST)}) === null`, "Escape closes the retained attention list");
   driver.milestone("attention-reconnect-retained", {

@@ -4,15 +4,30 @@
 // fixture owns no such command (cascade_browser_test.go is deliberately
 // untouched by this fix). What the journey CAN observe is the two handshakes,
 // so the decision reads them and these cases pin what it answers.
+//
+// Each rejection is identified by the assertion's own structured fields
+// (`actual`, `expected`, `operator`) rather than by its message, so rewording a
+// failure keeps every case meaningful (docs/developing-evener/testing.md, "Copy
+// Is Not a Test Oracle").
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconnectReadyDecision } from "./cascadeguard/attention.mjs";
+import { reconnectReadyDecision, reconnectSequences, rowUsable } from "./cascadeguard/attention.mjs";
 
 // The handshake the loaded tier belongs to. A reconnect reports a handshake of
 // its own, so every case below gives the reconnect a distinct handshake id.
 const consumed = { handshakeId: "handshake-a", generationId: "generation-a", sequence: 7 };
 const reconnectedAt = (over) => ({ ...consumed, handshakeId: "handshake-b", ...over });
 const tierRead = (offset, id = "request-1") => ({ offset, label: `offset ${offset} (${id})` });
+
+// The fields the assertion that rejected the call carried. `assert.throws`
+// needs a predicate, so this is the predicate every rejection case shares.
+const rejectedWith = (actual, expected, operator) => (error) => {
+  assert.equal(error.code, "ERR_ASSERTION");
+  assert.equal(error.operator, operator);
+  assert.deepEqual(error.actual, actual);
+  assert.deepEqual(error.expected, expected);
+  return true;
+};
 
 test("an equal-sequence reconnect retains the loaded tier and starts no read", () => {
   assert.equal(
@@ -44,7 +59,7 @@ test("a retained reconnect that read the tier anyway is a failure", () => {
         reconnected: reconnectedAt({}),
         deliveredTierReads: [tierRead(0)],
       }),
-    /re-reads no needs-you page/,
+    rejectedWith(["offset 0 (request-1)"], [], "deepStrictEqual"),
     "an equal-sequence reconnect must not issue a tier read",
   );
 });
@@ -73,7 +88,7 @@ test("the retry allowance does not extend to an offset the close did not lose", 
         deliveredTierReads: [tierRead(0)],
         retryableOffsets: [50],
       }),
-    /re-reads no needs-you page/,
+    rejectedWith(["offset 0 (request-1)"], [], "deepStrictEqual"),
   );
 });
 
@@ -85,7 +100,7 @@ test("a reconnect into a different navigation generation is a protocol error", (
         reconnected: reconnectedAt({ generationId: "generation-b" }),
         deliveredTierReads: [],
       }),
-    /stays in the navigation generation/,
+    rejectedWith("generation-b", "generation-a", "strictEqual"),
   );
 });
 
@@ -97,7 +112,11 @@ test("a reconnect whose sequence moved backward is refused", () => {
         reconnected: reconnectedAt({ sequence: 6 }),
         deliveredTierReads: [],
       }),
-    /never moves the navigation sequence backward/,
+    (error) => {
+      assert.equal(error.code, "ERR_ASSERTION");
+      assert.deepEqual([error.actual, error.expected], [false, true]);
+      return true;
+    },
   );
 });
 
@@ -111,13 +130,47 @@ test("a reconnect still reporting the tier's own handshake is refused", () => {
         reconnected: { ...consumed },
         deliveredTierReads: [],
       }),
-    /handshake of its own/,
+    rejectedWith("handshake-a", "handshake-a", "notStrictEqual"),
   );
 });
 
 test("a reconnect with no observed handshake cannot claim retained", () => {
   assert.throws(
     () => reconnectReadyDecision({ consumed, reconnected: null, deliveredTierReads: [] }),
-    /the reconnect reported a navigation handshake/,
+    rejectedWith(null, true, "=="),
   );
+});
+
+// A reconnect advertises the sequence its initialize response carries, and that
+// is the number the store compares (store.ts:899). An invalidation that targets
+// another resource and lands while subscriptions recover advances the page
+// afterwards; folding it into the advertised value would demand a needs-you
+// re-read the store never performs.
+test("the advertised sequence is the handshake's own, without later invalidations", () => {
+  const atReady = reconnectSequences({ handshakeSequence: 7, invalidations: [8] });
+  assert.equal(atReady.advertised, 7);
+  assert.equal(
+    reconnectReadyDecision({
+      consumed: { ...consumed, sequence: 7 },
+      reconnected: reconnectedAt({ sequence: atReady.advertised }),
+      deliveredTierReads: [],
+    }),
+    "retained",
+  );
+});
+
+// The page's own side is the opposite: everything it received before the cut
+// advanced what it had consumed.
+test("the consumed sequence takes every invalidation the page received", () => {
+  assert.equal(reconnectSequences({ handshakeSequence: 7, invalidations: [8, 9] }).consumed, 9);
+  assert.equal(reconnectSequences({ handshakeSequence: 7, invalidations: [] }).consumed, 7);
+});
+
+// A row whose refresh failed keeps its place but refuses activation, so a hit
+// test on its own would call a tier usable that offers no usable choice.
+test("a disabled row is not a usable choice even when it is hit-tested", () => {
+  assert.equal(rowUsable({ exists: true, ariaDisabled: "true", hit: true }), false);
+  assert.equal(rowUsable({ exists: true, ariaDisabled: null, hit: true }), true);
+  assert.equal(rowUsable({ exists: true, ariaDisabled: null, hit: false }), false);
+  assert.equal(rowUsable({ exists: false, ariaDisabled: null, hit: false }), false);
 });
