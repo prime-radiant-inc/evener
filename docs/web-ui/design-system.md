@@ -1308,26 +1308,36 @@ both compose them. Use existing surface, edge,
 ink, spacing, and tap-size tokens. Do not introduce mobile-only
 colors, type tokens, chip backgrounds, or monospace labels.
 
-Editable text is 16px on phones, and it gets there through the ramp rather
-than per-field: `tokens.css`'s below-900px block sets `--font-size-body` to
-16px and every field takes the body size, so iOS Safari has nothing to
-auto-zoom into. That is what let the viewport meta stop locking zoom (WCAG
-1.4.4 resize text): `index.html` no longer carries
-`maximum-scale=1, user-scalable=no`, and `src/styles/viewport-pin.test.ts`
-fails if either comes back. An auto-growing textarea has a real content-driven
+Editable text is 16px on phones and on any coarse pointer, and it gets there
+through the ramp rather than per-field: `tokens.css`'s below-900px block sets
+`--font-size-body` to 16px, and the touch block beside `--tap-min` floors
+`--font-size-control` at 16px, so iOS Safari has nothing to auto-zoom into on
+any touch device — the iPhone Duo's 951pt inner display in landscape crosses
+the 899px boundary and still runs iOS Safari. Double-tap and pinch zoom are
+gone the same way (Jesse 2026-11-15): `global.css` spends
+`touch-action: pan-x pan-y` under `(any-pointer: coarse)`, so every touch
+screen pans and never zooms, matching the native app, which has no zoom on
+any display. Desktop zoom is untouched by construction: touch-action governs
+touch input only. The enlargement paths that remain on touch screens are the
+in-app font-size preference (S/M/L/XL) and the OS Magnifier. The viewport
+meta itself still never locks zoom: modern iOS ignores `maximum-scale` for
+pinch anyway, so a meta lock would add nothing the coarse query does not
+already own, and `src/styles/viewport-pin.test.ts` fails if it comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
 behavior across breakpoints.
 
-The tap floor is `--tap-min`, 44px (decision 4 of
-2026-07-30-mobile-session-layout-design.md). `tokens.css` declares it under
-`@media (max-width: 899px), (any-pointer: coarse)`, so it holds on phones and on
-any coarse pointer at any width, such as touch laptops and iPad landscape
-(Jesse 2026-10-11). Only the floor widens: the 16px body and phone density
-stay phone-only. Widgets apply it as `min-width`/`min-height` under that same
-query, so desktop sizing never changes; `src/styles/display-gates.test.ts`
-fails if a widget's `var(--tap-min)` sits under any other gate.
+The touch floor query is `@media (max-width: 899px), (any-pointer: coarse)`.
+`--tap-min`, 44px (decision 4 of 2026-07-30-mobile-session-layout-design.md),
+and the 16px `--font-size-control` floor are declared under it, so both hold
+on phones and on any coarse pointer at any width, such as touch laptops and
+iPad landscape (Jesse 2026-10-11). Only the floors widen: the 16px body and
+phone density stay phone-only. Widgets apply `--tap-min` as
+`min-width`/`min-height` under that same query, so desktop sizing never
+changes; `src/styles/display-gates.test.ts` fails if a widget's
+`var(--tap-min)` — or a `--font-size-control` override — sits under any other
+gate.
 
 When a form has one primary completion action, the mobile action band may be
 fixed above `var(--dock-clearance)`. It is a raised surface with a top

@@ -1,17 +1,15 @@
 // @vitest-environment node
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { MOBILE_QUERY } from "../shell/useIsMobile";
-import { escapeRegExp } from "./cssBlock";
+import { escapeRegExp, mediaBlock, readModuleCss } from "./cssBlock";
 
-const STYLES_DIR = dirname(fileURLToPath(import.meta.url));
-const GLOBAL_CSS = readFileSync(join(STYLES_DIR, "global.css"), "utf8");
+// readModuleCss also strips comments, so a declaration quoted in a doc
+// comment can never satisfy - or fail - an assertion about a rule.
+const GLOBAL_CSS = readModuleCss(import.meta.url, "global.css");
 
-function removeMobileMediaBlock(source: string): string {
-  const start = source.indexOf(`@media ${MOBILE_QUERY} {`);
+function removeMediaBlock(source: string, mediaQuery: string): string {
+  const start = source.indexOf(`@media ${mediaQuery} {`);
   expect(start).toBeGreaterThanOrEqual(0);
 
   let depth = 0;
@@ -27,7 +25,7 @@ function removeMobileMediaBlock(source: string): string {
     }
   }
 
-  throw new Error("mobile media block was not closed");
+  throw new Error("media block was not closed");
 }
 
 test("mobile: html suppresses root overscroll while panes retain scroll ownership", () => {
@@ -44,6 +42,17 @@ test("mobile: html suppresses root overscroll while panes retain scroll ownershi
 });
 
 test("desktop: root overscroll containment is not declared outside the mobile query", () => {
-  const withoutMobileBlock = removeMobileMediaBlock(GLOBAL_CSS);
+  const withoutMobileBlock = removeMediaBlock(GLOBAL_CSS, MOBILE_QUERY);
   expect(withoutMobileBlock).not.toContain("overscroll-behavior");
+});
+
+test("touch screens pan but never zoom this app", () => {
+  // The 2026-11-15 decision (Jesse): every touch screen pans and never zooms
+  // the app, matching the native app, which has no zoom on any display.
+  // global.css's coarse-gate comment owns the full rationale.
+  const coarse = mediaBlock(GLOBAL_CSS, "any-pointer: coarse");
+  expect(coarse).toMatch(/\bbody \{[^}]*touch-action: pan-x pan-y;/);
+  // That block alone may declare touch-action: with it removed, no other
+  // rule - top-level, the phone gate, or any later gate - owns the property.
+  expect(removeMediaBlock(GLOBAL_CSS, "(any-pointer: coarse)")).not.toContain("touch-action");
 });

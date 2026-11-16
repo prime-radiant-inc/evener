@@ -414,8 +414,9 @@ body {
   --font-size-page-title: calc(26px * var(--font-scale)); /* section headings, the spawn heading */
   --font-size-display: calc(34px * var(--font-scale)); /* welcome hero only */
   /* Every editable control (input, select, textarea, and the raw ones a pane
-   * renders itself) sizes its text from this: the ui step on desktop, the
-   * 16px body step on phones, because iOS Safari zooms into any focused
+   * renders itself) sizes its text from this: the ui step on fine-pointer
+   * widths, floored at 16px on phones and on any coarse pointer (the touch
+   * block near --tap-min), because iOS Safari zooms into any focused
    * field under 16px and index.html no longer locks zoom to hide that. */
   --font-size-control: var(--font-size-ui);
   /* The conversation column and everything aligned to it (composer, cold
@@ -448,23 +449,29 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
     --line-height-body: calc(1.6 * var(--density-scale));
     /* iOS Safari zooms into any focused field under 16px, and the body size
      * IS the field size (widgets/textarea takes it), so the phone body is
-     * 16px and index.html no longer locks the viewport's zoom. */
+     * 16px and index.html no longer locks the viewport's zoom. The field
+     * floor itself (--font-size-control) lives in the touch block below, so
+     * it also holds on coarse pointers past this width. */
     --font-size-body: calc(16px * var(--font-scale));
-    /* A floor, not an alias: the S preference scales the phone body to
-     * 14.4px, and iOS zooms into a 14.4px field just the same. */
-    --font-size-control: max(16px, var(--font-size-body));
   }
   body[data-phone-density="comfortable"] { --density-scale: 1.25; }
 }
 
-/* The touch-target floor (2026-07-30-mobile-session-layout-design.md,
- * decision 4): 44px per the platform HIG, on phones and on any coarse
- * pointer at any width (touch laptops, iPad landscape; Jesse 2026-10-11).
- * Only the floor widens - the phone font-size and density rules above stay
- * phone-only. Widgets consume it under this same query as min-width/
- * min-height, so desktop sizing rules stay untouched. */
+/* The touch floors (2026-07-30-mobile-session-layout-design.md, decision 4):
+ * 44px targets per the platform HIG, and 16px field text. Both hold on
+ * phones and on any coarse pointer at any width (touch laptops, iPad
+ * landscape, the iPhone Duo's 951pt inner display in landscape, which
+ * crosses the 899px phone boundary while still running iOS Safari — and
+ * Jesse 2026-10-11 for the tap floor). Only the floors widen: the phone
+ * font-size and density rules above stay phone-only. Widgets consume
+ * --tap-min under this same query as min-width/min-height, so desktop
+ * sizing rules stay untouched. */
 @media (max-width: 899px), (any-pointer: coarse) {
   body {
     --tap-min: 44px;
+    /* A floor, not an alias: the S preference scales the phone body to
+     * 14.4px and the ui step to 11.7px, and iOS zooms into a 14.4px field
+     * just the same (roborev on PR #947). */
+    --font-size-control: max(16px, var(--font-size-body), var(--font-size-ui));
   }
 }
