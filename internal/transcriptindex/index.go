@@ -329,7 +329,11 @@ type turnOrderMemo struct {
 	valid bool
 	epoch uint64
 	turns uint64
-	order []indexedTurn
+	// preludeID is the header turn the order was built with. A header that
+	// only establishes a system prompt changes neither the epoch nor the turn
+	// count, so without this the order built before it would omit that turn.
+	preludeID string
+	order     []indexedTurn
 }
 
 // turnOrderStore is where a view keeps its turn order: the handle that outlives

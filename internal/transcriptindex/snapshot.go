@@ -79,6 +79,14 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 		if derived := x.reconstructAtCut(length); derived != nil {
 			view = derived
 		} else {
+			// The replay below replaces the table with a private prefix, so this
+			// view must answer from its own memo: the handle's describes the
+			// full records, and a private replay can reach the same epoch and
+			// turn count describing different ones — a loaded one-turn build
+			// and a replayed one-entry cut are both (epoch=2, turns=1). Sharing
+			// it would answer a historical read with another incarnation's
+			// turn IDs.
+			view.turnOrderOwner = nil
 			view.meta = meta{Incarnation: x.meta.Incarnation}
 			view.prelude = nil
 			view.items = table{size: itemRecordSize, buf: []byte{}}

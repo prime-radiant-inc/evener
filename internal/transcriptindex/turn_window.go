@@ -124,9 +124,11 @@ func (x *Index) resolveTurnWindow(r *reader, selector appwire.ThreadTurnWindow) 
 // turn_system summary already represents that same turn.
 func (x *Index) indexedTurnOrder() ([]indexedTurn, error) {
 	// The order is a pure function of the turn records and the prelude, so it
-	// is kept until a record changes. A turn-addressed read asks for it on
-	// every request, and building it reads every turn record.
-	if m := x.turnOrderStore(); m.valid && m.epoch == x.turns.epoch && m.turns == x.turns.n {
+	// is kept until either changes. A turn-addressed read asks for it on every
+	// request, and building it reads every turn record. The prelude is part of
+	// the key: a header that establishes only a system prompt changes neither
+	// the epoch nor the count.
+	if m := x.turnOrderStore(); m.valid && m.epoch == x.turns.epoch && m.turns == x.turns.n && m.preludeID == x.preludeID() {
 		return m.order, nil
 	}
 	order, err := x.buildTurnOrder()
@@ -134,8 +136,17 @@ func (x *Index) indexedTurnOrder() ([]indexedTurn, error) {
 		return nil, err
 	}
 	x.turnOrderCounter().turnOrderWalks++
-	*x.turnOrderStore() = turnOrderMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, order: order}
+	*x.turnOrderStore() = turnOrderMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, preludeID: x.preludeID(), order: order}
 	return order, nil
+}
+
+// preludeID names the header turn the order must include, or "" when the
+// header has none.
+func (x *Index) preludeID() string {
+	if x.prelude == nil {
+		return ""
+	}
+	return x.prelude.ID
 }
 
 // buildTurnOrder reads every turn summary into first-recorded order.
