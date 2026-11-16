@@ -12,6 +12,10 @@ verbosity level, including Full, on 2026-10-06. This spec records the
 web-only change. Dedicated memory-tool renderers, native app presentation,
 CLI/TUI presentation, memory storage and model context remain unchanged.
 
+Jesse amended the visibility half of that ruling on 2026-11-16: Chat and
+Intent fold actions into one-line intent proxies, so they show no refresh row.
+From Tools up the row keeps the collapsed-by-default treatment below.
+
 ## Current cause
 
 `agent/session_memory.go` appends a `MEMORY_CONTEXT` turn containing a
@@ -26,7 +30,8 @@ unclassified body as plain text.
 - Keep each memory refresh inspectable in its original transcript position.
   Render a steering-style glyph, the exact summary **Refreshed my memory**,
   and a disclosure chevron instead of the raw text wall.
-- Begin collapsed at Conversation, Intent, Tools, Activity and Full.
+- Show no row at Conversation or Intent: those levels fold actions into
+  intent proxies. Begin collapsed at Tools, Activity and Full.
   Changing verbosity or applying a general expansion baseline must not open
   a memory refresh. Explicit user expansion remains authoritative.
 - Opening reveals the scope and index state, then the decoded index through
