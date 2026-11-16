@@ -363,7 +363,7 @@ func geminiImagePart(p llm.ContentPart) (map[string]any, error) {
 		return map[string]any{
 			"inlineData": map[string]any{
 				"mimeType": mt,
-				"data":     base64.StdEncoding.EncodeToString(b),
+				"data":     llm.CachedBase64(b),
 			},
 		}, nil
 	}
@@ -603,7 +603,7 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 						funcResp["parts"] = []map[string]any{{
 							"inlineData": map[string]any{
 								"mimeType": imageType,
-								"data":     base64.StdEncoding.EncodeToString(imageBytes),
+								"data":     llm.CachedBase64(imageBytes),
 							},
 						}}
 					}
