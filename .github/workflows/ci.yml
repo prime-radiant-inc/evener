@@ -597,13 +597,26 @@ jobs:
       - name: Compare the Go module graph with the base
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.dispatch.outputs.base }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DISPATCH_BASE: ${{ steps.dispatch.outputs.base }}
           ACKNOWLEDGED: ${{ steps.ack.outputs.acknowledged || steps.dispatch.outputs.acknowledged }}
           ACK_INPUT: ${{ github.event.inputs.acknowledged }}
         run: |
+          set -euo pipefail
+          # A pull request checks out refs/pull/N/merge: the branch already
+          # merged into its base branch. The merge base of that checkout and the
+          # base branch's head fetched now is the tree the merge was built from,
+          # so the diff holds only this pull request's module changes. The
+          # event's base.sha is where the branch was cut, and comparing with it
+          # reported every dependency the base branch changed since as this pull
+          # request's own (#6396).
+          base="$DISPATCH_BASE"
+          if [ -n "$PR_BASE_REF" ]; then
+            base="$(git merge-base HEAD "origin/$PR_BASE_REF")"
+          fi
           go run ./cmd/evener-go-deps \
             --event "$EVENT_NAME" \
-            --base "$BASE_SHA" \
+            --base "$base" \
             --acknowledged="${ACKNOWLEDGED:-${ACK_INPUT:-false}}" \
             --download
 
