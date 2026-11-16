@@ -79,6 +79,12 @@ func (x *Index) readAtLocked(length int64, fn func(*Snapshot) error) error {
 		if derived := x.reconstructAtCut(length); derived != nil {
 			view = derived
 		} else {
+			// The replay below replaces the table with a private prefix, so this
+			// view must answer from its own memo: the parent's describes the
+			// full records, and a private replay can reach the same epoch and
+			// turn count from a different prefix, which would let a historical
+			// read and a current read answer each other's totals.
+			view.derivedOwner = nil
 			view.meta = meta{Incarnation: x.meta.Incarnation}
 			view.prelude = nil
 			view.items = table{size: itemRecordSize, buf: []byte{}}
