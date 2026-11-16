@@ -6289,6 +6289,25 @@ async function publishAndReconcileThreadHydration(
           ),
           { retainDisplayCopy: true, queueEntryIdsById },
         );
+        // A refused promote whose queue entry this response proves delivered
+        // is a duplicate the projection suppresses while the proof is visible
+        // - but the transcript window is bounded, so the proof can age out on
+        // a later read. Settle the unedited recovery durably now (an edited
+        // composition is the user's own unsent work and survives): the
+        // delivered source speaks either as a recorded item's lineage id or
+        // as the queue's own clientMutationId while the entry still sits
+        // queued.
+        if (mutationStateAuthoritative) {
+          const deliveredSourceIds = new Set<string>(responseQueue?.clientMutationIds ?? []);
+          for (const turn of hydration.response.thread.turns ?? []) {
+            for (const item of turn.items ?? []) {
+              for (const inputId of item.conversationInputIds ?? []) {
+                if (inputId.startsWith("client:")) deliveredSourceIds.add(inputId.slice("client:".length));
+              }
+            }
+          }
+          await runtime.storage.retireDeliveredPromoteRecoveries(ref, deliveredSourceIds);
+        }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
         // the live projection. Retry unresolved records with their original

@@ -488,6 +488,54 @@ test("a refused promote stays suppressed after its entry's consumer settles", ()
   expect(rows).toEqual([]);
 });
 
+// An edited refused promote is the user's OWN unsent composition
+// (compositionRevision above zero): delivery of the ORIGINAL entry must not
+// hide it - the row the reader sees is the edited text, not the delivered
+// message, and suppressing it would strand the composition with no surface
+// at all (roborev round 3, finding 1). The row renders as refused work.
+test("an edited refused promote renders its own composition after its entry's source delivery", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued text",
+            clientMutationId: "consumer",
+            conversationInputIds: ["client:m_source"],
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+        // The composer edited the refused row's text after the refusal.
+        compositionRevision: 2,
+      }),
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "promote:edited:promote:2", state: "refused" });
+});
+
 test("a carried row stays while its recorded owner is still only pending", () => {
   const model = threadModel({
     queue: { depth: 0, revision: 6, ids: [] },

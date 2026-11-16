@@ -40,6 +40,7 @@ type MutationOutboxOperation =
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
+  | "retireDeliveredPromoteRecoveries"
   | "preserveRecoveryComposition"
   | "discardRecovery"
   | "resendRecovery"
@@ -1850,6 +1851,46 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         .filter((record) => targetRef === undefined || record.targetRef === targetRef)
         .sort((left, right) => left.intentSequence - right.intentSequence);
     });
+  }
+
+  // A refused promote whose queue entry another transition already delivered
+  // is a duplicate the projection suppresses while the proof is visible - but
+  // a bounded transcript window can drop the proof on a reload, so the
+  // hydration path settles the UNEDITED record durably here (render-side
+  // suppression alone would resurrect the row). An edited composition is the
+  // user's own unsent work and survives every sweep
+  // (settlementRetiresRecovery's rule, read structurally).
+  async retireDeliveredPromoteRecoveries(
+    targetRef: string,
+    deliveredSourceIds: ReadonlySet<string>,
+  ): Promise<string[]> {
+    if (deliveredSourceIds.size === 0) return [];
+    const retired = await this.#write<string[]>(
+      [RECOVERY_STORE],
+      "retireDeliveredPromoteRecoveries",
+      async (transaction) => {
+        const store = transaction.objectStore(RECOVERY_STORE);
+        const records = await requestResult<MutationRecoveryRecord[]>(store.getAll());
+        const retiredIds: string[] = [];
+        for (const record of records) {
+          if (record.targetRef !== targetRef && record.displayedRef !== targetRef) continue;
+          if (record.recoveryKind !== "rejected") continue;
+          if (record.method !== "turn/promoteQueuedAsSteer") continue;
+          if ((record.compositionRevision ?? 0) > 0) continue;
+          const display = record.optimisticDisplay;
+          const displaySource: Record<string, unknown> | undefined =
+            display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
+          const sourceMutationId =
+            typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
+          if (sourceMutationId === undefined || !deliveredSourceIds.has(sourceMutationId)) continue;
+          await requestResult(store.delete(record.clientMutationId));
+          retiredIds.push(record.clientMutationId);
+        }
+        return retiredIds;
+      },
+    );
+    if (retired.length > 0) this.#notifyQuietly(() => this.#settledListener?.(targetRef));
+    return retired;
   }
 
   async updateRecoveryInput(

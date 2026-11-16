@@ -715,16 +715,21 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     // settles, the transcript item that replaced the entry speaks in the
     // consumed input's lineage (the SOURCE mutation's id). Both proofs say
     // the message is already on screen; neither exists while the entry is
-    // still queued, so the row renders as refused work until delivery.
+    // still queued, so the row renders as refused work until delivery. An
+    // EDITED composition is the user's own unsent work and never suppresses:
+    // the row the reader sees is the edited text, not the delivered message
+    // (settlementRetiresRecovery's rule, read structurally here).
+    const revision = (record as { compositionRevision?: number }).compositionRevision;
+    const uneditedPromote = record.method === "turn/promoteQueuedAsSteer" && (revision ?? 0) === 0;
     const entryLink =
-      typeof record.payload?.expectedEntryId === "string" && record.method === "turn/promoteQueuedAsSteer"
-        ? [record.payload.expectedEntryId]
-        : [];
+      uneditedPromote && typeof record.payload?.expectedEntryId === "string" ? [record.payload.expectedEntryId] : [];
     const display = record.optimisticDisplay;
     const displaySource: Record<string, unknown> | undefined =
       display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
     const sourceMutationId =
-      typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
+      uneditedPromote && typeof displaySource?.sourceMutationId === "string"
+        ? displaySource.sourceMutationId
+        : undefined;
     if (
       (entryLink.length > 0 && entryLink.every((entryId) => recordedEntryOwners.has(entryId))) ||
       (sourceMutationId !== undefined && recordedLineage.has(`client:${sourceMutationId}`))

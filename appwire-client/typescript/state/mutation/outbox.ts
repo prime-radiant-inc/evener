@@ -172,6 +172,13 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // delivery registration synchronously, before any background read
   // re-computes it.
   restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]>;
+  // Retires an UNEDITED refused promote recovery whose queue entry an
+  // authoritative response proves delivered (the ids a recorded item's
+  // lineage names, plus the queue's own clientMutationIds). Render-side
+  // suppression alone would resurrect the row once a bounded transcript
+  // window drops the delivery proof; an edited composition survives every
+  // sweep. Returns the retired records' ids.
+  retireDeliveredPromoteRecoveries(targetRef: string, deliveredSourceIds: ReadonlySet<string>): Promise<string[]>;
   // The optional marker a refusal that never reached the daemon sets: the
   // wire may still be applied by an outstanding attempt, so a host that
   // resends the recovery under a fresh wire identity would let the
