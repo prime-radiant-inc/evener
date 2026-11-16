@@ -310,6 +310,12 @@ func newWorktreeDocumentFixture(t *testing.T, scripted ...llm.ProviderAdapter) *
 		if persisted := strings.TrimSpace(meta.EnvInfo.WorkingDir); persisted != installed {
 			t.Fatalf("%s %q cwd: session=%q persisted=%q", operation, name, installed, persisted)
 		}
+		// The session holds the new environment as soon as the step returns, but
+		// a document read resolves its root from the daemon's projection, which
+		// applies the change on its own consumer. Wait for that projection to
+		// name the installed directory, or a read below answers against the
+		// directory the step replaced.
+		awaitWorktreeProjectedCWD(ctx, t, daemonClient, ref, installed)
 		switch operation {
 		case "create":
 			if installed == root || installed == lastHydrated {
@@ -677,6 +683,33 @@ func awaitWorktreeDocumentResync(ctx context.Context, t *testing.T, notification
 			return
 		case <-ctx.Done():
 			t.Fatalf("waiting for cwd resync after notifications %q: %v", observed, ctx.Err())
+		}
+	}
+}
+
+// awaitWorktreeProjectedCWD waits until the daemon projects want as the
+// session's working directory. A document read resolves its root from
+// thread/read's cwd, and the daemon writes that field from the event its
+// environment swap emits, on the consumer goroutine: the swap returns to the
+// caller before the projection carrying the new directory is applied. Reading
+// before it lands answers against the directory the step replaced.
+func awaitWorktreeProjectedCWD(ctx context.Context, t *testing.T, client *appwire.Client, ref, want string) {
+	t.Helper()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+		if err != nil {
+			t.Fatalf("daemon ThreadRead awaiting cwd %q: %v", want, err)
+		}
+		projected := strings.TrimSpace(read.Thread.CWD)
+		if projected == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("daemon projected cwd = %q, want %q: %v", projected, want, ctx.Err())
+		case <-ticker.C:
 		}
 	}
 }
