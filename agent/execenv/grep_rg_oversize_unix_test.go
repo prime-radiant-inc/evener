@@ -5,6 +5,7 @@ package execenv
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/searchresult"
@@ -21,21 +22,18 @@ func writeFakeRg(t *testing.T, root string) string {
 	t.Helper()
 	rg := filepath.Join(root, "rg")
 	script := `#!/bin/sh
-capped=0
 files=0
 nomatch=0
 dir=
 for arg in "$@"; do
 	case "$arg" in
 	--files) files=1 ;;
-	--max-filesize) capped=1 ;;
 	nomatch) nomatch=1 ;;
 	*) dir="$arg" ;;
 	esac
 done
 if [ "$files" = 1 ]; then
-	printf 'small.txt\000'
-	if [ "$capped" = 0 ]; then printf 'big.log\000'; fi
+	printf '%s/small.txt\000%s/big.log\000' "$dir" "$dir"
 	exit 0
 fi
 if [ "$nomatch" = 1 ]; then
@@ -90,7 +88,9 @@ func TestRgArmDisclosesFilesPastTheReadCapOnNoMatches(t *testing.T) {
 	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
 	root := t.TempDir()
 	rg := writeFakeRg(t, root)
-	if err := os.MkdirAll(filepath.Join(root, "onlybig"), 0o755); err != nil {
+	// The listing names big.log, so the stat the arm takes of it must find a
+	// file over the cap: the fixture has to carry what it claims.
+	if err := os.WriteFile(filepath.Join(root, "big.log"), make([]byte, 100), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	stubGrepMaxFileBytes(t, 64)
@@ -161,5 +161,65 @@ printf '%s/small.txt\0001:needle small\n' "$dir"
 	}
 	if notes != "" {
 		t.Fatalf("a failed capped listing produced a note anyway: %q, want none — a failed listing is not an empty one", notes)
+	}
+}
+
+// A directory search launches the search plus one listing, and no more: the
+// over-cap count comes from the files the search's own listing names, so it
+// costs one tree walk where it used to cost two (#6426).
+func TestRgArmLaunchesOneListingPerSearch(t *testing.T) {
+	// Not parallel: stubGrepMaxFileBytes swaps the package's read cap.
+	root := t.TempDir()
+	rg := filepath.Join(root, "rg")
+	log := filepath.Join(root, "launches")
+	script := `#!/bin/sh
+files=0
+dir=
+for arg in "$@"; do
+	case "$arg" in
+	--files) files=1 ;;
+	*) dir="$arg" ;;
+	esac
+done
+if [ "$files" = 1 ]; then
+	printf 'listing\n' >> "` + log + `"
+	printf '%s/small.txt\000' "$dir"
+	exit 0
+fi
+printf 'search\n' >> "` + log + `"
+printf '%s/small.txt\0001:needle small\n' "$dir"
+`
+	if err := os.WriteFile(rg, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "small.txt"), []byte("needle small\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubGrepMaxFileBytes(t, 64)
+	env := NewLocalExecutionEnvironment(root)
+	defer env.Cleanup()
+	env.lookPath = func(string) (string, error) { return rg, nil }
+
+	if _, err := env.Grep(t.Context(), "needle", root, "", false, 100, "content"); err != nil {
+		t.Fatal(err)
+	}
+	launches, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read launch log: %v", err)
+	}
+	search, listing := 0, 0
+	for line := range strings.SplitSeq(strings.TrimSpace(string(launches)), "\n") {
+		switch line {
+		case "search":
+			search++
+		case "listing":
+			listing++
+		}
+	}
+	if search != 1 {
+		t.Fatalf("search launched %d rg searches, want 1", search)
+	}
+	if listing != 1 {
+		t.Fatalf("search launched %d rg listings, want 1: the over-cap count must come from the search's own listing, not a second tree walk", listing)
 	}
 }

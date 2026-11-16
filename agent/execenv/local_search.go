@@ -482,14 +482,17 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 
 // grepRgOversizeCount reports how many candidate files ripgrep leaves out of
 // a directory search by --max-filesize, so the rg arm can disclose the same
-// omissions the native walk's finishWalk does: the difference between the
-// files rg lists without the size filter and with it. Both listings run
-// through the same ripgrep with the same glob filters, so the count is rg's
-// own view of the tree — its ignore rules included — not a guess about which
-// files it would search. A named file never needs the count (an over-cap one
-// routes to the native arm), a cancelled search reports its cancellation,
-// and any listing that fails another way returns none: the disclosure is
-// best-effort and never fails the search it describes.
+// omissions the native walk's finishWalk does. One --files listing names the
+// candidates rg would search, its ignore rules included, and each named path
+// is then stat'd: a path over the read cap is one rg skips. That is the same
+// set the two-listing form computed — rg's --max-filesize skips exactly the
+// files whose size exceeds the cap — from one tree walk instead of two, and
+// it keeps the count rg's own view of the tree rather than a guess about
+// which files it would search. A named file never needs the count (an
+// over-cap one routes to the native arm), a cancelled search reports its
+// cancellation, and a failed listing or a path that vanished between listing
+// and stat returns none: the disclosure is best-effort and never fails the
+// search it describes.
 func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg, dir string, globFilters []string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -497,44 +500,32 @@ func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg,
 	if grepTargetsOneFile(dir) {
 		return 0, nil
 	}
-	all, err := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
-	if err != nil {
-		return 0, err
-	}
-	under, err := e.grepRgListFiles(ctx, rg, dir, globFilters, true)
-	if err != nil {
-		return 0, err
-	}
-	if under > all {
-		return 0, nil
-	}
-	return all - under, nil
+	return e.grepRgListFiles(ctx, rg, dir, globFilters)
 }
 
-// grepRgListFiles counts one rg --files listing of dir: --null keeps the
-// paths separable and only their number matters — counted as they stream
-// through, so a listing of any size is never retained — and --max-filesize,
-// when capped, is the same filter the search itself passes. rg exits 1 for
-// a listing that found no file, so both 0 and 1 are a listing's answers;
-// anything else is a failure, which propagates so the caller suppresses the
-// note rather than deriving a count from a half-failed pair of listings,
-// while a cancellation is the search's error to report.
-func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) (int, error) {
+// grepRgListFiles counts the files one rg --files listing of dir names that
+// exceed the read cap, the set the search itself skips by --max-filesize.
+// --null keeps the paths separable; they are stat'd as they stream through
+// and only the count is kept, so a listing of any size is never retained.
+// rg exits 1 for a listing that found no file, so both 0 and 1 are a
+// listing's answers; anything else is a failure, which propagates so the
+// caller suppresses the note rather than deriving a count from a half-read
+// listing, while a cancellation is the search's error to report. A path that
+// vanished between the listing and its stat is not over the cap: it is no
+// longer a candidate, and a best-effort disclosure must not count it.
+func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	args := []string{"--files", "--null"}
-	if capped {
-		args = append(args, "--max-filesize", strconv.Itoa(grepMaxFileBytes))
-	}
 	for _, globFilter := range globFilters {
 		if strings.TrimSpace(globFilter) != "" {
 			args = append(args, "-g", globFilter)
 		}
 	}
 	args = append(args, "--", dir)
-	counter := &nulCounter{}
-	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, counter)
+	over := &oversizePathCounter{ctx: ctx, base: e.RootDir}
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, over)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return 0, cerr
@@ -543,7 +534,10 @@ func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir
 			return 0, err
 		}
 	}
-	return int(counter.n), nil
+	if over.failed != nil {
+		return 0, over.failed
+	}
+	return over.n, nil
 }
 
 // countNativeExcluded counts the paths the default dotfile and gitignore rules
@@ -588,14 +582,91 @@ func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir
 	return excluded, err
 }
 
-// nulCounter counts the NUL delimiters ripgrep --null ends each path with,
-// retaining nothing: whatever streams through is counted and dropped, so a
-// listing costs its delimiters' count and one pipe block of memory.
-type nulCounter struct{ n int64 }
+// maxListedPathBytes bounds one NUL-delimited path a listing may print. No
+// filesystem accepts a path near this length, so a run that reaches it is not
+// a listing of paths, and holding it would make the count retain whatever the
+// stream held.
+const maxListedPathBytes = 64 << 10
 
-func (c *nulCounter) Write(p []byte) (int, error) {
-	c.n += int64(bytes.Count(p, []byte{0}))
-	return len(p), nil
+var errOversizeListing = errors.New("ripgrep listing does not delimit paths")
+
+// oversizePathCounter counts the NUL-delimited paths in an rg --files
+// listing whose file exceeds the read cap, retaining nothing: each path is
+// stat'd as its delimiter arrives and then dropped, so a listing costs one
+// path and one pipe block of memory whatever its size. A partial path at the
+// end of a write is held until its delimiter arrives, because a path may
+// straddle two writes.
+type oversizePathCounter struct {
+	ctx context.Context
+	// base resolves a listed path that ripgrep printed relative: rg prints
+	// paths as it was given them, and the listing runs in the environment's
+	// root, so a relative one is relative to that root and never to this
+	// process's own working directory.
+	base string
+	// partial holds the bytes of a path whose delimiter has not arrived yet.
+	partial []byte
+	// failed records the first stat error that is not a vanished path; the
+	// count is then not rg's and the caller suppresses the note.
+	failed error
+	n      int
+}
+
+func (c *oversizePathCounter) Write(p []byte) (int, error) {
+	// Consuming p as paths advance a local cursor, so the count reported to
+	// the writer stays the bytes it handed over: a short write here would
+	// stall the pipe the listing streams through.
+	written := len(p)
+	for {
+		delim := bytes.IndexByte(p, 0)
+		if delim < 0 {
+			// A path may straddle two writes, but no real path is longer than
+			// the filesystem's limit: a run that grows past it is not a
+			// listing of paths, and holding it would make the count retain
+			// whatever the stream held.
+			if len(c.partial)+len(p) > maxListedPathBytes {
+				c.partial = c.partial[:0]
+				c.failed = errOversizeListing
+				return written, nil
+			}
+			c.partial = append(c.partial, p...)
+			return written, nil
+		}
+		// The path is the held partial plus this write's bytes up to the
+		// delimiter; both are consumed here, so the buffer is reused rather
+		// than appended to in place.
+		c.partial = append(c.partial, p[:delim]...)
+		c.stat(c.partial)
+		c.partial = c.partial[:0]
+		p = p[delim+1:]
+	}
+}
+
+// stat counts one listed path when its size exceeds the read cap, rg's own
+// --max-filesize boundary. A vanished path is skipped: the listing named it,
+// nothing carries it now, and it is no candidate to disclose.
+func (c *oversizePathCounter) stat(path []byte) {
+	if c.failed != nil || len(path) == 0 {
+		return
+	}
+	if err := c.ctx.Err(); err != nil {
+		c.failed = err
+		return
+	}
+	name := string(path)
+	if !filepath.IsAbs(name) {
+		name = filepath.Join(c.base, name)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return
+		}
+		c.failed = err
+		return
+	}
+	if info.Size() > int64(grepMaxFileBytes) {
+		c.n++
+	}
 }
 
 // grepTargetsOneFile reports whether a grep's resolved target names a single
