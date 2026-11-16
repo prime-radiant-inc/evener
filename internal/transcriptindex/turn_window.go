@@ -123,6 +123,23 @@ func (x *Index) resolveTurnWindow(r *reader, selector appwire.ThreadTurnWindow) 
 // prelude has no summary of its own, so it is prepended unless an indexed
 // turn_system summary already represents that same turn.
 func (x *Index) indexedTurnOrder() ([]indexedTurn, error) {
+	// The order is a pure function of the turn records and the prelude, so it
+	// is kept until a record changes. A turn-addressed read asks for it on
+	// every request, and building it reads every turn record.
+	if m := x.turnOrderStore(); m.valid && m.epoch == x.turns.epoch && m.turns == x.turns.n {
+		return m.order, nil
+	}
+	order, err := x.buildTurnOrder()
+	if err != nil {
+		return nil, err
+	}
+	x.turnOrderCounter().turnOrderWalks++
+	*x.turnOrderStore() = turnOrderMemo{valid: true, epoch: x.turns.epoch, turns: x.turns.n, order: order}
+	return order, nil
+}
+
+// buildTurnOrder reads every turn summary into first-recorded order.
+func (x *Index) buildTurnOrder() ([]indexedTurn, error) {
 	const chunk = uint64(256)
 	turns := make([]indexedTurn, 0, x.turns.n+1)
 	for start := uint64(0); start < x.turns.n; start += chunk {

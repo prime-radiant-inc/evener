@@ -308,6 +308,47 @@ type Index struct {
 	// entry or reader. The ordinary current-boundary path releases it.
 	cutView   *Index
 	cutLength int64
+	// turnOrder memoizes indexedTurnOrder, which reads every turn record to
+	// build the ordered list a turn-addressed read resolves against, and a
+	// past-thread read resolves the same list on every request. A turn's ID is
+	// fixed when its slot is created — stampTurn rewrites a summary as later
+	// entries arrive but never its ID — so the list holds until the records
+	// change, which the epoch detects.
+	turnOrder turnOrderMemo
+	// turnOrderOwner is the handle whose turn-order memo this view answers to.
+	// A current-boundary read wraps the handle in a fresh view per request, so
+	// a memo stored on the view would be discarded before it could be reused.
+	turnOrderOwner *Index
+	// turnOrderWalks counts indexedTurnOrder builds, for tests.
+	turnOrderWalks int
+}
+
+// turnOrderMemo is one indexedTurnOrder result with the table state it
+// describes.
+type turnOrderMemo struct {
+	valid bool
+	epoch uint64
+	turns uint64
+	order []indexedTurn
+}
+
+// turnOrderStore is where a view keeps its turn order: the handle that outlives
+// it. A reconstructed cut view keeps its own, because its table is a private
+// replay with an epoch that says nothing about the handle's records.
+func (x *Index) turnOrderStore() *turnOrderMemo {
+	if x.turnOrderOwner != nil {
+		return &x.turnOrderOwner.turnOrder
+	}
+	return &x.turnOrder
+}
+
+// turnOrderCounter is the handle whose walk count this view increments, for the
+// same reason turnOrderStore names one.
+func (x *Index) turnOrderCounter() *Index {
+	if x.turnOrderOwner != nil {
+		return x.turnOrderOwner
+	}
+	return x
 }
 
 // transcriptFile is what the index holds of the transcript file: positioned
@@ -656,6 +697,10 @@ func (x *Index) adopt(m meta) error {
 	}
 	x.meta, x.items.n, x.turns.n, x.updates.n, x.strings.n = m, m.Items, m.Turns, m.Updates, uint64(info.Size())
 	x.builderStale = true
+	// The records this handle can now see changed without a table.write of its
+	// own: another handle extended the sidecar and this one adopted its counts.
+	// A memo built from the shorter table must not outlive that.
+	x.turns.epoch++
 	// The adopting handle's buffered copies of the record files end where its
 	// own last build left them, below the counts just taken up from another
 	// handle's meta: reload them, or every read past that point would slice a
@@ -1489,6 +1534,9 @@ func (x *Index) closeBuild() error {
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0
+	// The table is empty now; a memo built from the previous records describes
+	// a build that no longer exists.
+	x.turns.epoch++
 	x.items.buf, x.turns.buf, x.strings.buf = nil, nil, nil
 	return errors.Join(errs...)
 }
