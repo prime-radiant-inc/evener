@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/afero"
@@ -38,6 +39,15 @@ var ErrInvalidOffset = errors.New("jobstore: invalid offset")
 // and output are still published. Snapshot readers translate it to a
 // concurrent change; durable reopeners surface it to their caller.
 var errOutputPendingHandoff = errors.New("jobstore: output pending metadata handoff")
+
+// outputMetaSyncInterval paces an append's barriers. Append publishes metadata
+// content on every write, because readers of a running job take the log's
+// lifetime counters from it, but it fsyncs the log and that metadata only this
+// often. A power crash can then lose the log's unsynced tail while the sidecar
+// rename survives, so metadata records the log as of the last barrier and
+// readers fall back to it rather than refusing the job (Jesse's 2026-11-16
+// ruling: lose the tail, never corrupt).
+const outputMetaSyncInterval = time.Second
 
 // SearchOptions bounds a retained-output line search. All offsets are lifetime
 // byte offsets, even when the retained file begins after offset zero.
@@ -81,6 +91,17 @@ type OutputStore struct {
 	// never re-reads the file.
 	retainedHash hash.Hash
 	disableSync  bool
+	// metaSyncInterval paces append barriers; lastMetaSync anchors that pace.
+	metaSyncInterval time.Duration
+	lastMetaSync     time.Time
+	// durableFileSize and durableSHA256 are the retained log as of the last
+	// barrier. A reader that finds the log shorter than its metadata uses them
+	// to tell a lost unsynced tail from a file something replaced.
+	durableFileSize int64
+	durableSHA256   string
+	// synced says the log's durable anchor describes every byte appended.
+	synced bool
+	closed bool
 }
 
 type outputMeta struct {
@@ -88,6 +109,13 @@ type outputMeta struct {
 	RetainedStart        int64  `json:"retained_start"`
 	RetainedStartPartial *bool  `json:"retained_start_partial,omitempty"`
 	RetainedSHA256       string `json:"retained_sha256"`
+	// DurableFileSize and DurableSHA256 are the retained log as of the last
+	// barrier that made this metadata durable, so a reader can accept a log
+	// whose unsynced tail a power crash lost. Sidecars written before these
+	// fields existed omit them, and a reader that finds them absent keeps the
+	// strict byte-count check.
+	DurableFileSize *int64 `json:"durable_file_size,omitempty"`
+	DurableSHA256   string `json:"durable_sha256,omitempty"`
 	// VisibleStart, when set, is the first lifetime offset readers may see. It
 	// is past RetainedStart when the file still holds bytes older than the
 	// retention cap that compaction has not yet dropped.
@@ -109,6 +137,16 @@ type outputView struct {
 // visibleOffset is the file offset of the first visible byte.
 func (v outputView) visibleOffset() int64 {
 	return v.visibleStart - v.fileStart
+}
+
+// verifiedLength is the number of file bytes the view vouches for: the length of
+// the retained window its metadata describes. A power crash can leave the log
+// physically longer than that window while its contents past the window are torn
+// or zeroed, so readers bound their reads here rather than by the file's size.
+// Presenting the excess would hand a reader unverified bytes as output (Jesse's
+// 2026-11-16 ruling: lose the tail, never corrupt).
+func (v outputView) verifiedLength() int64 {
+	return v.total - v.fileStart
 }
 
 func outputViewOf(meta outputMeta) outputView {
@@ -192,8 +230,23 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 			return nil, err
 		}
 		view, retainedStartPartial = outputViewOf(meta), outputMetaRetainedStartPartial(meta)
+		// A writable reopen becomes the file's only writer, so it must not carry
+		// a suffix the sidecar never vouched for: hashing the file as it stands
+		// would adopt a torn suffix into the new sidecar, and appending would
+		// build on top of it. Drop it now, while nothing reads the file yet, so
+		// the log this store owns is exactly the bytes its metadata describes
+		// (Jesse's 2026-11-16 ruling: lose the tail, never corrupt). The retained
+		// window ends where the file does on every intact reopen, so this is a
+		// no-op except after a crash that left the log longer than its metadata.
+		if verified := view.verifiedLength(); verified < info.Size() {
+			if err := f.Truncate(verified); err != nil {
+				cleanupCreated()
+				return nil, fmt.Errorf("jobstore: truncate output to metadata: %w", err)
+			}
+		}
 	}
 	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: view.total, retainedStart: view.fileStart, retainedStartPartial: retainedStartPartial, visibleStart: view.visibleStart, visiblePartial: view.visiblePartial, disableSync: disableSync}
+	o.metaSyncInterval = outputMetaSyncInterval
 	if o.retainedHash, err = outputFileHash(fs, path); err != nil {
 		cleanupCreated()
 		return nil, err
@@ -210,6 +263,7 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 		cleanupCreated()
 		return nil, err
 	}
+	o.lastMetaSync = time.Now()
 	return o, nil
 }
 
@@ -252,8 +306,14 @@ func outputArtifactPaths(path string) []string {
 func (o *OutputStore) Append(b []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return 0, fmt.Errorf("jobstore: append output: %w", os.ErrClosed)
+	}
 	n, err := o.f.Write(b)
 	o.total += int64(n)
+	if n > 0 {
+		o.synced = false
+	}
 	if o.retainedHash != nil {
 		o.retainedHash.Write(b[:n])
 	}
@@ -266,10 +326,95 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 	if err := o.refreshVisibleLocked(); err != nil {
 		return n, err
 	}
-	if err := o.persistMetaLocked(); err != nil {
+	// Publish metadata content so a reader of the running job sees the log's
+	// current counters, then pay the barriers at most once per interval.
+	if err := o.writeMetaLocked(false); err != nil {
+		return n, err
+	}
+	if err := o.syncMetaTickLocked(); err != nil {
 		return n, err
 	}
 	return n, nil
+}
+
+// writeMetaLocked replaces the metadata file. synced also fsyncs the log before
+// the sidecar that describes it, so metadata is never durable ahead of the log
+// bytes whose anchor it carries.
+func (o *OutputStore) writeMetaLocked(synced bool) error {
+	if o.metaPath == "" {
+		return nil
+	}
+	syncWrites := synced && !o.disableSync
+	var meta outputMeta
+	var err error
+	if syncWrites {
+		meta, err = o.outputMetaLocked()
+	} else {
+		meta, err = o.outputMetaContentLocked()
+	}
+	if err != nil {
+		return err
+	}
+	if syncWrites {
+		// This write follows the log's fsync, so it names the log as it stands:
+		// the sidecar and its anchor describe the same bytes.
+		meta.DurableFileSize, meta.DurableSHA256 = new(o.total-o.retainedStart), meta.RetainedSHA256
+	} else if o.hasDurableAnchor() {
+		meta.DurableFileSize, meta.DurableSHA256 = new(o.durableFileSize), o.durableSHA256
+	} else {
+		meta.DurableFileSize, meta.DurableSHA256 = nil, ""
+	}
+	// The bytes are synced before every rename, not only at a barrier: a rename
+	// that survives a power loss while the file's contents do not would replace
+	// durable metadata with an empty or malformed file. The parent-directory
+	// barrier is the barrier's job alone — a rewrite over an existing name only
+	// has to make ITS contents durable, and the next barrier commits the rename
+	// along with the log (#6402).
+	if err := writeOutputMetaFileFsSyncDir(o.fs, o.metaPath, meta, !o.disableSync, syncWrites); err != nil {
+		return err
+	}
+	if syncWrites {
+		o.durableFileSize = o.total - o.retainedStart
+		o.durableSHA256 = meta.RetainedSHA256
+		o.synced = true
+		o.lastMetaSync = time.Now()
+	}
+	if err := o.fs.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("jobstore: remove pending output metadata: %w", err)
+	}
+	return nil
+}
+
+// syncMetaTickLocked pays the log and metadata barriers at most once per
+// interval. A compaction writes its own pending journal, so batching here never
+// leaves a prune unrecorded.
+func (o *OutputStore) syncMetaTickLocked() error {
+	if o.disableSync || o.synced {
+		return nil
+	}
+	if !o.lastMetaSync.IsZero() && time.Since(o.lastMetaSync) < o.metaSyncInterval {
+		return nil
+	}
+	return o.persistMetaLocked()
+}
+
+// Flush pays the barriers now instead of at the next tick. Job finalization
+// calls it before recording a terminal output byte count, so a durable record
+// never names bytes the durable log lacks.
+func (o *OutputStore) Flush() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	return o.flushLocked()
+}
+
+func (o *OutputStore) flushLocked() error {
+	if o.synced || o.metaPath == "" {
+		return nil
+	}
+	return o.persistMetaLocked()
 }
 
 // refreshVisibleLocked moves the visible start forward to the first byte of
@@ -676,7 +821,10 @@ func GrepOutputFileLimitFromFile(path string, f *os.File, re *regexp.Regexp, lim
 	if err != nil {
 		return nil, err
 	}
-	matches, err := grepReaderLimit(bufio.NewReaderSize(f, 64*1024), re, limitBytes, maxMatches, maxLineBytes)
+	// Scan only the bytes the metadata vouches for. A crash can leave the log
+	// holding a torn suffix past that window, and those bytes are not output.
+	verified := view.verifiedLength() - view.visibleOffset()
+	matches, err := grepReaderLimit(bufio.NewReaderSize(io.LimitReader(f, verified), 64*1024), re, limitBytes, maxMatches, maxLineBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -693,7 +841,8 @@ func readOpenOutputFileView(f *os.File, path string, checkTotal func(total int64
 	if err != nil {
 		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	view, err := readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, opened.Size())
+	openedSize := opened.Size()
+	view, err := readOutputViewForFile(afero.NewOsFs(), outputMetaPath(path), path, openedSize)
 	if err != nil {
 		return outputView{}, err
 	}
@@ -705,7 +854,11 @@ func readOpenOutputFileView(f *os.File, path string, checkTotal func(total int64
 		return outputView{}, fmt.Errorf("jobstore: stat output: %w", err)
 	}
 	current, err := os.Stat(path)
-	if err != nil || !os.SameFile(info, current) || info.Size() != view.total-view.fileStart {
+	// Fence on the size this read observed, not on the verified window: the file
+	// may legitimately hold a torn suffix past that window, so a stable longer
+	// file is not a change. Growth or shrinkage since the view is, and the
+	// caller's bounded read keeps the suffix out of the scan.
+	if err != nil || !os.SameFile(info, current) || info.Size() != openedSize || openedSize < view.verifiedLength() {
 		return outputView{}, ErrOutputChangedDuringRead
 	}
 	if _, err := f.Seek(view.visibleOffset(), io.SeekStart); err != nil {
@@ -747,6 +900,17 @@ func (o *OutputStore) pruneLocked() error {
 	}
 	keep := o.capBytes
 	tail := make([]byte, keep)
+	// The log is synced before the journal is published below. The journal
+	// describes a tail this file only holds once the log reaches disk, so a crash
+	// between publishing the journal and replacing the file must find the bytes
+	// the journal names: otherwise the pending sidecar describes more than the
+	// log holds, carries no anchor to fall back to, and recovery refuses output
+	// that survived intact.
+	if !o.disableSync {
+		if err := o.f.Sync(); err != nil {
+			return fmt.Errorf("jobstore: sync output before compaction journal: %w", err)
+		}
+	}
 	if _, err := o.f.Seek(info.Size()-keep, 0); err != nil {
 		return fmt.Errorf("jobstore: seek output prune tail: %w", err)
 	}
@@ -824,32 +988,43 @@ func (o *OutputStore) pruneLocked() error {
 	o.retainedStartPartial = retainedStartPartial
 	o.retainedHash = sha256.New()
 	o.retainedHash.Write(tail)
+	// The compaction replaced the retained file, so the previous anchor names
+	// bytes that are no longer in it. The replacement was synced above, which
+	// makes the compacted tail itself durable: seed the anchor from it so an
+	// append before the next barrier cannot publish metadata with no anchor.
+	o.durableFileSize, o.durableSHA256 = keep, outputBytesSHA256(tail)
+	o.synced = false
 	if err := oldFile.Close(); err != nil {
 		return fmt.Errorf("jobstore: close replaced output: %w", err)
 	}
-	if !o.disableSync {
-		if err := syncParentDir(o.fs, o.path); err != nil {
-			return err
-		}
+	if o.disableSync {
+		return nil
+	}
+	if err := syncParentDir(o.fs, o.path); err != nil {
+		return err
+	}
+	// The compaction is a handoff, and it has to be durable as one step. Until
+	// the replacement FINAL sidecar and the removal of the journal are both
+	// committed, a crash leaves the pre-compaction sidecar bound to the
+	// compacted log — a state in which the anchor names bytes the log no longer
+	// holds and recovery refuses output that survived intact. Paying both here
+	// keeps it to one round per compaction rather than one per append.
+	if err := o.writeMetaLocked(true); err != nil {
+		return err
+	}
+	// writeMetaLocked removed the journal. This barrier commits that removal,
+	// which is what keeps a crash from restoring a stale journal against the
+	// compacted log.
+	if err := syncParentDir(o.fs, o.metaPath); err != nil {
+		return err
 	}
 	return nil
 }
 
+// persistMetaLocked writes metadata and pays the barriers that make the log and
+// its sidecar survive a power crash together.
 func (o *OutputStore) persistMetaLocked() error {
-	if o.metaPath == "" {
-		return nil
-	}
-	meta, err := o.outputMetaLocked()
-	if err != nil {
-		return err
-	}
-	if err := writeOutputMetaFileFsSync(o.fs, o.metaPath, meta, !o.disableSync); err != nil {
-		return err
-	}
-	if err := o.fs.Remove(outputPendingMetaPath(o.metaPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("jobstore: remove pending output metadata: %w", err)
-	}
-	return nil
+	return o.writeMetaLocked(true)
 }
 
 func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
@@ -858,6 +1033,12 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 			return outputMeta{}, fmt.Errorf("jobstore: sync output before metadata: %w", err)
 		}
 	}
+	return o.outputMetaContentLocked()
+}
+
+// outputMetaContentLocked builds metadata for the log as it stands, without
+// making the log durable first.
+func (o *OutputStore) outputMetaContentLocked() (outputMeta, error) {
 	meta := outputMeta{
 		TotalBytes:           o.total,
 		RetainedStart:        o.retainedStart,
@@ -878,6 +1059,13 @@ func (o *OutputStore) outputMetaLocked() (outputMeta, error) {
 	return meta, nil
 }
 
+// hasDurableAnchor reports whether the log's durable anchor describes bytes the
+// log still holds. A compaction replaces the log, so an anchor from before it
+// no longer names the retained file.
+func (o *OutputStore) hasDurableAnchor() bool {
+	return o.durableSHA256 != "" && o.durableFileSize <= o.total-o.retainedStart
+}
+
 // writeOutputMetaFile atomically writes meta on the OS filesystem.
 // writeOutputMetaFileFs carries the injectable seam; this preserves the
 // os-backed signature the package's callers and tests already use.
@@ -892,10 +1080,17 @@ func writeOutputMetaFileFs(fs afero.Fs, path string, meta outputMeta) error {
 }
 
 func writeOutputMetaFileFsSync(fs afero.Fs, path string, meta outputMeta, syncWrites bool) error {
-	return writeOutputMetaFileFsSyncMarshal(fs, path, meta, syncWrites, json.Marshal)
+	return writeOutputMetaFileFsSyncDir(fs, path, meta, syncWrites, syncWrites)
 }
 
-func writeOutputMetaFileFsSyncMarshal(fs afero.Fs, path string, meta outputMeta, syncWrites bool, marshal func(any) ([]byte, error)) error {
+// writeOutputMetaFileFsSyncDir writes meta atomically. syncWrites fsyncs the
+// bytes before the rename; syncDir fsyncs the parent directory after it, which
+// only a write that creates this directory entry needs.
+func writeOutputMetaFileFsSyncDir(fs afero.Fs, path string, meta outputMeta, syncWrites, syncDir bool) error {
+	return writeOutputMetaFileFsSyncMarshalDir(fs, path, meta, syncWrites, syncDir, json.Marshal)
+}
+
+func writeOutputMetaFileFsSyncMarshalDir(fs afero.Fs, path string, meta outputMeta, syncWrites, syncDir bool, marshal func(any) ([]byte, error)) error {
 	if path == "" {
 		return nil
 	}
@@ -917,7 +1112,7 @@ func writeOutputMetaFileFsSyncMarshal(fs afero.Fs, path string, meta outputMeta,
 		_ = fs.Remove(tmp)
 		return fmt.Errorf("jobstore: replace output metadata: %w", err)
 	}
-	if syncWrites {
+	if syncDir {
 		if err := syncParentDir(fs, path); err != nil {
 			return err
 		}
@@ -1064,15 +1259,16 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		}
 		return pendingOverOldFile(meta, finalMeta, retained, hash), true, nil
 	}
-	// The tail rewrite replaces the output atomically, so the file is never
-	// shorter than the pending metadata's retained tail; a shortfall here is
-	// out-of-contract tampering, not a writer state.
-	if metaRetained > retained {
-		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
-	}
 	hash, err := outputFileSHA256(fs, outputPath)
 	if err != nil {
 		return outputMeta{}, false, err
+	}
+	// The tail rewrite replaces the output atomically, so the file is never
+	// shorter than the pending metadata's retained tail; a shortfall here is
+	// out-of-contract tampering unless the pending metadata's durable anchor
+	// says the log's unsynced tail was lost.
+	if metaRetained > retained {
+		return acceptLostOutputTail(fs, outputPath, meta, retained)
 	}
 	if meta.RetainedSHA256 != hash {
 		info, err := fs.Stat(outputPath)
@@ -1182,6 +1378,25 @@ func readValidOutputMetaFs(fs afero.Fs, path string, outputPath string, retained
 	if err != nil {
 		return outputMeta{}, false, err
 	}
+	// An anchored sidecar whose window no longer matches the log's contents names
+	// bytes something did vouch for: its anchor. Report that prefix instead of
+	// failing, which is what an equal-length crash (size survived, contents did
+	// not) leaves behind, and failing there aborts session restore over a tail the
+	// ruling lets us lose (Jesse's 2026-11-16 ruling: lose the tail, never
+	// corrupt, and never fail restore for it).
+	if hasDurableAnchorMeta(meta) && metaRetained == retained {
+		if ok, err := outputFileHasPrefixSHA256(fs, outputPath, metaRetained, meta.RetainedSHA256); err != nil {
+			return outputMeta{}, false, err
+		} else if ok {
+			// The window is the whole file here, so the prefix hash just
+			// verified it; rehashing it below would read the file twice on
+			// every ordinary read of a finished job.
+			return meta, true, nil
+		}
+		return acceptLostOutputTail(fs, outputPath, meta, retained)
+	}
+	// A sidecar describes a prefix of the log, and a longer log is output the
+	// sidecar had not recorded yet.
 	if metaRetained < retained {
 		if ok, err := outputFileHasPrefixSHA256(fs, outputPath, metaRetained, meta.RetainedSHA256); err != nil {
 			return outputMeta{}, false, err
@@ -1196,8 +1411,14 @@ func readValidOutputMetaFs(fs afero.Fs, path string, outputPath string, retained
 		meta.RetainedSHA256 = hash
 		return meta, true, nil
 	}
-	if metaRetained != retained {
-		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	if metaRetained > retained {
+		// The metadata names more bytes than the log holds. That is what a power
+		// crash leaves when the sidecar rename reached the disk and the log's
+		// unsynced tail did not, so fall back to the durable anchor the sidecar
+		// carries and report the bytes that survived (Jesse's 2026-11-16 ruling:
+		// lose the tail, never corrupt). Metadata without an anchor, or a log
+		// that does not hold the anchored prefix, is still a mismatch.
+		return acceptLostOutputTail(fs, outputPath, meta, retained)
 	}
 	hash, err := outputFileSHA256(fs, outputPath)
 	if err != nil {
@@ -1237,6 +1458,57 @@ func outputMetaRetainedBytes(meta outputMeta) (int64, error) {
 		return 0, errors.New("jobstore: output metadata does not match retained output")
 	}
 	return meta.TotalBytes - meta.RetainedStart, nil
+}
+
+// hasDurableAnchorMeta reports whether a sidecar names a prefix of its log that
+// reached the disk. Without one, recovery cannot tell a log's untrusted suffix
+// from output its sidecar had not recorded.
+func hasDurableAnchorMeta(meta outputMeta) bool {
+	return meta.DurableFileSize != nil && meta.DurableSHA256 != ""
+}
+
+// acceptLostOutputTail reports the surviving bytes of a log whose metadata
+// describes more. It accepts only when the sidecar carries a durable anchor and
+// the log still holds the prefix that anchor names, which is the state a power
+// crash leaves when the sidecar rename reached the disk and the log's unsynced
+// tail did not. The returned metadata describes the bytes that survived, so
+// every reader places them in the same lifetime offsets the anchor used.
+func acceptLostOutputTail(fs afero.Fs, outputPath string, meta outputMeta, retained int64) (outputMeta, bool, error) {
+	if !hasDurableAnchorMeta(meta) {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	anchored := *meta.DurableFileSize
+	if anchored < 0 || anchored > retained {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	if ok, err := outputFileHasPrefixSHA256(fs, outputPath, anchored, meta.DurableSHA256); err != nil {
+		return outputMeta{}, false, err
+	} else if !ok {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	if anchored == 0 {
+		// A store that crashed before its first barrier has a genuine zero-length
+		// anchor, and the checksum above vouches for no byte. Report the log as
+		// empty rather than refuse it: refusing makes recovery abort session
+		// restore, which turns a tail the ruling allows us to lose into a dead
+		// session, and reporting the surviving bytes would present bytes nothing
+		// verified as output. Losing the whole tail is the honest answer.
+		meta.TotalBytes = meta.RetainedStart
+		meta.RetainedSHA256 = outputBytesSHA256(nil)
+		meta.VisibleStart, meta.VisibleStartPartial = nil, nil
+		return meta, true, nil
+	}
+	// Only the anchored prefix is bytes something vouched for. Whatever survives
+	// past it is the log the crash could not save, and a torn page can leave
+	// arbitrary content there, so report the anchored prefix as the output
+	// rather than present unverified bytes (Jesse's 2026-11-16 ruling: lose the
+	// tail, never corrupt).
+	meta.TotalBytes = meta.RetainedStart + anchored
+	meta.RetainedSHA256 = meta.DurableSHA256
+	if meta.VisibleStart != nil && *meta.VisibleStart > meta.TotalBytes {
+		meta.VisibleStart = new(meta.TotalBytes)
+	}
+	return meta, true, nil
 }
 
 func outputFileHasPrefixSHA256(fs afero.Fs, path string, n int64, want string) (bool, error) {
@@ -1411,9 +1683,20 @@ func appendGrepLine(matches *[]Match, re *regexp.Regexp, offset int64, raw []byt
 	return *budget <= 0
 }
 
-// Close closes the underlying file.
+// Close pays any outstanding barriers, so the closed log and its metadata are
+// durable together, then closes the file. A closed store is inert: a second
+// Close reports no error.
 func (o *OutputStore) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed {
+		return nil
+	}
+	flushErr := o.flushLocked()
+	if flushErr != nil {
+		// The barrier is still owed, so the store stays open and retryable.
+		return flushErr
+	}
+	o.closed = true
 	return o.f.Close()
 }

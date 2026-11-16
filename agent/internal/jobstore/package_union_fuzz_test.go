@@ -39,7 +39,7 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	mustWrite(output, []byte("abcdef"))
 
 	want := errors.New("marshal metadata")
-	if err := writeOutputMetaFileFsSyncMarshal(base, final, outputMeta{}, false, func(any) ([]byte, error) { return nil, want }); !errors.Is(err, want) {
+	if err := writeOutputMetaFileFsSyncMarshalDir(base, final, outputMeta{}, false, false, func(any) ([]byte, error) { return nil, want }); !errors.Is(err, want) {
 		t.Fatalf("marshal error = %v", err)
 	}
 	if err := writeOutputMetaFileFsSync(&jcpHookFS{Fs: base, wrap: func(f afero.File) afero.File { return &jcpHookFile{File: f, closeErr: jcpInjectedErr} }}, final, outputMeta{}, false); err == nil {

@@ -1675,6 +1675,13 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 // finalize without notification-arming (spec §6.4d).
 func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) (*terminalJob, error) {
 	var outputBytes int64
+	// Append batches its barriers now, so the finish seam is where the log and
+	// its metadata become durable together. The record written below names
+	// outputBytes, and every later reader compares that count against the
+	// metadata's total.
+	if err := run.output.Flush(); err != nil {
+		return nil, &terminalRecordPersistError{status: status, err: err}
+	}
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
 	}
@@ -1770,6 +1777,9 @@ func (jm *jobManager) emitFinishedJob(run *runningJob, terminal *terminalJob) {
 func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore, p *provenance.Causal) error {
 	var outputBytes int64
 	if output != nil {
+		if err := output.Flush(); err != nil {
+			return &terminalRecordPersistError{status: jobstore.StatusFailed, err: err}
+		}
 		if _, total, _, err := output.Tail(0); err == nil {
 			outputBytes = total
 		}
