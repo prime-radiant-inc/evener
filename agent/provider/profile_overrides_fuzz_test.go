@@ -32,6 +32,9 @@ import (
 //   - deepCopyJSONMap round-trips and is independent: the copy is deep-equal to the
 //     input and mutating the copy never reaches the input.
 //   - toStringSlice agrees across []string and its []any (post-JSON) form.
+//   - a JSON round-trip failure surfaces: a parameters or output schema that
+//     cannot marshal, and an injected seam failure in either direction, reaches
+//     the caller as an error rather than returning an unbound definition.
 //
 // SAFETY: pure in-memory schema transforms — no network, no I/O, no spawn.
 func FuzzProfileOverrides(f *testing.F) {
@@ -121,22 +124,28 @@ func assertOverrideFaultBranches(t *testing.T) {
 		{Parameters: map[string]any{"properties": map[string]any{"output": map[string]any{}}}},
 	}
 	for _, bad := range badShapes {
-		_ = replaceCommunicateOutputSchema(bad, map[string]any{})
+		_, _ = replaceCommunicateOutputSchema(bad, map[string]any{})
 		_ = addDecisionToSchema(bad, []string{"continue"})
 	}
 	_ = addDecisionToSchema(td, []string{"continue"})
-	_ = replaceCommunicateOutputSchema(td, map[string]any{"bad": make(chan int)})
+	if _, err := replaceCommunicateOutputSchema(td, map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("an unmarshalable output schema should fail the bind")
+	}
 	marshalErr := errors.New("marshal")
 	unmarshalErr := errors.New("unmarshal")
 	oldMarshal, oldUnmarshal := profileJSONMarshal, profileJSONUnmarshal
 	defer func() { profileJSONMarshal, profileJSONUnmarshal = oldMarshal, oldUnmarshal }()
 	profileJSONMarshal = func(any) ([]byte, error) { return nil, marshalErr }
-	_ = replaceCommunicateOutputSchema(td, map[string]any{})
+	if _, err := replaceCommunicateOutputSchema(td, map[string]any{}); !errors.Is(err, marshalErr) {
+		t.Fatalf("a parameters marshal failure should reach the caller, got %v", err)
+	}
 	_ = addDecisionToSchema(td, []string{"continue"})
 	_, _ = deepCopyJSONMap(map[string]any{})
 	profileJSONMarshal = oldMarshal
 	profileJSONUnmarshal = func([]byte, any) error { return unmarshalErr }
-	_ = replaceCommunicateOutputSchema(td, map[string]any{})
+	if _, err := replaceCommunicateOutputSchema(td, map[string]any{}); !errors.Is(err, unmarshalErr) {
+		t.Fatalf("a parameters unmarshal failure should reach the caller, got %v", err)
+	}
 	_ = addDecisionToSchema(td, []string{"continue"})
 	_, _ = deepCopyJSONMap(map[string]any{})
 	profileJSONUnmarshal = oldUnmarshal
@@ -146,7 +155,7 @@ func assertOverrideFaultBranches(t *testing.T) {
 		}
 		return oldMarshal(v)
 	}
-	_ = replaceCommunicateOutputSchema(td, nil)
+	_, _ = replaceCommunicateOutputSchema(td, nil)
 }
 
 func assertBaseUnchanged(t *testing.T, base *Profile, snapshot []byte, op string) {
