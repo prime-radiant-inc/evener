@@ -1265,14 +1265,16 @@ their implementation or further approval-design discussion.
 read_file, write_file and edit_file on a root session with an active subscriber.
 Batch patch, browsing and shell operations have no equivalent path here;
 delegates cannot escalate to the parent through it. Repeated approved file work
-can require repeated decisions. A batch patch applies operations sequentially,
-so a permission error on a later operation can follow successful earlier edits.
+can require repeated decisions. A batch patch applies its operations in order,
+so a permission error on a later one can follow successful earlier edits.
 
 **Evidence.** [Invocation grant](../../agent/session_escalation.go#L60),
 [eligibility/tool gates](../../agent/session_escalation.go#L107), and
 [rerun](../../agent/session_escalation.go#L231) define the limit.
-The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L18) applies each
-operation before checking the next and returns on the first error.
+The [ApplyPatch loop](../../agent/internal/tool/apply_patch.go#L28) applies each
+operation in order and returns on the first error. Consecutive update sections
+on one file are applied together, so a later section's error follows the
+earlier sections' edits having been written.
 This is a scoped mechanism, not a claim that every Evener permission flow has
 these restrictions.
 
