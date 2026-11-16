@@ -22,14 +22,19 @@ QUEUE_BRANCH="gh-readonly-queue/main/pr-6499-$HEAD_SHA"
 RUN_ID="123456789"
 RUN_URL="https://github.com/prime-radiant-inc/evener/actions/runs/$RUN_ID"
 
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
-STUBDIR="$TMPDIR/bin"
+# Scratch is minted by scratch_dir and reclaimed by the no-argument
+# scratch_rm (scripts/lib/scratch-lib.sh): a recursive delete must never
+# take an argument a caller could clobber. The trap is armed before the
+# mint, so a failure in between still reclaims the directory.
+. "$SCRIPT_DIR/../lib/scratch-lib.sh"
+trap 'scratch_rm' EXIT
+scratch_dir TEST_TMP merge-enqueue-test
+STUBDIR="$TEST_TMP/bin"
 mkdir -p "$STUBDIR"
-GH_LOG="$TMPDIR/gh-calls.log"
-GH_STATE="$TMPDIR/gh-state"
-LAST_OUT="$TMPDIR/last-out.txt"
-LAST_CODE="$TMPDIR/last-code.txt"
+GH_LOG="$TEST_TMP/gh-calls.log"
+GH_STATE="$TEST_TMP/gh-state"
+LAST_OUT="$TEST_TMP/last-out.txt"
+LAST_CODE="$TEST_TMP/last-code.txt"
 
 cat > "$STUBDIR/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -167,11 +172,11 @@ expect_token "$RUN_URL" "run URL $RUN_URL"
 [ "$scenario_failures" -eq 0 ] && printf 'PASS: %s\n' "$current_name" || failures=$(( failures + 1 ))
 
 run_scenario "no head from status: falls back without crashing" failed_checks 60 "$RUN_JSON" 0 0 "-" 0 "-"
-expect_token "the merge-group run for this PR" "generic run reference"
+grep -Fq "run list" "$GH_LOG" && fail "unexpected gh run list call"
 [ "$scenario_failures" -eq 0 ] && printf 'PASS: %s\n' "$current_name" || failures=$(( failures + 1 ))
 
 run_scenario "null head from status: falls back without crashing" failed_checks 60 "$RUN_JSON" 0 0 "null" 0 "null"
-expect_token "the merge-group run for this PR" "generic run reference"
+grep -Fq "run list" "$GH_LOG" && fail "unexpected gh run list call"
 [ "$scenario_failures" -eq 0 ] && printf 'PASS: %s\n' "$current_name" || failures=$(( failures + 1 ))
 
 # The queued read supplied no head but the detecting read does: the snapshot
