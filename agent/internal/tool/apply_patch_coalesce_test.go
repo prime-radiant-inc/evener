@@ -187,6 +187,24 @@ func FuzzApatchCoalescedMatchesSequential(f *testing.F) {
 	for _, s := range apatch_seeds() {
 		f.Add(s.patch, s.base)
 	}
+	// The shared seeds all name file.txt, which this harness does not create, so
+	// they never reach a successful update. These name f.txt and carry
+	// consecutive sections on it, the case coalescing exists for.
+	for _, s := range []struct{ patch, base string }{
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-alpha\n+ALPHA\n*** Update File: f.txt\n@@\n-gamma\n+GAMMA\n*** End Patch\n", "alpha\nbeta\ngamma\n"},
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-beta\n+BETA\n*** Update File: f.txt\n@@\n-gamma\n+GAMMA\n*** Update File: f.txt\n@@\n-delta\n+DELTA\n*** End Patch\n", "alpha\nbeta\ngamma\ndelta\n"},
+		// A later section matching a line the earlier one added.
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-beta\n+inserted\n*** Update File: f.txt\n@@\n-inserted\n+rewritten\n*** End Patch\n", "alpha\nbeta\ngamma\n"},
+		// A later section matching above the earlier one's edit.
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-gamma\n+GAMMA\n*** Update File: f.txt\n@@\n-alpha\n+ALPHA\n*** End Patch\n", "alpha\nbeta\ngamma\n"},
+		// A later section that cannot match, so the earlier ones write back.
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-alpha\n+ALPHA\n*** Update File: f.txt\n@@\n-not present\n+X\n*** End Patch\n", "alpha\nbeta\ngamma\n"},
+		// A run ended by a Move to, and a run ended by another path.
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-alpha\n+ALPHA\n*** Update File: f.txt\n*** Move to: g.txt\n@@\n-g one\n+G ONE\n*** End Patch\n", "alpha\nbeta\ngamma\n"},
+		{"*** Begin Patch\n*** Update File: f.txt\n@@\n-alpha\n+ALPHA\n*** Update File: g.txt\n@@\n-g one\n+G ONE\n*** Update File: f.txt\n@@\n-gamma\n+GAMMA\n*** End Patch\n", "alpha\nbeta\ngamma\n"},
+	} {
+		f.Add(s.patch, s.base)
+	}
 	f.Fuzz(func(t *testing.T, patch, base string) {
 		want := runPatchOnFixture(t, base, patch, applyPatchSequential)
 		got := runPatchOnFixture(t, base, patch, ApplyPatchCtx)
