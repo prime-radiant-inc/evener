@@ -130,30 +130,82 @@ func TestTuneGCTargetMovesTheRealCollectorTarget(t *testing.T) {
 // --version returns before any run, making the assertion about what main did
 // on its way in rather than about work a subcommand happened to do.
 //
-// Not parallel: it replaces os.Args and os.Stdout and moves the process-wide
-// collector target.
+// main reads GOGC from the real environment, so each case runs the entry point
+// under the environment it is about. An inherited GOGC is an operator's target
+// and main must leave it alone; the variable's absence is what the tuning is
+// for. A case that assumed an absent GOGC without clearing it failed whenever
+// the caller exported one, which is how this repo runs GC-stress loops.
+//
+// Not parallel: it replaces os.Args and os.Stdout, edits the environment, and
+// moves the process-wide collector target.
 func TestMainTunesTheCollectorBeforeDoingAnyWork(t *testing.T) {
-	previous := debug.SetGCPercent(gcDefaultPercent)
-	t.Cleanup(func() { debug.SetGCPercent(previous) })
+	const operatorPercent = 50
+	cases := []struct {
+		name string
+		// gogc is exported when gogcSet is true. GOGC=off and GOGC=100 are
+		// cases the operator would also export, but one exported value proves
+		// the presence test; the value itself is covered by the table above.
+		gogc    string
+		gogcSet bool
+		from    int
+		want    int
+	}{
+		{
+			name: "no operator GOGC tunes the collector",
+			from: gcDefaultPercent,
+			want: gcTargetPercent,
+		},
+		{
+			name:    "an operator's GOGC is left in place",
+			gogc:    "50",
+			gogcSet: true,
+			from:    operatorPercent,
+			want:    operatorPercent,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.gogcSet {
+				t.Setenv("GOGC", tc.gogc)
+			} else {
+				clearGOGC(t)
+			}
 
-	oldArgs, oldStdout := os.Args, os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
+			previous := debug.SetGCPercent(tc.from)
+			t.Cleanup(func() { debug.SetGCPercent(previous) })
+
+			oldArgs, oldStdout := os.Args, os.Stdout
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.Args, os.Stdout = []string{"evener", "--version"}, w
+			t.Cleanup(func() {
+				os.Args, os.Stdout = oldArgs, oldStdout
+				_ = r.Close()
+			})
+
+			main()
+			_ = w.Close()
+			if _, err := io.ReadAll(r); err != nil {
+				t.Fatalf("read --version output: %v", err)
+			}
+
+			if got := goGCTargetPercent(t); got != tc.want {
+				t.Fatalf("collector target after main = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// clearGOGC leaves GOGC genuinely unset for the test, so the entry point reads
+// the absence its tuning is for rather than whatever the caller exported.
+// t.Setenv registers the restore; os.Unsetenv is what "unset" means. This is
+// the shape clearOpenAIKey uses for the same reason.
+func clearGOGC(t *testing.T) {
+	t.Helper()
+	t.Setenv("GOGC", "")
+	if err := os.Unsetenv("GOGC"); err != nil {
 		t.Fatal(err)
-	}
-	os.Args, os.Stdout = []string{"evener", "--version"}, w
-	t.Cleanup(func() {
-		os.Args, os.Stdout = oldArgs, oldStdout
-		_ = r.Close()
-	})
-
-	main()
-	_ = w.Close()
-	if _, err := io.ReadAll(r); err != nil {
-		t.Fatalf("read --version output: %v", err)
-	}
-
-	if got := goGCTargetPercent(t); got != gcTargetPercent {
-		t.Fatalf("collector target after main = %d, want %d", got, gcTargetPercent)
 	}
 }
