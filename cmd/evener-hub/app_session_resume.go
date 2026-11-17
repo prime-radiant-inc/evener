@@ -15,9 +15,11 @@ import (
 // resuming the daemon, exactly as StartTurn/Compact/SetModel already do.
 //
 // The retry only fires when the ref is one the hub knows (a managed-launch
-// source or a thread in the local past index) and the failure is a
-// session-unavailable error — a live in-flight error or an unknown ref is
-// returned unchanged so we never resurrect a session to mask a real fault.
+// source, a thread in the local past index, or any ref a registered remote
+// source owns) and the failure is a session-unavailable error — a live
+// in-flight error or an unknown ref is returned unchanged so we never
+// resurrect a session to mask a real fault. A remote ref cannot be checked
+// against a saved index here, so the source's own resume admission decides.
 //
 // afterResume, when non-nil, runs between the resume and the retry. A mutation
 // whose change is published only as a live notification needs it: the

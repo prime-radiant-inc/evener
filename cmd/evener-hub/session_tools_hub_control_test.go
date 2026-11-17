@@ -470,6 +470,74 @@ func TestManagerSessionControlModelResumesPastThread(t *testing.T) {
 	}
 }
 
+// TestManagerSessionControlModelColdResumeAttachesRelay pins the medium review
+// finding: the authority read is what resumes a cold session, so the relay that
+// carries the resumed daemon's control, status and model frames has to be
+// attached from that resume. Without it the switch applies while every
+// subscribed pane keeps rendering the exited session's model.
+func TestManagerSessionControlModelColdResumeAttachesRelay(t *testing.T) {
+	var sessionID string
+	readCalls := 0
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			readCalls++
+			snapshot := appwire.ModelControlSnapshot{
+				Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "boot-manager"},
+				Revision:  1,
+				Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{}},
+			}
+			return appwire.ThreadReadResponse{
+				Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{
+					Ref: params.Ref, InstanceID: sessionID,
+					Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+					ModelControl: &snapshot,
+				}},
+				BootGeneration: "boot-manager",
+			}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+			snapshot := appwire.ModelControlSnapshot{
+				Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "boot-manager"},
+				Revision:  2,
+				Active:    appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}},
+			}
+			return appwire.ThreadModelSetResponse{
+				ModelControlVersion: appwire.ModelControlVersion1,
+				Disposition:         appwire.ModelControlDispositionAccepted,
+				ModelControl:        &snapshot,
+			}, nil
+		})
+	})
+	sessionID = sid
+
+	// The relay's own read is the attach: prepareRelay consults the seam before
+	// every subscription read, so a Manager switch that leaves a relay listening
+	// for the resumed daemon shows up here.
+	relayReads := 0
+	cfg.RelayHooks.BeforeReadThread = func() { relayReads++ }
+	server, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer server.Close()
+	owner := &sessionOperations{
+		cfg: web.cfg, sources: web.sources, navigation: web.navigation,
+		resolve: web.resolveTopLevelSessionRef,
+		relays:  newHubRelay(web.appRPC, web.cfg, web.sources),
+	}
+
+	_, err := owner.Control(t.Context(), appwire.SessionControlRequest{
+		Action: "model",
+		Model:  &appwire.SessionControlModelParams{Ref: "local:" + sessionID, ModelProvider: "openai", Model: "gpt-5.6-sol"},
+	})
+	if err != nil {
+		t.Fatalf("cold Manager model control: %v", err)
+	}
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls = %d, want exactly one", *resumeCalls)
+	}
+	if relayReads == 0 {
+		t.Fatalf("no relay was attached for the resumed daemon (reads=%d), so a subscribed pane would keep the exited session's model", readCalls)
+	}
+}
+
 func TestManagerSessionControlModelResumesRemoteSavedThread(t *testing.T) {
 	const (
 		ref       = "remote:worker"

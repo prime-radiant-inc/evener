@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -155,7 +156,11 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 		})
 
 		t.Run("set model guards and switch", func(t *testing.T) {
-			s := &Session{profile: NewOpenAIProfile("gpt-5"), reg: tool.NewRegistry()}
+			// Every production session carries the id NewSession assigned it
+			// (session_init.go), and SetModel's authority check requires that
+			// identity, so a fixture that means "a real session switching
+			// provider" must carry one too.
+			s := &Session{id: "standalone_" + ulid.Make().String(), profile: NewOpenAIProfile("gpt-5"), reg: tool.NewRegistry()}
 			s.resolveProfile = func(string) (*provider.Profile, error) {
 				return nil, errors.New("resolver failure")
 			}
@@ -173,7 +178,7 @@ func FuzzSessionGoTailCoverage(f *testing.F) {
 			lister := &tailCoverageBlockingLister{entered: make(chan struct{}), release: make(chan struct{})}
 			client := llm.NewClient()
 			client.Register(lister)
-			tracing := &Session{profile: NewOpenAIProfile("gpt-5"), client: client, reg: tool.NewRegistry()}
+			tracing := &Session{id: "standalone_" + ulid.Make().String(), profile: NewOpenAIProfile("gpt-5"), client: client, reg: tool.NewRegistry()}
 			done := make(chan struct{})
 			go func() {
 				tracing.SetModel("gpt-5.1")

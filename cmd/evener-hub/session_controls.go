@@ -119,11 +119,23 @@ func (o *sessionOperations) Control(ctx context.Context, request appwire.Session
 	return out, appwire.InvalidParams("unknown session control action")
 }
 
-func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, _ *hubRelay, params appwire.SessionControlModelParams) (appwire.ThreadModelSetResponse, error) {
+func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, params appwire.SessionControlModelParams) (appwire.ThreadModelSetResponse, error) {
 	if err := params.Validate(); err != nil {
 		return appwire.ThreadModelSetResponse{}, err
 	}
-	read, err := withSessionResume(ctx, cfg, sources, params.Ref, "", nil, func() (appwire.ThreadReadResponse, error) {
+	// A cold session's authority read is what resumes the daemon, so the relay
+	// that carries the resumed daemon's control, status and model frames to
+	// subscribed panes has to be attached from that resume's own hook - the
+	// same shape setReasoningEffortControl uses. Without it the Manager's
+	// switch applies while every pane, browser or phone, keeps rendering the
+	// exited session's model until it reconnects.
+	afterResume := func(resumed appwire.ThreadResumeResponse) error {
+		if relays == nil {
+			return nil
+		}
+		return relays.startRelayForThread(ctx, resumed.Thread)
+	}
+	read, err := withSessionResume(ctx, cfg, sources, params.Ref, "", afterResume, func() (appwire.ThreadReadResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
@@ -154,11 +166,15 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 		ExpectedInstanceID:     authority.InstanceID,
 		ExpectedBootGeneration: authority.BootGeneration,
 	}
-	source, err := sourceForThread(sources, params.Ref, "")
-	if err != nil {
-		return appwire.ThreadModelSetResponse{}, err
-	}
-	response, err := source.SetThreadModel(ctx, mutation)
+	// The authority was read before this dispatch, so a delete or force-stop
+	// landing in between has to be re-checked here rather than acted on.
+	response, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", mutation.ClientMutationID, func() (appwire.ThreadModelSetResponse, error) {
+		source, err := sourceForThread(sources, params.Ref, "")
+		if err != nil {
+			return appwire.ThreadModelSetResponse{}, err
+		}
+		return source.SetThreadModel(ctx, mutation)
+	})
 	if err != nil && managerModelMutationNeedsDiagnosticRead(err) {
 		if source, sourceErr := sourceForThread(sources, params.Ref, ""); sourceErr == nil {
 			_, _ = source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})

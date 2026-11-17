@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // FuzzEventDataProgram runs every member of the sealed event payload set
@@ -70,6 +72,11 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{TaskUpdatedData{Total: n, Done: n, Cancelled: n, Remaining: n, Current: &TaskSummaryData{ID: n, Description: text}, TaskStoreOwnerSessionID: text}, EventTaskUpdated},
 		{SessionNameChangedData{Name: text, Source: text}, EventSessionNameChanged},
 		{ModelChangedData{OldProvider: text, OldModel: text, NewProvider: text, NewModel: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag}, EventModelChanged},
+		{ModelControlChangedData{Snapshot: appwire.ModelControlSnapshot{
+			Authority: appwire.ModelControlAuthority{InstanceID: text, BootGeneration: text},
+			Revision:  uint64(max(n, 0)),
+			Active:    appwire.ModelControlActive{ModelProvider: text, Model: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag},
+		}}, EventModelControlChanged},
 		{ReasoningEffortChangedData{ReasoningEffort: text}, EventReasoningEffortChanged},
 		{VisionModelChangedData{OldVisionModel: text, NewVisionModel: text}, EventVisionModelChanged},
 		{TurnLimitData{MaxTurns: n, MaxToolRoundsPerInput: n}, EventTurnLimit},
