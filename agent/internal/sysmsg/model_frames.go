@@ -28,11 +28,19 @@ var modelAuthoredFrameOpeners = []string{
 	"<environment-context",
 	"<shared-notes",
 	"<skill-context",
+	"<skill-inventory",
 	"[answers]",
 	"[CONTEXT SUMMARY]",
 	"[CONTEXT CHECKPOINT]",
+	// The session-log strategy's own checkpoint header, which opens with the
+	// same bracket run as the deterministic one and would otherwise pass the
+	// "[CONTEXT CHECKPOINT]" comparison below only by its longer prefix.
+	"[CONTEXT CHECKPOINT - SESSION LOG]",
 	"[END SUMMARY]",
 	"[END CHECKPOINT]",
+	// The OODA strategy's orientation banner (internal/contextmgr/strategy_ooda.go),
+	// appended as a user-role steering turn.
+	"[SESSION ORIENTATION]",
 }
 
 // EscapeModelAuthoredFrames returns text with every line-start harness input
