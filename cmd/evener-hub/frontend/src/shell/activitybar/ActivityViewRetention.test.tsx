@@ -201,7 +201,7 @@ test("an unseen child keeps the ongoing inspection open after an immediate reloa
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs", ref: otherRef });
 });
 
-test("inactive agent disclosure and locally revealed rows survive reload without copying another session", async () => {
+test("expanded inactive history reveals every downloaded row and survives reload without copying another session", async () => {
   const makeClient = () => {
     const client = activityClient();
     client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -231,8 +231,8 @@ test("inactive agent disclosure and locally revealed rows survive reload without
   activitySidebarStore.getState().openWith("agents");
   mount();
   fireEvent.click(await screen.findByText("21 inactive subagents"));
-  fireEvent.click(screen.getByRole("button", { name: /Show 1 more/ }));
   expect(screen.getByRole("button", { name: /Finished check 20/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Show .*more/ })).toBeNull();
   fireEvent.click(screen.getByRole("radio", { name: "About" }));
   await screen.findByText("owner");
   fireEvent.click(screen.getByRole("radio", { name: /Agents/ }));

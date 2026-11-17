@@ -586,59 +586,50 @@ test("a scroll inside expanded watch details retains that watch instead of the n
   await waitFor(() => expect(viewport().scrollTop).toBe(500));
 });
 
-test.each([false, true])(
-  "retained agent anchor reveals local history only while restoration remains active; cancelled=%s",
-  async (cancelled) => {
-    const delegates = Array.from({ length: 30 }, (_, index) =>
-      activityDelegate({
-        delegateId: `delegate-${index}`,
-        childRef: `remote:child-${index}`,
-        description: `History agent ${index}`,
-        terminal: true,
-        status: "completed",
-        outcome: "success",
-      }),
-    );
-    const target = delegates[24];
-    if (!target) throw new Error("agent target missing");
-    installFocusedScope(ref);
-    activitySidebarStore.getState().openWith("agents");
-    activitySidebarStore.getState().setCategoryView(ref, "agents", {
-      anchor: { id: activityNodeID({ ...target, kind: "delegate" }), offset: 0 },
-      shown: 20,
-    });
-    setDisclosureOpen(`${ref}\0inactive-delegates`, true);
-    const client = activityClient();
-    let finish: (() => void) | undefined;
-    client.on("evener/thread/delegates/list", async ({ cursor }) => {
-      if (cursor)
-        await new Promise<void>((resolve) => {
-          finish = resolve;
-        });
-      return {
-        context: activityContext(),
-        scope: "session",
-        delegates: cursor ? delegates.slice(10) : delegates.slice(0, 10),
-        page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) },
-      };
-    });
-    connectionStore.getState().connect(client);
-    mount();
-    await screen.findByRole("button", { name: /History agent 0/ });
-    await act(async () => Visibility.latest().emit(true));
-    await waitFor(() => expect(finish).toBeTypeOf("function"));
-    if (cancelled) {
-      fireEvent.wheel(viewport(), { deltaY: -100 });
-      viewport().scrollTop = 0;
-      fireEvent.scroll(viewport());
-    }
-    await act(async () => finish?.());
-    const targetRow = screen.queryByRole("button", { name: /History agent 24/ });
-    if (cancelled) expect(targetRow).toBeNull();
-    else expect(targetRow).toBeTruthy();
-    expect(activitySidebarStore.getState().views.get(ref)?.categories.agents?.shown).toBe(cancelled ? 20 : 40);
-  },
-);
+test("retained agent history stays revealed after viewport restoration is cancelled", async () => {
+  const delegates = Array.from({ length: 30 }, (_, index) =>
+    activityDelegate({
+      delegateId: `delegate-${index}`,
+      childRef: `remote:child-${index}`,
+      description: `History agent ${index}`,
+      terminal: true,
+      status: "completed",
+      outcome: "success",
+    }),
+  );
+  const target = delegates[24];
+  if (!target) throw new Error("agent target missing");
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  activitySidebarStore.getState().setCategoryView(ref, "agents", {
+    anchor: { id: activityNodeID({ ...target, kind: "delegate" }), offset: 0 },
+  });
+  setDisclosureOpen(`${ref}\0inactive-delegates`, true);
+  const client = activityClient();
+  let finish: (() => void) | undefined;
+  client.on("evener/thread/delegates/list", async ({ cursor }) => {
+    if (cursor)
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    return {
+      context: activityContext(),
+      scope: "session",
+      delegates: cursor ? delegates.slice(10) : delegates.slice(0, 10),
+      page: { complete: !!cursor, issues: [], ...(!cursor ? { nextCursor: "next" } : {}) },
+    };
+  });
+  connectionStore.getState().connect(client);
+  mount();
+  await screen.findByRole("button", { name: /History agent 0/ });
+  await act(async () => Visibility.latest().emit(true));
+  await waitFor(() => expect(finish).toBeTypeOf("function"));
+  fireEvent.wheel(viewport(), { deltaY: -100 });
+  viewport().scrollTop = 0;
+  fireEvent.scroll(viewport());
+  await act(async () => finish?.());
+  expect(screen.getByRole("button", { name: /History agent 24/ })).toBeTruthy();
+});
 
 test.each(["Tab", "Shift", "Control", "Alt", "Meta", "a"])(
   "%s without activation or scrolling preserves the pending row and offset through a deferred page",

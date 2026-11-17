@@ -32,7 +32,6 @@ const current = (id) => `<button id="current-${id}" data-activity-anchor="delega
 const inactive = (id) => `<button id="inactive-${id}" data-activity-anchor="delegate:${id}">finished delegate</button>`;
 const fold = ({ id = "inactive-fold", attrs = "" } = {}) =>
   `<details><summary id="${id}" ${attrs}>51 inactive subagents</summary></details>`;
-const show = (id = "show-more") => `<button id="${id}">Show 20 more · 31 remaining</button>`;
 const loadMore = (id = "load-more") =>
   `<div id="${id}" role="status" aria-label="Loading"><div data-testid="skeleton-line"></div></div>`;
 
@@ -75,16 +74,8 @@ test("an unknown inactive total still exposes the native disclosure", () => {
   expect(gate(MISSING_TARGET)).toBe(true);
 });
 
-test("an open fold (an anchor follows it) presses Show more", () => {
-  expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${show()}`))).toBe("show-more");
-});
-
 test("an open fold with every loaded inactive row visible has no control to press", () => {
   expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${loadMore()}`))).toBeNull();
-});
-
-test("an open fold with both local and remote pages presses Show first", () => {
-  expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${show()}${loadMore()}`))).toBe("show-more");
 });
 
 test("without a fold the remote page boundary loads automatically", () => {
