@@ -494,6 +494,51 @@ func TestLaterArrivingUpdateCauseStillJoinsTheTurn(t *testing.T) {
 	}
 }
 
+// A settled round presents its items once. Re-presenting an item at a later
+// request of the same turn must not merge its cause again: the chain keeps one
+// entry per cause, so copies would spend the bounded head on one exchange and
+// leave too few distinct watch fires for the runaway fuse to count.
+//
+// Two guards hold this: the merge-once set stops the second union, and Union
+// collapses identical entries if one arrives. Neither alone is load-bearing,
+// so this counts raw chain entries — a distinct-id count cannot see copies.
+func TestRepresentingAnItemInTheSameTurnMergesItsCauseOnce(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	root := fixture.root
+	causes := &root.delegateController.attentionCauses
+	const update = "delegate:dlg_x/update/1"
+	stage := func(ids ...string) {
+		root.attentionMu.Lock()
+		staged := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			staged[id] = struct{}{}
+		}
+		root.attentionStagedIDs = staged
+		root.attentionMu.Unlock()
+	}
+	root.resetAttentionCoverage()
+	causes.remember(update, provenance.WithMessage(nil, "child-session", update))
+
+	// Four settled requests of one turn present the same item, the way one
+	// delegate update surfaces on more than one request.
+	for range 4 {
+		stage(update)
+		root.promoteStagedAttentionCoverage(llm.Request{})
+	}
+
+	// Count the chain itself: MessagesFrom reports distinct delivery ids, so it
+	// cannot see a cause merged more than once.
+	entries := 0
+	for _, entry := range root.activeCausalProvenance().Chain {
+		if entry.Kind == provenance.EntryKindMessage && entry.SessionID == "child-session" {
+			entries++
+		}
+	}
+	if entries != 1 {
+		t.Fatalf("the turn's lineage holds %d copies of one update, want 1: re-presenting an item must not merge its cause again", entries)
+	}
+}
+
 // A held report a positive-wait delegate_send consumes inline spends its
 // delivery in a tool-results turn, which carries no attention ID: the reply's
 // earlier_results are the only trace of what the parent's request presented.
