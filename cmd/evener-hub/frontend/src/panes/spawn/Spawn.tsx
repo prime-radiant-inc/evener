@@ -2004,7 +2004,7 @@ function SpawnForm({
   const resolvedEffortDefault =
     typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
   const effortOptions = [
-    { value: "", label: effortDefaultLabel(resolvedEffortDefault) },
+    { value: "", label: effortDefaultLabel(resolvedEffortDefault, effortLevels) },
     ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: effortLabel("none", effortLevels) },
