@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -224,6 +225,64 @@ func TestResetWithNothingStreamedEmitsNothingButStillStartsANewAttempt(t *testin
 	item := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "x"}))))
 	if item.StreamID != "r_1/2" {
 		t.Fatalf("stream after an empty reset = %q, want r_1/2", item.StreamID)
+	}
+}
+
+// TestADeltaAfterANewRoundOrAttemptNamesThatRoundAndAttempt pins the stream key
+// a delta appends to across every way the attempt changes. The overlay caches
+// the attempt's stream key so a delta does not rebuild it, and a key that
+// outlived its attempt would append a new round's text to the old round's
+// stream.
+func TestADeltaAfterANewRoundOrAttemptNamesThatRoundAndAttempt(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "one"}))
+
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_2"}))
+	second := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "two"}))))
+	if second.Key != "stream:r_2/1:agentMessage" || second.Item.Text != "two" {
+		t.Fatalf("first delta of round r_2 = %+v, want a new stream r_2/1 holding only its own text", second)
+	}
+
+	o.Event(events.New(events.AssistantTextResetData{}))
+	third := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "three"}))))
+	if third.Key != "stream:r_2/2:agentMessage" || third.Item.Text != "three" {
+		t.Fatalf("first delta of attempt r_2/2 = %+v, want a new stream r_2/2", third)
+	}
+}
+
+// TestADeltaPublishesExactlyKeyFieldAndDelta pins the published overlay/delta
+// frame: one frame per delta, carrying the key, the field and the delta, and
+// nothing else beyond the thread and ref the server stamps. A test asserting on
+// the struct would still pass if a field were renamed on the wire, so this
+// asserts the encoded object's own keys.
+func TestADeltaPublishesExactlyKeyFieldAndDelta(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "he"}))
+	change := one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "llo"})))
+
+	// The server stamps thread and ref on the way out (server/appwire_status_stamps.go);
+	// the overlay must leave them empty.
+	stamped := change.Params.(appwire.OverlayDeltaParams).WithNotificationTarget("th_1", "ref_1")
+	encoded, err := json.Marshal(stamped)
+	if err != nil {
+		t.Fatalf("marshal delta params: %v", err)
+	}
+	var frame map[string]string
+	if err := json.Unmarshal(encoded, &frame); err != nil {
+		t.Fatalf("decode delta frame %s: %v", encoded, err)
+	}
+	keys := make([]string, 0, len(frame))
+	for key := range frame {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	if want := []string{"delta", "field", "key", "ref", "threadId"}; !slices.Equal(keys, want) {
+		t.Fatalf("delta frame carries keys %v, want %v (frame %s)", keys, want, encoded)
+	}
+	if frame["key"] != "stream:r_1/1:agentMessage" || frame["field"] != string(appwire.OverlayDeltaText) || frame["delta"] != "llo" {
+		t.Fatalf("delta frame = %v, want the stream key, the text field and the delta", frame)
 	}
 }
 
