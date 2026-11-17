@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -286,9 +287,15 @@ func inferPreFlagMachinery(turn *schema.Turn) {
 	}
 }
 
+// strictDecoderOptions is decodeStrictJSON's decode configuration, joined once:
+// v1 semantics (case-insensitive names, duplicate names allowed, the legacy
+// error shapes) plus the unknown-member rejection below.
+var strictDecoderOptions = jsonv2.JoinOptions(json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true))
+
+// decodeStrictJSON decodes one line as exactly one JSON value, rejecting
+// unknown members and any trailing value.
 func decodeStrictJSON(line []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	// DisallowUnknownFields is deliberate and applies to the nested turn, not
+	// RejectUnknownMembers is deliberate and applies to the nested turn, not
 	// just this record's own envelope: a typo'd or renamed field in schema.Turn
 	// (or anything it embeds, like llm.Message) fails loudly here instead of
 	// vanishing silently, which is the failure mode kata kq8c spent real effort
@@ -314,18 +321,14 @@ func decodeStrictJSON(line []byte, target any) error {
 	// TestTranscriptReadersAndRawOutputRejectUnknownFields in agent pins the
 	// whole-file readers' refusal, so a future change to either is a decision,
 	// not an accident.
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("multiple JSON values")
-		}
-		return fmt.Errorf("trailing JSON data: %w", err)
-	}
-	return nil
+	//
+	// Decoding the line in place, rather than through a streaming Decoder over
+	// bytes.NewReader, is what keeps a cold transcript-index rebuild's
+	// allocation near the bytes it reads: such a Decoder starts from a 64-byte
+	// buffer and doubles it as it consumes a line, so every entry paid several
+	// times its own size in transient growth. Unmarshal rejects a trailing
+	// value itself, which the second Decode here existed to catch.
+	return jsonv2.Unmarshal(line, target, strictDecoderOptions)
 }
 
 // ReadLine reads one newline-framed transcript record. maxLineBytes applies to
@@ -333,9 +336,33 @@ func decodeStrictJSON(line []byte, target any) error {
 // drained before ErrLineTooLong is returned. An unterminated final tail is
 // always drained and discarded without retaining it, regardless of its size.
 func ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
+	return readLine(reader, maxLineBytes, nil)
+}
+
+// LineBuffer reads newline-framed records through one buffer it keeps across
+// calls, so a scan over many records sizes it for the largest line instead of
+// allocating for every line. The returned line is only valid until the next
+// call: a caller that retains any of its bytes must copy them.
+type LineBuffer struct {
+	buf []byte
+}
+
+// ReadLine is ReadLine over the buffer this LineBuffer reuses.
+func (b *LineBuffer) ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
+	line, complete, bytesRead, err = readLine(reader, maxLineBytes, b.buf[:0])
+	// Keep the buffer when the line was dropped (over the limit, or an
+	// unterminated tail), so the next call still has its capacity.
+	if line != nil {
+		b.buf = line
+	}
+	return line, complete, bytesRead, err
+}
+
+func readLine(reader *bufio.Reader, maxLineBytes int, scratch []byte) (line []byte, complete bool, bytesRead int64, err error) {
 	if maxLineBytes <= 0 {
 		maxLineBytes = DefaultMaxLineBytes
 	}
+	line = scratch
 	overLimit := false
 	for {
 		fragment, readErr := reader.ReadSlice('\n')
