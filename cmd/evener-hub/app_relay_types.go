@@ -184,17 +184,6 @@ func subscribeRelayRecovery(ctx context.Context, source appsource.Source, params
 	return source.SubscribeThread(ctx, params)
 }
 
-// closedThreadCapabilities is the capability set a close frame carries: what
-// this hub can still do for a thread whose daemon is gone (pastThreadCapabilities),
-// with forkFromTurn removed when the caller's ownership fence refused it.
-func closedThreadCapabilities(allowFork bool) appwire.ThreadCapabilities {
-	set := pastThreadCapabilities()
-	if !allowFork {
-		set.ForkFromTurn = false
-	}
-	return set
-}
-
 // relayGaveUpCapabilities is the action set the relay advertises beside the
 // idle status it synthesizes when a mid-turn daemon stops answering. It is the
 // hub's own answer, so it applies the same gate stampStatusCapabilities' closed
@@ -250,8 +239,7 @@ func stampResyncTarget(notification appwire.Notification, threadID, ref string) 
 }
 
 // patchForkCapability writes the hub's forkFromTurn answer onto a capability
-// update, the one definition the single-field stamper and the relay's
-// one-pass stamp share.
+// update, clearing a stale daemon value when the fence refuses the action.
 func patchForkCapability(status appwire.ThreadStatus, capabilities map[string]json.RawMessage, allowFork bool) {
 	if allowFork && !hubForkRecoveryFenced(appwire.Thread{Status: status}) {
 		capabilities["forkFromTurn"] = json.RawMessage("true")
@@ -335,7 +323,7 @@ func stampStatusCapabilities(notification appwire.Notification, answers relayCap
 	if statusPresent && status.Type == appwire.ThreadStatusClosed {
 		// The one frame the daemon cannot describe: what a thread can still be
 		// asked to do once its daemon is gone is this hub's answer.
-		encoded, err := json.Marshal(closedThreadCapabilities(answers.forkFromTurn))
+		encoded, err := json.Marshal(pastThreadCapabilities())
 		if err != nil {
 			return notification
 		}

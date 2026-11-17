@@ -130,7 +130,7 @@ func (r *hubRelay) startAcknowledgedFanout(
 			// gone.
 			if strings.HasPrefix(target.relayKey, "local:") {
 				notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-				// The stamp and both resolvers behind it answer only a status
+				// The stamp and the three resolvers behind it answer only a status
 				// frame, so the method is checked before the answers are
 				// computed rather than after. This is the hottest path the
 				// projection sits on — every frame of every subscribed
