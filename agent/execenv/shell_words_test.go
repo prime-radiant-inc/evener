@@ -640,7 +640,11 @@ func TestStreamCommandMatchesTheShell(t *testing.T) {
 		{`say "it's here" 'x y'`},
 		{`say e\ f g`},
 		{"say '' \"\""},
-		{`say one two | cat`},
+		// Both lines travel through cat in sequence. Without the redirect the
+		// two arms' order is a race - say's stderr goes straight to the
+		// combined stream while its stdout waits on cat - so a differing
+		// interleaving fails a comparison that has no code defect behind it.
+		{`say one two 2>&1 | cat`},
 		{`say one two; say three four`},
 		{`say a b 2>&1`},
 		{`SAY_VAR=x say "$SAY_VAR" b`},
