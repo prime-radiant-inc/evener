@@ -940,6 +940,29 @@ test("a press that ends without a click does not hold a later keyboard blur", as
   expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
 });
 
+// The hold answers a press that is about to land its click. A press that never
+// clicks leaves nothing to wait for, and the browser's focus move still
+// happened, so the box is open and unfocused, capturing keys with no visible
+// owner. It cancels. jsdom does not perform the focus move itself, so the blur
+// below stands in for the browser's default action.
+test("an outside press that leaves the box unfocused cancels once it ends without a click", async () => {
+  await wireEditableClient();
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.pointerDown(document.body);
+  fireEvent.mouseDown(document.body);
+  act(() => {
+    box.blur();
+  });
+  fireEvent.pointerCancel(document.body);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+});
+
 // Searching or folding the editor changes visibility, not the captured chord,
 // so those targets are inside the surface for both the press and its click.
 test("a completed click on shortcut-navigation controls does not cancel the capture", async () => {

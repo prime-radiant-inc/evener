@@ -44,6 +44,12 @@ import { useEffect, useRef } from "react";
  * holds its blur collapse while this is true and lets the completed click
  * dismiss instead. One source for the press, never a second listener.
  *
+ * `onPressSpentUnclicked` reports a press that began outside and ended without
+ * a click (a drag, a cancelled press). The hold above only pays off when the
+ * click arrives; with none coming, the caller is left to decide, because
+ * whether its surface is now unfocused is the caller's fact and not this
+ * hook's.
+ *
  * Nothing is observed while `enabled` is false - a closed surface has nothing
  * to dismiss, and a mounted-but-closed widget should not listen at all.
  */
@@ -54,6 +60,7 @@ export function useDismissOnOutsidePress({
   enabled,
   when = "press",
   pressInFlight,
+  onPressSpentUnclicked,
 }: {
   /** The document the surface lives in; a Dockview popout has its own. */
   ownerDocument: Document | null;
@@ -67,9 +74,14 @@ export function useDismissOnOutsidePress({
    * above. Written by "click" mode only, and reset to false on teardown.
    */
   pressInFlight?: { current: boolean };
+  /**
+   * Optional report of an outside press that ended without a click; see the
+   * note above. Fired by "click" mode only, and never for a press inside.
+   */
+  onPressSpentUnclicked?(): void;
 }): void {
-  const latest = useRef({ isInside, onDismiss });
-  latest.current = { isInside, onDismiss };
+  const latest = useRef({ isInside, onDismiss, onPressSpentUnclicked });
+  latest.current = { isInside, onDismiss, onPressSpentUnclicked };
   useEffect(() => {
     if (!enabled || ownerDocument === null) return;
     if (when === "press") {
@@ -126,14 +138,25 @@ export function useDismissOnOutsidePress({
       pressStartedOutside = !latest.current.isInside(event.target);
       // Published before the browser's focus move (mousedown's default action
       // runs after dispatch), so a caller's blur sees the press in flight.
-      setPressInFlight(pressStartedOutside);
+      //
+      // Only the primary button holds. A right or middle press fires mousedown
+      // and then contextmenu or auxclick, never a click, so a hold on one would
+      // never be spent: the browser's focus move would blur the caller's surface
+      // while its own blur handler waited for a click that never comes, leaving
+      // it open and unfocused. Those presses cancel at the press, as before.
+      setPressInFlight(pressStartedOutside && event.button === 0);
     }
-    // A press that ends without a click (a text-selection drag, a scroll drag)
+    // A press that ends without a click (a text-selection drag, a drag-and-drop)
     // must not leave `pressInFlight` stuck true, or a caller holding its blur
     // collapse would ignore a later keyboard blur. A real press dispatches its
     // click synchronously after pointerup, so this later-task check runs only
     // when no click came. Registered only for a caller that asked for the
     // sink: surfaces that do not read it need no extra listener.
+    //
+    // A press that began outside and never clicked leaves the caller's hold
+    // unpaid. Report it so a caller that holds its blur can answer for the
+    // focus it still lost; whether the surface is now unfocused stays the
+    // caller's fact, not this hook's.
     function onPointerUpOrCancel(): void {
       if (pressInFlight === undefined || !pressStartedOutside) return;
       cancelRelease();
@@ -142,6 +165,7 @@ export function useDismissOnOutsidePress({
         // A click that arrived in between spent the press already.
         if (!live || !pressStartedOutside) return;
         spendPress();
+        latest.current.onPressSpentUnclicked?.();
       }, 0);
     }
     // The ordinary path: a click that reaches the document in the bubble phase

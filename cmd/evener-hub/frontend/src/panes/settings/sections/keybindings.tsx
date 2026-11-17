@@ -132,8 +132,12 @@ interface CaptureBoxProps {
 }
 
 // Searching or folding the editor changes visibility, not the captured chord.
+// Reads nodeType rather than `instanceof Element`: a Dockview popout has its own
+// constructors, and its nodes fail an opener-realm instanceof, which would make
+// every press in a popped-out Settings pane look like an outside press.
 function isShortcutNavigation(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest("[data-keybinding-navigation]") !== null;
+  const node = target as Node | null;
+  return node !== null && node.nodeType === 1 && (node as Element).closest("[data-keybinding-navigation]") !== null;
 }
 
 /** The capture widget: a focusable box that consumes EVERY keydown while it
@@ -202,9 +206,24 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
     enabled: active,
     when: "click",
     pressInFlight,
+    // Same realm reasoning as isShortcutNavigation: `instanceof Node` is false
+    // for a popout's nodes, so the box's own contents would read as outside.
     isInside: (target) =>
-      (target instanceof Node && boxRef.current?.contains(target) === true) || isShortcutNavigation(target),
+      (target !== null && boxRef.current?.contains(target as Node) === true) || isShortcutNavigation(target),
     onDismiss: () => onCancel(false),
+    // The press held this box's blur open for a click that never came (a drag,
+    // a cancelled press, a scroll taking over). The browser still moved focus,
+    // so the box is open and unfocused, intercepting keys with no visible
+    // owner. Cancel, unless focus is still in the box or on a
+    // shortcut-navigation control, which are both live parts of the editor.
+    onPressSpentUnclicked: () => {
+      if (!active) return;
+      const focused = ownerDocument?.activeElement ?? null;
+      const box = boxRef.current;
+      if (box !== null && focused !== null && box.contains(focused)) return;
+      if (isShortcutNavigation(focused)) return;
+      onCancel(false);
+    },
   });
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {

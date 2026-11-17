@@ -363,7 +363,7 @@ test("click mode reports no in-flight press for a press inside, or one that neve
     press(inside);
     expect(pressInFlight.current).toBe(false);
 
-    // A press that ends without a click (a drag, a cancelled press) must not
+    // A press that ends without a click (a drag, a drag-and-drop) must not
     // leave the hold armed: a later keyboard blur is not part of that press.
     press(outside);
     expect(pressInFlight.current).toBe(true);
