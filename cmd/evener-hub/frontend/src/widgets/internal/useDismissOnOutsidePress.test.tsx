@@ -11,6 +11,11 @@ function release(target: EventTarget) {
   target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+/** Await the next macrotask, where the capture fallback's dismissal lands. */
+function nextTask(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 test("a press outside dismisses", () => {
   const panel = document.createElement("div");
   const outside = document.createElement("button");
@@ -176,6 +181,128 @@ test("click mode ignores a click that began inside the surface", () => {
     // A normal press-and-click outside still dismisses.
     press(outside);
     release(outside);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode dismisses for a control that stops its click's propagation", async () => {
+  // A transcript control that consumes its own click (a file-reference link, a
+  // delegate activity toggle) must still dismiss an in-flow surface. Reading
+  // the click in the bubble phase never sees that event at all.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  outside.addEventListener("click", (event) => event.stopPropagation());
+  document.body.append(panel, outside);
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    release(outside);
+    // The fallback never dismisses inside dispatch: the target's own handlers
+    // run first, and the surface collapses on a later task.
+    expect(onDismiss).not.toHaveBeenCalled();
+    await nextTask();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode runs the pressed control's own handler before it dismisses", async () => {
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  const order: string[] = [];
+  outside.addEventListener("click", () => order.push("control"));
+  document.body.append(panel, outside);
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss: () => order.push("dismiss"),
+      }),
+    );
+    press(outside);
+    release(outside);
+    expect(order).toEqual(["control", "dismiss"]);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("a stopped click still runs the control's own handler before the fallback dismisses", async () => {
+  // The captured click is read before dispatch reaches the target, so the
+  // fallback must not dismiss there: the control's handler runs first, and the
+  // surface collapses only on the later task.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  const order: string[] = [];
+  outside.addEventListener("click", (event) => {
+    order.push("control");
+    event.stopPropagation();
+  });
+  document.body.append(panel, outside);
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss: () => order.push("dismiss"),
+      }),
+    );
+    press(outside);
+    release(outside);
+    expect(order).toEqual(["control"]);
+    await nextTask();
+    expect(order).toEqual(["control", "dismiss"]);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("a stopped click's spent press does not dismiss a later click", async () => {
+  // The fallback consumes the press. A second click with no press of its own
+  // (a script-dispatched click, a synthetic activation) is not a dismissal.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  outside.addEventListener("click", (event) => event.stopPropagation());
+  document.body.append(panel, outside);
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    release(outside);
+    await nextTask();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    // No press precedes this click, so there is nothing to complete.
+    outside.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTask();
     expect(onDismiss).toHaveBeenCalledTimes(1);
   } finally {
     panel.remove();
