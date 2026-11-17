@@ -1061,17 +1061,7 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 // publicTranscriptEntry strips correlation metadata that is durable only for
 // crash recovery, and omits the kinds TurnKind.PublicTranscript excludes.
 func publicTranscriptEntry(entry transcript.Entry) (transcript.Entry, bool) {
-	if !entry.Turn.Kind.PublicTranscript() {
-		return transcript.Entry{}, false
-	}
-	if entry.Turn.OriginalOrdinal != nil {
-		// A compaction fold re-appends, after its markers, an entry the file
-		// already holds before them; the copy carries the ordinal of the line
-		// it copies (see publishFoldTransaction). The original is the one this
-		// view already showed, exactly as the ATIF projection and the doctor's
-		// transcript read treat it. Skipping it here keeps every public
-		// transcript surface consistent rather than leaving each walker to
-		// decide.
+	if !entry.Turn.InPublicTranscript() {
 		return transcript.Entry{}, false
 	}
 	entry.Turn.AttentionID = ""
@@ -1134,6 +1124,13 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("decode public transcript turn kind: %w", err)
 	}
 	if !kind.PublicTranscript() {
+		return nil, false, nil
+	}
+	if raw, ok := turn["original_ordinal"]; ok && string(raw) != "null" {
+		// A fold copy repeats an entry the file already holds before this one,
+		// so it takes no public position: the caller must not advance its
+		// sequence for it, or the range it selects and the lines it emits
+		// would count different entries.
 		return nil, false, nil
 	}
 	delete(turn, "attention_id")

@@ -448,7 +448,12 @@ func Transcript(ctx context.Context, stateBase, selector string, opts Transcript
 	if err != nil {
 		return TranscriptResult{}, err
 	}
-	doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
+	// The recorded view: fold copies are out, exactly as read_transcript leaves
+	// them out. A copy holds no public position, so numbering this document
+	// against the physical file would run one ahead of read_transcript for
+	// every entry after a copy — and a turn number doctor showed would then
+	// fail expand_turn as out of range.
+	doc, err := loadRecordedTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return TranscriptResult{}, err
 	}
@@ -460,7 +465,7 @@ func Transcript(ctx context.Context, stateBase, selector string, opts Transcript
 	var turnStarts []int
 	for i, e := range doc.Entries {
 		turnOf[i] = -1
-		if e.Turn.Kind.PublicTranscript() {
+		if e.Turn.InPublicTranscript() {
 			turnOf[i] = len(turnStarts)
 			turnStarts = append(turnStarts, i)
 		}

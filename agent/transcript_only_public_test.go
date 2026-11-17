@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/schema/schematest"
 	"primeradiant.com/evener/agent/transcript"
@@ -96,5 +97,107 @@ func TestPublicTranscriptOmitsFoldCopies(t *testing.T) {
 	}
 	if got := strings.Count(page.(readMarkdownEnvelope).Content, text); got != 1 {
 		t.Fatalf("expanded block shows the text %d times, want exactly 1", got)
+	}
+}
+
+// foldCopyFixture writes an original, a compaction marker, its fold copy, and a
+// later message — the shape every affected transcript has. The copy is not a
+// public entry, so the public transcript holds the original at 0 and the later
+// message at 1.
+func foldCopyFixture(t *testing.T) (path, root, id, first, last string) {
+	t.Helper()
+	root = newBucket(t)
+	id = "02wMz5Txv1C3Hut0M8GCeB"
+	first = "the earlier message"
+	last = "the message after the fold"
+	original := schema.NewTurn(schema.TurnUserInput, llm.User(first))
+	marker := schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfolded\n[END CHECKPOINT]"))
+	ordinal := uint64(0)
+	copied := schema.NewTurn(schema.TurnUserInput, llm.User(first))
+	copied.OriginalOrdinal = &ordinal
+	later := schema.NewTurn(schema.TurnUserInput, llm.User(last))
+	writeFindTranscript(t, root, id, time.Time{}, original, marker, copied, later)
+	return filepath.Clean(transcriptPath(root, id)), root, id, first, last
+}
+
+// A range counts public entries, and a fold copy is not one. Selecting the last
+// turn must therefore return the message after the copy, not the copy: the
+// selection and the emitted lines have to count the same entries, or the range
+// that names the newest turn renders something else and leaves it out.
+func TestPublicTranscriptRangeSkipsFoldCopyInBothFormats(t *testing.T) {
+	t.Parallel()
+	path, root, _, first, last := foldCopyFixture(t)
+
+	value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "last:1", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("markdown last:1: %v", err)
+	}
+	markdown := value.(readMarkdownEnvelope).Content
+	if !strings.Contains(markdown, last) {
+		t.Fatalf("markdown last:1 did not render the newest message; the range counted an entry the public view omits")
+	}
+	if strings.Contains(markdown, first) {
+		t.Fatalf("markdown last:1 rendered the folded message, not the newest one:\n%s", markdown)
+	}
+
+	raw, err := readRaw(context.Background(), path, root, "", "last:1")
+	if err != nil {
+		t.Fatalf("jsonl last:1: %v", err)
+	}
+	jsonl := raw.(readRawEnvelope).Content
+	if !strings.Contains(jsonl, last) {
+		t.Fatalf("jsonl last:1 did not emit the newest message:\n%s", jsonl)
+	}
+	if strings.Contains(jsonl, first) {
+		t.Fatalf("jsonl last:1 emitted the folded message, not the newest one:\n%s", jsonl)
+	}
+}
+
+// doctor transcript numbers entries by the same rule read_transcript does, so a
+// number it shows addresses the same turn there. A fold copy holding no public
+// position must not push that numbering one ahead of the document's.
+func TestDoctorTranscriptNumbersMatchReadTranscriptAcrossFoldCopy(t *testing.T) {
+	t.Parallel()
+	path, root, id, first, last := foldCopyFixture(t)
+
+	doc, err := doctor.Transcript(context.Background(), filepath.Dir(filepath.Dir(path)), id, doctor.TranscriptOpts{})
+	if err != nil {
+		t.Fatalf("doctor transcript: %v", err)
+	}
+	var doctorNumber *int
+	for i := range doc.Turns {
+		if doc.Turns[i].Text == last {
+			doctorNumber = doc.Turns[i].Turn
+			break
+		}
+	}
+	if doctorNumber == nil {
+		t.Fatalf("doctor transcript did not render the newest message as a numbered turn")
+	}
+
+	// The same entry through read_transcript, found by its own rendered text so
+	// the comparison does not reuse doctor's numbering.
+	value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	document := value.(readMarkdownEnvelope).Content
+	address := -1
+	for seq := 0; seq < value.(readMarkdownEnvelope).Meta.TurnsTotal; seq++ {
+		page, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "", &seq, 0, 0)
+		if err != nil || !strings.Contains(page.(readMarkdownEnvelope).Content, last) {
+			continue
+		}
+		if strings.Contains(page.(readMarkdownEnvelope).Content, first) {
+			continue
+		}
+		address = seq
+		break
+	}
+	if address < 0 || !strings.Contains(document, last) {
+		t.Fatalf("read_transcript did not render the newest message as an expandable turn")
+	}
+	if *doctorNumber != address {
+		t.Fatalf("doctor numbers the newest message turn %d, read_transcript addresses it as %d", *doctorNumber, address)
 	}
 }
