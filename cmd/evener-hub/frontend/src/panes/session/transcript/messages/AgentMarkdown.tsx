@@ -38,9 +38,13 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   // and every reference is wrapped again. The scan that FINDS them is a pure
   // function of text and roots, so the blocks this stream did not touch are
   // answered from the previous pass instead of rescanned (issue #6455).
+  // Only a live instance earns that memo: it is the one that runs the pass
+  // again over the same text (issue #6603). A settled message fills a cache
+  // once and then holds every block's text and span arrays for as long as it
+  // stays mounted, so it keeps none - the effect below releases it on settle.
   const analysisRef = useRef<AnalysisCache | null>(null);
-  if (analysisRef.current === null) analysisRef.current = createAnalysisCache();
-  const analysis = analysisRef.current;
+  if (live && analysisRef.current === null) analysisRef.current = createAnalysisCache();
+  const analysis = analysisRef.current ?? undefined;
   // Portal updates must not replace the innerHTML that owns their mount points.
   const markdown = useMemo(() => <Markdown ref={root} source={source} live={live} />, [source, live]);
 
@@ -48,6 +52,10 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   // unchanged text. source/live invalidate the sanitized Markdown DOM itself.
   // biome-ignore lint/correctness/useExhaustiveDependencies: source/live invalidate the child Markdown DOM
   useLayoutEffect(() => {
+    // Released after the commit rather than during render: a settled instance
+    // keeps no analysis, and a stream that settles in place drops the cache it
+    // filled. The settle pass itself may still answer from it.
+    if (!live) analysisRef.current = null;
     const element = root.current;
     if (!element) return;
     if (pendingFileClick.current !== null && pendingFileClick.current.sessionRef !== sessionRef) {
