@@ -472,6 +472,7 @@ native:.:.:FuzzInstallScript
 native:auth:./openai/oaitest:FuzzIsolateOpenAIAuth
 native:fuzz:./fault:FuzzFaultSequence
 native:llm:./providers/internal/protocolhttp:FuzzProtocolHTTPExchange
+native:llm:./providers/internal/protocolhttp:FuzzMarshalBodyMatchesStdlib
 native:llm:./providers/internal/transport:FuzzStreamRunner
 native:.:./cmd/evener:FuzzRootCommandSeedCoverage
 native:auth:./openai:FuzzAuthOpenAIFaultSeams
