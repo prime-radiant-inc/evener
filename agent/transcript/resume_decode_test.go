@@ -219,8 +219,7 @@ func TestResumeScanJoinsItsDecodeWorkers(t *testing.T) {
 		if got != nil {
 			t.Fatalf("failed resume returned %d entries, want none", len(got))
 		}
-		var mismatch *SessionIDMismatchError
-		if !errors.As(err, &mismatch) {
+		if _, ok := errors.AsType[*SessionIDMismatchError](err); !ok {
 			t.Fatalf("resume error = %v, want SessionIDMismatchError", err)
 		}
 		if n := inFlight.Load(); n != 0 {
