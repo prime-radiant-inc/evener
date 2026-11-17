@@ -568,10 +568,18 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "evener/thread/modelRetry": {
       if (!notificationTargetsThread(n, model)) return model;
       const params = n.params;
+      // A usage-limit wait announces itself and its own end the way any retry
+      // group does: a retry whose delay runs to the reset, then the retry that
+      // goes out with no delay (agent/session_quota_wait.go's emitQuotaRetry).
+      // The instant itself comes from the read alone - a delay is not an
+      // absolute time, and this client's clock is not the daemon's - so the
+      // only thing this fold owns is dropping it when the daemon says the wait
+      // is over, which a steer or a model switch can do hours early.
+      const quotaWaitEnded = params.errorClass === "quota_exceeded" && params.delayMs === 0;
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
       // quiet/stall clock is measuring a real silence; this explains it rather
       // than resetting it.
-      return {
+      const next = {
         ...model,
         modelRetry: {
           attempt: params.attempt,
@@ -586,6 +594,10 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
           receivedAt: now,
         },
       };
+      if (!quotaWaitEnded) return next;
+      const waitEnded = { ...next };
+      delete waitEnded.quotaResumesAt;
+      return waitEnded;
     }
 
     default:
