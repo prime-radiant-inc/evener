@@ -906,7 +906,12 @@ function BandRow({ node, info }: { node: BandRailNode; info: TreeRowInfo }) {
         </span>
       </span>
       <span className={CLASS.bandCount} data-testid="rail-row-band-count">
-        <Badge count={node.children.length} tone={node.band === "needsYou" ? "attention" : undefined} />
+        {/* The count is sessions in the band. A band's own "+N older" row
+            stands for rows beyond it, so it is not one of them. */}
+        <Badge
+          count={node.children.filter((child) => child.kind === "session").length}
+          tone={node.band === "needsYou" ? "attention" : undefined}
+        />
       </span>
     </span>
   );

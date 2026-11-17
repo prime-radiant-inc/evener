@@ -9,7 +9,7 @@ import {
   liveCycleRefs,
   railLiveBands,
 } from "./liveBands";
-import type { RailSession } from "./railNodes";
+import type { BandRailNode, RailNode, RailSession, SessionRailNode } from "./railNodes";
 
 function row(ref: string, overrides: Partial<RailSession> = {}): RailSession {
   const [host = "local", id = ref] = ref.split(":");
@@ -30,6 +30,11 @@ function row(ref: string, overrides: Partial<RailSession> = {}): RailSession {
 const at = (minute: number) => new Date(Date.UTC(2026, 1, 1, 12, minute)).toISOString();
 const refsOf = (rows: readonly { session: { ref: string } }[]) => rows.map((item) => item.session.ref);
 const open = (_id: string, defaultExpanded: boolean) => defaultExpanded;
+// The nodes a band builder returned that are bands: the union also carries the
+// Needs-you band's own overflow row when the tier outgrew its loaded pages.
+const bandsOf = (nodes: RailNode[]) => nodes.filter((node): node is BandRailNode => node.kind === "band");
+const sessionsOf = (node: BandRailNode) =>
+  node.children.filter((child): child is SessionRailNode => child.kind === "session");
 const sources: Source[] = [
   { id: "local", label: "this host", kind: "local", online: true },
   { id: "devbox", label: "devbox", kind: "appwire", online: true },
@@ -160,31 +165,36 @@ describe("railLiveBands", () => {
 describe("liveBandNodes", () => {
   test("renders a branch only for a band with rows, in band order, carrying each row's class", () => {
     const bands = railLiveBands([row("local:idle"), row("local:ask", { state: "awaiting", ask_pending: true })], []);
-    const nodes = liveBandNodes(bands, sources, open);
+    const nodes = bandsOf(liveBandNodes(bands, sources, open));
     expect(nodes.map((node) => node.band)).toEqual(["needsYou", "idle"]);
     expect(nodes.map((node) => node.id)).toEqual([liveBandId("needsYou"), liveBandId("idle")]);
-    expect(nodes[0]?.children.map((child) => child.live)).toEqual(["question"]);
+    const [needsYou] = nodes;
+    expect(needsYou && sessionsOf(needsYou).map((child) => child.live)).toEqual(["question"]);
     expect(nodes.every((node) => node.expanded === true)).toBe(true);
   });
 
   test("a fold the reader closed stays closed", () => {
     const bands = railLiveBands([row("local:idle")], []);
-    const [idle] = liveBandNodes(bands, sources, (id, fallback) => (id === liveBandId("idle") ? false : fallback));
+    const [idle] = bandsOf(
+      liveBandNodes(bands, sources, (id, fallback) => (id === liveBandId("idle") ? false : fallback)),
+    );
     expect(idle?.expanded).toBe(false);
     expect(idle?.children).toHaveLength(1);
   });
 
   test("names no host while Live sits on one host", () => {
     const bands = railLiveBands([row("devbox:a"), row("devbox:b")], []);
-    const hosts = liveBandNodes(bands, sources, open).flatMap((node) => node.children.map((child) => child.liveHost));
+    const hosts = bandsOf(liveBandNodes(bands, sources, open)).flatMap((node) =>
+      sessionsOf(node).map((child) => child.liveHost),
+    );
     expect(hosts).toEqual([undefined, undefined]);
   });
 
   test("once Live spans hosts, only the rows away from this hub name theirs", () => {
     const bands = railLiveBands([row("local:a"), row("devbox:b"), row("devbox:c")], []);
     const named = new Map(
-      liveBandNodes(bands, sources, open).flatMap((node) =>
-        node.children.map((child) => [child.session.ref, child.liveHost?.label] as const),
+      bandsOf(liveBandNodes(bands, sources, open)).flatMap((node) =>
+        sessionsOf(node).map((child) => [child.session.ref, child.liveHost?.label] as const),
       ),
     );
     expect(named.get("local:a")).toBeUndefined();
@@ -194,7 +204,7 @@ describe("liveBandNodes", () => {
 
   test("a row on an offline host says so even when it is the only host in Live", () => {
     const bands = railLiveBands([row("buildbox:a")], []);
-    const [node] = liveBandNodes(bands, sources, open).flatMap((band) => band.children);
+    const [node] = bandsOf(liveBandNodes(bands, sources, open)).flatMap((band) => sessionsOf(band));
     expect(node?.liveHost).toEqual({ label: "buildbox", online: false });
   });
 
@@ -206,7 +216,7 @@ describe("liveBandNodes", () => {
     });
     const fromLive = { ...fromQueue, row_id: "navigation:live:local:ask" };
     const idOf = (bands: ReturnType<typeof railLiveBands<RailSession>>) =>
-      liveBandNodes(bands, sources, open)[0]?.children[0]?.id;
+      bandsOf(liveBandNodes(bands, sources, open))[0]?.children[0]?.id;
     expect(idOf(railLiveBands([], [fromQueue]))).toBe(idOf(railLiveBands([fromLive], [fromQueue])));
   });
 
@@ -219,11 +229,48 @@ describe("liveBandNodes", () => {
 
   test("a row that changes class gets a fresh node in its new band", () => {
     const working = row("local:a", { state: "active" });
-    const before = liveBandNodes(railLiveBands([working], []), sources, open)[0]?.children[0];
+    const before = bandsOf(liveBandNodes(railLiveBands([working], []), sources, open))[0]?.children[0];
     const asking = { ...working, state: "awaiting", ask_pending: true };
-    const after = liveBandNodes(railLiveBands([asking], []), sources, open);
+    const after = bandsOf(liveBandNodes(railLiveBands([asking], []), sources, open));
     expect(after.map((node) => node.band)).toEqual(["needsYou"]);
     expect(after[0]?.children[0]).not.toBe(before);
+  });
+
+  test("the needs-you tier's own overflow rides last inside its band", () => {
+    const nodes = liveBandNodes(
+      railLiveBands([], [row("local:ask", { state: "awaiting", ask_pending: true })]),
+      sources,
+      open,
+      { remaining: 12, offset: 1, limit: 50 },
+    );
+    const [needsYou] = bandsOf(nodes);
+    expect(needsYou && nodes.length).toBe(1);
+    const children = needsYou?.children ?? [];
+    expect(children.map((child) => child.kind)).toEqual(["session", "overflow"]);
+    expect(children.at(-1)).toMatchObject({ count: 12, pages: [{ section: "needs_you", offset: 1, limit: 50 }] });
+  });
+
+  test("a settled needs-you tier leaves no overflow row, and no other band grows one", () => {
+    const live = [row("local:ask", { state: "awaiting", ask_pending: true }), row("local:idle")];
+    const settled = liveBandNodes(railLiveBands(live, []), sources, open, { remaining: 0, offset: 2, limit: 50 });
+    expect(settled.flatMap((node) => (node.kind === "band" ? node.children : [])).map((child) => child.kind)).toEqual([
+      "session",
+      "session",
+    ]);
+    const paged = liveBandNodes(railLiveBands(live, []), sources, open, { remaining: 5, offset: 2, limit: 50 });
+    expect(bandsOf(paged).map((node) => [node.band, node.children.map((child) => child.kind)])).toEqual([
+      ["needsYou", ["session", "overflow"]],
+      ["idle", ["session"]],
+    ]);
+  });
+
+  test("a needs-you tier with no row drawing its band still offers the rest", () => {
+    // The tier's one loaded row is a warning whose background job still runs,
+    // so the rail presents it as working and no Needs-you band renders.
+    const busy = row("local:busy", { state: "warning", running_job_count: 1 });
+    const nodes = liveBandNodes(railLiveBands([], [busy]), sources, open, { remaining: 3, offset: 1, limit: 50 });
+    expect(bandsOf(nodes).map((node) => node.band)).toEqual(["working"]);
+    expect(nodes.map((node) => node.kind)).toEqual(["band", "overflow"]);
   });
 });
 

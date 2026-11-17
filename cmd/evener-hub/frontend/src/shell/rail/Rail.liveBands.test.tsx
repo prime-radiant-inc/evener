@@ -1,5 +1,4 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
-import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
@@ -52,11 +51,16 @@ function session(id: string, overrides: Partial<NavigationSessionSummary> = {}):
 // answers with. Decoding, the store, the band split and the rows are the
 // production code. `hub` is mutable so a test can move a session and announce
 // it the way the hub does.
+// A needs-you section served page by page, offset -> rows and what the hub
+// said was left after them. Absent, every section answers one page with
+// nothing remaining.
+type NeedsYouPages = ReadonlyMap<number, { sessions: NavigationSessionSummary[]; remaining: number }>;
 async function mountRail(
   initial: { live: NavigationSessionSummary[]; needsYou?: NavigationSessionSummary[] },
   props: { revealTarget?: string; onRevealConsumed?: () => void } = {},
   // The phone renders the rail inside the Sessions drawer, itself a modal.
   frame: (rail: ReactElement) => ReactElement = (rail) => rail,
+  needsYouPages?: NeedsYouPages,
 ) {
   const hub = { live: initial.live, needsYou: initial.needsYou ?? [] };
   let revision = 1;
@@ -69,12 +73,19 @@ async function mountRail(
         sources: [{ id: "local", label: "This host", kind: "local", online: true }],
         sections: {
           live: { count: hub.live.length },
-          needs_you: { count: hub.needsYou.length },
+          needs_you: {
+            count: needsYouPages
+              ? [...needsYouPages.values()].reduce((total, page) => total + page.sessions.length, 0)
+              : hub.needsYou.length,
+          },
           pin_sections: { count: 0 },
         },
       });
     } else if (params.resource === "section") {
-      data = { sessions: params.section === "live" ? hub.live : hub.needsYou, remaining: 0 };
+      const page = params.section === "needs_you" ? needsYouPages?.get(params.offset ?? 0) : undefined;
+      data = page
+        ? { sessions: page.sessions, remaining: page.remaining }
+        : { sessions: params.section === "live" ? hub.live : hub.needsYou, remaining: 0 };
     } else if (params.resource === "catalog") {
       data = { projects: [], remaining: 0 };
     } else if (params.resource === "pin_catalog") {
@@ -95,10 +106,10 @@ async function mountRail(
     await waitFor(() => {
       const state = navigationStore.getState();
       expect(state.manifest?.loadedRevision).toBe(revision);
-      // A section the manifest counts empty is never read at all.
-      for (const section of ["live", "needs_you"] as const) {
-        const resource = state.resources.get(keyID({ kind: "section", section, offset: 0, limit: 50 }));
-        if (!resource) continue;
+      // A section the manifest counts empty is never read at all, and a
+      // paged one holds more than its first page: every loaded page counts.
+      for (const resource of state.resources.values()) {
+        if (resource.key.kind !== "section") continue;
         expect(resource.loadedRevision).toBe(revision);
         expect(resource.loading).toBe(false);
       }
@@ -121,8 +132,23 @@ async function mountRail(
     });
     await settled();
   };
+  // A reconnect that carries the hub's latest sequence: the store re-reads
+  // every page it already holds, which is what a dropped socket costs.
+  const reconnect = async () => {
+    await act(async () => {
+      client.emitStateChange("reconnecting");
+      client.emitReady({
+        serverInfo: { name: "fake", version: "1" },
+        protocolVersion: "evener-appwire-v6",
+        sourceId: "fake",
+        features: {} as never,
+        navigation: { version: 1, generationId: "generation_test", sequence: revision, readVersions: [3] },
+      });
+    });
+    await settled();
+  };
   await settled();
-  return { hub, announce, view };
+  return { hub, announce, reconnect, view };
 }
 
 function band(name: "needsYou" | "working" | "idle"): HTMLElement | null {
@@ -147,6 +173,18 @@ function bandNames(): string[] {
   return [...document.querySelectorAll<HTMLElement>('[data-testid="rail-row-band"]')].map(
     (header) => header.dataset.band ?? "",
   );
+}
+// The overflow row a band holds stands for rows beyond it, not for one of
+// them, so it sits inside the band's own group: folding the band hides it
+// with the rows it speaks for.
+function overflowInBand(name: "needsYou" | "working" | "idle"): HTMLElement | null {
+  const group = band(name)?.nextElementSibling;
+  if (group?.getAttribute("role") !== "group") return null;
+  return group.querySelector<HTMLElement>('[data-testid="rail-row-overflow"]');
+}
+function bandCount(name: "needsYou" | "working" | "idle"): string | null {
+  const header = band(name);
+  return header ? within(header).getByTestId("rail-row-band-count").textContent : null;
 }
 
 const fleet = () => ({
@@ -311,4 +349,64 @@ test("a rename survives its session being the only row and leaving the sections 
   await announce();
   expect(draft().value).toBe("Half-typed name");
   expect(rowFor("local:only")).toBeTruthy();
+});
+
+// The hub caps a section's page at 50 rows and reports the rest as
+// `remaining` (hubcore's maxSidebarSessionsPerTier). With Live's loaded pages
+// not also supplying those rows, the band's own first page is all the reader
+// sees unless the band offers the rest - which it does with the same quiet
+// "+N older" row every other capped list on the rail uses.
+const needsYouAsking = (id: string, overrides: Partial<NavigationSessionSummary> = {}) =>
+  session(id, { state: "awaiting", ask_pending: true, ...overrides });
+
+test("Needs you offers the sessions its own first page left behind", async () => {
+  await mountRail(
+    { live: [] },
+    {},
+    (rail) => rail,
+    new Map([
+      [0, { sessions: [needsYouAsking("a1"), needsYouAsking("a2")], remaining: 40 }],
+      [2, { sessions: [needsYouAsking("a3")], remaining: 39 }],
+    ]),
+  );
+  expect(rowsOf("needsYou")).toEqual(["local:a1", "local:a2"]);
+  // The count is the rows the band shows, and the overflow row speaks for the
+  // rest without counting itself as one of them.
+  expect(bandCount("needsYou")).toBe("2");
+  // The row itself sits in the band's group; its count and page descriptor are
+  // asserted on the node in liveBands.test.ts, not read back off this copy.
+  expect(overflowInBand("needsYou")).not.toBeNull();
+  // No other band gains an overflow row: this one is Needs you's own.
+  expect(bandNames()).toEqual(["needsYou"]);
+});
+
+test("a needs-you row from a later page stays in the band across a refresh and a reconnect", async () => {
+  const pages = new Map([
+    [0, { sessions: [needsYouAsking("a1"), needsYouAsking("a2")], remaining: 2 }],
+    [2, { sessions: [needsYouAsking("a3"), needsYouAsking("a4")], remaining: 0 }],
+  ]);
+  const { announce, reconnect } = await mountRail({ live: [] }, {}, (rail) => rail, pages);
+  expect(overflowInBand("needsYou")).not.toBeNull();
+
+  // Page two, as activating the overflow row loads it.
+  await act(async () => {
+    await navigationStore.getState().loadSection("needs_you", 2, 50);
+  });
+  expect(rowsOf("needsYou")).toEqual(["local:a1", "local:a2", "local:a3", "local:a4"]);
+  // Loaded to the end, the row that stood for the rest is gone.
+  expect(overflowInBand("needsYou")).toBeNull();
+  expect(bandCount("needsYou")).toBe("4");
+
+  // A page-two row changes class elsewhere: the band keeps it, now as failed,
+  // which the band's own order puts first.
+  pages.set(2, { sessions: [needsYouAsking("a3", { state: "errored" }), needsYouAsking("a4")], remaining: 0 });
+  await announce();
+  expect([...rowsOf("needsYou")].sort()).toEqual(["local:a1", "local:a2", "local:a3", "local:a4"]);
+  expect(within(rowFor("local:a3")).getByTestId("rail-row-why-text").dataset.hue).toBe("danger");
+
+  // A reconnect re-reads every page the reader had loaded, so the row page
+  // two supplied is still there afterwards - not dropped back to page one.
+  await reconnect();
+  expect([...rowsOf("needsYou")].sort()).toEqual(["local:a1", "local:a2", "local:a3", "local:a4"]);
+  expect(overflowInBand("needsYou")).toBeNull();
 });

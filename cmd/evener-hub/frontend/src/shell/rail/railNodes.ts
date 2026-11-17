@@ -105,11 +105,14 @@ export interface SessionRailNode extends WidgetTreeNode {
 }
 
 /** One of Live's bands as a tree branch (liveBands.ts). The band is a fold:
- * collapsing it hides its rows and keeps its count. */
+ * collapsing it hides its rows and keeps its count. Usually session rows; the
+ * Needs-you band also holds its own "+N older" row while the tier holds more
+ * sessions than its loaded pages, so folding the band puts that away with the
+ * rows it speaks for. */
 export interface BandRailNode extends WidgetTreeNode {
   kind: "band";
   band: Band;
-  children: SessionRailNode[];
+  children: RailNode[];
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -404,9 +407,9 @@ export function liveSessionNode(
   return node;
 }
 
-type BandNodeCacheEntry = Readonly<{ expanded: boolean; children: SessionRailNode[]; value: BandRailNode }>;
+type BandNodeCacheEntry = Readonly<{ expanded: boolean; children: RailNode[]; value: BandRailNode }>;
 const bandNodeCache = new Map<string, BandNodeCacheEntry>();
-export function cachedBandNode(id: string, band: Band, expanded: boolean, children: SessionRailNode[]): BandRailNode {
+export function cachedBandNode(id: string, band: Band, expanded: boolean, children: RailNode[]): BandRailNode {
   const cached = bandNodeCache.get(id);
   if (
     cached &&
