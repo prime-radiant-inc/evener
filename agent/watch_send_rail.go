@@ -67,15 +67,16 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // coalescing successor can still count toward the runaway fuse. A frame the
 // receiver already took, or one whose delivery is in flight or awaiting a
 // settlement retry, may yet be marked delivered; only a frame with no such
-// hold is certain never to count. The caller must hold jm.mu.
+// hold is certain never to count. An enqueue receipt is deliberately not a
+// hold: every stable frame holds one from the moment it is enqueued, before
+// anything delivers it, so treating it as evidence would keep every coalesced
+// frame's fire entry and let dead ids evict the delivered ancestors the fuse
+// counts (#6068). The caller must hold jm.mu.
 func (jm *jobManager) supersededFireStillCountsLocked(deliveryID string) bool {
 	if deliveryID == "" {
 		return true
 	}
 	if jm.watchSendDeliveredLocked(deliveryID) {
-		return true
-	}
-	if _, held := jm.stableWatchReceipts[deliveryID]; held {
 		return true
 	}
 	if _, delivering := jm.deliveringWatchSends[deliveryID]; delivering {

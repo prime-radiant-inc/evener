@@ -919,14 +919,21 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	persistedTurn := liveTurn
 	persistedTurn.Message = persisted
 	persistedTurn.SkillState = skillState.Clone()
+	var deliveries []schema.DelegateDeliveryCommit
 	for _, binding := range commits {
 		if binding.commit != nil {
-			persistedTurn.DelegateDeliveryCommits = append(persistedTurn.DelegateDeliveryCommits, schema.DelegateDeliveryCommit{
+			deliveries = append(deliveries, schema.DelegateDeliveryCommit{
 				ToolCallID: binding.toolCallID,
 				DeliveryID: binding.commit.deliveryID,
 			})
 		}
 	}
+	// The live history turn carries the commits too: inline cause adoption reads
+	// them off the history a later request presents (stagePresentedAttentionCoverage),
+	// and the live turn is what joins history. Only the provider projection is
+	// built from Message alone, so the private delivery IDs never reach the wire.
+	liveTurn.DelegateDeliveryCommits = deliveries
+	persistedTurn.DelegateDeliveryCommits = append([]schema.DelegateDeliveryCommit(nil), deliveries...)
 	if err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
 		func() error { return s.writeTranscriptSyncedLocked(persistedTurn) },

@@ -1738,19 +1738,30 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // round loop on the success path only.
 //
 // A responses-continuation delta never carries an attention delivery: every
-// one is a steering turn, and the eligibility rules reject any delta whose
-// suffix holds a steering turn. A round that settled as a delta therefore
-// presented no attention at all — it credits no coverage and clears no latch,
-// so a latched trigger's reopen stays owed. A delta whose call fell back to a
-// full-history request settled as that request, which carried every staged
-// turn.
+// steering one is a steering turn, and the eligibility rules reject any delta
+// whose suffix holds a steering turn. A round that settled as a delta therefore
+// credits no steering coverage and clears no latch, so a latched trigger's
+// reopen stays owed. Inline deliveries are the exception: a tool-results turn
+// is delta-eligible, so a reply that spent a held report inline can ride a
+// delta and must still adopt that report's cause and retire it. A delta whose
+// call fell back to a full-history request settled as that request, which
+// carried every staged turn.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	staged := s.attentionStagedIDs
 	inline := s.attentionStagedInlineDeliveries
 	s.attentionStagedIDs = nil
 	s.attentionStagedInlineDeliveries = nil
-	if (len(staged) == 0 && len(inline) == 0) || settled.HistoryMode == llm.HistoryModeResponsesDelta {
+	if settled.HistoryMode == llm.HistoryModeResponsesDelta {
+		// What a delta presents that a steering turn cannot carry: the inline
+		// deliveries whose tool-results turn rode it.
+		s.attentionMu.Unlock()
+		if len(inline) != 0 {
+			s.adoptInlineAttentionCauses(inline)
+		}
+		return
+	}
+	if len(staged) == 0 && len(inline) == 0 {
 		s.attentionMu.Unlock()
 		return
 	}
@@ -1781,15 +1792,8 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	// An inline result is consumed by the turn that presented it, so its cause
 	// joins the turn and then leaves the registry: nothing else will resolve it,
 	// and a cause no attention can still arrive for would outlive its item.
-	var spent []string
-	for id := range inline {
-		if _, done := merged[id]; done {
-			continue
-		}
-		merged[id] = struct{}{}
-		fresh = append(fresh, id)
-		spent = append(spent, id)
-	}
+	inlineFresh, spent := joinInlineDeliveries(merged, inline)
+	fresh = append(fresh, inlineFresh...)
 	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
 	s.attentionCausesMergedIDs = merged
@@ -1803,6 +1807,44 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 		s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
 		s.delegateController.attentionCauses.forget(spent...)
 	}
+}
+
+// joinInlineDeliveries marks each inline delivery in merged as joining this
+// turn, skipping any an earlier settled request of the turn already merged, and
+// returns the ones that joined plus the same ids as spent: an inline result is
+// consumed by the turn that presented it, so nothing else will resolve it. The
+// caller holds attentionMu.
+func joinInlineDeliveries(merged, inline map[string]struct{}) (fresh, spent []string) {
+	for id := range inline {
+		if _, done := merged[id]; done {
+			continue
+		}
+		merged[id] = struct{}{}
+		fresh = append(fresh, id)
+		spent = append(spent, id)
+	}
+	return fresh, spent
+}
+
+// adoptInlineAttentionCauses joins the causes of inline deliveries a settled
+// delta presented, and forgets each: the reply that carried the result spent
+// it, so no attention turn will ever resolve it. Steering items are untouched —
+// the delta did not carry them, so their coverage stays owed. The caller holds
+// no lock.
+func (s *Session) adoptInlineAttentionCauses(inline map[string]struct{}) {
+	s.attentionMu.Lock()
+	merged := s.attentionCausesMergedIDs
+	if merged == nil {
+		merged = make(map[string]struct{}, len(inline))
+	}
+	fresh, spent := joinInlineDeliveries(merged, inline)
+	s.attentionCausesMergedIDs = merged
+	s.attentionMu.Unlock()
+	if s.delegateController == nil || len(fresh) == 0 {
+		return
+	}
+	s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
+	s.delegateController.attentionCauses.forget(spent...)
 }
 
 type foldedCoveredAttentionTurn struct {

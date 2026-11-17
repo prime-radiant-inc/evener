@@ -277,8 +277,17 @@ func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProvi
 	sess.mu.Lock()
 	live := sess.history[len(sess.history)-1]
 	sess.mu.Unlock()
-	if len(live.DelegateDeliveryCommits) != 0 {
-		t.Fatalf("live provider turn exposed delivery commits = %#v", live.DelegateDeliveryCommits)
+	// The live history turn carries the same pairs as the persisted one: inline
+	// cause adoption reads them off the history a later request presents, and
+	// s.history is that history (#6068 finding 2). Privacy is the next check:
+	// expandHistory projects Message alone, so the IDs never reach the wire.
+	if len(live.DelegateDeliveryCommits) != len(persisted.DelegateDeliveryCommits) {
+		t.Fatalf("live turn delivery pairs = %#v, want the persisted %#v", live.DelegateDeliveryCommits, persisted.DelegateDeliveryCommits)
+	}
+	for i, commit := range live.DelegateDeliveryCommits {
+		if commit != persisted.DelegateDeliveryCommits[i] {
+			t.Fatalf("live delivery pair %d = %#v, want %#v", i, commit, persisted.DelegateDeliveryCommits[i])
+		}
 	}
 	providerJSON, err := json.Marshal(expandHistory([]schema.Turn{live}, replayScope{}))
 	if err != nil {

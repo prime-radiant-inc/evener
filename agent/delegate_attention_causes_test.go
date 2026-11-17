@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -500,33 +501,53 @@ func TestLaterArrivingUpdateCauseStillJoinsTheTurn(t *testing.T) {
 // count — and its registry entry must go once incorporated, since no attention
 // turn remains to resolve it.
 func TestInlineHeldReportJoinsTheTurnAndRetiresItsCause(t *testing.T) {
-	fixture := newStableWatchRuntimeFixture(t, nil)
-	root := fixture.root
-	causes := &root.delegateController.attentionCauses
 	const (
 		watchID         = "watch_inline"
 		watchGeneration = "wg_inline"
-		deliveryID      = "dlv_inline_report"
 	)
-	reportID := delegateAttentionID(deliveryID)
-	causes.remember(reportID, provenance.WithWatch(nil, watchID, watchGeneration, deliveryID, "child-session", ""))
-	// The send's reply presented the held report as an earlier result, and its
-	// tool-results turn records the delivery it spent.
-	sendTurn := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
-		Kind:       llm.ContentToolResult,
-		ToolResult: &llm.ToolResultData{ToolCallID: "send", Name: "delegate_send", Content: "HELD_REPORT"},
-	}}})
-	sendTurn.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "send", DeliveryID: deliveryID}}
-
-	root.resetAttentionCoverage()
-	root.stagePresentedAttentionCoverage(context.Background(), []schema.Turn{sendTurn})
-	root.promoteStagedAttentionCoverage(llm.Request{})
-
-	turn := root.activeCausalProvenance()
-	if depth := provenance.SelfInfluenceDepth(turn, watchID, watchGeneration, func(string) bool { return true }); depth != 1 {
-		t.Fatalf("the turn that consumed the held report exposes its watch fire at depth %d, want 1: %#v", depth, turn)
+	// A positive-wait delegate_send is consumed inline: the controller hands its
+	// caller a real delivery commit, and the caller's tool-results append is the
+	// only record that the round presented it. Drive that append, not a
+	// hand-built turn, so the test crosses the boundary the reviewer named.
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	plan := finishDelegateDeliveryGeneration(t, c, lease, "HELD_REPORT").deliveries[0]
+	if _, err := deliverDelegatePacket(plan, nil); err != nil {
+		t.Fatalf("deliver held report inline: %v", err)
 	}
-	if cause := causes.union([]string{reportID}); cause != nil {
-		t.Fatalf("the consumed report's cause is still registered after incorporation: %#v", cause)
+	resolution := <-waiter.resolution
+	if resolution.commit == nil {
+		t.Fatalf("inline delivery resolution carries no commit: %#v", resolution)
+	}
+	deliveryID := plan.deliveryID
+	reportID := delegateAttentionID(deliveryID)
+	c.attentionCauses.remember(reportID, provenance.WithWatch(nil, watchID, watchGeneration, deliveryID, "child-session", ""))
+	sess := newDelegateToolResultPersistenceSession(t, c, afero.NewMemMapFs())
+	sess.queueDelegateDeliveryCommit("send", resolution.commit)
+	if err := appendDelegateToolResultFixture(sess, "send"); err != nil {
+		t.Fatalf("append inline result: %v", err)
+	}
+
+	// The next request presents the resident history, tool-results turn
+	// included. Both a full-history round and a responses delta carried it, so
+	// both must adopt the report's lineage and retire its cause.
+	for _, settled := range []llm.Request{
+		{HistoryMode: llm.HistoryModeFullHistory},
+		{HistoryMode: llm.HistoryModeResponsesDelta},
+	} {
+		sess.replaceActiveProvenance(nil)
+		c.attentionCauses.remember(reportID, provenance.WithWatch(nil, watchID, watchGeneration, deliveryID, "child-session", ""))
+		sess.resetAttentionCoverage()
+		sess.stagePresentedAttentionCoverage(context.Background(), currentHistory(t, sess))
+		sess.promoteStagedAttentionCoverage(settled)
+
+		turn := sess.activeCausalProvenance()
+		if depth := provenance.SelfInfluenceDepth(turn, watchID, watchGeneration, func(string) bool { return true }); depth != 1 {
+			t.Fatalf("%s: the turn that consumed the held report exposes its watch fire at depth %d, want 1: %#v", settled.HistoryMode, depth, turn)
+		}
+		if cause := c.attentionCauses.union([]string{reportID}); cause != nil {
+			t.Fatalf("%s: the consumed report's cause is still registered after incorporation: %#v", settled.HistoryMode, cause)
+		}
 	}
 }
