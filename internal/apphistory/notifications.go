@@ -2,6 +2,7 @@ package apphistory
 
 import (
 	"encoding/json"
+	"maps"
 	"sync"
 
 	"primeradiant.com/evener/appwire"
@@ -245,9 +246,7 @@ func (f *Filter) Notification(n appwire.Notification) (appwire.Notification, boo
 // of the record.
 func replaceFields(n appwire.Notification, params map[string]json.RawMessage, fields map[string]any) (appwire.Notification, bool, error) {
 	spliced := make(map[string]json.RawMessage, len(params)+len(fields))
-	for key, value := range params {
-		spliced[key] = value
-	}
+	maps.Copy(spliced, params)
 	for key, value := range fields {
 		raw, err := json.Marshal(value)
 		if err != nil {
