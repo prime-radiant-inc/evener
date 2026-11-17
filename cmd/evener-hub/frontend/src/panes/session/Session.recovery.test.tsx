@@ -1065,12 +1065,28 @@ test.each(["model", "compact"])(
       rejectAction = reject;
     });
     void pendingAction.catch(() => {});
-    fake.on("thread/read", () => {
+    // The saved session's own read carries the snapshot of the daemon that has
+    // since exited. A model pick resumes first, so the read that answers the
+    // resume names a NEW boot generation - the authority that pick is fenced
+    // on. Every read keeps the session's saved status: this test's subject is
+    // recovery retained while that resume stalls, not the resumed status.
+    const savedRead = (bootGeneration: string) => {
       const saved = action === "model" ? modelControlRead(ref, "pending") : readResponse(ref);
+      if (action === "model") {
+        saved.bootGeneration = bootGeneration;
+        const control = saved.thread.evener.modelControl;
+        if (control) control.authority.bootGeneration = bootGeneration;
+      }
       saved.thread.status = { type: "notLoaded" };
       saved.thread.evener.resumeRequired = stopped;
       return saved;
+    };
+    let resumed = false;
+    fake.on("thread/resume", () => {
+      resumed = true;
+      return savedRead("2");
     });
+    fake.on("thread/read", () => savedRead(resumed ? "2" : "1"));
     const method = action === "model" ? "thread/model/set" : "thread/compact/start";
     fake.on(method, () => {
       daemonStarted = true;
@@ -1119,9 +1135,10 @@ test.each(["model", "compact"])(
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
-      expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(
-        0,
-      );
+      // A model pick on this saved session resumes once and dispatches on the
+      // resumed daemon's authority; a compact action dispatches without one.
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(action === "model" ? 1 : 0);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     } finally {
       rejectAction(new Error("fixture cleanup"));
     }
