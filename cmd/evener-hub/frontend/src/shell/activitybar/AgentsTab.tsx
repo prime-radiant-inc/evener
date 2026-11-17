@@ -4,23 +4,23 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // to the shared owner without acquiring another reader or retry loop.
 
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
-import { useId, useLayoutEffect } from "react";
+import { useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Button, Chevron, EmptyState, InlineNotice, Skeleton } from "../../widgets";
-import { isDisclosureOpen, toggleDisclosure } from "../../widgets/disclosure/disclosureStore";
+import { Button, Disclosure, EmptyState, InlineNotice, Skeleton } from "../../widgets";
+import { isDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
 import { useActivityScrollAnchor, useActivityScrollProgress, useActivityViewCurrent } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
+import { activityPlaceholderLines } from "./activityPlaceholders";
 import { AgentRow } from "./activityRows";
 import { activitySidebarStore, useActivitySidebarStore } from "./activitySidebarStore";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
-  foldButton: requireClass(styles.foldButton, "activitybar.module.css", "foldButton"),
 };
 
 const PAGE = 20;
@@ -30,16 +30,13 @@ function drill(sub: SessionDelegate): void {
 }
 
 export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
-  const inactiveSuffix = "inactive-delegates";
-  const foldID = `${scope.leaf.ref}\0${inactiveSuffix}`;
-  // The sidebar and an ActivityPeek can both render this body for one ref:
-  // the persisted fold key stays ref-based, but the controlled list id must
-  // be unique per rendered surface.
-  const inactiveListID = useId();
+  const foldID = `${scope.leaf.ref}\0inactive-delegates`;
   const foldOpen = isDisclosureOpen(foldID, false);
   const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "delegates");
   const collection = snapshot?.delegates;
+  const summary = snapshot?.summary?.delegates;
+  const inactiveTotal = summary?.known ? summary.total - summary.active : null;
   const anchorID = useActivityScrollAnchor();
   const isCurrent = useActivityViewCurrent();
   const rows = collection?.rows ?? [];
@@ -59,7 +56,7 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
   if (collection?.permanent && collection.rows.length === 0)
     return <EmptyState size="compact" title="Subagents unavailable for this session." />;
   if (!collection || (collection.rows.length === 0 && !collection.complete)) {
-    return <Skeleton lines={2} />;
+    return <Skeleton lines={summary?.known ? activityPlaceholderLines(summary.total) : undefined} />;
   }
   return (
     <div className={CLASS.stack}>
@@ -70,52 +67,46 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
         <AgentRow key={activityNodeID({ ...sub, kind: "delegate" })} sub={sub} now={now} onDrill={() => onDrill(sub)} />
       ))}
       {inactive.length > 0 ? (
-        <>
-          <div className={CLASS.foldButton}>
-            <Button
-              variant="quiet"
-              size="sm"
-              aria-expanded={foldOpen}
-              aria-controls={foldOpen ? inactiveListID : undefined}
-              onClick={() => toggleDisclosure(foldID, false)}
-            >
-              <Chevron direction={foldOpen ? "down" : "right"} /> Inactive subagents ({inactive.length})
-            </Button>
+        <Disclosure
+          id={foldID}
+          summary={
+            <span>
+              {inactiveTotal === null
+                ? "Inactive subagents"
+                : `${inactiveTotal} inactive ${inactiveTotal === 1 ? "subagent" : "subagents"}`}
+            </span>
+          }
+        >
+          <div className={CLASS.stack}>
+            {inactive.slice(0, visible).map((sub) => (
+              <AgentRow
+                key={activityNodeID({ ...sub, kind: "delegate" })}
+                sub={sub}
+                now={now}
+                onDrill={() => onDrill(sub)}
+              />
+            ))}
+            {visible < inactive.length ? (
+              <Button
+                variant="quiet"
+                size="sm"
+                onClick={() =>
+                  activitySidebarStore.getState().setCategoryView(scope.leaf.ref, "agents", { shown: visible + PAGE })
+                }
+              >
+                Show {Math.min(PAGE, inactive.length - visible)} more · {inactive.length - visible} remaining
+              </Button>
+            ) : null}
           </div>
-          {foldOpen ? (
-            <div id={inactiveListID} className={CLASS.stack}>
-              {inactive.slice(0, visible).map((sub) => (
-                <AgentRow
-                  key={activityNodeID({ ...sub, kind: "delegate" })}
-                  sub={sub}
-                  now={now}
-                  onDrill={() => onDrill(sub)}
-                />
-              ))}
-              {visible < inactive.length ? (
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  onClick={() =>
-                    activitySidebarStore.getState().setCategoryView(scope.leaf.ref, "agents", { shown: visible + PAGE })
-                  }
-                >
-                  Show {Math.min(PAGE, inactive.length - visible)} more · {inactive.length - visible} remaining
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-        </>
+        </Disclosure>
       ) : null}
       <ActivityPageBoundary
         resource="delegates"
-        label="subagents"
         rows={collection.rows}
         hasMore={collection.hasMore}
         loading={collection.loading}
         error={collection.error}
         permanent={collection.permanent}
-        enabled={foldOpen || inactive.length === 0}
         loadMore={loadMore}
       />
       {collection.error && !collection.permanent ? (

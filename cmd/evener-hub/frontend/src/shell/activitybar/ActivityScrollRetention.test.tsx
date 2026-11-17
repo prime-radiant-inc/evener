@@ -12,6 +12,7 @@ import {
   activityContext,
   activityDelegate,
   activityJob,
+  activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -20,6 +21,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import styles from "./activitybar.module.css";
+import { ActivityBoundaryObserver as Visibility } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { ActivitySidebar } from "./activitySidebarTestUtils";
 
@@ -33,6 +35,13 @@ const jobs = Array.from({ length: 30 }, (_, index) =>
 const target = jobs[22];
 if (!target) throw new Error("fixture target missing");
 const anchor = { id: activityNodeID({ ...target, kind: "shell" }), offset: -12 };
+
+function serveJobSummary(client: ReturnType<typeof activityClient>, total = 30, active = 0) {
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total, active, completed: total - active, failed: 0 },
+  }));
+}
 
 function targetJob() {
   return screen.findByRole("button", {
@@ -75,31 +84,6 @@ function installGeometry() {
   });
 }
 
-class Visibility {
-  static observers: Visibility[] = [];
-  private callback: IntersectionObserverCallback;
-  target?: Element;
-  constructor(callback: IntersectionObserverCallback) {
-    this.callback = callback;
-    Visibility.observers.push(this);
-  }
-  observe(target: Element) {
-    this.target = target;
-  }
-  disconnect() {}
-  emit(visible: boolean) {
-    this.callback(
-      [{ target: this.target, isIntersecting: visible } as IntersectionObserverEntry],
-      this as unknown as IntersectionObserver,
-    );
-  }
-  static latest() {
-    const observer = Visibility.observers.at(-1);
-    if (!observer) throw new Error("no active page boundary observer");
-    return observer;
-  }
-}
-
 function mount() {
   return render(
     <MotionProvider>
@@ -115,7 +99,7 @@ function resetLive() {
   resetDisclosureStoreForTests();
   resetThreadsStoreForTests();
   resetConnectionStoreForTests();
-  Visibility.observers = [];
+  Visibility.reset();
 }
 
 function prepareRetainedAnchor() {
@@ -160,11 +144,12 @@ function serveRevisionedJobs(
 // boundary row: the connect/scope/open/mount sequence and the two visibility
 // rounds both round-trip tests start from.
 async function openJobsToRetainedBoundary(client: ReturnType<typeof activityClient>): Promise<void> {
+  serveJobSummary(client);
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("jobs");
   mount();
-  fireEvent.click(await screen.findByText("10 completed jobs"));
+  fireEvent.click(await screen.findByText("30 completed jobs"));
   await act(async () => Visibility.latest().emit(true));
   await screen.findByRole("button", { name: /History 19 revision 0/ });
   await act(async () => Visibility.latest().emit(true));
@@ -399,6 +384,7 @@ test("the shared store's empty-page progress reaches the retained anchor without
 test("a saved anchor waits for its successful-history disclosure to hydrate on a cold complete page", async () => {
   const connect = () => {
     const client = activityClient();
+    serveJobSummary(client);
     client.on("evener/thread/jobs/list", () => ({
       context: activityContext(),
       scope: "session",
@@ -689,6 +675,7 @@ test("keyboard activation of a history disclosure cancels its pending anchor bef
   prepareRetainedAnchor();
   setDisclosureOpen(`${ref}\0completed-jobs`, true);
   const client = activityClient();
+  serveJobSummary(client);
   let finish: (() => void) | undefined;
   client.on("evener/thread/jobs/list", async ({ cursor }) => {
     if (cursor)
@@ -709,7 +696,7 @@ test("keyboard activation of a history disclosure cancels its pending anchor bef
   });
   connectionStore.getState().connect(client);
   mount();
-  const disclosure = (await screen.findByText("10 completed jobs")).closest("summary");
+  const disclosure = (await screen.findByText("30 completed jobs")).closest("summary");
   if (!disclosure) throw new Error("completed history disclosure missing");
   await screen.findByRole("button", { name: /History 0/ });
   await act(async () => Visibility.latest().emit(true));

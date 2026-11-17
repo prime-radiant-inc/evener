@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { ActivitySidebar } from "../../shell/activitybar/ActivitySidebar";
+import { ActivityBoundaryObserver } from "../../shell/activitybar/activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
@@ -329,6 +330,7 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
 });
 
 test("an initially empty incomplete parent page retains its real continuation and scroll does not dismiss it", async () => {
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
   const { client, context, mount } = fixture();
   client.on("evener/thread/delegates/list", ({ ref, cursor }) => ({
     context: context(ref),
@@ -361,10 +363,10 @@ test("an initially empty incomplete parent page retains its real continuation an
     { ref: "root", scope: "session" },
     { ref: "root", scope: "session", cursor: "page-two" },
   ]);
-  const more = await within(peek).findByRole("button", { name: "Load more subagents" });
+  await within(peek).findByRole("status", { name: "Loading" });
   fireEvent.scroll(peek);
   expect(screen.getByTestId("activity-peek")).toBe(peek);
-  await act(async () => fireEvent.click(more));
+  await act(async () => ActivityBoundaryObserver.intersect());
   await within(peek).findByRole("button", { name: /Direct page row 20/ });
   expect(within(peek).getAllByRole("button", { name: /Direct page row/ })).toHaveLength(21);
   expect(reads()).toEqual([
