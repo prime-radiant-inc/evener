@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -59,6 +58,11 @@ func TestDelegateDisposalHint_DelegateSendReportsFinalWorktreeState(t *testing.T
 
 			var created delegateCreateResult
 			var sendOutput string
+			// sendRequested makes the fetch turn a one-shot: the product folds a
+			// child's pending report into the next turn as a steering row, so the
+			// fetch input need not be the request's last user message, and it never
+			// leaves history once it has run.
+			sendRequested := false
 			createArgs, err := json.Marshal(map[string]any{
 				"prompt":    "Create CHILD_WORK.txt in your worktree and report completion.",
 				"isolation": "worktree",
@@ -82,7 +86,8 @@ func TestDelegateDisposalHint_DelegateSendReportsFinalWorktreeState(t *testing.T
 					sendOutput = output
 					return communicateWithDefaultOutput("delegate result received")
 				}
-				if latestUserMessageText(req) == "fetch final child result" {
+				if !sendRequested && requestContainsText(req, "fetch final child result") {
+					sendRequested = true
 					args, err := json.Marshal(map[string]any{
 						"to":          created.DelegateID,
 						"message":     "Report completion and make no further filesystem changes.",
@@ -305,15 +310,6 @@ func toolResultTextForCall(req llm.Request, callID string) string {
 			if part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
 				return fmt.Sprint(part.ToolResult.Content)
 			}
-		}
-	}
-	return ""
-}
-
-func latestUserMessageText(req llm.Request) string {
-	for _, message := range slices.Backward(req.Messages) {
-		if message.Role == llm.RoleUser {
-			return message.Text()
 		}
 	}
 	return ""
