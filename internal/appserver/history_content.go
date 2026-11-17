@@ -109,15 +109,6 @@ func (s *Subscriptions) contentOwner(connID, threadID string) (*apphistory.Filte
 	return nil, false
 }
 
-func (c *Connection) enqueueHistory(record SequencedNotification, filter *apphistory.Filter) bool {
-	notification, keep, err := filter.Notification(record.Notification)
-	if err != nil {
-		c.server.logf("history notification selection: %v", err)
-		return false
-	}
-	return !keep || c.enqueue(appwire.Message{Notification: &notification})
-}
-
 type subscriptionRetryContextKey struct{}
 
 type subscriptionAttempt struct {
