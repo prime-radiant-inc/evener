@@ -13,10 +13,13 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
-// noticeInterval is how often the hub re-derives its notices to announce a
-// change it did not cause: an access token that expired with no refresh token,
-// a refresh the issuer rejected, a plugin directory that went missing.
-const noticeInterval = 5 * time.Second
+// snapshotInterval is how often the hub re-derives the periodic snapshots it
+// announces changes to that it did not cause: the notices (an access token that
+// expired with no refresh token, a refresh the issuer rejected, a plugin
+// directory that went missing) and each live session's attention level, which
+// the same wake publishes (#6422). Both were 5 seconds as separate tickers;
+// they are one wake and one cadence now.
+const snapshotInterval = 5 * time.Second
 
 // hubNotices derives the Board's notices (S11, spec 7.1): hub-level problems
 // that block sessions. It reads the answers the phone's fallback reads, so a
