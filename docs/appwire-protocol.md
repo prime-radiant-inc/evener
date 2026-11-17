@@ -3911,6 +3911,15 @@ Underlying Go kind: `string` (no struct fields).
 | `bindingId` | string |  |  |
 
 
+### `SessionControlModelParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | string |  |  |
+| `modelProvider` | string |  |  |
+| `model` | string |  |  |
+
+
 ### `SessionControlRequest`
 
 | Field | Go type | Omitempty | Embedded |
@@ -3920,7 +3929,7 @@ Underlying Go kind: `string` (no struct fields).
 | `resume` | \*[appwire.ThreadResumeParams](#threadresumeparams) | yes |  |
 | `fork` | \*[appwire.ThreadForkParams](#threadforkparams) | yes |  |
 | `clear` | \*[appwire.ThreadClearParams](#threadclearparams) | yes |  |
-| `model` | \*[appwire.ThreadModelSetParams](#threadmodelsetparams) | yes |  |
+| `model` | \*[appwire.SessionControlModelParams](#sessioncontrolmodelparams) | yes |  |
 | `vision_model` | \*[appwire.ThreadVisionModelSetParams](#threadvisionmodelsetparams) | yes |  |
 | `reasoning_effort` | \*[appwire.ThreadReasoningEffortSetParams](#threadreasoningeffortsetparams) | yes |  |
 | `compact` | \*[appwire.ThreadCompactStartParams](#threadcompactstartparams) | yes |  |

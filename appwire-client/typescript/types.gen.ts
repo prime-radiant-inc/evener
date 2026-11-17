@@ -3872,13 +3872,19 @@ export interface SessionBinding {
   bindingId: string;
 }
 
+export interface SessionControlModelParams {
+  ref: string;
+  modelProvider: string;
+  model: string;
+}
+
 export interface SessionControlRequest {
   action: string;
   approval?: SandboxEscalationResolveParams;
   resume?: ThreadResumeParams;
   fork?: ThreadForkParams;
   clear?: ThreadClearParams;
-  model?: ThreadModelSetParams;
+  model?: SessionControlModelParams;
   vision_model?: ThreadVisionModelSetParams;
   reasoning_effort?: ThreadReasoningEffortSetParams;
   compact?: ThreadCompactStartParams;
