@@ -330,6 +330,17 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 				t.Fatalf("the %s body carries effort names %v and thinking budgets %v; wantCarried = %v for %q",
 					res.Protocol, names, budgets, tc.wantCarried, tc.want)
 			}
+			// The reported tier is right only if the predicate agrees with the
+			// body this same request built. Checking only the reported tier
+			// would let a wrong predicate pass wherever the two happen to
+			// coincide; this is the check that a branch restating a builder's
+			// gate is still true to it.
+			if tc.want != "" {
+				if reached := llm.EffortReachesWire(tc.want, res); reached != carried {
+					t.Fatalf("EffortReachesWire(%q) = %t but the %s body that carries effort names %v and thinking budgets %v answers %t",
+						tc.want, reached, res.Protocol, names, budgets, carried)
+				}
+			}
 		})
 	}
 }

@@ -893,10 +893,16 @@ func VouchedEffort(requested string, levels []string) string {
 //
 // The branches below restate each builder's own gate — chatcompletions'
 // applyThinkingFormat, responses' reasoningObject, anthropic's
-// applyThinkingShape, and google's thinkingConfig — so this answers the same
-// question they do. Provider tests check those builders; a test in the agent
-// package (TestDefaultReasoningEffort_NamesTheTierTheWireCarries) checks this
-// function against the real builders, so the two cannot drift apart silently.
+// applyThinkingShape, and google's thinkingConfig — rather than asking the
+// builder, which reports its decision only as a side effect on the request
+// body. That is deliberate: the one caller needs a pure, cheap answer on the
+// envelope read path, and the alternative is a return value threaded through
+// four wire implementations. It also means this is a second copy of those
+// gates, so a branch here is only as right as the last person to read both.
+// TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the real
+// builders and is what catches a divergence; it does not make divergence
+// impossible, and a gate that runs after the builder (registry.Prune, a
+// provider's generationConfig overlay) is outside what this can see.
 //
 // Rows that derive a numeric budget instead of spelling the level (anthropic
 // budget_tokens/budget+effort, the google thinkingConfig) count as reaching
@@ -905,7 +911,31 @@ func VouchedEffort(requested string, levels []string) string {
 func EffortReachesWire(tier string, res registry.Resolved) bool {
 	caps := res.Caps
 	shape := registry.StringValue(caps.ThinkingShape)
+	budgetSized := ReasoningBudget(tier) > 0
+	// The level name the builders would spell: empty when the ladder refuses
+	// it, which is the vouch gate every name-carrying dialect shares.
 	vouched := VouchedEffort(tier, caps.EffortValues)
+	nameCarried := vouched != ""
+	nameGated := caps.EffortCapable() && nameCarried
+	// The off tier takes a different gate: only the two dialects with a value
+	// that says "off" write it, and only for a row whose ladder lists the off
+	// level. Every other shape omits the control entirely.
+	if tier == ReasoningEffortNone {
+		if !caps.EffortOffCapable() {
+			return false
+		}
+		switch res.Protocol {
+		case registry.ProtocolOpenAIChat:
+			switch registry.StringValue(caps.ThinkingFormat) {
+			case "", "openai":
+				return caps.EffortCapable()
+			case "openrouter":
+				return true
+			}
+			return false
+		}
+		return false
+	}
 	switch res.Protocol {
 	case registry.ProtocolAnthropic:
 		// A numeric budget is sized from the level, so it puts the tier to work
@@ -913,17 +943,17 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		// output_config.effort only for a level the ladder vouches for.
 		switch shape {
 		case "budget":
-			return ReasoningBudget(tier) > 0
+			return budgetSized
 		case "budget+effort":
-			return ReasoningBudget(tier) > 0 || vouched != ""
+			return budgetSized || nameCarried
 		case "adaptive":
-			return vouched != ""
+			return nameCarried
 		}
 		return false
 	case registry.ProtocolGoogle:
 		switch shape {
 		case "budget":
-			return ReasoningBudget(tier) > 0
+			return budgetSized
 		case "level":
 			// A gateway's no-effort verdict keeps includeThoughts but spells no
 			// level; a row naming no ladder has the level spelled through, and
@@ -931,11 +961,22 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 			if registry.BoolValue(caps.EffortParameterUnsupported) {
 				return false
 			}
-			return len(caps.EffortValues) == 0 || vouched != ""
+			if len(caps.EffortValues) != 0 && !nameCarried {
+				return false
+			}
+			// The builder writes its wire enum, renaming evener's top two
+			// tiers onto the enum's ceiling and dropping anything above it.
+			// Reporting the vouch answer would name a tier the wire never
+			// spells, so ask the same question the builder answers.
+			switch strings.ToUpper(vouched) {
+			case "", "MINIMAL", "LOW", "MEDIUM", "HIGH", "XHIGH", "MAX":
+				return true
+			}
+			return false
 		}
 		return false
 	case registry.ProtocolOpenAIResponses:
-		return caps.EffortCapable() && vouched != ""
+		return nameGated
 	case registry.ProtocolOpenAIChat:
 		switch registry.StringValue(caps.ThinkingFormat) {
 		case "openrouter":
@@ -950,12 +991,12 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		case "string-thinking":
 			// This one spells "thinking" on the ladder's word alone, without
 			// the effort-capability check the name-carrying fields make.
-			return vouched != ""
+			return nameCarried
 		}
 		// The unset/openai dialect and the zai, deepseek and together enable
 		// objects write the level only on an effort-capable row — which is false
 		// for a row stating the no-effort verdict — and only when vouched.
-		return caps.EffortCapable() && vouched != ""
+		return nameGated
 	}
 	return false
 }
