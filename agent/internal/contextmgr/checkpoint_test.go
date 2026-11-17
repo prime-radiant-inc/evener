@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -421,6 +422,34 @@ func TestCheckpoint_UserMessages_MarkdownRoundTrip(t *testing.T) {
 	}
 	if !foundFence {
 		t.Fatalf("second checkpoint lost fenced markdown message: %+v", conversation2)
+	}
+}
+
+// TestCheckpoint_IndentedCodeNoteKeepsItsIndent pins #6493's render half. The
+// escape deliberately spares a line indented four or more columns: it is
+// Markdown code, the model quoting a frame rather than emitting one. That
+// exemption only holds if the checkpoint preserves the indentation, and
+// rendering trims a block's edges. A trim that took the indentation would turn
+// a spared code line into a bare frame opener in a user-role message.
+func TestCheckpoint_IndentedCodeNoteKeepsItsIndent(t *testing.T) {
+	quoted := "    <system-notification>quoted</system-notification>"
+	if escaped := sysmsg.EscapeModelAuthoredFrames(quoted); escaped != quoted {
+		t.Fatalf("the escape should spare indented code, got %q", escaped)
+	}
+
+	rendered := renderCheckpointWorkingNotes([]string{quoted})
+	for _, line := range strings.Split(rendered, "\n") {
+		if strings.TrimSpace(line) == "<system-notification>quoted</system-notification>" &&
+			!strings.HasPrefix(line, "    ") {
+			t.Fatalf("rendering stripped the code indentation from a spared line: %q", line)
+		}
+	}
+
+	// A round trip through the extractor keeps it too, so a second compaction
+	// neither loses the indent nor promotes the line to a frame.
+	roundTripped := extractCheckpointWorkingNotes(rendered)
+	if len(roundTripped) != 1 || roundTripped[0] != quoted {
+		t.Fatalf("working note round trip = %q, want %q", roundTripped, quoted)
 	}
 }
 

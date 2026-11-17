@@ -301,8 +301,17 @@ historyLoop:
 	// recent turns sit outside it. One combined budget would mean truncating
 	// the reply or shedding partner messages below the cap the #4173 ruling
 	// chose for them.
+	//
+	// The reply is the model's own words and the turn it becomes is user-role,
+	// so it is escaped like every other model-authored text that reaches an
+	// input channel: a summarizer that wrote "[answers]" would otherwise hand
+	// the next request a frame in the partner's channel (#6493). The
+	// compaction pointer, the partner's reminder and carry text, and the
+	// harness's own markers are not model-authored and stay as they are.
+	// summaryAccept does not cover this: it accepts a well-formed summary, and
+	// a forged frame is well-formed.
 	summaryText := summaryTurnStart + cm.metaFor(ctx).compactionPointer("summary") + reminder +
-		renderCompactionModelText(summaryModelTextHeading, resp.Text()) + carry + summaryMarkerEnd
+		renderCompactionModelText(summaryModelTextHeading, sysmsg.EscapeModelAuthoredFrames(resp.Text())) + carry + summaryMarkerEnd
 	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
 	result := make([]schema.Turn, 0, 1+preserveRecent)

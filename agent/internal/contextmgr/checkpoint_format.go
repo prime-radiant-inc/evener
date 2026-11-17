@@ -42,10 +42,28 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 	return b.String()
 }
 
+// trimBlockEdges drops a block's leading and trailing blank lines and reports
+// "" for a block that holds nothing else, keeping the indentation of its first
+// content line. TrimSpace would strip that indentation, and indentation is
+// load-bearing here: a line indented four or more columns is Markdown code,
+// which the frame escape deliberately leaves alone. Trimming it would turn a
+// note the escape correctly spared as code into a bare frame opener in a
+// user-role message (#6493).
+func trimBlockEdges(text string) string {
+	lines := strings.Split(text, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func renderCheckpointWorkingNotes(notes []string) string {
 	clean := make([]string, 0, len(notes))
 	for _, note := range notes {
-		note = strings.TrimSpace(note)
+		note = trimBlockEdges(note)
 		if note != "" {
 			clean = append(clean, note)
 		}
@@ -309,7 +327,7 @@ func extractCheckpointWorkingNotes(text string) []string {
 		blocks := parseMarkdownBlocks(section)
 		notes := make([]string, 0, len(blocks))
 		for _, block := range blocks {
-			note := strings.TrimSpace(block.Text)
+			note := trimBlockEdges(block.Text)
 			if note != "" {
 				notes = append(notes, note)
 			}
@@ -398,7 +416,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 		if heading == "" {
 			return
 		}
-		text := strings.TrimSpace(strings.Join(lines, "\n"))
+		text := trimBlockEdges(strings.Join(lines, "\n"))
 		if text != "" {
 			blocks = append(blocks, checkpointMarkdownBlock{Heading: heading, Text: text})
 		}
@@ -448,7 +466,7 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		default:
 			continue
 		}
-		text := strings.TrimSpace(entry.Text)
+		text := trimBlockEdges(entry.Text)
 		if text == "" {
 			continue
 		}
