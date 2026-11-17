@@ -331,4 +331,73 @@ describe("per-delta projection work", () => {
     // And the round key moved to the earlier turn, as a full projection gives it.
     expect(keys(reused).at(-1)).toContain("b-1:b-1");
   });
+
+  test("an earlier turn whose entry count changes re-projects every later turn at its new index", () => {
+    // The start-index check: a turn can keep its (identity, position) rank
+    // signature while the number of entries it projects changes. Here turn-a's
+    // only item is a hook exit the tools preset hides at exit 0 and shows as a
+    // critical row when non-zero. The position-sorted document does not move,
+    // so only the running projected index can tell turn-b's anchors to shift -
+    // and scroll restoration keys on those anchor indexes.
+    const twoTurns = (hookExitCode: number): ThreadModel => {
+      const items = (turnId: string, entry: number, items: object[]) => ({
+        id: turnId,
+        status: "completed",
+        version: 1,
+        itemsView: "",
+        items: items.map((item) => ({ turnId, status: "completed", position: { entry, item: 0 }, ...item })),
+      });
+      return hydrateThread(
+        {
+          thread: {
+            id: "thr_startindex",
+            sessionId: "sess_startindex",
+            preview: "startindex",
+            ephemeral: false,
+            modelProvider: "test",
+            createdAt: 1,
+            updatedAt: 1,
+            status: { type: "active" },
+            cwd: "/tmp/project",
+            cliVersion: "1.0.0",
+            source: "evener",
+            evener: { ref: "ref_startindex", capabilities: {}, queue: { revision: 0 } },
+            turns: [
+              items("turn-a", 1, [
+                { id: "a-hook", type: "systemMessage", eventKind: "hook_completed", exitCode: hookExitCode, text: "" },
+              ]),
+              items("turn-b", 2, [{ id: "b-1", type: "agentMessage", text: "reply from b" }]),
+            ],
+          },
+          items: [],
+        } as never,
+        "ref_startindex",
+        1000,
+      );
+    };
+
+    const first = twoTurns(0);
+    const projector = createTranscriptProjector();
+    const before = projector.project(first, CONFIG);
+    // The exit-0 hook is hidden at tools, so turn-b's only anchor starts at 0.
+    expect(before.anchors.map((anchor) => [anchor.id, anchor.index])).toEqual([["b-1", 0]]);
+
+    // Only turn a changed, and turn b is the same object, so the projector must
+    // still re-project turn b: its start index moved from 0 to 1.
+    const updated = twoTurns(7);
+    const firstTurn = first.turns.at(0);
+    const secondTurn = first.turns.at(1);
+    const updatedTurn = updated.turns.at(0);
+    if (firstTurn === undefined || secondTurn === undefined || updatedTurn === undefined) throw new Error("no turns");
+    const next: ThreadModel = { ...first, turns: [updatedTurn, secondTurn] };
+    const reused = projector.project(next, CONFIG);
+    const full = projectThread(next, CONFIG);
+
+    // The whole contract: the incremental answer is the full answer, anchors included.
+    expect(reused).toEqual(full);
+    expect(reused.anchors.map((anchor) => [anchor.id, anchor.index])).toEqual([
+      ["a-hook", 0],
+      ["b-1", 1],
+    ]);
+  });
 });
