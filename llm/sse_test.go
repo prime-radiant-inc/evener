@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -370,6 +371,38 @@ func TestParseSSEPreservesUTF8SplitAcrossReads(t *testing.T) {
 			}
 			if !bytes.Equal(got[0].Data, []byte(want)) {
 				t.Fatalf("data of %d bytes did not survive the split reads intact", len(got[0].Data))
+			}
+		})
+	}
+}
+
+// TestParseSSETreatsWrappedEOFAsEndOfStream pins the stream-end test on both
+// read paths. End of stream is decided with errors.Is, so a reader that reports
+// the end of its body through a wrapper still ends the stream normally, and the
+// accumulated event still flushes; an unrelated read error is still returned to
+// the caller unchanged.
+func TestParseSSETreatsWrappedEOFAsEndOfStream(t *testing.T) {
+	t.Parallel()
+	wrappedEOF := fmt.Errorf("body closed after the last byte: %w", io.EOF)
+	for _, tc := range []struct {
+		name string
+		opts []SSEOption
+	}{
+		{name: "blocking path"},
+		{name: "read-timeout path", opts: []SSEOption{WithStreamReadTimeout(time.Hour)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := collectSSE(sseErrorReader{wrappedEOF}, tc.opts...)
+			if err != nil {
+				t.Fatalf("a wrapped EOF must end the stream, not fail it: %v", err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("events = %v, want none from a body that carried none", got)
+			}
+
+			boom := errors.New("connection reset")
+			if _, err := collectSSE(sseErrorReader{boom}, tc.opts...); !errors.Is(err, boom) {
+				t.Fatalf("unrelated read error = %v, want %v", err, boom)
 			}
 		})
 	}

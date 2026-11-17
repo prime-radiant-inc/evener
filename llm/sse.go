@@ -115,7 +115,7 @@ func scanLine(br *bufio.Reader, buf []byte) ([]byte, error) {
 	for {
 		frag, err := br.ReadSlice('\n')
 		buf = append(buf, frag...)
-		if err == bufio.ErrBufferFull {
+		if errors.Is(err, bufio.ErrBufferFull) {
 			continue
 		}
 		return trimLineEnding(buf), err
@@ -192,7 +192,7 @@ func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) err
 		}
 		line, err := scanLine(br, p.lineBuf)
 		p.lineBuf = line[:cap(line)]
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
 
@@ -200,7 +200,7 @@ func parseSSEBlocking(ctx context.Context, r io.Reader, fn func(ev SSEEvent) err
 			return perr
 		}
 
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return p.flush(fn)
 		}
 	}
