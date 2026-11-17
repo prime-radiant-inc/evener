@@ -1180,7 +1180,8 @@ type ThreadModelChangedParams struct {
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
 	// DefaultReasoningEffort is the effort the new model runs at while the
-	// session's own effort is unset (EvenerThread.DefaultReasoningEffort).
+	// session's own effort is unset (EvenerThread.DefaultReasoningEffort),
+	// absent under the same conditions.
 	DefaultReasoningEffort string  `json:"defaultReasoningEffort,omitempty"`
 	ContextUsed            int     `json:"contextUsed,omitempty"`
 	ContextWindow          int     `json:"contextWindow,omitempty"`
