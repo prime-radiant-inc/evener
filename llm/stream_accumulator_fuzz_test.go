@@ -7,9 +7,10 @@ import (
 )
 
 // FuzzStreamAccumulator folds an arbitrary sequence of StreamEvents into a
-// StreamAccumulator and inspects the assembled Response. Process/buildResponse/
-// responseHasContent/copyResponseMetadata bridge every streaming provider back to
-// a buffered Response; only fixed unit sequences exercised them (0% fuzz).
+// StreamAccumulator and inspects the assembled Response.
+// Process/buildResponseLocked/responseHasContent/copyResponseMetadata bridge
+// every streaming provider back to a buffered Response; only fixed unit
+// sequences exercised them (0% fuzz).
 //
 // Oracles:
 //   - Process never panics over any event order and is a no-op on a nil receiver.
@@ -27,7 +28,7 @@ func FuzzStreamAccumulator(f *testing.F) {
 	f.Fuzz(func(t *testing.T, textPipes, reasonPipes, toolID string, finish bool) {
 		var nilAcc *StreamAccumulator
 		nilAcc.Process(StreamEvent{Type: StreamEventTextDelta, Delta: "x"}) // must be a no-op
-		if nilAcc.Response() != nil || nilAcc.PartialResponse() != nil || nilAcc.buildResponse() != nil {
+		if nilAcc.Response() != nil || nilAcc.PartialResponse() != nil {
 			t.Fatal("nil accumulator returned a response")
 		}
 

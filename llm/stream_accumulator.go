@@ -24,7 +24,7 @@ type StreamAccumulator struct {
 	final         *Response
 	partial       *Response
 	dirty         bool // true when partial is stale and must be rebuilt before the next read
-	buildCount    int  // number of buildResponse() calls; test-visible proof of lazy rebuild
+	buildCount    int  // number of buildResponseLocked() calls; test-visible proof of lazy rebuild
 }
 
 // NewStreamAccumulator returns a StreamAccumulator with its internal text and
@@ -146,7 +146,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				a.dirty = true
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
-				// Clone rather than reuse the accumulated buffer: buildResponse copies a
+				// Clone rather than reuse the accumulated buffer: buildResponseLocked copies a
 				// ToolCallData by value, so a partial projected before this event still
 				// aliases that array. Rewriting it in place would change bytes a caller
 				// already holds. The delta arm stays append-only, which never writes
@@ -222,17 +222,8 @@ func (a *StreamAccumulator) hasText() bool {
 	return false
 }
 
-// buildResponse returns a fresh response assembled from the accumulated state.
-func (a *StreamAccumulator) buildResponse() *Response {
-	if a == nil {
-		return nil
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.buildResponseLocked()
-}
-
-// buildResponseLocked is buildResponse for callers already holding a.mu.
+// buildResponseLocked assembles a fresh response from the accumulated state.
+// Callers must hold a.mu.
 func (a *StreamAccumulator) buildResponseLocked() *Response {
 	a.buildCount++
 	var parts []ContentPart
