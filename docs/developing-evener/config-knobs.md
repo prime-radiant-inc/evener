@@ -119,6 +119,7 @@ packages and test files do not count.
 | `DISPLAY` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `GOCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `make/fuzzing.mk` and 2 more |
 | `GOENV` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/lib/private-go-home.sh` |
+| `GOGC` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `GOMODCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `GOPATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/lib/private-go-home.sh` |
 | `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 19 more |
@@ -156,7 +157,6 @@ Dev tooling and test rigs declare these themselves.
 | `EVENER_SHARD_RUN_FILE` | [developing-evener/testing.md](../developing-evener/testing.md) | `internal/devtool/shardrun` |
 | `EVENER_WEB_VITEST_JSON` | none | `cmd/evener-dev` |
 | `GITHUB_STEP_SUMMARY` | none | `cmd/evener-go-deps` |
-| `GOGC` | none | `cmd/evener` |
 | `SHARDRUN_PROBE_CHILD` | none | `internal/devtool/shardrun` |
 
 ## hub.toml keys
