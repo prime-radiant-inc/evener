@@ -88,8 +88,12 @@ type builder struct {
 	entryReplayOrdinal bool
 	// assistant is the latest ASSISTANT entry with tool calls this builder
 	// applied, at assistantOffset, so the results after it need not read it
-	// back.
-	assistant       *schema.Turn
+	// back. It holds a copy, not the caller's pointer: scan decodes one entry
+	// per line into a local, and retaining its address would put that whole
+	// decoded entry on the heap for every line of a cold rebuild. hasAssistant
+	// distinguishes the empty turn from no assistant at all.
+	assistant       schema.Turn
+	hasAssistant    bool
 	assistantOffset int64
 	models          map[string]strRef
 
@@ -499,7 +503,7 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 		}
 	}
 	if entry.Kind == schema.TurnAssistant && hasToolCall(entry) {
-		b.assistant, b.assistantOffset = entry, offset
+		b.assistant, b.assistantOffset, b.hasAssistant = *entry, offset, true
 	}
 	return b.stampTurn(slot, entry, ordinal, offset, length)
 }
@@ -903,15 +907,15 @@ func lastTextRun(content []llm.ContentPart) string {
 }
 
 func (b *builder) awaitingEntry(summary turnRecord) (*schema.Turn, error) {
-	if b.assistant != nil && b.assistantOffset == summary.AwaitingOffset {
-		return b.assistant, nil
+	if b.hasAssistant && b.assistantOffset == summary.AwaitingOffset {
+		return &b.assistant, nil
 	}
 	entry, err := b.x.readEntry(summary.AwaitingOffset, summary.AwaitingLength)
 	if err != nil {
 		return nil, err
 	}
-	b.assistant, b.assistantOffset = entry, summary.AwaitingOffset
-	return entry, nil
+	b.assistant, b.assistantOffset, b.hasAssistant = *entry, summary.AwaitingOffset, true
+	return &b.assistant, nil
 }
 
 func hasToolCall(entry *schema.Turn) bool {
