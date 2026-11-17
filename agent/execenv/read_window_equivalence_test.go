@@ -33,11 +33,6 @@ type readWindowCase struct {
 	want string
 }
 
-// offPtr and limPtr name one bound of a window on its own; passing nil for the
-// other is how a caller leaves it at its default.
-func offPtr(off int) *int { return &off }
-func limPtr(lim int) *int { return &lim }
-
 // readFileWindowGolden pins the rendered window for the edge cases issue #6427
 // names: line numbering, CRLF, a missing trailing newline, bytes that are not
 // UTF-8, blank lines, an empty file, an offset past the end, and the
@@ -51,22 +46,22 @@ var readFileWindowGolden = []readWindowCase{
 	{name: "lone CR at end", body: "a\r", want: "   1\ta\r\n"},
 	{name: "CR mid line", body: "a\rb\nc", want: "   1\ta\rb\n   2\tc\n"},
 	{name: "CRLF two rows", body: "a\r\nb\r\n", want: "   1\ta\n   2\tb\n"},
-	{name: "CRLF window", body: "a\r\nb\r\nc\r\n", off: offPtr(2), lim: limPtr(1), want: "   2\tb\n"},
+	{name: "CRLF window", body: "a\r\nb\r\nc\r\n", off: new(2), lim: new(1), want: "   2\tb\n"},
 	{name: "trailing blank lines", body: "a\n\n\n", want: "   1\ta\n   2\t\n   3\t\n"},
 	{name: "mixed endings", body: "a\r\nb\nc\r\n", want: "   1\ta\n   2\tb\n   3\tc\n"},
-	{name: "no trailing newline offset 2", body: "a\nb", off: offPtr(2), lim: limPtr(10), want: "   2\tb\n"},
-	{name: "offset past single line", body: "a\n", off: offPtr(2), lim: limPtr(10), want: ""},
-	{name: "offset past many lines", body: "a\nb\nc\n", off: offPtr(9), lim: limPtr(10), want: ""},
-	{name: "window from the middle", body: "1\n2\n3\n4\n5\n", off: offPtr(3), lim: limPtr(2), want: "   3\t3\n   4\t4\n"},
-	{name: "limit longer than the file", body: "1\n2\n", off: offPtr(1), lim: limPtr(100), want: "   1\t1\n   2\t2\n"},
+	{name: "no trailing newline offset 2", body: "a\nb", off: new(2), lim: new(10), want: "   2\tb\n"},
+	{name: "offset past single line", body: "a\n", off: new(2), lim: new(10), want: ""},
+	{name: "offset past many lines", body: "a\nb\nc\n", off: new(9), lim: new(10), want: ""},
+	{name: "window from the middle", body: "1\n2\n3\n4\n5\n", off: new(3), lim: new(2), want: "   3\t3\n   4\t4\n"},
+	{name: "limit longer than the file", body: "1\n2\n", off: new(1), lim: new(100), want: "   1\t1\n   2\t2\n"},
 	{name: "non-UTF-8 bytes", body: "caf\xe9 \xff\xfe line\nsecond \x80 line\n", want: "   1\tcaf\xe9 \xff\xfe line\n   2\tsecond \x80 line\n"},
-	{name: "non-UTF-8 unterminated tail", body: "ok\n\xff\xfe\xfd", off: offPtr(2), lim: limPtr(1), want: "   2\t\xff\xfe\xfd\n"},
+	{name: "non-UTF-8 unterminated tail", body: "ok\n\xff\xfe\xfd", off: new(2), lim: new(1), want: "   2\t\xff\xfe\xfd\n"},
 	{name: "blank first line", body: "\nsecond\nthird\n", want: "   1\t\n   2\tsecond\n   3\tthird\n"},
 	{name: "CRLF without final terminator", body: "a\r\nb\r", want: "   1\ta\n   2\tb\r\n"},
-	{name: "offset only", body: "a\nb\nc\n", off: offPtr(2), want: "   2\tb\n   3\tc\n"},
-	{name: "limit only", body: "a\nb\nc\n", lim: limPtr(2), want: "   1\ta\n   2\tb\n"},
-	{name: "offset zero is the default", body: "a\nb\n", off: offPtr(0), want: "   1\ta\n   2\tb\n"},
-	{name: "limit zero is the default", body: "a\nb\n", lim: limPtr(0), want: "   1\ta\n   2\tb\n"},
+	{name: "offset only", body: "a\nb\nc\n", off: new(2), want: "   2\tb\n   3\tc\n"},
+	{name: "limit only", body: "a\nb\nc\n", lim: new(2), want: "   1\ta\n   2\tb\n"},
+	{name: "offset zero is the default", body: "a\nb\n", off: new(0), want: "   1\ta\n   2\tb\n"},
+	{name: "limit zero is the default", body: "a\nb\n", lim: new(0), want: "   1\ta\n   2\tb\n"},
 }
 
 // TestReadFileWindowGoldenRows pins the exact rows for every golden case on the
