@@ -48,7 +48,7 @@ func withSessionResume[R any](
 	if !isSessionUnavailableError(err) {
 		return resp, err
 	}
-	if ref != "" && !hubCanResumeRef(cfg, sources, ref) {
+	if ref != "" && !hubCanResumeRef(cfg, sources, ref, clientMutationID) {
 		return resp, err
 	}
 	resumed, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref})
@@ -91,13 +91,25 @@ func withSessionResume[R any](
 	return resp, retryErr
 }
 
-func hubCanResumeRef(cfg hubcore.WebConfig, sources *appsource.Registry, ref string) bool {
+func hubCanResumeRef(cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID string) bool {
 	if hubKnowsRef(cfg, ref) {
 		return true
 	}
 	// A remote source owns its saved-session index and resume admission. The
 	// local past index cannot know those refs, so source registration is the
 	// strongest pre-dispatch proof available without starting the session.
+	//
+	// Only a caller with no client mutation id takes this path. A remote host
+	// that is not attached refuses before dispatching anything, and this
+	// helper's failure report turns any failed resume into an unknown outcome
+	// when the caller carries an id — which makes the client mark the record
+	// blocked and never replay a mutation that was never sent. Those callers
+	// keep returning the original retryable session-unavailable refusal, so a
+	// queued message waits for the host instead of being dropped. The remote
+	// resume exists for Manager's authority read, which passes no id.
+	if clientMutationID != "" {
+		return false
+	}
 	parsed, err := appwire.ParseRef(ref)
 	if err != nil || parsed.SourceID == appwire.LocalSourceID {
 		return false

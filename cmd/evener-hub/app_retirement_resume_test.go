@@ -648,6 +648,55 @@ func TestModelMutationResumeUsesOnlyPredispatchRefusal(t *testing.T) {
 			t.Fatalf("blocked error = %#v, want %#v", err, blocked)
 		}
 	})
+
+	// A remote host that is not attached refuses before it dispatches anything,
+	// so the mutation never ran. The refusal has to stay the retryable
+	// session-unavailable it is: reporting it as an unknown outcome would make
+	// the client mark the record blocked and never replay it, dropping a queued
+	// message that was never sent. The Manager's own authority read passes no
+	// client mutation id, which is the caller the remote auto-resume exists for.
+	t.Run("detached remote host stays retryable", func(t *testing.T) {
+		server, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{})
+		defer server.Close()
+		remote := appsource.NewRemoteHubSource("worker", nil, func(context.Context, string) (*appwire.Client, error) {
+			t.Fatal("a detached host must not be dialed")
+			return nil, nil
+		})
+		remote.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return nil, false })
+		web.sources.Add(remote)
+		ref := "worker:queued-thread"
+
+		attempts := 0
+		_, err := withSessionResume(t.Context(), web.cfg, web.sources, ref, mutationID, nil, func() (appwire.EmptyResponse, error) {
+			attempts++
+			source, err := sourceForThread(web.sources, ref, "")
+			if err != nil {
+				return appwire.EmptyResponse{}, err
+			}
+			_, err = source.QueueTurn(t.Context(), appwire.TurnQueueParams{Ref: ref, ClientMutationID: mutationID})
+			return appwire.EmptyResponse{}, err
+		})
+		if err == nil {
+			t.Fatal("withSessionResume reported success for a detached remote host")
+		}
+		if attempts != 1 {
+			t.Fatalf("attempts=%d, want 1 (nothing was dispatched, so nothing may be retried here)", attempts)
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("refusal %T=%v, want a WireError", err, err)
+		}
+		data, ok := appwire.ErrorDataOf(wire.Data)
+		if !ok {
+			t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+			t.Fatalf("evenerErrorInfo = %q, want %q so the client retries the undispatched mutation", data.EvenerErrorInfo, appwire.ErrorSessionUnavailable)
+		}
+		if data.MutationOutcome == appwire.MutationOutcomeUnknown {
+			t.Fatalf("detached host reported an unknown outcome (wire=%+v), so the client would never replay a mutation that was never sent", wire)
+		}
+	})
 }
 
 func TestRetirementResumeSameIDReplaysOneStableTurn(t *testing.T) {

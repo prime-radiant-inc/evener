@@ -472,9 +472,13 @@ available. The inline session chrome owns activity discovery at rest and while
 engaged, without a second discovery mount.
 
 The model picker remains available when the session advertises `changeModel`.
-Selecting a model uses `thread/model/set`; the hub owns resuming a cold session
-and applying the choice. After a capable `thread/read`, the thread store owns
-the daemon's versioned model-control snapshot for every view of that session.
+Selecting a model on a live session sends one `thread/model/set` bound to the
+authority the store already holds. On a cold session the thread store resumes
+it first, then sends one `thread/model/set` bound to the authority from the read
+that followed the resume; the hub's own resume-and-retry remains as a fallback
+for a pick whose authority retired in between. After a capable `thread/read`, the
+thread store owns the daemon's versioned model-control snapshot for every view
+of that session.
 An accepted choice is shown immediately, including while the current turn
 finishes on its old model. The typed response, live model-control notification,
 and later reads all replace that snapshot through the shared reducer, so another
