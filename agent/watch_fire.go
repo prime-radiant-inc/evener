@@ -255,19 +255,7 @@ func (jm *jobManager) conditionFireSendLocked(d watchSendDelivery) watchSendDeli
 // that owes a settle: one still pending, in flight under a delivery claim, or
 // handed to the settlement retry. The caller must hold jm.mu.
 func (jm *jobManager) conditionFrameCanSettleLocked(cfg *watchConfig, deliveryID string) bool {
-	for _, key := range cfg.pendingOrder {
-		if state := cfg.pending[key]; state != nil && state.DeliveryID == deliveryID {
-			return true
-		}
-	}
-	if _, delivering := jm.deliveringWatchSends[deliveryID]; delivering {
-		return true
-	}
-	if _, unsettled := jm.unsettledWatchSends[deliveryID]; unsettled {
-		return true
-	}
-	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
-	return retrying
+	return cfg.pendingDeliveryLocked(deliveryID) || jm.watchSendHeldLocked(deliveryID)
 }
 
 // watchReceiverSession is the session cfg delivers to: its receiver, or this
@@ -382,13 +370,19 @@ func (jm *jobManager) settleConditionFrameLocked(cfg *watchConfig, deliveryID st
 		}
 	}
 	for id := range cfg.conditionFrames {
-		if !slices.ContainsFunc(cfg.pendingOrder, func(key jobstore.WatchSendKey) bool {
-			state := cfg.pending[key]
-			return state != nil && state.DeliveryID == id
-		}) {
+		if !cfg.pendingDeliveryLocked(id) {
 			delete(cfg.conditionFrames, id)
 		}
 	}
+}
+
+// pendingDeliveryLocked reports whether deliveryID is still the pending frame
+// of one of cfg's keys. The caller must hold jm.mu.
+func (cfg *watchConfig) pendingDeliveryLocked(deliveryID string) bool {
+	return slices.ContainsFunc(cfg.pendingOrder, func(key jobstore.WatchSendKey) bool {
+		state := cfg.pending[key]
+		return state != nil && state.DeliveryID == deliveryID
+	})
 }
 
 // watchBackstopNotice is the hourly backstop's notice for watchID, which has

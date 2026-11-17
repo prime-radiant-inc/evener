@@ -86,13 +86,22 @@ func (jm *jobManager) supersededFireStillCountsLocked(deliveryID string) bool {
 	if jm.watchSendDeliveredLocked(deliveryID) {
 		return true
 	}
+	if _, transcribed := jm.transcribedWatchSends[deliveryID]; transcribed {
+		return true
+	}
+	return jm.watchSendHeldLocked(deliveryID)
+}
+
+// watchSendHeldLocked reports whether a delivery is held by anything that can
+// still settle it: in flight under a claim, taken by the receiver with its
+// settle outstanding, or handed to the settlement retry. The supersession hold
+// and the settleability question both read these, so another kind of hold goes
+// here rather than into each caller. The caller must hold jm.mu.
+func (jm *jobManager) watchSendHeldLocked(deliveryID string) bool {
 	if _, delivering := jm.deliveringWatchSends[deliveryID]; delivering {
 		return true
 	}
 	if _, unsettled := jm.unsettledWatchSends[deliveryID]; unsettled {
-		return true
-	}
-	if _, transcribed := jm.transcribedWatchSends[deliveryID]; transcribed {
 		return true
 	}
 	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
@@ -962,9 +971,6 @@ func (jm *jobManager) releaseWatchSendReservation(record watchSendPendingRecord)
 		return
 	}
 	jm.releaseWatchSendDeliveryClaim(record.reservedDelivery)
-	if record.cfg == nil {
-		return
-	}
 	jm.mu.Lock()
 	if !jm.conditionFrameCanSettleLocked(record.cfg, record.reservedDelivery) {
 		delete(record.cfg.conditionFrames, record.reservedDelivery)
