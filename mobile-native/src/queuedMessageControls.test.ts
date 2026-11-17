@@ -1301,6 +1301,51 @@ test("a failed Edit append keeps the exact recovery owner across reopen", async 
 	expect(f.calls).toEqual([]);
 });
 
+// #4816: the recovery half of an Edit is one keyed row, not a scan of the
+// target's whole recovery projection. What makes that read safe is the identity
+// checks around it, so this pins the read and both rejections: a row for another
+// target, and a row that is not an editing claim, never authorise a restore even
+// though the keyed read hands them back.
+test("an edit's recovery lookup is keyed, and foreign or non-editing rows never authorise it", async () => {
+	const f = fixture();
+	const id = await f.enqueue({ draftCaptureToken: "capture" });
+	// Count the recovery reads this lookup issues. listRecovery is the
+	// whole-projection scan; getRecovery is the keyed row the fix uses. One
+	// lookup must issue the keyed read and no scan - the calls are what the
+	// issue measures, and the behavioural checks below cannot tell them apart
+	// because both return the same row.
+	let scans = 0;
+	let keyedReads = 0;
+	const listRecovery = f.runtime.storage.listRecovery.bind(f.runtime.storage);
+	const getRecovery = f.runtime.storage.getRecovery.bind(f.runtime.storage);
+	f.runtime.storage.listRecovery = async (targetRef: string) => {
+		scans += 1;
+		return listRecovery(targetRef);
+	};
+	f.runtime.storage.getRecovery = async (clientMutationId: string) => {
+		keyedReads += 1;
+		return getRecovery(clientMutationId);
+	};
+
+	// No editing claim yet: the same id exists in the outbox only, so the keyed
+	// read must find nothing to authorise.
+	expect(await f.runtime.retainedRecoveryForAction(id, key)).toBeUndefined();
+	expect({ scans, keyedReads }).toEqual({ scans: 0, keyedReads: 1 });
+
+	// A genuine claim under this target authorises the restore, and the same
+	// helper reports it.
+	expect(await editQueuedMessageIntoDraft(f.runtime, key, id, f.document)).toBe("restored");
+	const retained = await f.runtime.retainedRecoveryForAction(id, key);
+	expect(retained?.record).toMatchObject({ clientMutationId: id, recoveryKind: "editing" });
+	expect(scans).toBe(0);
+
+	// The currentness fence, not the read, withdraws it: replacing the target
+	// registration is a different target, so the retained claim no longer
+	// authorises anything.
+	f.unregisterTarget();
+	expect(await f.runtime.retainedRecoveryForAction(id, key)).toBeUndefined();
+});
+
 test("a missing durable row cannot authorize clearing a matching uncertain capture", async () => {
 	const f = fixture();
 	f.repository.write(destination, {
