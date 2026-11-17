@@ -8795,10 +8795,16 @@ it("background disk settlement does not await a pending end read", async () => {
     settled = true;
   });
   try {
-    // The settle helper the test invoked is the work being awaited, so join it
-    // directly rather than polling a flag it sets when it returns (#5630).
-    await settling;
-    expect(settled).toBe(true);
+    // The settle must return while the end read is still parked. Awaiting
+    // `settling` directly cannot assert that: it either returns or the test
+    // times out, and a regression that awaited the parked read would hang
+    // here instead of failing on a named check. The pump spends real storage
+    // round trips, so a regressed settle fails the assertion and the finally
+    // below still releases the owner (#5630).
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: () => settled }),
+      "background settle waited on the parked end read",
+    ).toBe(true);
     expect(reads).toBe(2);
   } finally {
     pendingEnd.resolve({ ...readOf([recorded("end")], 41), overlay: [], requestGeneration: 2 });
