@@ -3,7 +3,6 @@ package execenv
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -87,15 +86,22 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 
 // ReadFileCtx is ReadFile with the caller's context threaded to the read, so a
 // cancelled call ends a read parked on a stream instead of waiting it out.
+// A call naming a positive offset or limit reads only the bytes the window
+// needs; see read_window.go.
 func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, error) {
-	out, _, err := e.ReadFileAndBytesCtx(ctx, path, offsetLine, limitLines)
+	if lineWindowRequested(offsetLine, limitLines) {
+		return e.readFileWindowedCtx(ctx, path, offsetLine, limitLines)
+	}
+	out, _, err := e.ReadFileAndBytesCtx(ctx, path, nil, nil)
 	return out, err
 }
 
 // ReadFileAndBytesCtx is ReadFileCtx that also returns the whole file's bytes
 // as this read loaded them, for a caller that must record exactly what the
 // read saw. The bytes are the complete file even when offset and limit select
-// only some of its lines; on error they are nil.
+// only some of its lines — the caller needs the file, not the window — so this
+// entry always loads it; ReadFileCtx, which does not need them, reads the
+// window alone. On error the bytes are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	t, err := e.fileTarget("read_file", path, targetRead)
 	if err != nil {
@@ -128,21 +134,11 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, pat
 		}
 		return "", nil, err
 	}
-	// Image files: return base64-encoded data instead of erroring on binary.
-	if format := detectImageFormat(path, b); format != "" {
-		encoded := base64.StdEncoding.EncodeToString(b)
-		return fmt.Sprintf("[image: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), b, nil
+	out, rerr := renderTextRead(path, b, offsetLine, limitLines)
+	if rerr != nil {
+		return "", nil, rerr
 	}
-	// Document files (PDF): return base64-encoded data for vision/content pipeline.
-	if format := detectDocumentFormat(path, b); format != "" {
-		encoded := base64.StdEncoding.EncodeToString(b)
-		return fmt.Sprintf("[document: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), b, nil
-	}
-	// Basic binary detection.
-	if bytes.IndexByte(b, 0) >= 0 {
-		return "", nil, fmt.Errorf("binary file (NUL byte): %s", path)
-	}
-	return NumberLinesBytes(b, offsetLine, limitLines), b, nil
+	return out, b, nil
 }
 
 // NumberLinesBytes is NumberLines over the file's raw bytes. It exists so a
