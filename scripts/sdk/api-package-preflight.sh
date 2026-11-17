@@ -134,3 +134,22 @@ if [ ! -e node_modules/ws ]; then
 	print_install_remedy
 	exit 1
 fi
+
+# A tree newer than the lockfile is not necessarily a complete one: npm ci
+# installs in one pass, but does not have to for the probes above to pass, and
+# a tree that kept the early devDependencies while losing anser and tweetnacl
+# then failed inside npm pack's build with TS2307 "Cannot find module" — a
+# broken-package reading for a half-finished install. The lockfile's packages
+# map is exactly the set of paths npm ci creates, so every non-optional entry
+# the tree does not contain is a dependency that cannot resolve. Optional
+# entries are skipped because npm omits the ones whose os/cpu fields exclude
+# this host.
+if ! absent=$(node -e 'const fs=require("fs"); const lock=require("./package-lock.json"); const packages=(lock.packages)||{}; const missing=Object.keys(packages).filter((path)=>path!=="" && packages[path] && !packages[path].optional && !fs.existsSync(path)); if(missing.length===0) process.exit(0); process.stdout.write(missing.map((path)=>"  "+path).join("\n")+"\n"); process.exit(1);'); then
+	echo "ERROR: $package/node_modules is incomplete: package-lock.json lists" >&2
+	echo "  dependencies the install does not contain:" >&2
+	printf '%s\n' "$absent" >&2
+	echo "  The qualification runner compiles against them, so npm pack's build" >&2
+	echo "  fails with \"Cannot find module\" on a tree that looks installed." >&2
+	print_install_remedy
+	exit 1
+fi

@@ -152,6 +152,30 @@ func apiPackageLockfile(typescriptVersion string) string {
 	return fmt.Sprintf("{\"lockfileVersion\":3,\"packages\":{\"node_modules/typescript\":{\"version\":%q}}}\n", typescriptVersion)
 }
 
+// lockEntry is one dependency the lockfile's packages map lists: the path npm
+// ci would create relative to the package directory, and whether npm may skip
+// it on this host (an optional entry whose os/cpu fields exclude it).
+type lockEntry struct {
+	path     string
+	optional bool
+}
+
+// apiPackageLockfileWith is apiPackageLockfile plus one entry per dependency, so
+// a case can pin what the completeness check owes the tree beyond the tsc
+// version it matches.
+func apiPackageLockfileWith(typescriptVersion string, entries ...lockEntry) string {
+	var packages strings.Builder
+	fmt.Fprintf(&packages, `"node_modules/typescript":{"version":%q}`, typescriptVersion)
+	for _, entry := range entries {
+		optional := ""
+		if entry.optional {
+			optional = `,"optional":true`
+		}
+		fmt.Fprintf(&packages, `,%q:{"version":"1.0.0"%s}`, "node_modules/"+entry.path, optional)
+	}
+	return fmt.Sprintf(`{"lockfileVersion":3,"packages":{%s}}`+"\n", packages.String())
+}
+
 // apiPackageFixture lays out a throwaway appwire-client/typescript directory
 // with lockfile as its package-lock.json, dated into the past so a node_modules
 // the case adds is newer than it and the -nt freshness shortcut skips npm ci.
@@ -181,12 +205,16 @@ func freshNodeModules(t *testing.T, dir string) {
 
 // healthyNodeModules fills dir/node_modules with what the preflight's health
 // check wants: a tsc that reports tscVersion and the ws the qualification
-// runner imports. It is written after freshNodeModules, so dir/node_modules
-// stays newer than dir/package-lock.json.
+// runner imports. The typescript package directory is written too, because the
+// completeness check reads the lockfile's own paths and npm ci creates
+// node_modules/typescript alongside the .bin/tsc link derived from it. It is
+// written after freshNodeModules, so dir/node_modules stays newer than
+// dir/package-lock.json.
 func healthyNodeModules(t *testing.T, dir, tscVersion string) {
 	t.Helper()
 	freshNodeModules(t, dir)
 	writeTestFile(t, filepath.Join(dir, "node_modules", ".bin", "tsc"), []byte("#!/bin/sh\necho 'Version "+tscVersion+"'\n"), 0o755)
+	writeTestFile(t, filepath.Join(dir, "node_modules", "typescript", "package.json"), []byte("{}\n"), 0o644)
 	writeTestFile(t, filepath.Join(dir, "node_modules", "ws", "package.json"), []byte("{}\n"), 0o644)
 }
 
@@ -272,6 +300,47 @@ func TestAPIPackagePreflightRefusesUnreadyInstalls(t *testing.T) {
 		}
 		if !strings.Contains(output, "ws") {
 			t.Fatalf("refusal does not name the missing ws devDependency; output = %s", output)
+		}
+	})
+
+	// The real failure was a tree newer than the lockfile that still carried the
+	// pinned tsc and ws but had lost anser and tweetnacl: the spot checks passed,
+	// npm ci was skipped, and npm pack's build failed with TS2307 "Cannot find
+	// module" — a broken-package reading for a half-finished install. The
+	// completeness check reads the lockfile's packages map, so every declared
+	// dependency must be present, not just the two the probes name.
+	t.Run("newer but incomplete install", func(t *testing.T) {
+		dir := apiPackageFixture(t, apiPackageLockfileWith(apiPackageTypescriptVersion,
+			lockEntry{path: "anser"},
+			lockEntry{path: "tweetnacl"},
+			lockEntry{path: "ws"},
+		))
+		healthyNodeModules(t, dir, apiPackageTypescriptVersion)
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err == nil {
+			t.Fatalf("preflight accepted a newer node_modules missing declared dependencies; output = %s", output)
+		}
+		if output == "" {
+			t.Fatal("refusal printed nothing, so the reader is not told the install is incomplete")
+		}
+	})
+
+	// An optional entry is one npm may legitimately skip when its os/cpu fields
+	// exclude this host, so its absence must not read as an incomplete install:
+	// otherwise a correct tree on the wrong platform would be refused.
+	t.Run("complete install with an omitted optional dependency", func(t *testing.T) {
+		dir := apiPackageFixture(t, apiPackageLockfileWith(apiPackageTypescriptVersion,
+			lockEntry{path: "anser"},
+			lockEntry{path: "ws"},
+			lockEntry{path: "fsevents", optional: true},
+		))
+		healthyNodeModules(t, dir, apiPackageTypescriptVersion)
+		writeTestFile(t, filepath.Join(dir, "node_modules", "anser", "package.json"), []byte("{}\n"), 0o644)
+
+		output, err := runAPIPackagePreflight(t, dir)
+		if err != nil {
+			t.Fatalf("preflight refused a complete install over an optional dependency npm may skip: %v\n%s", err, output)
 		}
 	})
 
