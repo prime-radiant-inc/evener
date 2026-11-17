@@ -204,8 +204,14 @@ func TestReplacedTranscribedFrameStillCountsAsDelivered(t *testing.T) {
 	_, stranded := jm.transcribedWatchSends[first]
 	delivered := jm.watchSendDeliveredLocked(first)
 	jm.mu.Unlock()
-	if stranded && !delivered {
-		t.Fatalf("the replaced frame %s kept a transcript entry that nothing retries and never counts as delivered", first)
+	// Both halves matter and neither stands in for the other: clearing the
+	// marker stops the leak, but the fuse counts deliveries, so a frame the
+	// receiver already holds has to be recorded as one.
+	if stranded {
+		t.Fatalf("the replaced frame %s kept a transcript entry that nothing retries", first)
+	}
+	if !delivered {
+		t.Fatalf("the replaced frame %s reached the receiver's transcript but never counts as delivered", first)
 	}
 }
 
