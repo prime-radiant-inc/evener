@@ -1,12 +1,19 @@
 package llm
 
 import (
+	"slices"
 	"strings"
+	"sync"
 )
 
 // StreamAccumulator collects StreamEvent values and produces a complete Response.
 // It primarily exists to bridge streaming mode back to code that expects a Response.
+//
+// A StreamAccumulator is safe for concurrent use: Process may run on a producer
+// goroutine while Response or PartialResponse projects the accumulated state on a
+// consumer goroutine.
 type StreamAccumulator struct {
+	mu            sync.Mutex
 	textByID      map[string]*strings.Builder
 	textOrder     []string
 	reasoning     strings.Builder
@@ -36,6 +43,8 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 	if a == nil {
 		return
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	switch ev.Type {
 	case StreamEventTextStart:
 		id := strings.TrimSpace(ev.TextID)
@@ -137,7 +146,12 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				a.dirty = true
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
-				tc.Arguments = append(tc.Arguments[:0], ev.ToolCall.Arguments...)
+				// Clone rather than reuse the accumulated buffer: buildResponse copies a
+				// ToolCallData by value, so a partial projected before this event still
+				// aliases that array. Rewriting it in place would change bytes a caller
+				// already holds. The delta arm stays append-only, which never writes
+				// below the length a reader can see.
+				tc.Arguments = slices.Clone(ev.ToolCall.Arguments)
 				a.dirty = true
 			}
 		}
@@ -147,7 +161,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 		if ev.Response != nil {
 			cp := *ev.Response
 			if !responseHasContent(cp) {
-				cp = *a.buildResponse()
+				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
 			}
 			a.final = &cp
@@ -155,7 +169,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			a.dirty = false
 			return
 		}
-		r := a.buildResponse()
+		r := a.buildResponseLocked()
 		a.final = r
 		a.partial = r
 		a.dirty = false
@@ -170,6 +184,8 @@ func (a *StreamAccumulator) Response() *Response {
 	if a == nil {
 		return nil
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.final
 }
 
@@ -178,8 +194,10 @@ func (a *StreamAccumulator) PartialResponse() *Response {
 	if a == nil {
 		return nil
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.dirty {
-		a.partial = a.buildResponse()
+		a.partial = a.buildResponseLocked()
 		a.dirty = false
 	}
 	if a.partial != nil {
@@ -189,10 +207,33 @@ func (a *StreamAccumulator) PartialResponse() *Response {
 	return nil
 }
 
+// hasText reports whether any nonempty text delta has been accumulated.
+func (a *StreamAccumulator) hasText() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, id := range a.textOrder {
+		if b := a.textByID[id]; b != nil && b.Len() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// buildResponse returns a fresh response assembled from the accumulated state.
 func (a *StreamAccumulator) buildResponse() *Response {
 	if a == nil {
 		return nil
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.buildResponseLocked()
+}
+
+// buildResponseLocked is buildResponse for callers already holding a.mu.
+func (a *StreamAccumulator) buildResponseLocked() *Response {
 	a.buildCount++
 	var parts []ContentPart
 

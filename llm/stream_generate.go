@@ -17,10 +17,17 @@ type StreamResult struct {
 
 	mu         sync.Mutex
 	final      *Response
-	partial    *Response
 	err        error
 	totalUsage Usage
 	steps      []StepResult
+	// acc is the accumulator for the attempt in flight, published so a caller
+	// reading PartialResponse mid-stream projects the accumulated state instead
+	// of the producer rebuilding a snapshot per delta (#6411).
+	acc *StreamAccumulator
+	// prevAcc is the most recently completed attempt, consulted while a new
+	// attempt has accumulated no text yet so a step boundary does not make a
+	// visible partial disappear.
+	prevAcc *StreamAccumulator
 
 	done chan struct{}
 }
@@ -98,19 +105,44 @@ func (r *StreamResult) Response() (*Response, error) {
 	return nil, r.err
 }
 
-// PartialResponse returns a copy of the most recently accumulated partial response,
-// or nil if r is nil or no partial response is available yet.
+// PartialResponse returns a copy of the partial response accumulated so far, or
+// nil if r is nil or no text has been accumulated yet.
+//
+// It projects the in-flight accumulator at call time: the producer appends each
+// delta and never rebuilds the response per delta, so a caller that never reads
+// this pays nothing for it. Once the stream settles, it returns the final
+// response.
+//
+// An in-flight partial carries accumulated content only. Finish reason and usage
+// arrive with the settled response, which is all the pre-#6411 per-delta
+// snapshot ever published: it was taken before the FINISH event was folded in.
 func (r *StreamResult) PartialResponse() *Response {
 	if r == nil {
 		return nil
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.partial == nil {
+	final := r.final
+	acc := r.acc
+	prevAcc := r.prevAcc
+	r.mu.Unlock()
+	if final != nil {
+		cp := *final
+		return &cp
+	}
+	// A stream that has produced no text has no meaningful partial yet: the
+	// accumulator would otherwise report an empty text part.
+	var pr *Response
+	if acc.hasText() {
+		pr = acc.PartialResponse()
+	} else if prevAcc.hasText() {
+		pr = prevAcc.PartialResponse()
+	}
+	if pr == nil {
 		return nil
 	}
-	cp := *r.partial
-	return &cp
+	pr.Finish = FinishReason{}
+	pr.Usage = Usage{}
+	return pr
 }
 
 // TotalUsage returns the aggregated token usage across all steps. It is safe to
@@ -141,7 +173,6 @@ func (r *StreamResult) fail(err error) {
 func (r *StreamResult) settle(final *Response, totalUsage Usage, steps []StepResult) {
 	r.mu.Lock()
 	r.final = final
-	r.partial = final
 	r.totalUsage = totalUsage
 	r.steps = steps
 	r.mu.Unlock()
@@ -214,19 +245,23 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 					return finishEv, acc, hasPartialOutput, streamErr
 				}
 
+				// Publish the previous attempt before replacing it, so a
+				// caller that read a partial still sees it until this attempt
+				// accumulates text of its own. Only an attempt that produced text
+				// is promoted: a text-less one would blank the visible partial.
+				res.mu.Lock()
+				if res.acc.hasText() {
+					res.prevAcc = res.acc
+				}
+				res.mu.Unlock()
+
 				acc = NewStreamAccumulator()
+				res.mu.Lock()
+				res.acc = acc
+				res.mu.Unlock()
 
 				for ev := range st.Events() {
 					acc.Process(ev)
-
-					// Best-effort: expose partial response for consumers.
-					if ev.Type == StreamEventTextDelta {
-						if pr := acc.PartialResponse(); pr != nil {
-							res.mu.Lock()
-							res.partial = pr
-							res.mu.Unlock()
-						}
-					}
 
 					switch ev.Type {
 					case StreamEventStreamStart:

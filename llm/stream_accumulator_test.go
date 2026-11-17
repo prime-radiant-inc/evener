@@ -448,3 +448,58 @@ func TestStreamAccumulatorFinishRebuildsEmptyResponse(t *testing.T) {
 		t.Fatalf("rebuilt text = %q, want body", resp.Text())
 	}
 }
+
+// TestStreamAccumulator_ToolCallEndDoesNotRewriteAHeldPartial covers the
+// ownership rule the projected partial depends on: a partial handed to a caller
+// owns its bytes. A ToolCallEnd that supplies different arguments than the
+// deltas accumulated must not rewrite the array a held partial shares, or the
+// caller's snapshot changes under it.
+//
+// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
+func TestStreamAccumulator_ToolCallEndDoesNotRewriteAHeldPartial(t *testing.T) {
+	acc := NewStreamAccumulator()
+	acc.Process(StreamEvent{Type: StreamEventToolCallStart, ToolCall: &ToolCallData{
+		ID: "c1", Name: "t1", Type: "function",
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "c1", Arguments: json.RawMessage(`{"streamed":`),
+	}})
+	acc.Process(StreamEvent{Type: StreamEventToolCallDelta, ToolCall: &ToolCallData{
+		ID: "c1", Arguments: json.RawMessage(`true}`),
+	}})
+
+	// Hold a partial mid-argument-stream, the way a caller reading
+	// PartialResponse between deltas does.
+	held := acc.PartialResponse()
+	if held == nil {
+		t.Fatal("PartialResponse() = nil mid-stream")
+	}
+	heldCalls := held.ToolCalls()
+	if len(heldCalls) != 1 {
+		t.Fatalf("held partial has %d tool calls, want 1", len(heldCalls))
+	}
+	heldArgs := string(heldCalls[0].Arguments)
+	if heldArgs != `{"streamed":true}` {
+		t.Fatalf("held partial arguments = %q, want %q", heldArgs, `{"streamed":true}`)
+	}
+
+	// A ToolCallEnd carrying different arguments arrives after the read.
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
+		ID: "c1", Name: "t1", Type: "function", Arguments: json.RawMessage(`{"final":"value"}`),
+	}})
+
+	if got := string(heldCalls[0].Arguments); got != heldArgs {
+		t.Fatalf("held partial arguments changed from %q to %q: the ToolCallEnd rewrote the array the snapshot shares", heldArgs, got)
+	}
+	fresh := acc.PartialResponse()
+	if fresh == nil {
+		t.Fatal("PartialResponse() = nil after ToolCallEnd")
+	}
+	freshCalls := fresh.ToolCalls()
+	if len(freshCalls) != 1 {
+		t.Fatalf("fresh partial has %d tool calls, want 1", len(freshCalls))
+	}
+	if got := string(freshCalls[0].Arguments); got != `{"final":"value"}` {
+		t.Fatalf("fresh partial arguments = %q, want the ToolCallEnd value %q", got, `{"final":"value"}`)
+	}
+}
