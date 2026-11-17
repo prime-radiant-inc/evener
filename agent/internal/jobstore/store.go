@@ -299,7 +299,10 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 	} else if ok {
 		return folded, nil
 	}
-	events, err := s.readAllLocked()
+	// Fold copies and stable-sorts this view itself and retains none of it, and
+	// the records it builds are deep-copied below before they leave this lock,
+	// so the whole-history event copy readAllLocked makes buys nothing here.
+	events, err := s.readEventsLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -403,10 +406,23 @@ func (s *Store) readAll() ([]Event, error) {
 	return s.readAllLocked()
 }
 
-// readAllLocked returns every durable event in the log. It reads and decodes
-// only the bytes appended since the previous call, replaying the rest from the
-// tail cursor; the result is what a full reread of the file would produce.
-func (s *Store) readAllLocked() ([]Event, error) {
+// readEventsLocked returns every durable event in the log as a view the store
+// owns and the caller must only read, never mutate or retain past the call. It
+// reads and decodes only the bytes appended since the previous call, replaying
+// the rest from the tail cursor; the result is what a full reread of the file
+// would produce.
+//
+// The view may alias the cursor's decoded events and any unterminated tail, so
+// it is usable only while s.mu is held, and neither the slice nor the events in
+// it may be mutated. Fold is the one production consumer. It copies the slice
+// before sorting and so keeps no reference to it, but the records it returns
+// still share the events' reference fields: applyEvent copies ExitCode,
+// EndedAt, StructuredResult and StructuredResultValid out of a job_finished
+// event by reference and clones none of them. A caller of Fold may therefore
+// read those values but not write through them, and Fold's result may not reach
+// a caller until noteFoldedJobsLocked deep-copies it. Every reader that hands
+// events out uses readAllLocked instead.
+func (s *Store) readEventsLocked() ([]Event, error) {
 	tail, err := s.refreshCursorLocked()
 	if err != nil {
 		return nil, err
@@ -414,12 +430,36 @@ func (s *Store) readAllLocked() ([]Event, error) {
 	if len(s.cursor.events) == 0 && len(tail) == 0 {
 		return nil, nil
 	}
-	events := make([]Event, 0, len(s.cursor.events)+len(tail))
-	for _, e := range s.cursor.events {
-		events = append(events, cloneEvent(e))
+	// A tail is a fresh slice from advanceCursorLocked, so it is already the
+	// caller's; only combining it with the prefix needs a new slice.
+	if len(tail) == 0 {
+		return s.cursor.events, nil
 	}
-	for _, e := range tail {
-		events = append(events, cloneEvent(e))
+	if len(s.cursor.events) == 0 {
+		return tail, nil
+	}
+	events := make([]Event, 0, len(s.cursor.events)+len(tail))
+	events = append(events, s.cursor.events...)
+	events = append(events, tail...)
+	return events, nil
+}
+
+// readAllLocked returns every durable event in the log as a private snapshot:
+// every pointer, slice and map reachable from a returned event is its own, so a
+// caller may mutate what it got without changing what a later read reports.
+// This is the wrapper every public event reader uses; Load folds a borrowed
+// view instead (see readEventsLocked).
+func (s *Store) readAllLocked() ([]Event, error) {
+	view, err := s.readEventsLocked()
+	if err != nil {
+		return nil, err
+	}
+	if view == nil {
+		return nil, nil
+	}
+	events := make([]Event, len(view))
+	for i, e := range view {
+		events[i] = cloneEvent(e)
 	}
 	return events, nil
 }
