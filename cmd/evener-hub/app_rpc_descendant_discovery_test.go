@@ -188,26 +188,32 @@ func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client 
 	}, refreshes, reads)
 }
 
-// childDiscoveryReadForcingIndexAnswer issues the child read and answers the
-// first attempt that reaches the hub with the transcript index's transient
-// locked answer, so the helper reissues the request the way a live writer's
-// contention makes it. beforeRetry runs before every attempt after the first:
-// the helper reissues with no refresh of its own, and the daemon the first
-// attempt reached can be gone by then, so only a real roster refresh publishes
-// that departure to the reissued read.
+// childDiscoveryReadForcingIndexAnswer issues the child read and, when force
+// is set, answers the first attempt that reaches the hub with the transcript
+// index's transient locked answer so the helper reissues the request the way a
+// live writer's contention makes it. beforeRetry runs before every attempt
+// after the first: the helper reissues with no refresh of its own, and the
+// daemon the first attempt reached can be gone by then, so only a real roster
+// refresh publishes that departure to the reissued read.
 //
-// The answer is forced on a successful first read as well as a real transient
-// one, because the first attempt's own failure is not what this seam is about:
-// the daemon state the retry must meet is.
-func childDiscoveryReadForcingIndexAnswer(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, beforeRetry func()) func() (appwire.ThreadReadResponse, error) {
+// With force unset the first attempt's own answer is returned, so a scenario
+// that is not about index contention asserts the hub's first answer. Forcing
+// it there would throw that answer away and assert the reissued read instead,
+// which is what the forced scenario exists to cover. attempts counts the client
+// reads actually issued, so a caller can assert which of the two it exercised:
+// one means the hub's own first answer survived, two mean the read was reissued.
+func childDiscoveryReadForcingIndexAnswer(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, beforeRetry func(), force bool, issued *atomic.Int32) func() (appwire.ThreadReadResponse, error) {
 	attempts := 0
 	return func() (appwire.ThreadReadResponse, error) {
 		if attempts > 0 && beforeRetry != nil {
 			beforeRetry()
 		}
 		attempts++
+		if issued != nil {
+			issued.Add(1)
+		}
 		response, err := client.ThreadRead(ctx, params)
-		if err != nil || attempts > 1 {
+		if !force || err != nil || attempts > 1 {
 			return response, err
 		}
 		return appwire.ThreadReadResponse{}, appwire.TranscriptIndexLocked()
@@ -388,20 +394,30 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 			params.Ref = "unattached:" + childID
 		}
 		if scenario == "transport-lost" || scenario == "transport-lost-retried" {
-			// A transport loss answers the first attempt from the saved history,
-			// which the transcript index can refuse with a transient answer. The
-			// helper reissues that request, and by then the daemon is gone: a real
-			// refresh publishes the departure so the retry resolves to no source
-			// and folds to the saved history instead of dialing a dead listener.
-			// Forcing the transient answer puts both scenarios on that path; the
-			// refresh runs outside the scenario's hook, so the first attempt still
-			// makes its own live read and the counters stay the scenario's own.
+			// A transport loss answers from the saved history, and by the time the
+			// read is reissued the daemon is gone: a real refresh publishes the
+			// departure so the retry resolves to no source and folds to the saved
+			// history instead of dialing a dead listener.
+			//
+			// Only the retried scenario forces the transcript index's transient
+			// answer. That pins the reissue path deterministically, where the
+			// first attempt's own answer is not the subject. Plain transport-lost
+			// keeps the hub's own first answer, so it still pins the transport-lost
+			// fallback itself rather than a reissued read.
 			refreshBeforeRetry := func() {
 				if refreshErr := previousRefresh(readCtx, roster); refreshErr != nil {
 					t.Errorf("refresh before the retried read: %v", refreshErr)
 				}
 			}
-			read, err = retryChildDiscoveryReads(readCtx, t, childDiscoveryReadForcingIndexAnswer(readCtx, client, params, refreshBeforeRetry), &refreshes, &reads)
+			issued := new(atomic.Int32)
+			read, err = retryChildDiscoveryReads(readCtx, t, childDiscoveryReadForcingIndexAnswer(readCtx, client, params, refreshBeforeRetry, scenario == "transport-lost-retried", issued), &refreshes, &reads)
+			wantIssued := int32(2)
+			if scenario == "transport-lost" {
+				wantIssued = 1
+			}
+			if got := issued.Load(); got != wantIssued {
+				t.Fatalf("%s issued %d client reads, want %d: the forced scenario must reissue and the plain one must keep the hub's first answer", scenario, got, wantIssued)
+			}
 		} else {
 			read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
 		}
