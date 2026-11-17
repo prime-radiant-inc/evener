@@ -3,18 +3,19 @@ package hubcore
 import (
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-// openLockDriverName registers a driver that fails its first N opens with a
-// real SQLITE_BUSY, then delegates to the real sqlite driver. It reproduces
-// the concurrent-first-open failure deterministically: the WAL transition the
-// shared DSN performs on every new connection needs index.db's exclusive lock,
-// and a racing opener gets SQLITE_BUSY back in milliseconds rather than
-// waiting out busy_timeout.
+// openLockDriverName registers a driver that fails its first N opens with the
+// injected error, then delegates to the real sqlite driver. With a real
+// SQLITE_BUSY it reproduces the concurrent-first-open failure
+// deterministically: the WAL transition the shared DSN performs on every new
+// connection needs index.db's exclusive lock, and a racing opener gets
+// SQLITE_BUSY back in milliseconds rather than waiting out busy_timeout.
 const openLockDriverName = "sqlite-hub-identity-open-lock-test"
 
 var (
@@ -37,10 +38,9 @@ func (d *openLockDriver) Open(name string) (driver.Conn, error) {
 	return d.real.Open(name)
 }
 
-// hubIdentityStoreWithLockedOpen returns a store whose connections are opened
-// through the failing driver, with the next n opens failing with a real
-// SQLITE_BUSY.
-func hubIdentityStoreWithLockedOpen(t *testing.T, dbPath string, n int) *HubIdentityStore {
+// hubIdentityStoreWithFailingOpen returns a store whose connections are opened
+// through a driver that fails the next n opens with injectErr.
+func hubIdentityStoreWithFailingOpen(t *testing.T, dbPath string, n int, injectErr error) *HubIdentityStore {
 	t.Helper()
 	openLockMu.Lock()
 	t.Cleanup(openLockMu.Unlock)
@@ -53,7 +53,7 @@ func hubIdentityStoreWithLockedOpen(t *testing.T, dbPath string, n int) *HubIden
 		_ = db.Close()
 		sql.Register(openLockDriverName, &openLockDriver{real: realDriver})
 	})
-	errOpenLockInjected = realBusyError(t)
+	errOpenLockInjected = injectErr
 	openLockFailures.Store(int64(n))
 	store := NewHubIdentityStore(dbPath)
 	store.openDB = func(_, dataSourceName string) (*sql.DB, error) {
@@ -67,7 +67,7 @@ func hubIdentityStoreWithLockedOpen(t *testing.T, dbPath string, n int) *HubIden
 // transition on a brand-new index.db, and the losing attempt comes back in
 // milliseconds without waiting out busy_timeout.
 func TestHubIdentityRetriesLockConflictOnOpen(t *testing.T) {
-	store := hubIdentityStoreWithLockedOpen(t, filepath.Join(t.TempDir(), "index.db"), 2)
+	store := hubIdentityStoreWithFailingOpen(t, filepath.Join(t.TempDir(), "index.db"), 2, realBusyError(t))
 	id, err := store.HubID()
 	if err != nil {
 		t.Fatalf("HubID with two busy opens = %q, %v", id, err)
@@ -80,16 +80,30 @@ func TestHubIdentityRetriesLockConflictOnOpen(t *testing.T) {
 	}
 }
 
-// A lock conflict on a connection this store did not open is not this
-// function's to hide: an error that is not a lock conflict is returned as is,
-// and a persistent one is not retried forever.
+// A lock conflict is retried, but not forever.
 func TestHubIdentityOpenLockConflictIsBounded(t *testing.T) {
-	store := hubIdentityStoreWithLockedOpen(t, filepath.Join(t.TempDir(), "index.db"), hubIdentityOpenAttempts+5)
+	store := hubIdentityStoreWithFailingOpen(t, filepath.Join(t.TempDir(), "index.db"), hubIdentityOpenAttempts+5, realBusyError(t))
 	if _, err := store.HubID(); err == nil {
 		t.Fatal("HubID succeeded while every open returned SQLITE_BUSY")
 	}
 	if left := openLockFailures.Load(); left != 5 {
 		t.Fatalf("busy opens remaining = %d, want 5: want exactly %d attempts", left, hubIdentityOpenAttempts)
+	}
+}
+
+// An open error that is not a lock conflict is not retried: another attempt
+// cannot clear it, so it is returned after exactly one open. The injected
+// error is a real driver error that retrying cannot fix and whose text
+// contains "busy", so text matching on the message would misclassify it.
+func TestHubIdentityDoesNotRetryNonLockOpenError(t *testing.T) {
+	injectErr := realNonLockError(t)
+	store := hubIdentityStoreWithFailingOpen(t, filepath.Join(t.TempDir(), "index.db"), 1, injectErr)
+	_, err := store.HubID()
+	if !errors.Is(err, injectErr) {
+		t.Fatalf("HubID error = %v, want %v", err, injectErr)
+	}
+	if left := openLockFailures.Load(); left != 0 {
+		t.Fatalf("failing opens remaining = %d, want 0: want exactly one open attempt", left)
 	}
 }
 
