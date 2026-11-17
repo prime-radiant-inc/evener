@@ -91,6 +91,87 @@ describe("splitMarkdownSegments", () => {
   });
 });
 
+// How many times `run` split `tail` on "\n". A duplicate line scan over the
+// same tail is invisible in the rendered output and a timing assertion would
+// measure the host instead, so the count is the fact: splitLiveWindow's two
+// tail gates must share one scan of the tail's first non-blank line.
+function countTailLineScans(tail: string, run: () => void): number {
+  // A call-through spy, so nothing here restates split's own behavior. Marked
+  // splits its input on "\n" too, and the definition check lexes the tail, so
+  // the receiver matters as much as the separator: only passes over the exact
+  // tail string count.
+  const spy = vi.spyOn(String.prototype, "split");
+  let scans = 0;
+  try {
+    run();
+    const calls: unknown[][] = spy.mock.calls;
+    const contexts: unknown[] = spy.mock.contexts;
+    for (const [index, call] of calls.entries()) {
+      const separator = call[0];
+      if (separator === "\n" && String(contexts[index]) === tail) scans += 1;
+    }
+  } finally {
+    spy.mockRestore();
+  }
+  return scans;
+}
+
+describe("splitLiveWindow tail gates", () => {
+  // The tail's first non-blank line decides both gates. The two readings share
+  // one scan, so a list-headed tail costs exactly what a prose-headed one does:
+  // closeOpenMarkdown's pass (its result is returned as closedTail) plus that
+  // one shared read.
+  it("reads the tail's first non-blank line once whether or not the head ends in a list", () => {
+    const tail = "streaming tail prose. ".repeat(40).trim();
+    const listHeaded = splitLiveWindow(`${listSplitHead()}\n\n${tail}`, { current: null });
+    const proseHeaded = splitLiveWindow(`${"prose paragraph. ".repeat(40).trim()}\n\n${tail}`, { current: null });
+    // Control: both frames reach the tail gates, so the counts below are not
+    // measuring an early decline.
+    expect(listHeaded?.tail).toBe(tail);
+    expect(proseHeaded?.tail).toBe(tail);
+    const listScans = countTailLineScans(tail, () => {
+      expect(splitLiveWindow(`${listSplitHead()}\n\n${tail}`, { current: null })).not.toBeNull();
+    });
+    const proseScans = countTailLineScans(tail, () => {
+      expect(splitLiveWindow(`${"prose paragraph. ".repeat(40).trim()}\n\n${tail}`, { current: null })).not.toBeNull();
+    });
+    expect({ listHeaded: listScans, proseHeaded: proseScans }).toEqual({ listHeaded: 2, proseHeaded: 2 });
+  });
+
+  // The edge the two readings could disagree on: a tail of nothing but blanks
+  // has no first non-blank line, so it reads as NOT indented and does not
+  // extend a list. Reading the raw tail's first character instead would call
+  // the leading spaces an indent and decline a split that is sound.
+  it.each([
+    ["an all-blank tail", "   ", true],
+    ["an indented first line", "  indented continuation of an open item", false],
+    ["non-indented prose", "streaming tail prose. ".repeat(40).trim(), true],
+  ])("reads %s correctly", (_name, tail, accepted) => {
+    const source = `${listSplitHead()}\n\n${tail}`;
+    expect(splitLiveWindow(source, { current: null })?.tail ?? null).toBe(accepted ? tail : null);
+  });
+
+  // A declined frame is a steady state - a list-headed stream declines every
+  // frame until its list ends - so it must not pay for the whole-tail close
+  // whose result it throws away. Both the shared line read and the close split
+  // the tail on "\n", so the count is every line pass over it: one for a
+  // declined frame, two for an accepted one (the read, then the close).
+  it("does not close the tail it is going to discard", () => {
+    const inner = "streaming tail prose. ".repeat(40).trim();
+    // An indented first line declines the split before the close.
+    const declinedTail = `  ${inner}`;
+    const declinedScans = countTailLineScans(declinedTail, () => {
+      expect(splitLiveWindow(`${listSplitHead()}\n\n${declinedTail}`, { current: null })).toBeNull();
+    });
+    // The same tail accepted still closes exactly once, which keeps the
+    // assertion above from passing vacuously.
+    const acceptedScans = countTailLineScans(inner, () => {
+      expect(splitLiveWindow(`${listSplitHead()}\n\n${inner}`, { current: null })?.closedTail).toBe(inner);
+    });
+    expect({ declinedScans, acceptedScans }).toEqual({ declinedScans: 1, acceptedScans: 2 });
+  });
+});
+
 describe("splitLiveMarkdownSegments", () => {
   it("serves the frozen head's segments by identity as the tail streams", async () => {
     const { splitLiveMarkdownSegments } = await import("./segments");
