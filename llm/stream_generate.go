@@ -247,9 +247,12 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 
 				// Publish the previous attempt before replacing it, so a
 				// caller that read a partial still sees it until this attempt
-				// accumulates text of its own.
+				// accumulates text of its own. Only an attempt that produced text
+				// is promoted: a text-less one would blank the visible partial.
 				res.mu.Lock()
-				res.prevAcc = res.acc
+				if res.acc.hasText() {
+					res.prevAcc = res.acc
+				}
 				res.mu.Unlock()
 
 				acc = NewStreamAccumulator()

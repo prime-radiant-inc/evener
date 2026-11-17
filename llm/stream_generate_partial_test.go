@@ -326,3 +326,87 @@ func TestStreamGenerate_PartialSurvivesToolStepBoundary(t *testing.T) {
 		t.Fatalf("final partial text = %q, want %q", got, "step-two")
 	}
 }
+
+// A step that produces only a tool call must not blank the partial a caller is
+// reading: the last attempt that produced text stays visible across it.
+func TestPartialResponseKeepsTextAcrossATextLessStep(t *testing.T) {
+	t.Parallel()
+	call1 := ToolCallData{ID: "c1", Name: "t1", Arguments: []byte(`{"x":1}`), Type: "function"}
+	call2 := ToolCallData{ID: "c2", Name: "t1", Arguments: []byte(`{"y":2}`), Type: "function"}
+	// Each step before the last carries a tool call, which is what keeps the
+	// loop going to the next step.
+	first := Response{
+		Provider: "openai", Model: "m",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentText, Text: "step-one"},
+			{Kind: ContentToolCall, ToolCall: &call1},
+		}},
+		Finish: FinishReason{Reason: "tool_calls"},
+	}
+	// The middle step produces a tool call and no text at all.
+	middle := Response{
+		Provider: "openai", Model: "m",
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentToolCall, ToolCall: &call2},
+		}},
+		Finish: FinishReason{Reason: "tool_calls"},
+	}
+	last := Response{Provider: "openai", Model: "m", Message: Assistant("step-three"), Finish: FinishReason{Reason: "stop"}}
+
+	c, _ := newScriptedStreamClient(
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventTextStart, TextID: "t"},
+			StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-one"},
+			finishEvent(first),
+		),
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			finishEvent(middle),
+		),
+		replayEvents(
+			StreamEvent{Type: StreamEventStreamStart},
+			StreamEvent{Type: StreamEventTextStart, TextID: "t"},
+			StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-three"},
+			finishEvent(last),
+		),
+	)
+	prompt := "hi"
+	rounds := 3
+
+	res, err := StreamGenerate(context.Background(), GenerateOptions{
+		Client:        c,
+		Model:         "m",
+		Provider:      "openai",
+		Prompt:        &prompt,
+		MaxToolRounds: &rounds,
+		Tools: []Tool{{
+			Definition: ToolDefinition{Name: "t1", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
+			Execute: func(context.Context, any) (any, error) {
+				return "done", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close() //nolint:errcheck
+
+	var seen []string
+	for ev := range res.Events() {
+		if ev.Type != StreamEventStepFinish {
+			continue
+		}
+		partial := res.PartialResponse()
+		if partial == nil {
+			t.Fatalf("PartialResponse() = nil at a step boundary after text was delivered (seen %v)", seen)
+		}
+		seen = append(seen, partial.Text())
+	}
+	if len(seen) < 2 {
+		t.Fatalf("observed %d step boundaries (%v), want at least 2", len(seen), seen)
+	}
+	if seen[1] != "step-one" {
+		t.Fatalf("partial text at the boundary after a text-less step = %q, want %q", seen[1], "step-one")
+	}
+}
