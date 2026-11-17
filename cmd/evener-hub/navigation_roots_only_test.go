@@ -22,7 +22,7 @@ import (
 func rootsOnlyWeb(t *testing.T) (*WebServer, *hubcore.PinSectionStore) {
 	t.Helper()
 	now := timeNowForTest()
-	pins := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
+	pins := closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")))
 	root := liveForPinTest("01ROOT", "01CHILD")
 	root.Status = appwire.ThreadStatusIdle
 	child := liveForPinTest("01CHILD", "01GRAND")

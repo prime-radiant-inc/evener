@@ -24,6 +24,10 @@ type OutputSnapshot struct {
 	RetainedStart        int64
 	RetainedStartPartial bool
 	Truncated            bool
+	// FileBytes is the physical length the read observed. It exceeds TotalBytes
+	// when the file grew past the bytes its metadata vouches for: an append made
+	// outside the store, which a terminal record must refuse rather than serve.
+	FileBytes int64
 }
 
 // OutputWindowSnapshot is a stable raw range over retained job
@@ -36,6 +40,8 @@ type OutputWindowSnapshot struct {
 	RetainedStart        int64
 	RetainedStartPartial bool
 	Truncated            bool
+	// FileBytes is the physical length the read observed; see OutputSnapshot.
+	FileBytes int64
 }
 
 // outputSnapshotObservation is the comparable state changed by OutputStore's

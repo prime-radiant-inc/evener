@@ -2,7 +2,15 @@ import { type EvenerDelegateInfo, parseSteeringNotifications } from "@evener/app
 import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { describe, expect, it } from "vitest";
 import type { TimelineRow } from "../timeline";
-import { findMatches, matchLabel, rowText, stepMatch } from "./findInSession";
+import {
+	findMatches,
+	matchLabel,
+	matchPosition,
+	rowText,
+	selectedMatch,
+	selectedRowIndex,
+	stepMatch,
+} from "./findInSession";
 
 const rows: TimelineRow[] = [
 	{ kind: "time", id: "time:turn_1", turnId: "turn_1", at: 0 },
@@ -39,6 +47,25 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 	it("reads a run's steps, targets included, and nothing from a time marker", () => {
 		expect(rowText(rows[3] as TimelineRow)).toContain("go test ./agent/...");
 		expect(rowText(rows[0] as TimelineRow)).toBe("");
+	});
+
+	it("matches the answer a question row renders, whose raw row the recap hid", () => {
+		// hideAnswerMessages drops the raw answer row once the question row's
+		// recap stands for it, so the recap's words are the only searchable
+		// copy left (#6328). Find reads them beside the row it draws them in.
+		const answered: TimelineRow[] = [
+			{
+				kind: "activity",
+				id: "q",
+				label: "ask_user",
+				family: "tool",
+				state: "completed",
+				detail: { arguments: JSON.stringify({ questions: [] }) },
+			},
+		];
+		const answers = new Map([["q", "celsius to fahrenheit"]]);
+		expect(findMatches(answered, "fahrenheit", undefined, answers)).toEqual([0]);
+		expect(findMatches(answered, "fahrenheit")).toEqual([]);
 	});
 
 	// A step's words name what it acted on: a page's URL, a search's query.
@@ -119,6 +146,66 @@ describe("finding words in the loaded transcript (ruling 29)", () => {
 		expect(numbers(matchLabel([1, 2, 4], 2))).toEqual([2, 3]);
 		expect(numbers(matchLabel([1, 2, 4], null))).toEqual([3, 3]);
 		expect(numbers(matchLabel([], null))).toEqual([]);
+	});
+});
+
+describe("keeping the find selection when an answer row hides", () => {
+	// The reviewer's paging transition (#6328): Find is on a linked answer
+	// whose question sits on an older page. Loading that page hides the answer
+	// row, since the question row now recaps it. The selection must move to
+	// the question row — the row that survives and shows the same words — or
+	// Find sees no current match, treats it as lost, and pages past the older
+	// hits that are still there, finally reporting "No older matches" for
+	// something the reader can see.
+	const answerRow: TimelineRow = { kind: "user", id: "ans", text: "sure, go with Yes" };
+	const olderQuestion: TimelineRow = {
+		kind: "activity",
+		id: "q",
+		label: "ask_user",
+		family: "tool",
+		state: "completed",
+		detail: { arguments: "{}" },
+	};
+	// Older history, holding an earlier match, arrives above the two rows.
+	const olderMatch: TimelineRow = { kind: "user", id: "older", text: "fahrenheit" };
+
+	it("moves the selection to the question row the answer now shows beneath", () => {
+		const loadedPage: TimelineRow[] = [answerRow];
+		const standIns = new Map([["ans", "q"]]);
+		// On the page that held the answer row, the selection is the answer.
+		expect(selectedRowIndex(loadedPage, "ans", new Map())).toBe(0);
+		// The older page arrives and hides it; the same key still resolves.
+		const withOlderPage: TimelineRow[] = [olderMatch, olderQuestion];
+		expect(selectedRowIndex(withOlderPage, "ans", standIns)).toBe(1);
+		// And stepping back from there finds the older hit instead of stopping.
+		const hits = findMatches(withOlderPage, "fahrenheit");
+		expect(stepMatch(hits, selectedRowIndex(withOlderPage, "ans", standIns), -1)).toBe(0);
+	});
+
+	it("keeps a selection that names no row null, so a resume still reloads its boundary", () => {
+		// A saved key with nothing to remap is the resume case, not a hide.
+		expect(selectedRowIndex([olderQuestion], "gone", new Map())).toBeNull();
+		expect(selectedRowIndex([olderQuestion], "q", new Map([["other", "q"]]))).toBe(0);
+	});
+
+	it("counts the stand-in as current only when it is itself a hit", () => {
+		// The question row carries the answer it renders, but a composed
+		// answer's "[answers]" framing and numbering are not in the recap, so
+		// the query can hit only the older row. A non-hit stand-in must not
+		// become the current match, or the label reads "0 of N" while a row
+		// is highlighted.
+		const rows: TimelineRow[] = [olderMatch, olderQuestion];
+		const hits = findMatches(rows, "fahrenheit");
+		expect(hits).toEqual([0]);
+		expect(selectedMatch(rows, hits, "ans", new Map([["ans", "q"]]))).toBe(0);
+		expect(matchPosition(hits, selectedMatch(rows, hits, "ans", new Map([["ans", "q"]])))).toEqual({
+			position: 1,
+			count: 1,
+		});
+		// A direct hit is kept as the current match.
+		expect(selectedMatch(rows, hits, "older", new Map())).toBe(0);
+		// No hit at all leaves nothing current, which reads "No matches".
+		expect(selectedMatch(rows, [], "ans", new Map([["ans", "q"]]))).toBeNull();
 	});
 });
 

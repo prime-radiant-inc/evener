@@ -1613,6 +1613,38 @@ func navigationModelName(model string) string {
 	return truncateNavigationRunes(prettifyModelDisplayName(model), maxNavigationLabelRunes)
 }
 
+// runningJobFor picks the job a row speaks for: the command it shows and the
+// intent it leads with come from ONE job, because pairing them across jobs
+// would name one command's purpose beside another's command.
+//
+// Which job is a stated rule, not list order: the daemon's order is not
+// semantic (rosterFingerprint sorts before hashing, SplitNonAgentJobs preserves
+// what it was given), so order alone could make two probes of one job set name
+// different work. Foreground work wins over background, then the lowest job ID
+// breaks the tie, and a job that says neither a command nor an intent is
+// skipped so a silent job cannot blank the row.
+func runningJobFor(jobs []appwire.EvenerJobInfo) (appwire.EvenerJobInfo, bool) {
+	var picked appwire.EvenerJobInfo
+	found := false
+	for _, job := range jobs {
+		if job.Command == "" && job.Intent == "" {
+			continue
+		}
+		if !found || runningJobBefore(job, picked) {
+			picked, found = job, true
+		}
+	}
+	return picked, found
+}
+
+// runningJobBefore orders two candidate jobs by the rule runningJobFor states.
+func runningJobBefore(a, b appwire.EvenerJobInfo) bool {
+	if a.Background != b.Background {
+		return !a.Background
+	}
+	return a.JobID < b.JobID
+}
+
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
 	pinned := p.projection.pinSectionIDFor(ref) != ""
@@ -1622,12 +1654,10 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 			armedWatchCount++
 		}
 	}
-	runningCommand := ""
-	for _, job := range node.RunningJobs {
-		if job.Command != "" {
-			runningCommand = truncateNavigationRunes(job.Command, maxNavigationLabelRunes)
-			break
-		}
+	runningCommand, runningIntent := "", ""
+	if job, ok := runningJobFor(node.RunningJobs); ok {
+		runningCommand = truncateNavigationRunes(job.Command, maxNavigationLabelRunes)
+		runningIntent = appwire.Excerpt(job.Intent, appwire.MaxIntentRunes)
 	}
 	live := p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended"
 	return hubapi.NavigationSessionSummary{
@@ -1667,6 +1697,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		SeenThrough:       p.projection.seenThrough(ref, live),
 		RunningJobCount:   len(node.RunningJobs),
 		RunningJobCommand: runningCommand,
+		RunningJobIntent:  runningIntent,
 		WatchCount:        len(node.Watches),
 		ArmedWatchCount:   armedWatchCount,
 		Tasks:             navigationTaskProgress(node.Tasks),

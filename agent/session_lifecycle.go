@@ -1546,6 +1546,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				return "", progressed, err
 			}
 		}
+		// A server whose first connect failed has no registered tool, so nothing
+		// else in the turn would ever redial it. Retrying before the round is
+		// prepared keeps a recovered server's tools out of the round that already
+		// started without them and in effect from this one; the manager's own
+		// backoff window makes a still-failed attempt free.
+		s.retryFailedMCP(ctx)
 		roundStart := s.sclock().Now()
 		// Snapshot the pending-ask count before this round's tool calls run, so
 		// the delivery check below can compute the per-round delta (spec §5.1):

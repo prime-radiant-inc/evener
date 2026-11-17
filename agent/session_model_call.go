@@ -315,10 +315,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-	untrimmedReq := s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort, toolDefsJSONBytes)
-	s.mu.Lock()
-	s.roundFallbackMessages = untrimmedReq.Messages
-	s.mu.Unlock()
+	s.setRoundFallbackSource(sys, untrimmedHistory)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -384,10 +381,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-		untrimmedReq = s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort, toolDefsJSONBytes)
-		s.mu.Lock()
-		s.roundFallbackMessages = untrimmedReq.Messages
-		s.mu.Unlock()
+		s.setRoundFallbackSource(sys, untrimmedHistory)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
@@ -1060,14 +1054,38 @@ func isProviderTerminalError(err error) bool {
 	return strings.HasPrefix(err.Error(), "provider error: ") && ok
 }
 
-// takeRoundFallbackMessages returns and clears the round's unprojected request
-// messages kept for per-target fallback projection (#4563, #4217).
-func (s *Session) takeRoundFallbackMessages() []llm.Message {
+// roundFallbackSource is the round's unprojected request input: the system
+// prompt and the expanded history before the primary target's thinking and
+// media projection. It is kept instead of a built message slice so a round
+// that never falls back does not pay for one (#6442). Only Messages depends on
+// the history a request is built from, so laying it out at the fallback site
+// produces the slice this source would have produced there.
+type roundFallbackSource struct {
+	system  string
+	history []llm.Message
+}
+
+// setRoundFallbackSource records the source the fallback chain lays its own
+// messages out from. The history is this round's own unprojected expansion;
+// the primary's projections replace the slice they return rather than the
+// messages it holds, so this remains the unprojected input either way.
+func (s *Session) setRoundFallbackSource(system string, history []llm.Message) {
+	s.mu.Lock()
+	s.roundFallbackSource = roundFallbackSource{system: system, history: history}
+	s.roundFallbackSourceSet = true
+	s.mu.Unlock()
+}
+
+// takeRoundFallbackSource returns and clears the round's unprojected request
+// source. Clearing keeps a later round from inheriting it, so a round that
+// leaves no source reports false rather than the previous round's input.
+func (s *Session) takeRoundFallbackSource() (roundFallbackSource, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs := s.roundFallbackMessages
-	s.roundFallbackMessages = nil
-	return msgs
+	source := s.roundFallbackSource
+	set := s.roundFallbackSourceSet
+	s.roundFallbackSource, s.roundFallbackSourceSet = roundFallbackSource{}, false
+	return source, set
 }
 
 // suppressRejectedToolResultDocuments records tool-call IDs whose document
@@ -1362,30 +1380,11 @@ func protocolInjectsNativeWebSearch(protocol string) bool {
 // request prices its tools from it, which keeps the estimate's value identical
 // while sparing every round a re-serialization of the whole schema list (#6406).
 func (s *Session) buildModelRequest(profile *provider.Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string, toolDefsJSONBytes int) llm.Request {
-	var messages []llm.Message
-	if s.cfg.SystemPromptAsUser {
-		// Combine system prompt with the first user-role message into one
-		// message, since GPT-5.4 ignores the instructions parameter and
-		// follows user messages. That first message is usually the task, but
-		// maybeAppendEnvironmentContext's harness-injected ENVIRONMENT turn
-		// can land ahead of it — the system prompt then combines with that
-		// instead, still leading with instructions in a user-role message.
-		if len(history) > 0 && history[0].Role == llm.RoleUser {
-			messages = make([]llm.Message, len(history))
-			copy(messages, history)
-			messages[0] = prependSystemPromptToUserMessage(sys, history[0])
-		} else {
-			messages = append([]llm.Message{llm.User(sys)}, history...)
-		}
-	} else {
-		messages = append([]llm.Message{llm.System(sys)}, history...)
-	}
-
 	idleTimeout, _ := ParseProviderIdleTimeout(s.cfg.ProviderIdleTimeout) // validated at session construction/restore
 	req := llm.Request{
 		Model:          profile.Model(),
 		Provider:       profile.ID(),
-		Messages:       messages,
+		Messages:       s.requestMessages(sys, history),
 		Tools:          toolDefs,
 		ToolsJSONBytes: toolDefsJSONBytes,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
@@ -1418,6 +1417,47 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // defaultReasoningEffort is what a reasoning model runs at when nothing
 // configured it and no model data states a better default.
 const defaultReasoningEffort = "medium"
+
+// requestMessages lays out a request's system prompt and expanded history into
+// the message slice buildModelRequest dispatches. It is the only part of a
+// request that depends on the history it is built from, so the fallback chain
+// lays out its own messages through it instead of paying for a whole second
+// build on rounds that never fall back.
+func (s *Session) requestMessages(sys string, history []llm.Message) []llm.Message {
+	if s.cfg.SystemPromptAsUser {
+		// Combine system prompt with the first user-role message into one
+		// message, since GPT-5.4 ignores the instructions parameter and
+		// follows user messages. That first message is usually the task, but
+		// maybeAppendEnvironmentContext's harness-injected ENVIRONMENT turn
+		// can land ahead of it — the system prompt then combines with that
+		// instead, still leading with instructions in a user-role message.
+		if len(history) > 0 && history[0].Role == llm.RoleUser {
+			messages := make([]llm.Message, len(history))
+			copy(messages, history)
+			messages[0] = prependSystemPromptToUserMessage(sys, history[0])
+			return messages
+		}
+		return append([]llm.Message{llm.User(sys)}, history...)
+	}
+	return append([]llm.Message{llm.System(sys)}, history...)
+}
+
+// DefaultReasoningEffort is the effort a request carries while nothing
+// configured one: resolveRequestEffort's unset branch over a model's facts, so
+// a client can name the tier a session whose own effort is unset ("(default)")
+// actually runs at instead of guessing. It is empty for a model that does not
+// reason, which carries no effort at all.
+func DefaultReasoningEffort(supportsReasoning bool, levels []string, modelDefault string) string {
+	if effort := resolveRequestEffort("", supportsReasoning, levels, modelDefault); effort != nil {
+		return *effort
+	}
+	return ""
+}
+
+// profileDefaultReasoningEffort is DefaultReasoningEffort over profile's facts.
+func profileDefaultReasoningEffort(profile *provider.Profile) string {
+	return DefaultReasoningEffort(profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
+}
 
 // resolveRequestEffort is the one rule for the effort a request carries, shared
 // by the primary and fallback paths:
@@ -1501,9 +1541,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// prepared round keeps the
 	// request's own full-history shadows.
 	fallbackHistory := fullHistory
-	if base := s.takeRoundFallbackMessages(); len(base) > 0 {
-		fallbackHistory = base
-	}
+	// Taking the source clears it whether or not a fallback runs, so a later
+	// round cannot inherit this one's input. Its layout waits for the chain
+	// below: a round with no fallback target pays nothing for it (#6442).
+	fallbackSource, hasFallbackSource := s.takeRoundFallbackSource()
 	// The round's fallback chain is fixed here, at the round's model-call
 	// boundary, from a copy taken under s.mu. SetModel revalidates and may
 	// rewrite s.cfg.ModelFallbacks while this round's primary call is
@@ -1599,6 +1640,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
 	if err != nil && len(fallbacks) > 0 && modelFallbackEligible(err, policy) {
+		if hasFallbackSource {
+			fallbackHistory = s.requestMessages(fallbackSource.system, fallbackSource.history)
+		}
 		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort

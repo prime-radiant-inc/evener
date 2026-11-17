@@ -2448,14 +2448,15 @@ describe("a streamed reply's key once history records its round", () => {
 	});
 
 	// The web renders an automatic memory refresh as a "Refreshed my memory"
-	// disclosure, and native now matches: the shared projector keeps the typed
-	// memory-context event visible at every level, and native maps it to a
+	// disclosure, and native matches: the shared projector keeps the typed
+	// memory-context event visible from Tools up, and native maps it to a
 	// standalone "Refreshed my memory" notice carrying the decoded observation
-	// beside the exact recorded Text. These run the real producer fixture
-	// (agent/testdata/memorycontextwire) through hydrateThread ->
+	// beside the exact recorded Text. Chat and Intent fold actions into one-line
+	// steps, so no row appears there (Jesse, 2026-11-16). These run the real
+	// producer fixture (agent/testdata/memorycontextwire) through hydrateThread ->
 	// projectTimeline / projectNativeTranscript, with no mocks.
 	describe("memory-context native presentation", () => {
-		it("maps every recorded refresh to a standalone 'Refreshed my memory' notice with its exact Text at every level", () => {
+		it("maps every recorded refresh to a standalone 'Refreshed my memory' notice with its exact Text from Tools up", () => {
 			for (const wire of memoryContextWireItems()) {
 				const thread = {
 					id: "thread-1",
@@ -2475,7 +2476,7 @@ describe("a streamed reply's key once history records its round", () => {
 				const model = hydrateThread({ thread }, "ref-1", 0);
 				// The exact recorded Text is preserved on every case, decoded or not.
 				const expectedObservation = parseMemoryContext(wire.raw);
-				for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+				for (const level of ["tools", "activity", "full"] as const) {
 					// The refresh is never hidden by the Advanced.system-events
 					// gate: the shared projector decides memory-context before
 					// that gate (transcriptProjector.ts), so native keeps the

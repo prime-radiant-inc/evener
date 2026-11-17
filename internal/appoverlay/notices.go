@@ -150,7 +150,12 @@ func noticeAnnouncement(ev events.SessionEvent) (apptranscript.NoticeAnnouncemen
 	case events.ForkSummaryData:
 		return apptranscript.ForkSummaryAnnouncement(data), true
 	case events.WarningData:
-		return warningAnnouncement(data.Source, data.Title, data.Hint, data.Code, data.Message), true
+		return warningAnnouncement(warningFields{
+			source: data.Source, title: data.Title, hint: data.Hint,
+			code: data.Code, message: data.Message,
+			delegateID:       data.DelegateID,
+			refusedPredicate: data.RefusedPredicate,
+		}), true
 	case events.ErrorData:
 		// A recorded error is a TURN_FAILURE entry history already shows.
 		if data.Recorded {
@@ -163,7 +168,7 @@ func noticeAnnouncement(ev events.SessionEvent) (apptranscript.NoticeAnnouncemen
 		// A user-cancelled turn is not a failure: it shows as a warning, as
 		// the live projector has always shown it.
 		if apptranscript.IsCancellation(message) {
-			return warningAnnouncement(data.Source, data.Title, data.Hint, "", message), true
+			return warningAnnouncement(warningFields{source: data.Source, title: data.Title, hint: data.Hint, message: message}), true
 		}
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
 		return apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindError, Description: info.Title, Text: message}, true
@@ -182,23 +187,42 @@ func interruptedAnnouncement() apptranscript.NoticeAnnouncement {
 	}
 }
 
+// warningFields is one warning's identity as the overlay projects it. The
+// four string fields are the fields the warning notification has always
+// carried; the structured identities ride only when the warning has them, so
+// a delegate warning keeps naming its delegate (and a refusal its predicate)
+// through the overlay instead of collapsing into one anonymous line.
+type warningFields struct {
+	source, title, hint, code, message string
+	delegateID                         string
+	refusedPredicate                   string
+}
+
 // warningAnnouncement shows a warning's title and message, and carries its
 // source, title and hint on Raw under "warning", the fields the warning
 // notification has always given clients, and its code when it has one, so a
 // client can tell a "no action needed" notice (events.WarningCodeContextBudget)
-// from a failure without reading its prose.
-func warningAnnouncement(source, title, hint, code, message string) apptranscript.NoticeAnnouncement {
-	info := diagnostic.FromFields(source, title, hint, message)
-	announcement := apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindWarning, Description: info.Title, Text: message}
-	fields := map[string]string{
+// from a failure without reading its prose. A delegate-scoped warning carries
+// its delegate id, and an attention refusal its refusing predicate, the same
+// structured fields the event payload carries.
+func warningAnnouncement(fields warningFields) apptranscript.NoticeAnnouncement {
+	info := diagnostic.FromFields(fields.source, fields.title, fields.hint, fields.message)
+	announcement := apptranscript.NoticeAnnouncement{EventKind: appwire.ThreadItemEventKindWarning, Description: info.Title, Text: fields.message}
+	rawFields := map[string]string{
 		"source": string(info.Source),
 		"title":  info.Title,
 		"hint":   info.Hint,
 	}
-	if code != "" {
-		fields["code"] = code
+	if fields.code != "" {
+		rawFields["code"] = fields.code
 	}
-	raw, err := json.Marshal(map[string]map[string]string{"warning": fields})
+	if fields.delegateID != "" {
+		rawFields["delegate_id"] = fields.delegateID
+	}
+	if fields.refusedPredicate != "" {
+		rawFields["refused_predicate"] = fields.refusedPredicate
+	}
+	raw, err := json.Marshal(map[string]map[string]string{"warning": rawFields})
 	if err == nil {
 		announcement.Raw = raw
 	}

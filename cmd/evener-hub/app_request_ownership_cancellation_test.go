@@ -205,7 +205,7 @@ func TestHubRPCProjectDeleteCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T
 			StateDir:         root,
 			LaunchConfigRoot: t.TempDir(),
 			PluginRoot:       t.TempDir(),
-			Past:             hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+			Past:             closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))),
 			ResumeLocks:      locks,
 			CredsStore:       newTestCredentialsStore(t),
 		}))
@@ -308,7 +308,7 @@ func TestHubRPCProjectDeleteRetryCanceledPropagatesCancellation(t *testing.T) {
 			StateDir:         root,
 			LaunchConfigRoot: t.TempDir(),
 			PluginRoot:       t.TempDir(),
-			Past:             hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+			Past:             closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))),
 			ResumeLocks:      locks,
 			CredsStore:       newTestCredentialsStore(t),
 		}))
@@ -379,7 +379,7 @@ func TestProjectDeleteRetryCanceledAfterOwnershipReportsError(t *testing.T) {
 		StateDir:         root,
 		LaunchConfigRoot: t.TempDir(),
 		PluginRoot:       t.TempDir(),
-		Past:             hubcore.NewPastIndex(filepath.Join(root, "projects", "*")),
+		Past:             closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))),
 		ResumeLocks:      locks,
 		CredsStore:       newTestCredentialsStore(t),
 	}))

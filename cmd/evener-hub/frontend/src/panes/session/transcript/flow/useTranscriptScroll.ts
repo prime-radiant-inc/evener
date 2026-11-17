@@ -192,6 +192,21 @@ export interface UseTranscriptScrollResult {
    * Call it immediately BEFORE the scroll write. The bottom-hold correction
    * refuses to re-pin while a gesture is pending in the same frame - see the
    * scroll listener. Stable identity; safe to call from a long-lived handler. */
+  /** Lands the reader on a row inside the transcript, as a jump they asked
+   * for: it ends bottom-following and supersedes any pending placement, so
+   * neither pulls them back off the row. */
+  jumpToRow: (index: number) => void;
+  /** Keeps the reader where they chose to look: the same transition as
+   * jumpToRow, for a place that is already in view. New output then offers
+   * the way back to latest instead of carrying them off. */
+  holdPosition: () => void;
+  /** Gives a held place back: the reader is wherever geometry says, which at
+   * the end means following again. */
+  releaseHold: () => void;
+  /** True from holdPosition until the reader moves the transcript or jumps to
+   * latest. A held place is not the end even where the end is in view, so the
+   * list must not follow new output while this is set. */
+  holdsPlace: boolean;
   markGesture: (readerIntent?: boolean, beforeOffset?: number) => void;
   /** Capture the top stable row immediately before changing view mode. */
   captureViewAnchor: () => void;
@@ -255,6 +270,15 @@ export function useTranscriptScroll({
   // reader has ACTUALLY arrived - so a jump that lands short leaves the pill
   // on offer instead of vanishing into a stranded mid-transcript position.
   const [awayFromBottom, setAwayFromBottom] = useState(false);
+  // A place the reader chose (holdPosition). Geometry cannot say it is not
+  // the end when the whole transcript fits the port, so the choice is kept
+  // here until the reader moves or jumps to latest.
+  const heldRef = useRef(false);
+  const [holdsPlace, setHoldsPlace] = useState(false);
+  const setHeld = useCallback((held: boolean) => {
+    heldRef.current = held;
+    setHoldsPlace(held);
+  }, []);
 
   const wasAtBottomRef = useRef(true);
   // The long-lived following-bottom intent behind wasAtBottomRef: it survives
@@ -543,6 +567,37 @@ export function useTranscriptScroll({
     setPillArrowDirection("down");
   }, []);
 
+  const holdPosition = useCallback(() => {
+    pendingViewAnchorRef.current = null;
+    pendingBottomJumpRef.current = null;
+    readerGestureRef.current = undefined;
+    readerCallbacksRef.current.onReaderIntent?.();
+    // Wherever the reader is held, it is not the bottom until measured
+    // geometry says so.
+    wasAtBottomRef.current = false;
+    endFollowIntentRef.current = false;
+    setAwayFromBottom(true);
+    setHeld(true);
+  }, [setHeld]);
+
+  const releaseHold = useCallback(() => {
+    if (!heldRef.current) return;
+    setHeld(false);
+    const el = listRef.current?.getScrollElement();
+    if (!el || !isAtBottom(measure(el))) return;
+    wasAtBottomRef.current = true;
+    endFollowIntentRef.current = true;
+    setAwayFromBottom(false);
+  }, [listRef, measure, setHeld]);
+
+  const jumpToRow = useCallback(
+    (index: number) => {
+      holdPosition();
+      listRef.current?.scrollToIndex(index, { align: "start" });
+    },
+    [holdPosition, listRef],
+  );
+
   const jumpToBottom = useCallback(() => {
     pendingViewAnchorRef.current = null;
     pendingBottomJumpRef.current = null;
@@ -562,6 +617,7 @@ export function useTranscriptScroll({
       // the landing is not the bottom, so the pill stays on offer.
       setAwayFromBottom(true);
     } else {
+      setHeld(false);
       const count = renderedRowCountRef.current;
       // Bottom state is NEVER set optimistically: wasAtBottomRef and
       // awayFromBottom only come from measured geometry. So measure BEFORE
@@ -632,7 +688,7 @@ export function useTranscriptScroll({
       }
     }
     clearPill();
-  }, [listRef, clearPill, measure, cancelOlder]);
+  }, [listRef, clearPill, measure, cancelOlder, setHeld]);
 
   const captureViewAnchor = useCallback(() => {
     pendingInitialEndRef.current = null;
@@ -780,6 +836,7 @@ export function useTranscriptScroll({
       wasAtBottomRef.current = true;
       endFollowIntentRef.current = true;
       setAwayFromBottom(false);
+      setHeld(false);
       firstTurnIdRef.current = undefined;
       baselineItemCountRef.current = 0;
       pendingInitialEndRef.current = null;
@@ -947,6 +1004,18 @@ export function useTranscriptScroll({
         wasAtBottomRef.current = false;
         readerCallbacksRef.current.onReaderMovement?.(wheelAwayOffset);
       }
+      // The reader moved: where they are now is theirs to say again. Measured
+      // against the last geometry, not the gesture's own record, which a
+      // command that writes the offset before reporting it has already
+      // advanced to the new place.
+      if (
+        heldRef.current &&
+        (gestured || pointerDraggingRef.current) &&
+        heightsHeld &&
+        m.scrollTop !== previous.scrollTop
+      ) {
+        setHeld(false);
+      }
       const gesture = readerGestureRef.current;
       const beforeOffset = gesture?.beforeOffset ?? previous.scrollTop;
       if ((gestured || pointerDraggingRef.current) && m.scrollTop !== beforeOffset && heightsHeld) {
@@ -994,11 +1063,13 @@ export function useTranscriptScroll({
         m.clientHeight === previous.clientHeight &&
         !layoutCurrent;
       const wasFollowingBefore = wasAtBottomRef.current;
+      // Neither a held place nor an unseen-reply landing is an arrival at
+      // the end, even when the end is temporarily in view.
       // An unseen-reply landing still in flight scrolls toward a row whose
       // offset is an estimate, and a sizer shorter than that estimate clamps
       // it to its own end for a frame. That is not the reader arriving at the
       // end: the landing says where they are once it settles.
-      const arrived = atBottom && pendingViewAnchorRef.current?.openingRow === undefined;
+      const arrived = atBottom && !heldRef.current && pendingViewAnchorRef.current?.openingRow === undefined;
       wasAtBottomRef.current = preserveEndFollow || (arrived && (wasFollowingBefore || jumpLanded || layoutCurrent));
       // Only a real arrival (not a one-frame clamp) establishes the intent; a
       // stable-geometry backward move clears it.
@@ -1490,6 +1561,10 @@ export function useTranscriptScroll({
     pillArrowDirection,
     isFollowingBottom,
     jumpToBottom,
+    jumpToRow,
+    holdPosition,
+    releaseHold,
+    holdsPlace,
     captureViewAnchor,
     restoreViewAnchorAfterMeasurement,
   };

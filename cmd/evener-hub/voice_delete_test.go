@@ -49,7 +49,7 @@ func newVoiceDeletionFixture(t *testing.T, opened, retired bool) voiceDeletionFi
 	targetID, siblingID := projectDeleteCanonicalSessionIDs[0], projectDeleteCanonicalSessionIDs[1]
 	writeSession(t, stateDir, targetID, project.CanonicalPath)
 	writeSession(t, stateDir, siblingID, project.CanonicalPath)
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -228,8 +228,8 @@ func TestVoiceSessionDeletionMetadataMissPreservesDecisionsUntilRecovery(t *test
 		t.Run(scenario, func(t *testing.T) {
 			f := newVoiceDeletionFixture(t, true, false)
 			dbPath := filepath.Join(f.web.cfg.StateDir, "decisions.db")
-			f.web.cfg.Archive = hubcore.NewArchiveStore(dbPath)
-			f.web.cfg.Favorite = hubcore.NewFavoriteStore(dbPath)
+			f.web.cfg.Archive = closeOnCleanup(t, hubcore.NewArchiveStore(dbPath))
+			f.web.cfg.Favorite = closeOnCleanup(t, hubcore.NewFavoriteStore(dbPath))
 			seedProjectDeleteDecisions(t, f.web.cfg.Archive, f.web.cfg.Favorite, f.projectID, f.targetID, f.siblingID)
 			metaPath := schema.SessionMetaPath(f.stateDir, f.targetID)
 			original, err := os.ReadFile(metaPath)
@@ -297,7 +297,7 @@ func TestVoiceSessionDeletionMetadataMissPreservesDecisionsUntilRecovery(t *test
 					}
 				}
 			}
-			f.web.cfg.Past = hubcore.NewPastIndexWithDB(f.web.cfg.Past.StateGlob(), filepath.Join(f.web.cfg.StateDir, "cold.db"))
+			f.web.cfg.Past = closeOnCleanup(t, hubcore.NewPastIndexWithDB(f.web.cfg.Past.StateGlob(), filepath.Join(f.web.cfg.StateDir, "cold.db")))
 			// The configured history may live outside the default state root.
 			// Neither absence nor reservations may be inferred from that root.
 			f.web.cfg.StateDir = t.TempDir()
@@ -362,7 +362,7 @@ func TestVoiceSessionDeletionAbsentHistoryRespectsReservation(t *testing.T) {
 	if err := owner.ReserveSession(f.targetID); err != nil {
 		t.Fatal(err)
 	}
-	f.web.cfg.Past = hubcore.NewPastIndexWithDB(f.web.cfg.Past.StateGlob(), filepath.Join(t.TempDir(), "cold.db"))
+	f.web.cfg.Past = closeOnCleanup(t, hubcore.NewPastIndexWithDB(f.web.cfg.Past.StateGlob(), filepath.Join(t.TempDir(), "cold.db")))
 	f.web.cfg.StateDir = t.TempDir()
 	if _, ok := f.web.cfg.Past.Find(f.targetID); ok {
 		t.Fatal("metadata miss not exercised")

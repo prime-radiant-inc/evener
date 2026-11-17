@@ -345,6 +345,7 @@ test("cancelling Find stops its retries without discarding a reader's demand", a
   await vi.advanceTimersByTimeAsync(1000);
   expect(load).toHaveBeenCalledTimes(2);
   paging.cancel("reader");
+  expect(paging.getSnapshot().error).toBeNull();
   await vi.advanceTimersByTimeAsync(600_000);
   expect(load).toHaveBeenCalledTimes(2);
   expect(paging.getSnapshot().pending).toBe(false);
@@ -371,6 +372,7 @@ test("a failure after the last consumer cancels cannot resurrect demand", async 
   await vi.advanceTimersByTimeAsync(600_000);
   expect(load).toHaveBeenCalledTimes(1);
   expect(paging.getSnapshot().pending).toBe(false);
+  expect(paging.getSnapshot().error).toBeNull();
   leave();
 });
 

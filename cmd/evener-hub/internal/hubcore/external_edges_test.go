@@ -135,12 +135,12 @@ func fuzzScenarioPersistenceExternalErrors(t *testing.T) {
 	}
 
 	for _, stage := range []string{"open", "exec"} {
-		a := NewArchiveStore("x").SetFs(afero.NewMemMapFs())
+		a := closeOnCleanup(t, NewArchiveStore("x").SetFs(afero.NewMemMapFs()))
 		a.openDB = edgeOpen(stage)
 		if err := a.openOnly(); !errors.Is(err, errExternalEdge) {
 			t.Fatalf("archive %s: %v", stage, err)
 		}
-		f := NewFavoriteStore("x").SetFs(afero.NewMemMapFs())
+		f := closeOnCleanup(t, NewFavoriteStore("x").SetFs(afero.NewMemMapFs()))
 		f.openDB = edgeOpen(stage)
 		if err := f.openOnly(); !errors.Is(err, errExternalEdge) {
 			t.Fatalf("favorite %s: %v", stage, err)
@@ -152,12 +152,12 @@ func fuzzScenarioPersistenceExternalErrors(t *testing.T) {
 		if err := afero.WriteFile(fs, "x", nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		a := NewArchiveStore("x").SetFs(fs)
+		a := closeOnCleanup(t, NewArchiveStore("x").SetFs(fs))
 		a.openDB = edgeOpen(stage)
 		if _, err := a.Decisions(); !errors.Is(err, errExternalEdge) {
 			t.Fatalf("archive rows: %v", err)
 		}
-		f := NewFavoriteStore("x").SetFs(fs)
+		f := closeOnCleanup(t, NewFavoriteStore("x").SetFs(fs))
 		f.openDB = edgeOpen(stage)
 		if _, err := f.Favorites(); !errors.Is(err, errExternalEdge) {
 			t.Fatalf("favorite rows: %v", err)
@@ -184,7 +184,7 @@ func (s *FavoriteStore) openOnly() error {
 func fuzzScenarioPastIndexSQLLifecycleErrors(t *testing.T) {
 	entry := PastEntry{ID: "id", Meta: schema.SessionMeta{ID: "id"}}
 	for _, stage := range []string{"open", "exec", "begin", "tx-exec", "prepare", "stmt-exec", "commit", "close"} {
-		i := NewPastIndexWithDB("", "x").SetFs(afero.NewMemMapFs())
+		i := closeOnCleanup(t, NewPastIndexWithDB("", "x").SetFs(afero.NewMemMapFs()))
 		i.openDB = edgeOpen(stage)
 		if err := i.rebuildFTS([]PastEntry{entry}); !errors.Is(err, errExternalEdge) {
 			t.Fatalf("%s: %v", stage, err)
@@ -192,7 +192,7 @@ func fuzzScenarioPastIndexSQLLifecycleErrors(t *testing.T) {
 	}
 
 	for _, stage := range []string{"open", "query", "scan", "rows"} {
-		i := NewPastIndexWithDB("", "x")
+		i := closeOnCleanup(t, NewPastIndexWithDB("", "x"))
 		i.openDB = edgeOpen(stage)
 		i.fts = true
 		if got, ok := i.searchFTS("term"); ok || got != nil {

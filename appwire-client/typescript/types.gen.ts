@@ -1140,6 +1140,15 @@ export interface EvenerThread {
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
   /**
+   * DefaultReasoningEffort is the effort the session's current model runs
+   * at while ReasoningEffort is unset: the model's stated default, else
+   * medium, clamped to its ladder. A client names this tier where it would
+   * otherwise show a bare "(default)". Absent when the model does not
+   * reason, from a row the registry cannot resolve, and from an older
+   * daemon; live updates arrive on thread/model/changed.
+   */
+  defaultReasoningEffort?: string;
+  /**
    * VisionModel is the session's vision side-channel setting: "" describes
    * with the session model, "off" disables the side-channel, anything else is
    * a model ref. Snapshot-only like the effort fields beside it; live updates
@@ -2981,10 +2990,17 @@ export interface NavigationSessionSummary {
   seen_through?: string;
   /**
    * Own-session activity counts are captured before navigation fitting.
-   * RunningJobCommand is the first available command, bounded for display.
+   * RunningJobCommand and RunningJobIntent both come from one running job,
+   * chosen by rule rather than list order (foreground before background,
+   * then the lowest job ID). The command is bounded for display; the intent
+   * is that same job's own `intent` argument, stamped on the job record at
+   * launch, one line of at most appwire.MaxIntentRunes and absent when the
+   * job stated none. The row leads with the intent because the command says
+   * what is executing and the intent says why.
    */
   running_job_count?: number;
   running_job_command?: string;
+  running_job_intent?: string;
   watch_count?: number;
   armed_watch_count?: number;
   /**
@@ -5020,6 +5036,11 @@ export interface ThreadModelChangedParams {
   model: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  /**
+   * DefaultReasoningEffort is the effort the new model runs at while the
+   * session's own effort is unset (EvenerThread.DefaultReasoningEffort).
+   */
+  defaultReasoningEffort?: string;
   contextUsed?: number;
   contextWindow?: number;
   contextPressure?: number;

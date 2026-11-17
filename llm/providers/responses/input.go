@@ -172,7 +172,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 							if err != nil {
 								return "", nil, &llm.ConfigurationError{Message: err.Error()}
 							}
-							url = llm.DataURI(mt, data)
+							url = llm.CachedDataURI(mt, data)
 						} else if llm.IsLocalPath(url) {
 							path := llm.ExpandTilde(url)
 							b, err := os.ReadFile(path)
@@ -187,7 +187,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 							if err != nil {
 								return "", nil, &llm.ConfigurationError{Message: err.Error()}
 							}
-							url = llm.DataURI(mt, data)
+							url = llm.CachedDataURI(mt, data)
 						}
 						if url != "" {
 							img := map[string]any{
@@ -311,7 +311,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 					}
 					img := map[string]any{
 						"type":      "input_image",
-						"image_url": llm.DataURI(mt, data),
+						"image_url": llm.CachedDataURI(mt, data),
 					}
 					if detail := llm.ResponsesImageDetail("", imageCap); detail != "" {
 						img["detail"] = detail

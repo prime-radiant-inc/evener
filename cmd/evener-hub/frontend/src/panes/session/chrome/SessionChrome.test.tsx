@@ -6,7 +6,7 @@ import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, renderHook, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
 import { lazy } from "react";
@@ -30,6 +30,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { resetFindRequestsForTests, useFindRequest } from "../find/findRequest";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
@@ -398,6 +399,29 @@ test("SessionChrome keeps the menu entry count-free even when an outcome is omit
   render(<SessionChrome ref="ref_remaining" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
+});
+
+test("Session actions asks this pane's conversation to open Find, except where the menu has no room for the row", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_find"));
+  await threadsStore.getState().ensureThread("ref_find");
+  const asked = renderHook(() => useFindRequest("ref_find", "p1"));
+  const first = render(<SessionChrome ref="ref_find" paneId="p1" />);
+
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  await user.click(screen.getByRole("menuitem", { name: /find/i }));
+  expect(asked.result.current).toBeDefined();
+  act(() => resetFindRequestsForTests());
+  first.unmount();
+
+  // A landscape phone: every menu row must fit without scrolling.
+  vi.stubGlobal("innerHeight", 390);
+  render(<SessionChrome ref="ref_find" paneId="p1" />);
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  expect(screen.getByRole("menuitem", { name: /rename/i })).toBeTruthy();
+  expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();
+  vi.unstubAllGlobals();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {

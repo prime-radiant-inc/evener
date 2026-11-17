@@ -70,12 +70,12 @@ async function point(send, selector) {
   })()`,
   );
 }
-async function mouse(send, p, type, clickCount = 1) {
+async function mouse(send, p, type, clickCount = 1, buttons) {
   await send("Input.dispatchMouseEvent", {
     type,
     ...p,
     button: "left",
-    buttons: type === "mousePressed" ? 1 : 0,
+    buttons: buttons ?? (type === "mousePressed" ? 1 : 0),
     clickCount,
   });
 }
@@ -437,6 +437,157 @@ export async function verifyComposerGesture(endpoint, url, width, gesture, { dri
           page.close();
         }
       }
+    } finally {
+      try {
+        if (context) await browser.send("Target.disposeBrowserContext", { browserContextId: context });
+      } finally {
+        browser?.close();
+      }
+    }
+  }
+}
+
+/**
+ * An outside press must not fold the composer before its click lands.
+ *
+ * The card is in flow, so a fold at pointerdown shrinks it before mouseup and
+ * the control under the pointer moves away before it receives its click: the
+ * user clicks a transcript button or disclosure and nothing happens. A trusted
+ * press-release over a real disclosure is the only oracle that can see this -
+ * the loss depends on browser hit-testing at release, which no synthetic event
+ * reproduces. The drag case pins the other half of the rule: a press that ends
+ * without a click leaves the card alone.
+ */
+export async function verifyComposerOutsidePressClick(endpoint, url, width) {
+  let browser, context, page;
+  try {
+    browser = await connectBrowser(endpoint);
+    context = (await browser.send("Target.createBrowserContext")).result.browserContextId;
+    const target = (await browser.send("Target.createTarget", { url: "about:blank", browserContextId: context })).result
+      .targetId;
+    page = await connectPage(endpoint, target);
+    const { send } = page;
+    await applyViewport(send, { width, height: 900, mobile: width < 900, touch: width < 900 });
+    await navigateTo(page, url, BOOT);
+    await assertGuardOrigin(send, new URL(url).host);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+
+    // Open the editor and settle on the expanded card. A trusted tap on the
+    // editor would itself move the footer, so focus it programmatically.
+    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
+    await waitForComposerSettled(send);
+
+    // Aim at a transcript disclosure that sits below the card, so the fold's
+    // height change is what moves it.
+    const aim = await evaluate(
+      send,
+      `(() => {
+      const all = [...document.querySelectorAll('[data-testid="turn-block"] details')];
+      const siblingsOpen = all.map((details) => details.open);
+      for (const [index, details] of all.entries()) {
+        const node = details.querySelector(':scope > summary');
+        if (!node) continue;
+        const r = node.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        if (r.height <= 0 || r.width <= 0) continue;
+        if (!node.contains(document.elementFromPoint(x, y))) continue;
+        return {
+          index,
+          x,
+          y,
+          open: details.open,
+          others: siblingsOpen.filter((_, sibling) => sibling !== index),
+          label: (node.textContent || '').trim().slice(0, 40),
+        };
+      }
+      return null;
+    })()`,
+    );
+    assert.ok(aim, "no reachable transcript disclosure in the harness");
+
+    // Press, hold long enough that a mid-press fold would have landed, then
+    // release. Editing must survive the hold: the fold waits for the click.
+    await mouse(send, { x: aim.x, y: aim.y }, "mousePressed");
+    await delay(400);
+    const held = await evaluate(
+      send,
+      `({
+      editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
+      folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
+      hit: !!document.elementFromPoint(${aim.x}, ${aim.y})?.closest('summary'),
+    })`,
+    );
+    assert.ok(held.editing, "editing must survive the outside press until its click lands");
+    assert.equal(held.folded, null, "the card must not fold mid-press");
+    assert.ok(held.hit, "the pressed disclosure must still sit under the pointer before release");
+
+    await mouse(send, { x: aim.x, y: aim.y }, "mouseReleased");
+    // The pressed disclosure's own state must flip. Comparing any disclosure
+    // against the pressed one's initial state would pass on a sibling that
+    // already sat in the other state, telling nothing about the click that
+    // was pressed.
+    const pressed = `document.querySelectorAll('[data-testid="turn-block"] details')[${aim.index}]`;
+    const toggledExpr = `${pressed}.open !== ${aim.open}`;
+    await until(send, toggledExpr);
+    const settled = await evaluate(
+      send,
+      `({
+      toggled: ${toggledExpr},
+      pressedOpenAfter: ${pressed}.open,
+      othersUnchanged: [...document.querySelectorAll('[data-testid="turn-block"] details')]
+        .filter((_, index) => index !== ${aim.index})
+        .every((d, index) => d.open === ${JSON.stringify(aim.others)}[index]),
+      folded: document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded'),
+      editing: document.querySelector('[data-composer]').hasAttribute('data-composer-editing'),
+    })`,
+    );
+    assert.ok(settled.toggled, "the transcript disclosure must receive its click");
+    assert.ok(settled.othersUnchanged, "the click must toggle only the pressed disclosure");
+    assert.equal(settled.folded, "true", "the card folds after the click lands on an empty composer");
+    assert.equal(settled.editing, false, "the click ends editing");
+
+    // A press-drag produces no click and must leave the card as it was.
+    await evaluate(send, `document.querySelector('${editor}').focus()`);
+    await until(send, `!document.querySelector('[data-testid="composer-input-card"]').hasAttribute('data-folded')`);
+    await waitForComposerSettled(send);
+    const dragStart = await evaluate(
+      send,
+      `(() => {
+      const node = document.querySelector('[data-testid="turn-block"] p');
+      const r = node.getBoundingClientRect();
+      return { x: r.left + 4, y: r.top + Math.min(8, r.height / 2) };
+    })()`,
+    );
+    await mouse(send, dragStart, "mousePressed");
+    await mouse(send, { x: dragStart.x + 120, y: dragStart.y + 40 }, "mouseMoved", 1, 1);
+    // The collapse this case must catch lands within one frame and a React
+    // commit; there is no height transition to outlast.
+    await evaluate(send, "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    const midDrag = await evaluate(
+      send,
+      `document.querySelector('[data-testid="composer-input-card"]').getAttribute('data-folded')`,
+    );
+    assert.equal(midDrag, null, "a text-selection drag must not fold the card mid-gesture");
+    await mouse(send, { x: dragStart.x + 120, y: dragStart.y + 40 }, "mouseReleased");
+    return {
+      disclosure: aim.label,
+      // The pressed disclosure's own state is what the click must flip; the
+      // siblings' states are reported because a predicate that only compared
+      // "some disclosure differs from the pressed one" was satisfied by a
+      // sibling already in the other state.
+      pressedOpenBefore: aim.open,
+      siblingOpensBefore: aim.others,
+      pressedOpenAfter: settled.pressedOpenAfter,
+      heldEditing: held.editing,
+      toggled: settled.toggled,
+      foldedAfterClick: settled.folded,
+      dragHeldCard: midDrag === null,
+    };
+  } finally {
+    try {
+      page?.close();
     } finally {
       try {
         if (context) await browser.send("Target.disposeBrowserContext", { browserContextId: context });

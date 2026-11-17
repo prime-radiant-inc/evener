@@ -1,8 +1,9 @@
 // The automatic memory refresh renderer: a systemMessage with the typed
 // eventKind "memory-context" (from agent/session_memory.go's MEMORY_CONTEXT
 // turn) shown as a compact, steering-style "Refreshed my memory" notification.
-// Collapsed at every verbosity level, including Full, and independent of any
-// general expansion baseline - only an explicit reader choice opens it.
+// Collapsed even at Full and independent of any general expansion baseline -
+// only an explicit reader choice opens it. The shared projector decides which
+// levels show the row.
 //
 // Opening reveals the scope and index state, then the decoded index through the
 // existing safe Markdown renderer. A raw that does not decode keeps the compact

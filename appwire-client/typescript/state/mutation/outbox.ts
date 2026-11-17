@@ -172,6 +172,18 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // delivery registration synchronously, before any background read
   // re-computes it.
   restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<MutationOutboxRecord[]>;
+  // Retires an UNEDITED refused promote recovery whose queue entry an
+  // authoritative response proves SETTLED: delivered (a recorded item's own
+  // id, or the lineage a recorded replacement carries) or confirmed canceled
+  // (an input the daemon names retired will never deliver, so a removed
+  // message must not resurrect as refused work). Render-side suppression
+  // alone would resurrect the row once a bounded transcript window drops the
+  // delivery proof; an edited composition survives every sweep. Returns the
+  // retired records' ids. A host whose storage can hold same-wire superseded
+  // siblings of the recovery (the web outbox's mint leaves them) retires
+  // them in the same write, by its own wire-family rule, so a delayed
+  // terminal refusal of a sibling cannot resurrect the composition.
+  retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]>;
   // The optional marker a refusal that never reached the daemon sets: the
   // wire may still be applied by an outstanding attempt, so a host that
   // resends the recovery under a fresh wire identity would let the
@@ -376,6 +388,21 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
       } satisfies MutationOutboxWakeup),
     );
     if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
+  }
+
+  // Wake sibling tabs into discovery for work this tab already settled locally:
+  // a retire deletes shared rows (a recovery this tab will never re-project),
+  // and only the siblings still cache the stale projection. Best effort, like
+  // a commit's announce: a sibling that is not ready drops the wake, and the
+  // row's deletion means no storage scan re-names the ref afterwards, so the
+  // sibling's own reconnect re-read or pane remount is what clears the row.
+  announceCrossTabWork(targetRef: string): void {
+    tryOrUndefined(() =>
+      this.#channel?.postMessage({
+        version: 1,
+        targetRef,
+      } satisfies MutationOutboxWakeup),
+    );
   }
 
   async connectionReady(): Promise<void> {

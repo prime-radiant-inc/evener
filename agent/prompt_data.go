@@ -117,7 +117,7 @@ type promptData struct {
 	HasEndReason bool
 
 	// Delegation capability (spec §1, §5): CanDelegate is true when this session
-	// has a grantable allowance (> 0) and the delegation tools are actually
+	// has a positive allowance and the delegation tools are actually
 	// callable. Drives the subagent template's conditional delegation/background-
 	// jobs sections and the stated allowance.
 	CanDelegate         bool

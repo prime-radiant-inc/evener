@@ -132,6 +132,48 @@ func EstimateMessagesInputTokensForResolved(res registry.Resolved, messages []Me
 	return estimateMessageList(targetFromResolved(res, "", ""), messages)
 }
 
+// EstimateMessageInputTokenPartsForResolved returns the two additive components
+// estimateMessagesInputTokens sums: the whole list's char count and its count of
+// parts billed at a fixed token price. The caller combines them with
+// TokenParts.Total.
+//
+// It exists so a caller that already holds one prefix's parts can estimate only
+// the messages appended since and get the SAME answer the whole-list estimate
+// would give. That is only sound because the estimator divides the summed chars
+// by four once, over the whole list (see estimateMessagesInputTokens): summing
+// chars first and dividing once at the end cannot round differently, whereas
+// adding per-prefix token counts would.
+func EstimateMessageInputTokenPartsForResolved(res registry.Resolved, messages []Message) TokenParts {
+	t := targetFromResolved(res, "", "")
+	var parts TokenParts
+	for _, m := range messages {
+		c, counted := estimateMessageInputParts(t, m)
+		parts.Chars += c
+		parts.Counted += counted
+	}
+	return parts
+}
+
+// TokenParts is the additive decomposition of a local token estimate.
+type TokenParts struct {
+	// Chars is the summed character count, divided by four once in Total.
+	Chars int
+	// Counted is the parts billed at a fixed token price rather than by size
+	// (images, audio, documents), summed directly.
+	Counted int
+}
+
+// Total is the estimate those parts describe. It is the same arithmetic
+// estimateMessagesInputTokens performs, in the same order.
+func (p TokenParts) Total() int {
+	return p.Counted + p.Chars/4
+}
+
+// Add returns the parts of the concatenated message lists.
+func (p TokenParts) Add(other TokenParts) TokenParts {
+	return TokenParts{Chars: p.Chars + other.Chars, Counted: p.Counted + other.Counted}
+}
+
 func estimateMessageList(t targetInfo, messages []Message) InputTokenCount {
 	return InputTokenCount{
 		Tokens: estimateMessagesInputTokens(t, messages),

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // TestSetModel_EmitsModelChangedEvent verifies that a successful SetModel
@@ -56,6 +57,63 @@ drain:
 	wantLevels := newProfile.ReasoningEffortLevels()
 	if len(found.ReasoningEffortLevels) != len(wantLevels) {
 		t.Fatalf("ReasoningEffortLevels = %v, want %v", found.ReasoningEffortLevels, wantLevels)
+	}
+}
+
+// TestSetModel_ModelChangedEventCarriesNewDefaultEffort verifies that the
+// switch event names the effort an unset session runs at on the NEW model, so
+// a client's "(default)" readout follows the switch instead of naming the
+// previous model's default.
+func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
+	t.Parallel()
+	instance := lunarouteInstance(map[string]registry.Model{
+		"plain-model":   {Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"low", "medium", "high"}}},
+		"stated-model":  {Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"low", "medium", "high", "max"}, DefaultEffort: new("max")}},
+		"thinker-model": {Caps: registry.Caps{Reasoning: new(true), EffortValues: []string{"high", "max"}}},
+	})
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{model: "stated-model", want: "max"},
+		{model: "thinker-model", want: "high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t,
+				withProfile(resolveTestProfile("lunaroute", instance, "plain-model")),
+				withAdapter(&fakeAdapter{name: "lunaroute"}),
+				withConfig(SessionConfig{
+					testOnly: testConfig{skipGitSnapshot: true},
+				}),
+			)
+			if err := sess.SetModel(tc.model); err != nil {
+				t.Fatalf("SetModel: %v", err)
+			}
+
+			var found *events.ModelChangedData
+		drain:
+			for {
+				select {
+				case ev := <-sess.Events():
+					if d, ok := ev.Data.(events.ModelChangedData); ok {
+						found = &d
+					}
+				default:
+					break drain
+				}
+			}
+			if found == nil {
+				t.Fatal("no EventModelChanged emitted")
+			}
+			if found.NewModel != tc.model {
+				t.Fatalf("NewModel = %q, want %q", found.NewModel, tc.model)
+			}
+			if found.DefaultReasoningEffort != tc.want {
+				t.Fatalf("DefaultReasoningEffort = %q, want %q: the new model's unset effort", found.DefaultReasoningEffort, tc.want)
+			}
+		})
 	}
 }
 

@@ -63,7 +63,7 @@ and should not be presented as reproduced production incidents.
 | [H12](#h12-dormant-host-notices) | Low | An unused disconnected host becomes a recovery notice | S03, S06, S07 |
 | [H13](#h13-wind-down-for-an-incompatible-session-daemon) | Medium | A fenced session's active work can only be moved by an immediate kill | S08 |
 | [T01](#t01-tool-call-parking) | High | Repeated failure parks an operation even after the dependency heals | S14 |
-| [T02](#t02-mcp-initial-discovery-recovery) | High | An initially unavailable MCP server never contributes tools to the session | S18, S19 |
+| [T02](#t02-mcp-initial-discovery-recovery) | High (resolved) | An initially unavailable MCP server contributes no tools until the session redials it at a round boundary | S18, S19 |
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
 | [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
 | [T06](#t06-global-git-excludes-files-in-restricted-mode) | Medium (accepted limitation) | A global excludes or attributes file the config names does not apply in restricted mode | S14 |
@@ -1192,18 +1192,25 @@ cancellation remain effective.
 
 ### T02 MCP initial discovery recovery
 
-**Current behavior.** A server unavailable during session MCP initialization has
-no registered tools. Lazy reconnect lives inside previously registered tool
-closures, so it cannot recover that initial absence. Other servers continue
-working; a new session discovers the repaired server, but the current session
-has no hot discovery/registration owner.
+**Current behavior.** A server unavailable during session MCP initialization
+registers no tools at construction, and lazy reconnect — which lives inside
+previously registered tool closures — cannot recover that initial absence. The
+session redials such servers at the head of each round instead: a server that
+answers is registered into the same registry as a startup connection, subject to
+the same tool-name policy, and its tools are advertised from that round's
+request on. A still-down server is retried at most once per backoff window, and
+a recovery emits an informational notice naming the server. Other servers
+continue working throughout.
 
-**Evidence.** [Manager initialization](../../agent/internal/mcp/manager.go#L108),
-[RegisterTools](../../agent/internal/mcp/manager.go#L351), and
-[lazy reconnect](../../agent/internal/mcp/manager.go#L394) establish the gap.
-Session [initMCP](../../agent/session_init.go#L2545) runs at construction.
-`TestIntgMCP_NewManager_SiblingSurvivesFailure` is a useful isolation
-control, not an initial-recovery test.
+**Evidence.** [Manager initialization](../../agent/internal/mcp/manager.go#L108)
+and [RegisterTools](../../agent/internal/mcp/manager.go#L391) leave a
+first-connect failure unregistered; [RetryFailed](../../agent/internal/mcp/manager.go#L560)
+redials it and reports the recovery.
+[retryFailedMCP](../../agent/session_init.go#L2719) applies the tool policy and
+rebuilds the caches, and the round loop calls it before each round's request.
+`TestIntgMCP_NewManager_SiblingSurvivesFailure` is a useful isolation control;
+the recovery itself is covered by the session-level tests against the stdio
+fixture server's failing first start.
 
 **Decision.** Automatically retry discovery for enabled MCP servers that were
 unavailable at session startup, using backoff. When a server recovers, register
@@ -1211,11 +1218,16 @@ its discovered tools and make the agent aware of the recovered capabilities in
 the existing chat. Work waiting on those tools can continue without a new chat,
 restart or manual reload. Preserve the selected server identity and keep healthy
 tools usable throughout recovery. Disabling or removing the server ends its
-recovery attempts. Implementation remains pending.
+recovery attempts. Implemented at the round boundary; retries are bounded by the
+turn's context, so a cancelled turn stops them.
 
-**Discuss — registration design.** Define how tool names and schemas become
-visible to the running session while preserving existing tools and in-flight
-operations. The agent-visible tool list must match the callable registrations.
+**Resolved — registration design.** A registration made after startup is
+ordinary: the registry accepts it at any time. Visibility is the session's
+cached definition set, which `prepareModelRequestWithError` snapshots under
+`s.mu` at the top of every round, so a rebuild before a round is prepared is
+what that round advertises. The boundary is therefore the round, never mid-round:
+the model in a round never sees its tool list change under it, and the agent's
+visible set stays equal to the callable registrations.
 
 **Acceptance.** Start with one MCP server down, then restore it. Automatic
 discovery makes its tools visible and callable in the same session, and the
@@ -1442,7 +1454,10 @@ These are useful patterns and preservation checks, rather than new fix requests.
   position remain with the existing stores and scroll owners. Find stays
   incomplete until a match or confirmed history end; proven permanent failures
   keep their explanations. Closing Find or jumping live cancels only that
-  consumer's demand. Fulfilled reads without cursor progress remain quiet and
+  consumer's demand. Browser Find is its own consumer beside the pane's reader:
+  it reads older pages only when the user steps older past the loaded matches,
+  reads back to its current match when a refresh or resync drops that page, and
+  is withdrawn alone by closing Find or changing the words. Fulfilled reads without cursor progress remain quiet and
   paced rather than reporting a fetch failure. Native session memory also retains pending demand
   across route disposal without holding a closed store or service. Mounted native views keep independent demand; a detached pending owner is
   adopted once when the reader commits, preserving its requested page and Find
@@ -1515,7 +1530,7 @@ every branch. A gap is not evidence that the subsystem is correct or broken.
 | S15 Providers/credentials | Snapshot lifetime, API-key repair, OAuth process coordination, save failure and malformed configuration | Scripted subprocess rotation and live provider-specific API/authentication behavior |
 | S16 Model catalog | Directory-scoped cache, warmup, stale refresh and client loading gates | Cold project latency and project overrides with slow/live catalog sources |
 | S17 Plugins and S18 skills/hooks | Fail-soft loading, interrupted store recovery, auto-upgrade isolation, source revision recovery, hook deny/error distinction | Every marketplace/schema form and extension-specific runtime; no claim that all extensions recover |
-| S19 MCP | Initial discovery, registered-tool reconnect, sibling isolation and recovery presentation | Real transport/server-schema changes and hot-registration lifecycle |
+| S19 MCP | Initial discovery, round-boundary retry of a failed first connect, registered-tool reconnect, sibling isolation and recovery presentation | Real transport/server-schema changes, and cancellation during a stalled handshake on a real server |
 | S20 Install/update | Single executable, archive/build resolution, remote bootstrap, installed-file versus running-process state | Real install/restart/rollback on each supported platform |
 | S21 Diagnostics | Read-only doctor construction, source evidence and operative repair instructions | A complete authorized diagnosis-to-repair journey and diagnostic presentation |
 | S22 Shared foundations and S23 development | Workspace/module inventory, process/identity primitives and owning callers, documented gates and meaningful existing tests | Full lint/vet/test, race/fuzz/stress suites and generated/platform qualification when implementing changes |

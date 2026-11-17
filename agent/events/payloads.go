@@ -275,15 +275,52 @@ func ImageSHA(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ToolEndExcerptRunes bounds the Output and Error text a TOOL_CALL_END carries.
+// Those bytes already streamed as TOOL_CALL_OUTPUT_DELTA events, so the end
+// event carries only the excerpt a reader that missed them renders; a frame
+// that renders that payload reads this same bound, so the payload and its
+// reader cannot drift.
+const ToolEndExcerptRunes = 1000
+
+// BoundToolField bounds text to ToolEndExcerptRunes and returns the text's full
+// byte length when it was cut, or 0 when text was sent whole. The length is how
+// a reader knows it holds an excerpt, and what lets a frame report truncation
+// from the true size.
+//
+// The excerpt is a prefix sharing text's bytes, never a rebuilt string: this
+// runs on the emit path for every tool call, so a rune-slice round trip here
+// would charge an output's whole length in four-byte runes to a change made to
+// stop copying that output.
+func BoundToolField(text string) (string, int) {
+	runes := 0
+	for i := range text {
+		if runes == ToolEndExcerptRunes {
+			return text[:i], len(text)
+		}
+		runes++
+	}
+	return text, 0
+}
+
 // ToolCallEndData is the payload for an EventToolCallEnd event.
 type ToolCallEndData struct {
-	ToolName      string        `json:"tool_name"`
-	CallID        string        `json:"call_id"`
-	ArgumentsJSON string        `json:"arguments_json,omitempty"`
-	Output        string        `json:"output,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	OutputRef     string        `json:"output_ref,omitempty"`
-	OutputImages  []OutputImage `json:"output_images,omitempty"`
+	ToolName      string `json:"tool_name"`
+	CallID        string `json:"call_id"`
+	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	// Output is a bounded excerpt of the tool's output, not the whole of it.
+	// The same bytes already streamed as TOOL_CALL_OUTPUT_DELTA events, so a
+	// consumer that watched them accumulates the tail itself; this field is
+	// what a reader that missed the deltas renders. OutputBytes is set only
+	// when Output stands for a longer text, to that text's byte length, so its
+	// presence is how a reader knows it holds an excerpt. A text that fits is
+	// sent whole and carries no length.
+	Output      string `json:"output,omitempty"`
+	OutputBytes int    `json:"output_bytes,omitempty"`
+	// Error follows Output's contract, and ErrorBytes its length convention.
+	Error        string        `json:"error,omitempty"`
+	ErrorBytes   int           `json:"error_bytes,omitempty"`
+	OutputRef    string        `json:"output_ref,omitempty"`
+	OutputImages []OutputImage `json:"output_images,omitempty"`
 	// PrevalOnly is true when Error came from prepareToolCall's pre-dispatch
 	// repair step (an unknown tool name, or arguments that still fail schema
 	// validation after repair) and the tool's own ExecuteCall never ran (kata
@@ -544,9 +581,9 @@ type SessionNameChangedData struct {
 
 // ModelChangedData is the payload for an EventModelChanged event: SetModel
 // committed a provider/model switch. OldProvider/OldModel and
-// NewProvider/NewModel let subscribers diff the change; ReasoningEffortLevels
-// and SupportsReasoning describe the NEW profile so pickers re-key without a
-// separate model/list round trip.
+// NewProvider/NewModel let subscribers diff the change; ReasoningEffortLevels,
+// SupportsReasoning and DefaultReasoningEffort describe the NEW profile so
+// pickers re-key without a separate model/list round trip.
 type ModelChangedData struct {
 	OldProvider           string   `json:"old_provider"`
 	OldModel              string   `json:"old_model"`
@@ -554,6 +591,10 @@ type ModelChangedData struct {
 	NewModel              string   `json:"new_model"`
 	ReasoningEffortLevels []string `json:"reasoning_effort_levels,omitempty"`
 	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
+	// DefaultReasoningEffort is the effort the new model runs at while the
+	// session's own effort is unset (agent.DefaultReasoningEffort); empty
+	// when the new model does not reason.
+	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 	// MarkerText is the persisted switch-marker text ("Switched model: <old>
 	// → <new>", plus any warning lines) — the exact text SetModel wrote to
 	// the transcript's TurnModelSwitch turn. The live projector renders it
@@ -669,6 +710,14 @@ const WarningCodeDelegateAttentionRestore = "delegate_attention_restore"
 // restarts. Clients show it at every level.
 const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undeliverable"
 
+// WarningCodeDelegateAttentionDriveRefused identifies the notice that a
+// delegate's owed attention is held by a guard: a wake eligibility or drive
+// predicate refused it, naming the predicate on the warning's
+// RefusedPredicate field. Evener retries on its own with backoff while the
+// attention is owed, and warns once per refusal episode, so clients show this
+// warning only at their most detailed level, by this stable code.
+const WarningCodeDelegateAttentionDriveRefused = "delegate_attention_drive_refused"
+
 // WarningCodeDelegateStartDeliveryReplay identifies the notice that a
 // committed delegate start could not replay an owed delivery. The parcel is
 // requeued and the start continues.
@@ -707,6 +756,16 @@ type WarningData struct {
 	// the event the matcher was declared under) for a hook-configuration
 	// warning. Carries only the name, no hook payload or secrets.
 	EventName string `json:"event_name,omitempty"`
+	// RefusedPredicate is the stable identifier of the guard predicate that
+	// refused a delegate attention wake eligibility or drive, on the warning
+	// that reports the refusal. It is a machine token — one of "binding",
+	// "recovery_required", "finalizing", "reservation", "start_blocked" or
+	// "fatal_run_gated" (the agent package's unexported
+	// delegateAttentionRefused* constants, whose values are named here so
+	// wire consumers can key on them without importing the agent package) —
+	// never prose, so clients and tests can key on which predicate held the
+	// wake without matching wording.
+	RefusedPredicate string `json:"refused_predicate,omitempty"`
 	// SummaryFailure carries bounded route and failure metadata, never provider text.
 	SummaryFailure *diagnostic.SummaryFailure `json:"summary_failure,omitempty"`
 }

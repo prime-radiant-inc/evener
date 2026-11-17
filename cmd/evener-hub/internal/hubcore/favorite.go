@@ -20,6 +20,11 @@ type FavoriteStore struct {
 	// onChange, when set via SetOnChange, is fired after a successful Set or
 	// Delete. Nil is a safe no-op (existing tests construct stores without it).
 	onChange func()
+
+	// handle is the store's process-lifetime connection, created by the first
+	// call and reused by every later one, so a call pays the connect, the DDL
+	// and the schema check once per process instead of once per call.
+	handle keeperHandle
 }
 
 func NewFavoriteStore(dbPath string) *FavoriteStore {
@@ -49,9 +54,6 @@ CREATE TABLE IF NOT EXISTS favorite (
 )`
 
 func (s *FavoriteStore) open() (*sql.DB, error) {
-	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
-		return nil, err
-	}
 	db, err := s.openDB("sqlite", sqliteDSN(s.dbPath))
 	if err != nil {
 		return nil, err
@@ -67,16 +69,34 @@ func (s *FavoriteStore) open() (*sql.DB, error) {
 	return db, nil
 }
 
+// db returns the store's shared handle, creating it on first use. The parent
+// directory is ensured on every call, as the per-call open did, so a
+// scaffolding failure still surfaces from the call that hit it.
+func (s *FavoriteStore) db() (*sql.DB, error) {
+	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
+		return nil, err
+	}
+	return s.handle.get(s.dbPath, s.fs, s.open)
+}
+
+// Close releases the store's shared handle. The hub calls it on shutdown; a
+// store that never opened one closes nothing.
+func (s *FavoriteStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.handle.close()
+}
+
 func (s *FavoriteStore) Set(source, kind, id string, favorited bool, now time.Time) error {
 	if s.dbPath == "" {
 		return nil
 	}
 	source = NormalizeDecisionSource(source)
-	db, err := s.open()
+	db, err := s.db()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = db.Close() }()
 	flag := 0
 	if favorited {
 		flag = 1
@@ -97,11 +117,10 @@ func (s *FavoriteStore) Delete(source, kind, id string) error {
 		return nil
 	}
 	source = NormalizeDecisionSource(source)
-	db, err := s.open()
+	db, err := s.db()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = db.Close() }()
 	_, err = db.Exec(`DELETE FROM favorite WHERE source = ? AND kind = ? AND id = ?`, source, kind, id) //nolint:noctx // local file DB
 	if err != nil {
 		return err
@@ -119,11 +138,10 @@ func (s *FavoriteStore) Favorites() (map[ArchiveKey]bool, error) {
 	if _, err := s.fs.Stat(s.dbPath); os.IsNotExist(err) {
 		return out, nil
 	}
-	db, err := s.open()
+	db, err := s.db()
 	if err != nil {
 		return out, err
 	}
-	defer func() { _ = db.Close() }()
 	rows, err := db.Query(`SELECT source, kind, id, favorited FROM favorite`) //nolint:noctx // local file DB
 	if err != nil {
 		return out, err

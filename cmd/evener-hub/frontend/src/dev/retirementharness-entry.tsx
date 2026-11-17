@@ -284,7 +284,7 @@ async function settled(): Promise<void> {
 // produces, not a poll.
 function awaitTurn(turnID: string): Promise<void> {
   return new Promise<void>((resolve) => {
-    const check = (state: { threads: Map<string, { turns: Array<{ id: string }> }> }): void => {
+    const check = (state: { threads: ReadonlyMap<string, { turns: Array<{ id: string }> }> }): void => {
       const model = state.threads.get(REF);
       if (model?.turns.some((turn) => turn.id === turnID)) {
         unsubscribe();

@@ -1250,6 +1250,9 @@ func readJobOutputPageForRecord(path string, rec *jobstore.JobRecord, beforeByte
 		if err := checkOutputTotalForRecord(rec, page.TotalBytes); err != nil {
 			return jobstore.OutputWindowSnapshot{}, err
 		}
+		if err := checkOutputFileNotGrownPastRecord(rec, page.FileBytes, page.TotalBytes); err != nil {
+			return jobstore.OutputWindowSnapshot{}, err
+		}
 	}
 	return page, err
 }
@@ -1337,7 +1340,10 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 		// A retired delegate's output belongs to the runtime that wrote it and is
 		// never read, so its unreadable artifacts cannot stop the restore.
 		if string(rec.Type) != delegateResourceType {
-			if total, _, err := jobstore.OutputFileStats(jm.outputPathForJob(rec, finished.JobID)); err == nil {
+			// Commit recovered output before recording its count: bytes batched in
+			// the page cache survive a process-only crash, and a durable count
+			// naming them would be rejected once a later power loss dropped them.
+			if total, err := jobstore.CommitOutput(jm.outputPathForJob(rec, finished.JobID)); err == nil {
 				finished.OutputBytes = total
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -1690,6 +1696,13 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 // finalize without notification-arming (spec §6.4d).
 func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) (*terminalJob, error) {
 	var outputBytes int64
+	// Append batches its barriers now, so the finish seam is where the log and
+	// its metadata become durable together. The record written below names
+	// outputBytes, and every later reader compares that count against the
+	// metadata's total.
+	if err := run.output.Flush(); err != nil {
+		return nil, &terminalRecordPersistError{status: status, err: err}
+	}
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
 	}
@@ -1785,6 +1798,9 @@ func (jm *jobManager) emitFinishedJob(run *runningJob, terminal *terminalJob) {
 func (jm *jobManager) appendStartForwardFailure(jobID string, output *jobstore.OutputStore, p *provenance.Causal) error {
 	var outputBytes int64
 	if output != nil {
+		if err := output.Flush(); err != nil {
+			return &terminalRecordPersistError{status: jobstore.StatusFailed, err: err}
+		}
 		if _, total, _, err := output.Tail(0); err == nil {
 			outputBytes = total
 		}
@@ -2191,6 +2207,17 @@ func checkOutputTotalForRecord(rec *jobstore.JobRecord, total int64) error {
 	return nil
 }
 
+// checkOutputFileNotGrownPastRecord refuses a terminal job's output file whose
+// physical length exceeds the bytes its metadata vouches for. A finished record
+// is durable before the file grows, so growth is an append made outside the
+// store, not a lost tail: serving it would hand out bytes nothing checksummed.
+func checkOutputFileNotGrownPastRecord(rec *jobstore.JobRecord, fileBytes, total int64) error {
+	if rec != nil && rec.Status.IsTerminal() && fileBytes > total {
+		return fmt.Errorf("jobstore: output file holds %d bytes but its record vouches for %d", fileBytes, total)
+	}
+	return nil
+}
+
 // readClosedJobOutput reads a head or tail window of a closed job's visible
 // output. The window and the metadata describing it come from one opened
 // regular file (readLocalJobOutputSnapshot reopens once on a concurrent
@@ -2200,8 +2227,11 @@ func readClosedJobOutput(path string, rec *jobstore.JobRecord, maxBytes int, fro
 	if err != nil {
 		return "", 0, false, err
 	}
-	if err := checkOutputTotalForRecord(rec, snapshot.TotalBytes); err != nil {
-		return "", 0, false, err
+	if totalErr := checkOutputTotalForRecord(rec, snapshot.TotalBytes); totalErr != nil {
+		return "", 0, false, totalErr
+	}
+	if grownErr := checkOutputFileNotGrownPastRecord(rec, snapshot.FileBytes, snapshot.TotalBytes); grownErr != nil {
+		return "", 0, false, grownErr
 	}
 	return string(snapshot.Content), snapshot.TotalBytes, snapshot.Truncated, nil
 }
@@ -2211,8 +2241,11 @@ func readClosedJobOutput(path string, rec *jobstore.JobRecord, maxBytes int, fro
 // scanning when its metadata total disagrees with rec.
 func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, rec *jobstore.JobRecord) ([]jobstore.Match, error) {
 	return readOpenedJobOutput(path, func(f *os.File) ([]jobstore.Match, error) {
-		return jobstore.GrepOutputFileLimitFromFile(path, f, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total int64) error {
-			return checkOutputTotalForRecord(rec, total)
+		return jobstore.GrepOutputFileLimitFromFile(path, f, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, func(total, fileBytes int64) error {
+			if totalErr := checkOutputTotalForRecord(rec, total); totalErr != nil {
+				return totalErr
+			}
+			return checkOutputFileNotGrownPastRecord(rec, fileBytes, total)
 		})
 	})
 }

@@ -63,6 +63,7 @@ const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "modelProvider",
   "model",
   "reasoningEffort",
+  "defaultReasoningEffort",
   "visionModel",
   "askPending",
   "pendingEscalations",

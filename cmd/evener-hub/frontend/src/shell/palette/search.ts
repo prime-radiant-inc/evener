@@ -1,16 +1,23 @@
 // Search mode: the palette's default mode (query is empty or doesn't start
 // with "/"). Three concerns, all ported from search.js's search-mode block:
 //   - fetchSearch: the backend session search over the typed AppWire method.
-//   - findInSessionMatches: the "In session · N" section. The legacy scanned
-//     #conversation's DOM (search.js:961-982); the new transcript is
-//     virtualized, so this scans the focused session's ThreadModel directly
-//     (turns -> items -> text) - the plan-resolved successor.
+//   - findInSessionMatches: the "In session · N" section, scanning the focused
+//     session's loaded ThreadModel (turns -> items -> text). Choosing a
+//     message row opens the session's own Find on it (panes/session/find).
 //   - buildSnippet / highlightParts: the <mark>-highlighted context strings.
 //     Returned as structured parts (not HTML) so the React overlay renders
 //     <mark> without dangerouslySetInnerHTML - React escapes for us, so the
 //     legacy's escapeHtml has no successor here.
 
-import type { AppwireClientLike, ItemModel, SearchResponse, ThreadModel } from "@evener/appwire-client";
+import {
+  type AppwireClientLike,
+  findIndexIn,
+  findNeedle,
+  type ItemModel,
+  type SearchResponse,
+  type ThreadModel,
+} from "@evener/appwire-client";
+import { messageAsShown } from "../../panes/session/find/messageText";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.
@@ -44,7 +51,12 @@ function normalizeWhitespace(text: string): string {
 // item's turn label.
 function itemSearchTexts(item: ItemModel): string[] {
   const texts: string[] = [];
-  if (item.text) texts.push(item.text);
+  // A message is read as its row shows it (a reply's Markdown rendered), the
+  // way the session's own Find reads it, so a message row here is one Find
+  // can land on.
+  const message = messageAsShown(item);
+  if (message !== null) texts.push(message);
+  else if (item.text) texts.push(item.text);
   if (item.output) texts.push(item.output);
   if (item.error) texts.push(item.error);
   for (const summary of item.reasoningSummaries ?? []) {
@@ -55,7 +67,9 @@ function itemSearchTexts(item: ItemModel): string[] {
 }
 
 export function findInSessionMatches(model: ThreadModel, query: string): InSessionMatch[] {
-  const q = query.toLowerCase();
+  // The shared find needle: case and the shape of whitespace never decide a
+  // match, here or in the session's Find.
+  const q = findNeedle(query);
   if (!q) return [];
   const out: InSessionMatch[] = [];
   let turnNumber = 0;
@@ -65,9 +79,9 @@ export function findInSessionMatches(model: ThreadModel, query: string): InSessi
       for (const raw of itemSearchTexts(item)) {
         const text = normalizeWhitespace(raw);
         if (!text) continue;
-        const hit = text.toLowerCase().indexOf(q);
+        const hit = findIndexIn(text, q);
         if (hit < 0) continue;
-        out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, query.length) });
+        out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, q.length) });
       }
     }
   }
@@ -91,11 +105,12 @@ export function buildSnippet(text: string, hit: number, len: number): HighlightP
 
 export function highlightParts(text: string, query: string): HighlightPart[] {
   if (!query) return [{ text, mark: false }];
-  const i = text.toLowerCase().indexOf(query.toLowerCase());
+  const needle = findNeedle(query);
+  const i = findIndexIn(text, needle);
   if (i < 0) return [{ text, mark: false }];
   return [
     { text: text.slice(0, i), mark: false },
-    { text: text.slice(i, i + query.length), mark: true },
-    { text: text.slice(i + query.length), mark: false },
+    { text: text.slice(i, i + needle.length), mark: true },
+    { text: text.slice(i + needle.length), mark: false },
   ];
 }

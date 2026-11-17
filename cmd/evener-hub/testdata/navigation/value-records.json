@@ -57,6 +57,7 @@
     "children": [],
     "running_job_count": 1,
     "running_job_command": "command-sentinel",
+    "running_job_intent": "intent-sentinel",
     "watch_count": 3,
     "armed_watch_count": 2
   },

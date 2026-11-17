@@ -414,7 +414,7 @@ func TestSessionActivityArchivedNestedHierarchy(t *testing.T) {
 				t.Fatalf("archive %s: %v", ref, err)
 			}
 		}
-		decisions, err := hubcore.NewArchiveStore(filepath.Join(f.cfg.HubStateRoot, "index.db")).Decisions()
+		decisions, err := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(f.cfg.HubStateRoot, "index.db"))).Decisions()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -532,7 +532,7 @@ func TestSessionActivityPublicInitiallyEmptyIncompletePageProgresses(t *testing.
 			t.Fatal(err)
 		}
 		cfg := f.cfg
-		cfg.Past = hubcore.NewPastIndex(retainedDir)
+		cfg.Past = closeOnCleanup(t, hubcore.NewPastIndex(retainedDir))
 		cfg.Roster = hubcore.NewRosterWithEntries()
 		if _, err := cfg.Past.Rebuild(); err != nil {
 			t.Fatal(err)

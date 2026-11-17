@@ -50,12 +50,12 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		for _, id := range projectDeleteCanonicalSessionIDs[:2] {
 			writeSession(t, stateDir, id, project.CanonicalPath)
 		}
-		past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+		past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db")))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
-		favorite := hubcore.NewFavoriteStore(filepath.Join(root, "index.db"))
+		archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "index.db")))
+		favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(filepath.Join(root, "index.db")))
 		web := newTestWebServerWithConfig(t, hubcore.WebConfig{StateDir: root, Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
@@ -92,7 +92,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		}
 		stateDir := filepath.Join(root, "projects", project.ID)
 		writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		for _, id := range projectDeleteCanonicalSessionIDs[:2] {
 			writeSession(t, stateDir, id, project.CanonicalPath)
 		}
-		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 		}
 		stateDir := filepath.Join(root, "projects", project.ID)
 		writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 			t.Fatal(err)
 		}
 		writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
-		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}

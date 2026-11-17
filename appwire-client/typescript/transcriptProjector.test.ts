@@ -1224,11 +1224,13 @@ describe("transcript projector", () => {
 });
 
 // --- automatic memory refresh (eventKind "memory-context") ------------------
-// The refresh is a standalone collapsed notification a reader can always
-// reach: visible at every level independently of the system-events gate, and
-// opted out of the expand-everything (Full) disclosure baseline. Both are
-// shared projector rules; each client renders the typed kind as its own
-// collapsed "Refreshed my memory" disclosure.
+// From Tools up the refresh is a standalone collapsed notification a reader can
+// always reach: visible independently of the system-events gate, and opted out
+// of the expand-everything (Full) disclosure baseline. Chat and Intent show the
+// actions view instead, where every call is a one-line intent proxy, so no
+// standalone refresh row appears there (Jesse, 2026-11-16). All of it is shared
+// projector rules; each client renders the typed kind as its own collapsed
+// "Refreshed my memory" disclosure.
 
 describe("memory refresh projection", () => {
   function memoryItem(): ItemModel {
@@ -1239,11 +1241,45 @@ describe("memory refresh projection", () => {
     });
   }
 
-  test("stays a visible item entry at every preset, even with system events off", () => {
-    for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
-      const entries = entriesFor(threadWith(memoryItem()), preset(level));
-      expect(entries).toEqual([expect.objectContaining({ kind: "item", id: "item_memory_context_0" })]);
+  test.each(["chat", "intent"] as const)("hides the refresh at %s, where actions fold to intent", (level) => {
+    for (const advanced of [{}, { systemEvents: true }]) {
+      const projection = projectThread(threadWith(memoryItem()), preset(level, advanced));
+      expect(projection.turns[0]?.entries).toEqual([]);
+      expect(projection.turns[0]?.visibleItems).toEqual([]);
+      expect(projection.anchors).toEqual([]);
     }
+  });
+
+  test.each(["tools", "activity", "full"] as const)(
+    "stays a visible item entry at %s, even with system events off",
+    (level) => {
+      expect(entriesFor(threadWith(memoryItem()), preset(level))).toEqual([
+        expect.objectContaining({ kind: "item", id: "item_memory_context_0" }),
+      ]);
+    },
+  );
+
+  test("never resurrects a hidden refresh in a failed or interrupted turn", () => {
+    for (const status of ["failed", "interrupted"] as const) {
+      const model = {
+        ...threadWith(),
+        turns: [turn([memoryItem()], { status, error: { message: "model call failed" } })],
+      } as unknown as ThreadModel;
+      for (const level of ["chat", "intent"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+      }
+      expect(entriesFor(model, preset("tools"))).toEqual([expect.objectContaining({ id: "item_memory_context_0" })]);
+    }
+  });
+
+  test("follows the tool-calls field, so a custom vector with calls on still shows it", () => {
+    const model = threadWith(memoryItem());
+    const withCalls = custom({ toolIntent: true, toolCalls: true, reasoning: false, expandByDefault: false });
+    expect(entriesFor(model, withCalls)).toEqual([
+      expect.objectContaining({ kind: "item", id: "item_memory_context_0" }),
+    ]);
+    const withoutCalls = custom({ toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: true });
+    expect(entriesFor(model, withoutCalls)).toEqual([]);
   });
 
   test("is not an eligible-disclosure id, so no general baseline can open it", () => {

@@ -15,7 +15,14 @@
 //   - raw ↑/↓ token counts. The details sheet carries the exact figures.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { effortLabel, effortOptionLevels, sessionActionError, sessionEffortLevels } from "@evener/appwire-client";
+import {
+  effortDefaultLabel,
+  effortLabel,
+  effortOptionLevels,
+  effortReadout,
+  sessionActionError,
+  sessionEffortLevels,
+} from "@evener/appwire-client";
 import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -76,11 +83,16 @@ const CLASS = {
 // to [], reducer.ts:263). A model that does not reason at all gets no control.
 //
 // none-vs-(default): an unset effort ("") means "the session default applies"
-// and reads as "(default)", a real leading option, never the first ladder
-// level a bare value-"" select would display. "none" is an explicit off the
-// user chose (llm/types.go ReasoningEffortNone): it displays as "none (off)"
-// and is offered as its own option when the model's ladder lists it (or when
-// the session already runs at it).
+// and is a real leading option, never the first ladder level a bare value-""
+// select would display. Its tier is the daemon's own resolution
+// (model.defaultReasoningEffort): the closed readout shows that tier, the
+// effort the session actually runs at, and the open list labels the option
+// "<tier> (default)" so following the default stays distinct from pinning
+// the same tier. With no resolution (an older daemon, an unresolved row) both
+// read a plain "(default)". "none" is an explicit off the user chose
+// (llm/types.go ReasoningEffortNone): it displays as "none (off)" and is
+// offered as its own option when the model's ladder lists it (or when the
+// session already runs at it).
 function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const toasts = useToasts();
 
@@ -109,7 +121,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
           select already speaks its own value - without it the value would be
           announced twice. */}
       <span className={CLASS.effortValue} data-testid="status-row-effort-value" aria-hidden="true">
-        {effortLabel(current, levels)}
+        {effortReadout(current, levels, model.defaultReasoningEffort)}
       </span>
       <span className={CLASS.effortChevron} aria-hidden="true">
         <Chevron direction="down" />
@@ -129,7 +141,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
       >
         {options.map((level) => (
           <option key={level} value={level}>
-            {effortLabel(level, levels)}
+            {level === "" ? effortDefaultLabel(model.defaultReasoningEffort) : effortLabel(level, levels)}
           </option>
         ))}
       </select>

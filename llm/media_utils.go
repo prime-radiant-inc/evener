@@ -185,10 +185,7 @@ func NormalizeImageForWire(data []byte, claimedMediaType string, accept func(for
 // mimeType is empty after trimming whitespace, "application/octet-stream" is
 // used.
 func DataURI(mimeType string, data []byte) string {
-	mimeType = strings.TrimSpace(mimeType)
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
-	}
+	mimeType = canonicalDataURIMediaType(mimeType)
 	// One allocation for the whole result: grow the builder to the exact final
 	// size, stream the payload straight into it, and let String share the
 	// buffer instead of copying it. Multi-MB document and image payloads make

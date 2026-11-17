@@ -32,6 +32,15 @@ export const WarningCodePluginCompatibility = "plugin_compatibility";
  */
 export const WarningCodeDelegateAttentionRestore = "delegate_attention_restore";
 
+/**
+ * A guard predicate refused a delegate's owed attention wake: the warning
+ * names the holding predicate on its refused_predicate field. The daemon
+ * retries on its own with backoff while the attention is owed and warns once
+ * per refusal episode, so it is detail for Full, not an alarm at every level.
+ * Bound by test to agent/events/payloads.go.
+ */
+export const WarningCodeDelegateAttentionDriveRefused = "delegate_attention_drive_refused";
+
 /** A restored MCP connection, independent of the pending tool call outcome. */
 export const WarningCodeMCPReconnected = "mcp_reconnected";
 
@@ -48,6 +57,7 @@ const INFORMATIONAL_WARNING_CODES: ReadonlySet<unknown> = new Set([
   WarningCodeContextBudget,
   WarningCodePluginCompatibility,
   WarningCodeDelegateAttentionRestore,
+  WarningCodeDelegateAttentionDriveRefused,
   WarningCodeMCPReconnected,
   WarningCodeContextWindowAssumed,
 ]);

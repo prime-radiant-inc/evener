@@ -10,13 +10,14 @@ import "strings"
 var sqliteURIPathEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
 
 // sqliteDSN wraps a database path in the DSN every store sharing index.db must
-// open it with. Five stores (archive, favorite, pin sections, seen markers,
-// past-index FTS) plus the periodic FTS rebuild all write to the same file from
-// short-lived connections, so a writer must wait out a concurrent writer's lock
-// instead of failing instantly with SQLITE_BUSY, and WAL journaling keeps
-// readers from blocking the writer. WAL mode is persistent in the database
-// file; the busy_timeout and synchronous pragmas apply per connection, which is
-// why they live here in the DSN rather than in a one-time migration.
+// open it with. The archive, favorite, pin-section, session-seen and hub-
+// identity stores, past-index FTS and its periodic rebuild, and the rebuildable
+// message-search index all open their own short-lived connections, so a writer
+// must wait out a concurrent writer's lock instead of failing instantly with
+// SQLITE_BUSY, and WAL journaling keeps readers from blocking the writer. WAL
+// mode is persistent in the database file; the busy_timeout and synchronous
+// pragmas apply per connection, which is why they live here in the DSN rather
+// than in a one-time migration.
 //
 // synchronous=NORMAL is what keeps a store write from fsyncing the write-ahead
 // log: SQLite's default is FULL, and entering WAL does not change it. Under WAL,

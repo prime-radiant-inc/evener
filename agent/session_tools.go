@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/runetrim"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
@@ -451,13 +452,24 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	// incremental event pattern that mirrors provider LLM streaming.
 	full := res.FullOutput
 	const chunk = 4000
-	for i := 0; i < len(full); i += chunk {
-		j := min(i+chunk, len(full))
+	// Each delta ends on a rune boundary. A consumer that reassembles the
+	// deltas of an output the end event only excerpts cannot recover a rune
+	// split across two events, because JSON encoding of a partial rune yields
+	// replacement characters.
+	for i := 0; i < len(full); {
+		delta := runetrim.Cut(full[i:], chunk)
+		if delta == "" {
+			// No rune start in the window: output that is not UTF-8 at all.
+			// Emit the raw bytes rather than dropping them; nothing intact is
+			// being split here.
+			delta = full[i:min(i+chunk, len(full))]
+		}
 		s.emit(events.ToolCallOutputDeltaData{
 			ToolName: res.ToolName,
 			CallID:   res.CallID,
-			Delta:    full[i:j],
+			Delta:    delta,
 		})
+		i += len(delta)
 	}
 
 	endData := events.ToolCallEndData{
@@ -477,10 +489,10 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		endData.OutputImages = []events.OutputImage{img}
 	}
 	if res.IsError {
-		endData.Error = res.FullOutput
+		endData.Error, endData.ErrorBytes = events.BoundToolField(res.FullOutput)
 		endData.PrevalOnly = res.PrevalOnly
 	} else {
-		endData.Output = res.FullOutput
+		endData.Output, endData.OutputBytes = events.BoundToolField(res.FullOutput)
 	}
 	s.emit(endData)
 	s.responseSideEffectsMu.Unlock()

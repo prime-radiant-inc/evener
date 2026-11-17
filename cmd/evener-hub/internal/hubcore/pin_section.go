@@ -90,6 +90,15 @@ type PinSectionStore struct {
 	fs       afero.Fs
 	openDB   func(driverName, dataSourceName string) (*sql.DB, error)
 	onChange func()
+
+	// readHandle_ is the store's process-lifetime read handle, created by the
+	// first read and reused by every later one, so both navigation reads pay
+	// the connect, the pragma and DDL setup and the schema check once per
+	// process instead of once per read. Writes do not use it: each write
+	// attempt opens its own connection so a retry can take SQLite's write lock
+	// with the IMMEDIATE DSN (see openWriteAttempt). The trailing underscore
+	// leaves the name readHandle to the accessor method.
+	readHandle_ keeperHandle
 }
 
 // NewPinSectionStore returns a store backed by the SQLite file at dbPath.
@@ -203,17 +212,36 @@ func (s *PinSectionStore) openWithImmediateTransaction(immediate bool) (*sql.DB,
 	return db, nil
 }
 
+// readHandle returns the store's shared read handle, creating it on first use.
+// The parent directory is ensured on every call, as the per-attempt open did,
+// so a scaffolding failure still surfaces from the call that hit it.
+func (s *PinSectionStore) readHandle() (*sql.DB, error) {
+	if err := s.fs.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
+		return nil, err
+	}
+	return s.readHandle_.get(s.dbPath, s.fs, s.open)
+}
+
+// Close releases the store's shared read handle. The hub calls it on shutdown;
+// a store that never read closes nothing. Write connections are per attempt
+// and already closed by the write.
+func (s *PinSectionStore) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.readHandle_.close()
+}
+
 // Sections returns every stored section ordered alphabetically with durable
 // member counts.
 func (s *PinSectionStore) Sections() ([]PinSection, error) {
 	if s == nil || s.dbPath == "" {
 		return []PinSection{}, nil
 	}
-	db, err := s.open()
+	db, err := s.readHandle()
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = db.Close() }()
 	rows, err := db.QueryContext(context.Background(), `
 SELECT s.id, s.name, s.created_at, s.updated_at, COUNT(p.session_id)
 FROM pin_section AS s
@@ -491,11 +519,10 @@ func (s *PinSectionStore) Assignments() (map[ArchiveKey]SessionPin, error) {
 	if s == nil || s.dbPath == "" {
 		return out, nil
 	}
-	db, err := s.open()
+	db, err := s.readHandle()
 	if err != nil {
 		return out, err
 	}
-	defer func() { _ = db.Close() }()
 	rows, err := db.QueryContext(context.Background(), `SELECT source, session_id, section_id, assigned_at FROM session_pin ORDER BY source, session_id`)
 	if err != nil {
 		return out, err

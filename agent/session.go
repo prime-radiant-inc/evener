@@ -141,12 +141,16 @@ type Session struct {
 	// longer validate against the new profile). Nil until a switch drops any.
 	// The model-switch marker surfaces it as a warning line.
 	lastDroppedModelFallbacks []string
-	// roundFallbackMessages is the round's unprojected request messages (system
-	// plus expanded history) kept for the fallback chain, whose targets apply
-	// their own thinking-replay and tool-result media policy.
+	// roundFallbackSource is the round's unprojected request input (system plus
+	// expanded history) kept for the fallback chain, whose targets apply their
+	// own thinking-replay and tool-result media policy (#4563, #4217).
 	// prepareModelRequestWithError writes it and callModelWithFallback takes and
-	// clears it on the same turn goroutine; mu guards the exchange (#4563, #4217).
-	roundFallbackMessages []llm.Message
+	// clears it on the same turn goroutine; mu guards the exchange. It holds the
+	// input rather than a built message slice because only Messages depends on
+	// that input: the fallback lays out its own messages when it runs, so a
+	// round that never falls back builds one request instead of two (#6442).
+	roundFallbackSource    roundFallbackSource
+	roundFallbackSourceSet bool
 	// rejectedToolResultDocuments holds tool-call IDs whose document payload a
 	// provider rejected. Request assembly omits those bytes for the rest of the
 	// session (the transcript keeps them); the rejection recovery adds the IDs
@@ -346,7 +350,20 @@ type Session struct {
 	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
-	mu sync.Mutex
+	//
+	// mu is a read/write lock. Every mutation of a guarded field takes Lock;
+	// a pure read may take RLock only when it touches guarded fields and
+	// nothing else, never mutates what it reads, and takes no other lock
+	// except one classified in session_emit_lock_guard_test.go as a
+	// collaborator whose holder cannot reach Session. Two readers are the emit
+	// stamp (activeCausalProvenance) and the context sample (ContextStatus),
+	// which run on every event and every sample; sharing keeps them from
+	// serializing each other. Readers are still excluded by any writer, so a
+	// read observes one whole state and never a write in progress. Go read
+	// locks are not recursive: a path that takes RLock and then reaches
+	// another Session RLock or Lock can wedge when a writer is pending, so no
+	// reader may call another.
+	mu sync.RWMutex
 	// retirementController is process-owned and published atomically so admission
 	// never nests the controller mutex with a Session lock. Nil leaves ordinary
 	// non-daemon sessions unchanged; descendants inherit it before starting work.
@@ -2268,18 +2285,19 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
-		OldProvider:           commitPrev.ID(),
-		OldModel:              commitPrev.Model(),
-		NewProvider:           nextProfile.ID(),
-		NewModel:              nextProfile.Model(),
-		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
-		SupportsReasoning:     nextProfile.SupportsReasoning(),
-		MarkerText:            markerText,
-		ContextUsed:           usage.Used,
-		ContextWindow:         usage.Window,
-		ContextPressure:       contextPressure,
-		ContextAssumed:        usage.Assumed,
-		CompactionThreshold:   usage.CompactionThreshold,
+		OldProvider:            commitPrev.ID(),
+		OldModel:               commitPrev.Model(),
+		NewProvider:            nextProfile.ID(),
+		NewModel:               nextProfile.Model(),
+		ReasoningEffortLevels:  nextProfile.ReasoningEffortLevels(),
+		SupportsReasoning:      nextProfile.SupportsReasoning(),
+		DefaultReasoningEffort: profileDefaultReasoningEffort(nextProfile),
+		MarkerText:             markerText,
+		ContextUsed:            usage.Used,
+		ContextWindow:          usage.Window,
+		ContextPressure:        contextPressure,
+		ContextAssumed:         usage.Assumed,
+		CompactionThreshold:    usage.CompactionThreshold,
 	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave
@@ -2736,12 +2754,16 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	}
 	if committed && publishEvent {
 		// The entry and the event announcing it are one publication, and the
-		// transcript door is the statement that says so: while it is held no
-		// fold can publish, so the order a live reader sees is the order the
-		// transcript holds. Emitted after the release, a fold could take the
-		// door in between, commit its markers and flush its own events first,
-		// and the projector — which reads an environment event as a turn
-		// boundary — would split a turn cold replay does not.
+		// transcript door is the statement that says so: the entry is in
+		// history before the event exists, so no reader can observe the event
+		// ahead of the transcript that explains it.
+		//
+		// The door does NOT prevent a turn from being split. An earlier version
+		// of this comment claimed the projector read an environment event as a
+		// turn boundary; it no longer builds turns from events at all, and this
+		// event is a context facet (server/thread_envelope.go's facetsByEvent).
+		// Whether the event needs the door at all is #6513's open question, not
+		// something this comment settles.
 		//
 		// This is the one event published under the door, and the trade is
 		// real: emit is not a bounded send. It parks indefinitely against the

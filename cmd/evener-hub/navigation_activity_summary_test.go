@@ -145,3 +145,108 @@ func TestNavigationFittingPreservesCompactCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// rowWithRunningJobs projects one live session carrying the given jobs and
+// returns its summary row, the shape every running-job case below inspects.
+func rowWithRunningJobs(t *testing.T, jobs ...appwire.EvenerJobInfo) hubapi.NavigationSessionSummary {
+	t.Helper()
+	node := hubcore.TreeNode{ID: "root", Kind: "session", State: "active", RunningJobs: jobs}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := projection.LivePage(0, 50)
+	if len(page.Sessions) != 1 {
+		t.Fatalf("sessions=%d", len(page.Sessions))
+	}
+	return page.Sessions[0]
+}
+
+// A running job's own stated intent is the row's work text: the command says
+// what is executing, the intent says why. The projector takes it from the same
+// job whose command it takes, bounded like every other row why text.
+func TestNavigationSummaryCarriesTheRunningJobIntent(t *testing.T) {
+	row := rowWithRunningJobs(t, appwire.EvenerJobInfo{
+		JobID:   "job-1",
+		JobType: "shell",
+		Status:  "running",
+		Command: "go test ./agent/...",
+		Intent:  "Checking the rail's row tests.",
+	})
+	if row.RunningJobIntent != "Checking the rail's row tests." {
+		t.Fatalf("running_job_intent = %q, want the job's stated intent", row.RunningJobIntent)
+	}
+	if row.RunningJobCommand != "go test ./agent/..." {
+		t.Fatalf("running_job_command = %q, want the command it belongs to", row.RunningJobCommand)
+	}
+}
+
+// A command with no stated intent leaves the field absent, so a client keeps
+// its command fallback rather than rendering an empty line.
+func TestNavigationSummaryOmitsAnUnstatedRunningJobIntent(t *testing.T) {
+	row := rowWithRunningJobs(t, appwire.EvenerJobInfo{JobID: "job-1", JobType: "shell", Status: "running", Command: "make test"})
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields["running_job_intent"]; present {
+		t.Fatalf("unstated intent reached the wire: %v", fields["running_job_intent"])
+	}
+}
+
+// The intent is cut to the same bound the activity read uses, so one runaway
+// statement cannot widen a row.
+func TestNavigationSummaryBoundsTheRunningJobIntent(t *testing.T) {
+	row := rowWithRunningJobs(t, appwire.EvenerJobInfo{
+		JobID: "job-1", JobType: "shell", Status: "running",
+		Command: "make test",
+		Intent:  strings.Repeat("i", 5_000),
+	})
+	intent := row.RunningJobIntent
+	if got := utf8.RuneCountInString(intent); got > appwire.MaxIntentRunes {
+		t.Fatalf("running_job_intent is %d runes, want at most %d", got, appwire.MaxIntentRunes)
+	}
+	if intent == "" {
+		t.Fatal("a stated intent was dropped")
+	}
+}
+
+// The command and the intent come from ONE job: pairing them across jobs would
+// name one command's purpose beside another's command. An intent-only job
+// therefore wins the row outright and leaves the command empty.
+func TestNavigationSummaryPairsCommandAndIntentFromOneJob(t *testing.T) {
+	row := rowWithRunningJobs(t,
+		appwire.EvenerJobInfo{JobID: "job-1", JobType: "shell", Status: "running", Intent: "Checking the rows."},
+		appwire.EvenerJobInfo{JobID: "job-2", JobType: "shell", Status: "running", Command: "make test"},
+	)
+	if row.RunningJobIntent != "Checking the rows." {
+		t.Fatalf("running_job_intent = %q, want the first job's", row.RunningJobIntent)
+	}
+	if row.RunningJobCommand != "" {
+		t.Fatalf("running_job_command = %q, want the same job's (which stated none)", row.RunningJobCommand)
+	}
+}
+
+// Job list order is not semantic, so the row's job is chosen by rule:
+// foreground before background, then the lowest job ID. Two probes of one job
+// set must never name different work.
+func TestNavigationSummaryPicksTheRowJobByRule(t *testing.T) {
+	foreground := appwire.EvenerJobInfo{JobID: "job-a", JobType: "shell", Status: "running", Command: "make test"}
+	background := appwire.EvenerJobInfo{JobID: "job-b", JobType: "shell", Status: "running", Background: true, Intent: "Polling the logs."}
+	// A silent job would blank the row, so it is skipped entirely.
+	silent := appwire.EvenerJobInfo{JobID: "job-0", JobType: "shell", Status: "running"}
+	for name, jobs := range map[string][]appwire.EvenerJobInfo{
+		"foreground over background": {foreground, background},
+		"reversed order":             {background, foreground},
+		"a silent job":               {silent, foreground},
+	} {
+		row := rowWithRunningJobs(t, jobs...)
+		if row.RunningJobCommand != "make test" || row.RunningJobIntent != "" {
+			t.Errorf("%s: command=%q intent=%q, want the foreground job alone", name, row.RunningJobCommand, row.RunningJobIntent)
+		}
+	}
+}

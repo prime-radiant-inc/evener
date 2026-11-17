@@ -173,11 +173,18 @@ card stops asking and keeps its fallback.
 
 The card settles a working status in the phone Board's order: running
 subagents, then the shared quiet/stuck rule, then `latestIntent`, then the
-row's running job command, then the state word. Without a usable read it keeps
-the state word, or the row's running job command when it carries one. It does
+running job's own intent, then its command, then the state word. Without a
+usable read it names the running job's intent, else its command, else the
+state word; a job that stated no intent keeps showing its command. It does
 not derive a subagent line from the row's tally, which the card's own Subagents
 row already names. The non-working statuses keep their existing vocabulary
 (`Not started`, `Failed`, or the humanized state).
+
+A row speaks for one job, and the command and intent it carries always come
+from that same job, so a row never pairs one command with another job's
+purpose. Which job is a stated rule rather than list order, which is not
+semantic: foreground work before background, then the lowest job ID, skipping a
+job that states neither.
 
 ## APIs and ownership
 

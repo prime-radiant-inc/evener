@@ -398,16 +398,18 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "thread/model/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       // ThreadModelChangedParams (appwire/types_turn.go) carries
-      // reasoningEffortLevels/supportsReasoning alongside modelProvider/
-      // model, describing the NEW model's full reasoning profile - not a
-      // partial patch, so an omitted/empty ladder on the new payload
-      // replaces (not preserves) whatever the old model's picker showed.
+      // reasoningEffortLevels/supportsReasoning/defaultReasoningEffort
+      // alongside modelProvider/model, describing the NEW model's full
+      // reasoning profile - not a partial patch, so an omitted/empty ladder or
+      // default on the new payload replaces (not preserves) whatever the old
+      // model's picker showed.
       return {
         ...model,
         modelProvider: n.params.modelProvider,
         model: n.params.model,
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
+        defaultReasoningEffort: n.params.defaultReasoningEffort,
         contextUsed: n.params.contextUsed ?? (n.params.contextWindow !== undefined ? 0 : model.contextUsed),
         contextWindow: n.params.contextWindow ?? model.contextWindow,
         contextPressure: n.params.contextPressure ?? (n.params.contextWindow !== undefined ? 0 : model.contextPressure),

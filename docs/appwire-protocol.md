@@ -1336,6 +1336,7 @@ Underlying Go kind: `string` (no struct fields).
 | `reasoningEffort` | string | yes |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `supportsReasoning` | bool | yes |  |
+| `defaultReasoningEffort` | string | yes |  |
 | `visionModel` | string | yes |  |
 | `activity` | \*[appwire.ThreadActivity](#threadactivity) | yes |  |
 | `lastTurnEndedAt` | int64 | yes |  |
@@ -4868,6 +4869,7 @@ Underlying Go kind: `string` (no struct fields).
 | `model` | string |  |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `supportsReasoning` | bool | yes |  |
+| `defaultReasoningEffort` | string | yes |  |
 | `contextUsed` | int | yes |  |
 | `contextWindow` | int | yes |  |
 | `contextPressure` | float64 | yes |  |

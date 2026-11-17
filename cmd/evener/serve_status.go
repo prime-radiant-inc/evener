@@ -224,10 +224,11 @@ func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalati
 	return mapServePendingEscalations(l.session().PendingEscalations())
 }
 
-func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
+func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool, string) {
 	sess := l.session()
 	p := sess.Profile()
-	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+	levels, supportsReasoning := p.ReasoningEffortLevels(), p.SupportsReasoning()
+	return sess.ReasoningEffort(), levels, supportsReasoning, agent.DefaultReasoningEffort(supportsReasoning, levels, p.DefaultReasoningEffort())
 }
 
 func (l liveThreadEnvelopeSource) LatestExecutionTurnID() string {

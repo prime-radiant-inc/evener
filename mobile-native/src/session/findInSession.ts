@@ -2,7 +2,16 @@
 // typed, and stepping between them, newest first. It searches what the phone
 // has loaded; the screen loads older pages as you step back past the oldest
 // match.
-import { composeStepWords, type EvenerDelegateInfo, type SteeringFragment } from "@evener/appwire-client";
+import {
+	composeStepWords,
+	type EvenerDelegateInfo,
+	findMatches as findSharedMatches,
+	type MatchPosition,
+	matchPosition,
+	type SteeringFragment,
+	stepMatch,
+} from "@evener/appwire-client";
+import { readerKey } from "../readerPosition";
 import type { RunStep, TimelineRow } from "../timeline";
 import { notificationLine, notificationText } from "./notificationLine";
 /** Find in session while it's open: what you typed, the current match's
@@ -37,8 +46,16 @@ function fragmentText(fragment: SteeringFragment, delegates: readonly EvenerDele
 }
 
 /** The words a row shows, or would show when opened. A time marker has none.
- * The session's subagents name the subagents its notifications report on. */
-export function rowText(row: TimelineRow, delegates?: readonly EvenerDelegateInfo[]): string {
+ * The session's subagents name the subagents its notifications report on.
+ * answersByRow carries the recap an ask_user row renders beneath its
+ * questions, which the row itself does not hold: the raw answer row is
+ * hidden once the recap stands for it (#6328), so Find must read the
+ * rendered answer here or the words would be unsearchable while on screen. */
+export function rowText(
+	row: TimelineRow,
+	delegates?: readonly EvenerDelegateInfo[],
+	answersByRow?: ReadonlyMap<string, string>,
+): string {
 	switch (row.kind) {
 		case "user":
 		case "note":
@@ -55,8 +72,11 @@ export function rowText(row: TimelineRow, delegates?: readonly EvenerDelegateInf
 			return row.questions.map((question) => `${question.header}\n${question.question}`).join("\n");
 		case "details":
 			return row.entries.map((entry) => entry.text).join("\n");
-		case "activity":
-			return stepText(row);
+		case "activity": {
+			const text = stepText(row);
+			const answer = answersByRow?.get(row.id);
+			return answer === undefined ? text : `${text}\n${answer}`;
+		}
 		case "run":
 			return row.steps.map(stepText).join("\n");
 		case "attachments":
@@ -66,42 +86,57 @@ export function rowText(row: TimelineRow, delegates?: readonly EvenerDelegateInf
 	}
 }
 
-/** The indexes of the rows holding `query`, ignoring case, oldest first. */
+/** The indexes of the rows holding `query`, oldest first. What counts as a
+ * match is the shared rule every client uses. */
 export function findMatches(
 	rows: readonly TimelineRow[],
 	query: string,
 	delegates?: readonly EvenerDelegateInfo[],
+	answersByRow?: ReadonlyMap<string, string>,
 ): number[] {
-	const needle = query.trim().toLowerCase();
-	if (!needle) return [];
-	const matches: number[] = [];
-	rows.forEach((row, index) => {
-		if (rowText(row, delegates).toLowerCase().includes(needle)) matches.push(index);
-	});
-	return matches;
+	return findSharedMatches(rows, query, (row) => rowText(row, delegates, answersByRow));
 }
 
-/** The match to show next. With none shown yet it starts at the newest, since
- * you are usually at the end. Stepping back (-1) goes older and forward (1)
- * newer. Null means there is none that way: stepping back, the screen then
- * loads older history and tries again. */
-export function stepMatch(matches: readonly number[], current: number | null, direction: 1 | -1): number | null {
-	if (matches.length === 0) return null;
-	if (current === null) return matches[matches.length - 1] ?? null;
-	if (direction === 1) return matches.find((index) => index > current) ?? null;
-	return matches.findLast((index) => index < current) ?? null;
+export { type MatchPosition, matchPosition, stepMatch };
+/** The row Find's selection lands on: the key itself, or — when the row that
+ * key named is gone because its answer now shows beneath its question — the
+ * question row standing in for it. Null only when the key names no row at
+ * all, which is the resume case that reloads a saved boundary.
+ *
+ * Without this, selecting a linked answer whose question sits on an older
+ * page loses the selection when that page loads: the answer row is hidden,
+ * the selection finds nothing, and Find treats the match as gone and pages
+ * past the hits that are still there (#6328). */
+export function selectedRowIndex(
+	rows: readonly TimelineRow[],
+	selectedKey: string | null,
+	standIns: ReadonlyMap<string, string>,
+): number | null {
+	if (selectedKey === null) return null;
+	const key = standIns.get(selectedKey) ?? selectedKey;
+	const index = rows.findIndex((row) => readerKey(row) === key);
+	return index < 0 ? null : index;
 }
 
-/** Where you are among the matches: which one (1-based, 0 with none) of how
- * many. With no current match it sits on the newest. */
-export interface MatchPosition {
-	position: number;
-	count: number;
-}
-
-export function matchPosition(matches: readonly number[], current: number | null): MatchPosition {
-	if (matches.length === 0) return { position: 0, count: 0 };
-	return { position: current === null ? matches.length : matches.indexOf(current) + 1, count: matches.length };
+/** Where Find's selection sits among the matches: the selected row when it
+ * is itself a hit, and otherwise the newest hit at or before it.
+ *
+ * A stand-in row is not necessarily a hit — the question row shows the
+ * answer, but its own searchable words are the questions and the recap, which
+ * need not contain the query (a composed answer's `[answers]` framing and
+ * numbering are not in the recap). Reporting a non-hit as the current match
+ * made the label read "0 of N"; anchoring on the nearest hit keeps the count
+ * honest while the reader is still looking at the row that carries the words. */
+export function selectedMatch(
+	rows: readonly TimelineRow[],
+	hits: readonly number[],
+	selectedKey: string | null,
+	standIns: ReadonlyMap<string, string>,
+): number | null {
+	const index = selectedRowIndex(rows, selectedKey, standIns);
+	if (index === null) return null;
+	if (hits.includes(index)) return index;
+	return hits.findLast((hit) => hit <= index) ?? hits[0] ?? null;
 }
 
 /** Where you are among the matches, "2 of 3", or "No matches". */

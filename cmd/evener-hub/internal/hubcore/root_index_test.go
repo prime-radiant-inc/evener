@@ -106,7 +106,7 @@ func TestLookupDoesNotProbeDiskOrMutateTheIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	const id = "02wMz5Txv1C3Hut0M8GCeB"
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(root, "projects", "*")))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestLookupDoesNotProbeDiskOrMutateTheIndex(t *testing.T) {
 }
 
 func TestPastIndexRootIndexIsCachedPerGeneration(t *testing.T) {
-	idx := NewPastIndex("")
+	idx := closeOnCleanup(t, NewPastIndex(""))
 	idx.SeedForTest([]schema.SessionMeta{{ID: "01A"}})
 	first := idx.RootIndex()
 	if idx.RootIndex() != first {

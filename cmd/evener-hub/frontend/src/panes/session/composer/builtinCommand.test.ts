@@ -210,3 +210,7 @@ test("an enum command given an unknown value is blocked with an honest message, 
   expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(false);
   vi.unstubAllGlobals();
 });
+
+test("/find is a command the composer runs, like every session command", () => {
+  expect(matchBuiltinInvocation("/find", allBuiltins())?.command.id).toBe("find");
+});

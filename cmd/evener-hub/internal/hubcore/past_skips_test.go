@@ -69,7 +69,7 @@ func fuzzScenarioPastIndex_RebuildNamesSkippedEntries(t *testing.T) {
 	// looks like a session id and is not one.
 	writeMeta(t, good, schema.SessionMeta{ID: "02wMz5Txv6USAGE000001", UpdatedAt: time.Now()})
 
-	idx := NewPastIndex(filepath.Join(projects, "*"))
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
 	out := captureSkipReport(t, func() {
 		if _, err := idx.Rebuild(); err != nil {
 			t.Fatalf("Rebuild: %v", err)
@@ -107,7 +107,7 @@ func fuzzScenarioPastIndex_RebuildReportsOnlyNewlySkippedEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := NewPastIndex(filepath.Join(projects, "*"))
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
 	first := captureSkipReport(t, func() { _, _ = idx.Rebuild() })
 	if !strings.Contains(first, standing) {
 		t.Fatalf("first rebuild must report the standing skip:\n%s", first)
@@ -143,7 +143,7 @@ func fuzzScenarioPastIndex_RebuildCapsSkipReport(t *testing.T) {
 		}
 	}
 
-	idx := NewPastIndex(filepath.Join(projects, "*"))
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
 	out := captureSkipReport(t, func() { _, _ = idx.Rebuild() })
 
 	named := strings.Count(out, " path=")
@@ -162,7 +162,7 @@ func fuzzScenarioPastIndex_RebuildSilentWhenNothingSkipped(t *testing.T) {
 	proj := hubtest.ProjectDir(t, projects, "clean")
 	writeMeta(t, proj, schema.SessionMeta{ID: hubtest.SessionID(t), UpdatedAt: time.Now()})
 
-	idx := NewPastIndex(filepath.Join(projects, "*"))
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
 	out := captureSkipReport(t, func() {
 		if _, err := idx.Rebuild(); err != nil {
 			t.Fatalf("Rebuild: %v", err)

@@ -106,7 +106,26 @@ export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): A
 // byte-exact format): "N. [Header] → resolution text[ — note: "..."]". Safe
 // headers are raw; headers containing ]/CR/LF are JSON strings, so their
 // delimiters cannot be mistaken for the framing brackets.
-const ASK_ANSWER_LINE_RE = /^\d+\.\s(?:\[([^\]\r\n]*)\]|\[("(?:\\.|[^"\\])*")\])\s→\s(.*)$/;
+const ASK_ANSWER_LINE_RE = /^(\d+)\.\s(?:\[([^\]\r\n]*)\]|\[("(?:\\.|[^"\\])*")\])\s→\s(.*)$/;
+
+// parseAskAnswerLine reads one line of a composed [answers] reply into its
+// number, the header it answers and the text after the arrow, or undefined
+// when the line is not an answer line at all.
+function parseAskAnswerLine(line: string): { ordinal: number; header: string; rest: string } | undefined {
+  const m = ASK_ANSWER_LINE_RE.exec(line);
+  if (!m) return undefined;
+  let header = m[2] ?? "";
+  if (m[3] !== undefined) {
+    try {
+      const decoded = JSON.parse(m[3]);
+      if (typeof decoded !== "string") return undefined;
+      header = decoded;
+    } catch {
+      return undefined;
+    }
+  }
+  return { ordinal: Number(m[1]), header, rest: m[4] ?? "" };
+}
 
 // parseAskAnswerLines reads a composed [answers] reply's text back into a
 // header -> resolution-text map. The optional trailing " — note: ..." is
@@ -115,43 +134,79 @@ const ASK_ANSWER_LINE_RE = /^\d+\.\s(?:\[([^\]\r\n]*)\]|\[("(?:\\.|[^"\\])*")\])
 function parseAskAnswerLines(text: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const line of text.split("\n")) {
-    const m = ASK_ANSWER_LINE_RE.exec(line);
-    if (!m) continue;
-    let header = m[1] ?? "";
-    if (m[2] !== undefined) {
-      try {
-        const decoded = JSON.parse(m[2]);
-        if (typeof decoded !== "string") continue;
-        header = decoded;
-      } catch {
-        continue;
-      }
-    }
-    const rest = m[3] ?? "";
-    const noteAt = rest.indexOf(" — note: ");
-    map.set(header, noteAt === -1 ? rest : rest.slice(0, noteAt));
+    const answer = parseAskAnswerLine(line);
+    if (!answer) continue;
+    const noteAt = answer.rest.indexOf(" — note: ");
+    map.set(answer.header, noteAt === -1 ? answer.rest : answer.rest.slice(0, noteAt));
   }
   return map;
 }
 
-// answeredAskUserSuffix builds the "— answered: ..." recap for a SETTLED,
-// answered ask_user call - kata h70z's fix. Old build precedent: "asked
-// [Direction] — answered: 'Celsius to Fahrenheit'" as a single collapsed
-// line. The current transcript already collapses a clean ask_user row by
-// default (ToolCallItem's generic disclosure contract), but its summary
-// only ever showed "Asked: [Header]" - the answer lives in a SEPARATE,
-// later reply item that this item alone can't see, forcing the reader to
-// cross-reference a second, unstyled message to reconstruct "what did I
-// answer". This reads the FULL thread model to find that reply and pull
-// the answer back in.
+// composedReplyCoversCall answers whether a composed [answers] reply is
+// PROVABLY the whole content the recap for this call will show, rather than
+// merely parseable into something like it.
 //
-// Returns undefined - meaning "show nothing extra, keep the bare
-// 'Asked: [Header]' summary" - whenever there's nothing to append: the call
-// errored (its own row already gets the failure treatment), it carries no
-// parseable questions, or no later answer reply exists yet (still
-// pending in the composer/dock - a LIVE thing, which per the same
-// principle must stay looking unresolved).
-export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): string | undefined {
+// The recap is a lossy render (it restates matched headers and drops every
+// other word), so it cannot certify its own completeness; a predicate that
+// re-derives what the recap "meant" keeps admitting a new case that loses
+// text. This instead demands the reply BE the composed answer set for these
+// questions, byte for byte, built by the composer itself:
+//
+//   - the first line is exactly the "[answers]" marker, nothing appended;
+//   - the answer lines carry the composer's own 1..N numbering, in order, so
+//     a dropped or reordered line breaks the match;
+//   - every header is one this call asked, and no header repeats (two
+//     questions may share a header, and the recap's header-keyed parse keeps
+//     only the last, so a repeat is not provably equal);
+//   - no line carries a note, which the recap strips.
+//
+// Any reply that fails is one the recap does not fully stand in for, and its
+// raw row must stay: a duplicate row is cosmetic, a silently dropped answer
+// is not.
+function composedReplyCoversCall(
+  text: string,
+  questions: readonly AskUserQuestion[],
+  answers: ReadonlyMap<string, string>,
+): boolean {
+  const askedHeaders = new Set(questions.map((question) => question.header));
+  if (askedHeaders.size !== questions.length) return false;
+  const lines = text.split("\n");
+  if (lines[0] !== "[answers]") return false;
+  const seen = new Set<string>();
+  let ordinal = 0;
+  for (const line of lines.slice(1)) {
+    if (line === "") continue;
+    const answer = parseAskAnswerLine(line);
+    if (!answer) return false;
+    ordinal += 1;
+    if (answer.ordinal !== ordinal) return false;
+    if (!askedHeaders.has(answer.header)) return false;
+    if (seen.has(answer.header)) return false;
+    seen.add(answer.header);
+    if (answer.rest.includes(" — note: ")) return false;
+  }
+  // Every question this call asked must have an answer line, or the recap
+  // would restate fewer answers than the call had.
+  return seen.size === questions.length && seen.size === answers.size;
+}
+
+// answerFor resolves the recap for a SETTLED, answered ask_user call once:
+// the reply item the recap would speak for, and the suffix string that
+// recap renders. Every gate that decides whether a recap shows at all
+// lives here, so the two can never disagree: the call errored (its own row
+// already gets the failure treatment), it carries no parseable questions,
+// or no later answer reply exists yet (still pending in the composer/dock
+// - a LIVE thing, which per the same principle must stay looking
+// unresolved). Returns undefined whenever there is nothing to append -
+// meaning "show nothing extra, keep the bare 'Asked: [Header]' summary".
+// carriesWholeReply says whether the suffix carries the reply's own words in
+// full: a one-line free-prose answer does, a multi-line one does not (the
+// recap shows its first line only), and the composed form does (its lines
+// ARE the answers the suffix restates).
+function answerFor(
+  model: Pick<ThreadModel, "turns">,
+  item: ItemModel,
+): { reply: ItemModel; suffix: string; carriesWholeReply: boolean } | undefined {
   if (item.error !== undefined) return undefined;
   const questions = parseAskUserQuestions(item);
   if (!questions) return undefined;
@@ -173,7 +228,12 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
         return multiple ? `${q.header}: ${a}` : a;
       })
       .filter((p): p is string => p !== undefined);
-    return parts.length > 0 ? ` — answered: ${parts.join(", ")}` : undefined;
+    if (parts.length === 0) return undefined;
+    return {
+      reply,
+      suffix: ` — answered: ${parts.join(", ")}`,
+      carriesWholeReply: composedReplyCoversCall(reply.text, questions, answers),
+    };
   }
   // A linked reply whose text is not the composed form is the spec's other
   // reply form - free prose (§4.3: "either the numbered [answers] form ...
@@ -184,7 +244,40 @@ export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): stri
   const trimmed = reply.text.trim();
   const [first, ...rest] = trimmed.split("\n");
   const more = rest.some((line) => line.trim() !== "");
-  return first !== "" ? ` — answered: ${first}${more ? " …" : ""}` : undefined;
+  if (first === "") return undefined;
+  return { reply, suffix: ` — answered: ${first}${more ? " …" : ""}`, carriesWholeReply: !more };
+}
+
+// answeredAskUserReply names the reply item whose answer the recap for the
+// ask_user call `item` carries IN FULL - the reply a client may drop from
+// the raw transcript because the recap already shows everything it said
+// (#6328). Nothing when the recap shows nothing, and nothing when the recap
+// shows only part of a multi-line free-prose reply. Resolving through this
+// rather than re-deriving the link semantics keeps the two from disagreeing:
+// the answer is never dropped without the recap standing in for it.
+export function answeredAskUserReply(model: Pick<ThreadModel, "turns">, item: ItemModel): ItemModel | undefined {
+  const recap = answerFor(model, item);
+  if (recap?.carriesWholeReply !== true) return undefined;
+  // The recap speaks for the human ("You answered"); a row another actor
+  // wrote - a Manager settling a question on its own - carries an
+  // attribution the recap cannot show. Hiding it would attribute an
+  // automated decision to the person, so the raw row stays authoritative.
+  if (recap.reply.actor !== undefined && recap.reply.actor.kind !== "user") return undefined;
+  return recap.reply;
+}
+
+// answeredAskUserSuffix builds the "— answered: ..." recap for a SETTLED,
+// answered ask_user call - kata h70z's fix. Old build precedent: "asked
+// [Direction] — answered: 'Celsius to Fahrenheit'" as a single collapsed
+// line. The current transcript already collapses a clean ask_user row by
+// default (ToolCallItem's generic disclosure contract), but its summary
+// only ever showed "Asked: [Header]" - the answer lives in a SEPARATE,
+// later reply item that this item alone can't see, forcing the reader to
+// cross-reference a second, unstyled message to reconstruct "what did I
+// answer". This reads the whole turn list to find that reply and pull
+// the answer back in. The gates live in answerFor above.
+export function answeredAskUserSuffix(model: Pick<ThreadModel, "turns">, item: ItemModel): string | undefined {
+  return answerFor(model, item)?.suffix;
 }
 
 // One acked, answerable ask_user call - the only population that can hold a

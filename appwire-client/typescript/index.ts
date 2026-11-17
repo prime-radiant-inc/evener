@@ -93,7 +93,7 @@ export type {
 } from "./askDock";
 export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
-export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
+export { answeredAskUserReply, answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
 export {
   admissionRejection,
@@ -289,6 +289,16 @@ export {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+export {
+  findIndexIn,
+  findMatches,
+  findNeedle,
+  findReadable,
+  type MatchPosition,
+  matchPosition,
+  stepMatch,
+  textMatchesFind,
+} from "./findInSession";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export { HistoryPaging, type HistoryPagingState } from "./historyPaging";
@@ -473,7 +483,13 @@ export {
   lifecycleStateIsTerminal,
 } from "./lifecycle";
 export type { FenceToken } from "./markdownFence";
-export { fenceTokenTerminated, isMermaidCodeToken, MERMAID_FENCE, mermaidText } from "./markdownFence";
+export {
+  fenceLanguage,
+  fenceTokenTerminated,
+  isMermaidCodeToken,
+  MERMAID_FENCE,
+  mermaidText,
+} from "./markdownFence";
 export { marketplaceSourceLabel, marketplaceSourcePin, marketplaceSourceTakesRef } from "./marketplaceSourceLabel";
 export {
   MEMORY_CONTEXT_EVENT_KIND,
@@ -534,8 +550,10 @@ export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export {
   EFFORT_TIERS,
+  effortDefaultLabel,
   effortLabel,
   effortOptionLevels,
+  effortReadout,
   FALLBACK_EFFORT_LEVELS,
   sessionEffortLevels,
 } from "./reasoningEffort";

@@ -22,3 +22,20 @@ func BenchmarkFailureLedger_RecordRepeatFailure(b *testing.B) {
 		l.record(key, true, output)
 	}
 }
+
+// BenchmarkFailureLedger_RecordLargeSuccessfulOutput measures the repetition
+// fingerprint's cost on the shape that made it worth replacing: a multi-megabyte
+// successful tool result, which every judged call hashes in full. The old
+// fingerprint was a SHA-256 over the whole body; this one is maphash.
+func BenchmarkFailureLedger_RecordLargeSuccessfulOutput(b *testing.B) {
+	l := newFailureLedger()
+	key := newDispatchKey("read_file", []byte(`{"path":"big"}`), nil)
+	output := strings.Repeat("line of representative tool output content here\n", 64<<10)
+
+	b.SetBytes(int64(len(output)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		l.record(key, false, output)
+	}
+}

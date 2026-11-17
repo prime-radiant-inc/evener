@@ -48,11 +48,18 @@ function effortReadout(): HTMLElement {
   return readout as HTMLElement;
 }
 
-/** Effort is unset and its readout names the resolved default `level`. */
+/** Effort is unset and resolves to `level`: the open list names that tier on
+ * the unset option, still distinct from pinning it, and the closed readout
+ * shows the tier itself, exactly as it would show the tier pinned. */
 function expectEffortDefaultNames(level: string): void {
-  expect(effortSelect().value).toBe("");
-  expect(effortOptionLabels()[0]).toContain(level);
-  expect(effortReadout().textContent).toBe(effortOptionLabels()[0]);
+  const select = effortSelect();
+  expect(select.value).toBe("");
+  const unsetLabel = effortOptionLabels()[0];
+  const pinnedLabel = Array.from(select.options).find((option) => option.value === level)?.textContent;
+  expect(pinnedLabel).toBeDefined();
+  expect(unsetLabel).toContain(level);
+  expect(unsetLabel).not.toBe(pinnedLabel);
+  expect(effortReadout().textContent).toBe(pinnedLabel);
 }
 installSpawnTestHooks();
 
@@ -387,9 +394,10 @@ test("Effort, Model, and the mobile rows name the resolved default once launch/r
   expectResolvedDefaultModel("anthropic/claude-sonnet-4-5");
 });
 
-// The visible effort readout is the selected option's own label - including
-// the resolved default's ("high (default)"), not the bare "(default)" the
-// empty value renders before the resolve lands.
+// The visible effort readout names the effort a session started now would run
+// at: once the resolve lands, an unset effort shows the resolved tier itself,
+// not the bare "(default)" it shows before then. The open list keeps marking
+// that tier as the default (expectEffortDefaultNames).
 test("the card's effort readout names the resolved default once launch/resolve lands", async () => {
   const user = setupUser();
   const fake = readyClient((f) => {
