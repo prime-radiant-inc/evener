@@ -299,8 +299,12 @@ func TestReattachedSteerRecordsExactlyOneEntryAcrossAPeerStart(t *testing.T) {
 
 	// The replacement carries the steer on its own turn, as the report's step
 	// 3 did for turn_m2442.
-	if _, ran, err := restored.ProcessPendingUserInput(t.Context(), nil); err != nil {
+	_, ran, err := restored.ProcessPendingUserInput(t.Context(), nil)
+	if err != nil {
 		t.Fatalf("carrier input: ran=%v err=%v", ran, err)
+	}
+	if !ran {
+		t.Fatal("the replacement ran no carrier turn, so the count below would only prove that nothing was appended")
 	}
 
 	// Step 4: a fresh turn/start follows, as turn_m2443 did in the report.
