@@ -3,10 +3,8 @@ package execenv
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,15 +85,44 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 
 // ReadFileCtx is ReadFile with the caller's context threaded to the read, so a
 // cancelled call ends a read parked on a stream instead of waiting it out.
+// A call naming a positive offset or limit reads only the bytes the window
+// needs; see read_window.go.
 func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, error) {
-	out, _, err := e.ReadFileAndBytesCtx(ctx, path, offsetLine, limitLines)
-	return out, err
+	if lineWindowRequested(offsetLine, limitLines) {
+		return e.readFileWindowedCtx(ctx, path, offsetLine, limitLines)
+	}
+	out, _, err := e.ReadFileAndBytesCtx(ctx, path, nil, nil)
+	if err != nil {
+		return "", readFileLimitHint(err)
+	}
+	return out, nil
+}
+
+// errReadFileCapHint is the "and you can still read a window" note read_file
+// adds past the whole-file cap. It is a sentinel so a test can assert the hint
+// was added without matching the wording.
+var errReadFileCapHint = errors.New("read_file can also read a window of it directly: pass offset and limit (for example offset=1, limit=2000)")
+
+// readFileLimitHint adds read_file's own way past the whole-file read cap to the
+// cap's refusal: the shared ReadLimitError text predates the offset/limit
+// window and only points at shell tools, so a model that follows it never finds
+// the tool capability this change adds. edit_file and apply_patch share
+// ReadLimitError and keep the shared text, so the hint belongs here, at the
+// read_file entry, rather than in the error type.
+func readFileLimitHint(err error) error {
+	rle, capped := errors.AsType[*ReadLimitError](err)
+	if !capped {
+		return err
+	}
+	return fmt.Errorf("%w; %w", rle, errReadFileCapHint)
 }
 
 // ReadFileAndBytesCtx is ReadFileCtx that also returns the whole file's bytes
 // as this read loaded them, for a caller that must record exactly what the
 // read saw. The bytes are the complete file even when offset and limit select
-// only some of its lines; on error they are nil.
+// only some of its lines — the caller needs the file, not the window — so this
+// entry always loads it; ReadFileCtx, which does not need them, reads the
+// window alone. On error the bytes are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	t, err := e.fileTarget("read_file", path, targetRead)
 	if err != nil {
@@ -114,35 +141,13 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, pat
 		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
-		// Best-effort "did you mean" suggestion for a genuine missing-file miss
-		// (never for a permission error or a directory-not-a-file error). Skipped
-		// when sandboxed: the diagnostic listing walks plain os.Stat/os.ReadDir
-		// outside the confined resolver, and could name a masked or denied
-		// directory's contents that the sandbox would otherwise keep the model
-		// from seeing. Off/unsandboxed is the default mode, so this still covers
-		// the common case; sandboxed sessions just get the raw ENOENT.
-		if sfs == nil && errors.Is(err, fs.ErrNotExist) {
-			if suggestion := readFileNotFoundSuggestion(abs); suggestion != "" {
-				return "", nil, fmt.Errorf("%w. %s", err, suggestion)
-			}
-		}
-		return "", nil, err
+		return "", nil, e.mapReadFileErr(sfs, abs, err)
 	}
-	// Image files: return base64-encoded data instead of erroring on binary.
-	if format := detectImageFormat(path, b); format != "" {
-		encoded := base64.StdEncoding.EncodeToString(b)
-		return fmt.Sprintf("[image: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), b, nil
+	out, rerr := renderTextRead(path, b, offsetLine, limitLines)
+	if rerr != nil {
+		return "", nil, rerr
 	}
-	// Document files (PDF): return base64-encoded data for vision/content pipeline.
-	if format := detectDocumentFormat(path, b); format != "" {
-		encoded := base64.StdEncoding.EncodeToString(b)
-		return fmt.Sprintf("[document: %s, %d bytes, base64 data follows]\n%s", format, len(b), encoded), b, nil
-	}
-	// Basic binary detection.
-	if bytes.IndexByte(b, 0) >= 0 {
-		return "", nil, fmt.Errorf("binary file (NUL byte): %s", path)
-	}
-	return NumberLinesBytes(b, offsetLine, limitLines), b, nil
+	return out, b, nil
 }
 
 // NumberLinesBytes is NumberLines over the file's raw bytes. It exists so a
