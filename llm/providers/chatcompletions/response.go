@@ -211,8 +211,55 @@ type chatChunkToolCall struct {
 	Index        int               `json:"index"`
 	ID           string            `json:"id,omitempty"`
 	Type         string            `json:"type,omitempty"`
-	Function     chatFunctionCall  `json:"function"`
+	Function     chatChunkFunction `json:"function"`
 	ExtraContent *chatExtraContent `json:"extra_content,omitempty"`
+}
+
+// chatChunkFunction is a streamed function call. Its arguments stay in their
+// wire form so the assembler unescapes each delta once, byte-faithfully:
+// the same chunk bytes are never decoded a second time to recover them.
+type chatChunkFunction struct {
+	Name      string         `json:"name"`
+	Arguments chunkArgsToken `json:"arguments"`
+}
+
+// chunkArgsToken is a streamed function.arguments value in its JSON wire form.
+// encoding/json hands an Unmarshaler the exact token, so keeping those bytes
+// costs one copy and no unescape. It accepts only a JSON string (or null), the
+// same tokens a string field accepts, so a malformed chunk still fails its own
+// decode and degrades to the raw passthrough event.
+type chunkArgsToken struct {
+	token json.RawMessage
+}
+
+func (a *chunkArgsToken) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		// null is what a string field does nothing for, so a duplicate key such
+		// as "arguments":"{}","arguments":null keeps the arguments already
+		// decoded rather than dropping them.
+		return nil
+	}
+	if len(b) > 0 && b[0] == '"' {
+		a.token = append(a.token[:0], b...)
+		return nil
+	}
+	return errors.New("chatcompletions: function.arguments is not a JSON string")
+}
+
+// carriesFragment reports whether a delta carries argument bytes: a JSON
+// string token of at least one content byte. An absent or "" token carries
+// none, which is the case the string form skipped.
+func (a chunkArgsToken) carriesFragment() bool {
+	return len(a.token) > 2 && a.token[0] == '"'
+}
+
+// stringForm is the arguments as a Go string: the value a string-typed field
+// would have decoded. The assembler writes it only when the raw token cannot
+// be unescaped byte-faithfully.
+func (a chunkArgsToken) stringForm() string {
+	var s string
+	_ = json.Unmarshal(a.token, &s)
+	return s
 }
 
 func thoughtSignatureFromExtraContent(extra *chatExtraContent) string {

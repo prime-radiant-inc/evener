@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -563,10 +564,14 @@ func TestRawArgs_RecordedJSON_DecodesBodyOnce(t *testing.T) {
 	}
 }
 
-// TestRawArgs_Stream_DecodesChunkOnce pins one streamed chunk with several
-// tool-call deltas to one focused chunk decode.
+// TestRawArgs_Stream_CarriesArgsFromTheSingleChunkDecode supersedes
+// TestRawArgs_Stream_DecodesChunkOnce, which pinned one *focused* chunk decode
+// on top of the chunk's own decode. Each delta's arguments token now rides out
+// of that one decode on chatChunkFunction.Arguments, so the invariant is that
+// the focused raw-args seam is never called on the streaming path, and
+// the assembled arguments stay byte-exact for a chunk carrying several calls.
 // Not parallel: it swaps the package-level rawArgsBodyDecode seam.
-func TestRawArgs_Stream_DecodesChunkOnce(t *testing.T) {
+func TestRawArgs_Stream_CarriesArgsFromTheSingleChunkDecode(t *testing.T) {
 	decodes := countRawArgsBodyDecodes(t)
 	first := `{ "first" : "` + "\xff" + `" }`
 	second := `{ "second" : "` + "\xfe" + `" }`
@@ -581,8 +586,247 @@ func TestRawArgs_Stream_DecodesChunkOnce(t *testing.T) {
 
 	got := decodeRawArgsStreamMany(t, sseBody)
 	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second), []byte(third)})
-	if *decodes != 1 {
-		t.Fatalf("focused raw-args chunk decodes = %d, want 1", *decodes)
+	if *decodes != 0 {
+		t.Fatalf("focused raw-args chunk decodes = %d, want 0 (the chunk's own decode must carry the arguments)", *decodes)
+	}
+}
+
+// rawArgsChunkedSSE builds a single-tool-call stream that delivers frags as
+// one chunk each. Every fragment is escaped on its own, so each chunk is a
+// complete JSON chunk and a fragment boundary may land anywhere in the
+// assembled arguments, including beside a JSON escape.
+func rawArgsChunkedSSE(frags []string) string {
+	var b strings.Builder
+	for _, frag := range frags {
+		b.WriteString(`data: {"id":"c1","model":"m-wire","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":`)
+		b.Write(jsonStringToken(frag))
+		b.WriteString("}}]}}]}\n\n")
+	}
+	b.WriteString("data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+	b.WriteString("data: [DONE]\n\n")
+	return b.String()
+}
+
+// argContent is the assembled tool arguments for the split tests. It holds a
+// JSON \u escape, an escaped backslash pair and a multi-byte rune, so the
+// split cases below put a chunk boundary beside each of them.
+const argContent = `{"path":"a\\b","u":"\u00e9","q":"say \"hi\"","note":"é"}`
+
+// argContentUnits returns the smallest fragments a provider can delimit: one
+// rune each, so every boundary between two units escapes to a valid chunk.
+func argContentUnits(content string) []string {
+	units := make([]string, 0, len(content))
+	for _, r := range content {
+		units = append(units, string(r))
+	}
+	return units
+}
+
+// TestRawArgs_Stream_SplitArgContentAssemblesByteExact cuts argContent into
+// two chunks at every unit boundary and requires the assembled arguments to
+// equal the content byte for byte. The boundaries next to the \u escape, the
+// escaped backslashes and the quoted text put a lone "\" or "\\" at the end
+// of one chunk and its continuation at the start of the next.
+func TestRawArgs_Stream_SplitArgContentAssemblesByteExact(t *testing.T) {
+	t.Parallel()
+	units := argContentUnits(argContent)
+	if len(units) < 8 {
+		t.Fatalf("fixture has %d units, want at least 8 to cut between", len(units))
+	}
+	for cut := 1; cut < len(units); cut++ {
+		frags := []string{strings.Join(units[:cut], ""), strings.Join(units[cut:], "")}
+		got := decodeRawArgsStream(t, rawArgsChunkedSSE(frags))
+		if !bytes.Equal(got, []byte(argContent)) {
+			t.Fatalf("cut %d of %d: Arguments = %q, want %q", cut, len(units), got, argContent)
+		}
+	}
+}
+
+// TestRawArgs_Stream_ManyArgumentChunksAssembleByteExact delivers argContent
+// one rune per chunk and requires the assembled arguments to equal it byte for
+// byte.
+func TestRawArgs_Stream_ManyArgumentChunksAssembleByteExact(t *testing.T) {
+	t.Parallel()
+	got := decodeRawArgsStream(t, rawArgsChunkedSSE(argContentUnits(argContent)))
+	if !bytes.Equal(got, []byte(argContent)) {
+		t.Fatalf("Arguments = %q, want %q", got, argContent)
+	}
+}
+
+// TestRawArgs_Stream_SplitMultiByteRuneAcrossChunks puts a chunk boundary
+// between the two bytes of "é", so neither chunk's string token holds a whole
+// rune. Unescaping per chunk must still reproduce the original two bytes.
+func TestRawArgs_Stream_SplitMultiByteRuneAcrossChunks(t *testing.T) {
+	t.Parallel()
+	frags := []string{`{"note":"` + "\xc3", "\xa9" + `"}`}
+	want := []byte(`{"note":"` + "\xc3\xa9" + `"}`)
+	got := decodeRawArgsStream(t, rawArgsChunkedSSE(frags))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", got, got, want, want)
+	}
+}
+
+// TestRawArgs_Stream_InterleavedToolCallsAssembleByIndex streams two tool
+// calls whose deltas interleave across chunks, with the chunk's array order
+// reversed on the second chunk. Each call must assemble its own fragments, and
+// each chunk's arguments must stay with the call it belongs to.
+func TestRawArgs_Stream_InterleavedToolCallsAssembleByIndex(t *testing.T) {
+	t.Parallel()
+	first := []string{`{"first":`, `"a`, `\u00e9"}`}
+	second := []string{`{"second":`, `"b`, `\\c"}`}
+	chunk := func(calls string) string {
+		return "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[" + calls + "]}}]}\n\n"
+	}
+	call := func(index int, id, name, frag string) string {
+		return `{"index":` + strconv.Itoa(index) + `,"id":"` + id + `","type":"function","function":{"name":"` + name + `","arguments":` + string(jsonStringToken(frag)) + `}}`
+	}
+	sseBody := chunk(call(0, "call_1", "first", first[0])+","+call(1, "call_2", "second", second[0])) +
+		chunk(call(1, "call_2", "second", second[1])+","+call(0, "call_1", "first", first[1])) +
+		chunk(call(0, "call_1", "first", first[2])+","+call(1, "call_2", "second", second[2])) +
+		"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{
+		[]byte(strings.Join(first, "")),
+		[]byte(strings.Join(second, "")),
+	})
+}
+
+// TestRawArgs_Stream_ChunkWithoutArgumentsCarriesNoFragment pins that a
+// chunk whose tool-call entry omits arguments, or sends null or "", still
+// assembles the fragments the rest of the stream carries, and emits no
+// tool-call delta for the empty one. A delta with no argument bytes is not a
+// tool-call delta: the adapter only reports argument content.
+func TestRawArgs_Stream_ChunkWithoutArgumentsCarriesNoFragment(t *testing.T) {
+	t.Parallel()
+	for name, emptyToken := range map[string]string{
+		"absent": ``,
+		"null":   `,"arguments":null`,
+		"empty":  `,"arguments":""`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			rest := []string{`{"a`, `":`, `1}`}
+			sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\"" + emptyToken + "}}]}}]}\n\n" +
+				rawArgsChunkedSSE(rest)
+
+			srv, _ := server(t, http.StatusOK, sseBody)
+			res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+			s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var deltaBytes []byte
+			var deltas int
+			var final *llm.Response
+			for ev := range s.Events() {
+				if ev.Type == llm.StreamEventError {
+					t.Fatalf("stream error: %v", ev.Err)
+				}
+				if ev.Type == llm.StreamEventToolCallDelta && ev.ToolCall != nil {
+					deltas++
+					if len(ev.ToolCall.Arguments) == 0 {
+						t.Fatalf("tool-call delta %d carries no argument bytes", deltas)
+					}
+					deltaBytes = append(deltaBytes, ev.ToolCall.Arguments...)
+				}
+				if ev.Type == llm.StreamEventFinish {
+					final = ev.Response
+				}
+			}
+			if final == nil {
+				t.Fatal("stream ended without a finish event")
+			}
+			want := []byte(strings.Join(rest, ""))
+			if deltas != len(rest) {
+				t.Fatalf("tool-call deltas = %d, want %d", deltas, len(rest))
+			}
+			if !bytes.Equal(deltaBytes, want) {
+				t.Fatalf("delta Arguments = %q, want %q", deltaBytes, want)
+			}
+			assertRawArgsByIndex(t, toolCallArguments(*final), [][]byte{want})
+		})
+	}
+}
+
+// TestRawArgs_Stream_DuplicateArgumentsKeyKeepsTheString pins that a null
+// arguments value after a string one is a no-op, the way a string field treats
+// it: the duplicate key must not discard the arguments already decoded.
+func TestRawArgs_Stream_DuplicateArgumentsKeyKeepsTheString(t *testing.T) {
+	t.Parallel()
+	body := `{"path":"a"}`
+	sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":" + string(jsonStringToken(body)) + ",\"arguments\":null}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv, _ := server(t, http.StatusOK, sseBody)
+	res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatal("stream ended without a finish event")
+	}
+	assertRawArgsByIndex(t, toolCallArguments(*final), [][]byte{[]byte(body)})
+}
+
+// TestRawArgs_Stream_NonStringArgumentsSkipTheChunk pins that an arguments
+// token that is not a JSON string still fails its chunk's decode, so the
+// chunk rides out as a raw passthrough provider event and starts no tool
+// call. Degrade, never drop: a rejected token is reported, not silently
+// coerced into argument bytes.
+func TestRawArgs_Stream_NonStringArgumentsSkipTheChunk(t *testing.T) {
+	t.Parallel()
+	for name, token := range map[string]string{
+		"number": `123`,
+		"object": `{"a":1}`,
+		"bool":   `true`,
+		"array":  `[1]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":" + token + "}}]}}]}\n\n" +
+				"data: [DONE]\n\n"
+			srv, _ := server(t, http.StatusOK, sseBody)
+			res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+			s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var passThrough int
+			var final *llm.Response
+			for ev := range s.Events() {
+				switch ev.Type {
+				case llm.StreamEventError:
+					t.Fatalf("stream error: %v", ev.Err)
+				case llm.StreamEventProviderEvent:
+					passThrough++
+				case llm.StreamEventToolCallStart, llm.StreamEventToolCallDelta, llm.StreamEventToolCallEnd:
+					t.Fatalf("chunk with a non-string %s arguments token produced a %s event", name, ev.Type)
+				case llm.StreamEventFinish:
+					final = ev.Response
+				}
+			}
+			if passThrough != 1 {
+				t.Fatalf("raw passthrough events = %d, want 1", passThrough)
+			}
+			if final == nil {
+				t.Fatal("stream ended without a finish event")
+			}
+			if calls := final.ToolCalls(); len(calls) != 0 {
+				t.Fatalf("tool calls = %d, want 0", len(calls))
+			}
+		})
 	}
 }
 
