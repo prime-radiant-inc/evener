@@ -27,6 +27,12 @@ func (s *hubPastSweep) tick(ctx context.Context) {
 
 // sweepFixture is a projects root holding one indexed session, plus the two
 // indexes the sweeper drives.
+//
+// The root also holds a pre-identifier directory, because that is what a real
+// projects root looks like ("hundreds of pre-identifier directories",
+// past_skips_test.go) and because the digest gate must not be held open by one:
+// SessionTreeStamp ignores such a directory, so a rescan can never index it and
+// a coverage rule that counted it would re-scan an idle tree every tick.
 type sweepFixture struct {
 	stateDir  string
 	sessionID string
@@ -37,6 +43,9 @@ type sweepFixture struct {
 func newSweepFixture(t *testing.T) *sweepFixture {
 	t.Helper()
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(filepath.Join(projectsRoot, "legacy16hexname"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
 	sessionID := hubtest.SessionID(t)
 	now := time.Now().UTC()
@@ -182,6 +191,13 @@ func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	if got := sweep.rebuildCount() - before; got != 0 {
 		t.Fatalf("idle sweeps did full work %d times, want 0", got)
 	}
+	// The fixture's projects root holds a pre-identifier directory beside the
+	// real project. It is refused by the scan and named in the skip report, but
+	// it must not hold the gate open: nothing under it can reach the index, and
+	// re-scanning an idle tree every tick is the cost #6424 removed.
+	if !f.past.RebuildCoveredTree() {
+		t.Fatalf("a rebuild over a root that also holds %q does not report the tree covered, so every idle tick would rescan", "legacy16hexname")
+	}
 
 	// A rename still has to be seen by the very next sweep, so the gate cannot
 	// be a one-way latch.
@@ -193,6 +209,54 @@ func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	entry, ok := f.past.Lookup(f.sessionID)
 	if !ok || entry.Meta.Name != "Renamed by the client" {
 		t.Fatalf("the rename is not in the index: name=%q found=%v", entry.Meta.Name, ok)
+	}
+
+	// The gate may only stay closed when the rebuild that closed it actually
+	// covered the tree. Rename on disk, then park Rebuild after each scan and
+	// fold the row it already holds with a newer stamp, which moves the index's
+	// generation and supersedes every attempt — the contended case Rebuild gives
+	// up on after pastRebuildAttempts. That is the aborted rebuild: the index is
+	// left holding the row it held, and the tree digest over the same files has
+	// not moved since it was taken.
+	f.renameSession(t, "Renamed while the rebuild was aborted")
+	idx := f.past
+	idx.SetBeforeRebuildSwapForTest(func() {
+		if entry, ok := idx.Lookup(f.sessionID); ok {
+			folded := entry.Meta
+			folded.UpdatedAt = folded.UpdatedAt.Add(time.Minute)
+			idx.UpdateMeta(f.sessionID, folded)
+		}
+	})
+	settled := sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 1 {
+		t.Fatalf("the aborted sweep ran %d rebuilds, want 1", got)
+	}
+	if entry, ok := f.past.Lookup(f.sessionID); !ok || entry.Meta.Name != "Renamed by the client" {
+		t.Fatalf("the aborted rebuild changed the index: name=%q found=%v", entry.Meta.Name, ok)
+	}
+
+	// The tick after an aborted rebuild owes it a re-scan even though nothing
+	// on disk has moved since the digest was taken. Recording the digest for
+	// the aborted rebuild is precisely the defect: the gate would decide the
+	// tree is unchanged and never pick the rename up.
+	settled = sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 1 {
+		t.Fatalf("the tick after an aborted rebuild ran %d rebuilds, want 1: the incomplete rebuild left the digest recorded, so the gate skipped the re-scan it owed", got)
+	}
+
+	// Once a rebuild covers the tree again the gate closes: a quiet tree stops
+	// paying for scans, and the rename the aborted rebuild missed is indexed.
+	idx.SetBeforeRebuildSwapForTest(nil)
+	sweep.tick(ctx)
+	if entry, ok := f.past.Lookup(f.sessionID); !ok || entry.Meta.Name != "Renamed while the rebuild was aborted" {
+		t.Fatalf("the rename the aborted rebuild missed is not in the index after a complete rebuild: name=%q found=%v", entry.Meta.Name, ok)
+	}
+	settled = sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 0 {
+		t.Fatalf("the gate stayed open after a complete rebuild: %d idle passes, want 0", got)
 	}
 }
 

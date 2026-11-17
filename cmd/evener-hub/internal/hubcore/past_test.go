@@ -211,12 +211,11 @@ func fuzzScenarioPastIndex_DeletedSessionEvictedAfterRacedRebuildSwap(t *testing
 
 	paused := make(chan struct{})
 	release := make(chan struct{})
-	prevSwap := pastBeforeRebuildSwap
-	pastBeforeRebuildSwap = func() {
+	idx.SetBeforeRebuildSwapForTest(func() {
 		close(paused)
 		<-release
-	}
-	defer func() { pastBeforeRebuildSwap = prevSwap }()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -265,12 +264,11 @@ func fuzzScenarioPastIndex_DeletedSessionEvictedWhenRebuildSwapsBeforeProbe(t *t
 
 	paused := make(chan struct{})
 	release := make(chan struct{})
-	prevSwap := pastBeforeRebuildSwap
-	pastBeforeRebuildSwap = func() {
+	idx.SetBeforeRebuildSwapForTest(func() {
 		close(paused)
 		<-release
-	}
-	defer func() { pastBeforeRebuildSwap = prevSwap }()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -330,12 +328,11 @@ func fuzzScenarioPastIndex_IndeterminateProbeMissDoesNotEvict(t *testing.T) {
 	// A Rebuild scans S and pauses before its swap.
 	paused := make(chan struct{})
 	release := make(chan struct{})
-	prevSwap := pastBeforeRebuildSwap
-	pastBeforeRebuildSwap = func() {
+	idx.SetBeforeRebuildSwapForTest(func() {
 		close(paused)
 		<-release
-	}
-	defer func() { pastBeforeRebuildSwap = prevSwap }()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -662,12 +659,11 @@ func fuzzScenarioPastIndex_FindReProbesSessionCreatedDuringRebuild(t *testing.T)
 	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(root, "projects", "*")))
 	paused := make(chan struct{})
 	release := make(chan struct{})
-	prevSwap := pastBeforeRebuildSwap
-	pastBeforeRebuildSwap = func() {
+	idx.SetBeforeRebuildSwapForTest(func() {
 		close(paused)
 		<-release
-	}
-	defer func() { pastBeforeRebuildSwap = prevSwap }()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -2502,8 +2498,8 @@ func fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB(t *testing.T) {
 // scan-generation capture (roborev Medium: "Rebuild can overwrite a newer
 // snapshot with stale disk state"). Rebuild scans unlocked; a fold landing
 // during the scan must not be dropped when Rebuild swaps its older view. The
-// pastBeforeRebuildSwap seam parks Rebuild after its scan and before the swap
-// so the fold deterministically lands first.
+// SetBeforeRebuildSwapForTest seam parks Rebuild after its scan and before the
+// swap so the fold deterministically lands first.
 func fuzzScenarioPastIndex_RebuildRescanKeepsConcurrentFold(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
@@ -2524,14 +2520,13 @@ func fuzzScenarioPastIndex_RebuildRescanKeepsConcurrentFold(t *testing.T) {
 	reached := make(chan struct{})
 	release := make(chan struct{})
 	var parked atomic.Bool
-	prev := pastBeforeRebuildSwap
-	pastBeforeRebuildSwap = func() {
+	idx.SetBeforeRebuildSwapForTest(func() {
 		if parked.CompareAndSwap(false, true) {
 			close(reached)
 			<-release
 		}
-	}
-	defer func() { pastBeforeRebuildSwap = prev }()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -2620,13 +2615,12 @@ func fuzzScenarioPastIndex_SupersededRebuildDoesNotReportSkips(t *testing.T) {
 
 	// Supersede every attempt's scan by bumping the generation from the seam, so
 	// Rebuild never swaps a scan in.
-	prev := pastBeforeRebuildSwap
-	pastBeforeRebuildSwap = func() {
+	idx.SetBeforeRebuildSwapForTest(func() {
 		idx.mu.Lock()
 		idx.gen++
 		idx.mu.Unlock()
-	}
-	defer func() { pastBeforeRebuildSwap = prev }()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
 
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)

@@ -115,6 +115,13 @@ type PastIndex struct {
 	// it was refused, so the next Rebuild can report only what is newly
 	// unindexable (see reportSkips).
 	skipped map[string]string
+	// covered reports whether the most recent completed Rebuild replaced the
+	// index with a scan that reached every project and skipped nothing (see
+	// RebuildCoveredTree). False until the first Rebuild and after any rebuild
+	// that swapped nothing or left an entry out, so a caller gating work on a
+	// disk digest can tell "the index matches the tree" from "the index is
+	// missing something the next scan has to retry".
+	covered bool
 
 	// onChange, when set via SetOnChange, is fired by Rebuild only when the
 	// indexed content's fingerprint actually changes.
@@ -137,6 +144,10 @@ type PastIndex struct {
 	// findCached miss and before the first probe. Instance-scoped test seam for
 	// interleaving a Rebuild swap in that window; nil in production.
 	afterFindCacheMiss func()
+	// beforeRebuildSwap, when non-nil, runs after Rebuild's unlocked disk scan
+	// and before it takes the lock to swap. Instance-scoped test seam for
+	// interleaving a mutation with a scan that predates it; nil in production.
+	beforeRebuildSwap func()
 	// searchProbe, when non-nil, observes each Search call's limit and offset.
 	// Instance-scoped test seam so a caller can pin that its fetch stays
 	// bounded however the index grows; nil in production.
@@ -223,6 +234,13 @@ func (i *PastIndex) SetOnRootChange(fn func()) { i.onRootChange = fn }
 // production.
 func (i *PastIndex) SetSearchProbeForTest(fn func(limit, offset int)) { i.searchProbe = fn }
 
+// SetBeforeRebuildSwapForTest installs fn to run after Rebuild's unlocked disk
+// scan and before it takes the lock to swap. It is a test-only seam: a caller
+// can interleave a mutation with a scan that predates it, deterministically,
+// without a second goroutine racing a sleep. nil in production. Set it before
+// the Rebuild it should park, never concurrently with one.
+func (i *PastIndex) SetBeforeRebuildSwapForTest(fn func()) { i.beforeRebuildSwap = fn }
+
 // contentFingerprint hashes the consumer-visible fields of the sorted entries so
 // a publish can detect a genuine content delta without a deep compare. It
 // deliberately covers ForkLabel and ObservedBy: a fork tag or an observer append
@@ -264,8 +282,15 @@ func contentFingerprint(all []PastEntry) uint64 {
 // snapshot with stale disk state and mark that stale FTS snapshot healthy
 // (#724). Bounded so a busy tick cannot spin; after the bound it leaves the
 // newer snapshot in place and the next tick re-scans.
+//
+// Whether the scan covered the tree is reported by RebuildCoveredTree rather
+// than by the bool return, which answers a different question (see it): a
+// rebuild that swapped nothing, or swapped a scan that dropped a session, must
+// not be read as "the index now matches disk". With no state glob there is
+// nothing to scan, so an empty index is complete and covered.
 func (i *PastIndex) Rebuild() (bool, error) {
 	if i.stateGlob == "" {
+		i.setCovered(true)
 		return false, nil
 	}
 	for range pastRebuildAttempts {
@@ -273,13 +298,16 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		startGen := i.gen
 		i.mu.RUnlock()
 
-		all, byID, skipped, err := i.scanAll()
+		all, byID, skipped, complete, err := i.scanAll()
 		if err != nil {
+			// A scan that could not run left the index where it was; nothing
+			// about the tree was verified, so nothing may read as covered.
+			i.setCovered(false)
 			return false, err
 		}
 
-		if pastBeforeRebuildSwap != nil {
-			pastBeforeRebuildSwap()
+		if i.beforeRebuildSwap != nil {
+			i.beforeRebuildSwap()
 		}
 
 		i.mu.Lock()
@@ -300,6 +328,7 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		}
 		i.gen++
 		i.rebuildGen++
+		i.covered = complete
 		gen := i.gen
 		i.mu.Unlock()
 		// Report skips only for the scan that actually replaced the index; a
@@ -310,6 +339,7 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	}
 	// Contended on every attempt: keep the newer in-memory snapshot rather than
 	// overwrite it with a scan already known to be stale.
+	i.setCovered(false)
 	return false, nil
 }
 
@@ -317,43 +347,94 @@ func (i *PastIndex) Rebuild() (bool, error) {
 // supersedes its unlocked scan (see Rebuild).
 const pastRebuildAttempts = 3
 
-// pastBeforeRebuildSwap, when non-nil, runs after Rebuild's unlocked disk scan
-// and before it takes the lock to swap. It is a deterministic test seam for
-// interleaving a mutation with a scan that predates it; nil in production.
-var pastBeforeRebuildSwap func()
+// RebuildCoveredTree reports whether the most recent completed Rebuild left the
+// index holding everything that rebuild could have indexed: it swapped a scan
+// in, and that scan listed every project's sessions and dropped no session it
+// found.
+//
+// It is how a caller decides whether the disk digest taken alongside that
+// rebuild stands for the whole tree, so it is deliberately narrow: it is false
+// only where the digest and the index can disagree. Those cases are an abort
+// and a session-level drop. An abort is a rebuild superseded on every attempt,
+// which swaps nothing and leaves the index exactly as it was. A session-level
+// drop is a ListSessionMetas failure, or a meta the lister returned but this
+// index refused, or a meta file the lister did not return while the directory
+// read that enumerated it succeeded; the digest folds a sessions dir's entries
+// and their stats, so it never sees a per-file read failure underneath a
+// successful readdir. Reporting those lets the hub's sweep leave its gate open
+// and scan again rather than deciding an unchanged tree has nothing owed to it.
+// False before the first Rebuild, and false after any rebuild that did not
+// swap.
+//
+// A directory the projects glob matches but whose name is not a project id is
+// NOT a coverage loss: SessionTreeStamp skips it for the same reason this index
+// does ("nothing under it can reach either index"), so a rescan could never
+// index what this pass refused, and real projects roots hold hundreds of
+// pre-identifier directories. Counting those would hold the gate open forever
+// and re-scan an idle tree every tick — the cost #6424 removed. They stay in
+// skipped so reportSkips still names them.
+func (i *PastIndex) RebuildCoveredTree() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.covered
+}
+
+// setCovered records RebuildCoveredTree's answer. Guarded by mu, which every
+// caller takes separately from the swap it describes.
+func (i *PastIndex) setCovered(covered bool) {
+	i.mu.Lock()
+	i.covered = covered
+	i.mu.Unlock()
+}
 
 // scanAll performs Rebuild's unlocked disk scan: it globs stateGlob, reads each
 // project's session metas, and returns the entries sorted per the Hub ordering
-// contract, the by-id map, and the skip reasons for reportSkips.
-func (i *PastIndex) scanAll() ([]PastEntry, map[string]PastEntry, map[string]string, error) {
+// contract, the by-id map, the skip reasons for reportSkips, and whether the
+// scan reached every project (see RebuildCoveredTree).
+func (i *PastIndex) scanAll() ([]PastEntry, map[string]PastEntry, map[string]string, bool, error) {
 	matches, err := filepath.Glob(i.stateGlob)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
 	byID := make(map[string]PastEntry)
 	skipped := make(map[string]string)
+	covered := true
 	for _, project := range matches {
 		if err := identifier.ValidateProjectID(filepath.Base(project)); err != nil {
+			// Not a coverage loss. SessionTreeStamp skips the same directories
+			// for the same reason (nothing under one can reach either index),
+			// so the digest already treats them as irrelevant and a rescan
+			// could never index what this pass refused. Real projects roots
+			// hold hundreds of pre-identifier directories, and a projects/*
+			// glob also matches dotfiles such as .DS_Store; counting these
+			// would keep the sweep's gate open forever.
 			skipped[project] = badProjectID(err)
 			continue
 		}
 		metas, err := schema.ListSessionMetas(project)
 		if err != nil {
 			skipped[project] = "list session metas: " + err.Error()
+			covered = false
 			continue
 		}
 		indexed := make(map[string]bool, len(metas))
 		for _, m := range metas {
 			if err := identifier.ValidateSessionID(m.ID); err != nil {
 				skipped[sessionMetaPath(project, m.ID)] = badSessionID(err)
+				covered = false
 				continue
 			}
 			indexed[m.ID] = true
 			pe := PastEntry{ID: m.ID, Meta: m, StateDir: project}
 			byID[m.ID] = pe
 		}
-		reportUnlistedMetas(i.fs, project, indexed, skipped)
+		if reportUnlistedMetas(i.fs, project, indexed, skipped) {
+			covered = false
+		}
 	}
+	// covered is set by the arms above and never derived from len(skipped): a
+	// stray project directory belongs in skipped (so it is reported) but not in
+	// this decision, because no rescan can make it indexable.
 	// i.all derives from byID (one row per id, the LAST project's row for a
 	// session present in several projects) rather than accumulating per
 	// project: appending as the loop scanned would keep the FIRST project's
@@ -367,7 +448,7 @@ func (i *PastIndex) scanAll() ([]PastEntry, map[string]PastEntry, map[string]str
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
-	return all, byID, skipped, nil
+	return all, byID, skipped, covered, nil
 }
 
 // maxReportedSkips bounds how many individual unindexable paths one Rebuild
@@ -408,12 +489,18 @@ func sessionMetaPath(project, id string) string {
 // id never appears: the index's own session-id guard can only reject a meta the
 // lister already refused to hand it. Re-deriving the difference here is what
 // puts the seeded path and its rejection in front of whoever seeded it.
-func reportUnlistedMetas(fs afero.Fs, project string, indexed map[string]bool, skipped map[string]string) {
+//
+// It reports whether it refused anything. A refusal is a session the index now
+// lacks, so RebuildCoveredTree must count it against coverage: the lister read
+// the directory the stamp also read and still could not produce the meta, which
+// is precisely a failure the digest does not record.
+func reportUnlistedMetas(fs afero.Fs, project string, indexed map[string]bool, skipped map[string]string) bool {
 	sessionsDir := schema.SessionsDir(project)
 	entries, err := afero.ReadDir(fs, sessionsDir)
 	if err != nil {
-		return // no sessions dir (or unreadable): nothing to compare against
+		return false // no sessions dir (or unreadable): nothing to compare against
 	}
+	dropped := false
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), schema.SessionMetaSuffix) {
 			continue
@@ -427,7 +514,9 @@ func reportUnlistedMetas(fs afero.Fs, project string, indexed map[string]bool, s
 			reason = badSessionID(err)
 		}
 		skipped[filepath.Join(sessionsDir, e.Name())] = reason
+		dropped = true
 	}
+	return dropped
 }
 
 // reportSkips names the entries this Rebuild refused to index that the previous
