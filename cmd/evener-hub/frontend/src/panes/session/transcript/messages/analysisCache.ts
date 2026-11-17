@@ -14,13 +14,18 @@ import { type FileReferenceSpan, findFileReferences, type ServedRoots } from "@e
 // returned. A delta that splits a token produces new text and therefore a miss,
 // never a half-token answer derived from the previous frame.
 
-// One message's blocks: an exhaustive assistant answer runs to a few hundred
-// blocks, so this keeps every settled block of the message being streamed
-// while staying proportional to the text that message already renders. A
-// streamed tail is a new string every delta, so its entries are dead on
-// arrival; the character budget stops them accumulating there, and stops one
-// huge paragraph from pinning its own growing prefixes for the whole stream.
-const MAX_ENTRIES = 256;
+// One message's own working set, in keys: the entity memo is keyed per TEXT
+// NODE and the file memo per BLOCK, so inline code, emphasis and wrapped links
+// split one paragraph into several keys. Measured by rendering real assistant
+// answers from session transcripts: 150 answers of 2.5 KB or more peaked at
+// 922 distinct entity keys and 431 file keys, and synthetic shapes peaked at
+// 3,009 keys (a 500-row x 6-column table, one key per cell) and 1,205 (600
+// formatted paragraphs). Below that working set the LRU evicts each key just
+// before the next pass in document order asks for it again, so every lookup
+// misses and the memo costs Map churn on top of the scans it exists to remove
+// (issue #6602). This keeps a whole realistic message resident; the character
+// budget below, not this count, is what bounds memory.
+const MAX_ENTRIES = 4096;
 const MAX_KEY_CHARACTERS = 128 * 1024;
 const MAX_CONTEXTS = 8;
 
