@@ -34,6 +34,16 @@ import { useEffect, useRef } from "react";
  * The predicate and the dismissal ride refs, so a caller may pass fresh
  * closures on every render without re-subscribing the document listener.
  *
+ * `pressInFlight` is written by "click" mode only: true from an outside press
+ * until that press is spent (its click arrived, or the surface was disabled).
+ * A caller whose own blur handler would collapse the surface needs it: the
+ * browser moves focus as mousedown's DEFAULT action, after every mousedown
+ * listener, so a press on a focusable control below the surface blurs the
+ * surface before the release and a blur-driven collapse reflows the page at
+ * the press - the same hazard "click" mode exists to avoid. Such a caller
+ * holds its blur collapse while this is true and lets the completed click
+ * dismiss instead. One source for the press, never a second listener.
+ *
  * Nothing is observed while `enabled` is false - a closed surface has nothing
  * to dismiss, and a mounted-but-closed widget should not listen at all.
  */
@@ -43,6 +53,7 @@ export function useDismissOnOutsidePress({
   onDismiss,
   enabled,
   when = "press",
+  pressInFlight,
 }: {
   /** The document the surface lives in; a Dockview popout has its own. */
   ownerDocument: Document | null;
@@ -51,6 +62,11 @@ export function useDismissOnOutsidePress({
   enabled: boolean;
   /** When the dismissal runs; see the note above. Defaults to "press". */
   when?: "press" | "click";
+  /**
+   * Optional sink for whether an outside press is in flight; see the note
+   * above. Written by "click" mode only, and reset to false on teardown.
+   */
+  pressInFlight?: { current: boolean };
 }): void {
   const latest = useRef({ isInside, onDismiss });
   latest.current = { isInside, onDismiss };
@@ -75,11 +91,26 @@ export function useDismissOnOutsidePress({
     // below then knows its own deferred check has nothing left to do.
     let dismissed = false;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
     let live = true;
     function cancelFallback(): void {
       if (fallbackTimer === null) return;
       clearTimeout(fallbackTimer);
       fallbackTimer = null;
+    }
+    function cancelRelease(): void {
+      if (releaseTimer === null) return;
+      clearTimeout(releaseTimer);
+      releaseTimer = null;
+    }
+    /** Drop a press whose gesture ended, publishing that it is no longer in flight. */
+    function spendPress(): void {
+      pressStartedOutside = false;
+      setPressInFlight(false);
+    }
+    /** Publish the press state to a caller whose blur handler must hold. */
+    function setPressInFlight(inFlight: boolean): void {
+      if (pressInFlight !== undefined) pressInFlight.current = inFlight;
     }
     /** Whether this click is a dismissal: it began outside and ended outside. */
     function isDismissal(event: MouseEvent): boolean {
@@ -89,15 +120,39 @@ export function useDismissOnOutsidePress({
       // A new press owns the gesture: the previous one's fallback, if it is
       // still queued, must not dismiss for a click that is no longer current.
       cancelFallback();
+      cancelRelease();
       dismissed = false;
       pressSeq += 1;
       pressStartedOutside = !latest.current.isInside(event.target);
+      // Published before the browser's focus move (mousedown's default action
+      // runs after dispatch), so a caller's blur sees the press in flight.
+      setPressInFlight(pressStartedOutside);
+    }
+    // A press that ends without a click (a text-selection drag, a scroll drag)
+    // must not leave `pressInFlight` stuck true, or a caller holding its blur
+    // collapse would ignore a later keyboard blur. A real press dispatches its
+    // click synchronously after pointerup, so this later-task check runs only
+    // when no click came. Registered only for a caller that asked for the
+    // sink: surfaces that do not read it need no extra listener.
+    function onPointerUpOrCancel(): void {
+      if (pressInFlight === undefined || !pressStartedOutside) return;
+      cancelRelease();
+      releaseTimer = setTimeout(() => {
+        releaseTimer = null;
+        // A click that arrived in between spent the press already.
+        if (!live || !pressStartedOutside) return;
+        spendPress();
+      }, 0);
     }
     // The ordinary path: a click that reaches the document in the bubble phase
     // is dismissed synchronously, after the target's own handlers have run.
     function onClick(event: MouseEvent) {
       const dismiss = isDismissal(event);
+      cancelRelease();
       pressStartedOutside = false;
+      // The press is spent whether or not it dismissed: a later blur with no
+      // press of its own is not part of it.
+      setPressInFlight(false);
       // A drag that began inside the surface is not a dismissal, and a click
       // that somehow ends inside it is not either.
       if (!dismiss) return;
@@ -124,18 +179,30 @@ export function useDismissOnOutsidePress({
         // The press is spent: a later click with no press of its own is not a
         // dismissal.
         pressStartedOutside = false;
+        setPressInFlight(false);
         latest.current.onDismiss();
       }, 0);
     }
     ownerDocument.addEventListener("mousedown", onMouseDown);
     ownerDocument.addEventListener("click", onClick);
     ownerDocument.addEventListener("click", onClickCapture, true);
+    if (pressInFlight !== undefined) {
+      ownerDocument.addEventListener("pointerup", onPointerUpOrCancel, true);
+      ownerDocument.addEventListener("pointercancel", onPointerUpOrCancel, true);
+    }
     return () => {
       live = false;
       cancelFallback();
+      cancelRelease();
+      setPressInFlight(false);
       ownerDocument.removeEventListener("mousedown", onMouseDown);
       ownerDocument.removeEventListener("click", onClick);
       ownerDocument.removeEventListener("click", onClickCapture, true);
+      ownerDocument.removeEventListener("pointerup", onPointerUpOrCancel, true);
+      ownerDocument.removeEventListener("pointercancel", onPointerUpOrCancel, true);
     };
-  }, [enabled, ownerDocument, when]);
+    // `pressInFlight` is a ref OBJECT, so a caller that keeps one ref for its
+    // lifetime (the usual case) never re-subscribes here; a caller that swaps
+    // sinks rebinds onto the new one.
+  }, [enabled, ownerDocument, when, pressInFlight]);
 }
