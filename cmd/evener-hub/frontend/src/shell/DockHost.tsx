@@ -27,6 +27,7 @@ import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
+import { PaneDocumentContext } from "./paneDocument";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import { PaneVisibilityContext } from "./paneVisibility";
 import { refParam } from "./routing";
@@ -72,6 +73,12 @@ const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   const [focused, setFocused] = useState(api.isActive);
   const [visible, setVisible] = useState(api.isVisible);
+  // The document this pane lives in: the opener's, or the popout's Dockview
+  // moved its DOM into. PaneScaffold publishes it on render and DockHost
+  // republishes it at the move itself, so this follows a popout without the
+  // pane re-rendering. Anything in this subtree that observes document
+  // visibility must read this, not the module global.
+  const paneDocument = useChromeStore((s) => s.paneDocuments.get(api.id) ?? document);
   useEffect(() => {
     // This boundary is deliberately above the lazy pane component. A panel can
     // lose activation (or be unmounted) while Suspense is still showing its
@@ -113,17 +120,19 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   // and replaces a silent gap with visible progress on the slow one.
   const Component = paneFor(params.paneType).component;
   return (
-    <PaneVisibilityContext.Provider value={visible}>
-      <Suspense fallback={<Skeleton />}>
-        <ConversationHandoffBoundary
-          generation={conversationHandoffGeneration("desktop")}
-          paneId={api.id}
-          renderedPane={params}
-        >
-          <Component params={params.paneParams} paneId={api.id} focused={focused} />
-        </ConversationHandoffBoundary>
-      </Suspense>
-    </PaneVisibilityContext.Provider>
+    <PaneDocumentContext.Provider value={paneDocument}>
+      <PaneVisibilityContext.Provider value={visible}>
+        <Suspense fallback={<Skeleton />}>
+          <ConversationHandoffBoundary
+            generation={conversationHandoffGeneration("desktop")}
+            paneId={api.id}
+            renderedPane={params}
+          >
+            <Component params={params.paneParams} paneId={api.id} focused={focused} />
+          </ConversationHandoffBoundary>
+        </Suspense>
+      </PaneVisibilityContext.Provider>
+    </PaneDocumentContext.Provider>
   );
 }
 

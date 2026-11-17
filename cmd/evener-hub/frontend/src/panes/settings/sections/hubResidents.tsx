@@ -20,6 +20,7 @@
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
+import { usePaneDocument } from "../../../shell/paneDocument";
 import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
@@ -134,11 +135,13 @@ export function HubResidents() {
 
   // Polling lifetime: owned by this component, not the store. The roster is a
   // rendering clock — the daemons keep running whatever this tab draws — so it
-  // pauses while hidden and re-reads on the first visible frame.
+  // pauses while hidden and re-reads on the first visible frame, watching the
+  // Settings pane's own document so a popout keeps refreshing.
   useEffect(() => {
     void daemonResidentsStore.getState().refresh();
   }, []);
-  useVisibleInterval(() => void daemonResidentsStore.getState().refresh(), POLL_INTERVAL_MS);
+  const ownerDocument = usePaneDocument();
+  useVisibleInterval(() => void daemonResidentsStore.getState().refresh(), POLL_INTERVAL_MS, true, ownerDocument);
 
   // Prune per-row retire results and action errors against the latest list.
   // A refusal is NOT superseded by a fresh snapshot: the list's lifecycle

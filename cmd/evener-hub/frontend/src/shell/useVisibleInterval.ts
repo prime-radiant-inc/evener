@@ -11,21 +11,29 @@
 // is durability work; stopping any of them while hidden would strand a
 // sign-in or delay a queued mutation. Those keep running.
 //
-// Visibility is read from the module document, like every other shell-observer
-// hook here (useIsMobile's window, markSeen's document). A pane in a Dockview
-// popout pauses when the opener's tab hides rather than its own window's; the
-// browser hides both together on a tab switch, which is the case this exists
-// for.
+// Visibility is read from the document the caller names, never from the module
+// global, because a Dockview popout is a separate window with its own
+// visibility: a pane moved into a popout must keep drawing while the opener's
+// tab is hidden. Pane-bound callers resolve that document from the pane (see
+// shell/paneDocument.ts and widgets/internal/useOwnedDocument.ts); shell chrome
+// that only ever lives on the opener leaves the default.
 import { useEffect, useRef } from "react";
 
 /**
- * Run `onTick` every `intervalMs` while the document is visible, and once
- * immediately whenever the document becomes visible again. Nothing ticks at
- * mount (a caller that wants an immediate read does it itself), and nothing
- * ticks while the document is hidden. `enabled` false disarms the timer
- * entirely, as for a clock that only runs while it has live rows to draw.
+ * Run `onTick` every `intervalMs` while `ownerDocument` is visible, and once
+ * immediately whenever it becomes visible again. Nothing ticks at mount (a
+ * caller that wants an immediate read does it itself), and nothing ticks while
+ * the document is hidden. `enabled` false disarms the timer entirely, as for a
+ * clock that only runs while it has live rows to draw. `ownerDocument` defaults
+ * to the module document, which is right for shell chrome and for a pane that
+ * is not in a popout.
  */
-export function useVisibleInterval(onTick: () => void, intervalMs: number, enabled = true): void {
+export function useVisibleInterval(
+  onTick: () => void,
+  intervalMs: number,
+  enabled = true,
+  ownerDocument: Document = document,
+): void {
   // The callback usually closes over component state and callers pass an
   // inline arrow, so a ref keeps an ordinary re-render from restarting the
   // cadence.
@@ -43,10 +51,10 @@ export function useVisibleInterval(onTick: () => void, intervalMs: number, enabl
       clearInterval(timer);
       timer = undefined;
     };
-    if (document.visibilityState === "hidden") disarm();
+    if (ownerDocument.visibilityState === "hidden") disarm();
     else arm();
     const onVisibilityChange = (): void => {
-      if (document.visibilityState === "hidden") {
+      if (ownerDocument.visibilityState === "hidden") {
         disarm();
         return;
       }
@@ -57,10 +65,10 @@ export function useVisibleInterval(onTick: () => void, intervalMs: number, enabl
       arm();
       if (wasPaused) onTickRef.current();
     };
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    ownerDocument.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       disarm();
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      ownerDocument.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [intervalMs, enabled]);
+  }, [intervalMs, enabled, ownerDocument]);
 }

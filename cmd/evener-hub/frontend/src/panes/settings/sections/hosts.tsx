@@ -11,6 +11,7 @@ import {
   rootsToText,
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
+import { usePaneDocument } from "../../../shell/paneDocument";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import {
@@ -215,8 +216,11 @@ export function HostsSection(_props: HostsSectionProps) {
   // progress lines are what they refresh, and the work they describe (an
   // attach, a deploy) continues on the hub whether or not this tab is
   // watching. A hidden tab pauses them and the first visible frame re-reads,
-  // so the rows are current the moment the reader looks.
-  useVisibleInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
+  // so the rows are current the moment the reader looks. Both watch the
+  // settings pane's own document: a Settings pane moved to a popout must keep
+  // refreshing while the opener's tab is hidden.
+  const ownerDocument = usePaneDocument();
+  useVisibleInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS, true, ownerDocument);
 
   // The operation poll (S15): every tracked operation that still owes a read is
   // read once per tick, so its row renders progress through the terminal state
@@ -224,20 +228,25 @@ export function HostsSection(_props: HostsSectionProps) {
   // skipped — terminal state ends the loop — while a terminal seed from a
   // replay is still read once for the retained body. Unmount clears the
   // interval and cancels any in-flight read's publish.
-  useVisibleInterval(() => {
-    const tracked = hostOpsStore.getState().operations;
-    for (const name of Object.keys(tracked)) {
-      const operation = tracked[name];
-      // A ref suppressed from the row (an older incarnation after a
-      // same-name re-add) is still read to its terminal state: render
-      // suppression is the row's decision, and stopping the poll here would
-      // leave the ref non-terminal forever.
-      if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name, operation.id)) {
-        continue;
+  useVisibleInterval(
+    () => {
+      const tracked = hostOpsStore.getState().operations;
+      for (const name of Object.keys(tracked)) {
+        const operation = tracked[name];
+        // A ref suppressed from the row (an older incarnation after a
+        // same-name re-add) is still read to its terminal state: render
+        // suppression is the row's decision, and stopping the poll here would
+        // leave the ref non-terminal forever.
+        if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name, operation.id)) {
+          continue;
+        }
+        void hostOpsStore.getState().pollOperation(name);
       }
-      void hostOpsStore.getState().pollOperation(name);
-    }
-  }, OPERATION_POLL_MS);
+    },
+    OPERATION_POLL_MS,
+    true,
+    ownerDocument,
+  );
 
   // Unmount still cancels any in-flight read's publish, exactly as before.
   useEffect(

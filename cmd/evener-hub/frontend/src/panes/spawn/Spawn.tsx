@@ -41,6 +41,7 @@ import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
 import { CHORD_HINTS } from "../../shell/palette/helpRows";
+import { usePaneDocument } from "../../shell/paneDocument";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
@@ -253,9 +254,11 @@ const MODEL_CHOOSE_LABEL = "Choose a model";
 // ran it - but a tick re-renders this leaf alone, never the whole pane.
 const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: number }): JSX.Element {
   const [now, setNow] = useState(() => Date.now());
+  const ownerDocument = usePaneDocument();
   // The elapsed label is a rendering clock: a hidden tab is not reading it,
-  // and the resume tick keeps the first visible frame's seconds exact.
-  useVisibleInterval(() => setNow(Date.now()), 1000);
+  // and the resume tick keeps the first visible frame's seconds exact. It
+  // watches the spawn pane's own document, so a popout keeps counting.
+  useVisibleInterval(() => setNow(Date.now()), 1000, true, ownerDocument);
   return <Loader label="Starting" startedAt={startedAt} now={now} />;
 });
 

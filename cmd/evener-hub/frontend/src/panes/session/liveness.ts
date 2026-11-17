@@ -3,6 +3,7 @@
 // transcript descendants can share the same logic without importing the
 // pane back into this leaf module.
 import { createContext, useContext, useState } from "react";
+import { usePaneDocument } from "../../shell/paneDocument";
 import { useVisibleInterval } from "../../shell/useVisibleInterval";
 
 // The session clock every relative-age display shares. A timestamp that
@@ -36,9 +37,11 @@ export function useSessionNow(): number {
 // time is it" signal.
 export function useNowTick(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
+  const ownerDocument = usePaneDocument();
   // It is a rendering clock: nothing on screen is being read while the tab is
   // hidden, and the resume tick is what keeps the first visible frame's ages
-  // honest.
-  useVisibleInterval(() => setNow(Date.now()), intervalMs);
+  // honest. It watches the document the enclosing pane lives in, so a session
+  // moved to a popout keeps ticking when the opener's tab hides.
+  useVisibleInterval(() => setNow(Date.now()), intervalMs, true, ownerDocument);
   return now;
 }

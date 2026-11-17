@@ -9,6 +9,7 @@
 // renders (CredentialsHostScope says so honestly).
 
 import { HOST_POLL_MS, isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
+import { usePaneDocument } from "../../shell/paneDocument";
 import { useVisibleInterval } from "../../shell/useVisibleInterval";
 import { useConnectionStore } from "../../stores/connection";
 import { hostsStore, isConfiguredHost, selectableHostRows, useHostsStore } from "../../stores/hosts";
@@ -34,8 +35,9 @@ export function HostPicker() {
   // (sections/hosts.tsx) rather than this picker inventing one.
   useConnectedEffect(() => hostsStore.getState().fetch(), [client, connection]);
   // The same rendering clock as the Hosts section's: paused while the tab is
-  // hidden, re-read on the first visible frame.
-  useVisibleInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
+  // hidden, re-read on the first visible frame, watching the Settings pane's
+  // own document so a popout keeps refreshing.
+  useVisibleInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS, true, usePaneDocument());
 
   const hostRows = selectableHostRows(load);
   const options: SelectOption[] = [
