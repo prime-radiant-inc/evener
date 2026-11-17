@@ -840,6 +840,14 @@ func projectToolResultMediaFor(profile *provider.Profile, messages []llm.Message
 	scope := replayScope{dropsToolResultMedia: func(mediaType string) bool {
 		return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
 	}}
+	// Allocate the projected list only when a payload actually has to go: most
+	// turns carry no tool-result media at all, and this projection runs on every
+	// request, so a copy made up front is a whole message list paid for a walk
+	// that changes nothing (#6448). An unchanged list is handed straight back;
+	// nothing downstream writes its elements in place.
+	if !slices.ContainsFunc(messages, scope.dropsToolResultMediaFrom) {
+		return messages
+	}
 	out := append([]llm.Message(nil), messages...)
 	for i := range out {
 		out[i] = scope.projectToolResultMedia(out[i])
@@ -2017,14 +2025,7 @@ func (rs replayScope) projectToolResultMedia(msg llm.Message) llm.Message {
 	if rs.dropsToolResultMedia == nil {
 		return msg
 	}
-	drops := false
-	for _, p := range msg.Content {
-		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 && rs.dropsMedia(p.ToolResult.ImageMediaType) {
-			drops = true
-			break
-		}
-	}
-	if !drops {
+	if !rs.dropsToolResultMediaFrom(msg) {
 		return msg
 	}
 	parts := make([]llm.ContentPart, len(msg.Content))
@@ -2039,6 +2040,22 @@ func (rs replayScope) projectToolResultMedia(msg llm.Message) llm.Message {
 	}
 	msg.Content = parts
 	return msg
+}
+
+// dropsToolResultMediaFrom reports whether projectToolResultMedia would change
+// msg: it carries a tool-result media payload the target cannot see. It is the
+// same test the projection applies per part, so a caller deciding whether to
+// copy a whole message list and the projection itself cannot disagree.
+func (rs replayScope) dropsToolResultMediaFrom(msg llm.Message) bool {
+	if rs.dropsToolResultMedia == nil {
+		return false
+	}
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 && rs.dropsMedia(p.ToolResult.ImageMediaType) {
+			return true
+		}
+	}
+	return false
 }
 
 // producerProtocol is the wire protocol that produced a stored turn: the one
@@ -2070,6 +2087,22 @@ func dropsReplayedThinking(p *provider.Profile) bool {
 // applies its own policy instead of inheriting the primary's (#4563).
 func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message) []llm.Message {
 	if !dropsReplayedThinking(profile) {
+		return messages
+	}
+	// Allocate the projected list only when a message actually carries thinking
+	// to trim: a chat target reaches here on every request, and most replayed
+	// messages carry no thinking part at all, so a copy made up front is a whole
+	// message list paid for a walk that changes nothing (#6448). An unchanged
+	// list is handed straight back; nothing downstream writes its elements in
+	// place.
+	trims := false
+	for _, message := range messages {
+		if llm.TrimsThinkingForReplay(message, true) {
+			trims = true
+			break
+		}
+	}
+	if !trims {
 		return messages
 	}
 	out := append([]llm.Message(nil), messages...)
