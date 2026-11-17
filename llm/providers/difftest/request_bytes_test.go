@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -66,19 +67,20 @@ func requestByteLegs() []requestByteLeg {
 // and numbers a real session carries, so each builder exercises its message
 // conversion rather than an empty list.
 func requestByteHistory() llm.Request {
-	toolResult := "line one with <html> & \"quotes\"\n"
-	for i := 0; i < 40; i++ {
-		toolResult += fmt.Sprintf("line %d\ttabbed 日本語 \u2028 more\n", i)
+	var toolResult strings.Builder
+	toolResult.WriteString("line one with <html> & \"quotes\"\n")
+	for i := range 40 {
+		fmt.Fprintf(&toolResult, "line %d\ttabbed 日本語 \u2028 more\n", i)
 	}
 	var msgs []llm.Message
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		msgs = append(msgs,
 			llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: fmt.Sprintf("run grep %d & <run>", i)}}},
 			llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 				Kind:     llm.ContentToolCall,
 				ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("toolu_%d", i), Name: "grep", Arguments: json.RawMessage(fmt.Sprintf(`{"pattern":"func main %d"}`, i))},
 			}}},
-			llm.ToolResult(fmt.Sprintf("toolu_%d", i), toolResult, false),
+			llm.ToolResult(fmt.Sprintf("toolu_%d", i), toolResult.String(), false),
 		)
 	}
 	effort := "medium"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strconv"
 	"testing"
 )
 
@@ -30,19 +31,19 @@ func randomBodyValue(r *rand.Rand, depth int) any {
 		case 0:
 			return r.Intn(1000000) - 500000
 		case 1:
-			return int64(r.Int63()) - (1 << 62)
+			return r.Int63() - (1 << 62)
 		case 2:
 			return math.Copysign(r.Float64()*math.Pow(10, float64(r.Intn(40)-20)), r.Float64()-0.5)
 		default:
 			return []float64{0, math.Copysign(0, -1), 1e-7, 1e21, math.MaxFloat64, 5e-324}[r.Intn(6)]
 		}
 	case 4:
-		return json.Number(fmt.Sprint(r.Int63()))
+		return json.Number(strconv.FormatInt(r.Int63(), 10))
 	case 5:
-		return []byte(fmt.Sprintf("bytes-%d", r.Intn(1000)))
+		return fmt.Appendf(nil, "bytes-%d", r.Intn(1000))
 	case 6:
 		m := make(map[string]any, r.Intn(5))
-		for i := 0; i < r.Intn(5); i++ {
+		for range r.Intn(5) {
 			m[randomBodyString(r)] = randomBodyValue(r, depth+1)
 		}
 		if r.Intn(8) == 0 {
@@ -55,7 +56,7 @@ func randomBodyValue(r *rand.Rand, depth int) any {
 			return []map[string]any(nil)
 		}
 		out := make([]map[string]any, 0, n)
-		for i := 0; i < n; i++ {
+		for range n {
 			if r.Intn(6) == 0 {
 				out = append(out, nil)
 				continue
@@ -69,14 +70,14 @@ func randomBodyValue(r *rand.Rand, depth int) any {
 			return []any(nil)
 		}
 		out := make([]any, 0, n)
-		for i := 0; i < n; i++ {
+		for range n {
 			out = append(out, randomBodyValue(r, depth+1))
 		}
 		return out
 	case 9:
 		n := r.Intn(4)
 		out := make([]string, 0, n)
-		for i := 0; i < n; i++ {
+		for range n {
 			out = append(out, randomBodyString(r))
 		}
 		return out
@@ -117,10 +118,10 @@ func randomBodyString(r *rand.Rand) string {
 func TestMarshalBodyMatchesStdlibRandomized(t *testing.T) {
 	t.Parallel()
 	const seeds = 3000
-	for seed := 0; seed < seeds; seed++ {
+	for seed := range seeds {
 		r := rand.New(rand.NewSource(int64(seed)))
 		body := make(map[string]any, 6)
-		for i := 0; i < 1+r.Intn(6); i++ {
+		for range 1 + r.Intn(6) {
 			body[randomBodyString(r)] = randomBodyValue(r, 0)
 		}
 		want, err := json.Marshal(body)

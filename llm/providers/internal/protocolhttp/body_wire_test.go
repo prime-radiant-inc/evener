@@ -1,9 +1,11 @@
 package protocolhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -13,18 +15,18 @@ import (
 // prepareBodyFixtures builds the wire bodies Prepare actually marshals: the
 // pruned, constant-applied, preparer-edited shapes the protocols hand it.
 func prepareBodyFixtures() map[string]map[string]any {
-	longText := ""
-	for i := 0; i < 200; i++ {
-		longText += "some tool output line with <html> & \"quotes\" and tabs\there\n"
+	var longText strings.Builder
+	for range 200 {
+		longText.WriteString("some tool output line with <html> & \"quotes\" and tabs\there\n")
 	}
 	var messages []map[string]any
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		messages = append(messages,
 			map[string]any{"role": "assistant", "content": []map[string]any{
 				{"type": "tool_use", "id": "toolu_01", "name": "grep", "input": map[string]any{"pattern": "func main"}},
 			}},
 			map[string]any{"role": "user", "content": []map[string]any{
-				{"type": "tool_result", "tool_use_id": "toolu_01", "content": longText},
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": longText.String()},
 			}},
 		)
 	}
@@ -78,7 +80,7 @@ func TestPrepareBodyBytesMatchStdlib(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(p.Body) != string(want) {
+			if !bytes.Equal(p.Body, want) {
 				t.Fatalf("wire bytes differ from encoding/json\nwant %s\ngot  %s", want, p.Body)
 			}
 			if p.Request.ContentLength != int64(len(want)) {
@@ -94,7 +96,7 @@ func TestPrepareBodyBytesMatchStdlib(t *testing.T) {
 // encoder.
 func TestPrepareDifferentBodiesSendDifferentBytes(t *testing.T) {
 	t.Parallel()
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		first, err := Prepare(context.Background(), &Call{
 			Method: http.MethodPost, URL: "https://example.test/v1/responses",
 			Body: map[string]any{"input": "a", "reasoning": map[string]any{"effort": "low"}},
@@ -126,7 +128,7 @@ func TestPrepareDifferentBodiesSendDifferentBytes(t *testing.T) {
 		if secondReasoning["effort"] != "high" || secondReasoning["context"] != "turns" {
 			t.Fatalf("second body = %s", second.Body)
 		}
-		if string(first.Body) == string(second.Body) {
+		if bytes.Equal(first.Body, second.Body) {
 			t.Fatalf("different bodies produced identical bytes: %s", first.Body)
 		}
 	}

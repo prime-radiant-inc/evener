@@ -136,7 +136,7 @@ func TestMarshalBodyReturnsOwnCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	retained := append([]byte(nil), first...)
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		if _, err := MarshalBody(map[string]any{"b": "another call's much longer payload body"}); err != nil {
 			t.Fatal(err)
 		}

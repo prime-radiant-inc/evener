@@ -30,7 +30,7 @@ func benchPrepareRes() registry.Resolved {
 func benchPrepareBody(turns, resultBytes int) map[string]any {
 	result := strings.Repeat("x", resultBytes)
 	msgs := make([]map[string]any, 0, 2*turns)
-	for i := 0; i < turns; i++ {
+	for range turns {
 		msgs = append(msgs,
 			map[string]any{"role": "assistant", "content": []map[string]any{
 				{"type": "tool_use", "id": "toolu_01", "name": "grep", "input": map[string]any{"pattern": "func main"}},
