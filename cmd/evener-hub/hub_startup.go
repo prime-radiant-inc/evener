@@ -859,34 +859,22 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	goBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	goBackground(func() { watchHubRoster(ctx, roster) })
 
-	goBackground(func() {
-		ticker := time.NewTicker(cfg.PastIndexRebuild)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, _ = past.Rebuild()
-			}
-		}
-	})
+	// Past index and message search share one tick, and a tick skips both when
+	// no session file moved since the last pass: their inputs are the same
+	// projects tree, and re-reading it unchanged was the hub's largest idle
+	// cost (#6424). The interval is unchanged, so a new session, message or
+	// index entry is still visible within the same bound.
+	goBackground(func() { newHubPastSweep(past, r.messageSearch).run(ctx, cfg.PastIndexRebuild) })
 
-	// Message search refresher: re-reads the transcripts that changed on the
-	// past index's rebuild interval (S14).
-	goBackground(func() { refreshHubMessageSearch(ctx, r.messageSearch, past, cfg.PastIndexRebuild) })
-
-	// Attention watcher: derives each live session's attention level from the
-	// same remote-inclusive metas/live the sidebar tree uses (see
-	// web.navigationSnapshot), and broadcasts evener/attention/changed when a
-	// session's level actually transitions (notifications.js drives the tab
-	// title/favicon badge and OS notifications from it). Ticks every 5s and
-	// on-demand via attentionPoke.
-	goBackground(func() { watchHubAttention(ctx, r.attentionPoke, r.archive, web) })
-
-	// Notices watcher: re-derives the hub's notices every few seconds and
-	// broadcasts evener/notices/changed when they change (S11).
-	goBackground(func() { watchHubNotices(ctx, web) })
+	// Snapshot wake: derives each live session's attention level from the same
+	// remote-inclusive metas/live the sidebar tree uses (see
+	// web.navigationSnapshot) and republishes the Manager roster, broadcasting
+	// evener/attention/changed when a session's level actually transitions
+	// (notifications.js drives the tab title/favicon badge and OS notifications
+	// from it); on the same wake it re-derives the hub's notices and broadcasts
+	// evener/notices/changed when they change (S11). Ticks every 5s and, for
+	// attention, on-demand via attentionPoke.
+	startHubSnapshotWatchers(ctx, goBackground, r.attentionPoke, r.archive, web)
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already

@@ -392,6 +392,11 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 // causal provenance onto the envelope, and returns the enriched payload alongside
 // the delivered envelope. Summary failure metadata is also retained in the
 // process log; the Notification hook decision belongs to the caller.
+//
+// The envelope ADOPTS p rather than copying it, so the caller must own p: a
+// value nothing else reads or mutates. Callers holding a shared record (a
+// descriptor, a jobstore event, a transcript entry) pass provenance.Clone of
+// it. See sendEventContext for why adoption is the contract.
 func (s *Session) sendEvent(data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
 	data, ev, _ := s.sendEventContext(context.Background(), data, p)
 	return data, ev
@@ -402,11 +407,19 @@ func (s *Session) sendEvent(data events.EventData, p *provenance.Causal) (events
 // event cannot be lost; when that consumer is wedged, the close deadline must
 // release eventsMu so teardown can close the stream and preserve the durable
 // closed state.
+//
+// The delivered envelope ADOPTS p: it is not copied again here. Copying it a
+// second time cost every watch-driven event two identical stamps, 4 of its 8
+// allocations (#6413). Adoption is safe because a provenance reaches this
+// function already owned by this one event: activeCausalProvenance returns a
+// fresh clone per call, so two events never share one, and no consumer mutates
+// a delivered envelope's stamp. A caller holding a value anything else can read
+// or mutate passes provenance.Clone of it instead.
 func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent, bool) {
 	data = enrichDiagnosticData(data)
 	ev := events.New(data)
 	ev.SessionID = s.id
-	ev.Provenance = provenance.Clone(p)
+	ev.Provenance = p
 	// eventsMu makes the send mutually exclusive with Close()'s close(s.events).
 	// emit is called from caller-owned goroutines the session cannot join
 	// (the client-mutation queue handlers, the ProcessInput loop), so the lock — not a recover()

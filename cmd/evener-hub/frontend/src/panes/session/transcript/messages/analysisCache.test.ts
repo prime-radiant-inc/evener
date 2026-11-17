@@ -1,0 +1,94 @@
+import { findEntityIds } from "@evener/appwire-client";
+import * as docContent from "@evener/appwire-client/docContent";
+import { findFileReferences } from "@evener/appwire-client/docContent";
+import { expect, test, vi } from "vitest";
+import { createAnalysisCache } from "./analysisCache";
+
+// The memo behind AgentMarkdown's per-delta enhancement must be exact: a hit
+// has to return what the scan it stands in for would return. These are the
+// cases where a wrong key would show up as a changed reference.
+
+const TEXT = "The importer reads docs/report.md and writes docs/out.json.";
+const CWD = "/workspace/project";
+const OTHER_CWD = "/workspace/elsewhere";
+
+test("a file-span hit equals the scan it replaces", () => {
+  const analysis = createAnalysisCache();
+  const first = analysis.fileSpans(TEXT, CWD, undefined);
+  const second = analysis.fileSpans(TEXT, CWD, undefined);
+  expect(first).toEqual(findFileReferences(TEXT, CWD, undefined));
+  expect(second).toEqual(findFileReferences(TEXT, CWD, undefined));
+  expect(first.length).toBeGreaterThan(0);
+});
+
+test("an entity-id hit equals the scan it replaces", () => {
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const analysis = createAnalysisCache();
+  expect(analysis.entityIds(`see ${id} now`)).toEqual(findEntityIds(`see ${id} now`));
+  expect(analysis.entityIds(`see ${id} now`)).toEqual(findEntityIds(`see ${id} now`));
+});
+
+test("the same text under a different cwd is a different answer", () => {
+  const analysis = createAnalysisCache();
+  const here = analysis.fileSpans(TEXT, CWD, undefined);
+  // The memo must not serve the other root's spans for this root's text: an
+  // absolute path binds against the working directory it names.
+  const absolute = "Read /workspace/project/docs/report.md and /workspace/elsewhere/docs/report.md.";
+  expect(analysis.fileSpans(absolute, CWD, undefined)).toEqual(findFileReferences(absolute, CWD, undefined));
+  expect(analysis.fileSpans(absolute, OTHER_CWD, undefined)).toEqual(
+    findFileReferences(absolute, OTHER_CWD, undefined),
+  );
+  expect(analysis.fileSpans(absolute, CWD, undefined)).toEqual(findFileReferences(absolute, CWD, undefined));
+  expect(here).toEqual(findFileReferences(TEXT, CWD, undefined));
+});
+
+test("the same text under different served roots is a different answer", () => {
+  const analysis = createAnalysisCache();
+  const absolute = "Read /artifacts/docs/report.md now.";
+  const withArtifacts = { artifactsDir: "/artifacts" };
+  const withScratch = { artifactsDir: "", scratchDir: "/scratch" };
+  expect(analysis.fileSpans(absolute, CWD, withArtifacts)).toEqual(findFileReferences(absolute, CWD, withArtifacts));
+  expect(analysis.fileSpans(absolute, CWD, withScratch)).toEqual(findFileReferences(absolute, CWD, withScratch));
+  expect(analysis.fileSpans(absolute, CWD, withArtifacts)).toEqual(findFileReferences(absolute, CWD, withArtifacts));
+});
+
+test("a text that splits a reference analyses as its own text, never a prefix's answer", () => {
+  const analysis = createAnalysisCache();
+  const complete = "see docs/report.md";
+  const partial = "see docs/rep";
+  expect(analysis.fileSpans(complete, CWD, undefined)).toEqual(findFileReferences(complete, CWD, undefined));
+  // The partial token names no file; a memo keyed on the wrong thing (the
+  // block, the paragraph, the message) would hand back the complete answer.
+  expect(analysis.fileSpans(partial, CWD, undefined)).toEqual([]);
+  expect(analysis.fileSpans(complete, CWD, undefined)).toEqual(findFileReferences(complete, CWD, undefined));
+});
+
+test("many distinct blocks still answer correctly past the entry budget", () => {
+  const analysis = createAnalysisCache();
+  for (let index = 0; index < 700; index += 1) {
+    const text = `paragraph ${index} names docs/file-${index}.md`;
+    expect(analysis.fileSpans(text, CWD, undefined)).toEqual(findFileReferences(text, CWD, undefined));
+  }
+  // The most recent entries survive; an evicted one is simply re-analysed.
+  const last = "paragraph 699 names docs/file-699.md";
+  expect(analysis.fileSpans(last, CWD, undefined)).toEqual(findFileReferences(last, CWD, undefined));
+});
+
+test("a long message's settled head keeps its entries while its tail streams", () => {
+  const fileSpy = vi.spyOn(docContent, "findFileReferences");
+  const analysis = createAnalysisCache();
+  // A long answer: 200 settled paragraphs, each naming a file, then a tail
+  // that grows a few characters at a time the way a streamed delta does.
+  const settled = Array.from({ length: 200 }, (_value, index) => `Paragraph ${index} reads docs/part-${index}.md.`);
+  const tail = "The closing paragraph opens docs/closing.md and ends here.";
+  for (const paragraph of settled) analysis.fileSpans(paragraph, CWD, undefined);
+  for (let length = 1; length <= tail.length; length += 5) {
+    analysis.fileSpans(tail.slice(0, length), CWD, undefined);
+  }
+  // The whole settled head is still cached: re-analysing it for the final
+  // frame is the per-delta cost the change removes.
+  fileSpy.mockClear();
+  for (const paragraph of settled) analysis.fileSpans(paragraph, CWD, undefined);
+  expect(fileSpy).not.toHaveBeenCalled();
+  fileSpy.mockRestore();
+});

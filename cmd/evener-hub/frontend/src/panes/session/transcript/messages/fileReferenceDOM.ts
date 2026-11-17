@@ -11,6 +11,7 @@ import {
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { browserDocPort } from "../../../doc/browserDocPort";
 import { type DocumentOpenRequest, openDocBeside } from "../../../doc/openDoc";
+import type { AnalysisCache } from "./analysisCache";
 
 const EXCLUDED = `a, pre, script, style, [data-entity-host], [data-file-action], [${MERMAID_DIAGRAM_ATTR}]`;
 const BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, div, ul, ol, table, tr, hr, br";
@@ -27,10 +28,14 @@ interface TextOffset {
 }
 
 /** Enhances sanitized DOM only. Block offsets preserve token boundaries across
- * inline formatting, but ambiguous multi-node references remain unchanged. */
+ * inline formatting, but ambiguous multi-node references remain unchanged.
+ * `analysis` lets a caller that enhances the same unchanged blocks after every
+ * streamed delta reuse the previous pass's scan of them; a hit returns exactly
+ * what the scan would have (see analysisCache.ts). */
 export function enhanceFileReferences(
   root: HTMLElement,
   context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string; scratchDir?: string },
+  analysis?: AnalysisCache,
 ): () => void {
   const epoch = {};
   epochs.set(root, epoch);
@@ -97,7 +102,9 @@ export function enhanceFileReferences(
   let offsets: TextOffset[] = [];
   const codeElements: Array<{ element: HTMLElement; start: number; end: number }> = [];
   function flush() {
-    const matches = findFileReferences(text, context.cwd, served);
+    const matches = analysis
+      ? analysis.fileSpans(text, context.cwd, served)
+      : findFileReferences(text, context.cwd, served);
     for (const offset of offsets) {
       const contained = matches
         .filter((span) => span.start >= offset.start && span.end <= offset.end)

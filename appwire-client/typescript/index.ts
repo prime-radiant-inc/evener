@@ -944,9 +944,11 @@ export type {
   ProjectedTurn,
   TranscriptMetadataVisibility,
   TranscriptProjection,
+  TranscriptProjector,
 } from "./transcriptProjector";
 export {
   ACTION_SUMMARY_UNAVAILABLE,
+  createTranscriptProjector,
   entryDisplayKey,
   isLiveCurrentReasoning,
   PROMPT_EVENT_KINDS,

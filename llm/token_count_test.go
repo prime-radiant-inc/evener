@@ -1528,3 +1528,92 @@ func TestEstimateImageTokens_LocalPathFallbacks(t *testing.T) {
 		})
 	}
 }
+
+// A caller that prices messages one at a time — a session walking its own turn
+// history, so it need not project that history into a []Message first — must get
+// exactly what pricing the whole list gives. The two differ only in where the
+// loop lives, so any difference here is the per-message path pricing something
+// the list path does not.
+//
+// The prefix split pins the property a caller reusing a prefix relies on: parts
+// summed over a prefix and a suffix, with Total called once at the end, equal
+// the whole-list estimate. At least one split must land where the prefix's chars
+// are not a multiple of four — there, pricing each half separately and adding
+// the two token totals would drift by a token, so the case is what makes this a
+// check of the single divide rather than a tautology.
+func TestTokenPartEstimatorMatchesMessageList(t *testing.T) {
+	t.Parallel()
+	image := testPNG1024()
+	messages := []Message{
+		System("you are a test"),
+		User("read the configuration and report the section it names"),
+		{Role: RoleAssistant, Content: []ContentPart{{
+			Kind: ContentToolCall,
+			ToolCall: &ToolCallData{
+				ID: "call_1", Name: "read_file",
+				Arguments: []byte(`{"path":"config/section-1.yaml"}`),
+			},
+		}}},
+		{Role: RoleTool, ToolCallID: "call_1", Content: []ContentPart{{
+			Kind: ContentToolResult,
+			ToolResult: &ToolResultData{
+				ToolCallID: "call_1", Name: "read_file",
+				Content: strings.Repeat("section: value\n", 32),
+			},
+		}}},
+		{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("t", 400)}},
+			{Kind: ContentThinking, Thinking: &ThinkingData{
+				EncryptedContent: `[{"type":"reasoning.text","text":"","signature":"sig"}]`,
+				Text:             strings.Repeat("s", 200),
+			}},
+			{Kind: ContentText, Text: "the file declares three keys"},
+		}},
+		{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{Data: image, MediaType: "image/png"}},
+		}},
+		{}, // an empty message: no role, no parts, no bytes
+	}
+	targets := []struct {
+		name string
+		res  registry.Resolved
+	}{
+		{name: "anthropic", res: registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}},
+		{name: "openai responses", res: registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}},
+		{name: "openai chat", res: registry.Resolved{Instance: "gw", Protocol: registry.ProtocolOpenAIChat}},
+		{name: "zero row", res: registry.Resolved{}},
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			t.Parallel()
+			estimator := TokenPartEstimatorFor(target.res)
+			var got TokenParts
+			for _, m := range messages {
+				got = got.Add(estimator.Parts(m))
+			}
+			listTokens := EstimateMessagesInputTokensForResolved(target.res, messages).Tokens
+			if got.Total() != listTokens {
+				t.Fatalf("per-message total = %d, want the whole-list estimate %d", got.Total(), listTokens)
+			}
+			roundingSplits := 0
+			for split := 1; split < len(messages); split++ {
+				var prefix, suffix TokenParts
+				for _, m := range messages[:split] {
+					prefix = prefix.Add(estimator.Parts(m))
+				}
+				for _, m := range messages[split:] {
+					suffix = suffix.Add(estimator.Parts(m))
+				}
+				if combined := prefix.Add(suffix).Total(); combined != listTokens {
+					t.Fatalf("split at %d: total = %d, want the whole-list estimate %d", split, combined, listTokens)
+				}
+				if prefix.Chars%4 != 0 {
+					roundingSplits++
+				}
+			}
+			if roundingSplits == 0 {
+				t.Fatal("no split leaves a prefix whose chars are not a multiple of four: this case cannot detect per-prefix rounding")
+			}
+		})
+	}
+}

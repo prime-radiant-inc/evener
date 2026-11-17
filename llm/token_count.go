@@ -132,26 +132,32 @@ func EstimateMessagesInputTokensForResolved(res registry.Resolved, messages []Me
 	return estimateMessageList(targetFromResolved(res, "", ""), messages)
 }
 
-// EstimateMessageInputTokenPartsForResolved returns the two additive components
-// estimateMessagesInputTokens sums: the whole list's char count and its count of
-// parts billed at a fixed token price. The caller combines them with
-// TokenParts.Total.
+// TokenPartEstimator prices messages one at a time for ONE resolved target, so a
+// caller that walks its own list — a session's turn history, say — prices the
+// turns it already holds without projecting them into a []Message.
 //
-// It exists so a caller that already holds one prefix's parts can estimate only
-// the messages appended since and get the SAME answer the whole-list estimate
-// would give. That is only sound because the estimator divides the summed chars
-// by four once, over the whole list (see estimateMessagesInputTokens): summing
-// chars first and dividing once at the end cannot round differently, whereas
-// adding per-prefix token counts would.
-func EstimateMessageInputTokenPartsForResolved(res registry.Resolved, messages []Message) TokenParts {
-	t := targetFromResolved(res, "", "")
-	var parts TokenParts
-	for _, m := range messages {
-		c, counted := estimateMessageInputParts(t, m)
-		parts.Chars += c
-		parts.Counted += counted
-	}
-	return parts
+// Summing Parts over a list and calling Total once is that list's estimate: the
+// chars are summed first and divided by four once (see
+// estimateMessagesInputTokens), so no prefix of the list can round differently
+// from the whole. See TestTokenPartEstimatorMatchesMessageList, which pins that
+// the per-message walk prices what EstimateMessagesInputTokensForResolved
+// prices.
+type TokenPartEstimator struct {
+	target targetInfo
+}
+
+// TokenPartEstimatorFor returns a per-message pricer for res. Building one reads
+// the resolved row, so a caller prices a list with one estimator rather than one
+// per message.
+func TokenPartEstimatorFor(res registry.Resolved) TokenPartEstimator {
+	return TokenPartEstimator{target: targetFromResolved(res, "", "")}
+}
+
+// Parts returns m's share of the estimate: its char count and its count of parts
+// billed at a fixed token price.
+func (e TokenPartEstimator) Parts(m Message) TokenParts {
+	chars, counted := estimateMessageInputParts(e.target, m)
+	return TokenParts{Chars: chars, Counted: counted}
 }
 
 // TokenParts is the additive decomposition of a local token estimate.

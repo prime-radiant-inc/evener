@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -51,40 +52,24 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 	}
 }
 
-func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
-	if ctx.Err() != nil {
-		return
-	}
-	w := hubcore.NewAttentionWatcher(func(p appwire.AttentionChangedPayload) {
-		web.appRPC.BroadcastAll(appwire.NotifyEvenerAttentionChanged, p)
-	})
-	ticks, stop := hubTicker(5 * time.Second)
-	defer stop()
-	run := func() {
-		decisions, _ := archive.Decisions()
-		// Derive from the same remote-inclusive metas/live the navigation tree
-		// uses: sessions on other hosts reach the hub only through the
-		// remote-thread cache, so reading the roster alone left their
-		// question/approval out of the broadcast (#2529).
-		snapshot := web.navigationSnapshot(ctx)
-		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-		// Archiving clears human attention, not the Manager's live population.
-		// Reuse top-level eligibility without an archive suppression decision.
-		roster, _ := hubcore.DeriveAttention(snapshot.metas, snapshot.live, nil)
-		web.navigation.roster.Publish(roster, rosterIdentities(snapshot))
-		w.Tick(m, sum)
-	}
-	run()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticks:
-			run()
-		case <-poke:
-			run()
-		}
-	}
+// runHubAttention derives each live session's attention level and republishes
+// the Manager roster from the same snapshot, then lets the attention watcher
+// announce any transition. It is one derivation, so every caller that serves a
+// wake — the shared snapshot wake, or the attention-only loop a test drives —
+// publishes the identical snapshot.
+func runHubAttention(ctx context.Context, web *WebServer, archive *hubcore.ArchiveStore, w *hubcore.AttentionWatcher) {
+	decisions, _ := archive.Decisions()
+	// Derive from the same remote-inclusive metas/live the navigation tree
+	// uses: sessions on other hosts reach the hub only through the
+	// remote-thread cache, so reading the roster alone left their
+	// question/approval out of the broadcast (#2529).
+	snapshot := web.navigationSnapshot(ctx)
+	m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
+	// Archiving clears human attention, not the Manager's live population.
+	// Reuse top-level eligibility without an archive suppression decision.
+	roster, _ := hubcore.DeriveAttention(snapshot.metas, snapshot.live, nil)
+	web.navigation.roster.Publish(roster, rosterIdentities(snapshot))
+	w.Tick(m, sum)
 }
 
 // rosterIdentities retains the workspace ref across thread/clear, when the
@@ -113,34 +98,28 @@ func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity,
 	return func(id string) (rosterIdentity, bool) { identity, ok := identities[id]; return identity, ok }
 }
 
-// refreshHubMessageSearch keeps the message search index (S14) in step with
-// the transcripts the past index lists: once now, then every interval (the
-// past index's own rebuild interval). A refresh reads again only the
-// transcripts that changed.
-func refreshHubMessageSearch(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex, interval time.Duration) {
+// refreshHubMessageSearchOnce brings the message search index (S14) in step
+// with the transcripts the past index lists, one pass. A refresh reads again
+// only the transcripts that changed.
+//
+// Callers must run it every tick, never behind a gate on disk state. Refresh
+// retries, on its next call, what it deferred or failed to read this one
+// (recording a failure would freeze the loss), and several of those deferrals
+// — a transcript whose sidecar this projection has never built, a contended
+// lock, a paging race — leave no trace on disk that a gate could see. The
+// failures are reported here and nowhere else: they name no remedial action a
+// caller could take.
+func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex) {
 	if index == nil || ctx.Err() != nil {
 		return
 	}
 	log := componentlog.New("hub")
-	ticks, stop := hubTicker(interval)
-	defer stop()
-	refresh := func() {
-		failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
-		for _, failure := range failures {
-			log.Info(fmt.Sprintf("message search: session %s: %v", failure.SessionID, failure.Err))
-		}
-		if err != nil && ctx.Err() == nil {
-			log.Info(fmt.Sprintf("message search: %v", err))
-		}
+	failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
+	for _, failure := range failures {
+		log.Info(fmt.Sprintf("message search: session %s: %v", failure.SessionID, failure.Err))
 	}
-	refresh()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticks:
-			refresh()
-		}
+	if err != nil && ctx.Err() == nil {
+		log.Info(fmt.Sprintf("message search: %v", err))
 	}
 }
 
@@ -154,16 +133,71 @@ func messageSearchSessions(entries []hubcore.PastEntry) []hubcore.MessageSearchS
 	return sessions
 }
 
-// watchHubNotices announces the hub's notice changes (S11) until ctx ends.
-func watchHubNotices(ctx context.Context, web *WebServer) {
+// startHubSnapshotWatchers starts the hub's periodic snapshot watchers on the
+// one wake that serves all of them (#6422).
+func startHubSnapshotWatchers(ctx context.Context, start func(func()), poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
-	ticks, stop := hubTicker(noticeInterval)
-	defer stop()
-	web.notices.runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
-		return web.notices.watchRead(ctx)
+	start(func() { watchHubSnapshotWake(ctx, poke, archive, web) })
+}
+
+// watchHubSnapshotWake is the hub's one periodic snapshot wake. Before it,
+// attention (which republishes the Manager roster) and notices each ran their
+// own 5 s ticker, so an idle hub paid two independent derivations of the same
+// state, and the notices' credential listing rebuilt the whole instance listing
+// for every curated provider on every one of its ticks (#6422).
+//
+// Both halves keep the cadence they had. The attention roster and
+// evener/attention/changed are re-derived on each tick and on each poke; the
+// notices are re-derived on the tick only. A poke is not a reason to re-read
+// providers.toml under credMu, run the credential listing and list plugins:
+// pokes fire on every roster change, remote-cache change and archive, favorite
+// or pin decision, so pulsing notices on them would turn a fixed 5 s read into
+// one read per event on a busy hub, which is more work than #6422 removed.
+//
+// The notices half runs on its own goroutine because its watcher owns the
+// announced-set baseline it diffs against and does its own credential read;
+// keeping that baseline single-owner is what makes the announcements
+// well-ordered. Its wake is a coalesced pulse: a pulse that arrives while the
+// previous derive still runs is dropped, which loses nothing, because the next
+// tick re-derives from current state and announces whatever moved. The watcher
+// is waited for before this returns, so a derive in flight cannot outlive the
+// server and stores its callers close.
+func watchHubSnapshotWake(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
+	if ctx.Err() != nil {
+		return
+	}
+	w := hubcore.NewAttentionWatcher(func(p appwire.AttentionChangedPayload) {
+		web.appRPC.BroadcastAll(appwire.NotifyEvenerAttentionChanged, p)
 	})
+	ticks, stop := hubTicker(snapshotInterval)
+	defer stop()
+	noticeTicks := make(chan time.Time, 1)
+	var notices sync.WaitGroup
+	notices.Go(func() {
+		web.notices.runNoticeWatcher(ctx, noticeTicks, web.notices.watchRead)
+	})
+	defer notices.Wait()
+	run := func() { runHubAttention(ctx, web, archive, w) }
+	pulseNotices := func() {
+		select {
+		case noticeTicks <- time.Time{}:
+		default:
+		}
+	}
+	run()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			run()
+			pulseNotices()
+		case <-poke:
+			run()
+		}
+	}
 }
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go

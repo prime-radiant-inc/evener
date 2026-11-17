@@ -7,6 +7,7 @@ import { Markdown, OpenButton } from "../../../../widgets";
 import { MERMAID_DIAGRAM_ATTR } from "../../../../widgets/mermaid/markers";
 import { openDocBeside } from "../../../doc/openDoc";
 import { enhanceEntityText } from "../EntityText";
+import { type AnalysisCache, createAnalysisCache } from "./analysisCache";
 import { enhanceFileReferences, resolveAnchorReference } from "./fileReferenceDOM";
 
 // A bare relative href the shared resolver accepts as a file link is the only
@@ -33,6 +34,17 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   // (issue #5451), so the click is held until the authoritative context
   // resolves the same href as a source-owned file.
   const pendingFileClick = useRef<{ href: string; sessionRef: string; sourcePaneId: string } | null>(null);
+  // React writes the sanitized HTML again on every delta, so every node is new
+  // and every reference is wrapped again. The scan that FINDS them is a pure
+  // function of text and roots, so the blocks this stream did not touch are
+  // answered from the previous pass instead of rescanned (issue #6455).
+  // Only a live instance earns that memo: it is the one that runs the pass
+  // again over the same text (issue #6603). A settled message fills a cache
+  // once and then holds every block's text and span arrays for as long as it
+  // stays mounted, so it keeps none - the effect below releases it on settle.
+  const analysisRef = useRef<AnalysisCache | null>(null);
+  if (live && analysisRef.current === null) analysisRef.current = createAnalysisCache();
+  const analysis = analysisRef.current ?? undefined;
   // Portal updates must not replace the innerHTML that owns their mount points.
   const markdown = useMemo(() => <Markdown ref={root} source={source} live={live} />, [source, live]);
 
@@ -40,6 +52,10 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   // unchanged text. source/live invalidate the sanitized Markdown DOM itself.
   // biome-ignore lint/correctness/useExhaustiveDependencies: source/live invalidate the child Markdown DOM
   useLayoutEffect(() => {
+    // Released after the commit rather than during render: a settled instance
+    // keeps no analysis, and a stream that settles in place drops the cache it
+    // filled. The settle pass itself may still answer from it.
+    if (!live) analysisRef.current = null;
     const element = root.current;
     if (!element) return;
     if (pendingFileClick.current !== null && pendingFileClick.current.sessionRef !== sessionRef) {
@@ -107,8 +123,8 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
         );
       }
     }
-    const restoreFiles = context ? enhanceFileReferences(element, context) : () => {};
-    const entityResult = enhanceEntityText(element);
+    const restoreFiles = context ? enhanceFileReferences(element, context, analysis) : () => {};
+    const entityResult = enhanceEntityText(element, analysis);
     setPortals([...affordances, ...entityResult.portals]);
     return () => {
       removeClickHold();

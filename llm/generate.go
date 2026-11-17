@@ -165,6 +165,19 @@ type generationState struct {
 	hasActiveTool bool
 	maxToolRounds int
 	policy        RetryPolicy
+	// toolDefsJSONBytes is toolDefs' serialized length, measured once when the
+	// list is built. It is stamped on every request the generation builds, so
+	// the per-dispatch token estimate prices the catalog without re-serializing
+	// it (#6437). The list is never reassigned after prepareGeneration, so the
+	// length describes exactly the slice every request carries.
+	//
+	// Like every stamp, it describes the bytes at stamping time, so the list and
+	// every element's Parameters must be treated as immutable for the
+	// generation's life (see Request.ToolsJSONBytes). prepareTools already
+	// copies the slice; the parameter maps are the caller's, and a caller that
+	// rewrites one mid-generation would drift the estimate. Build a new
+	// GenerateOptions instead.
+	toolDefsJSONBytes int
 }
 
 func prepareGeneration(opts GenerateOptions) (*generationState, error) {
@@ -206,6 +219,11 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Measured here, beside the one place the list is built, rather than by
+	// every estimate: the list is immutable for the generation's life, and one
+	// marshal of an advertised catalog costs far more than the history walk the
+	// estimate is for (#6437).
+	toolDefsJSONBytes := ToolsJSONBytes(toolDefs)
 	hasActiveTool := false
 	for _, t := range opts.Tools {
 		if t.Execute != nil {
@@ -220,13 +238,14 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	}
 
 	return &generationState{
-		client:        client,
-		history:       history,
-		toolIndex:     toolIndex,
-		toolDefs:      toolDefs,
-		hasActiveTool: hasActiveTool,
-		maxToolRounds: maxToolRounds,
-		policy:        policy,
+		client:            client,
+		history:           history,
+		toolIndex:         toolIndex,
+		toolDefs:          toolDefs,
+		toolDefsJSONBytes: toolDefsJSONBytes,
+		hasActiveTool:     hasActiveTool,
+		maxToolRounds:     maxToolRounds,
+		policy:            policy,
 	}, nil
 }
 
@@ -237,6 +256,7 @@ func (gs *generationState) request(opts GenerateOptions, history []Message) Requ
 		Provider:             opts.Provider,
 		Messages:             append([]Message{}, history...),
 		Tools:                gs.toolDefs,
+		ToolsJSONBytes:       gs.toolDefsJSONBytes,
 		ToolChoice:           opts.ToolChoice,
 		ResponseFormat:       opts.ResponseFormat,
 		Temperature:          opts.Temperature,

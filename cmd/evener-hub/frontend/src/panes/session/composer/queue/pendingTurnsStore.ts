@@ -173,9 +173,25 @@ installResumeOnlyProjection({
 const projectionFence = createMutationProjectionFence<MutationAttachment>();
 const persistencePort: MutationPersistencePort<MutationAttachment> = { read: readMutationPersistence };
 
+// The refs whose projection refresh an in-flight press already owns. A durable
+// action notifies persistence before it resolves (#4816), and the commit feed
+// turns that notice into a fire-and-forget refresh of the same ref - a second
+// full read of the same rows, which the fence then discards because the
+// press's own later read out-ranks it.
+//
+// The mark covers the mutation only, not the refresh that follows it. Anything
+// notified while the mutation runs committed before it resolved, so the press's
+// own read - which starts after that - sees it too. Once that read is in flight
+// the mark is gone, because a write notified from then on may land after the
+// read's snapshot and would need its own refresh to be published.
+const pressOwnedRefreshes = new Set<string>();
+
 // The fire-and-forget refresh port both the commit feed and the submission
 // runner take, bound once here rather than written inline at each site.
-const refreshTarget: (ref?: string) => void = (ref) => void refreshPendingTurnsProjection(ref);
+const refreshTarget: (ref?: string) => void = (ref) => {
+  if (ref !== undefined && pressOwnedRefreshes.has(ref)) return;
+  void refreshPendingTurnsProjection(ref);
+};
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
@@ -665,7 +681,13 @@ export function useRecoveryMessageEntries(ref: string): MutationRecoveryRecord[]
 function mutateThenRefresh<T>(ref: string, mutate: () => Promise<T>): Promise<T> {
   return trackProjectionWork(
     (async () => {
-      const result = await mutate();
+      pressOwnedRefreshes.add(ref);
+      let result: T;
+      try {
+        result = await mutate();
+      } finally {
+        pressOwnedRefreshes.delete(ref);
+      }
       await refreshPendingTurnsProjection(ref);
       return result;
     })(),

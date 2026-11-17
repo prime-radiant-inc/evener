@@ -117,9 +117,32 @@ afterEach(() => {
 // classification and row construction twice. The fix passes Session's prepared
 // projection and rows into the body; this pins one derivation per distinct
 // (model, config) pair through the live parent -> child path.
+//
+// #6419: the live path derives through an incremental projector instead of the
+// exported projectThread, because that projector reuses the turns a delta did
+// not touch. So the count is taken on the projector the live path actually
+// calls, and projectThread is asserted NOT to be reached from the live tree: a
+// second whole-thread derivation there would undo the reuse.
 test("derives the live thread projection once per model revision", async ({ onTestFinished }) => {
-  const project = vi.spyOn(appwireClient, "projectThread");
-  onTestFinished(() => project.mockRestore());
+  const fullDerivations = vi.spyOn(appwireClient, "projectThread");
+  onTestFinished(() => fullDerivations.mockRestore());
+
+  // Wrap rather than fake: the real derivation still runs, so the pane renders,
+  // and the wrapper records what the live path asked for.
+  const realCreateProjector = appwireClient.createTranscriptProjector;
+  const project = vi.fn();
+  const createProjector = vi.spyOn(appwireClient, "createTranscriptProjector");
+  createProjector.mockImplementation(() => {
+    const inner = realCreateProjector();
+    return {
+      project: (model, config) => {
+        project(model, config);
+        return inner.project(model, config);
+      },
+    };
+  });
+  onTestFinished(() => createProjector.mockRestore());
+
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { turns: [turnFixture("turn_1", "hello")] }));
 
@@ -141,6 +164,9 @@ test("derives the live thread projection once per model revision", async ({ onTe
   }
   expect(project.mock.calls.length).toBeGreaterThan(0);
   expect(project.mock.calls.length).toBe(distinct.size);
+  // TranscriptBody renders the prepared view, so the live tree never pays a
+  // whole-thread derivation of its own.
+  expect(fullDerivations.mock.calls.length).toBe(0);
 });
 
 // --- turn-failure recovery wiring (wave 8) -------------------------------
