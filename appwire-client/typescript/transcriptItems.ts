@@ -549,6 +549,12 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.evener.tasks ?? null,
+    // A quota wait's resume instant rides the failure summary on a working
+    // thread (ThreadFailure.ResumesAt). Present-and-undefined clears it, the
+    // same rule as artifactsDir below: a read whose thread no longer waits
+    // must drop a stale instant, or a pane would keep announcing a wait that
+    // ended.
+    quotaResumesAt: thread.evener.failure?.resumesAt,
     ...(thread.evener.diagnostics
       ? {
           diagnostics: {
@@ -600,5 +606,6 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
   // without a root keeps the shape it had before this field existed.
   if (fields.artifactsDir === undefined) delete fields.artifactsDir;
   if (fields.scratchDir === undefined) delete fields.scratchDir;
+  if (fields.quotaResumesAt === undefined) delete fields.quotaResumesAt;
   return fields;
 }

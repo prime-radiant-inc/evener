@@ -53,7 +53,7 @@ const CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
-function thread(turns: Turn[], activeTurnId?: string): Thread {
+function thread(turns: Turn[], activeTurnId?: string, quotaWaitResumesAt?: number): Thread {
   return {
     id: THREAD_ID,
     sessionId: "sess_h",
@@ -72,6 +72,7 @@ function thread(turns: Turn[], activeTurnId?: string): Thread {
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
       ...(activeTurnId ? { activeTurnId } : {}),
+      ...(quotaWaitResumesAt === undefined ? {} : { failure: { resumesAt: quotaWaitResumesAt } }),
     },
   };
 }
@@ -116,10 +117,11 @@ function read(
     changes?: HistoryChanges;
     olderCursor?: string;
     activeTurnId?: string;
+    quotaWaitResumesAt?: number;
   } = {},
 ): ThreadReadResponse {
   return {
-    thread: thread(turns, options.activeTurnId),
+    thread: thread(turns, options.activeTurnId, options.quotaWaitResumesAt),
     requestGeneration: options.requestGeneration ?? 1,
     bootGeneration: options.bootGeneration ?? "1",
     epoch: options.epoch ?? 0,
@@ -159,6 +161,33 @@ test.each([
   const again = pruneBackgroundHistoryBodies(pruned);
   expect(again.history?.turns).toEqual(pruned.history?.turns);
   expect(again.turns.flatMap((turn) => turn.items)).toEqual([]);
+});
+
+// A quota wait is state the thread carries, not a notification: a pane that
+// reloads, reconnects or cold-visits a waiting session re-hydrates from the
+// read, whose failure summary carries the resume instant on the working
+// thread (ThreadFailure.ResumesAt). The next read, once the wait is over,
+// carries no failure and must clear the instant — a stale resume time would
+// render a wait that ended.
+test("a read whose thread carries a quota failure sets the model's resume instant", () => {
+  const resumesAt = 4_102_400_000;
+  const model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  expect(model.quotaResumesAt).toBe(resumesAt);
+});
+
+test("a read whose thread carries no quota failure clears a stale resume instant", () => {
+  const resumesAt = 4_102_400_000;
+  const model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  const fresh = hydrateThread(read([turn("turn_2", 1)], { activeTurnId: "turn_2" }), REF, NOW + 1);
+  expect(applyReadModel(model, fresh).quotaResumesAt).toBeUndefined();
 });
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {

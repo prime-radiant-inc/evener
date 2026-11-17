@@ -669,6 +669,7 @@ function LiveConversationBody({
           turnId={model.runningTurnId ?? model.activeTurnId}
           retry={model.modelRetry}
           primaryModel={model.model}
+          quotaResumesAt={model.quotaResumesAt}
         />
         <ConversationRecoveryNotices sessionRef={ref} />
         {/* Recovery keeps the composer and its menu mounted. Retain the

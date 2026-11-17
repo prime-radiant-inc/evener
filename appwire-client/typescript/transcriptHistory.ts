@@ -1007,12 +1007,14 @@ export function applyReadResponse<M extends ThreadModel>(
   // one, or link actions stay aimed at a directory the hub no longer serves.
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
+  const clearedQuotaWait = fields.quotaResumesAt === undefined ? { quotaResumesAt: undefined } : {};
   let next = withDisplay(
     {
       ...base,
       ...fields,
       ...clearedArtifacts,
       ...clearedScratch,
+      ...clearedQuotaWait,
       ...runningTurn(resp.thread),
       olderCursor,
       olderFrontier,
@@ -1182,12 +1184,15 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.artifactsDir === undefined && model.artifactsDir !== undefined ? { artifactsDir: undefined } : {};
   const clearedScratch =
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
+  const clearedQuotaWait =
+    fresh.quotaResumesAt === undefined && model.quotaResumesAt !== undefined ? { quotaResumesAt: undefined } : {};
   let next = withDisplay(
     {
       ...base,
       ...fields,
       ...clearedArtifacts,
       ...clearedScratch,
+      ...clearedQuotaWait,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
       olderFrontier,

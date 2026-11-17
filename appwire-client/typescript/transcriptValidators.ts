@@ -63,6 +63,7 @@ export type CurrentTranscriptFields = Pick<
   | "olderFrontier"
   | "lastFrameAt"
   | "modelRetry"
+  | "quotaResumesAt"
   | "goal"
   | "humanNote"
   | "agentNote"
@@ -847,6 +848,7 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.failedToolCalls !== undefined && !isFiniteNumber(value.failedToolCalls)) return false;
   if (value.activeTurnId !== undefined && typeof value.activeTurnId !== "string") return false;
   if (value.runningTurnId !== undefined && typeof value.runningTurnId !== "string") return false;
+  if (value.quotaResumesAt !== undefined && !isFiniteNumber(value.quotaResumesAt)) return false;
   for (const key of [
     "reasoningEffort",
     "defaultReasoningEffort",

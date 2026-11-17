@@ -673,7 +673,11 @@ the user's current intent.
 
 A usage limit that names its reset time is handled: the model call waits for
 the reset inside its turn, with the goal active (see S09 in the
-[subsystem map](subsystems.md)).
+[subsystem map](subsystems.md)). The wait is visible in every surface the
+reader watches it from: the web rail row and session card, the phone
+Board's why line, and the transcript pane's liveness line, which carries
+the resume time on the thread snapshot so a reload or cold visit still
+shows it.
 
 **Still pending.** Other temporary provider failures (an outage outlasting the
 transport retries, or a usage limit with no reset time) still block the goal.

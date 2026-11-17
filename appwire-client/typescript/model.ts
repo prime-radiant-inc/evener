@@ -454,6 +454,16 @@ export interface ThreadModel {
   // the completion of the model's own output item (assistant message,
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
+  // The epoch-ms instant a model call waiting out a provider usage limit
+  // resumes by itself (ThreadFailure.ResumesAt on the read snapshot, or the
+  // reducer's stamp of `now + delayMs` for the quota class's
+  // evener/thread/modelRetry announcement). Unlike modelRetry this is state,
+  // not liveness state: a reload or reconnect that re-hydrates from a read
+  // still knows the wait, so the transcript pane can keep saying it. Cleared
+  // by the wait's own retry-start announcement (a quota retry with no
+  // delay), by the completion of the model's own output item (the retry
+  // succeeded), and by a read whose thread carries no quota failure.
+  quotaResumesAt?: number;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

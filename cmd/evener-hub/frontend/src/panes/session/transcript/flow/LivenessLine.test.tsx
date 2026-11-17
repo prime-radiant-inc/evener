@@ -158,6 +158,56 @@ function rawRetry(overrides: Partial<Parameters<typeof LivenessLine>[0]["retry"]
   } as NonNullable<Parameters<typeof LivenessLine>[0]["retry"]>;
 }
 
+// Re-renders the mounted element with a new `now`, the way Session's
+// ticking clock would between renders.
+function rerenderWith(mounted: ReturnType<typeof render>, quotaResumesAt: number, now: number) {
+  mounted.rerender(
+    <LivenessLine
+      lastFrameAt={0}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      quotaResumesAt={quotaResumesAt}
+    />,
+  );
+}
+
+// A quota wait the thread snapshot carries (ThreadFailure.ResumesAt): the
+// pane re-hydrating from a read has no modelRetry notification at all, so
+// the resume instant alone must produce the line. It shows at once (a
+// provider-named wait is not a stall guess) and keeps reading as a wait
+// however long the silence runs, where an ordinary first retry would read
+// "no updates for 3h" past the stuck threshold.
+test("a quota wait known from the thread snapshot renders immediately and never reads as stalled", () => {
+  const resumesAt = 30_000 + 90 * 60_000;
+  const mounted = render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      quotaResumesAt={resumesAt}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("retrying");
+
+  rerenderWith(mounted, resumesAt, STUCK_AFTER_MS * 6);
+  const hoursIn = screen.getByTestId("liveness-line");
+  expect(hoursIn.getAttribute("data-level")).toBe("retrying");
+  expect(hoursIn.textContent).not.toContain("no updates for");
+});
+
+test("a quota wait whose resume time has passed renders nothing and lets the ordinary liveness decision speak", () => {
+  render(
+    <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" quotaResumesAt={10_000} />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quiet");
+});
+
 test("renders the retry cause and wait instead of the quiet phrase", () => {
   render(
     <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,

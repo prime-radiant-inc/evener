@@ -5,8 +5,11 @@ import {
   describeLiveness,
   formatExactGap,
   formatQuietBucket,
+  formatRetryCause,
+  formatRetryWait,
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
+  quotaWaitFrom,
   type RetryWait,
 } from "./liveness";
 
@@ -220,6 +223,26 @@ test("describeLiveness: a non-rate-limit retryable error names itself genericall
   });
 });
 
+// A quota wait is the one other cause a reader can act on (wait out the
+// reset, or switch models), and it is not a provider malfunction: naming it
+// "provider error" misnames a scheduled wait as a failure. The wait is
+// wall-clock long (hours), so the chip renders the wait itself, not the
+// per-second countdown an ordinary retry's delayMs uses. The quota retry the
+// daemon sends always reads attempt 1 and never exhausts a budget, so the
+// attempt count carries no information and renders nowhere.
+test("formatRetryCause: a quota wait names itself, not a generic provider error", () => {
+  expect(formatRetryCause("quota_exceeded")).toBe("waiting for quota");
+  expect(formatRetryCause("rate_limit")).toBe("rate limited");
+  expect(formatRetryCause("server")).toBe("provider error");
+});
+
+test("formatRetryWait: a quota wait reads the wall-clock wait, not attempt counts", () => {
+  const retry = retryWait({ attempt: 1, attemptCap: 1, delayMs: 2 * 60 * 60_000, errorClass: "quota_exceeded" });
+  expect(formatRetryWait(retry)).toContain("waiting for quota");
+  expect(formatRetryWait(retry)).toContain("2h");
+  expect(formatRetryWait(retry)).not.toContain("attempt");
+});
+
 test("describeLiveness: past the stuck threshold a retry reports both facts, never suppressing the stall", () => {
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(630_000, true, 0, retry)).toEqual({
@@ -235,6 +258,35 @@ test("describeLiveness: past the stuck threshold a retry reports both facts, nev
 test("describeLiveness: a first retry (attempt 1) under the quiet threshold stays invisible", () => {
   const retry = retryWait({ attempt: 1, attemptCap: 11, delayMs: 1_000, errorClass: "rate_limit" });
   expect(describeLiveness(5_000, true, 0, retry)).toEqual({ level: "none", text: null });
+});
+
+// The quota wait's announcement always reads attempt 1 (the wait announces
+// itself as a retry whose delay runs to the reset), so the attempt-2 gate
+// above would hide a multi-hour wait behind the ordinary 20s quiet clock —
+// and past the stuck threshold the same wait would read "no updates for 3h",
+// a stall report for a scheduled, provider-named pause. A quota wait is
+// KNOWN information the daemon reported, like a retry past its first attempt:
+// it shows as soon as the client knows it, and it never escalates to
+// stalled while its resume time is ahead.
+test("describeLiveness: a quota wait shows immediately, without the quiet gate, and never reads as stalled", () => {
+  const retry = retryWait({ attempt: 1, attemptCap: 1, delayMs: 3 * 60 * 60_000, errorClass: "quota_exceeded" });
+  expect(describeLiveness(2_000, true, 0, retry).level).toBe("retrying");
+  const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, retry);
+  expect(hoursIn.level).toBe("retrying");
+  expect(hoursIn.text).not.toContain("no updates for");
+});
+
+// The same wait, arriving as the thread's failure summary rather than a
+// live notification (a reload, a reconnect, a cold visit to a session that
+// was already waiting): the resume instant is all the line needs, and the
+// same no-gate, never-stalled rules apply. This is the shape a pane that
+// re-hydrated from a snapshot has to render.
+test("describeLiveness: a quota wait known only as a resume instant shows at once and never reads as stalled", () => {
+  const resumesIn = 90 * 60_000;
+  expect(describeLiveness(2_000, true, 0, quotaWaitFrom(resumesIn)).level).toBe("retrying");
+  const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, quotaWaitFrom(resumesIn));
+  expect(hoursIn.level).toBe("retrying");
+  expect(hoursIn.text).not.toContain("no updates for");
 });
 
 test("describeLiveness: a retry is never stuck while a subagent runs", () => {

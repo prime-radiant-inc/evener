@@ -3023,6 +3023,103 @@ test("evener/thread/modelRetry records retry state and leaves lastFrameAt alone"
   expect(model.lastFrameAt).toBe(frameAtBeforeRetry);
 });
 
+// A usage-limit wait announced as a model retry (emitQuotaRetry in the
+// daemon): the delay runs to the reset, and the pane's own countdown needs
+// the wall-clock resume instant, not the delay alone — the notification is
+// liveness state a reload drops, so the instant is what a re-hydrated pane
+// must reconstruct the line from. The second announcement, sent when the
+// retry goes out, has no delay and must clear the wait.
+test("evener/thread/modelRetry with the quota class records the resume instant", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 2 * 60 * 60_000,
+        errorClass: "quota_exceeded",
+        statusCode: 429,
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_000_000,
+  );
+  expect(model.quotaResumesAt).toBe(1_000_000 + 2 * 60 * 60_000);
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+test("evener/thread/modelRetry with the quota class and no delay clears the resume instant", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        statusCode: 429,
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_000_000,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+
+  model = applyNotification(
+    { ...model, quotaResumesAt: 5_000_000 },
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_500_000,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+});
+
+// A non-quota retry must not set the quota instant: a rate limit's delay is
+// pacing, not a provider-named reset.
+test("evener/thread/modelRetry with a non-quota class records no resume instant", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 2,
+        maxAttempts: 11,
+        delayMs: 4_000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        groupElapsedMs: 840_000,
+        attemptCap: 11,
+      },
+    },
+    999_000,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+});
+
 // Component 1 (docs/superpowers/specs/2026-08-07-provider-failure-feedback-
 // design.md): the retry state answers "what is happening now, in this retry
 // group" and must survive ordinary mid-grind progress (deltas, a

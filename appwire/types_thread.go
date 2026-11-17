@@ -240,8 +240,11 @@ type EvenerThread struct {
 	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
 	// Failure summarizes the failed turn the session rests on (S1c). It is
 	// present only while the thread's status is systemError, and absent from
-	// an older daemon and for a failure that recorded no diagnostic.
-	// Snapshot-only: no notification carries it.
+	// an older daemon and for a failure that recorded no diagnostic. The one
+	// working-thread exception is a model call waiting out a provider usage
+	// limit: that summary carries the wait's reset time (ResumesAt) and rides
+	// the working thread until the wait ends. Snapshot-only: no notification
+	// carries it.
 	Failure *ThreadFailure `json:"failure,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,

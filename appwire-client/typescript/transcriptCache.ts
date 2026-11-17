@@ -81,6 +81,7 @@ const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "olderFrontier",
   "lastFrameAt",
   "modelRetry",
+  "quotaResumesAt",
   "goal",
   "humanNote",
   "agentNote",

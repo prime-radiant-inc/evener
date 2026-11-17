@@ -16,7 +16,7 @@
 // (Cadence already carries live activity via its trace - see
 // widgets/cadence). These are session-level thresholds only.
 
-import { isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
+import { compactDuration, isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
 
 export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
 
@@ -87,16 +87,20 @@ export interface RetryWait {
 }
 
 /**
- * Names the retry's cause for the reader. Only rate limiting gets its own
- * phrasing: it is the one the reader can act on (wait, or switch model), and it
- * is overwhelmingly the common case - one session logged 91 of them in four
- * hours. Everything else retryable reads as a generic provider error rather
- * than leaking an error-class token like "server" into the UI. Lowercase,
- * matching the design doc's own literal chip string (Component 1,
- * Jesse 2026-08-08 rendering note) character for character.
+ * Names the retry's cause for the reader. Rate limiting and a usage-limit
+ * wait get their own phrasing: they are the ones the reader can act on (wait,
+ * or switch model). Rate limits are overwhelmingly the common case - one
+ * session logged 91 of them in four hours. A usage-limit wait is not a
+ * malfunction at all: the provider named a reset time and the call is holding
+ * until then, so reading it as an error misnames a scheduled wait.
+ * Everything else retryable reads as a generic provider error rather than
+ * leaking an error-class token like "server" into the UI. Lowercase, matching
+ * the design doc's own literal chip string (Component 1, Jesse 2026-08-08
+ * rendering note) character for character.
  */
 export function formatRetryCause(errorClass?: string): string {
-  return errorClass === "rate_limit" ? "rate limited" : "provider error";
+  if (errorClass === "rate_limit") return "rate limited";
+  return errorClass === "quota_exceeded" ? "waiting for quota" : "provider error";
 }
 
 /**
@@ -114,11 +118,37 @@ export function formatRetryCause(errorClass?: string): string {
  * so the denominator is omitted entirely rather than substituted.
  */
 export function formatRetryWait(retry: RetryWait): string {
+  // A quota wait's attempt count carries no information (the daemon's wait
+  // announcement always reads attempt 1 and never spends a budget), and its
+  // delay runs hours, not seconds: the wait is the line's whole content, the
+  // same wall-clock phrasing every other surface gives it (the rail row and
+  // the phone Board's compactDuration), with the call's elapsed time beside
+  // it so the reader can tell a fresh wait from one hours in.
+  if (retry.errorClass === "quota_exceeded") {
+    const wait = retry.inProgress ? "in progress" : `resumes in ${compactDuration(retry.delayMs)}`;
+    return `${formatRetryCause(retry.errorClass)} — ${wait} — ${formatExactGap(retry.groupElapsedMs)} on this call`;
+  }
   const modelTag = retry.model ? ` (${retry.model})` : "";
   const attempt = retry.attemptCap > 0 ? `attempt ${retry.attempt}/${retry.attemptCap}` : `attempt ${retry.attempt}`;
   const wait = retry.inProgress ? "in progress" : `retrying in ${Math.max(0, Math.round(retry.delayMs / SECOND_MS))}s`;
   const elapsed = `${formatExactGap(retry.groupElapsedMs)} on this call`;
   return `${formatRetryCause(retry.errorClass)}${modelTag} — ${attempt} — ${wait} — ${elapsed}`;
+}
+
+// The quota wait a resume instant names, as the RetryWait describeLiveness's
+// retry branch renders: delayMs measured from now to the instant, and
+// groupElapsedMs zero, because the resume instant alone carries no call
+// elapsed time - the reducer-stamped path (a live quota retry) keeps its own.
+export function quotaWaitFrom(resumesInMs: number): RetryWait {
+  return {
+    attempt: 1,
+    attemptCap: 1,
+    delayMs: resumesInMs,
+    errorClass: "quota_exceeded",
+    model: undefined,
+    groupElapsedMs: 0,
+    inProgress: false,
+  };
 }
 
 /**
@@ -159,8 +189,28 @@ export function describeLiveness(
   active: boolean,
   runningSubagents: number,
   retry?: RetryWait,
+  quotaResumesAt?: number,
+  nowMs?: number,
 ): LivenessInfo {
   if (!active) return { level: "none", text: null };
+  // A quota wait is known information the same way a retry past its first
+  // attempt is (the rule below): the provider named the reset, so the wait
+  // shows the moment the client knows it and never escalates to stalled
+  // while the reset is still ahead. The wait announcement always reads
+  // attempt 1, so the attempt-count gate below cannot cover it, and its
+  // silence runs hours: behind the quiet gate the line would read "no
+  // updates for 3h", a stall report for a scheduled pause. The instant form
+  // is the read snapshot's (a pane that re-hydrated, with no notification);
+  // the retry form is the live announcement, whose delay runs to the reset.
+  const quotaRemaining =
+    quotaResumesAt !== undefined && nowMs !== undefined
+      ? quotaResumesAt > nowMs
+        ? quotaResumesAt - nowMs
+        : undefined
+      : retry !== undefined && retry.errorClass === "quota_exceeded" && !retry.inProgress
+        ? retry.delayMs
+        : undefined;
+  if (quotaRemaining !== undefined) return { level: "retrying", text: formatRetryWait(quotaWaitFrom(quotaRemaining)) };
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.
