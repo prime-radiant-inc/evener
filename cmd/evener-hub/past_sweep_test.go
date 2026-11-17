@@ -158,8 +158,8 @@ func TestSweepReadsASessionARepairedSidecarMadeReadable(t *testing.T) {
 }
 
 // TestSweepSkipsFullPassWhenNothingChanged is the change the issue asks for: an
-// idle sweep must not redo the full scan and refresh. It counts the work, not
-// the time.
+// idle sweep must not redo the past index's full scan. (The refresh still runs
+// every tick, by design.) It counts the work, not the time.
 func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	f := newSweepFixture(t)
 	sweep := newHubPastSweep(f.past, f.search)
