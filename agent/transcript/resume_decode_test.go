@@ -46,6 +46,8 @@ func waitForResumeDecoderGoroutines(d time.Duration) int64 {
 // left, so a scan over a longer transcript submits entries and then hits a read
 // error. It exists to put the scan on its read-error path after submits, which
 // a header or open failure cannot do.
+var errInjectedReadFailure = errors.New("injected read failure")
+
 type failingReadFS struct {
 	afero.Fs
 	path      string
@@ -73,7 +75,7 @@ type failingReadFile struct {
 
 func (f *failingReadFile) Read(p []byte) (int, error) {
 	if f.remaining <= 0 {
-		return 0, errors.New("injected read failure")
+		return 0, errInjectedReadFailure
 	}
 	if len(p) > f.remaining {
 		p = p[:f.remaining]
@@ -317,7 +319,7 @@ func TestResumeScanReportsAnEntryErrorBeforeALaterReadFailure(t *testing.T) {
 	if !errors.Is(err, ErrInvalidRecordBoundary) {
 		t.Fatalf("resume error = %v, want the earlier corrupt line's ErrInvalidRecordBoundary", err)
 	}
-	if strings.Contains(err.Error(), "read transcript for resume") {
+	if errors.Is(err, errInjectedReadFailure) {
 		t.Fatalf("resume error = %v, want the corrupt line's error rather than the later read failure", err)
 	}
 }
@@ -390,7 +392,7 @@ func TestResumeScanJoinsItsDecodeWorkers(t *testing.T) {
 		if err == nil {
 			t.Fatal("resume succeeded through a read fault")
 		}
-		if !strings.Contains(err.Error(), "read transcript for resume") {
+		if !errors.Is(err, errInjectedReadFailure) {
 			t.Fatalf("resume error = %v, want the scan's read error", err)
 		}
 		// The point of this case: entry lines really were submitted before the
