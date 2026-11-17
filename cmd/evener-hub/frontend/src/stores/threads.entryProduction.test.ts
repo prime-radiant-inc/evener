@@ -458,9 +458,17 @@ it.each(
   expect(JSON.stringify(model()) ?? "").not.toContain("obsolete");
   replacement.resolve({ ...response("local:a", [turn("replacement", 2)]), authoritative: true });
   if (owner === "held") {
-    // The replacement read's own settlement is what publishes the model.
-    await settleEntryTranscriptForTests("local:a");
-    await drainSettleSteps();
+    // The replacement read publishes from its own continuation. A tracked
+    // refresh registers that hydration, so its settle covers publication; the
+    // watched mirror (refreshWatchedThread) registers nothing, so awaiting the
+    // settle there would wait on unrelated work and pass only if the read
+    // happened to finish first. Await the model itself in that case.
+    if (kind === "thread") {
+      await settleEntryTranscriptForTests("local:a");
+      await drainSettleSteps();
+    } else {
+      await pumpIndexedDBUntil({ turns: 400, until: () => (JSON.stringify(model()) ?? "").includes("replacement") });
+    }
     expect(JSON.stringify(model())).toContain("replacement");
   }
   await settleBackgroundTranscriptsForTests();
@@ -8714,7 +8722,6 @@ it("aborted Clear restarts a pending end read from the current owner", async () 
   client.on("thread/read", (params) => {
     reads += 1;
     if (reads === 2) endReadIssued.resolve();
-    if (reads === 3) restartedEndReadIssued.resolve();
     if (reads === 3) restartedEndReadIssued.resolve();
     return reads === 2
       ? pendingEnd.promise
