@@ -1,4 +1,6 @@
-import { STUCK_AFTER_MS } from "@evener/appwire-client";
+import { hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
+import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
@@ -304,6 +306,70 @@ test("renders 'in progress' once the reported delay has elapsed, even with no ne
   expect(screen.getByTestId("liveness-line").textContent).toBe(
     "rate limited — attempt 9/11 — in progress — 5s on this call",
   );
+});
+
+// --- a usage-limit wait (issue #6657) ---------------------------------------
+//
+// A model call that meets a usage limit naming its reset waits inside itself.
+// The daemon samples that wait into the thread read's failure summary, so a
+// client that RELOADS can still say when the call resumes; the live
+// evener/thread/modelRetry that also described it is ephemeral and gone. These
+// cases seed the store with a model built by hydrateThread from a read - the
+// same way a reload rebuilds one - rather than by setting the field.
+
+// A usage-limit wait as a reload rebuilds it: a thread read whose failure names
+// the reset instant, hydrated into a ThreadModel. `resumesInMs` is measured from
+// the test's own clock, so the model carries the same instant a real read of
+// that daemon would have carried at that moment.
+function reloadWithQuotaWait(resumesInMs: number, nowMs: number): void {
+  const thread = testThread({
+    status: { type: "active" },
+    evener: {
+      failure: { title: "Usage limit reached", resumesAt: nowMs + resumesInMs },
+    },
+  });
+  // Hydrated under the ref the pane looks the session up by.
+  const model = hydrateThread({ thread }, "s1", nowMs);
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+}
+
+test("a reloaded session says when its usage-limit wait resumes, without any live retry frame", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(6 * 60 * 60_000, now);
+  render(<LivenessLine lastFrameAt={0} now={now} active={true} sessionRef="s1" turnId="turn_0" />);
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  // The shared wait words, from the one source both this pane and the rail
+  // read - asserted through the same function, never against a literal.
+  expect(el.textContent).toBe(waitingForQuotaText(6 * 60 * 60_000));
+});
+
+// A six-hour reset is not 21,600 seconds of a wedged session, and the chip's
+// own silence gate is for unexplained silence: a wait whose reset is known
+// shows at once, and keeps saying hours rather than counting seconds down.
+test("a usage-limit wait shows immediately, in hours rather than a seconds countdown", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(21_600_000, now);
+  // 3s of quiet: far under the 20s gate that guards inferred silence.
+  render(<LivenessLine lastFrameAt={now - 3_000} now={now} active={true} sessionRef="s1" turnId="turn_0" />);
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).not.toContain("21600s");
+  expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
+});
+
+// The wait ends at its instant whether or not a read has landed since: past
+// it the call resumes by itself, so the line stops promising a future that
+// has arrived and the ordinary silence decision holds again.
+test("a usage-limit wait stops explaining the silence once its instant passes", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(60_000, now);
+  render(<LivenessLine lastFrameAt={now} now={now + 60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).not.toBe("quota");
 });
 
 // --- the hub's count (#3797) ------------------------------------------------

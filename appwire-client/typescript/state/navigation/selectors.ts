@@ -300,15 +300,26 @@ export function selectSessionSummary(ref: string, state: NavigationStoreState): 
 }
 export const findSessionNode = selectSessionSummary;
 
-/** How long until a session whose model call waits out a provider usage
- * limit resumes by itself, or null when it is not waiting: its failure names
- * no resume time, or that time has passed. The waiting session is working, so
- * the summary rides a working row. A passed time is not shown because the
- * call resumes then, and the row may refresh a little after it. */
+/** How long until a call waiting out a provider usage limit resumes by
+ * itself, given the instant it resumes and the current time; null when it is
+ * not waiting: no instant was named, or that instant has passed. A passed
+ * time is not shown because the call resumes then, and the surface may
+ * refresh a little after it.
+ *
+ * One rule for both holders of the instant: a navigation row's failure
+ * (`resumes_at`, an ISO string) and a thread read's ThreadModel
+ * (`quotaResumesAt`, the same instant already converted). Neither parses the
+ * other's shape. */
+export function quotaResumeRemainingMs(resumesAt: string | undefined, nowMs: number): number | null {
+  const parsed = parseTimestampMs(resumesAt);
+  if (parsed === undefined || parsed <= nowMs) return null;
+  return parsed - nowMs;
+}
+
+/** quotaResumeRemainingMs for a navigation row: the summary rides a working
+ * row because the waiting session is working. */
 export function quotaWaitRemainingMs(session: NavigationSessionSummary, nowMs: number): number | null {
-  const resumesAt = parseTimestampMs(session.failure?.resumes_at);
-  if (resumesAt === undefined || resumesAt <= nowMs) return null;
-  return resumesAt - nowMs;
+  return quotaResumeRemainingMs(session.failure?.resumes_at, nowMs);
 }
 
 /** The status words of a session waiting out a usage limit, for every list
