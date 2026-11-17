@@ -160,8 +160,7 @@ func boundFires(p *Causal) {
 	keptCount := make(map[WatchKey]int, len(p.WatchKeys)+1)
 	kept := make([]FireKey, 0, len(p.FireKeys))
 	over := false
-	for i := len(p.FireKeys) - 1; i >= 0; i-- {
-		fire := p.FireKeys[i]
+	for _, fire := range slices.Backward(p.FireKeys) {
 		key := WatchKey{WatchID: fire.WatchID, WatchGeneration: fire.WatchGeneration}
 		// Walking newest-first, the first maxCausalFiresPerWatch fires of a watch
 		// are the ones retained; everything older than that is surplus.
