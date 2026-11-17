@@ -315,6 +315,16 @@ type ignoreFileCost struct {
 	source int // every source byte read
 }
 
+// charge is what retaining this file costs, saturated so no term can wrap int on
+// a 32-bit build and shrink the charge. A call's budget and the matcher cache's
+// retention bound both add up this same number, so a matcher costs its holder
+// the same whether it is held for one call or until the cache drops it.
+func (c ignoreFileCost) charge() int {
+	total := satAdd(int64(globIgnoreFileOverheadBytes), int64(c.path)+int64(c.source))
+	total = satAdd(total, int64(c.rules)*globIgnoreRuleBytes)
+	return int(total)
+}
+
 // retainIgnoreFile charges one .gitignore read against the call's ignore budget
 // and refuses once the total crosses maxGlobIgnoreTotalBytes. A file that
 // compiles no rule passes zero rules and is charged for its path and the source
@@ -324,9 +334,7 @@ type ignoreFileCost struct {
 // because the matchers and the dedupe entries are never released before the
 // call ends.
 func (b *GlobBudget) retainIgnoreFile(c ignoreFileCost) error {
-	total := satAdd(int64(globIgnoreFileOverheadBytes), int64(c.path)+int64(c.source))
-	total = satAdd(total, int64(c.rules)*globIgnoreRuleBytes)
-	total = satAdd(int64(b.ruleBytes), total)
+	total := satAdd(int64(b.ruleBytes), int64(c.charge()))
 	b.ruleBytes = int(total)
 	if total <= int64(maxGlobIgnoreTotalBytes) {
 		return nil

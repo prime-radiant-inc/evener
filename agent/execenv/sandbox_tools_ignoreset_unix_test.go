@@ -5,6 +5,7 @@ package execenv
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,5 +75,93 @@ func TestLoadIgnoreSetSkipsMaskedSubtree(t *testing.T) {
 	}
 	if !found {
 		t.Error("loadIgnoreSet should still load the non-masked base .gitignore")
+	}
+}
+
+// TestSandboxedGlobReusesIgnoreMatchersAcrossCalls is the sandboxed half of the
+// entry-point proof: the sandboxed glob walks a different filesystem (a
+// secureDirFS over a held fd) and reaches the shared cache through globCached,
+// so the cache must be asserted through env.Glob rather than through the
+// helper, which is handed a cache directly and therefore stayed green while no
+// call site passed one.
+func TestSandboxedGlobReusesIgnoreMatchersAcrossCalls(t *testing.T) {
+	env, _, worktree := sandboxedEnv(t, sandbox.ModeReadOnly)
+	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte("*.log\n!keep.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "a.go"), []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "a.log"), []byte("log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "keep.log"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	count, reset := countEntryPointCompiles(t)
+
+	glob := func() []string {
+		matches, _, err := env.GlobWithBudget(t.Context(), "**/*", worktree, false, NewGlobBudget())
+		if err != nil {
+			t.Fatalf("sandboxed GlobWithBudget: %v", err)
+		}
+		return matches
+	}
+	first := glob()
+	if firstCompiles := count(); firstCompiles == 0 {
+		t.Fatal("the first sandboxed glob compiled no rules file, so this test proves nothing")
+	}
+	reset()
+	second := glob()
+	if got := count(); got != 0 {
+		t.Fatalf("the second sandboxed glob compiled %d rules file(s), want 0: the environment's cache is not reaching the sandboxed glob's ignore load", got)
+	}
+	if !slices.Equal(first, second) {
+		t.Fatalf("the two sandboxed globs disagreed:\nfirst  = %v\nsecond = %v", first, second)
+	}
+	for _, m := range second {
+		if filepath.Base(m) == "a.log" {
+			t.Fatalf("the cached sandboxed pass reported an ignored file: %v", second)
+		}
+	}
+	if !slices.ContainsFunc(second, func(p string) bool { return filepath.Base(p) == "keep.log" }) {
+		t.Fatalf("the cached sandboxed pass dropped the negated file: %v", second)
+	}
+}
+
+// TestNilEnvironmentReadsIgnoreRulesUncached pins the fallback the cache has to
+// keep: a nil or struct-literal environment has no cache, so its searches must
+// still read and compile rules instead of panicking or matching nothing.
+func TestNilEnvironmentReadsIgnoreRulesUncached(t *testing.T) {
+	t.Parallel()
+	if cache := (*LocalExecutionEnvironment)(nil).ignoreMatcherCacheFor(); cache != nil {
+		t.Fatal("a nil environment answered a cache, so its callers would thread a non-nil cache into a search that has no environment behind it")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.log"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A struct literal carries no initialized cache; the accessor fills it in.
+	env := &LocalExecutionEnvironment{RootDir: root}
+	if env.ignoreMatcherCacheFor() == nil {
+		t.Fatal("a struct-literal environment's accessor answered nil, want a cache so its searches can reuse matchers")
+	}
+	matches, _, err := env.GlobWithBudget(t.Context(), "**/*", root, false, NewGlobBudget())
+	if err != nil {
+		t.Fatalf("struct-literal env GlobWithBudget: %v", err)
+	}
+	for _, m := range matches {
+		if filepath.Base(m) == "a.log" {
+			t.Fatalf("the struct-literal environment did not apply its rules file: %v", matches)
+		}
+	}
+	if !slices.ContainsFunc(matches, func(p string) bool { return filepath.Base(p) == "a.go" }) {
+		t.Fatalf("the struct-literal environment matched nothing it should have: %v", matches)
 	}
 }
