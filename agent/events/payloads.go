@@ -593,7 +593,8 @@ type ModelChangedData struct {
 	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
 	// DefaultReasoningEffort is the effort the new model runs at while the
 	// session's own effort is unset (agent.DefaultReasoningEffort); empty
-	// when the new model does not reason.
+	// when the new model does not reason, or when the new model's dialect
+	// would not carry the tier the switch resolves.
 	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 	// MarkerText is the persisted switch-marker text ("Switched model: <old>
 	// → <new>", plus any warning lines) — the exact text SetModel wrote to

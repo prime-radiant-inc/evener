@@ -361,7 +361,7 @@ func (p *Profile) ReasoningEffortLevels() []string {
 // a hand-written "High" or "off" means what it says. Empty means no source
 // states one and the caller applies its own fallback.
 func (p *Profile) DefaultReasoningEffort() string {
-	return llm.NormalizeReasoningEffort(registry.StringValue(p.res.Caps.DefaultEffort))
+	return llm.StatedDefaultEffort(p.res.Caps)
 }
 
 // SupportsWebSearch reports whether the row serves provider-native web search.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/llm/effort"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // Role identifies the author of a message.
@@ -800,6 +801,14 @@ func NormalizeReasoningEffort(s string) string {
 	}
 }
 
+// StatedDefaultEffort is the effort a row says its model runs at when the
+// request asks for nothing, normalized to the canonical vocabulary so a
+// hand-written "High" or "off" means what it says. Empty means the row states
+// none and the caller applies its own fallback.
+func StatedDefaultEffort(caps registry.Caps) string {
+	return NormalizeReasoningEffort(registry.StringValue(caps.DefaultEffort))
+}
+
 // ReasoningEffortRank returns the ordinal rank of a reasoning-effort level
 // (minimal=1 … max=6), or 0 for empty/unknown values. Use it instead of a
 // local hierarchy so effort comparisons (e.g. a "floor at high" side-channel)
@@ -880,6 +889,146 @@ func VouchedEffort(requested string, levels []string) string {
 		}
 	}
 	return ""
+}
+
+// EffortReachesWire reports whether res's protocol builder puts tier in
+// effect, which is the difference between a tier a caller may report as the
+// one a request runs at and an unknown provider default. It is the reporting
+// counterpart to VouchedEffort: a builder that spells the effort NAME drops a
+// level res's ladder cannot vouch for, leaving the provider's own default in
+// charge, while budget-shaped thinking and the OpenRouter pass-through put an
+// unlisted level to work.
+//
+// The branches below restate each builder's own gate — chatcompletions'
+// applyThinkingFormat, responses' reasoningObject, anthropic's
+// applyThinkingShape, and google's thinkingConfig — rather than asking the
+// builder, which reports its decision only as a side effect on the request
+// body. That is deliberate: the one caller needs a pure, cheap answer on the
+// envelope read path, and the alternative is a return value threaded through
+// four wire implementations. It also means this is a second copy of those
+// gates, so a branch here is only as right as the last person to read both.
+// TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the real
+// builders over the pruned body and is what catches a divergence; it does not
+// make divergence impossible. The google branch models the one prune rule that
+// drops the whole thinkingConfig object; any other gate that runs after the
+// builder (a provider's generationConfig overlay) stays outside what this can
+// see.
+//
+// Rows that derive a numeric budget instead of spelling the level (anthropic
+// budget_tokens/budget+effort, the google thinkingConfig) count as reaching
+// the wire: such a row legitimately states no effort ladder and still sizes its
+// budget from the effort.
+func EffortReachesWire(tier string, res registry.Resolved) bool {
+	caps := res.Caps
+	shape := registry.StringValue(caps.ThinkingShape)
+	format := registry.StringValue(caps.ThinkingFormat)
+	capable := caps.EffortCapable()
+	budgetSized := ReasoningBudget(tier) > 0
+	// Every builder returns before writing anything for a row whose reasoning
+	// is off. The only caller pre-filters this, but the arms below would
+	// otherwise each have to know that.
+	if caps.ReasoningDisabled() {
+		return false
+	}
+	// The level name the builders would spell: empty when the ladder refuses
+	// it, which is the vouch gate every name-carrying dialect shares.
+	vouched := VouchedEffort(tier, caps.EffortValues)
+	nameCarried := vouched != ""
+	nameGated := capable && nameCarried
+	// The off tier takes a different gate: only the two dialects with a value
+	// that says "off" write it, and only for a row whose ladder lists the off
+	// level. Every other shape omits the control entirely.
+	if tier == ReasoningEffortNone {
+		if !caps.EffortOffCapable() {
+			return false
+		}
+		// The chat-completions and Responses dialects spell an off value; the
+		// anthropic and google bodies omit the control entirely.
+		switch res.Protocol {
+		case registry.ProtocolOpenAIChat:
+			switch format {
+			case "", "openai":
+				return capable
+			case "openrouter":
+				return true
+			}
+		case registry.ProtocolOpenAIResponses:
+			return capable
+		}
+		return false
+	}
+	switch res.Protocol {
+	case registry.ProtocolAnthropic:
+		// A numeric budget is sized from the level, so it puts the tier to work
+		// without spelling a name; the name-carrying shapes write
+		// output_config.effort only for a level the ladder vouches for.
+		switch shape {
+		case "budget":
+			return budgetSized
+		case "budget+effort":
+			return budgetSized || nameCarried
+		case "adaptive":
+			return nameCarried
+		}
+		return false
+	case registry.ProtocolGoogle:
+		// registry.Prune runs after the builder and deletes the whole
+		// thinkingConfig object, whichever shape spelled into it, so a row that
+		// turns the field off carries neither a level nor a budget.
+		if sends, pinned := caps.Fields[registry.FieldGoogleThinkingConfig]; pinned && !sends {
+			return false
+		}
+		switch shape {
+		case "budget":
+			return budgetSized
+		case "level":
+			// A gateway's no-effort verdict keeps includeThoughts but spells no
+			// level, whatever the row's ladder lists.
+			if registry.BoolValue(caps.EffortParameterUnsupported) {
+				return false
+			}
+			// The builder spells the tier through a row with no ladder and only
+			// a vouched level through a row that names one.
+			spelled := tier
+			if len(caps.EffortValues) != 0 {
+				spelled = vouched
+			}
+			// It then writes its wire enum: only the four tiers that enum spells
+			// are on the wire. Evener's top two are renamed onto the ceiling and
+			// anything else is dropped, so neither carries the tier that was
+			// asked for — reporting either would name a tier the body never
+			// spells, which is the defect this predicate exists to prevent.
+			switch strings.ToUpper(spelled) {
+			case "MINIMAL", "LOW", "MEDIUM", "HIGH":
+				return true
+			}
+			return false
+		}
+		return false
+	case registry.ProtocolOpenAIResponses:
+		return nameGated
+	case registry.ProtocolOpenAIChat:
+		switch format {
+		case "openrouter":
+			// The documented exception to the vouch gate: the level passes
+			// through and the gateway maps it to a budget. Only an explicit
+			// no-effort verdict closes it.
+			return !registry.BoolValue(caps.EffortParameterUnsupported)
+		case "qwen", "qwen-chat-template", "chat-template":
+			// These three write only their enable/template control: no level
+			// name and no budget carries the tier, whatever the ladder lists.
+			return false
+		case "string-thinking":
+			// This one spells "thinking" on the ladder's word alone, without
+			// the effort-capability check the name-carrying fields make.
+			return nameCarried
+		}
+		// The unset/openai dialect and the zai, deepseek and together enable
+		// objects write the level only on an effort-capable row — which is false
+		// for a row stating the no-effort verdict — and only when vouched.
+		return nameGated
+	}
+	return false
 }
 
 // IntFromAny extracts an integer from a JSON-decoded value.

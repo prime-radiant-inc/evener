@@ -227,8 +227,7 @@ func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalati
 func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool, string) {
 	sess := l.session()
 	p := sess.Profile()
-	levels, supportsReasoning := p.ReasoningEffortLevels(), p.SupportsReasoning()
-	return sess.ReasoningEffort(), levels, supportsReasoning, agent.DefaultReasoningEffort(supportsReasoning, levels, p.DefaultReasoningEffort())
+	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning(), agent.DefaultReasoningEffort(p.Resolved())
 }
 
 func (l liveThreadEnvelopeSource) LatestExecutionTurnID() string {

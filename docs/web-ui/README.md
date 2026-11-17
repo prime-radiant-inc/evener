@@ -478,8 +478,13 @@ resolves to (the thread's `defaultReasoningEffort`, replaced on every model
 switch), the same way it shows a tier the user picked. Opened, the list keeps
 the unset option as `<tier> (default)`, so following the default stays distinct
 from pinning that tier. When the daemon or the model's row cannot resolve the
-tier, both read `(default)`. The new-session form applies the same rule to the
-effort its launch configuration resolves.
+tier, or when the model's dialect would not carry it, the session control
+reads `(default)`: the provider's own default is not a tier evener can name.
+A dialect drops the resolved tier when the provider's API can only spell an
+effort name the row's ladder does not vouch for, and the enable-only dialects
+carry no tier at all whatever the ladder lists. The new-session form applies
+the same unset-effort labeling to the effort its launch configuration
+resolves.
 
 ## Directory fields
 
