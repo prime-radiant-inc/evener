@@ -10,6 +10,17 @@ export class ActivityBoundaryObserver {
     this.target = target;
   }
   disconnect(): void {}
+  emit(visible: boolean): void {
+    this.callback(
+      [{ target: this.target, isIntersecting: visible } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+  static latest(): ActivityBoundaryObserver {
+    const observer = ActivityBoundaryObserver.observers.at(-1);
+    if (!observer) throw new Error("No activity observer");
+    return observer;
+  }
   static boundary(): ActivityBoundaryObserver {
     let observer: ActivityBoundaryObserver | undefined;
     for (let index = ActivityBoundaryObserver.observers.length - 1; index >= 0; index -= 1) {
@@ -23,11 +34,7 @@ export class ActivityBoundaryObserver {
     return observer;
   }
   static intersect(): void {
-    const observer = ActivityBoundaryObserver.boundary();
-    observer.callback(
-      [{ target: observer.target, isIntersecting: true } as IntersectionObserverEntry],
-      observer as unknown as IntersectionObserver,
-    );
+    ActivityBoundaryObserver.boundary().emit(true);
   }
   static reset(): void {
     ActivityBoundaryObserver.observers = [];

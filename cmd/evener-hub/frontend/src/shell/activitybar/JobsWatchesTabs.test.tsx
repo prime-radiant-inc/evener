@@ -73,10 +73,9 @@ test("jobs show supplied terminal status and have no invented transcript action"
 });
 test("job history uses its direct-session summary and waits for unknown totals", async () => {
   const client = activityClient();
-  let known = true;
   client.on("evener/thread/activity/read", ({ ref, scope }) => ({
     ...activitySummary(ref, scope),
-    jobs: { known, total: 51, active: 1, completed: 50, failed: 0 },
+    jobs: { known: true, total: 51, active: 1, completed: 50, failed: 0 },
   }));
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
@@ -92,7 +91,6 @@ test("job history uses its direct-session summary and waits for unknown totals",
   expect(await screen.findByText("50 completed jobs")).toBeTruthy();
   view.unmount();
   resetConnectionStoreForTests();
-  known = false;
   const unknownClient = activityClient();
   unknownClient.on("evener/thread/activity/read", ({ ref, scope }) => ({
     ...activitySummary(ref, scope),
