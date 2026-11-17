@@ -381,9 +381,11 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		const target = this.#targetIdentitySnapshot(targetKey);
 		const identity = target.identity;
 		if (!identity) return undefined;
-		const record = (await this.storage.listRecovery(targetKey)).find(
-			(recovery) => recovery.clientMutationId === id && recovery.recoveryKind === "editing",
-		);
+		// One keyed row, not the target's whole recovery projection: the caller
+		// already knows the id it claimed, and every identity check below still
+		// runs against the target snapshot this read was taken under.
+		const held = await this.storage.getRecovery(id);
+		const record = held?.recoveryKind === "editing" ? held : undefined;
 		if (
 			!record ||
 			record.targetRef !== targetKey ||
