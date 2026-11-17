@@ -172,6 +172,13 @@ type process struct {
 	closedCh chan struct{}
 }
 
+// fallbackExitPollInterval is how often a waiter on a handle with no exit
+// signal re-asks whether the process has exited. Re-reading identity is the
+// only exit proof those platforms have, and it cannot block, so the interval
+// is the fallback's whole cost: one question per interval while an explicit
+// waiter is active, and nothing at all while none is.
+const fallbackExitPollInterval = 20 * time.Millisecond
+
 // validate refuses a target no inspection could be bound to.
 func (t Target) validate() error {
 	if t.PID <= 1 || t.PID > 1<<31-1 || t.PID == os.Getpid() {
@@ -313,7 +320,7 @@ func (p *process) Wait(ctx context.Context) error {
 		}
 		return nil
 	}
-	ticker := time.NewTicker(20 * time.Millisecond)
+	ticker := time.NewTicker(fallbackExitPollInterval)
 	defer ticker.Stop()
 	for {
 		p.mu.Lock()
