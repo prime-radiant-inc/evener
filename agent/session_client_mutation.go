@@ -1572,6 +1572,47 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
+// wakeRunnableInputAfterResidency wakes the input paths when admission
+// reopening leaves accepted work runnable.
+//
+// beginRetirementMutation refuses every lease while the controller is not
+// resident, and both the queued-input path (ProcessPendingUserInput) and the
+// start path (ProcessClientMutationStart) take one. So either can have its
+// work claimable and still refused: the serve loop's probe finds it, the claim
+// returns nothing, and the loop blocks on a channel nothing will write. The
+// return to resident is the transition that makes the claims possible again,
+// and it notifies both paths for exactly that reason. Each wake is gated on its
+// own runnable predicate, so an idle session -- the ordinary retire, where
+// nothing is waiting -- sends nothing.
+//
+// The wake is deliberately its own, not wakePendingUserInput's: that one
+// clears the failed-attempt park (Session.steeringParked), and a return to
+// resident is not an event outside the failed attempt. Clearing it here would
+// make every idle-interval refusal the next wake sender and retry a failing
+// steer once per interval -- the paced retry the queue path declines. A steer
+// parked by a Stop is the durable SteeringHeld flag instead, which the
+// hasPendingUserInputToRun gate and steeringCarrierRailOpen already honour.
+func (s *Session) wakeRunnableInputAfterResidency() {
+	// A pending start is admitted through the same lease, and its own wake
+	// (sent once at acceptance) has already been consumed by the refused
+	// probe. The fence-clear wake is the same re-probe the Stop path uses: it
+	// fires only when a start is claimable right now.
+	s.wakeRunnableClientMutationStartAfterFence()
+	if !s.hasPendingUserInputToRun() {
+		return
+	}
+	s.mu.Lock()
+	wake := s.pendingUserInputWake
+	s.mu.Unlock()
+	if wake != nil {
+		wake()
+		return
+	}
+	// No daemon drives this session (a bare caller, or a subagent): notify is
+	// the only wake it has.
+	s.notify()
+}
+
 // runnableClientMutationStartTurnID reports the next turn the start path can run
 // and whether it is runnable right now. Its start branch mirrors
 // claimClientMutationStart's fence guard exactly: NO start is reported runnable
