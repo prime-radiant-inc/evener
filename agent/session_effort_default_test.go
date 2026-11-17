@@ -162,6 +162,17 @@ func wireEffortEvidence(body map[string]any) (names []string, budgets []int) {
 	return names, budgets
 }
 
+// withThinkingShape pins a resolved row's thinking shape and ladder, standing
+// in for a catalog row that declares them: the case must run against the real
+// protocol, so the profile keeps the one its provider resolves to.
+func withThinkingShape(p *provider.Profile, shape string, levels ...string) *provider.Profile {
+	res := p.Resolved()
+	res.Caps.ThinkingShape = new(shape)
+	res.Caps.EffortValues = levels
+	res.Caps.Reasoning = new(true)
+	return p.WithResolved(res)
+}
+
 // DefaultReasoningEffort is what clients show for an unset ("(default)")
 // session effort, so it may name only a tier the session's requests actually
 // put to work. The request itself always carries resolveRequestEffort's answer
@@ -297,6 +308,67 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			profile:     reasoningProfile("gateway-model", registry.Caps{EffortValues: []string{"none", "low", "high"}, DefaultEffort: new("none")}),
 			want:        "none",
 			wantCarried: true,
+		},
+		{
+			// The budget+effort shape carries the tier two ways: a numeric
+			// budget sized from it, or a level name its ladder vouches for.
+			// A ladder that refuses the tier still leaves the budget to size.
+			name: "a budget+effort row sizes its budget when its ladder refuses the tier",
+			profile: withThinkingShape(newAnthropicProfile("claude-sonnet-4-5"), "budget+effort",
+				"turbo"),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
+			// A ladder that does vouch for the tier spells the level too.
+			name: "a budget+effort row spells a level its ladder vouches for",
+			profile: withThinkingShape(newAnthropicProfile("claude-sonnet-4-5"), "budget+effort",
+				"low", "medium", "high"),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
+			// Google's level shape gated by a ladder spells only a level the
+			// ladder vouches for; one it refuses is dropped.
+			name:        "Google's level shape drops a level its ladder refuses",
+			profile:     withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "turbo"),
+			want:        "",
+			wantCarried: false,
+		},
+		{
+			name:        "Google's level shape spells a level its ladder vouches for",
+			profile:     withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "low", "medium", "high"),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
+			// string-thinking spells its own control on the ladder's word
+			// alone, without the effort-capability check the name-carrying
+			// fields make.
+			name:        "string-thinking spells a level its ladder vouches for",
+			profile:     chatDialect("string-thinking", registry.Caps{EffortValues: []string{"low", "medium", "high"}}),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
+			name:        "string-thinking spells nothing its ladder refuses",
+			profile:     chatDialect("string-thinking", registry.Caps{}),
+			want:        "",
+			wantCarried: false,
+		},
+		{
+			// The unset/openai dialect writes the level on an effort-capable
+			// row whose ladder vouches for it.
+			name:        "the openai chat dialect spells a level its ladder vouches for",
+			profile:     chatDialect("", registry.Caps{EffortValues: []string{"low", "medium", "high"}}),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
+			name:        "the openai chat dialect drops a level its ladder refuses",
+			profile:     chatDialect("", registry.Caps{}),
+			want:        "",
+			wantCarried: false,
 		},
 		{
 			name:        "nothing for a model that does not reason",
