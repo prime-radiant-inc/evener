@@ -820,8 +820,9 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 	}
 	listed := map[string]bool{}
 	for _, id := range r.ProviderIDs() {
-		p, ok := r.Provider(id)
-		if !ok || !registry.BoolValue(p.Implicit) {
+		// This loop runs for every curated id, so ask the registry the one
+		// fact it needs: Provider deep-copies the whole record.
+		if implicit, ok := r.ProviderIsImplicit(id); !ok || !implicit {
 			continue
 		}
 		status, err := c.statusLocked(appwire.AuthStatusParams{Provider: id}, key)

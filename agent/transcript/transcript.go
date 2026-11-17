@@ -294,25 +294,19 @@ func finalizeEntry(entry Entry) (Entry, error) {
 // This reader is DecodeEntry's equal oracle-wise and cheaper on the success
 // path, which for a resume is every line of a transcript that runs to hundreds
 // of megabytes.
-// The two decoders are not equivalent on every input: the v2 one is stricter
-// about a few things v1 tolerates, lone surrogates among them. So any failure
-// here falls back to DecodeEntry, and the successful result is the Entry
-// finalizeEntry would have produced anyway. The returned Entry is identical to
-// DecodeEntry's; the error is DecodeEntry's own error value, never this
-// function's.
+//
+// It decodes through decodeStrictJSON, the same function DecodeEntry decodes
+// with, so the strictness is that function's by construction rather than
+// restated here. The one check it cannot get from that call is the record kind,
+// which DecodeEntry reads from the boundary parse it is skipping; finalizeEntry
+// repeats it, and a kind this build does not support falls back to DecodeEntry
+// so the error value and its taxonomy stay single-sourced.
 func decodeEntryOnePass(line []byte) (Entry, error) {
 	var entry Entry
-	if err := decodeEntryFast(line, &entry); err != nil {
+	if err := decodeStrictJSON(line, &entry); err != nil {
 		return DecodeEntry(line)
 	}
-	finished, err := finalizeEntry(entry)
-	if err != nil {
-		// finalizeEntry's checks run on both paths, so its verdict cannot
-		// differ; going through DecodeEntry here keeps the error value single-
-		// sourced rather than re-deriving it.
-		return DecodeEntry(line)
-	}
-	return finished, nil
+	return finalizeEntry(entry)
 }
 
 // resumeDecodedEntryBytes accumulates the entry-record payload bytes this
@@ -320,15 +314,6 @@ func decodeEntryOnePass(line []byte) (Entry, error) {
 // resume decode test asserts on: the bytes parsed, independent of how loaded
 // the host is or what the runtime's allocator happened to do.
 var resumeDecodedEntryBytes atomic.Int64
-
-// decodeEntryFast is the strict decode decodeEntryOnePass tries first. It is
-// the same strictness DecodeEntry's decodeStrictJSON applies — unknown members
-// rejected at every depth, one top-level value only — on a decoder that reads
-// the record once.
-func decodeEntryFast(line []byte, entry *Entry) error {
-	resumeDecodedEntryBytes.Add(int64(len(line)))
-	return jsonv2.Unmarshal(line, entry, jsonv2.RejectUnknownMembers(true))
-}
 
 // inferPreFlagMachinery flags block-shaped machinery parts on turns recorded
 // before part flags existed, so those transcripts keep filtering their
@@ -344,10 +329,16 @@ func inferPreFlagMachinery(turn *schema.Turn) {
 	}
 }
 
+// strictDecoderOptions is decodeStrictJSON's decode configuration, joined once:
+// v1 semantics (case-insensitive names, duplicate names allowed, the legacy
+// error shapes) plus the unknown-member rejection below.
+var strictDecoderOptions = jsonv2.JoinOptions(json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true))
+
+// decodeStrictJSON decodes one line as exactly one JSON value, rejecting
+// unknown members and any trailing value.
 func decodeStrictJSON(line []byte, target any) error {
 	resumeDecodedEntryBytes.Add(int64(len(line)))
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	// DisallowUnknownFields is deliberate and applies to the nested turn, not
+	// RejectUnknownMembers is deliberate and applies to the nested turn, not
 	// just this record's own envelope: a typo'd or renamed field in schema.Turn
 	// (or anything it embeds, like llm.Message) fails loudly here instead of
 	// vanishing silently, which is the failure mode kata kq8c spent real effort
@@ -373,18 +364,14 @@ func decodeStrictJSON(line []byte, target any) error {
 	// TestTranscriptReadersAndRawOutputRejectUnknownFields in agent pins the
 	// whole-file readers' refusal, so a future change to either is a decision,
 	// not an accident.
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("multiple JSON values")
-		}
-		return fmt.Errorf("trailing JSON data: %w", err)
-	}
-	return nil
+	//
+	// Decoding the line in place, rather than through a streaming Decoder over
+	// bytes.NewReader, is what keeps a cold transcript-index rebuild's
+	// allocation near the bytes it reads: such a Decoder starts from a 64-byte
+	// buffer and doubles it as it consumes a line, so every entry paid several
+	// times its own size in transient growth. Unmarshal rejects a trailing
+	// value itself, which the second Decode here existed to catch.
+	return jsonv2.Unmarshal(line, target, strictDecoderOptions)
 }
 
 // ReadLine reads one newline-framed transcript record. maxLineBytes applies to
@@ -392,21 +379,33 @@ func decodeStrictJSON(line []byte, target any) error {
 // drained before ErrLineTooLong is returned. An unterminated final tail is
 // always drained and discarded without retaining it, regardless of its size.
 func ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
-	return ReadLineInto(reader, maxLineBytes, nil)
+	return readLine(reader, maxLineBytes, nil)
 }
 
-// ReadLineInto is ReadLine into a caller-owned buffer: it appends the record to
-// buf[:0] and returns the result, which is valid only until the next call. A
-// reader that consumes each line before reading the next one — the resume scan,
-// which decodes every record as it arrives — pays nothing per line for its
-// bytes, where ReadLine grows a fresh slice and copies each fragment into it.
-// The framing rules, the payload limit, the error values and the treatment of
-// an unterminated tail are ReadLine's; only the buffer's ownership differs.
-func ReadLineInto(reader *bufio.Reader, maxLineBytes int, buf []byte) (line []byte, complete bool, bytesRead int64, err error) {
+// LineBuffer reads newline-framed records through one buffer it keeps across
+// calls, so a scan over many records sizes it for the largest line instead of
+// allocating for every line. The returned line is only valid until the next
+// call: a caller that retains any of its bytes must copy them.
+type LineBuffer struct {
+	buf []byte
+}
+
+// ReadLine is ReadLine over the buffer this LineBuffer reuses.
+func (b *LineBuffer) ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
+	line, complete, bytesRead, err = readLine(reader, maxLineBytes, b.buf[:0])
+	// Keep the buffer when the line was dropped (over the limit, or an
+	// unterminated tail), so the next call still has its capacity.
+	if line != nil {
+		b.buf = line
+	}
+	return line, complete, bytesRead, err
+}
+
+func readLine(reader *bufio.Reader, maxLineBytes int, scratch []byte) (line []byte, complete bool, bytesRead int64, err error) {
 	if maxLineBytes <= 0 {
 		maxLineBytes = DefaultMaxLineBytes
 	}
-	buf = buf[:0]
+	line = scratch
 	overLimit := false
 	for {
 		fragment, readErr := reader.ReadSlice('\n')
@@ -416,11 +415,11 @@ func ReadLineInto(reader *bufio.Reader, maxLineBytes int, buf []byte) (line []by
 			payload = payload[:len(payload)-1]
 		}
 		if !overLimit {
-			if len(payload) > maxLineBytes-len(buf) {
-				buf = nil
+			if len(payload) > maxLineBytes-len(line) {
+				line = nil
 				overLimit = true
 			} else {
-				buf = append(buf, payload...)
+				line = append(line, payload...)
 			}
 		}
 
@@ -429,7 +428,7 @@ func ReadLineInto(reader *bufio.Reader, maxLineBytes int, buf []byte) (line []by
 			if overLimit {
 				return nil, false, bytesRead, fmt.Errorf("%w: transcript line exceeds %d bytes", ErrLineTooLong, maxLineBytes)
 			}
-			return buf, true, bytesRead, nil
+			return line, true, bytesRead, nil
 		case errors.Is(readErr, bufio.ErrBufferFull):
 			continue
 		case errors.Is(readErr, io.EOF):
@@ -1273,13 +1272,13 @@ func scanForResumeCounting(f afero.File, expectedSessionID string) (Header, []En
 	headerRead := false
 	var header Header
 	var stats resumeDecodeStats
-	// lineBuf is reused across records: everything the scan needs from a line's
-	// bytes is decided while it holds them, and the decoded Entry owns its own
-	// data. A resume reads the whole file, so this saves an allocation and a
+	// framer reuses one buffer across records: everything the scan needs from a
+	// line's bytes is decided while it holds them, and the decoded Entry owns its
+	// own data. A resume reads the whole file, so this saves an allocation and a
 	// copy per record on a transcript that can hold tens of thousands.
-	var lineBuf []byte
+	var framer LineBuffer
 	for {
-		line, complete, bytesRead, readErr := ReadLineInto(reader, DefaultMaxLineBytes, lineBuf)
+		line, complete, bytesRead, readErr := framer.ReadLine(reader, DefaultMaxLineBytes)
 		if readErr != nil {
 			return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
@@ -1287,7 +1286,6 @@ func scanForResumeCounting(f afero.File, expectedSessionID string) (Header, []En
 			hasPartialTail = bytesRead > 0
 			break
 		}
-		lineBuf = line
 		validLen += bytesRead
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {

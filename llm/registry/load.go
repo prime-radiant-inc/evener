@@ -1270,6 +1270,19 @@ func (r *Registry) Provider(id string) (Provider, bool) {
 	return cloneProviderView(rec.head), true
 }
 
+// ProviderIsImplicit reports whether a curated id is an implicit provider,
+// without the deep copy Provider makes. Callers that only need this one fact
+// (the credentials listing asks it of every curated id, hundreds of times a
+// tick) must not clone each record's models, transports and headers to read a
+// bool.
+func (r *Registry) ProviderIsImplicit(id string) (bool, bool) {
+	rec, ok := r.curated[id]
+	if !ok {
+		return false, false
+	}
+	return BoolValue(rec.head.Implicit), true
+}
+
 // UserLayerNote describes where the user layer came from ("user layer:
 // none (EVENER_PROVIDERS_CONFIG is empty)", spec §14.1).
 func (r *Registry) UserLayerNote() string { return r.userNote }

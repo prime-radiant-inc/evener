@@ -116,6 +116,15 @@ func toFsErr(err error) error {
 // Dotfiles/dirs and gitignored paths are excluded by default (matching the
 // off path's Glob), unless includeIgnored is set.
 func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includeIgnored bool, budget *GlobBudget) ([]string, int, error) {
+	return s.globCached(ctx, tool, base, pattern, includeIgnored, budget, nil)
+}
+
+// globCached is glob with a matcher cache for .gitignore compilation. The
+// sandboxed arm walks a different filesystem than the off arm but compiles the
+// same rules files, so it reuses the same cache and the same key: the rules
+// file's absolute path, which for this arm is the canonical base joined with
+// the path discovery walked.
+func (s *sandboxFS) globCached(ctx context.Context, tool, base, pattern string, includeIgnored bool, budget *GlobBudget, cache *ignoreMatcherCache) ([]string, int, error) {
 	patterns, err := expandSearchPattern(pattern)
 	if err != nil {
 		return nil, 0, err
@@ -133,42 +142,16 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 		// .gitignore rules — secureDirFS enforces symlink-refusal and root
 		// confinement but not masking, so the skip must be supplied here.
 		var err error
-		ignores, err = loadIgnoreSet(ctx, fsys, func(relPath string) bool {
+		ignores, err = loadIgnoreSetCached(ctx, fsys, func(relPath string) bool {
 			return s.underMasked(filepath.Join(canonical, relPath))
-		}, budget, ignoreScopeForPatterns(patterns))
+		}, budget, ignoreScopeForPatterns(patterns), canonical, cache)
 		if err != nil {
 			return nil, 0, err
 		}
 	}
-	seen := make(map[string]struct{})
-	var abs []string
-	excluded := 0
-	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern, budget)
-		if err != nil {
-			return nil, 0, err
-		}
-		for _, m := range matches {
-			if !includeIgnored {
-				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
-				if err != nil {
-					return nil, 0, err
-				}
-				if drop {
-					excluded++
-					continue
-				}
-			}
-			p := filepath.Join(canonical, m)
-			if s.underMasked(p) {
-				continue
-			}
-			if _, ok := seen[p]; ok {
-				continue
-			}
-			seen[p] = struct{}{}
-			abs = append(abs, p)
-		}
+	abs, excluded, err := globExpandedMatches(ctx, fsys, canonical, patterns, includeIgnored, ignores, budget, s.underMasked)
+	if err != nil {
+		return nil, 0, err
 	}
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
 		return nil, 0, err
@@ -185,20 +168,20 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 // searched alone (see grepNamedFile).
 // displayRoot, when non-empty, formats returned file paths relative to
 // displayRoot when under it, or as absolute paths when outside it (#6176).
-func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, displayRoot ...string) (string, error) {
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, cache *ignoreMatcherCache, displayRoot ...string) (string, error) {
 	root := base
 	if len(displayRoot) > 0 && displayRoot[0] != "" {
 		root = displayRoot[0]
 	}
-	return s.grepNativeInternal(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, root, false)
+	return s.grepNativeInternal(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, cache, root, false)
 }
 
 // grepConfinedNative is used by GrepConfinedFiles for memory search.
-func (s *sandboxFS) grepConfinedNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, outputRoot string) (string, error) {
-	return s.grepNativeInternal(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, outputRoot, true)
+func (s *sandboxFS) grepConfinedNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, cache *ignoreMatcherCache, outputRoot string) (string, error) {
+	return s.grepNativeInternal(ctx, pattern, base, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, cache, outputRoot, true)
 }
 
-func (s *sandboxFS) grepNativeInternal(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, displayRoot string, scopeRelative bool) (string, error) {
+func (s *sandboxFS) grepNativeInternal(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, cache *ignoreMatcherCache, displayRoot string, scopeRelative bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -249,6 +232,8 @@ func (s *sandboxFS) grepNativeInternal(ctx context.Context, pattern, base, globF
 		skip:        skip,
 		root:        basePath,
 		ignoreFS:    fsys,
+		ignoreRoot:  basePath,
+		ignoreCache: cache,
 		budget:      budget,
 		walk:        func(fn fs.WalkDirFunc) error { return secureBrowseWalkDir(fsys, ".", fn) },
 		read:        func(rel string) ([]byte, error) { return secureBrowseReadFile(fsys, rel) },
