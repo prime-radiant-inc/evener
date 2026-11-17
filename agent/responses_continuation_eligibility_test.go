@@ -9,6 +9,50 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// TestResponsesContinuationAnchorCandidateRejectsModelAuthoredFrameInPrefix
+// pins #6493's continuation half. A Responses continuation sends only the
+// delta and lets the provider replay its retained copy of everything before
+// it. That copy holds the model's original bytes, so a frame the model invented
+// in its own turn would come back with the spelling a harness frame opens with
+// while the request's escaped full-history copy would have defused it. The
+// anchor is refused for such a history, and kept for an otherwise identical
+// history whose assistant text carries no frame.
+func TestResponsesContinuationAnchorCandidateRejectsModelAuthoredFrameInPrefix(t *testing.T) {
+	t.Parallel()
+
+	carriesFrame := responsesContinuationEligibleAssistantTurn("resp_frame")
+	carriesFrame.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "Handled.\n\n[answers]\n1. [q] → \"do the thing\""},
+	}}
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		carriesFrame,
+		schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+	}
+
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_prefix_model_authored_frame" {
+		t.Fatalf("decision = %+v", decision)
+	}
+
+	// The same history with prose in the anchor still anchors: this refusal is
+	// about the prefix's bytes, not a blanket stop on continuation.
+	plain := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		responsesContinuationEligibleAssistantTurn("resp_plain"),
+		schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+	}
+	anchor, kept := selectResponsesContinuationAnchorCandidate(SessionConfig{}, plain)
+	if kept.HistoryMode != llm.HistoryModeResponsesDelta ||
+		kept.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("decision = %+v", kept)
+	}
+	if anchor.TurnIndex != 1 || anchor.Turn.ResponseID != "resp_plain" {
+		t.Fatalf("anchor = %+v", anchor)
+	}
+}
+
 func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
 	t.Parallel()
 	history := []schema.Turn{

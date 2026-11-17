@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -67,6 +68,12 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			Reason:      reason,
 		}
 	}
+	if responsesContinuationPrefixCarriesModelAuthoredFrame(history, anchorIndex) {
+		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeFullHistory,
+			Reason:      "continuation_prefix_model_authored_frame",
+		}
+	}
 
 	return responsesContinuationAnchorCandidate{
 		TurnIndex: anchorIndex,
@@ -76,6 +83,34 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		HistoryMode: llm.HistoryModeResponsesDelta,
 		Reason:      "continuation_anchor_candidate",
 	}
+}
+
+// responsesContinuationPrefixCarriesModelAuthoredFrame reports whether the
+// prefix the provider retains, history up to and including the anchor, carries
+// assistant text the replay escape would rewrite.
+//
+// A continuation sends only the delta and lets the provider replay its own
+// retained copy of the prefix, which holds the model's original bytes. A frame
+// the model invented there would come back with the spelling a harness frame
+// opens with, so the escape every other path applies would be bypassed
+// (#6493). The retained prefix cannot be rewritten, so the anchor is refused
+// and the request carries the full history instead — where the escape does
+// reach it. Histories whose prefix needs no escaping keep anchoring.
+func responsesContinuationPrefixCarriesModelAuthoredFrame(history []schema.Turn, anchorIndex int) bool {
+	for i := 0; i <= anchorIndex; i++ {
+		if history[i].Kind != schema.TurnAssistant {
+			continue
+		}
+		for _, part := range history[i].Message.Content {
+			if part.Kind != llm.ContentText || part.Machinery || part.Text == "" {
+				continue
+			}
+			if sysmsg.EscapeModelAuthoredFrames(part.Text) != part.Text {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func responsesContinuationDeltaTurns(history []schema.Turn, start int) []schema.Turn {
