@@ -34,3 +34,30 @@ func TestWaitExitObservesCancellationUnderRepeatedEINTR(t *testing.T) {
 		t.Fatal("test setup: context should be cancelled")
 	}
 }
+
+// TestWaitExitAnswersAnAlreadyFiredWake covers the pidfd's level-triggered
+// readiness, which is why this platform cannot lose an exit wake to ordering: a
+// process that exited before the waiter existed leaves the descriptor readable,
+// so the first poll reports it. One poll and no budget consumed is the claim; a
+// waiter that ignored the readiness, or that retried past it, would need more.
+func TestWaitExitAnswersAnAlreadyFiredWake(t *testing.T) {
+	t.Parallel()
+	polls := 0
+	poll := func(fds []unix.PollFd, _ int) (int, error) {
+		polls++
+		fds[0].Revents = unix.POLLIN
+		return 1, nil
+	}
+	p := &linuxProcess{fd: -1}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	gone, err := p.exitPollUntil(poll, deadline)
+	if err != nil {
+		t.Fatalf("exitPollUntil: %v", err)
+	}
+	if !gone {
+		t.Fatal("a readable pidfd was not reported as an exit")
+	}
+	if polls != 1 {
+		t.Fatalf("an already-fired wake cost %d polls, want 1", polls)
+	}
+}
