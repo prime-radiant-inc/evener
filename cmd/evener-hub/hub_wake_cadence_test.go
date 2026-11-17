@@ -138,7 +138,7 @@ func TestHubSnapshotWakePublishesAllThreeSnapshots(t *testing.T) {
 	// close them.
 	go func() {
 		defer close(stopped)
-		startHubSnapshotWatchers(func(fn func()) { fn() }, ctx, poke, archive, web)
+		startHubSnapshotWatchers(ctx, func(fn func()) { fn() }, poke, archive, web)
 	}()
 	t.Cleanup(func() {
 		hubTicker = oldTicker
@@ -187,7 +187,7 @@ func TestHubSnapshotWakePublishesAllThreeSnapshots(t *testing.T) {
 	// consumed by the assertion that is not looking for it.
 	var rosterMoved, attentionMoved, noticesMoved bool
 	deadline := time.After(10 * time.Second)
-	for !(rosterMoved && attentionMoved && noticesMoved) {
+	for !rosterMoved || !attentionMoved || !noticesMoved {
 		select {
 		case update := <-sub.Updates:
 			for _, event := range update.Events {

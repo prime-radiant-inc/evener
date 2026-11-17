@@ -50,7 +50,7 @@ func TestHubRosterArchivedLiveSession(t *testing.T) {
 				// such as sub.baseline, which the wake writes under the broker
 				// mutex.
 				go func() {
-					startHubSnapshotWatchers(func(fn func()) { fn() }, ctx, poke, archive, web)
+					startHubSnapshotWatchers(ctx, func(fn func()) { fn() }, poke, archive, web)
 					close(done)
 				}()
 				// The unbuffered poke is accepted only after the initial run has

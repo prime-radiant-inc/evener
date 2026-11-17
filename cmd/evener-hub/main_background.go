@@ -141,7 +141,7 @@ func messageSearchSessions(entries []hubcore.PastEntry) []hubcore.MessageSearchS
 
 // startHubSnapshotWatchers starts the hub's periodic snapshot watchers on the
 // one wake that serves all of them (#6422).
-func startHubSnapshotWatchers(start func(func()), ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
+func startHubSnapshotWatchers(ctx context.Context, start func(func()), poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -181,11 +181,9 @@ func watchHubSnapshotWake(ctx context.Context, poke <-chan struct{}, archive *hu
 	defer stop()
 	noticeTicks := make(chan time.Time, 1)
 	var notices sync.WaitGroup
-	notices.Add(1)
-	go func() {
-		defer notices.Done()
+	notices.Go(func() {
 		web.notices.runNoticeWatcher(ctx, noticeTicks, web.notices.watchRead)
-	}()
+	})
 	defer notices.Wait()
 	run := func() { runHubAttention(ctx, web, archive, w) }
 	pulseNotices := func() {

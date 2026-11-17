@@ -44,7 +44,7 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 	// returning, so this also proves nothing is left reading the archive or the
 	// server after the test's cleanups close them.
 	go func() {
-		startHubSnapshotWatchers(func(fn func()) { fn() }, ctx, poke, archive, web)
+		startHubSnapshotWatchers(ctx, func(fn func()) { fn() }, poke, archive, web)
 		close(done)
 	}()
 	t.Cleanup(func() {

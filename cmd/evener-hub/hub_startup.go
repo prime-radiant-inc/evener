@@ -884,7 +884,7 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// from it); on the same wake it re-derives the hub's notices and broadcasts
 	// evener/notices/changed when they change (S11). Ticks every 5s and, for
 	// attention, on-demand via attentionPoke.
-	startHubSnapshotWatchers(goBackground, ctx, r.attentionPoke, r.archive, web)
+	startHubSnapshotWatchers(ctx, goBackground, r.attentionPoke, r.archive, web)
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already
