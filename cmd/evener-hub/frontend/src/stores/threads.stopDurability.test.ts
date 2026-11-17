@@ -927,6 +927,199 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     }
   });
 
+  // The repository-read half of the same settle. A released pane's final read
+  // is accepted history too, so its retire must announce like the storage-hook
+  // and live-frame settles above: siblings cache the row it deleted with no
+  // local retire to clear it. The evidence arrives in this read alone - the
+  // model published before the press holds no delivery - so the read is the
+  // only boundary that can retire the row, and only a settle that removed
+  // something owes the wake.
+  test("a repository read that retires the refused promote broadcasts the cross-tab wakeup", async () => {
+    const wakeups: string[] = [];
+    const uninstallChannel = installMutationBroadcastChannelForTests(() => {
+      const channel = new EventTarget();
+      return Object.assign(channel, {
+        postMessage(message: unknown) {
+          const wakeup = message as { version?: number; targetRef?: string };
+          if (wakeup.version === 1 && typeof wakeup.targetRef === "string") wakeups.push(wakeup.targetRef);
+        },
+        close() {},
+      });
+    });
+    try {
+      const { storage, fake } = await hydratedFallbackTarget({
+        indexedDB: new IDBFactory(),
+        databaseName: "evener-mutation-outbox-promote-repository-read-wakeup",
+      });
+      // The delivery the released pane's final read will carry: the drain's
+      // recorded item holds the refused promote's source as lineage.
+      fake.on("thread/read", () =>
+        readResponse("ref_a", {
+          turns: [
+            {
+              id: "turn_1",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                {
+                  id: "item_1",
+                  turnId: "turn_1",
+                  type: "userMessage",
+                  text: "queued message",
+                  status: "completed",
+                  clientMutationId: "drain_consumer",
+                  conversationInputIds: ["client:queue_source"],
+                },
+              ],
+            },
+          ],
+          evener: {
+            ref: "ref_a",
+            capabilities: CAPABILITIES,
+            mutationStateAuthoritative: true,
+            queue: { revision: 9, depth: 0, ids: [] },
+          },
+        }),
+      );
+      // A refused promote as another tab left it: a shared recovery row this
+      // tab never minted, so nothing local can settle it.
+      const refused = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        method: "turn/promoteQueuedAsSteer",
+        payload: {
+          ref: "ref_a",
+          index: 0,
+          expectedEntryId: "entry_1",
+          input: [{ type: "text", text: "queued message" }],
+        },
+        attachments: [],
+        optimisticDisplay: { text: "queued message", sourceMutationId: "queue_source" },
+      });
+      await storage.transferToRecovery(refused.clientMutationId, "rejected");
+      expect((await storage.listRecovery("ref_a")).map((record) => record.method)).toEqual([
+        "turn/promoteQueuedAsSteer",
+      ]);
+      // The release is what issues the final read, and that read is the only
+      // boundary holding the delivery evidence.
+      wakeups.length = 0;
+      await threadsStore.getState().releaseThreadAndWait("ref_a");
+      await flushUntilArrived("the released pane's read to retire the recovery", async () => {
+        const recoveries = await storage.listRecovery("ref_a");
+        return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+      });
+      expect(wakeups).toEqual(["ref_a"]);
+      storage.close();
+    } finally {
+      uninstallChannel();
+    }
+  });
+
+  // The tracked hydration's own retire. A recovery that lands in the window
+  // between publication and the hydration's post-publication reconciliation
+  // is invisible to the settle publication already ran, so that reconcile is
+  // the boundary that retires it - and it owes the same wake.
+  test("a tracked hydration that retires the refused promote broadcasts the cross-tab wakeup", async () => {
+    const wakeups: string[] = [];
+    const uninstallChannel = installMutationBroadcastChannelForTests(() => {
+      const channel = new EventTarget();
+      return Object.assign(channel, {
+        postMessage(message: unknown) {
+          const wakeup = message as { version?: number; targetRef?: string };
+          if (wakeup.version === 1 && typeof wakeup.targetRef === "string") wakeups.push(wakeup.targetRef);
+        },
+        close() {},
+      });
+    });
+    try {
+      const { storage, fake } = await hydratedFallbackTarget({
+        indexedDB: new IDBFactory(),
+        databaseName: "evener-mutation-outbox-promote-hydration-wakeup",
+      });
+      // A pending mutation is what the hydrate's post-publication
+      // reconciliation settles; parking that settle holds the hydration
+      // inside the window, after publication already swept the ref.
+      const settled = deferred<void>();
+      const released = deferred<void>();
+      let reconcileParked = false;
+      fake.on("thread/read", () =>
+        readResponse("ref_a", {
+          turns: [
+            {
+              id: "turn_1",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                {
+                  id: "item_1",
+                  turnId: "turn_1",
+                  type: "userMessage",
+                  text: "queued message",
+                  status: "completed",
+                  clientMutationId: "drain_consumer",
+                  conversationInputIds: ["client:queue_source"],
+                },
+              ],
+            },
+          ],
+          evener: {
+            ref: "ref_a",
+            capabilities: CAPABILITIES,
+            mutationStateAuthoritative: true,
+            queue: { revision: 9, depth: 0, ids: [] },
+            pendingMutations: [
+              {
+                clientMutationId: "pending_1",
+                method: "turn/promoteQueuedAsSteer",
+                executionState: "accepted",
+                projectionState: "pending",
+                queueEntryIds: ["entry_1"],
+              },
+            ],
+          },
+        }),
+      );
+      const realSettleApplied = storage.settleApplied.bind(storage);
+      storage.settleApplied = async (clientMutationId, options) => {
+        if (!reconcileParked && clientMutationId === "pending_1") {
+          reconcileParked = true;
+          settled.resolve();
+          await released.promise;
+        }
+        return realSettleApplied(clientMutationId, options);
+      };
+      const refresh = threadsStore.getState().refreshThread("ref_a");
+      await settled.promise;
+      // The refused promote lands while the hydrate is inside that window.
+      const refused = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        method: "turn/promoteQueuedAsSteer",
+        payload: {
+          ref: "ref_a",
+          index: 0,
+          expectedEntryId: "entry_1",
+          input: [{ type: "text", text: "queued message" }],
+        },
+        attachments: [],
+        optimisticDisplay: { text: "queued message", sourceMutationId: "queue_source" },
+      });
+      await storage.transferToRecovery(refused.clientMutationId, "rejected");
+      expect((await storage.listRecovery("ref_a")).map((record) => record.method)).toEqual([
+        "turn/promoteQueuedAsSteer",
+      ]);
+      wakeups.length = 0;
+      released.resolve();
+      await refresh;
+      await flushUntilArrived("the hydrate's reconcile to retire the recovery", async () => {
+        const recoveries = await storage.listRecovery("ref_a");
+        return recoveries.every((record) => record.method !== "turn/promoteQueuedAsSteer");
+      });
+      expect(wakeups).toEqual(["ref_a"]);
+      storage.close();
+    } finally {
+      uninstallChannel();
+    }
+  });
+
   // A source that is still QUEUED is not delivered (roborev round 7): the
   // index-shift refusal - another client removed an earlier entry, so the
   // promote's index no longer matches - leaves the entry queued, and a sweep
