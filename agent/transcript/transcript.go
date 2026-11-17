@@ -1261,26 +1261,36 @@ func scanForResumeCounting(f afero.File, expectedSessionID string) (Header, []En
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
-	maxSeq := -1
-	// entries is non-nil even for a header-only transcript: the
-	// delegate-attention fold keys on nilness to decide whether it can fold
-	// in memory or must re-read the file.
-	entries := make([]Entry, 0)
+	//
+	// The decode runs on resume_decode.go's bounded pool: it is pure CPU over
+	// independent lines, and on a huge transcript it is the whole of a resumed
+	// daemon's pre-rendezvous wait. This scan still owns the guarantees a
+	// reader of the file sees -- entries in file order, the first file-order
+	// error, and the truncation below -- and the pool reports both, so moving
+	// the decode off this goroutine changes only how long it takes.
+	decode := newResumeDecoder(resumeDecodeWorkerCount(runtime.GOMAXPROCS(0)))
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var validLen int64
 	hasPartialTail := false
 	headerRead := false
 	var header Header
 	var stats resumeDecodeStats
-	// framer reuses one buffer across records: everything the scan needs from a
-	// line's bytes is decided while it holds them, and the decoded Entry owns its
-	// own data. A resume reads the whole file, so this saves an allocation and a
-	// copy per record on a transcript that can hold tens of thousands.
-	var framer LineBuffer
 	for {
-		line, complete, bytesRead, readErr := framer.ReadLine(reader, DefaultMaxLineBytes)
+		// ReadLine, not LineBuffer: a submitted line is retained by the decode
+		// pool past the moment the scan reads the next one, so the framer must
+		// hand over bytes it will not overwrite. The reuse saves an allocation
+		// and a copy per record, and it is what a pool cannot have.
+		line, complete, bytesRead, readErr := ReadLine(reader, DefaultMaxLineBytes)
 		if readErr != nil {
-			return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("read transcript for resume: %w", readErr)
+			// Every submitted line precedes this read in file order, so a
+			// failed decode among them is the first file-order error and
+			// outranks the read failure that stopped the scan. finish still
+			// runs on both arms: no worker outlives the scan.
+			_, entryErr := decode.finish()
+			if entryErr != nil {
+				return Header{}, nil, 0, 0, stats, fmt.Errorf("parse transcript entry: %w", entryErr)
+			}
+			return Header{}, nil, 0, 0, stats, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
 			hasPartialTail = bytesRead > 0
@@ -1295,38 +1305,45 @@ func scanForResumeCounting(f afero.File, expectedSessionID string) (Header, []En
 			var err error
 			header, err = DecodeHeader(line)
 			if err != nil {
-				return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("parse transcript header: %w", err)
+				_, _ = decode.finish()
+				return Header{}, nil, 0, 0, stats, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
-				return Header{}, nil, 0, 0, resumeDecodeStats{}, &SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: expectedSessionID}
+				_, _ = decode.finish()
+				return Header{}, nil, 0, 0, stats, &SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: expectedSessionID}
 			}
 			headerRead = true
 			continue
 		}
-		entry, err := decodeEntryOnePass(line)
-		if err != nil {
-			return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("parse transcript entry: %w", err)
-		}
+		// Counted here, not in the worker: this is what the scan hands a
+		// decoder, and the pool is the thing that decodes it.
 		stats.EntriesDecoded++
 		stats.EntryBytesDecoded += int64(len(line))
-		entries = append(entries, entry)
-		if entry.Seq > maxSeq {
-			maxSeq = entry.Seq
-		}
+		decode.submit(line)
+	}
+	entries, entryErr := decode.finish()
+	if entryErr != nil {
+		return Header{}, nil, 0, 0, stats, fmt.Errorf("parse transcript entry: %w", entryErr)
 	}
 	if !headerRead {
 		if hasPartialTail && validLen == 0 {
-			return Header{}, nil, 0, 0, resumeDecodeStats{}, errors.New("transcript has no complete lines")
+			return Header{}, nil, 0, 0, stats, errors.New("transcript has no complete lines")
 		}
-		return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
+		return Header{}, nil, 0, 0, stats, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
 	}
 
 	if hasPartialTail {
 		if err := f.Truncate(validLen); err != nil {
-			return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("truncate partial line: %w", err)
+			return Header{}, nil, 0, 0, stats, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
 
+	maxSeq := -1
+	for _, entry := range entries {
+		if entry.Seq > maxSeq {
+			maxSeq = entry.Seq
+		}
+	}
 	// Use max(seq)+1 so resumed writes never collide with existing entries,
 	// even if earlier entries were lost to crash recovery.
 	nextSeq := 0
@@ -1336,7 +1353,7 @@ func scanForResumeCounting(f afero.File, expectedSessionID string) (Header, []En
 
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return Header{}, nil, 0, 0, resumeDecodeStats{}, fmt.Errorf("seek to end of transcript: %w", err)
+		return Header{}, nil, 0, 0, stats, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
 	return header, entries, nextSeq, validLen, stats, nil
