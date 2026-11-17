@@ -2983,10 +2983,17 @@ export interface NavigationSessionSummary {
   seen_through?: string;
   /**
    * Own-session activity counts are captured before navigation fitting.
-   * RunningJobCommand is the first available command, bounded for display.
+   * RunningJobCommand and RunningJobIntent both come from one running job,
+   * chosen by rule rather than list order (foreground before background,
+   * then the lowest job ID). The command is bounded for display; the intent
+   * is that same job's own `intent` argument, stamped on the job record at
+   * launch, one line of at most appwire.MaxIntentRunes and absent when the
+   * job stated none. The row leads with the intent because the command says
+   * what is executing and the intent says why.
    */
   running_job_count?: number;
   running_job_command?: string;
+  running_job_intent?: string;
   watch_count?: number;
   armed_watch_count?: number;
   /**

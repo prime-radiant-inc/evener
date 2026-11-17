@@ -24,10 +24,9 @@ import {
   quietState,
   type SessionActivity,
 } from "@evener/appwire-client";
-import { waitingOnSubagents } from "@evener/appwire-client/state/navigation";
+import { waitingOnSubagents, workingJobLine } from "@evener/appwire-client/state/navigation";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../stores/connection";
-import { STATUS_LABEL } from "../../widgets";
 import type { RailSession } from "./railNodes";
 
 export const RAIL_ACTIVITY_POLL_MS = 10_000;
@@ -163,6 +162,5 @@ export function workingStatus(session: RailSession, read: RailActivityRead | nul
     if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${compactDuration(quiet.forMs)}` };
     if (activity.latestIntent) return { kind: "intent", text: activity.latestIntent };
   }
-  if (session.running_job_command) return { kind: "job", text: `Running ${session.running_job_command}` };
-  return { kind: "state", text: STATUS_LABEL.working };
+  return workingJobLine(session);
 }

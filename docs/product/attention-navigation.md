@@ -75,7 +75,8 @@ spans hosts and the row is away from this hub, or its host is offline.
 
 A Live row says why it is in its band only where the band's name and the
 row's indicator have not already said it: the kind of attention on a
-Needs-you row, and what a working row is waiting on or running. The words
+Needs-you row, and what a working row is waiting on or what the job it is
+running says it is for, falling back to that job's command. The words
 come from the shared
 [`whyLine`](../../appwire-client/typescript/state/navigation/liveAttention.ts);
 the rail prints its state word and leaves the sentence that only says to

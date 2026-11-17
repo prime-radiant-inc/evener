@@ -58,6 +58,28 @@ describe("workingStatus", () => {
     expect(workingStatus(session({ running_job_command: "go test ./..." }), null).kind).toBe("job");
   });
 
+  test("a running job's own intent is its status text, not the command", () => {
+    expect(
+      workingStatus(
+        session({ running_job_command: "go test ./agent/...", running_job_intent: "Checking the rows." }),
+        null,
+      ),
+    ).toEqual({ kind: "job", text: "Checking the rows." });
+  });
+
+  test("a running job with no stated intent keeps the command", () => {
+    expect(workingStatus(session({ running_job_command: "go test ./agent/..." }), null)).toMatchObject({
+      kind: "job",
+      text: expect.stringContaining("go test ./agent/..."),
+    });
+  });
+
+  test("an activity read's latest intent still leads a running job's own", () => {
+    expect(
+      workingStatus(session({ running_job_intent: "Checking the rows." }), read({ latestIntent: "Fixing it." })),
+    ).toEqual({ kind: "intent", text: "Fixing it." });
+  });
+
   test("a fresh read's zero subagent count answers outright, ignoring the row's tally", () => {
     expect(
       workingStatus(session({ subagents: { running: 3, failed: 0, done: 0 } }), read({ latestIntent: "Reading." }))
