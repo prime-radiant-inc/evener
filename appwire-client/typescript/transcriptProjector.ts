@@ -13,6 +13,7 @@ import { isParentSteer } from "./steeringLabels";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
   type ContentVector,
+  configFingerprint,
   contentVectorForConfig,
   type HookExitDetail,
   hidesDaemonSteering,
@@ -503,92 +504,378 @@ function terminalFallbackEntry(
 // this turn's own array slot. Array.prototype.sort is stable, so an item with
 // no position (a legacy, pre-v6 thread) keeps today's turn-then-item order -
 // comparePositions sorts every unpositioned item equal.
+function positionOrderedItems(items: readonly ItemModel[]): ItemModel[] {
+  const all = [...items];
+  all.sort((left, right) => comparePositions(left.position, right.position));
+  return all;
+}
+
 function sourceIndexRanks(turns: readonly TurnModel[]): Map<ItemModel, number> {
   const all: ItemModel[] = [];
   for (const turn of turns) for (const item of turn.items) all.push(item);
-  all.sort((left, right) => comparePositions(left.position, right.position));
   const ranks = new Map<ItemModel, number>();
-  for (const [index, item] of all.entries()) ranks.set(item, index);
+  for (const [index, item] of positionOrderedItems(all).entries()) ranks.set(item, index);
   return ranks;
+}
+
+// The identity history merges an item by (transcriptHistory's itemIdentity),
+// and the identity a rank is looked up by when a derivation is reused across
+// frames. Items are immutable between merges, so an item whose PAYLOAD changed
+// - every streamed delta - is a new object with the same identity and
+// position. Keying ranks by identity is what lets one changed turn be
+// re-projected while every other turn's ranks stand.
+function itemRankIdentity(item: Pick<ItemModel, "id" | "transcriptKey">): string {
+  return item.transcriptKey ?? item.id;
+}
+
+/**
+ * One turn's contribution to a projection, plus what the incremental
+ * projector needs to decide whether it can be reused for the next model.
+ */
+interface TurnProjection {
+  /** The exact turn object this was derived from. A contribution is reused
+   * only while the model still holds this object: turns are immutable here, so
+   * an identical reference means identical entries, anchors and disclosure
+   * ids. */
+  readonly turn: TurnModel;
+  readonly projected: ProjectedTurn;
+  /** Anchors carrying their GLOBAL projected index, so a reused turn hands
+   * back the same objects. */
+  readonly anchors: readonly ProjectedAnchor[];
+  readonly eligible: readonly string[];
+  /** The round display keys displayKeyFor actually claimed here, in order.
+   * Replaying them onto the next pass's keyedRounds set rebuilds the
+   * cross-turn state a later turn's display keys depend on. */
+  readonly tookRoundKeys: readonly string[];
+  readonly entryCount: number;
+  /** This turn's first entry's projected index. A contribution can only be
+   * reused while the running index reaches the same place, or its anchors'
+   * global indexes would be stale. */
+  readonly startIndex: number;
+  /**
+   * This turn's items as their (identity, position) sequence. Two turns with
+   * equal signatures occupy the same slice of the position-sorted document, so
+   * if every turn that changed still matches its cached signature, the global
+   * rank order did not move and the cached ranks stand. Text, status and every
+   * other payload field are deliberately absent: a streamed delta changes those
+   * and must not invalidate ranks.
+   */
+  readonly rankSignature: string;
+}
+
+// displayKeyFor gives a round's key to the first item that claims it, in
+// projection order. Two passes over the same turns can hand the same round's
+// key to different turns when a turn's payload changes type, so a reused turn's
+// claim is only safe to stand when the turns rebuilt before it claim exactly
+// what they claimed last time.
+function sameRoundKeys(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (const [index, key] of left.entries()) {
+    if (key !== right[index]) return false;
+  }
+  return true;
+}
+
+function rankSignature(turn: TurnModel): string {
+  let signature = "";
+  for (const item of turn.items) {
+    const position = item.position;
+    // \u0001 and \u0002 cannot occur in an id or a number, so one item's
+    // fields can never blend into the next item's.
+    signature += `${itemRankIdentity(item)}\u0001${position?.entry ?? ""},${position?.item ?? ""},${
+      position?.sub ?? ""
+    }\u0002`;
+  }
+  return signature;
+}
+
+// One turn's entries, anchors and disclosure inventory. Pure: everything that
+// is not the turn itself arrives as an argument, so the whole-thread and the
+// per-turn (incremental) paths share exactly one implementation and cannot
+// drift.
+function projectTurn(
+  turn: TurnModel,
+  normalized: TranscriptDisplayConfigV1,
+  vector: ContentVector,
+  sourceIndexOf: (item: ItemModel) => number,
+  keyedRounds: Set<string>,
+  startIndex: number,
+): TurnProjection {
+  const anchors: ProjectedAnchor[] = [];
+  const eligibleDisclosureIds: string[] = [];
+  const entries: ProjectedEntry[] = [];
+  const visibleItems: ItemModel[] = [];
+  const sourceIndexByItem = new Map<ItemModel, number>();
+  const tookRoundKeys: string[] = [];
+  let projectedIndex = startIndex;
+  for (const item of turn.items) {
+    const itemSourceIndex = sourceIndexOf(item);
+    sourceIndexByItem.set(item, itemSourceIndex);
+    const decision = decisionFor(item, turn, normalized, vector);
+    if (decision === "hidden") continue;
+
+    let entry: ProjectedEntry;
+    const displayKey = displayKeyFor(item, keyedRounds);
+    if (displayKey !== undefined) tookRoundKeys.push(displayKey);
+    if (decision === "item") {
+      entry = itemEntry(item, turn.id, itemSourceIndex, displayKey);
+    } else if (decision === "thinking") {
+      entry = {
+        kind: "thinking",
+        id: item.id,
+        displayKey,
+        turnId: turn.id,
+        sourceIndex: itemSourceIndex,
+        item,
+        live: isLiveCurrentReasoning(item, turn),
+      };
+    } else if (decision === "intent") {
+      entry = intentEntry(item, turn.id, itemSourceIndex);
+    } else {
+      entry = criticalEntry(item, turn.id, itemSourceIndex, redactsReasoning(item, vector), displayKey);
+    }
+    visibleItems.push(item);
+    entries.push(entry);
+    addAnchor(anchors, entry, projectedIndex);
+    projectedIndex += 1;
+
+    if (entry.kind === "item" && eligibleDisclosure(item)) {
+      // The renderer keys a disclosure by the entry's display key (a
+      // reasoning row by its round key), so the baseline inventory names
+      // that same key - otherwise the open-everything baseline reaches no
+      // disclosure for the row and a reader's earlier close survives a
+      // level switch.
+      eligibleDisclosureIds.push(entryDisplayKey(entry));
+      // A commandExecution item's summary line has its own disclosure state
+      // (Task 5's two-level summaryOpen), so its summary key is also
+      // eligible for the Full-level baseline. Other eligible types
+      // (reasoning, systemMessage) have no separate summary disclosure.
+      if (item.type === "commandExecution") eligibleDisclosureIds.push(`summary:${item.id}`);
+    }
+  }
+  if (entries.length === 0) {
+    const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized);
+    if (fallback) {
+      visibleItems.push(fallback.item);
+      entries.push(fallback);
+      addAnchor(anchors, fallback, projectedIndex);
+      projectedIndex += 1;
+    }
+  }
+  return {
+    turn,
+    projected: { id: turn.id, source: turn, entries, visibleItems },
+    anchors,
+    eligible: eligibleDisclosureIds,
+    tookRoundKeys,
+    entryCount: entries.length,
+    startIndex,
+    rankSignature: rankSignature(turn),
+  };
+}
+
+function assembleProjection(
+  parts: readonly TurnProjection[],
+  normalized: TranscriptDisplayConfigV1,
+): TranscriptProjection {
+  return {
+    turns: parts.map((part) => part.projected),
+    anchors: parts.flatMap((part) => part.anchors),
+    metadata: { ...normalized.advanced },
+    eligibleDisclosureIds: parts.flatMap((part) => part.eligible),
+  };
+}
+
+// Projects every turn in order, threading the round display keys and the
+// running projected index from one turn into the next. Both whole-thread
+// derivations - projectThread and the incremental projector's fallback - come
+// through here, so the two cannot drift apart.
+function projectTurns(
+  turns: readonly TurnModel[],
+  normalized: TranscriptDisplayConfigV1,
+  vector: ContentVector,
+  sourceIndexOf: (item: ItemModel) => number,
+): TurnProjection[] {
+  // Rounds whose first reply already took the round key (see displayKeyFor).
+  const keyedRounds = new Set<string>();
+  const parts: TurnProjection[] = [];
+  let projectedIndex = 0;
+  for (const turn of turns) {
+    const part = projectTurn(turn, normalized, vector, sourceIndexOf, keyedRounds, projectedIndex);
+    parts.push(part);
+    projectedIndex += part.entryCount;
+  }
+  return parts;
 }
 
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
   const normalized = normalizeConfig(config);
   const vector = contentVectorForConfig(normalized);
-  const turns: ProjectedTurn[] = [];
-  const anchors: ProjectedAnchor[] = [];
-  const eligibleDisclosureIds: string[] = [];
   const sourceIndexRank = sourceIndexRanks(model.turns);
-  // Rounds whose first reply already took the round key (see displayKeyFor).
-  const keyedRounds = new Set<string>();
-  let projectedIndex = 0;
+  // Always present: sourceIndexRanks just built this map from these same
+  // turns. The fallback is never taken; it only avoids a non-null assertion.
+  const parts = projectTurns(model.turns, normalized, vector, (item) => sourceIndexRank.get(item) ?? 0);
+  return assembleProjection(parts, normalized);
+}
 
-  for (const turn of model.turns) {
-    const entries: ProjectedEntry[] = [];
-    const visibleItems: ItemModel[] = [];
-    const sourceIndexByItem = new Map<ItemModel, number>();
-    for (const item of turn.items) {
-      // Always present: sourceIndexRanks just built this map from these same
-      // turns. The fallback is never taken; it only avoids a non-null assertion.
-      const itemSourceIndex = sourceIndexRank.get(item) ?? 0;
-      sourceIndexByItem.set(item, itemSourceIndex);
-      const decision = decisionFor(item, turn, normalized, vector);
-      if (decision === "hidden") continue;
+interface HeldProjection {
+  readonly configKey: string;
+  readonly normalized: TranscriptDisplayConfigV1;
+  readonly vector: ContentVector;
+  /** The turn array this derivation read, so a model whose turns array did not
+   * move (a status or queue frame) costs one identity check. */
+  readonly turns: readonly TurnModel[];
+  readonly parts: readonly TurnProjection[];
+  /** Item identity to global rank, or undefined when two items share an
+   * identity. Reuse then cannot address items unambiguously, so the projector
+   * falls back to a full derivation. */
+  readonly rankByIdentity: ReadonlyMap<string, number> | undefined;
+  readonly projection: TranscriptProjection;
+}
 
-      let entry: ProjectedEntry;
-      const displayKey = displayKeyFor(item, keyedRounds);
-      if (decision === "item") {
-        entry = itemEntry(item, turn.id, itemSourceIndex, displayKey);
-      } else if (decision === "thinking") {
-        entry = {
-          kind: "thinking",
-          id: item.id,
-          displayKey,
-          turnId: turn.id,
-          sourceIndex: itemSourceIndex,
-          item,
-          live: isLiveCurrentReasoning(item, turn),
-        };
-      } else if (decision === "intent") {
-        entry = intentEntry(item, turn.id, itemSourceIndex);
-      } else {
-        entry = criticalEntry(item, turn.id, itemSourceIndex, redactsReasoning(item, vector), displayKey);
-      }
-      visibleItems.push(item);
-      entries.push(entry);
-      addAnchor(anchors, entry, projectedIndex);
-      projectedIndex += 1;
+/**
+ * A projector that keeps its previous derivation and reuses every turn whose
+ * inputs did not change. A streamed delta replaces one turn object and leaves
+ * every other turn's object alone, so the position sort, the per-item
+ * classification, and every other turn's entries, anchors and disclosure ids
+ * all stand: only the streaming turn is re-projected.
+ *
+ * Correctness rests on four checks, and failing any one falls back to the full
+ * derivation (projectThread). That fallback is what makes out-of-order and
+ * older-sequence arrivals safe rather than special-cased.
+ *
+ *  1. the config fingerprint is unchanged;
+ *  2. the turn list has the same length and the same turn id at every index;
+ *  3. every turn that changed still has the same (identity, position) item
+ *     sequence, so the position-sorted document - and therefore every global
+ *     sourceIndex - is unchanged. An insert, a delete or a move anywhere in a
+ *     changed turn fails this and takes the full path;
+ *  4. a reused turn's running projected index still matches its start index,
+ *     so its anchors' global indexes stay true.
+ *
+ * The turn ids and the reused prefix are what make a changed round key safe: a
+ * rebuilt turn re-claims its display keys in order, and a turn that moved its
+ * own position in the turn list never reaches the reuse path at all.
+ */
+export interface TranscriptProjector {
+  /** Derives the projection of `model` at `config`, reusing whatever the
+   * previous call already derived. Reference-equal to the previous projection
+   * when nothing it reads changed. */
+  project(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection;
+}
 
-      if (entry.kind === "item" && eligibleDisclosure(item)) {
-        // The renderer keys a disclosure by the entry's display key (a
-        // reasoning row by its round key), so the baseline inventory names
-        // that same key - otherwise the open-everything baseline reaches no
-        // disclosure for the row and a reader's earlier close survives a
-        // level switch.
-        eligibleDisclosureIds.push(entryDisplayKey(entry));
-        // A commandExecution item's summary line has its own disclosure state
-        // (Task 5's two-level summaryOpen), so its summary key is also
-        // eligible for the Full-level baseline. Other eligible types
-        // (reasoning, systemMessage) have no separate summary disclosure.
-        if (item.type === "commandExecution") eligibleDisclosureIds.push(`summary:${item.id}`);
-      }
+class IncrementalTranscriptProjector implements TranscriptProjector {
+  private held: HeldProjection | undefined;
+
+  project(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
+    const held = this.held;
+    if (held === undefined) return this.rebuild(model, config);
+    const configKey = configFingerprint(config);
+    if (configKey !== held.configKey) return this.rebuild(model, config);
+    if (model.turns === held.turns) return held.projection;
+    const turns = model.turns;
+    const previous = held.parts;
+    if (turns.length !== previous.length) return this.rebuild(model, config);
+    let firstChanged = -1;
+    for (const [index, turn] of turns.entries()) {
+      const cached = previous[index];
+      if (cached === undefined || cached.turn.id !== turn.id) return this.rebuild(model, config);
+      if (firstChanged === -1 && cached.turn !== turn) firstChanged = index;
     }
-    if (entries.length === 0) {
-      const fallback = terminalFallbackEntry(turn, sourceIndexByItem, vector, normalized);
-      if (fallback) {
-        visibleItems.push(fallback.item);
-        entries.push(fallback);
-        addAnchor(anchors, fallback, projectedIndex);
-        projectedIndex += 1;
-      }
+    // Every turn is the same object, so the two models project identically: the
+    // projection reads nothing else off the model.
+    if (firstChanged === -1) {
+      this.held = { ...held, turns };
+      return held.projection;
     }
-    turns.push({ id: turn.id, source: turn, entries, visibleItems });
+    // A changed turn whose items moved in the position-sorted document
+    // invalidates every rank at or after it, so only the full path is safe.
+    for (let index = firstChanged; index < turns.length; index += 1) {
+      const turn = turns[index];
+      const cached = previous[index];
+      if (turn === undefined || cached === undefined || turn === cached.turn) continue;
+      if (rankSignature(turn) !== cached.rankSignature) return this.rebuild(model, config);
+    }
+    const ranks = held.rankByIdentity;
+    if (ranks === undefined) return this.rebuild(model, config);
+    const parts: TurnProjection[] = [];
+    // Rounds whose first reply already took the round key (see displayKeyFor),
+    // replayed from the reused turns so a rebuilt turn's display key matches
+    // what a full derivation would give it.
+    const keyedRounds = new Set<string>();
+    // Whether the round keys claimed so far still match what this pass started
+    // from. A rebuilt turn can start claiming a key an earlier pass gave to a
+    // later turn, or stop claiming one that a later turn would then take; either
+    // way every later cached entry's displayKey is now untrustworthy, so reuse
+    // stops for the rest of the list. A streamed delta keeps claiming the same
+    // round key, so the common path stays incremental.
+    let keysMatchPreviousPass = true;
+    let projectedIndex = 0;
+    for (const [index, turn] of turns.entries()) {
+      const cached = previous[index];
+      const reused =
+        keysMatchPreviousPass && cached !== undefined && cached.turn === turn && cached.startIndex === projectedIndex
+          ? cached
+          : undefined;
+      if (reused !== undefined) {
+        for (const key of reused.tookRoundKeys) keyedRounds.add(key);
+        parts.push(reused);
+        projectedIndex += reused.entryCount;
+        continue;
+      }
+      const part = projectTurn(
+        turn,
+        held.normalized,
+        held.vector,
+        (item) => ranks.get(itemRankIdentity(item)) ?? 0,
+        keyedRounds,
+        projectedIndex,
+      );
+      if (cached !== undefined && !sameRoundKeys(part.tookRoundKeys, cached.tookRoundKeys)) {
+        keysMatchPreviousPass = false;
+      }
+      parts.push(part);
+      projectedIndex += part.entryCount;
+    }
+    const projection = assembleProjection(parts, held.normalized);
+    this.held = { ...held, turns, parts, projection };
+    return projection;
   }
 
-  return {
-    turns,
-    anchors,
-    metadata: { ...normalized.advanced },
-    eligibleDisclosureIds,
-  };
+  private rebuild(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
+    const configKey = configFingerprint(config);
+    const normalized = normalizeConfig(config);
+    const vector = contentVectorForConfig(normalized);
+    // The same position-sorted document and the same rank assignment
+    // projectThread uses, so the fallback and the reference derivation cannot
+    // disagree about a source index.
+    const byObject = sourceIndexRanks(model.turns);
+    const byIdentity = new Map<string, number>();
+    let itemCount = 0;
+    for (const turn of model.turns) itemCount += turn.items.length;
+    for (const [item, index] of byObject) {
+      byIdentity.set(itemRankIdentity(item), index);
+    }
+    const parts = projectTurns(model.turns, normalized, vector, (item) => byObject.get(item) ?? 0);
+    const projection = assembleProjection(parts, normalized);
+    this.held = {
+      configKey,
+      normalized,
+      vector,
+      turns: model.turns,
+      parts,
+      // A shared identity would make the identity lookup ambiguous; the
+      // object-keyed map stays authoritative and reuse is disabled.
+      rankByIdentity: byIdentity.size === itemCount ? byIdentity : undefined,
+      projection,
+    };
+    return projection;
+  }
+}
+
+/** Creates a projector that reuses one model's derivation across calls. One per
+ * live transcript surface: it holds only its last model, so two panes reading
+ * different threads must not share one. */
+export function createTranscriptProjector(): TranscriptProjector {
+  return new IncrementalTranscriptProjector();
 }

@@ -1,10 +1,17 @@
 import type { Token } from "marked";
 import { describe, expect, it, vi } from "vitest";
 import { markdownLexer } from "./lexer";
-import type { LiveSegmentsCache } from "./segments";
-import { messageMayContainMermaid, splitMarkdownSegments } from "./segments";
+import type { HeadGateVerdict, LiveSegmentsCache } from "./segments";
+import { LIST_FAMILY_UNKNOWN, messageMayContainMermaid, splitLiveWindow, splitMarkdownSegments } from "./segments";
 
 const MERMAID = "```mermaid\ngraph TD; A-->B\n```\n";
+
+// A head that ENDS in a list, long enough that the window edge falls inside the
+// list, so splitLiveSource's first blank line at/after the edge is the one
+// after it. That is the only geometry in which the head's list family is read.
+function listSplitHead(): string {
+  return Array.from({ length: 30 }, (_, i) => `- bullet item ${i + 1} with enough words to fill out a line`).join("\n");
+}
 
 // Every link href reachable in a token array, nested inline tokens included.
 function collectLinkHrefs(tokens: Token[]): string[] {
@@ -204,20 +211,80 @@ describe("splitLiveMarkdownSegments", () => {
     }
   });
 
-  // The windowed tail holds only when the split is sound. A definition in the
-  // window, or an open fence there, must still fall back to the whole-source
-  // lex (the same gate the single-root path applies), not split at a blank line.
-  it("falls back to the whole-source lex when the tail window is unsound", async () => {
+  // The windowed tail holds only when the split is sound. A mermaid fence in
+  // the window must fall back to the whole-source lex: only the frozen head is
+  // checked for non-markdown segments, so a diagram sitting in the window
+  // would parse as markdown and flip to a code block until it settled. Both
+  // fences here are PIE charts - no `-->` anywhere - so HTML_BLOCK_END cannot
+  // be what declines the split, and the whole-source lex is the pinned
+  // contract.
+  it("falls back to the whole-source lex when the tail window holds a mermaid fence", async () => {
     const { splitLiveMarkdownSegments } = await import("./segments");
-    const head = `intro\n\n${MERMAID}`;
-    const settled = `${"SETTLEDTAIL ".repeat(100)}\n\n`;
-    const cache: { current: LiveSegmentsCache | null } = { current: null };
-    // An open mermaid fence in the window trips TAIL_BLOCK_MARKER, so the whole
-    // source lexes as one document, exactly as before this change.
-    const withOpenFence = `${head}${settled}${"middle prose ".repeat(70)}\n\n\`\`\`mermaid\ngraph TD; A-->B`;
-    const segments = splitLiveMarkdownSegments(withOpenFence, cache);
-    // The trailing open fence demotes to a markdown slice; no windowed segment.
+    const topLevelPie = '```mermaid\npie title Top\n    "a" : 1\n```\n';
+    // Indented under a list item, so the scan's LAST closed fence candidate is
+    // rejected and no head freezes: the whole source is the tail, and the
+    // top-level pie above lands inside the window.
+    const nestedPie = '- outer item\n  ```mermaid\n  pie title Nested\n      "b" : 2\n  ```\n';
+    const lead = "lead prose before the diagram. ".repeat(40).trim();
+    const firstWindowParagraph = "window paragraph one. ".repeat(30).trim();
+    const secondWindowParagraph = "window paragraph two. ".repeat(4).trim();
+    const source = `${lead}\n\n${topLevelPie}\n${nestedPie}\n${firstWindowParagraph}\n\n${secondWindowParagraph}`;
+    expect(source).not.toContain("-->");
+    // The split is otherwise sound (a blank-line boundary well inside the
+    // window), so only the mermaid check can decline the windowed path.
+    const split = splitLiveWindow(source, { current: null });
+    expect(split).not.toBeNull();
+    expect(messageMayContainMermaid(split?.tail ?? "")).toBe(true);
+    const segments = splitLiveMarkdownSegments(source, { current: null });
+    // Whole-source lex: the top-level pie is still a diagram, and no windowed
+    // markdown segment exists to parse it as a code block instead.
+    expect(segments.filter((s) => s.kind === "mermaid")).toHaveLength(1);
     expect(segments.some((s) => s.kind === "markdown" && s.window !== undefined)).toBe(false);
+  });
+
+  // Finding: an unreadable head made the gate FAIL OPEN. The sentinel equals
+  // no real marker family, so a bare comparison would allow the split; the
+  // gate must decline instead, as headGateVerdict's own contract says. Seeding
+  // the cache with an UNKNOWN verdict is the only way to reach the arm today
+  // (both real producers - a lexer throw and an unparsable first item - are
+  // already declined by hasDef or cannot be produced by marked).
+  it("declines the split when the head's list family is unreadable", () => {
+    const head = `${listSplitHead()}\n\n`;
+    const tail = "streaming tail prose. ".repeat(40).trim();
+    const source = head + tail;
+    const unreadable: HeadGateVerdict = {
+      headSource: head,
+      balanced: true,
+      hazard: false,
+      htmlStart: false,
+      hasDef: false,
+      listFamily: LIST_FAMILY_UNKNOWN,
+    };
+    // A real same-family tail would already decline, so the tail here is a
+    // paragraph: the ONLY reason to decline is the unreadable head.
+    expect(tail.startsWith("streaming")).toBe(true);
+    // Control: the same source with a readable paragraph-ending head splits.
+    expect(splitLiveWindow(source, { current: null })).not.toBeNull();
+    expect(splitLiveWindow(source, { current: unreadable })).toBeNull();
+  });
+
+  // Finding: headGateVerdict lexed the head twice per head change (once for
+  // the definition check, once for the list family) on exactly the O(n)
+  // frames this change counts against its own work bound.
+  it("lexes the head once per head change", () => {
+    const head = `${listSplitHead()}\n\n`;
+    const tail = "streaming tail prose. ".repeat(40).trim();
+    const source = head + tail;
+    const spy = vi.spyOn(markdownLexer, "lexer");
+    try {
+      const cache: { current: HeadGateVerdict | null } = { current: null };
+      expect(splitLiveWindow(source, cache)).not.toBeNull();
+      // The split's head is the string the verdict keyed on.
+      expect(splitLiveWindow(source, cache)?.head).toBe(head);
+      expect(spy.mock.calls.filter((call) => call[0] === head)).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   // A rejected frozen head (a list-item-nested fence) leaves headSource empty,

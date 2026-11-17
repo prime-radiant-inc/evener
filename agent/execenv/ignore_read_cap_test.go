@@ -69,7 +69,7 @@ func TestReadIgnoreFileRefusesAnOverCapStallingStream(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		_, read, err := readIgnoreFile(context.Background(), capThenStallFS{f: f}, ".gitignore", newGlobBudget("grep"))
+		_, read, _, err := readIgnoreFile(context.Background(), capThenStallFS{f: f}, ".gitignore", newGlobBudget("grep"))
 		done <- result{read, err}
 	}()
 	select {

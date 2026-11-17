@@ -37,7 +37,7 @@ func TestIgnoreReadIsInterruptibleOnABlockedStream(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := readIgnoreFile(ctx, fsys, ".gitignore", newGlobBudget("test"))
+		_, _, _, err := readIgnoreFile(ctx, fsys, ".gitignore", newGlobBudget("test"))
 		done <- err
 	}()
 	select {
