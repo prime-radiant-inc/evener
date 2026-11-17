@@ -103,8 +103,9 @@ the area they exercise.
 ## Model switching
 
 - `web-model-switch-mid-session.md` — two web clients converge on a
-  live `thread/model/set` switch without reload; mid-turn and
-  queued-input switches stay rejected with no state change.
+  live `thread/model/set` switch without reload; a mid-turn or
+  queued-input pick is accepted and applied at the turn boundary, and a
+  pick on an exited session resumes it and applies in one action.
 - `model-switch-resume.md` — switch → kill the daemon → resume runs
   the next turn on the switched model (N3 persistence).
 - `web-reasoning-effort-control.md` — the web effort control and the
