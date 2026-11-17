@@ -7538,8 +7538,8 @@ function newlyInvalidatedHistoryRefs(
 }
 
 function newlyRecoveringModelControlRefs(
-  prev: Map<string, ThreadModel>,
-  next: Map<string, ThreadModel> | null,
+  prev: ReadonlyMap<string, ThreadModel>,
+  next: ReadonlyMap<string, ThreadModel> | null,
   candidates: readonly string[],
 ): string[] {
   if (!next) return [];
