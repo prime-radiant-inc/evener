@@ -122,9 +122,13 @@ func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity,
 // next call (recording the failure would freeze the loss), so a caller that
 // skips passes must not skip the one after a failed one, or a transient read
 // error would wait for unrelated disk activity to clear.
-func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex) (retry bool, err error) {
+//
+// A failed refresh is reported here and nowhere else: it names no remedial
+// action the caller could take, and the next pass retries the transcripts that
+// failed, so the caller gets only whether to run that pass.
+func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex) (retry bool) {
 	if index == nil || ctx.Err() != nil {
-		return false, nil
+		return false
 	}
 	log := componentlog.New("hub")
 	failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
@@ -134,7 +138,7 @@ func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSear
 	if err != nil && ctx.Err() == nil {
 		log.Info(fmt.Sprintf("message search: %v", err))
 	}
-	return len(failures) > 0, err
+	return len(failures) > 0
 }
 
 // messageSearchSessions is every session the past index lists, with its

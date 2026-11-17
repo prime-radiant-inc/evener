@@ -85,7 +85,7 @@ func (s *hubPastSweep) fullPass(ctx context.Context, stamp uint64) {
 	s.lastStamp, s.seeded = stamp, true
 	s.fullPassesCount.Add(1)
 	_, _ = s.past.Rebuild()
-	s.retry, _ = refreshHubMessageSearchOnce(ctx, s.index, s.past)
+	s.retry = refreshHubMessageSearchOnce(ctx, s.index, s.past)
 }
 
 // run sweeps every interval until ctx ends. The first pass is not a tick: a hub
