@@ -101,7 +101,13 @@ type OutputStore struct {
 	durableSHA256   string
 	// synced says the log's durable anchor describes every byte appended.
 	synced bool
-	closed bool
+	// cleanCloseLength is the retained window this store's last orderly finish
+	// vouched for, or nil when it has never finished one. It survives appends and
+	// reopens so a sidecar keeps claiming that a clean close happened: dropping
+	// the claim on reopen would let a crash restore a sidecar that adopts the
+	// suffix written after that finish.
+	cleanCloseLength *int64
+	closed           bool
 }
 
 type outputMeta struct {
@@ -116,6 +122,12 @@ type outputMeta struct {
 	// strict byte-count check.
 	DurableFileSize *int64 `json:"durable_file_size,omitempty"`
 	DurableSHA256   string `json:"durable_sha256,omitempty"`
+	// CleanCloseLength is the retained log length an orderly Close vouched for.
+	// Present, it is a trust boundary: a log longer than the window this sidecar
+	// names holds bytes past the writer's last clean finish, which nothing
+	// vouches for and a torn page can fill with arbitrary content. Absent, the
+	// sidecar makes no such claim, and a longer log keeps its external appends.
+	CleanCloseLength *int64 `json:"clean_close_length,omitempty"`
 	// VisibleStart, when set, is the first lifetime offset readers may see. It
 	// is past RetainedStart when the file still holds bytes older than the
 	// retention cap that compaction has not yet dropped.
@@ -223,6 +235,7 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 	total := info.Size()
 	view := outputView{total: total}
 	retainedStartPartial := false
+	var cleanCloseLength *int64
 	if !created {
 		meta, err := readOutputMetaRecordForFile(fs, metaPath, path, info.Size())
 		if err != nil {
@@ -230,6 +243,7 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 			return nil, err
 		}
 		view, retainedStartPartial = outputViewOf(meta), outputMetaRetainedStartPartial(meta)
+		cleanCloseLength = meta.CleanCloseLength
 		// A writable reopen becomes the file's only writer, so it must not carry
 		// a suffix the sidecar never vouched for: hashing the file as it stands
 		// would adopt a torn suffix into the new sidecar, and appending would
@@ -245,7 +259,7 @@ func openOutputFsWithSync(fs afero.Fs, path string, capBytes int64, disableSync 
 			}
 		}
 	}
-	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: view.total, retainedStart: view.fileStart, retainedStartPartial: retainedStartPartial, visibleStart: view.visibleStart, visiblePartial: view.visiblePartial, disableSync: disableSync}
+	o := &OutputStore{path: path, metaPath: metaPath, fs: fs, f: f, capBytes: capBytes, total: view.total, retainedStart: view.fileStart, retainedStartPartial: retainedStartPartial, visibleStart: view.visibleStart, visiblePartial: view.visiblePartial, cleanCloseLength: cleanCloseLength, disableSync: disableSync}
 	o.metaSyncInterval = outputMetaSyncInterval
 	if o.retainedHash, err = outputFileHash(fs, path); err != nil {
 		cleanupCreated()
@@ -1076,6 +1090,13 @@ func (o *OutputStore) outputMetaContentLocked() (outputMeta, error) {
 		RetainedStart:        o.retainedStart,
 		RetainedStartPartial: new(o.retainedStartPartial),
 	}
+	if o.cleanCloseLength != nil {
+		// Carry the claim forward, but never past the window this sidecar names:
+		// this sidecar vouches for what it hashes, and a claim longer than that
+		// would vouch for bytes no checksum covers.
+		vouched := min(*o.cleanCloseLength, o.total-o.retainedStart)
+		meta.CleanCloseLength = new(vouched)
+	}
 	if o.visibleStart > o.retainedStart {
 		meta.VisibleStart, meta.VisibleStartPartial = new(o.visibleStart), new(o.visiblePartial)
 	}
@@ -1452,9 +1473,18 @@ func readValidOutputMetaFs(fs afero.Fs, path string, outputPath string, retained
 			meta.TotalBytes = meta.RetainedStart + metaRetained
 			return meta, true, nil
 		}
-		// An unanchored sidecar predates the anchor contract, so it keeps the
-		// older adopt-whole behavior rather than lose bytes nothing can vouch for
-		// or against.
+		if meta.CleanCloseLength != nil {
+			// The writer finished orderly at some point, so a log longer than the
+			// window this sidecar names grew after that finish. Nothing vouched
+			// for those bytes, and a torn page can fill a suffix with arbitrary
+			// content, so report the window the sidecar checked rather than adopt
+			// bytes that only look like output.
+			meta.TotalBytes = meta.RetainedStart + metaRetained
+			return meta, true, nil
+		}
+		// A sidecar with neither an anchor nor a clean-close marker predates both
+		// contracts, so it keeps the older adopt-whole behavior rather than lose
+		// bytes nothing can vouch for or against.
 		hash, err := outputFileSHA256(fs, outputPath)
 		if err != nil {
 			return outputMeta{}, false, err
@@ -1735,19 +1765,25 @@ func appendGrepLine(matches *[]Match, re *regexp.Regexp, offset int64, raw []byt
 	return *budget <= 0
 }
 
-// Close pays any outstanding barriers, so the closed log and its metadata are
-// durable together, then closes the file. A closed store is inert: a second
-// Close reports no error.
+// Close pays the barriers and records the log as closed orderly, so a later
+// recovery can tell a suffix this writer never accounted for from output the
+// writer finished with. A closed store is inert: a second Close reports no
+// error.
 func (o *OutputStore) Close() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {
 		return nil
 	}
-	flushErr := o.flushLocked()
-	if flushErr != nil {
+	// The sidecar written here names the retained window as a clean-close
+	// boundary, which no other write states: only a finish can claim the log
+	// holds nothing past what this sidecar hashes.
+	prior := o.cleanCloseLength
+	o.cleanCloseLength = new(o.total - o.retainedStart)
+	if err := o.persistMetaLocked(); err != nil {
+		o.cleanCloseLength = prior
 		// The barrier is still owed, so the store stays open and retryable.
-		return flushErr
+		return err
 	}
 	o.closed = true
 	return o.f.Close()
