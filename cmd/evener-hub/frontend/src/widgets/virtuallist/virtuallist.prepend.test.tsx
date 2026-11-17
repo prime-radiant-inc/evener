@@ -63,7 +63,19 @@ test("a successful short-row prepend settles without recursive attachment update
     let deliveries = 0;
     do {
       if (++deliveries > 1000) throw new Error("measurement settlement tripwire");
-      await act(async () => external.notify());
+      await act(async () => {
+        external.notify();
+        // The virtualizer clears its "scrolling" flag on a debounced timer
+        // (`isScrollingResetDelay`, 150ms, via window.setTimeout - which this
+        // test fakes). While the flag is set, a row's ref attachment only
+        // starts observing that row and defers its measurement to a later
+        // frame, so a round that never advances the timer adds rows to observe
+        // without measuring them and the loop grows the window frame by frame.
+        // Running the pending reset inside the round lets each round measure
+        // what it attached, so settling ends in a couple of rounds instead of
+        // spinning until the test's wall-clock budget runs out.
+        await vi.runOnlyPendingTimersAsync();
+      });
     } while (frames.pending.size > 0 || !ref.current?.isMeasurementReady?.());
   };
   try {
@@ -83,7 +95,19 @@ test("a successful short-row prepend settles without recursive attachment update
     const beforeTop = retained.getBoundingClientRect().top;
     expect(beforeTop).toBe(0);
     const beforeChanges = changes;
-    const older = Array.from({ length: 720 }, (_, index) => ({
+    // The count is the stress this test reproduces, not a layout number: only
+    // the first three rows have height, so any count leaves the same 380px of
+    // content and the same 180px prefix. It has to be large enough that the
+    // collapsing overscan window attaches rows across more frames than React's
+    // 50-update nested-update ceiling, because that is exactly what #4918 was
+    // about: with synchronous ref measurement this fails at 525 or more rows
+    // ("Maximum update depth exceeded") and passes at 510 or fewer, checked by
+    // running the old measurement against each count. 600 keeps real headroom
+    // over that floor: the floor depends on the window's overscan constant, so
+    // a change that makes each frame attach more rows raises it, and a count
+    // sitting just above 525 would then stop reproducing #4918 while still
+    // passing. Do not lower this to make a loaded host's run faster.
+    const older = Array.from({ length: 600 }, (_, index) => ({
       key: `older-${index}`,
       height: [30, 60, 90][index] ?? 0,
     }));
