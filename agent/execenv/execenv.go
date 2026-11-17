@@ -21,6 +21,35 @@ var ErrDetachUnsupported = errors.New("detached commands are not supported by th
 // keeps its own special handling.
 var ErrOutputTruncated = errors.New("command output truncated at the capture cap")
 
+// CommandStartError is a command's start failure that a shell reports as a
+// process exit status rather than as a launch failure: 127 when the shell finds
+// no program of that name, 126 when it finds the program and the kernel still
+// refuses to run it (permission denied, exec format error, a directory, a `#!`
+// interpreter that is missing or not executable).
+//
+// The argv fast path must not give a caller a different outcome from the shell
+// path for the same command, so a start failure with a shell analogue is
+// reported the way the shell reports it: ExecCommand returns this error with
+// ExecResult.ExitCode already set to Status, exactly as it returns an
+// *exec.ExitError with the status of a command that ran and exited nonzero, and
+// StreamCommand returns a handle whose Wait reports Status with no error. A
+// caller that separates "never started" from "ran and failed" must therefore
+// read this type as the latter.
+//
+// A start failure with no shell analogue — resource exhaustion, an unusable
+// name — is never a CommandStartError, so it stays a plain start error.
+type CommandStartError struct {
+	// Status is the exit status the shell reports for this failure: 126 or 127.
+	Status int
+	// Err is the start error the process launcher returned. It stays reachable
+	// through errors.Is, so a caller can still ask what the kernel refused.
+	Err error
+}
+
+func (e *CommandStartError) Error() string { return e.Err.Error() }
+
+func (e *CommandStartError) Unwrap() error { return e.Err }
+
 // ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
 type ExecResult struct {
 	Stdout     string `json:"stdout"`

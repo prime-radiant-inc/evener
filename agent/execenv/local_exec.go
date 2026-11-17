@@ -344,6 +344,13 @@ func (e *LocalExecutionEnvironment) runCommandStdout(ctx context.Context, cmd co
 	cmd.Configure(config)
 
 	if err := cmd.Start(); err != nil {
+		if refusal := refusedStart(cmd, err); refusal != nil {
+			// bash writes its own explanation of the refusal to stderr, and a
+			// caller that only sees a status has nothing to act on: the start
+			// error names the file the kernel refused and why.
+			_, _ = io.WriteString(stderr, refusal.Error()+"\n")
+			return ExecResult{ExitCode: refusal.Status, Stderr: stderr.String()}, refusal
+		}
 		return ExecResult{ExitCode: 127}, err
 	}
 	pid := cmd.PID()
@@ -495,6 +502,13 @@ func (e *LocalExecutionEnvironment) startStreamCommand(ctx context.Context, cmd 
 	})
 
 	if err := cmd.Start(); err != nil {
+		if refusal := refusedStart(cmd, err); refusal != nil {
+			// Same diagnostic bash would print: the stream is the caller's only
+			// record of what happened, and the status alone does not say which
+			// file was refused or why.
+			_, _ = io.WriteString(combinedOutput, refusal.Error()+"\n")
+			return refusedStreamHandle(refusal), nil
+		}
 		return nil, err
 	}
 	pid := cmd.PID()

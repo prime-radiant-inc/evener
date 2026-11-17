@@ -2,10 +2,13 @@ package execenv
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"primeradiant.com/evener/envvars"
@@ -614,6 +617,160 @@ func TestStreamCommandChoosesTheSameRuntimeAsExecCommand(t *testing.T) {
 			}
 			if !slices.Equal(factory.shell, []string{tc.command}) {
 				t.Fatalf("StreamCommand(%q) shell = %q, want the command unchanged", tc.command, factory.shell)
+			}
+		})
+	}
+}
+
+// TestArgvStartFailureReportsTheShellStatus pins ExecArgv's outcome for a
+// program the kernel refuses to run, which used to be a bare start error
+// carrying 127 whatever the reason. bash separates the two: a file it finds but
+// cannot execute is 126, a name with no file behind it is 127. A caller acts on
+// that difference — retrying with an interpreter for 126, correcting the name
+// for 127 — so the argv path reports the same status, and a caller can still
+// tell a refusal from a launch failure that has no shell analogue.
+func TestArgvStartFailureReportsTheShellStatus(t *testing.T) {
+	t.Parallel()
+	if runtimeGOOS == "windows" {
+		t.Skip("POSIX exec statuses do not apply on windows")
+	}
+
+	root := t.TempDir()
+	// A file that exists, with the shebang the classifier accepts, and no
+	// execute bit: bash reports 126.
+	notExecutable := filepath.Join(root, "noexec")
+	if err := os.WriteFile(notExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A name no file answers to: bash reports 127.
+	missing := filepath.Join(root, "missing")
+
+	env := NewLocalExecutionEnvironment(root)
+	t.Cleanup(env.Cleanup)
+
+	for _, tc := range []struct {
+		name    string
+		program string
+		status  int
+	}{
+		{name: "a file that exists and is not executable", program: notExecutable, status: 126},
+		{name: "a name that does not exist", program: missing, status: 127},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res, err := env.ExecArgv(context.Background(), tc.program, nil, 5000, "", nil)
+			if res.ExitCode != tc.status {
+				t.Fatalf("ExecArgv(%q) exit code = %d, want bash's %d", tc.program, res.ExitCode, tc.status)
+			}
+			refusal, ok := errors.AsType[*CommandStartError](err)
+			if !ok {
+				t.Fatalf("ExecArgv(%q) error = %v (%T), want a *CommandStartError", tc.program, err, err)
+			}
+			if refusal.Status != tc.status {
+				t.Fatalf("refusal status = %d, want %d", refusal.Status, tc.status)
+			}
+			if refusal.Err == nil || !errors.Is(err, refusal.Err) {
+				t.Fatalf("refusal %v does not unwrap to the start error it reports", err)
+			}
+			// bash explains the refusal on stderr. A status with no explanation
+			// leaves the caller unable to tell which file was refused or why, so
+			// the start error travels with it.
+			if !strings.Contains(res.Stderr, tc.program) {
+				t.Fatalf("ExecArgv(%q) stderr = %q, want the refusal diagnostic naming the program", tc.program, res.Stderr)
+			}
+		})
+	}
+
+	// A start failure with no shell analogue stays a plain error with no
+	// reported status, so a caller cannot mistake it for a command the shell
+	// would have run and failed. An empty program name is one: no shell reaches
+	// exec with it.
+	res, err := env.ExecArgv(context.Background(), "", nil, 5000, "", nil)
+	if err == nil {
+		t.Fatalf("ExecArgv(\"\") = %+v, want a start failure", res)
+	}
+	if _, ok := errors.AsType[*CommandStartError](err); ok {
+		t.Fatalf("ExecArgv(\"\") error = %v, want no shell status for a failure bash has none for", err)
+	}
+
+	// The classifier's own line: resource exhaustion and a transient scheduling
+	// failure are start failures too, and neither is a refusal a shell reports a
+	// status for.
+	for _, notARefusal := range []error{syscall.EAGAIN, syscall.EMFILE, syscall.ENOMEM} {
+		if status, ok := shellStartStatus(notARefusal); ok {
+			t.Fatalf("shellStartStatus(%v) = %d, want no shell status", notARefusal, status)
+		}
+	}
+}
+
+// TestExecCommandReportsAStartRefusalAsTheShellStatus pins the same contract
+// through ExecCommand's own route choice, on the case the file check cannot rule
+// out: a `#!` script the kernel accepts in principle and refuses in fact. bash
+// answers 126 for an interpreter it cannot execute and 127 for one it cannot
+// find, and the stream path the shell tool actually uses must answer the same
+// way — a status from Wait, not a start error.
+func TestExecCommandReportsAStartRefusalAsTheShellStatus(t *testing.T) {
+	t.Parallel()
+	if runtimeGOOS == "windows" {
+		t.Skip("POSIX exec statuses do not apply on windows")
+	}
+
+	root := t.TempDir()
+	notExecutableInterp := filepath.Join(root, "interp-noexec")
+	if err := os.WriteFile(notExecutableInterp, []byte("not a program\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badInterp := filepath.Join(root, "bad-interp")
+	writeExecFixture(t, badInterp, "#!"+notExecutableInterp+"\n")
+	missingInterp := filepath.Join(root, "missing-interp")
+	writeExecFixture(t, missingInterp, "#!/nonexistent/evener-test-interpreter\n")
+	// An ELF for a machine this one is not: the classifier accepts the format,
+	// the kernel answers ENOEXEC, and bash reports that as 126. This is the case
+	// the file check cannot refuse and the exit status used to get wrong.
+	wrongArch := filepath.Join(root, "wrong-arch")
+	wrongArchELF := append([]byte("\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00"), make([]byte, 44)...)
+	writeExecFixture(t, wrongArch, string(wrongArchELF))
+
+	inherited := fixturePathEnv("/usr/local/bin", "/usr/bin", "/bin")
+	for _, tc := range []struct {
+		name    string
+		program string
+		status  int
+	}{
+		{name: "an interpreter that is not executable", program: badInterp, status: 126},
+		{name: "an interpreter that does not exist", program: missingInterp, status: 127},
+		{name: "an ELF built for another machine", program: wrongArch, status: 126},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, factory := recordingCommandEnv(t, inherited...)
+			factory.delegate = systemCommandRuntimeFactory{}
+
+			res, err := env.ExecCommand(context.Background(), tc.program, 5000, "", nil)
+			if len(factory.argv) != 1 {
+				t.Fatalf("ExecCommand(%q) = shell %q, want the fast path the file check accepts", tc.program, factory.shell)
+			}
+			if res.ExitCode != tc.status {
+				t.Fatalf("ExecCommand(%q) exit code = %d, want bash's %d", tc.program, res.ExitCode, tc.status)
+			}
+			if _, ok := errors.AsType[*CommandStartError](err); !ok {
+				t.Fatalf("ExecCommand(%q) error = %v (%T), want a *CommandStartError", tc.program, err, err)
+			}
+
+			// StreamCommand is the shell tool's own path. Nothing ran, so the
+			// handle reports the status with no error, exactly as it reports a
+			// command that ran and exited nonzero.
+			env2, factory2 := recordingCommandEnv(t, inherited...)
+			factory2.delegate = systemCommandRuntimeFactory{}
+			handle, err := env2.StreamCommand(context.Background(), tc.program, "", nil, io.Discard)
+			if err != nil {
+				t.Fatalf("StreamCommand(%q): %v, want the shell status rather than a start error", tc.program, err)
+			}
+			if len(factory2.argv) != 1 {
+				t.Fatalf("StreamCommand(%q) = shell %q, want the fast path", tc.program, factory2.shell)
+			}
+			if code, waitErr := handle.Wait(); code != tc.status || waitErr != nil {
+				t.Fatalf("StreamCommand(%q) Wait = (%d, %v), want (%d, nil)", tc.program, code, waitErr, tc.status)
 			}
 		})
 	}
