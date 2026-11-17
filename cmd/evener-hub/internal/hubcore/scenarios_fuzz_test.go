@@ -176,6 +176,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_CompleteRebuildCoversTheTree,
 		fuzzScenarioPastIndex_SupersededRebuildDoesNotCoverTheTree,
 		fuzzScenarioPastIndex_UnlistableProjectDoesNotCoverTheTree,
+		fuzzScenarioPastIndex_StrayProjectDirectoryDoesNotBlockCoverage,
 		fuzzScenarioPastIndex_RecentModels_DedupesGlobalRecencyLastN,
 		fuzzScenarioPastIndex_RecentModels_EmptyIndexReturnsNil,
 		fuzzScenarioPastIndex_RecentModels_SkipsBlankProviderOrModel,

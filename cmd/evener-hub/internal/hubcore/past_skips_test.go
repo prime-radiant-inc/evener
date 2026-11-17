@@ -174,6 +174,42 @@ func fuzzScenarioPastIndex_RebuildSilentWhenNothingSkipped(t *testing.T) {
 	}
 }
 
+// A directory in the projects root whose name is not a project id is refused,
+// and rightly so — nothing under it can reach either index, and SessionTreeStamp
+// skips it for the same reason. Real projects roots hold hundreds of
+// pre-identifier directories. That refusal must not count against coverage:
+// no rescan could ever index it, so holding the sweep's digest gate open over
+// it would re-scan an idle tree every tick, which is the cost #6424 removed.
+func fuzzScenarioPastIndex_StrayProjectDirectoryDoesNotBlockCoverage(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	const stray = "legacy16hexname"
+	if err := os.MkdirAll(filepath.Join(projects, stray), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj := hubtest.ProjectDir(t, projects, "alpha")
+	id := hubtest.SessionID(t)
+	writeMeta(t, proj, schema.SessionMeta{ID: id, UpdatedAt: time.Now()})
+
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
+	out := captureSkipReport(t, func() {
+		if _, err := idx.Rebuild(); err != nil {
+			t.Fatalf("Rebuild: %v", err)
+		}
+	})
+	if !idx.RebuildCoveredTree() {
+		t.Fatal("a stray pre-identifier directory held coverage false; the sweep gate would never close and every idle tick would rescan the whole tree")
+	}
+	// The refusal still has to be reported; leaving the stray out of coverage
+	// must not mean dropping it from the skip report.
+	if !strings.Contains(out, stray) {
+		t.Fatalf("the stray directory is not named in the skip report:\n%s", out)
+	}
+	if all := idx.All(); len(all) != 1 || all[0].ID != id {
+		t.Fatalf("index holds %d entries, want only the valid project's session", len(all))
+	}
+}
+
 // RebuildCoveredTree is what lets the hub's sweep gate its re-scan on a disk
 // digest: the digest only stands for the whole tree when the rebuild that
 // produced the index reached every project. A scan that swaps in with every
@@ -248,9 +284,10 @@ func fuzzScenarioPastIndex_SupersededRebuildDoesNotCoverTheTree(t *testing.T) {
 
 // A project whose sessions directory cannot be listed is recorded as a skip
 // and the rebuild carries on, so the swapped index is silently missing that
-// project's sessions. That is exactly the partial scan the digest cannot
-// express — the directory's unreadability moves no folded fact — so the
-// rebuild must not report the tree covered.
+// project's sessions. The directory's unreadability does move the digest
+// (foldSessionDirStamp folds an unreadable marker), but the index is short of
+// the tree until a scan manages to list it, so the rebuild that could not must
+// not report the tree covered.
 func fuzzScenarioPastIndex_UnlistableProjectDoesNotCoverTheTree(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")

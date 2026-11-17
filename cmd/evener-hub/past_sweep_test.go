@@ -27,6 +27,12 @@ func (s *hubPastSweep) tick(ctx context.Context) {
 
 // sweepFixture is a projects root holding one indexed session, plus the two
 // indexes the sweeper drives.
+//
+// The root also holds a pre-identifier directory, because that is what a real
+// projects root looks like ("hundreds of pre-identifier directories",
+// past_skips_test.go) and because the digest gate must not be held open by one:
+// SessionTreeStamp ignores such a directory, so a rescan can never index it and
+// a coverage rule that counted it would re-scan an idle tree every tick.
 type sweepFixture struct {
 	stateDir  string
 	sessionID string
@@ -37,6 +43,9 @@ type sweepFixture struct {
 func newSweepFixture(t *testing.T) *sweepFixture {
 	t.Helper()
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(filepath.Join(projectsRoot, "legacy16hexname"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
 	sessionID := hubtest.SessionID(t)
 	now := time.Now().UTC()
@@ -181,6 +190,13 @@ func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	sweep.tick(ctx)
 	if got := sweep.rebuildCount() - before; got != 0 {
 		t.Fatalf("idle sweeps did full work %d times, want 0", got)
+	}
+	// The fixture's projects root holds a pre-identifier directory beside the
+	// real project. It is refused by the scan and named in the skip report, but
+	// it must not hold the gate open: nothing under it can reach the index, and
+	// re-scanning an idle tree every tick is the cost #6424 removed.
+	if !f.past.RebuildCoveredTree() {
+		t.Fatalf("a rebuild over a root that also holds %q does not report the tree covered, so every idle tick would rescan", "legacy16hexname")
 	}
 
 	// A rename still has to be seen by the very next sweep, so the gate cannot
