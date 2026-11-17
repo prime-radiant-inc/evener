@@ -102,9 +102,12 @@ test("a successful short-row prepend settles without recursive attachment update
     // 50-update nested-update ceiling, because that is exactly what #4918 was
     // about: with synchronous ref measurement this fails at 525 or more rows
     // ("Maximum update depth exceeded") and passes at 510 or fewer, checked by
-    // running the old measurement against each count. The margin above 525 is
-    // deliberate; do not lower it to make a loaded host's run faster.
-    const older = Array.from({ length: 540 }, (_, index) => ({
+    // running the old measurement against each count. 600 keeps real headroom
+    // over that floor: the floor depends on the window's overscan constant, so
+    // a change that makes each frame attach more rows raises it, and a count
+    // sitting just above 525 would then stop reproducing #4918 while still
+    // passing. Do not lower this to make a loaded host's run faster.
+    const older = Array.from({ length: 600 }, (_, index) => ({
       key: `older-${index}`,
       height: [30, 60, 90][index] ?? 0,
     }));
