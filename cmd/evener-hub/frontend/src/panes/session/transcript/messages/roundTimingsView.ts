@@ -43,9 +43,9 @@ export interface RoundTimingsSummary {
 }
 
 // PHASE_FIELDS mirrors appwire_projection.go's roundTimingsAnnouncement field
-// order/naming (llm, tools, context, prompt, history, tool_defs, persistence,
-// after_action, overhead) so a reader who has seen the old raw line
-// recognizes the same names, just under real formatting.
+// order/naming (llm, tools, context, prompt, history, tool_defs, request_build,
+// persistence, after_action, overhead) so a reader who has seen the old raw
+// line recognizes the same names, just under real formatting.
 const PHASE_FIELDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "llm_call_ns", label: "LLM" },
   { key: "tool_exec_ns", label: "Tools" },
@@ -53,6 +53,7 @@ const PHASE_FIELDS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "system_prompt_ns", label: "Prompt" },
   { key: "history_expand_ns", label: "History" },
   { key: "tool_defs_ns", label: "Tool defs" },
+  { key: "request_build_ns", label: "Request build" },
   { key: "persistence_ns", label: "Persistence" },
   { key: "after_action_ns", label: "After action" },
   { key: "loop_overhead_ns", label: "Overhead" },
