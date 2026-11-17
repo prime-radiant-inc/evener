@@ -238,6 +238,7 @@ func FuzzRootScenarioReplay(f *testing.F) {
 		TestStreamAccumulator_ToolCallEndOverridesAccumulatedArgumentsAndName(t)
 		TestStreamAccumulator_MultipleToolCalls(t)
 		TestStreamAccumulator_ReasoningAndToolCallsTogether(t)
+		TestStreamAccumulator_ToolCallEndDoesNotRewriteAHeldPartial(t)
 		TestStreamGenerate_RejectsPromptAndMessagesTogether(t)
 		TestStreamGenerate_TimeoutPerStep_EmitsRequestTimeoutError(t)
 		TestStreamGenerate_TimeoutTotal_EmitsRequestTimeoutError(t)
