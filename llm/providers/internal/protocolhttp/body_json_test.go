@@ -126,9 +126,11 @@ func TestMarshalBodyMatchesStdlib(t *testing.T) {
 	}
 }
 
-// TestMarshalBodyReturnsOwnCopy pins that the returned bytes do not alias the
-// pooled scratch buffer: a second call must not be able to change the first
-// call's result, which is what the wire body is built from.
+// TestMarshalBodyReturnsOwnCopy pins that each call returns freshly allocated
+// bytes of its own: a later call must not be able to change an earlier result,
+// which is what the wire body, the retry body and the GetBody closure are built
+// from and hold for the life of the request. Reintroducing a shared or pooled
+// buffer would fail here.
 func TestMarshalBodyReturnsOwnCopy(t *testing.T) {
 	t.Parallel()
 	first, err := MarshalBody(map[string]any{"a": "first call payload"})

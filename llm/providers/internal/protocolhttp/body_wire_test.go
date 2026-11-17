@@ -67,11 +67,10 @@ func prepareBodyFixtures() map[string]map[string]any {
 // path and re-marshals the mutated body with encoding/json afterwards, so a
 // difference in any key order, escape, or number spelling fails here.
 func TestPrepareBodyBytesMatchStdlib(t *testing.T) {
-	t.Parallel()
+	// Not parallel: registerTestSchemes wires the package's preparerSawAuth flag into the registered authenticator, and these subtests all run Prepare through the "test-runner-preparer" scheme. In parallel they write that flag concurrently, which is a data race.
 	registerTestSchemes()
 	for name, body := range prepareBodyFixtures() {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
 			res := testRes("https://api.example.test/v1", "test-runner-preparer")
 			// The preparer edits the body in place, so encode the shape it left
 			// behind: c.Body is the wire body after Prepare (see Prepare's doc).
