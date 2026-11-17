@@ -233,7 +233,13 @@ type chunkArgsToken struct {
 }
 
 func (a *chunkArgsToken) UnmarshalJSON(b []byte) error {
-	if len(b) > 0 && (b[0] == '"' || string(b) == "null") {
+	if string(b) == "null" {
+		// null is what a string field does nothing for, so a duplicate key such
+		// as "arguments":"{}","arguments":null keeps the arguments already
+		// decoded rather than dropping them.
+		return nil
+	}
+	if len(b) > 0 && b[0] == '"' {
 		a.token = append(a.token[:0], b...)
 		return nil
 	}
@@ -241,8 +247,8 @@ func (a *chunkArgsToken) UnmarshalJSON(b []byte) error {
 }
 
 // carriesFragment reports whether a delta carries argument bytes: a JSON
-// string token of at least one content byte. An absent, null or "" token
-// carries none, which is the case the string form skipped.
+// string token of at least one content byte. An absent or "" token carries
+// none, which is the case the string form skipped.
 func (a chunkArgsToken) carriesFragment() bool {
 	return len(a.token) > 2 && a.token[0] == '"'
 }

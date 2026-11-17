@@ -750,6 +750,36 @@ func TestRawArgs_Stream_ChunkWithoutArgumentsCarriesNoFragment(t *testing.T) {
 	}
 }
 
+// TestRawArgs_Stream_DuplicateArgumentsKeyKeepsTheString pins that a null
+// arguments value after a string one is a no-op, the way a string field treats
+// it: the duplicate key must not discard the arguments already decoded.
+func TestRawArgs_Stream_DuplicateArgumentsKeyKeepsTheString(t *testing.T) {
+	t.Parallel()
+	body := `{"path":"a"}`
+	sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":" + string(jsonStringToken(body)) + ",\"arguments\":null}}]}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	srv, _ := server(t, http.StatusOK, sseBody)
+	res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatal("stream ended without a finish event")
+	}
+	assertRawArgsByIndex(t, toolCallArguments(*final), [][]byte{[]byte(body)})
+}
+
 // TestRawArgs_Stream_NonStringArgumentsSkipTheChunk pins that an arguments
 // token that is not a JSON string still fails its chunk's decode, so the
 // chunk rides out as a raw passthrough provider event and starts no tool
