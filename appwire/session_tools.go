@@ -280,6 +280,25 @@ type SessionOperationResponse struct {
 	FollowUps []SessionStatusFollowUp         `json:"followUps,omitempty"`
 }
 
+type SessionControlModelParams struct {
+	Ref           string `json:"ref"`
+	ModelProvider string `json:"modelProvider"`
+	Model         string `json:"model"`
+}
+
+func (p SessionControlModelParams) Validate() error {
+	switch {
+	case p.Ref == "":
+		return InvalidParams("ref is required")
+	case p.ModelProvider == "":
+		return InvalidParams("modelProvider is required")
+	case p.Model == "":
+		return InvalidParams("model is required")
+	default:
+		return nil
+	}
+}
+
 // SessionControlRequest exposes only implemented, typed Manager controls.
 type SessionControlRequest struct {
 	Action          string                          `json:"action"`
@@ -287,7 +306,7 @@ type SessionControlRequest struct {
 	Resume          *ThreadResumeParams             `json:"resume,omitempty"`
 	Fork            *ThreadForkParams               `json:"fork,omitempty"`
 	Clear           *ThreadClearParams              `json:"clear,omitempty"`
-	Model           *ThreadModelSetParams           `json:"model,omitempty"`
+	Model           *SessionControlModelParams      `json:"model,omitempty"`
 	VisionModel     *ThreadVisionModelSetParams     `json:"vision_model,omitempty"`
 	ReasoningEffort *ThreadReasoningEffortSetParams `json:"reasoning_effort,omitempty"`
 	Compact         *ThreadCompactStartParams       `json:"compact,omitempty"`
@@ -329,6 +348,9 @@ func (r SessionControlRequest) Validate() error {
 	}
 	if r.Archive != nil && r.Archive.Kind != ArchiveTargetSession {
 		return InvalidParams("Manager archive controls sessions only")
+	}
+	if r.Model != nil {
+		return r.Model.Validate()
 	}
 	return nil
 }

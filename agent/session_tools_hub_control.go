@@ -19,7 +19,7 @@ var managerControlActions = []managerActionSchema{
 	{"resume", appwire.ThreadResumeParams{}},
 	{"fork", appwire.ThreadForkParams{}},
 	{"clear", appwire.ThreadClearParams{}},
-	{"model", appwire.ThreadModelSetParams{}},
+	{"model", appwire.SessionControlModelParams{}},
 	{"vision_model", appwire.ThreadVisionModelSetParams{}},
 	{"reasoning_effort", appwire.ThreadReasoningEffortSetParams{}},
 	{"compact", appwire.ThreadCompactStartParams{}},
@@ -146,7 +146,7 @@ func decodeManagerControl(action any, raw []byte) (appwire.SessionControlRequest
 	case "clear":
 		r.Clear, err = decodeManagerArguments[appwire.ThreadClearParams](raw)
 	case "model":
-		r.Model, err = decodeManagerArguments[appwire.ThreadModelSetParams](raw)
+		r.Model, err = decodeManagerArguments[appwire.SessionControlModelParams](raw)
 	case "vision_model":
 		r.VisionModel, err = decodeManagerArguments[appwire.ThreadVisionModelSetParams](raw)
 	case "reasoning_effort":

@@ -42,6 +42,10 @@ func TestManagerControlSchemaHasEveryBehaviorAction(t *testing.T) {
 			if name == "archive" {
 				fields["kind"] = "session"
 			}
+			if name == "model" {
+				fields["modelProvider"] = "openai"
+				fields["model"] = "gpt-5.6-sol"
+			}
 			raw, err = json.Marshal(fields)
 			if err != nil {
 				t.Fatal(err)
@@ -85,6 +89,33 @@ func TestManagerControlSchemaHasEveryBehaviorAction(t *testing.T) {
 	}
 	if _, err := decodeManagerControl("archive", []byte(`{"kind":"project","id":"other","archived":true}`)); err == nil {
 		t.Fatal("project archive escaped session-only authority")
+	}
+}
+
+func TestManagerSessionControlModelSchema(t *testing.T) {
+	schema := managerParametersSchema(reflect.TypeFor[appwire.SessionControlModelParams]())
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("model schema properties = %T", schema["properties"])
+	}
+	want := map[string]any{
+		"ref":           map[string]any{"type": "string"},
+		"modelProvider": map[string]any{"type": "string"},
+		"model":         map[string]any{"type": "string"},
+	}
+	if !reflect.DeepEqual(properties, want) {
+		t.Fatalf("Manager model properties = %v, want %v", properties, want)
+	}
+	if !reflect.DeepEqual(schema["required"], []string{"ref", "modelProvider", "model"}) {
+		t.Fatalf("Manager model required = %v", schema["required"])
+	}
+
+	model, err := decodeManagerControl("model", []byte(`{"ref":"local:worker","modelProvider":"openai","model":"gpt-5.6-sol"}`))
+	if err != nil {
+		t.Fatalf("decode Manager model target: %v", err)
+	}
+	if model.Model == nil || model.Model.Ref != "local:worker" || model.Model.ModelProvider != "openai" || model.Model.Model != "gpt-5.6-sol" {
+		t.Fatalf("decoded Manager model target = %+v", model.Model)
 	}
 }
 

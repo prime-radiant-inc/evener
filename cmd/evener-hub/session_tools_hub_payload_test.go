@@ -17,8 +17,7 @@ type controlOwnerCall struct {
 
 type controlPayloadRecordingSource struct {
 	*scriptedAppSource
-	calls         []controlOwnerCall
-	modelResponse appwire.ThreadModelSetResponse
+	calls []controlOwnerCall
 }
 
 func (s *controlPayloadRecordingSource) record(method string, params any) {
@@ -36,10 +35,6 @@ func (s *controlPayloadRecordingSource) ResumeThread(_ context.Context, p appwir
 func (s *controlPayloadRecordingSource) ClearThread(_ context.Context, p appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	s.record(appwire.MethodThreadClear, p)
 	return appwire.ThreadClearResponse{}, nil
-}
-func (s *controlPayloadRecordingSource) SetThreadModel(_ context.Context, p appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
-	s.record(appwire.MethodThreadModelSet, p)
-	return s.modelResponse, nil
 }
 func (s *controlPayloadRecordingSource) SetThreadVisionModel(_ context.Context, p appwire.ThreadVisionModelSetParams) error {
 	s.record(appwire.MethodThreadVisionModelSet, p)
@@ -78,9 +73,11 @@ func (s *controlPayloadRecordingSource) UrlsRemove(_ context.Context, p appwire.
 	return appwire.UrlsRemoveResponse{}, nil
 }
 
-// These thirteen actions have separate refusal-parity tests. This test reaches
+// These twelve actions have separate refusal-parity tests. This test reaches
 // their actual guarded owner boundary and checks every input field, without
-// simulating a successful daemon mutation in thirteen separate fixtures.
+// simulating a successful daemon mutation in twelve separate fixtures. Manager
+// model changes intentionally accept user intent and generate an authority-bound
+// AppWire payload, so their payload is covered by the model authority tests.
 func TestManagerHumanControlOwnerPayloadParity(t *testing.T) {
 	const ref = "peer:payload-session"
 	cases := []struct {
@@ -90,7 +87,6 @@ func TestManagerHumanControlOwnerPayloadParity(t *testing.T) {
 		{appwire.MethodEvenerSandboxEscalationResolve, appwire.SessionControlRequest{Action: "approval", Approval: &appwire.SandboxEscalationResolveParams{Ref: ref, ThreadID: "payload-session", EscalationID: "escalation-7", Approve: true}}},
 		{appwire.MethodThreadResume, appwire.SessionControlRequest{Action: "resume", Resume: &appwire.ThreadResumeParams{Ref: ref, Session: "payload-session"}}},
 		{appwire.MethodThreadClear, appwire.SessionControlRequest{Action: "clear", Clear: &appwire.ThreadClearParams{Ref: ref, ClientMutationID: "clear-7", ExpectedInstanceID: "instance-7"}}},
-		{appwire.MethodThreadModelSet, appwire.SessionControlRequest{Action: "model", Model: &appwire.ThreadModelSetParams{Ref: ref, ModelProvider: "openai", Model: "gpt-5"}}},
 		{appwire.MethodThreadVisionModelSet, appwire.SessionControlRequest{Action: "vision_model", VisionModel: &appwire.ThreadVisionModelSetParams{Ref: ref, VisionModel: "openai/gpt-5"}}},
 		{appwire.MethodThreadReasoningEffortSet, appwire.SessionControlRequest{Action: "reasoning_effort", ReasoningEffort: &appwire.ThreadReasoningEffortSetParams{Ref: ref, ReasoningEffort: "high"}}},
 		{appwire.MethodThreadCompactStart, appwire.SessionControlRequest{Action: "compact", Compact: &appwire.ThreadCompactStartParams{Ref: ref}}},

@@ -46,6 +46,20 @@ func TestModelControlRequestShapes(t *testing.T) {
 	}
 }
 
+func TestSessionControlModelParamsExposeOnlyUserIntent(t *testing.T) {
+	params := SessionControlModelParams{
+		Ref:           "local:th_1",
+		ModelProvider: "work",
+		Model:         "gpt-5.5",
+	}
+	assertJSONKeys(t, params, "ref", "modelProvider", "model")
+
+	request := SessionControlRequest{Action: "model", Model: &params}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("valid Manager model request rejected: %v", err)
+	}
+}
+
 func TestModelControlSnapshotCarriersReuseWholeShape(t *testing.T) {
 	snapshot := ModelControlSnapshot{
 		Authority: ModelControlAuthority{InstanceID: "instance_1", BootGeneration: "7"},

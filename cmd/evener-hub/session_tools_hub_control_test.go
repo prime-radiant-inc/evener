@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -46,7 +47,7 @@ func TestManagerHumanControlsParity(t *testing.T) {
 			return len(matches)
 		}, true},
 		{"clear", appwire.MethodThreadClear, appwire.SessionControlRequest{Action: "clear", Clear: &appwire.ThreadClearParams{Ref: "local:missing", ClientMutationID: "clear-1", ExpectedInstanceID: "missing"}}, nil, false},
-		{"model", appwire.MethodThreadModelSet, appwire.SessionControlRequest{Action: "model", Model: &appwire.ThreadModelSetParams{Ref: "local:missing", Model: "test"}}, nil, false},
+		{"model", appwire.MethodThreadModelSet, appwire.SessionControlRequest{Action: "model", Model: &appwire.SessionControlModelParams{Ref: "local:missing", ModelProvider: "test", Model: "test"}}, nil, false},
 		{"vision_model", appwire.MethodThreadVisionModelSet, appwire.SessionControlRequest{Action: "vision_model", VisionModel: &appwire.ThreadVisionModelSetParams{Ref: "local:missing", VisionModel: "test"}}, nil, false},
 		{"reasoning_effort", appwire.MethodThreadReasoningEffortSet, appwire.SessionControlRequest{Action: "reasoning_effort", ReasoningEffort: &appwire.ThreadReasoningEffortSetParams{Ref: "local:missing"}}, nil, false},
 		{"compact", appwire.MethodThreadCompactStart, appwire.SessionControlRequest{Action: "compact", Compact: &appwire.ThreadCompactStartParams{Ref: "local:missing"}}, nil, false},
@@ -234,33 +235,237 @@ func TestManagerHumanControlsParity(t *testing.T) {
 	}
 }
 
-func TestManagerThreadModelControlReturnsTypedResponse(t *testing.T) {
-	const ref = "peer:model-response"
-	want := modelControlResponseForHubTest()
-	source := &controlPayloadRecordingSource{
-		scriptedAppSource: &scriptedAppSource{
-			id: "peer",
-			thread: appwire.Thread{ID: "model-response", Evener: appwire.EvenerThread{
-				Ref: ref, Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
-			}},
-		},
-		modelResponse: want,
-	}
-	web := NewWebServer(testWebConfig(t, hubcore.WebConfig{}))
-	web.sources.Add(source)
-	owner := &sessionOperations{cfg: web.cfg, sources: web.sources, navigation: web.navigation, resolve: web.resolveTopLevelSessionRef}
+type managerModelControlSource struct {
+	*scriptedAppSource
+	readResponse appwire.ThreadReadResponse
+	readErr      error
+	setModel     func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error)
+	readCalls    []appwire.ThreadReadParams
+	modelCalls   []appwire.ThreadModelSetParams
+}
 
-	got, err := owner.Control(t.Context(), appwire.SessionControlRequest{
-		Action: "model",
-		Model:  &appwire.ThreadModelSetParams{Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol"},
-	})
-	if err != nil {
-		t.Fatalf("Control(model): %v", err)
+func (s *managerModelControlSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	s.readCalls = append(s.readCalls, params)
+	return s.readResponse, s.readErr
+}
+
+func (s *managerModelControlSource) SetThreadModel(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+	s.modelCalls = append(s.modelCalls, params)
+	return s.setModel(params)
+}
+
+func managerModelReadyRead(ref string) appwire.ThreadReadResponse {
+	snapshot := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: "sess_1", BootGeneration: "boot-2"},
+		Revision:  22,
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
 	}
-	if got.Model == nil || !reflect.DeepEqual(*got.Model, want) {
-		t.Fatalf("Manager model response = %+v, want %+v", got.Model, want)
+	return appwire.ThreadReadResponse{
+		Thread: appwire.Thread{ID: "model-response", Evener: appwire.EvenerThread{
+			Ref: ref, InstanceID: "sess_1",
+			Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+			ModelControl: &snapshot,
+		}},
+		BootGeneration: "boot-2",
 	}
 }
+
+func TestManagerSessionControlModelAuthorityAdapter(t *testing.T) {
+	const ref = "peer:model-response"
+	request := appwire.SessionControlRequest{
+		Action: "model",
+		Model:  &appwire.SessionControlModelParams{Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol"},
+	}
+	newOwner := func(t *testing.T, read appwire.ThreadReadResponse, readErr error, setModel func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error)) (*sessionOperations, *managerModelControlSource) {
+		t.Helper()
+		source := &managerModelControlSource{
+			scriptedAppSource: &scriptedAppSource{id: "peer", thread: read.Thread},
+			readResponse:      read,
+			readErr:           readErr,
+			setModel:          setModel,
+		}
+		web := NewWebServer(testWebConfig(t, hubcore.WebConfig{}))
+		web.sources.Add(source)
+		return &sessionOperations{cfg: web.cfg, sources: web.sources, navigation: web.navigation, resolve: web.resolveTopLevelSessionRef}, source
+	}
+	assertLeanReads := func(t *testing.T, source *managerModelControlSource, want int) {
+		t.Helper()
+		if len(source.readCalls) != want {
+			t.Fatalf("read calls = %d, want %d", len(source.readCalls), want)
+		}
+		for _, params := range source.readCalls {
+			if params.Ref != ref || params.IncludeTurns || params.Subscribe {
+				t.Fatalf("Manager authority read = %+v", params)
+			}
+		}
+	}
+
+	t.Run("ready read generates exact authority and returns typed response", func(t *testing.T) {
+		want := modelControlResponseForHubTest()
+		owner, source := newOwner(t, managerModelReadyRead(ref), nil, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+			want.ModelControl.Desired.ClientMutationID = params.ClientMutationID
+			return want, nil
+		})
+		got, err := owner.Control(t.Context(), request)
+		if err != nil {
+			t.Fatalf("Control(model): %v", err)
+		}
+		assertLeanReads(t, source, 1)
+		if len(source.modelCalls) != 1 {
+			t.Fatalf("model calls = %d, want 1", len(source.modelCalls))
+		}
+		params := source.modelCalls[0]
+		if params.Ref != ref || params.ModelProvider != "openai" || params.Model != "gpt-5.6-sol" || params.ClientMutationID == "" || params.ExpectedInstanceID != "sess_1" || params.ExpectedBootGeneration != "boot-2" {
+			t.Fatalf("generated model mutation = %+v", params)
+		}
+		if got.Model == nil || !reflect.DeepEqual(*got.Model, want) {
+			t.Fatalf("Manager model response = %+v, want %+v", got.Model, want)
+		}
+	})
+
+	invalidReads := []struct {
+		name    string
+		mutate  func(*appwire.ThreadReadResponse)
+		readErr error
+	}{
+		{name: "absent version", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.Capabilities.ModelControlVersion = 0 }},
+		{name: "unknown version", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.Capabilities.ModelControlVersion = 2 }},
+		{name: "missing snapshot", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.ModelControl = nil }},
+		{name: "mismatched instance", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.ModelControl.Authority.InstanceID = "other" }},
+		{name: "mismatched boot", mutate: func(read *appwire.ThreadReadResponse) {
+			read.Thread.Evener.ModelControl.Authority.BootGeneration = "other"
+		}},
+		{name: "read refusal", readErr: appwire.InvalidParams("read refused")},
+		{name: "read cancellation", readErr: context.Canceled},
+		{name: "read transport failure", readErr: errors.New("read transport failed")},
+	}
+	for _, test := range invalidReads {
+		t.Run(test.name, func(t *testing.T) {
+			read := managerModelReadyRead(ref)
+			if test.mutate != nil {
+				test.mutate(&read)
+			}
+			owner, source := newOwner(t, read, test.readErr, func(appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+				t.Fatal("non-ready read dispatched a model mutation")
+				return appwire.ThreadModelSetResponse{}, nil
+			})
+			if _, err := owner.Control(t.Context(), request); err == nil {
+				t.Fatal("non-ready authority read accepted")
+			}
+			assertLeanReads(t, source, 1)
+			if len(source.modelCalls) != 0 {
+				t.Fatalf("model calls = %d, want 0", len(source.modelCalls))
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		err  func(string) error
+	}{
+		{name: "stale authority is diagnostic only", err: func(id string) error { return appwire.ModelControlAuthorityStale(id, "stale") }},
+		{name: "lost response is diagnostic only", err: func(id string) error { return appwire.MutationOutcomeUnknownBlocked(id, "lost") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			read := managerModelReadyRead(ref)
+			var source *managerModelControlSource
+			owner, source := newOwner(t, read, nil, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+				source.readResponse.Thread.Evener.ModelControl.Revision++
+				source.readResponse.Thread.Evener.ModelControl.Active = appwire.ModelControlActive{ModelProvider: "anthropic", Model: "claude-opus-4-6"}
+				return appwire.ThreadModelSetResponse{}, test.err(params.ClientMutationID)
+			})
+			// The diagnostic read observes a newer canonical pick but may not turn it
+			// into a replay or a synthetic success for this Manager request.
+			_, err := owner.Control(t.Context(), request)
+			if err == nil {
+				t.Fatal("uncertain model mutation reported success")
+			}
+			assertLeanReads(t, source, 2)
+			if len(source.modelCalls) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(source.modelCalls))
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("mutation error = %T %v, want WireError", err, err)
+			}
+			data, ok := appwire.ErrorDataOf(wire.Data)
+			if !ok || data.ClientMutationID != source.modelCalls[0].ClientMutationID {
+				t.Fatalf("mutation identity changed: data=%+v params=%+v", data, source.modelCalls[0])
+			}
+		})
+	}
+}
+
+func TestManagerSessionControlModelResumesPastThread(t *testing.T) {
+	var sessionID string
+	readCalls := 0
+	modelCalls := 0
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			readCalls++
+			if params.IncludeTurns || params.Subscribe {
+				t.Fatalf("cold Manager authority read = %+v", params)
+			}
+			snapshot := appwire.ModelControlSnapshot{
+				Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "boot-manager"},
+				Revision:  1,
+				Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+			}
+			return appwire.ThreadReadResponse{
+				Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{
+					Ref: params.Ref, InstanceID: sessionID,
+					Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+					ModelControl: &snapshot,
+				}},
+				BootGeneration: "boot-manager",
+			}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+			modelCalls++
+			if params.ClientMutationID == "" || params.ExpectedInstanceID != sessionID || params.ExpectedBootGeneration != "boot-manager" {
+				t.Fatalf("resumed Manager mutation = %+v", params)
+			}
+			snapshot := appwire.ModelControlSnapshot{
+				Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "boot-manager"},
+				Revision:  2,
+				Active:    appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model},
+				Desired: &appwire.ModelControlDesired{
+					RequestSequence: 1, ClientMutationID: params.ClientMutationID,
+					ModelProvider: params.ModelProvider, Model: params.Model,
+					Lifecycle: appwire.ModelControlLifecycleApplied,
+				},
+			}
+			return appwire.ThreadModelSetResponse{
+				ModelControlVersion: appwire.ModelControlVersion1,
+				Disposition:         appwire.ModelControlDispositionAccepted,
+				ModelControl:        &snapshot,
+			}, nil
+		})
+	})
+	sessionID = sid
+	server, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer server.Close()
+	owner := &sessionOperations{cfg: web.cfg, sources: web.sources, navigation: web.navigation, resolve: web.resolveTopLevelSessionRef}
+
+	response, err := owner.Control(t.Context(), appwire.SessionControlRequest{
+		Action: "model",
+		Model: &appwire.SessionControlModelParams{
+			Ref: "local:" + sessionID, ModelProvider: "openai", Model: "gpt-5.6-sol",
+		},
+	})
+	if err != nil {
+		t.Fatalf("cold Manager model control: %v", err)
+	}
+	// Auto-resume reads the replacement thread once to establish the live
+	// source. The adapter then performs its one post-resume authority read.
+	if *resumeCalls != 1 || readCalls != 2 || modelCalls != 1 {
+		t.Fatalf("resume=%d reads=%d model sends=%d, want 1/2/1", *resumeCalls, readCalls, modelCalls)
+	}
+	if response.Model == nil || response.Model.ModelControl == nil || response.Model.ModelControl.Active.Model != "gpt-5.6-sol" {
+		t.Fatalf("cold Manager response = %+v", response.Model)
+	}
+}
+
 func controlStoresSnapshot(t *testing.T, w *WebServer) any {
 	t.Helper()
 	archive, err := w.cfg.Archive.Decisions()

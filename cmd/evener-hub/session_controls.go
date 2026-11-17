@@ -2,8 +2,11 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
@@ -50,7 +53,7 @@ func (o *sessionOperations) Control(ctx context.Context, request appwire.Session
 		out.Clear = &result
 		return out, err
 	case "model":
-		result, err := setThreadModelWithResume(ctx, o.cfg, o.sources, o.relays, *request.Model)
+		result, err := setManagerThreadModel(ctx, o.cfg, o.sources, o.relays, *request.Model)
 		out.Model = &result
 		return out, err
 	case "vision_model":
@@ -114,6 +117,77 @@ func (o *sessionOperations) Control(ctx context.Context, request appwire.Session
 		return out, err
 	}
 	return out, appwire.InvalidParams("unknown session control action")
+}
+
+func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, _ *hubRelay, params appwire.SessionControlModelParams) (appwire.ThreadModelSetResponse, error) {
+	if err := params.Validate(); err != nil {
+		return appwire.ThreadModelSetResponse{}, err
+	}
+	read, err := withSessionResume(ctx, cfg, sources, params.Ref, "", nil, func() (appwire.ThreadReadResponse, error) {
+		source, err := sourceForThread(sources, params.Ref, "")
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})
+	})
+	if err != nil {
+		return appwire.ThreadModelSetResponse{}, err
+	}
+	authority, err := managerModelAuthority(read)
+	if err != nil {
+		return appwire.ThreadModelSetResponse{}, err
+	}
+	mutation := appwire.ThreadModelSetParams{
+		Ref:                    params.Ref,
+		ModelProvider:          params.ModelProvider,
+		Model:                  params.Model,
+		ClientMutationID:       uuid.NewString(),
+		ExpectedInstanceID:     authority.InstanceID,
+		ExpectedBootGeneration: authority.BootGeneration,
+	}
+	source, err := sourceForThread(sources, params.Ref, "")
+	if err != nil {
+		return appwire.ThreadModelSetResponse{}, err
+	}
+	response, err := source.SetThreadModel(ctx, mutation)
+	if err != nil && managerModelMutationNeedsDiagnosticRead(err) {
+		if source, sourceErr := sourceForThread(sources, params.Ref, ""); sourceErr == nil {
+			_, _ = source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})
+		}
+	}
+	return response, err
+}
+
+func managerModelAuthority(read appwire.ThreadReadResponse) (appwire.ModelControlAuthority, error) {
+	thread := read.Thread.Evener
+	if thread.Capabilities.ModelControlVersion != appwire.ModelControlVersion1 || thread.ModelControl == nil {
+		return appwire.ModelControlAuthority{}, appwire.Unavailable("model control authority unavailable")
+	}
+	if err := appwire.ValidateThreadModelSetResponse(appwire.ThreadModelSetResponse{
+		ModelControlVersion: thread.Capabilities.ModelControlVersion,
+		Disposition:         appwire.ModelControlDispositionAccepted,
+		ModelControl:        thread.ModelControl,
+	}); err != nil {
+		return appwire.ModelControlAuthority{}, appwire.Unavailable("model control authority unavailable")
+	}
+	authority := thread.ModelControl.Authority
+	if authority.InstanceID != thread.InstanceID || authority.BootGeneration != read.BootGeneration {
+		return appwire.ModelControlAuthority{}, appwire.Unavailable("model control authority unavailable")
+	}
+	return authority, nil
+}
+
+func managerModelMutationNeedsDiagnosticRead(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	if !ok {
+		return false
+	}
+	return data.EvenerErrorInfo == appwire.ErrorModelControlAuthorityStale ||
+		data.EvenerErrorInfo == appwire.ErrorMutationOutcomeUnknown && data.RetryDisposition == appwire.RetryDispositionBlocked
 }
 
 func (o *sessionOperations) Stop(ctx context.Context, request appwire.SessionStopRequest) (appwire.SessionStopResponse, error) {
