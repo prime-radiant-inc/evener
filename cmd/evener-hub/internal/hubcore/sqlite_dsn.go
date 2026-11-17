@@ -1,6 +1,16 @@
 package hubcore
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
+
+// sqliteBusyTimeoutMS is the busy_timeout every connection sharing index.db
+// opens with. It is the wait a writer pays once for a concurrent writer's
+// lock, and the whole budget HubIdentityStore.connect's retry may spend on
+// lock conflicts, so the two are defined once here instead of as two numbers
+// that can drift apart.
+const sqliteBusyTimeoutMS = 5000
 
 // sqliteURIPathEscaper escapes the characters SQLite's URI parser would
 // otherwise treat as query/fragment delimiters (or as the start of a %XX
@@ -39,7 +49,7 @@ func sqliteDSN(dbPath string) string {
 // sorts last ("full" before "normal"), not to whichever the DSN lists last.
 func sqliteDSNWithSynchronous(dbPath, level string) string {
 	return "file:" + sqliteURIPathEscaper.Replace(dbPath) +
-		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(" + level + ")"
+		"?_pragma=busy_timeout(" + strconv.Itoa(sqliteBusyTimeoutMS) + ")&_pragma=journal_mode(WAL)&_pragma=synchronous(" + level + ")"
 }
 
 // sqliteDSNImmediate is sqliteDSN with an IMMEDIATE transaction lock. The FTS
