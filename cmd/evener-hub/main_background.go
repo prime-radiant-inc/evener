@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -153,15 +154,22 @@ func startHubSnapshotWatchers(start func(func()), ctx context.Context, poke <-ch
 // state, and the notices' credential listing rebuilt the whole instance listing
 // for every curated provider on every one of its ticks (#6422).
 //
-// One wake does both halves, so neither can starve the other and both keep the
-// cadence they had: the attention roster, evener/attention/changed, and the
-// notices list are all re-derived on each tick, and attention also on each
-// poke. The notices half runs on its own goroutine because its watcher owns the
+// Both halves keep the cadence they had. The attention roster and
+// evener/attention/changed are re-derived on each tick and on each poke; the
+// notices are re-derived on the tick only. A poke is not a reason to re-read
+// providers.toml under credMu, run the credential listing and list plugins:
+// pokes fire on every roster change, remote-cache change and archive, favorite
+// or pin decision, so pulsing notices on them would turn a fixed 5 s read into
+// one read per event on a busy hub, which is more work than #6422 removed.
+//
+// The notices half runs on its own goroutine because its watcher owns the
 // announced-set baseline it diffs against and does its own credential read;
 // keeping that baseline single-owner is what makes the announcements
 // well-ordered. Its wake is a coalesced pulse: a pulse that arrives while the
 // previous derive still runs is dropped, which loses nothing, because the next
-// wake re-derives from current state and announces whatever moved.
+// tick re-derives from current state and announces whatever moved. The watcher
+// is waited for before this returns, so a derive in flight cannot outlive the
+// server and stores its callers close.
 func watchHubSnapshotWake(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
 	if ctx.Err() != nil {
 		return
@@ -172,7 +180,13 @@ func watchHubSnapshotWake(ctx context.Context, poke <-chan struct{}, archive *hu
 	ticks, stop := hubTicker(snapshotInterval)
 	defer stop()
 	noticeTicks := make(chan time.Time, 1)
-	go web.notices.runNoticeWatcher(ctx, noticeTicks, web.notices.watchRead)
+	var notices sync.WaitGroup
+	notices.Add(1)
+	go func() {
+		defer notices.Done()
+		web.notices.runNoticeWatcher(ctx, noticeTicks, web.notices.watchRead)
+	}()
+	defer notices.Wait()
 	run := func() { runHubAttention(ctx, web, archive, w) }
 	pulseNotices := func() {
 		select {
@@ -190,7 +204,6 @@ func watchHubSnapshotWake(ctx context.Context, poke <-chan struct{}, archive *hu
 			pulseNotices()
 		case <-poke:
 			run()
-			pulseNotices()
 		}
 	}
 }

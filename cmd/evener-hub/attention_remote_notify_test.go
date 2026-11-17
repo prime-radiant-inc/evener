@@ -38,8 +38,13 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	poke := make(chan struct{})
 	done := make(chan struct{})
+	// A synchronous starter: startHubSnapshotWatchers keeps the wake loop on
+	// this goroutine, so close(done) means the watcher has returned rather than
+	// that it was merely spawned. The wake waits for its notices watcher before
+	// returning, so this also proves nothing is left reading the archive or the
+	// server after the test's cleanups close them.
 	go func() {
-		startHubSnapshotWatchers(func(fn func()) { go fn() }, ctx, poke, archive, web)
+		startHubSnapshotWatchers(func(fn func()) { fn() }, ctx, poke, archive, web)
 		close(done)
 	}()
 	t.Cleanup(func() {

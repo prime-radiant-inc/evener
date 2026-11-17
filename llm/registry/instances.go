@@ -1262,9 +1262,9 @@ func (r *Registry) instanceView(inst *instance, def string) Instance {
 
 // HasInstance reports whether the listing would carry the named instance,
 // without computing one: the spawn gate needs the set alone, and Instance
-// resolves every instance's credential on the way — work the gate must not
-// trigger, since the listing's judgment may expand command expressions the
-// gate counts as presence.
+// resolves the named instance's credential — work the gate must not trigger,
+// since the listing's judgment may expand command expressions the gate counts
+// as presence.
 func (r *Registry) HasInstance(name string) bool {
 	_, ok := r.instances[strings.ToLower(strings.TrimSpace(name))]
 	return ok

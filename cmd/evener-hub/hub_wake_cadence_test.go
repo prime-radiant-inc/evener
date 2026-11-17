@@ -131,9 +131,14 @@ func TestHubSnapshotWakePublishesAllThreeSnapshots(t *testing.T) {
 	// must land after it or the tick would find nothing to announce.
 	poke := make(chan struct{})
 	stopped := make(chan struct{})
+	// A synchronous starter: the wake loop runs on this goroutine, so
+	// close(stopped) means every watcher it owns has returned — including the
+	// notices watcher, which the wake waits for. Nothing is still reading the
+	// archive store or broadcasting through the server when the test's cleanups
+	// close them.
 	go func() {
 		defer close(stopped)
-		startHubSnapshotWatchers(func(fn func()) { go fn() }, ctx, poke, archive, web)
+		startHubSnapshotWatchers(func(fn func()) { fn() }, ctx, poke, archive, web)
 	}()
 	t.Cleanup(func() {
 		hubTicker = oldTicker
@@ -141,9 +146,22 @@ func TestHubSnapshotWakePublishesAllThreeSnapshots(t *testing.T) {
 		<-stopped
 	})
 
+	// Prove the starter blocks rather than spawning and returning: an async
+	// starter (func(fn func()) { go fn() }) closes stopped immediately, and then
+	// the cleanup's <-stopped above would wait for nothing while watchers kept
+	// using the archive store and server the cleanups close.
+	select {
+	case <-stopped:
+		t.Fatal("startHubSnapshotWatchers returned while the wake loop was running: the starter must run the wake inline")
+	default:
+	}
+
 	// Both baselines, waited on rather than slept on:
-	// the notices watcher reads its announced set when it starts,
-	liveHost.waitRead(t, "baseline")
+	// the notices watcher reads its announced set when it starts, and
+	// hostNotices walks the sources in sorted ID order, so "wake-offline-host"
+	// is the last one any derive reads. Waiting on it means the whole baseline
+	// derive finished, including the state this test's assertion depends on.
+	offlineHost.waitRead(t, "baseline")
 	// and the attention watcher seeds before it selects; the poke that returns
 	// proves it has.
 	select {
