@@ -2115,9 +2115,8 @@ function SelectedConnection({
                     values: {
                       vars: settingsVars,
                       ...settingsDraft,
-                      ...(row?.auth === "oauth-openai-codex"
-                        ? { codexClientVersion: settingsDraft.codexClientVersion }
-                        : {}),
+                      codexClientVersion:
+                        row?.auth === "oauth-openai-codex" ? settingsDraft.codexClientVersion : undefined,
                     },
                     disabled: instanceEditsBlocked,
                     copy: {

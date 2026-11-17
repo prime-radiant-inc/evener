@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 
@@ -139,15 +138,12 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		return nil, llm.ErrModelListingUnsupported
 	}
 	modelsEndpoint := res.Transport.ModelsEndpoint
-	if res.Transport.Auth == registry.AuthOAuthOpenAICodex && res.Transport.CodexClientVersion != "" {
-		u, err := url.Parse(modelsEndpoint)
+	if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
+		var err error
+		modelsEndpoint, err = requestutil.WithQuery(modelsEndpoint, "client_version", res.Transport.CodexClientVersion)
 		if err != nil {
 			return nil, fmt.Errorf("models.list: %w", err)
 		}
-		query := u.Query()
-		query.Set("client_version", res.Transport.CodexClientVersion)
-		u.RawQuery = query.Encode()
-		modelsEndpoint = u.String()
 	}
 	call := &protocolhttp.Call{Operation: "models.list", EndpointFamily: "openai_models", Method: http.MethodGet, URL: protocolhttp.URL(res, modelsEndpoint), Req: llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, Res: res, Client: p.Client}
 	var rows []registry.Model

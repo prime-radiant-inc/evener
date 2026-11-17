@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 
 	"primeradiant.com/evener/llm"
@@ -73,7 +72,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 	var rows []registry.Model
 	afterID := ""
 	for {
-		u, err := withQuery(protocolhttp.URL(res, res.Transport.ModelsEndpoint), "limit", "1000", "after_id", afterID)
+		u, err := requestutil.WithQuery(protocolhttp.URL(res, res.Transport.ModelsEndpoint), "limit", "1000", "after_id", afterID)
 		if err != nil {
 			return nil, err
 		}
@@ -130,21 +129,4 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 		return nil, nil
 	})
 	return count, err
-}
-
-// withQuery adds key/value pairs (empty values skipped) to a URL that may
-// already carry a query string.
-func withQuery(raw string, pairs ...string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", err
-	}
-	q := u.Query()
-	for i := 0; i+1 < len(pairs); i += 2 {
-		if pairs[i+1] != "" {
-			q.Set(pairs[i], pairs[i+1])
-		}
-	}
-	u.RawQuery = q.Encode()
-	return u.String(), nil
 }
