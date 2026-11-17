@@ -352,7 +352,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       const status = n.params.status;
       // The running turn is the frame's activeTurnId, and none when it names
       // none: an idle frame ends the running turn.
-      const { runningTurnId: _previous, ...rest } = model;
+      const { runningTurnId: _previous, quotaResumesAt: heldQuotaResumesAt, ...rest } = model;
       return {
         ...(rest as M),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
@@ -363,6 +363,17 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // totalWorkMillis unconditionally). Drop it on any non-active
         // transition so the model never carries a live anchor while at rest.
         activeTurnStartedAt: status.type === "active" ? model.activeTurnStartedAt : undefined,
+        // A usage-limit wait belongs to ONE running turn, so it ends with that
+        // turn's status the same way the anchor above does. The daemon's own
+        // end-of-wait signal (a no-delay quota_exceeded retry) does not cover
+        // every way a wait ends: a Stop ends it through ctx.Done() and returns
+        // before that emit (agent/session_quota_wait.go), so a model hydrated
+        // during a six-hour wait would otherwise keep a future instant and say
+        // "Waiting for quota" for the whole of the next turn while its output
+        // streams. Re-adding it only while active keeps the fold's shape
+        // unchanged for every model that never held one; the next read
+        // refreshes the instant as it does every other snapshot field.
+        ...(status.type === "active" && heldQuotaResumesAt !== undefined ? { quotaResumesAt: heldQuotaResumesAt } : {}),
         // The failure count is otherwise snapshot-only, so a client that
         // attached while the session was clean would keep saying nothing
         // however many failures followed - the watcher the count exists for.

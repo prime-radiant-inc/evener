@@ -87,11 +87,6 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // The line holds the count itself whether or not a turn runs, so a starting
   // turn has it without relying on another surface holding it.
   const runningSubagents = useSubagentCounts(sessionRef ?? null)?.active ?? turnRunning;
-  // The countdown rule is the shared one the rail row uses, so both surfaces
-  // agree on when a wait is over; a wait whose instant has passed explains
-  // nothing and leaves the ordinary decision below.
-  const remaining = quotaResumeRemainingMs(quotaResumesAt, now);
-  const quotaWait: QuotaWait | undefined = remaining === null ? undefined : { remainingMs: remaining };
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,
@@ -101,6 +96,34 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     groupElapsedMs: retry.groupElapsedMs,
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
+  // The countdown rule is the shared one the rail row uses, so both surfaces
+  // agree on when a wait is over; a wait whose instant has passed explains
+  // nothing and leaves the ordinary decision below.
+  const fromRead = quotaResumeRemainingMs(quotaResumesAt, now);
+  // A pane OPEN when the limit hits gets only the live retry, and that
+  // notification never invalidates history, so no read has set an instant for
+  // it (ThreadModel.quotaResumesAt is snapshot-only). Without this the wait
+  // would still render as the retry line's seconds countdown and then as
+  // unexplained silence - the very reading this issue is about - for the whole
+  // wait, until something happened to force a reload. `delayMs` is how long
+  // the call waits from `receivedAt`, both on this client's clock, so the
+  // distance to `now` needs no daemon clock and is off only by delivery
+  // latency. The read-sourced instant wins while it is still ahead: it is
+  // absolute, where this is a countdown from a message that a reconnect could
+  // have delivered hours late. A read instant already past says that wait is
+  // over, which leaves a later retry free to speak for itself. `inProgress`
+  // rules this out once a frame has landed or the delay is spent: the call is
+  // moving again, and the retry text says so.
+  const liveRemaining =
+    retry !== undefined &&
+    retryWait !== undefined &&
+    !retryWait.inProgress &&
+    retry.errorClass === "quota_exceeded" &&
+    retry.delayMs > 0
+      ? retry.delayMs - (now - retry.receivedAt)
+      : undefined;
+  const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);
+  const quotaWait: QuotaWait | undefined = remaining === null ? undefined : { remainingMs: remaining };
   const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaWait);
   if (level === "none" || text === null) return null;
 

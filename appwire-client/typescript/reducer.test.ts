@@ -2609,6 +2609,41 @@ test("thread/status/changed to a non-active status clears the live work-clock an
   expect(model.activeTurnStartedAt).toBeUndefined();
 });
 
+// A usage-limit wait belongs to ONE running turn. The daemon's end-of-wait
+// signal (a no-delay quota_exceeded retry) does not cover every way a wait
+// ends: a Stop ends it through ctx.Done() and returns before that emit
+// (agent/session_quota_wait.go), so a model hydrated during a six-hour wait
+// would otherwise hold a future instant into the NEXT turn — where the quota
+// level wins over every other level and skips the quiet gate, reporting
+// "Waiting for quota · resumes in 6h" for a turn that is streaming output.
+// The status fold drops it on the same non-active transition as the anchor.
+test("thread/status/changed to a non-active status clears the usage-limit resume instant", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" } },
+    },
+    2000,
+  );
+
+  expect(model.status.type).toBe("awaiting");
+  expect(model.quotaResumesAt).toBeUndefined();
+});
+
 test("thread/status/changed staying active preserves the live work-clock anchor", () => {
   // The clear fires only on the rest transition; an active→active status frame
   // (e.g. an activeFlags change) must not drop a legitimately running anchor.

@@ -1,4 +1,4 @@
-import { hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
+import { applyNotification, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
 import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -343,6 +343,56 @@ test("a reloaded session says when its usage-limit wait resumes, without any liv
   // The shared wait words, from the one source both this pane and the rail
   // read - asserted through the same function, never against a literal.
   expect(el.textContent).toBe(waitingForQuotaText(6 * 60 * 60_000));
+});
+
+// The common trigger, and the one this issue was filed from: a reader has the
+// pane open when the limit hits. Nothing forces a read then - the retry
+// notification never invalidates history - so ThreadModel.quotaResumesAt is
+// never set, and before this the line stayed on the retry's own seconds
+// countdown and then fell to unexplained silence for hours. The live retry's
+// delay, measured from the client-side receipt stamp, is the remaining wait.
+test("a usage-limit retry with no read at all still says when the wait resumes", () => {
+  const now = 1_000_000;
+  const receivedAt = now - 5_000;
+  // Hydrated clean: no failure, so the read has told the model nothing about a
+  // wait and only the live notification below can.
+  const clean = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now);
+  expect(clean.quotaResumesAt).toBeUndefined();
+  const sixHours = 6 * 60 * 60_000;
+  const live = applyNotification(
+    clean,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    receivedAt,
+  );
+  expect(live.quotaResumesAt).toBeUndefined();
+  threadsStore.setState({ threads: new Map([["s1", live]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={receivedAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={live.modelRetry}
+    />,
+  );
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).toBe(waitingForQuotaText(sixHours - 5_000));
 });
 
 // A six-hour reset is not 21,600 seconds of a wedged session, and the chip's
