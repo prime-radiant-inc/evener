@@ -893,6 +893,10 @@ function systemEventModel(eventKind: string | undefined, exitCode: number | unde
 		status: { type: "idle" },
 		modelProvider: "",
 		model: "",
+		modelControlState: {
+			kind: "uninitialized",
+			canonicalDisplay: { modelProvider: "", model: "" },
+		},
 		visionModel: "",
 		askPending: false,
 		pendingEscalations: [],
