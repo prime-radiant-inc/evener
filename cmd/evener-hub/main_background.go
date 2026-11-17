@@ -113,35 +113,28 @@ func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity,
 	return func(id string) (rosterIdentity, bool) { identity, ok := identities[id]; return identity, ok }
 }
 
-// refreshHubMessageSearch keeps the message search index (S14) in step with
-// the transcripts the past index lists: once now, then every interval (the
-// past index's own rebuild interval). A refresh reads again only the
-// transcripts that changed.
-func refreshHubMessageSearch(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex, interval time.Duration) {
+// refreshHubMessageSearchOnce brings the message search index (S14) in step
+// with the transcripts the past index lists, one pass. A refresh reads again
+// only the transcripts that changed.
+//
+// retry reports that some transcript could not be read this pass. Refresh
+// deliberately retries an already-indexed transcript whose read failed on the
+// next call (recording the failure would freeze the loss), so a caller that
+// skips passes must not skip the one after a failed one, or a transient read
+// error would wait for unrelated disk activity to clear.
+func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex) (retry bool, err error) {
 	if index == nil || ctx.Err() != nil {
-		return
+		return false, nil
 	}
 	log := componentlog.New("hub")
-	ticks, stop := hubTicker(interval)
-	defer stop()
-	refresh := func() {
-		failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
-		for _, failure := range failures {
-			log.Info(fmt.Sprintf("message search: session %s: %v", failure.SessionID, failure.Err))
-		}
-		if err != nil && ctx.Err() == nil {
-			log.Info(fmt.Sprintf("message search: %v", err))
-		}
+	failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
+	for _, failure := range failures {
+		log.Info(fmt.Sprintf("message search: session %s: %v", failure.SessionID, failure.Err))
 	}
-	refresh()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticks:
-			refresh()
-		}
+	if err != nil && ctx.Err() == nil {
+		log.Info(fmt.Sprintf("message search: %v", err))
 	}
+	return len(failures) > 0, err
 }
 
 // messageSearchSessions is every session the past index lists, with its
