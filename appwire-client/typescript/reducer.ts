@@ -572,20 +572,20 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
       // quiet/stall clock is measuring a real silence; this explains it rather
       // than resetting it.
-      // A quota-class announcement is a wait, not pacing: the delay runs to
-      // the provider's named reset, so the model carries the resume instant
-      // itself (a reload drops modelRetry, and the snapshot's failure
-      // summary is what re-hydrates it). The zero-delay announcement is the
-      // retry starting - the wait it announced is over.
-      const quotaWait =
-        params.errorClass === "quota_exceeded"
-          ? params.delayMs > 0
-            ? { quotaResumesAt: now + params.delayMs }
-            : { quotaResumesAt: undefined }
-          : {};
       return {
         ...model,
-        ...quotaWait,
+        // A quota-class announcement is a wait, not pacing: the delay runs to
+        // the provider's named reset, so the model carries the resume instant
+        // itself (a reload drops modelRetry, and the snapshot's failure
+        // summary is what re-hydrates it). The zero-delay announcement is the
+        // retry starting - the wait it announced is over, so it clears the
+        // instant; any other class leaves it as the model held it.
+        quotaResumesAt:
+          params.errorClass === "quota_exceeded" && params.delayMs > 0
+            ? now + params.delayMs
+            : params.errorClass === "quota_exceeded"
+              ? undefined
+              : model.quotaResumesAt,
         modelRetry: {
           attempt: params.attempt,
           maxAttempts: params.maxAttempts,

@@ -117,7 +117,7 @@ export function formatRetryCause(errorClass?: string): string {
  * would be exactly the dishonest denominator AttemptCap exists to eliminate,
  * so the denominator is omitted entirely rather than substituted.
  */
-export function formatRetryWait(retry: RetryWait): string {
+export function formatRetryWait(retry: RetryWait | QuotaWait): string {
   // A quota wait's attempt count carries no information (the daemon's wait
   // announcement always reads attempt 1 and never spends a budget), and its
   // delay runs hours, not seconds: the wait is the line's whole content, the
@@ -128,24 +128,28 @@ export function formatRetryWait(retry: RetryWait): string {
     const wait = retry.inProgress ? "in progress" : `resumes in ${compactDuration(retry.delayMs)}`;
     return `${formatRetryCause(retry.errorClass)} — ${wait} — ${formatExactGap(retry.groupElapsedMs)} on this call`;
   }
-  const modelTag = retry.model ? ` (${retry.model})` : "";
-  const attempt = retry.attemptCap > 0 ? `attempt ${retry.attempt}/${retry.attemptCap}` : `attempt ${retry.attempt}`;
+  const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
+  const attempt =
+    "attempt" in retry
+      ? retry.attemptCap > 0
+        ? `attempt ${retry.attempt}/${retry.attemptCap}`
+        : `attempt ${retry.attempt}`
+      : "";
   const wait = retry.inProgress ? "in progress" : `retrying in ${Math.max(0, Math.round(retry.delayMs / SECOND_MS))}s`;
   const elapsed = `${formatExactGap(retry.groupElapsedMs)} on this call`;
   return `${formatRetryCause(retry.errorClass)}${modelTag} — ${attempt} — ${wait} — ${elapsed}`;
 }
 
-// The quota wait a resume instant names, as the RetryWait describeLiveness's
-// retry branch renders: delayMs measured from now to the instant, and
-// groupElapsedMs zero, because the resume instant alone carries no call
-// elapsed time - the reducer-stamped path (a live quota retry) keeps its own.
-export function quotaWaitFrom(resumesInMs: number): RetryWait {
+// The quota wait a resume instant names, narrowed to the fields the quota
+// branch of formatRetryWait reads: the instant alone carries no attempt count
+// (the wait announcement always reads attempt 1 and spends no budget) and no
+// call elapsed time, so neither is invented.
+export type QuotaWait = Pick<RetryWait, "errorClass" | "inProgress" | "delayMs" | "groupElapsedMs">;
+
+export function quotaWaitFrom(resumesInMs: number): QuotaWait {
   return {
-    attempt: 1,
-    attemptCap: 1,
     delayMs: resumesInMs,
     errorClass: "quota_exceeded",
-    model: undefined,
     groupElapsedMs: 0,
     inProgress: false,
   };
@@ -189,8 +193,7 @@ export function describeLiveness(
   active: boolean,
   runningSubagents: number,
   retry?: RetryWait,
-  quotaResumesAt?: number,
-  nowMs?: number,
+  quotaRemainingMs?: number,
 ): LivenessInfo {
   if (!active) return { level: "none", text: null };
   // A quota wait is known information the same way a retry past its first
@@ -202,15 +205,14 @@ export function describeLiveness(
   // updates for 3h", a stall report for a scheduled pause. The instant form
   // is the read snapshot's (a pane that re-hydrated, with no notification);
   // the retry form is the live announcement, whose delay runs to the reset.
-  const quotaRemaining =
-    quotaResumesAt !== undefined && nowMs !== undefined
-      ? quotaResumesAt > nowMs
-        ? quotaResumesAt - nowMs
-        : undefined
-      : retry !== undefined && retry.errorClass === "quota_exceeded" && !retry.inProgress
-        ? retry.delayMs
-        : undefined;
-  if (quotaRemaining !== undefined) return { level: "retrying", text: formatRetryWait(quotaWaitFrom(quotaRemaining)) };
+  // A live quota retry's own delay runs to the same reset; its RetryWait
+  // carries the call's elapsed time, which the bare instant cannot, so the
+  // live form renders directly and only the snapshot's synthesizes.
+  if (quotaRemainingMs !== undefined) {
+    return { level: "retrying", text: formatRetryWait(quotaWaitFrom(quotaRemainingMs)) };
+  }
+  const liveQuotaWait = retry !== undefined && retry.errorClass === "quota_exceeded" && !retry.inProgress;
+  if (liveQuotaWait) return { level: "retrying", text: formatRetryWait(retry) };
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.

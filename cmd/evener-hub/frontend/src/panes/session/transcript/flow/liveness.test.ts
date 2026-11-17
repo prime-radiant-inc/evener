@@ -9,7 +9,6 @@ import {
   formatRetryWait,
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
-  quotaWaitFrom,
   type RetryWait,
 } from "./liveness";
 
@@ -283,8 +282,8 @@ test("describeLiveness: a quota wait shows immediately, without the quiet gate, 
 // re-hydrated from a snapshot has to render.
 test("describeLiveness: a quota wait known only as a resume instant shows at once and never reads as stalled", () => {
   const resumesIn = 90 * 60_000;
-  expect(describeLiveness(2_000, true, 0, quotaWaitFrom(resumesIn)).level).toBe("retrying");
-  const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, quotaWaitFrom(resumesIn));
+  expect(describeLiveness(2_000, true, 0, undefined, resumesIn).level).toBe("retrying");
+  const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, undefined, resumesIn);
   expect(hoursIn.level).toBe("retrying");
   expect(hoursIn.text).not.toContain("no updates for");
 });

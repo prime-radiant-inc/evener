@@ -50,13 +50,8 @@ export interface LivenessLineProps {
    * still failing" from "now trying a different model").
    */
   primaryModel?: string;
-  /**
-   * ThreadModel.quotaResumesAt - the epoch-ms instant a model call waiting
-   * out a provider usage limit resumes by itself, whether the quota retry
-   * notification or the read snapshot carried it. A reload or cold visit
-   * knows the wait only through this prop; a live quota retry also feeds it
-   * so the line stays up even if the notification is dropped.
-   */
+  /** ThreadModel.quotaResumesAt - the epoch-ms instant a waiting model call
+   * resumes by itself; the only source a reload or cold visit has. */
   quotaResumesAt?: number;
 }
 
@@ -102,10 +97,10 @@ export function LivenessLine({
     groupElapsedMs: retry.groupElapsedMs,
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
-  // describeLiveness reads the quota wait from either source itself: the
-  // snapshot's instant (quotaResumesAt, the reload path) or a live
-  // quota-class retry's delay (the notification path).
-  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaResumesAt, now);
+  // The snapshot's resume instant is the pane's own quota source; a live
+  // quota-class retry carries its delay inside retryWait.
+  const quotaRemainingMs = quotaResumesAt !== undefined && quotaResumesAt > now ? quotaResumesAt - now : undefined;
+  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaRemainingMs);
   if (level === "none" || text === null) return null;
 
   return (
