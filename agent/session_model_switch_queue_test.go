@@ -821,3 +821,141 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 		t.Fatalf("profile model = %q, want the committed switch's model %q; the failed queued pick must not swap", got, "gpt-5.4")
 	}
 }
+
+// TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick pins the ordering in
+// issue #6621: pick A is valid, pick B is later and fails only the boundary's
+// deferred history check. B's rejection must not take A's accepted choice with
+// it.
+//
+// The pair is the whole matrix the store and the commit check must agree on:
+//   - valid then invalid: A applies even though B was picked later.
+//   - invalid then valid: B's rejection leaves nothing queued, so A applies.
+//
+// The assertions are behavioral: the model each turn actually ran on and the
+// session's selected model. B's pick is shown to pass pick-time validation
+// (SetModel returns nil for it) while its target cannot carry the settled
+// history, so the only place it can fail is the boundary - which is the path
+// that used to cancel A.
+func TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick(t *testing.T) {
+	t.Run("valid then invalid", func(t *testing.T) {
+		dir := t.TempDir()
+		listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+		openaiAdapter := &fakeAdapter{
+			name:       "openai",
+			liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+		}
+		glmAdapter := &fakeAdapter{
+			name: "glm",
+			liveModels: func(context.Context) ([]registry.Model, error) {
+				return []registry.Model{{ID: "glm-test"}}, nil
+			},
+		}
+		s := newSession(t,
+			withAdapter(openaiAdapter),
+			withAdapter(glmAdapter),
+			withDir(dir),
+			withConfig(SessionConfig{
+				StateDir:         dir,
+				MaxSubagentDepth: 1,
+				ResolveProfile:   testResolver,
+				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			}))
+		// B's target speaks the Chat protocol, which cannot carry a non-user
+		// document, while A's target (OpenAI Responses) can. That asymmetry is
+		// what makes B fail at the boundary and A survive it.
+		doc := documentTurn()
+		doc.Message.Role = llm.RoleAssistant
+		if len(unrepresentableHistoryKinds([]schema.Turn{doc}, registry.ProtocolOpenAIChat)) == 0 {
+			t.Fatal("pre-condition: a non-user document must be unrepresentable for B's target")
+		}
+		if got := len(unrepresentableHistoryKinds([]schema.Turn{doc}, NewOpenAIProfile("gpt-5.4").Protocol())); got != 0 {
+			t.Fatalf("pre-condition: A's target must carry the document, got %d offending kinds", got)
+		}
+
+		openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				// A is valid: it resolves, passes membership, and queues.
+				if err := s.SetModel("gpt-5.4"); err != nil {
+					t.Errorf("valid pick: %v", err)
+				}
+				// The content B cannot carry arrives after A queued, so only
+				// B's deferred check sees it.
+				s.appendTurn(schema.TurnAssistant, doc.Message)
+				// B passes pick-time resolution and membership; only the
+				// boundary rejects it.
+				if err := s.SetModel("glm/glm-test"); err != nil {
+					t.Errorf("B must pass pick-time validation and fail only at the boundary, got: %v", err)
+				}
+				return agenttest.CommunicateResponse(true, "first turn done")
+			},
+			func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+		})
+		serveSessionWithMutationStore(t, s)
+		queueOneMutation(t, s, "cm-valid-then-invalid", "the queued message")
+
+		if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+
+		requests := openaiAdapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+		}
+		if requests[1].Model != "gpt-5.4" {
+			t.Fatalf("the queued message ran on model %q; the rejected later pick must not cancel the earlier valid pick (%q)", requests[1].Model, "gpt-5.4")
+		}
+		if got := s.Profile().Model(); got != "gpt-5.4" {
+			t.Fatalf("selected model = %q after the later pick's deferred rejection; the earlier valid pick must still be selected (%q)", got, "gpt-5.4")
+		}
+	})
+
+	t.Run("invalid then valid", func(t *testing.T) {
+		dir := t.TempDir()
+		listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+		openaiAdapter := &fakeAdapter{
+			name:       "openai",
+			liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+		}
+		s := newSession(t,
+			withAdapter(openaiAdapter),
+			withDir(dir),
+			withConfig(SessionConfig{
+				StateDir:         dir,
+				MaxSubagentDepth: 1,
+				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			}))
+		openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				if err := s.SetModel("bogus/no-such-model"); err == nil {
+					t.Error("the invalid pick was accepted; it must be rejected")
+				}
+				// The rejection must not change the selection on its own.
+				if got := s.Profile().Model(); got != "gpt-5.2" {
+					t.Fatalf("the rejected pick changed the selected model to %q; a rejection selects nothing (%q)", got, "gpt-5.2")
+				}
+				if err := s.SetModel("gpt-5.4"); err != nil {
+					t.Errorf("the valid pick after a rejection: %v", err)
+				}
+				return agenttest.CommunicateResponse(true, "first turn done")
+			},
+			func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+		})
+		serveSessionWithMutationStore(t, s)
+		queueOneMutation(t, s, "cm-invalid-then-valid", "the queued message")
+
+		if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+
+		requests := openaiAdapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+		}
+		if requests[1].Model != "gpt-5.4" {
+			t.Fatalf("the queued message ran on model %q; the valid pick after a rejection must apply (%q)", requests[1].Model, "gpt-5.4")
+		}
+		if got := s.Profile().Model(); got != "gpt-5.4" {
+			t.Fatalf("selected model = %q, want the later valid pick (%q)", got, "gpt-5.4")
+		}
+	})
+}
