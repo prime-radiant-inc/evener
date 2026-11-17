@@ -1147,6 +1147,99 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
   });
 
+  test("an equal-revision conflict buffered during the establishing read starts one replacement read", async () => {
+    const fake = connectFakeClient();
+    const establishing = deferred<ThreadReadResponse>();
+    const recovery = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 1 ? establishing.promise : recovery.promise;
+    });
+
+    const ensuring = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        modelControl: modelControlSnapshot(2, { activeProvider: "google", activeModel: "gemini-3-pro" }),
+      },
+    });
+    establishing.resolve(capableModelRead("ref_a", modelControlSnapshot(2)));
+
+    await ensuring;
+    await flushUntil(() => reads === 2);
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("recovering");
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.invalidatedAtGeneration).toBeUndefined();
+
+    const recovered = modelControlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" });
+    recovery.resolve(capableModelRead("ref_a", recovered));
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+
+    expect(reads).toBe(2);
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState).toEqual({
+      kind: "ready",
+      snapshot: recovered,
+    });
+    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+  });
+
+  test("a tracked thread owns model-control recovery shared with a rich watcher", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    const recovery = deferred<ThreadReadResponse>();
+    let recoveryReads = 0;
+    fake.on("thread/read", () => {
+      recoveryReads += 1;
+      return recovery.promise;
+    });
+    const conflict = modelControlSnapshot(2, { activeProvider: "google", activeModel: "gemini-3-pro" });
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: conflict },
+    });
+    await flushUntil(() => recoveryReads > 0);
+
+    let pickSettled = false;
+    fake.on("thread/model/set", () => ({
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: modelControlSnapshot(4, {
+        activeProvider: "openai",
+        activeModel: "gpt-5.5",
+        desiredProvider: "openai",
+        desiredModel: "gpt-5.5",
+      }),
+    }));
+    const pick = threadsStore
+      .getState()
+      .setModel("ref_a", "openai", "gpt-5.5")
+      .then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      .finally(() => {
+        pickSettled = true;
+      });
+    await Promise.resolve();
+    expect(pickSettled).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+    expect(recoveryReads).toBe(1);
+
+    recovery.resolve(capableModelRead("ref_a", modelControlSnapshot(3)));
+    await expect(pick).resolves.toEqual({ ok: true });
+
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("ready");
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.modelControlState.kind).toBe("ready");
+    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1);
+  });
+
   test("a direct setModel refusal preserves the accepted shared snapshot", async () => {
     const fake = connectFakeClient();
     const accepted = modelControlSnapshot(2, {

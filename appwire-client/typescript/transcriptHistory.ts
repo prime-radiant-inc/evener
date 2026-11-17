@@ -7,7 +7,7 @@ import { compareBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
-import { reduceModelControl } from "./modelControl";
+import { reduceModelControl, restoreHeldModelControl } from "./modelControl";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
 export { comparePositions } from "./model";
@@ -1208,17 +1208,6 @@ export function applyReadModel<M extends ThreadModel>(
   const input = hydratedModelControlReadInput(fresh);
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
   return publicModel<M>(reduceModelControl(controlBase, input).model);
-}
-
-function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
-  return {
-    ...next,
-    modelControlState: held.modelControlState,
-    modelProvider: held.modelProvider,
-    model: held.model,
-    reasoningEffortLevels: held.reasoningEffortLevels,
-    supportsReasoning: held.supportsReasoning,
-  };
 }
 
 function modelControlReadInput(

@@ -1618,7 +1618,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							publishModelControlRecovery(threadRef, expectedThreadId, input);
 						},
 					);
-					const { conversation, olderCursor, hasEarlierItems, hasLaterItems } =
+					const { conversation, olderCursor, hasEarlierItems, hasLaterItems, modelControlRecoveryRequired } =
 						replacement ?? (await service.readProjection(ref));
 					if (gen !== conversationGen) return;
 					adoptRead(conversation);
@@ -1643,6 +1643,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							conversation.modelControlState.kind === "recovering")
 					) {
 						await get().rehydrate(service);
+					} else if (modelControlRecoveryRequired) {
+						requestRehydrate(ref);
 					}
 				} catch (err) {
 					if (gen !== conversationGen) return;
@@ -1849,8 +1851,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					const heldSnapshot = heldHistory?.incarnation
 						? { incarnation: heldHistory.incarnation, length: heldHistory.length }
 						: undefined;
-					const { conversation, changes, hasEarlierItems, hasLaterItems, replacedHeldHistory } =
-						await service.readProjection(ref, heldSnapshot);
+					const {
+						conversation,
+						changes,
+						hasEarlierItems,
+						hasLaterItems,
+						replacedHeldHistory,
+						modelControlRecoveryRequired,
+					} = await service.readProjection(ref, heldSnapshot);
 					// I1: Suppress stale work — if the binding epoch changed, the store
 					// switched to a different service/ref. Do not commit.
 					if (entryEpoch !== bindingEpoch) return;
@@ -2127,6 +2135,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// null — preserve it (do not spuriously increment errorOwnerRev).
 						set(commitBase);
 					}
+					if (modelControlRecoveryRequired) requestRehydrate(ref);
 				} catch (err) {
 					// R1: failure may set error only if error/page/mutation owners all
 					// remain unchanged. Check binding epoch, generation, token, page

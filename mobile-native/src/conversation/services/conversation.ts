@@ -43,6 +43,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	acquireThreadSubscription,
+	applyModelControlNotification,
 	applyNotification,
 	hydrateThread,
 	isStaleCursorError,
@@ -150,6 +151,7 @@ export interface ConversationReadProjection {
 	// the client was disconnected — and advance the snapshot length past the
 	// skipped update with no way back.
 	replacedHeldHistory?: boolean;
+	modelControlRecoveryRequired?: true;
 }
 
 // The canonical service interface — preserved for screen test mocks that only
@@ -684,11 +686,16 @@ export function createConversationService<ReadLease = unknown>(
 		return sameModelControlAuthority(left, right);
 	}
 
-	function replayOpeningModelControl(model: ThreadModel, responseThreadId: string, epoch: number): ThreadModel {
-		if (openEpoch !== epoch || opening === null) return model;
+	function replayOpeningModelControl(
+		model: ThreadModel,
+		responseThreadId: string,
+		epoch: number,
+	): { model: ThreadModel; replacementReadRequired: boolean } {
+		if (openEpoch !== epoch || opening === null) return { model, replacementReadRequired: false };
 		const authority = modelControlAuthority(model);
-		if (!authority) return model;
+		if (!authority) return { model, replacementReadRequired: false };
 		let next = model;
+		let replacementReadRequired = false;
 		for (const buffered of opening.modelControl) {
 			const params = buffered.notification.params;
 			if (
@@ -696,10 +703,12 @@ export function createConversationService<ReadLease = unknown>(
 				params.ref === opening.ref &&
 				sameAuthority(authority, params.modelControl.authority)
 			) {
-				next = applyNotification(next, buffered.notification, buffered.receivedAt);
+				const result = applyModelControlNotification(next, buffered.notification, buffered.receivedAt);
+				next = result.model;
+				replacementReadRequired ||= result.replacementReadRequired;
 			}
 		}
-		return next;
+		return { model: next, replacementReadRequired };
 	}
 
 	function requireRef(): string {
@@ -827,7 +836,7 @@ export function createConversationService<ReadLease = unknown>(
 					response.thread.evener.instanceId ?? response.thread.id,
 					"thread instance id",
 				);
-				const hydrated = replayOpeningModelControl(
+				const replayedModelControl = replayOpeningModelControl(
 					{
 						...hydrateThread({ ...response, thread }, threadRef, now()),
 						instanceId: readInstanceId,
@@ -835,6 +844,7 @@ export function createConversationService<ReadLease = unknown>(
 					response.thread.id,
 					epoch,
 				);
+				const hydrated = replayedModelControl.model;
 				const conversation = projectConversation(hydrated, undefined, displayConfig());
 				const caps = extractCapabilities(thread.evener.capabilities);
 				const readModelScope = { harness: thread.source, cwd: thread.cwd };
@@ -905,7 +915,7 @@ export function createConversationService<ReadLease = unknown>(
 					response.thread.evener.instanceId ?? response.thread.id,
 					"thread instance id",
 				);
-				const hydrated = replayOpeningModelControl(
+				const replayedModelControl = replayOpeningModelControl(
 					{
 						...hydrateThread({ ...response, thread }, threadRef, now()),
 						instanceId: readInstanceId,
@@ -913,6 +923,7 @@ export function createConversationService<ReadLease = unknown>(
 					response.thread.id,
 					epoch,
 				);
+				const hydrated = replayedModelControl.model;
 				const conversation = projectConversation(hydrated, undefined, displayConfig());
 				const olderCursor = response.olderCursor ?? null;
 				const caps = extractCapabilities(thread.evener.capabilities);
@@ -935,6 +946,7 @@ export function createConversationService<ReadLease = unknown>(
 					changes: response.changes,
 					olderCursor,
 					...(replacedHeldHistory ? { replacedHeldHistory: true } : {}),
+					...(replayedModelControl.replacementReadRequired ? { modelControlRecoveryRequired: true } : {}),
 					hasEarlierItems: thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
 					hasLaterItems: thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
 				};

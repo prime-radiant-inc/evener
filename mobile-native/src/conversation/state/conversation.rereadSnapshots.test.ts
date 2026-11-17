@@ -93,6 +93,22 @@ function modelConversation(snapshot: ModelControlSnapshot): MobileConversation {
 	});
 }
 
+function modelControlReadResponse(snapshot: ModelControlSnapshot): ThreadReadResponse {
+	return {
+		bootGeneration: snapshot.authority.bootGeneration,
+		thread: makeThread({
+			modelProvider: snapshot.active.modelProvider,
+			evener: {
+				ref: "ref-1",
+				instanceId: snapshot.authority.instanceId,
+				capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
+				queue: { revision: 0 },
+				modelControl: snapshot,
+			},
+		}),
+	};
+}
+
 describe("ConversationStore", () => {
 	describe("model-control snapshots", () => {
 		it("adopts a live whole-snapshot update through the shared notification reducer", async () => {
@@ -178,25 +194,12 @@ describe("ConversationStore", () => {
 			const client = new FakeClient("ready");
 			const initial = modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5");
 			const recovered = modelControl(3, MODEL_AUTHORITY_A, "claude-opus-4-6");
-			const readResponse = (snapshot: ModelControlSnapshot): ThreadReadResponse => ({
-				bootGeneration: snapshot.authority.bootGeneration,
-				thread: makeThread({
-					modelProvider: snapshot.active.modelProvider,
-					evener: {
-						ref: "ref-1",
-						instanceId: snapshot.authority.instanceId,
-						capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
-						queue: { revision: 0 },
-						modelControl: snapshot,
-					},
-				}),
-			});
 			client.on("thread/unsubscribe", () => ({}));
-			client.on("thread/read", () => readResponse(initial));
+			client.on("thread/read", () => modelControlReadResponse(initial));
 			const service = createConversationService(client, { idFactory: () => "mutation-1" });
 			const store = createConversationStore();
 			await store.getState().openProjected(service, "ref-1");
-			client.on("thread/read", () => readResponse(recovered));
+			client.on("thread/read", () => modelControlReadResponse(recovered));
 			client.on("thread/model/set", () => {
 				throw new WireError("lost", -32603, {
 					evenerErrorInfo: "mutationOutcomeUnknown",
@@ -214,6 +217,42 @@ describe("ConversationStore", () => {
 			const conversation = store.getState().conversation;
 			if (!conversation) throw new Error("expected recovered conversation");
 			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
+		});
+
+		it("rereads after an equal-revision conflict buffered during the establishing read", async () => {
+			const client = new FakeClient("ready");
+			const initial = modelControl(2, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			const conflicting = modelControl(2, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			const recovered = modelControl(3, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			let resolveEstablishing!: (response: ThreadReadResponse) => void;
+			let reads = 0;
+			client.on("thread/unsubscribe", () => ({}));
+			client.on("thread/read", () => {
+				reads += 1;
+				if (reads === 1) {
+					return new Promise<ThreadReadResponse>((resolve) => {
+						resolveEstablishing = resolve;
+					});
+				}
+				return modelControlReadResponse(recovered);
+			});
+			const service = createConversationService(client);
+			const store = createConversationStore();
+
+			const opening = store.getState().openProjected(service, "ref-1");
+			await vi.waitFor(() => expect(reads).toBe(1));
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: conflicting },
+			});
+			resolveEstablishing(modelControlReadResponse(initial));
+			await opening;
+
+			await vi.waitFor(() => {
+				expect(reads).toBe(2);
+				expect(store.getState().conversation?.modelControlState).toEqual({ kind: "ready", snapshot: recovered });
+			});
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
 	});
 

@@ -160,6 +160,22 @@ export function notificationTargetsThread(n: AnyNotification, model: ThreadModel
   return key.threadId === model.threadId;
 }
 
+export function applyModelControlNotification<M extends ThreadModel>(
+  model: M,
+  notification: Extract<AnyNotification, { method: "thread/model/controlChanged" }>,
+  now: number,
+): ReturnType<typeof reduceModelControl> {
+  if (!notificationTargetsThread(notification, model)) {
+    return { model, decision: "ignored", replacementReadRequired: false };
+  }
+  const result = reduceModelControl(model, {
+    kind: "snapshot",
+    source: "notification",
+    snapshot: notification.params.modelControl,
+  });
+  return { ...result, model: { ...result.model, lastFrameAt: now } };
+}
+
 // Replaces the turn identified by turnId with `fn(turn)`; turns not matching
 // pass through unchanged (same reference). The whole ARRAY is also unchanged
 // (same reference) when turnId names no turn in `turns` at all — every
@@ -435,13 +451,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     }
 
     case "thread/model/controlChanged": {
-      if (!notificationTargetsThread(n, model)) return model;
-      const result = reduceModelControl(model, {
-        kind: "snapshot",
-        source: "notification",
-        snapshot: n.params.modelControl,
-      });
-      return { ...result.model, lastFrameAt: now } as M;
+      return applyModelControlNotification(model, n, now).model as M;
     }
 
     case "thread/reasoning-effort/changed": {

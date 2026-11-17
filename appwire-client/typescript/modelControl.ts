@@ -97,6 +97,17 @@ export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelC
   };
 }
 
+export function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
+  return {
+    ...next,
+    modelControlState: held.modelControlState,
+    modelProvider: held.modelProvider,
+    model: held.model,
+    reasoningEffortLevels: held.reasoningEffortLevels,
+    supportsReasoning: held.supportsReasoning,
+  };
+}
+
 function recover(model: ThreadModel, replacementReadRequired: boolean): ModelControlReduction {
   if (model.modelControlState.kind === "recovering") {
     return { model, decision: "ignored", replacementReadRequired: false };

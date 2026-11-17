@@ -40,6 +40,7 @@ import type {
 import {
   acquireThreadSubscription,
   applyHistoryReadFailure,
+  applyModelControlNotification,
   applyNotification,
   applyReadResponse,
   buildComposerInput,
@@ -68,6 +69,7 @@ import {
   pruneBackgroundHistoryBodies,
   reduceModelControl,
   resolvePendingEscalation,
+  restoreHeldModelControl,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   sameModelControlAuthority as sharedSameModelControlAuthority,
@@ -1354,6 +1356,11 @@ type PendingThreadHydration = {
   // repair-clearing verdict: it does not touch the transcript index, so it
   // has no cross-kind repair verdict to order.
   readSequence: number;
+  // Model-control authority has one read owner per ref. A canonical tracked
+  // read advances this sequence; a watched read advances it only when no
+  // canonical owner exists, so an independent history refresh cannot replace
+  // the mutation binding.
+  modelControlReadSequence: number;
   modelControlRead?: ModelControlReadBinding;
   repairingRetired?: boolean;
 };
@@ -1378,6 +1385,7 @@ const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
 // the current value instead, so it cannot fence out a tracked read's repair
 // verdict.
 const threadReadSequences = new Map<string, number>();
+const modelControlReadSequences = new Map<string, number>();
 // Tracked-hydration attempts: one monotonically increasing counter per ref,
 // stamped onto each tracked pending and never reset. This is the currency the
 // Stop-cancellation unwind requires: only the ref's NEWEST attempt may unwind
@@ -4361,6 +4369,7 @@ interface ThreadHydration {
   response: ThreadReadResponse;
   fixtureNotifications: ReceivedTranscriptUpdate[];
   discardHeldHistory?: true;
+  modelControlRecoveryRequired?: true;
 }
 
 // The two hydration lifecycles read a ref the same way and differ in these
@@ -4375,17 +4384,20 @@ type HydrationRead = { kind: "thread"; signal?: AbortSignal } | { kind: "watched
 function replayQuarantinedModelControl(
   model: ThreadModel,
   notifications: readonly ReceivedTranscriptUpdate[],
-): ThreadModel {
+): { model: ThreadModel; replacementReadRequired: boolean } {
   const authority = modelControlAuthority(model);
-  if (!authority) return model;
+  if (!authority) return { model, replacementReadRequired: false };
   let replayed = model;
+  let replacementReadRequired = false;
   for (const update of notifications) {
     const notification = update.notification;
     if (notification.method !== "thread/model/controlChanged") continue;
     if (!sameModelControlAuthority(authority, notification.params.modelControl.authority)) continue;
-    replayed = applyNotification(replayed, notification, update.now);
+    const result = applyModelControlNotification(replayed, notification, update.now);
+    replayed = result.model;
+    replacementReadRequired ||= result.replacementReadRequired;
   }
-  return replayed;
+  return { model: replayed, replacementReadRequired };
 }
 
 async function readThreadHydration(
@@ -4520,16 +4532,18 @@ async function readThreadHydration(
   // can be enriched under recorded coverage, never replacing response-owned
   // overlay slots or replaying their already-represented deltas.
   const fixtureNotifications = pending.notifications.slice();
-  const cutModel = replayQuarantinedModelControl(
+  const replayedModelControl = replayQuarantinedModelControl(
     withoutResolvedEscalations(ref, pending, hydrated),
     fixtureNotifications,
   );
+  const cutModel = replayedModelControl.model;
   applyHydrationResponseCut(pending, ref, cutModel);
   return {
     model: cutModel,
     response,
     fixtureNotifications,
     ...(discardHeldHistory ? { discardHeldHistory: true } : {}),
+    ...(replayedModelControl.replacementReadRequired ? { modelControlRecoveryRequired: true } : {}),
   };
 }
 
@@ -4691,7 +4705,7 @@ function installModelControlReadBinding(
   const binding: ModelControlReadBinding = {
     client: pending.client,
     epoch: pending.epoch,
-    readSequence: pending.readSequence,
+    readSequence: pending.modelControlReadSequence,
     terminal,
     settle,
     settled: false,
@@ -4712,7 +4726,7 @@ function modelControlFenceCurrent(ref: string, client: AppwireClientLike, fence:
   return (
     getWiredClient() === client &&
     getReadyEpoch() === fence.clientGeneration &&
-    (threadReadSequences.get(ref) ?? 0) === fence.readGeneration &&
+    (modelControlReadSequences.get(ref) ?? 0) === fence.readGeneration &&
     current !== undefined &&
     sameModelControlAuthority(modelControlAuthority(current), fence.authority)
   );
@@ -4783,7 +4797,7 @@ async function waitForCurrentModelControl(ref: string): Promise<ThreadModel> {
     !client ||
     binding.client !== client ||
     binding.epoch !== getReadyEpoch() ||
-    binding.readSequence !== (threadReadSequences.get(ref) ?? 0)
+    binding.readSequence !== (modelControlReadSequences.get(ref) ?? 0)
   ) {
     throw new Error("Session model-control authority is not established by a current read");
   }
@@ -4792,7 +4806,7 @@ async function waitForCurrentModelControl(ref: string): Promise<ThreadModel> {
     modelControlReadBindings.get(ref) !== binding ||
     binding.client !== getWiredClient() ||
     binding.epoch !== getReadyEpoch() ||
-    binding.readSequence !== (threadReadSequences.get(ref) ?? 0)
+    binding.readSequence !== (modelControlReadSequences.get(ref) ?? 0)
   ) {
     throw new Error("Session model-control read was superseded");
   }
@@ -4821,20 +4835,29 @@ function startModelControlReplacementRead(
   client: AppwireClientLike,
   fence: ModelControlRequestFence,
 ): void {
+  startModelControlReplacementReadForGeneration(ref, client, fence.clientGeneration, fence.readGeneration);
+}
+
+function startModelControlReplacementReadForGeneration(
+  ref: string,
+  client: AppwireClientLike,
+  clientGeneration: number,
+  readGeneration: number,
+): void {
   if (
     getWiredClient() !== client ||
-    getReadyEpoch() !== fence.clientGeneration ||
-    (threadReadSequences.get(ref) ?? 0) !== fence.readGeneration ||
+    getReadyEpoch() !== clientGeneration ||
+    (modelControlReadSequences.get(ref) ?? 0) !== readGeneration ||
     trackedThreadModel(ref)?.modelControlState.kind !== "recovering"
   ) {
     return;
   }
   if (canonicalThreadOwnerActive(ref)) {
-    void refreshTrackedThread(client, fence.clientGeneration, ref, true, {
+    void refreshTrackedThread(client, clientGeneration, ref, true, {
       intent: hydrationIntentFor(ref),
     }).catch(() => {});
   } else if ((watchRefCounts.get(ref) ?? 0) > 0) {
-    void refreshWatchedThread(client, fence.clientGeneration, ref, true).catch(() => {});
+    void refreshWatchedThread(client, clientGeneration, ref, true).catch(() => {});
   }
 }
 
@@ -6112,6 +6135,8 @@ function beginThreadHydration(
   if (previousPending) retirePendingHydration(ref, previousPending, pendingThreadHydrations);
   const readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
   threadReadSequences.set(ref, readSequence);
+  const modelControlReadSequence = (modelControlReadSequences.get(ref) ?? 0) + 1;
+  modelControlReadSequences.set(ref, modelControlReadSequence);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
   // Capture the route BEFORE entryTranscriptRoute creates one: acceptance must
@@ -6134,6 +6159,7 @@ function beginThreadHydration(
     entryHistoryKey: entryRoute?.repository ? entryRoute.historyKey : undefined,
     entryHistoryGeneration: entryRoute?.repository ? (entryRoute.historyGeneration ?? 0) : undefined,
     readSequence,
+    modelControlReadSequence,
   };
   pendingThreadHydrations.set(ref, pending);
   installModelControlReadBinding(ref, pending, baseModel ?? model);
@@ -6163,6 +6189,14 @@ function beginWatchedHydration(
   } else {
     readSequence = threadReadSequences.get(ref) ?? 0;
   }
+  const canonicalOwner = canonicalThreadOwnerActive(ref);
+  let modelControlReadSequence: number;
+  if (canonicalOwner) {
+    modelControlReadSequence = modelControlReadSequences.get(ref) ?? 0;
+  } else {
+    modelControlReadSequence = (modelControlReadSequences.get(ref) ?? 0) + 1;
+    modelControlReadSequences.set(ref, modelControlReadSequence);
+  }
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
   const entryRoute = entryTranscriptRoute(ref);
@@ -6178,9 +6212,10 @@ function beginWatchedHydration(
     entryHistoryKey: entryRoute?.repository ? entryRoute.historyKey : undefined,
     entryHistoryGeneration: entryRoute?.repository ? (entryRoute.historyGeneration ?? 0) : undefined,
     readSequence,
+    modelControlReadSequence,
   };
   pendingWatchedHydrations.set(ref, pending);
-  if (!canonicalThreadOwnerActive(ref)) installModelControlReadBinding(ref, pending, baseModel ?? model);
+  if (!canonicalOwner) installModelControlReadBinding(ref, pending, baseModel ?? model);
   return pending;
 }
 
@@ -6325,7 +6360,12 @@ function publishThreadHydration(
     resumeOnlyFoldable: hydrated.resumeOnlyFoldable,
   });
   currentAppliedSequences.set(ref, currentAppliedSequences.get(ref) ?? 0);
-  putThreadModel(ref, backgroundModel);
+  const watchedModel = threadsStore.getState().watchedThreads.get(ref);
+  putThreadModels(
+    ref,
+    backgroundModel,
+    watchedModel ? restoreHeldModelControl(watchedModel, backgroundModel) : undefined,
+  );
   setCurrentThreadId(ref, backgroundModel.threadId);
   // The first authoritative publish ends the cached-shell window: the flag
   // and the gap rule's anchor live only from the shell's arming until this
@@ -6441,6 +6481,9 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  if (hydration.modelControlRecoveryRequired) {
+    startModelControlReplacementReadForGeneration(ref, pending.client, pending.epoch, pending.modelControlReadSequence);
+  }
   pruneConsumedQueueRows(ref, published);
   const snapshotCurrent =
     mutationStateGeneration === undefined || (mutationStateGenerations.get(ref) ?? 0) === mutationStateGeneration;
@@ -6709,7 +6752,7 @@ async function publishAndReconcileThreadHydration(
 function publishWatchedHydration(
   ref: string,
   pending: PendingThreadHydration,
-  model: ThreadModel,
+  hydration: ThreadHydration,
   includeTurns: boolean,
   generation: number,
 ): ThreadModel | null {
@@ -6723,17 +6766,23 @@ function publishWatchedHydration(
   if (getReadyEpoch() !== pending.epoch) return null;
 
   const live = threadsStore.getState().watchedThreads.get(ref);
-  const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
+  const replayed = replayHydrationNotifications(preserveLiveActiveTurn(hydration.model, live), pending.notifications);
+  const canonical = threadsStore.getState().threads.get(ref);
+  const published =
+    canonicalThreadOwnerActive(ref) && canonical ? restoreHeldModelControl(replayed.model, canonical) : replayed.model;
   settleModelControlRead(pending.modelControlRead, {
-    kind: replayed.model.modelControlState.kind === "ready" ? "ready" : "failed",
-    ...(replayed.model.modelControlState.kind === "ready"
+    kind: published.modelControlState.kind === "ready" ? "ready" : "failed",
+    ...(published.modelControlState.kind === "ready"
       ? {}
       : { error: new Error("Thread read did not establish model-control authority") }),
   } as ModelControlReadOutcome);
   retirePendingHydration(ref, pending, pendingWatchedHydrations);
-  storeWatchedModel(ref, replayed.model, includeTurns, generation);
-  settleOwnedHydration("watched", ref, replayed.model);
-  return replayed.model;
+  storeWatchedModel(ref, published, includeTurns, generation);
+  settleOwnedHydration("watched", ref, published);
+  if (hydration.modelControlRecoveryRequired && !canonicalThreadOwnerActive(ref)) {
+    startModelControlReplacementReadForGeneration(ref, pending.client, pending.epoch, pending.modelControlReadSequence);
+  }
+  return published;
 }
 
 // Fold one notification into matching models; real-pane updates also append
@@ -7377,8 +7426,11 @@ function handleNotification(n: AnyNotification): void {
       // reconnect that lands before this read resolves is already handled.
       for (const ref of new Set([...invalidatedThreadRefs, ...recoveringThreadRefs]))
         void refreshTrackedThread(client, epoch, ref, true, { intent: hydrationIntentFor(ref) });
-      for (const ref of new Set([...invalidatedWatchedRefs, ...recoveringWatchedRefs]))
-        void refreshWatchedThread(client, epoch, ref, true);
+      const watchedRefreshRefs = new Set(invalidatedWatchedRefs);
+      for (const ref of recoveringWatchedRefs) {
+        if (!canonicalThreadOwnerActive(ref)) watchedRefreshRefs.add(ref);
+      }
+      for (const ref of watchedRefreshRefs) void refreshWatchedThread(client, epoch, ref, true);
     }
   }
 }
@@ -7744,10 +7796,10 @@ async function refreshWatchedThread(
   );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
-    ({ model }) =>
-      isDiscardedReadResult(pending, model)
+    (result) =>
+      isDiscardedReadResult(pending, result.model)
         ? (pending.baseModel ?? null)
-        : publishWatchedHydration(ref, pending, model, includeTurns, generation),
+        : publishWatchedHydration(ref, pending, result, includeTurns, generation),
   );
   const hasPublishedModel = threadsStore.getState().watchedThreads.has(ref);
   const hasSufficientPublishedModel =
@@ -8716,7 +8768,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         kind: "watched",
         includeTurns: needTurns,
       })
-        .then(({ model }) => publishWatchedHydration(ref, pending, model, needTurns, generation))
+        .then((result) => publishWatchedHydration(ref, pending, result, needTurns, generation))
         .finally(() => {
           retirePendingHydration(ref, pending, pendingWatchedHydrations);
         });
@@ -9306,7 +9358,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const fence: ModelControlRequestFence = {
       authority,
       clientGeneration: getReadyEpoch(),
-      readGeneration: threadReadSequences.get(ref) ?? 0,
+      readGeneration: modelControlReadSequences.get(ref) ?? 0,
     };
     const clientMutationId = createSecureUUID();
     let rawResponse: unknown;

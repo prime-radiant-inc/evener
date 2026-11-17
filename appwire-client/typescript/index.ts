@@ -540,6 +540,7 @@ export {
   modelControlDisplay,
   modelControlRecoveryInput,
   reduceModelControl,
+  restoreHeldModelControl,
   sameModelControlAuthority,
   validateThreadModelSetResponse,
 } from "./modelControl";
@@ -561,6 +562,7 @@ export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";
 export {
+  applyModelControlNotification,
   applyNotification,
   applyOverlayEndForTranscriptHandoff,
   notificationRoutingKey,
