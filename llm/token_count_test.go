@@ -1528,3 +1528,69 @@ func TestEstimateImageTokens_LocalPathFallbacks(t *testing.T) {
 		})
 	}
 }
+
+// A caller that prices messages one at a time — a session walking its own turn
+// history, so it need not project that history into a []Message first (#6439) —
+// must get exactly what pricing the whole list gives. The two differ only in
+// where the loop lives, so any difference here is the per-message path pricing
+// something the list path does not.
+func TestTokenPartEstimatorMatchesMessageList(t *testing.T) {
+	t.Parallel()
+	image := testPNG1024()
+	messages := []Message{
+		System("you are a test"),
+		User("read the configuration and report the section it names"),
+		{Role: RoleAssistant, Content: []ContentPart{{
+			Kind: ContentToolCall,
+			ToolCall: &ToolCallData{
+				ID: "call_1", Name: "read_file",
+				Arguments: []byte(`{"path":"config/section-1.yaml"}`),
+			},
+		}}},
+		{Role: RoleTool, ToolCallID: "call_1", Content: []ContentPart{{
+			Kind: ContentToolResult,
+			ToolResult: &ToolResultData{
+				ToolCallID: "call_1", Name: "read_file",
+				Content: strings.Repeat("section: value\n", 32),
+			},
+		}}},
+		{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("t", 400)}},
+			{Kind: ContentThinking, Thinking: &ThinkingData{
+				EncryptedContent: `[{"type":"reasoning.text","text":"","signature":"sig"}]`,
+				Text:             strings.Repeat("s", 200),
+			}},
+			{Kind: ContentText, Text: "the file declares three keys"},
+		}},
+		{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{Data: image, MediaType: "image/png"}},
+		}},
+		{}, // an empty message: no role, no parts, no bytes
+	}
+	targets := []struct {
+		name string
+		res  registry.Resolved
+	}{
+		{name: "anthropic", res: registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}},
+		{name: "openai responses", res: registry.Resolved{Instance: "openai", Protocol: registry.ProtocolOpenAIResponses}},
+		{name: "openai chat", res: registry.Resolved{Instance: "gw", Protocol: registry.ProtocolOpenAIChat}},
+		{name: "zero row", res: registry.Resolved{}},
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			t.Parallel()
+			want := EstimateMessageInputTokenPartsForResolved(target.res, messages)
+			estimator := TokenPartEstimatorFor(target.res)
+			var got TokenParts
+			for _, m := range messages {
+				got = got.Add(estimator.Parts(m))
+			}
+			if got != want {
+				t.Fatalf("per-message parts = %+v, want %+v", got, want)
+			}
+			if listTokens := EstimateMessagesInputTokensForResolved(target.res, messages).Tokens; got.Total() != listTokens {
+				t.Fatalf("per-message total = %d, want %d", got.Total(), listTokens)
+			}
+		})
+	}
+}

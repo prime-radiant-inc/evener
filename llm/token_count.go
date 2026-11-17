@@ -154,6 +154,33 @@ func EstimateMessageInputTokenPartsForResolved(res registry.Resolved, messages [
 	return parts
 }
 
+// TokenPartEstimator prices messages one at a time for ONE resolved target, so a
+// caller that walks its own list — a session's turn history, say — does not have
+// to project it into a []Message first and pay for that list on every reading
+// (#6439). See TestTokenPartEstimatorMatchesMessageList, which pins that it
+// prices exactly what EstimateMessageInputTokenPartsForResolved prices.
+//
+// Summing Parts over a list and calling Total once gives that function's answer
+// for the list, for the same reason EstimateMessageInputTokenPartsForResolved
+// can be added to a prefix: the chars are summed first and divided by four once.
+type TokenPartEstimator struct {
+	target targetInfo
+}
+
+// TokenPartEstimatorFor returns a per-message pricer for res. Building one reads
+// the resolved row, so a caller prices a list with one estimator rather than one
+// per message.
+func TokenPartEstimatorFor(res registry.Resolved) TokenPartEstimator {
+	return TokenPartEstimator{target: targetFromResolved(res, "", "")}
+}
+
+// Parts returns m's share of the estimate: its char count and its count of parts
+// billed at a fixed token price.
+func (e TokenPartEstimator) Parts(m Message) TokenParts {
+	chars, counted := estimateMessageInputParts(e.target, m)
+	return TokenParts{Chars: chars, Counted: counted}
+}
+
 // TokenParts is the additive decomposition of a local token estimate.
 type TokenParts struct {
 	// Chars is the summed character count, divided by four once in Total.

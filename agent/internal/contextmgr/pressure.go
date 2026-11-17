@@ -362,16 +362,28 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 // projects the turns the way the request builder does and returns the chars and
 // fixed-price token counts the estimate is built from. Summing parts across
 // slices and calling Total once gives exactly the whole-slice answer.
+//
+// The walk prices each turn as it goes rather than projecting the history into a
+// []llm.Message and pricing that list. The intermediate list was a full copy of
+// the conversation on every reading — one allocation of len(turns) messages —
+// and the request path reads this estimate several times per round, so it
+// removed nothing the estimate needed (#6439). The per-message arithmetic and
+// the single divide-by-four are unchanged: see llm.TokenPartEstimator.
 func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
-	messages := make([]llm.Message, 0, len(turns))
+	estimator := llm.TokenPartEstimatorFor(res)
+	var parts llm.TokenParts
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
 			continue
 		}
-		messages = append(messages, llm.TrimThinkingForReplayMessage(t.Message, dropPlainThinking))
+		message := t.Message
+		if dropPlainThinking {
+			message = llm.TrimThinkingForReplayMessage(message, true)
+		}
+		parts = parts.Add(estimator.Parts(message))
 	}
-	return llm.EstimateMessageInputTokenPartsForResolved(res, messages)
+	return parts
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {
