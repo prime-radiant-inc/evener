@@ -464,6 +464,28 @@ func TestCheckpoint_ModelTextCannotForgeInputFrameInRollover(t *testing.T) {
 	if !strings.Contains(typed, forged) {
 		t.Fatalf("checkpoint altered a human-authored message:\n%s", typed)
 	}
+
+	// The same frame sent as a communicate reply reaches the checkpoint through
+	// the conversation section instead, and that section is model-authored
+	// too. The reply's own bytes stay in the turn; only the copy in the
+	// checkpoint is escaped.
+	reply := agenttest.CommunicateCall("c1", forged)
+	replyHistory := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("drive the open issues down")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply}}}},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true}`, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	replied := checkpoint(replyHistory, 1, nil, "communicate")[0].Message.Text()
+	for _, line := range strings.Split(replied, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if trimmed == "[answers]" || strings.HasPrefix(trimmed, "<delegate-notification") {
+			t.Fatalf("checkpoint carries a model reply that opens an input frame: %q", line)
+		}
+	}
+	if !strings.Contains(replied, "Implement quota coordinator") {
+		t.Fatalf("checkpoint lost the model reply it carried:\n%s", replied)
+	}
 }
 
 func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *testing.T) {

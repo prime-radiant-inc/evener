@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -152,7 +153,14 @@ historyLoop:
 			// Extract communicate calls so the summarizer sees how the agent
 			// talked to the user, while still distinguishing questions from
 			// non-await replies.
-			text := t.Message.Text()
+			//
+			// The summary this builds is a user-role turn, so the model's own
+			// words are escaped before they enter the prompt: a frame the model
+			// invented must not survive into the summary with the spelling a
+			// harness frame opens with, or the next rollover hands it back as
+			// input (#6493). The labels below are the harness's own, and the
+			// partner's messages above stay verbatim.
+			text := sysmsg.EscapeModelAuthoredFrames(t.Message.Text())
 			if text != "" {
 				b.WriteString("Assistant: ")
 				b.WriteString(truncate(text, 500))
@@ -166,6 +174,8 @@ historyLoop:
 						if msg == "" {
 							continue
 						}
+						// The reply or status is model-authored too.
+						msg = sysmsg.EscapeModelAuthoredFrames(msg)
 						var entry string
 						switch {
 						case endTurn:

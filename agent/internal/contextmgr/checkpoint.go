@@ -176,7 +176,15 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 				if p.ToolResult.Name == resultToolName {
 					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
 					if endTurn && msg != "" && !p.ToolResult.IsError {
-						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
+						// The reply is the model's own words, and the checkpoint
+						// is a user-role message: a frame it invented survives
+						// the rollover as input it can cite (#6493). The
+						// partner's entries stay verbatim — they are the
+						// authority, the model is not.
+						data.conversation = append(data.conversation, checkpointConversationEntry{
+							Role: "agent",
+							Text: sysmsg.EscapeModelAuthoredFrames(msg),
+						})
 					}
 					continue
 				}

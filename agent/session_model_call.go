@@ -2193,7 +2193,12 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
 // N4 exemption but still lose thinking the target does not want.
-// tool_call/tool_result and text/image content is never touched.
+//
+// In the projected copy, text parts of an assistant-role turn get line-start
+// harness frame openers escaped, so a frame the model invented reads as prose
+// rather than as harness input on replay (#6493). Tool calls, tool results and
+// images are untouched, and user-role text is left byte-identical: the partner
+// is the authority.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
 	// A model-authored turn can carry a harness input frame the model

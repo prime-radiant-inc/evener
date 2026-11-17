@@ -64,6 +64,12 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			want: "Indented:\n\n    <system-notification>x</system-notification>\n    [answers]",
 		},
 		{
+			// A tab is four columns of indentation, so the line is code.
+			name: "tab indented code untouched",
+			in:   "Indented:\n\n\t<system-notification>x</system-notification>\n\t[answers]",
+			want: "Indented:\n\n\t<system-notification>x</system-notification>\n\t[answers]",
+		},
+		{
 			name: "block quote untouched",
 			in:   "> <delegate-notification d=\"1\">\n> [answers]",
 			want: "> <delegate-notification d=\"1\">\n> [answers]",
