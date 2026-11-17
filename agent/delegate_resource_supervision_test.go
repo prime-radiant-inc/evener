@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -1703,6 +1704,71 @@ func TestDelegateResourceSupervision_LateCancellationBeatsSettlementSteer(t *tes
 	assertStableSupervisionOutcome(t, root, fixture.delegateID, delegatestore.OutcomeCancelled)
 }
 
+// closeGraceArmClock signals the instant a job manager arms its closeGrace
+// deadline. BlockUntil(n) accepts ANY parked waiter, and this fixture's clock
+// is the whole session tree's clock: a child session keeps its own tickers and
+// retry AfterFuncs on it (delegate_quiet_watch.go's 30s quiet ticker,
+// session_worktree_relock.go's 1s lane ticker, the attention retry chain), so
+// waiting for "one more waiter than I sampled" can be satisfied by one of
+// those instead of the deadline closeRuntimeState arms. Advancing then moves
+// virtual time past a deadline that does not exist yet, and the close parks on
+// it forever (#6561). This waits on the arm itself, which no other timer can
+// satisfy.
+type closeGraceArmClock struct {
+	*agenttest.FakeClock
+	grace time.Duration
+	armed chan struct{}
+	once  sync.Once
+}
+
+func newCloseGraceArmClock(grace time.Duration) *closeGraceArmClock {
+	return &closeGraceArmClock{
+		FakeClock: agenttest.NewFakeClock(),
+		grace:     grace,
+		armed:     make(chan struct{}),
+	}
+}
+
+func (c *closeGraceArmClock) NewTimer(d time.Duration) clock.Timer {
+	// Register the waiter BEFORE signalling: the signal says "the deadline
+	// exists", so the test's Advance must find it parked. Signalling first
+	// leaves a window where Advance fires against an unarmed clock and the
+	// deadline is then armed past the advance, reintroducing the very hang
+	// this replaces.
+	timer := c.FakeClock.NewTimer(d)
+	if d == c.grace {
+		c.once.Do(func() { close(c.armed) })
+	}
+	return timer
+}
+
+// errCloseGraceNeverArmed reports a close that neither armed its deadline nor
+// settled. It is deliberately not the abandon error: the test's assertion then
+// fails on this value rather than the wait parking forever.
+var errCloseGraceNeverArmed = errors.New("closeRuntimeState neither armed its closeGrace deadline nor settled")
+
+// awaitCloseSettled arms the deadline and reports the close's result. It
+// advances virtual time only once the deadline exists, so the advance can never
+// run before there is something to fire. A close that settles without a
+// deadline (nothing was still running) reports that result unchanged.
+//
+// The caller runs this on the fatal-run goroutine, so the stall path returns a
+// sentinel error the test's own assertion reports, rather than calling Fatal
+// off the test goroutine.
+func (c *closeGraceArmClock) awaitCloseSettled(closeResult <-chan error) error {
+	select {
+	case <-c.armed:
+		c.Advance(c.grace)
+		return <-closeResult
+	case err := <-closeResult:
+		return err
+	// TRIPWIRE: the deadline is armed synchronously once the running-job wait
+	// begins, so 30s only fires on a genuine stall, not on host load.
+	case <-time.After(30 * time.Second):
+		return errCloseGraceNeverArmed
+	}
+}
+
 type asynchronousCleanupStreamingExecutor struct {
 	marker         string
 	signalReturned chan struct{}
@@ -1936,7 +2002,10 @@ func TestDelegateResourceSupervision_FatalCleanupFailureIsObservable(t *testing.
 }
 
 func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailure(t *testing.T) {
-	clock := agenttest.NewFakeClock()
+	const closeGrace = time.Second
+	// The child session keeps its own waiters on this clock, so the close is
+	// paced by its own deadline arming, not by a count of parked waiters.
+	clk := newCloseGraceArmClock(closeGrace)
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal close-abandon turn", nil, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -1950,7 +2019,7 @@ func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailu
 	client.Register(adapter)
 	fixture.client = client
 	finalStatePublished := make(chan struct{})
-	root := restoreSupervisionRoot(t, fixture, clock)
+	root := restoreSupervisionRoot(t, fixture, clk.FakeClock)
 	root.cfg.testOnly.subagentAfterFinalStatePublish = func(*subagent) {
 		close(finalStatePublished)
 	}
@@ -1975,19 +2044,19 @@ func TestDelegateResourceSupervision_RootCloseBeforeReceiptCaptureIsCleanupFailu
 		t.Fatalf("start close-abandon owned shell = %#v", ownedShell)
 	}
 	jm := sub.sess.jobManager
-	jm.closeGrace = time.Second
+	jm.closeGrace = closeGrace
+	// Observe the child manager's own deadline arm on the same virtual time the
+	// fixture's sessions already use.
+	jm.clock = clk
 	var closeErr error
 	var closeOnce sync.Once
 	jm.stopReceiptsAfterCapture = func() {
 		closeOnce.Do(func() {
-			blockedBeforeClose := clock.BlockedCount()
 			closeResult := make(chan error, 1)
 			go func() {
 				closeResult <- jm.closeRuntimeState(context.Background())
 			}()
-			clock.BlockUntil(blockedBeforeClose + 1)
-			clock.Advance(time.Second)
-			closeErr = <-closeResult
+			closeErr = clk.awaitCloseSettled(closeResult)
 		})
 	}
 	close(release)
