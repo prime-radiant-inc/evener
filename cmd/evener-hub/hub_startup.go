@@ -859,22 +859,12 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	goBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	goBackground(func() { watchHubRoster(ctx, roster) })
 
-	goBackground(func() {
-		ticker := time.NewTicker(cfg.PastIndexRebuild)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, _ = past.Rebuild()
-			}
-		}
-	})
-
-	// Message search refresher: re-reads the transcripts that changed on the
-	// past index's rebuild interval (S14).
-	goBackground(func() { refreshHubMessageSearch(ctx, r.messageSearch, past, cfg.PastIndexRebuild) })
+	// Past index and message search share one tick, and a tick skips both when
+	// no session file moved since the last pass: their inputs are the same
+	// projects tree, and re-reading it unchanged was the hub's largest idle
+	// cost (#6424). The interval is unchanged, so a new session, message or
+	// index entry is still visible within the same bound.
+	goBackground(func() { newHubPastSweep(past, r.messageSearch).run(ctx, cfg.PastIndexRebuild) })
 
 	// Snapshot wake: derives each live session's attention level from the same
 	// remote-inclusive metas/live the sidebar tree uses (see
