@@ -243,11 +243,11 @@ export function Markdown({ source, live = false, ref }: MarkdownProps) {
   // stale output) while only the bounded tail window re-parses per render, so
   // formatting still previews while streaming. splitLiveWindow (segments.ts)
   // owns the soundness gate: it declines (returns null) whenever the split
-  // could change the parse - a link definition, a table delimiter, a block
-  // construct or HTML block spanning the boundary, an open fence - and that
-  // fallback below is exactly the pre-throttle full parse. Settled renders
-  // (live=false) always take the settled full-parse path unchanged, so the
-  // final HTML is byte-identical with or without this throttle.
+  // could change the parse - a link definition or HTML block spanning the
+  // boundary, or a list in the head that the tail's first line would extend -
+  // and that fallback below is exactly the pre-throttle full parse. Settled
+  // renders (live=false) always take the settled full-parse path unchanged, so
+  // the final HTML is byte-identical with or without this throttle.
   const headCacheRef = useRef<{ headSource: string; headHtml: string } | null>(null);
   // Backs the head-side gate verdicts splitLiveWindow caches: keyed on the
   // head's own exact text, never stale, misses evaluate once.
