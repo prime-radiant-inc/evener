@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"syscall"
@@ -38,6 +39,10 @@ type runCLIFlags struct {
 }
 
 func main() {
+	// Before any work: the collector's target for the whole process, both the
+	// one-shot run below and the long-lived `serve` and `hub` subcommands.
+	_, operatorSet := os.LookupEnv("GOGC")
+	tuneGCTarget(operatorSet, debug.SetGCPercent)
 	mainWithDeps(defaultMainDeps())
 }
 
