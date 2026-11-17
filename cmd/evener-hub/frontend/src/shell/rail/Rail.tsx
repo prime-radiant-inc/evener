@@ -1001,8 +1001,11 @@ function NavigationRail({
   const liveNodes = [
     // Live answers "who needs me" before "which machine": its rows sit in
     // attention bands in every grouping mode, and a row names its host only
-    // where it is not the one most of Live runs on (liveBandNodes).
-    ...liveBandNodes(liveBands, displaySources, isExpanded),
+    // where it is not the one most of Live runs on (liveBandNodes). The
+    // needs-you section's own overflow rides inside its band: the band shows
+    // the hub's tier, so the sessions its loaded pages have not reached are
+    // the band's business and no one else's.
+    ...liveBandNodes(liveBands, displaySources, isExpanded, resources.needsYouOverflow),
     ...sectionOverflowNode(
       "section:live",
       "live",

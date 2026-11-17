@@ -65,10 +65,14 @@ order:
   warning or restart, oldest first within each. This is the hub's own
   needs-you order, so the band reads in the order Next needs you walks it.
   The band also shows needs-you sessions that Live's loaded pages have not
-  reached, so a session that needs a person is never behind "+N older", and
-  it shows every row of the hub's tier, including one the rail files as
-  archived by age: the tier never decays, and Next needs you walks these
-  rows. The header's chip is a second number: it is the hub's attention
+  reached, so a session that needs a person is never behind Live's own
+  "+N older" row. The band pages the tier itself: while the hub lists
+  needs-you sessions in pages the rail has not read, the band ends with its
+  own "+N older" row, inside its fold, and that row is not a session, so
+  neither the band's count nor its fold grows with it. The band shows every
+  row of the hub's tier, including one the rail files as archived by age: the
+  tier never decays, and Next needs you walks these rows. The header's chip
+  is a second number: it is the hub's attention
   summary, which files a failed session under its own error count while the
   band lists it here, so a failed session shows in the band without adding to
   the chip. The two sections are read separately; while the needs-you section
