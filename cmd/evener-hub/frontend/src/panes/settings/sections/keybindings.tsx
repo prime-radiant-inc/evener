@@ -40,11 +40,13 @@ import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, use
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
+import { usePaneDocument } from "../../../shell/paneDocument";
 import { connectionStore } from "../../../stores/connection";
 import { type KeybindingsStoreState, keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { Button, Chip, InlineNotice, Input, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useDismissOnOutsidePress } from "../../../widgets/internal/useDismissOnOutsidePress";
 import styles from "./keybindings.module.css";
 
 const CLASS = {
@@ -130,8 +132,12 @@ interface CaptureBoxProps {
 }
 
 // Searching or folding the editor changes visibility, not the captured chord.
+// Reads nodeType rather than `instanceof Element`: a Dockview popout has its own
+// constructors, and its nodes fail an opener-realm instanceof, which would make
+// every press in a popped-out Settings pane look like an outside press.
 function isShortcutNavigation(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest("[data-keybinding-navigation]") !== null;
+  const node = target as Node | null;
+  return node !== null && node.nodeType === 1 && (node as Element).closest("[data-keybinding-navigation]") !== null;
 }
 
 /** The capture widget: a focusable box that consumes EVERY keydown while it
@@ -156,6 +162,17 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
   const [error, setError] = useState<string | null>(null);
   const writable = useKeybindingsStore(canWriteOverrides);
   const boxRef = useRef<HTMLDivElement>(null);
+  // The document the box lives in: a Settings pane moved to a Dockview popout
+  // keeps its own document, and the dismissal below must follow the box there.
+  const ownerDocument = usePaneDocument();
+  // Set by the dismissal hook while an outside press is in flight. onBlur
+  // reads it: the browser moves focus as mousedown's default action, so a
+  // press on a focusable control below the box blurs the box BEFORE the
+  // release. Collapsing on that blur is the very press-time reflow this
+  // click-time dismissal avoids (a real-browser check: the row grows ~15px
+  // mid-press and the control under the pointer never receives its click), so
+  // the blur waits and the completed click dismisses instead.
+  const pressInFlight = useRef(false);
   // A save is a hub round trip; keypresses that land while it is in flight
   // are ignored rather than queued into a second patch.
   const savingRef = useRef(false);
@@ -166,27 +183,50 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
 
   // Click-away cancels even when the click target is not focusable: onBlur
   // alone only fires when focus MOVES (to another control), so clicking
-  // non-focusable text or empty space would leave the capture live. A
-  // document-level pointerdown in the capture phase sees every press,
-  // wherever it lands; a press outside the box cancels with refocus:false
-  // (focus goes where the user put it - or stays, for a non-focusable
-  // target). The listener dies with the box (unmount on cancel/save).
-  useEffect(() => {
-    if (!active) return;
-    function onPointerDown(event: PointerEvent): void {
+  // non-focusable text or empty space would leave the capture live.
+  //
+  // The dismissal runs on the COMPLETED click, not the press. The capture box
+  // is the row's IN-FLOW replacement for its buttons and is shorter than they
+  // are, so collapsing it at the press re-grows the row before the release and
+  // every control below the box moves out from under the pointer - the control
+  // the reader aimed at never receives its click. That is exactly the rule
+  // useDismissOnOutsidePress states for its "click" mode, so this uses that
+  // hook rather than a second listener: the press origin, the deferred
+  // fallback for a control that stops its own click's propagation, and the
+  // teardown stay in one place. A click only fires when press and release
+  // share a target, so a drag or a cancelled press has no click to complete:
+  // the capture stays live only while focus is still in the box or on a
+  // shortcut-navigation control, and otherwise cancels on a later task.
+  //
+  // A press outside still cancels once its click completes, with
+  // refocus:false: focus goes where the reader put it - or stays, for a
+  // non-focusable target. Shortcut-navigation targets are INSIDE here, because
+  // searching or folding the editor changes visibility, not the captured
+  // chord. The listener dies with the box (unmount on cancel/save).
+  useDismissOnOutsidePress({
+    ownerDocument,
+    enabled: active,
+    when: "click",
+    pressInFlight,
+    // Same realm reasoning as isShortcutNavigation: `instanceof Node` is false
+    // for a popout's nodes, so the box's own contents would read as outside.
+    isInside: (target) =>
+      (target !== null && boxRef.current?.contains(target as Node) === true) || isShortcutNavigation(target),
+    onDismiss: () => onCancel(false),
+    // The press held this box's blur open for a click that never came (a drag,
+    // a cancelled press, a scroll taking over). The browser still moved focus,
+    // so the box is open and unfocused, intercepting keys with no visible
+    // owner. Cancel, unless focus is still in the box or on a
+    // shortcut-navigation control, which are both live parts of the editor.
+    onPressSpentUnclicked: () => {
+      if (!active) return;
+      const focused = ownerDocument?.activeElement ?? null;
       const box = boxRef.current;
-      if (
-        box !== null &&
-        event.target instanceof Node &&
-        !box.contains(event.target) &&
-        !isShortcutNavigation(event.target)
-      ) {
-        onCancel(false);
-      }
-    }
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [active, onCancel]);
+      if (box !== null && focused !== null && box.contains(focused)) return;
+      if (isShortcutNavigation(focused)) return;
+      onCancel(false);
+    },
+  });
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // IME composition keydowns are not presses: during composition events
@@ -250,10 +290,11 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
 
   return (
     <div className={CLASS.captureWrap}>
-      {/* Clicking away cancels: the box is modal-ish, and focus leaving it
-          (another row's chord button, the toggle) ends the capture via
-          onBlur; the pointerdown listener above covers clicks that never
-          move focus (non-focusable text, empty space). The
+      {/* Clicking away cancels: the box is modal-ish. A press outside - on a
+          focusable control or on plain text - ends the capture on that press's
+          COMPLETED click, and the blur it triggers is held in between. Only a
+          focus move with no press behind it, such as Tab, ends it via onBlur.
+          The
           textbox role names what it is - a keyboard-capture surface in the
           spirit of HotkeyRecorder's input; aria-readonly because every key
           is intercepted rather than typed. */}
@@ -269,7 +310,10 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onBlur={(event) => {
-          if (active && !isShortcutNavigation(event.relatedTarget)) onCancel(false);
+          // A focus move caused by an outside press is resolved by that
+          // press's completed click (above), so it must not collapse here. A
+          // keyboard focus move (Tab) has no press behind it and cancels now.
+          if (active && !pressInFlight.current && !isShortcutNavigation(event.relatedTarget)) onCancel(false);
         }}
       >
         {captured !== null ? (

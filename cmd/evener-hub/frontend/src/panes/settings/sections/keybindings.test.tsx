@@ -363,6 +363,17 @@ async function enterCapture(title: string): Promise<HTMLElement> {
   return captureBox();
 }
 
+/** A completed press-and-release on `target`. The capture dismisses on the
+ * CLICK, not the press: collapsing the in-flow box at the press re-grows the
+ * row before the release and moves the control under the pointer away from it. */
+function clickAway(target: Element): void {
+  fireEvent.pointerDown(target);
+  fireEvent.mouseDown(target);
+  fireEvent.pointerUp(target);
+  fireEvent.mouseUp(target);
+  fireEvent.click(target);
+}
+
 // Clearing a capture when hubError/hubLoading changes loses the proposal;
 // allowing Enter before the read settles can resend an uncertain mutation.
 test.each(["rejected", "response-lost"] as const)(
@@ -788,39 +799,192 @@ test("a non-ASCII character records verbatim; ASCII letters still normalize to u
   });
 });
 
-// Click-away cancels even when the click target cannot take focus: onBlur
-// alone only fires when focus MOVES, so a document-level pointerdown listener
-// (capture phase) covers non-focusable clicks while the capture is live.
-test("pointerdown outside the capture box cancels without refocusing the chord button", async () => {
+// The capture box is the row's IN-FLOW replacement for its buttons and is
+// shorter than they are (keybindings.module.css: `.capture` is about 29px;
+// the row buttons it replaces sit at the 44px --tap-min floor). Collapsing it
+// at the press re-grows the row BEFORE the release, so every control below
+// the box moves out from under the pointer and the control the reader aimed
+// at never receives its click.
+//
+// jsdom evaluates no layout, so the geometry cannot be asserted here. What IS
+// proven is the ordering the geometry depends on: the press does not cancel
+// (nothing collapses while the button is still held down), and the completed
+// click both reaches the control below - here the next row's chord button, so
+// its own capture opens - and cancels the abandoned one.
+test("a press outside the capture box does not cancel while the press is in flight, and its click reaches the control below", async () => {
   const client = await wireEditableClient();
   renderEditor();
   const box = await enterCapture("Open the command palette");
-
   fireEvent.keyDown(box, { key: "p", ctrlKey: true });
-  fireEvent.pointerDown(document.body);
 
-  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+  // The control below the box: the next row's chord button. A press moves
+  // focus to it as mousedown's default action, after every listener, which is
+  // why the onBlur path must hold for a press too.
+  const target = within(rowFor("Toggle the sidebar")).getByRole("button", {
+    name: "Change the shortcut for Toggle the sidebar",
+  });
+  fireEvent.pointerDown(target);
+  fireEvent.mouseDown(target);
+  // jsdom's fireEvent performs no default action, so the test performs the
+  // focus move the browser would: without it this test would pass even with
+  // the blur path collapsing the box, and would prove nothing about the hold.
+  act(() => {
+    target.focus();
+  });
+
+  // Still capturing, proposal intact: nothing has collapsed yet, so in a
+  // browser the control under the pointer is still there to take the release.
+  expect(captureBox()).toBe(box);
+  expect(keysOf(box)).toEqual(["Ctrl", "P"]);
+
+  // The release completes a click on that control, which runs its own handler
+  // first: the pressed row is capturing now. The abandoned proposal is gone
+  // and no write happened.
+  fireEvent.pointerUp(target);
+  fireEvent.mouseUp(target);
+  fireEvent.click(target);
+
+  const openedBox = captureBox();
+  expect(openedBox).not.toBe(box);
+  expect(document.activeElement).toBe(openedBox);
   expect(patchCallsOf(client)).toHaveLength(0);
   const row = rowFor("Open the command palette");
   expect(within(row).getByText("K")).toBeTruthy();
-  // refocus:false - a click-away cancel leaves focus where the user put it,
-  // unlike the keyboard cancel which returns focus to the chord button.
-  expect(document.activeElement).not.toBe(
-    within(row).getByRole("button", { name: "Change the shortcut for Open the command palette" }),
-  );
 });
 
-test("pointerdown INSIDE the capture box does not cancel", async () => {
+test("a completed click INSIDE the capture box does not cancel", async () => {
   await wireEditableClient();
   renderEditor();
   const box = await enterCapture("Open the command palette");
 
   fireEvent.pointerDown(box);
+  fireEvent.mouseDown(box);
+  fireEvent.pointerUp(box);
+  fireEvent.mouseUp(box);
+  fireEvent.click(box);
 
   expect(captureState(captureBox())).toBe("idle");
 });
 
-test("the outside-pointerdown listener is removed when the capture closes", async () => {
+// onBlur alone only fires when focus MOVES (to another control), so a press on
+// plain text or empty space has no blur to cover it. The document listener is
+// the only cover there, and it must still dismiss - on the click.
+test("a press on a non-focusable target outside the box still cancels on its completed click", async () => {
+  await wireEditableClient();
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+
+  const text = document.createElement("p");
+  text.textContent = "not focusable";
+  document.body.append(text);
+  try {
+    fireEvent.pointerDown(text);
+    fireEvent.mouseDown(text);
+    // Nothing has blurred, and the press alone has not cancelled.
+    expect(captureBox()).toBe(box);
+    fireEvent.pointerUp(text);
+    fireEvent.mouseUp(text);
+    fireEvent.click(text);
+    expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+    // refocus:false - a click-away cancel leaves focus where the user put it,
+    // unlike the keyboard cancel which returns focus to the chord button.
+    expect(document.activeElement).not.toBe(
+      within(rowFor("Open the command palette")).getByRole("button", {
+        name: "Change the shortcut for Open the command palette",
+      }),
+    );
+  } finally {
+    text.remove();
+  }
+});
+
+// A press that ends without a click (a drag, a cancelled press) is not itself
+// a dismissal: the capture keeps its proposal and no write happens. jsdom
+// performs no focus move, so the box still holds focus here; a real browser
+// moves it away and the next test covers that case.
+test("a press that never completes a click leaves the capture live", async () => {
+  const client = await wireEditableClient();
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+
+  fireEvent.pointerDown(document.body);
+  fireEvent.mouseDown(document.body);
+  fireEvent.pointerCancel(document.body);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(captureBox()).toBe(box);
+  expect(keysOf(box)).toEqual(["Ctrl", "P"]);
+  expect(patchCallsOf(client)).toHaveLength(0);
+});
+
+// The press hold covers THAT press's focus move only. A press that ends
+// without a click must not leave it armed, or a later keyboard focus move
+// would be ignored and the capture would stay live with focus elsewhere.
+test("a press that ends without a click does not hold a later keyboard blur", async () => {
+  await wireEditableClient();
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.pointerDown(document.body);
+  fireEvent.mouseDown(document.body);
+  fireEvent.pointerUp(document.body);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  act(() => {
+    box.blur();
+  });
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+});
+
+// The hold answers a press that is about to land its click. A press that never
+// clicks leaves nothing to wait for, and the browser's focus move still
+// happened, so the box is open and unfocused, capturing keys with no visible
+// owner. It cancels. jsdom does not perform the focus move itself, so the blur
+// below stands in for the browser's default action.
+test("an outside press that leaves the box unfocused cancels once it ends without a click", async () => {
+  await wireEditableClient();
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+
+  fireEvent.pointerDown(document.body);
+  fireEvent.mouseDown(document.body);
+  act(() => {
+    box.blur();
+  });
+  fireEvent.pointerCancel(document.body);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
+});
+
+// Searching or folding the editor changes visibility, not the captured chord,
+// so those targets are inside the surface for both the press and its click.
+test("a completed click on shortcut-navigation controls does not cancel the capture", async () => {
+  await wireEditableClient();
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "p", ctrlKey: true });
+
+  const search = screen.getByRole("textbox", { name: "Search shortcuts" });
+  fireEvent.pointerDown(search);
+  fireEvent.mouseDown(search);
+  fireEvent.pointerUp(search);
+  fireEvent.mouseUp(search);
+  fireEvent.click(search);
+
+  expect(captureBox()).toBe(box);
+  expect(keysOf(box)).toEqual(["Ctrl", "P"]);
+});
+
+test("the outside-dismissal listener is removed when the capture closes", async () => {
   const addSpy = vi.spyOn(document, "addEventListener");
   const removeSpy = vi.spyOn(document, "removeEventListener");
   try {
@@ -828,17 +992,18 @@ test("the outside-pointerdown listener is removed when the capture closes", asyn
     renderEditor();
     await enterCapture("Open the command palette");
 
-    // The capture box's listener is the pointerdown one in the capture phase.
-    const added = addSpy.mock.calls.filter((call) => call[0] === "pointerdown" && call[2] === true);
+    // The capture's dismissal is the shared hook's capture-phase click
+    // listener (see widgets/internal/useDismissOnOutsidePress.ts).
+    const added = addSpy.mock.calls.filter((call) => call[0] === "click" && call[2] === true);
     expect(added).not.toHaveLength(0);
     const listener = added[added.length - 1]?.[1];
 
     fireEvent.keyDown(captureBox(), { key: "Escape" });
     expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
 
-    expect(
-      removeSpy.mock.calls.some((call) => call[0] === "pointerdown" && call[1] === listener && call[2] === true),
-    ).toBe(true);
+    expect(removeSpy.mock.calls.some((call) => call[0] === "click" && call[1] === listener && call[2] === true)).toBe(
+      true,
+    );
   } finally {
     addSpy.mockRestore();
     removeSpy.mockRestore();
@@ -986,7 +1151,7 @@ test("a save resolving after a click-away cancel does not clobber a reopened cap
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
 
   // Click away: the capture cancels while the save is in flight...
-  fireEvent.pointerDown(document.body);
+  clickAway(document.body);
   expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
 
   // ...and the user reopens the same row's capture.
@@ -1016,7 +1181,7 @@ test("a stale save's error does not surface into a reopened capture", async () =
   fireEvent.keyDown(box, { key: "Enter" });
   await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
 
-  fireEvent.pointerDown(document.body);
+  clickAway(document.body);
   const reopened = await enterCapture("Open the command palette");
   expect(captureState(reopened)).toBe("idle");
 
@@ -1077,7 +1242,7 @@ test("a save queued behind another row's in-flight write lands in order and igno
   expect(patchCallsOf(client)).toHaveLength(1);
 
   // The capture is cancelled before its save executes.
-  fireEvent.pointerDown(document.body);
+  clickAway(document.body);
   expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull();
 
   // PATCH #1 lands: the queued save composes against the post-Reset state

@@ -309,3 +309,97 @@ test("a stopped click's spent press does not dismiss a later click", async () =>
     outside.remove();
   }
 });
+
+test("click mode publishes the in-flight press for a caller whose blur must hold", async () => {
+  // The browser moves focus as mousedown's default action, after every
+  // listener, so an in-flow surface that collapses on blur reflows at the
+  // press. The sink lets that caller hold its blur collapse until the press
+  // completes.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  document.body.append(panel, outside);
+  const pressInFlight = { current: false };
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        pressInFlight,
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    expect(pressInFlight.current).toBe(true);
+    release(outside);
+    expect(pressInFlight.current).toBe(false);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode reports no in-flight press for a press inside, or one that never clicks", async () => {
+  const panel = document.createElement("div");
+  const inside = document.createElement("span");
+  const outside = document.createElement("button");
+  panel.append(inside);
+  document.body.append(panel, outside);
+  const pressInFlight = { current: false };
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        pressInFlight,
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss: vi.fn(),
+      }),
+    );
+    press(inside);
+    expect(pressInFlight.current).toBe(false);
+
+    // A press that ends without a click (a drag, a drag-and-drop) must not
+    // leave the hold armed: a later keyboard blur is not part of that press.
+    press(outside);
+    expect(pressInFlight.current).toBe(true);
+    outside.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    await nextTask();
+    expect(pressInFlight.current).toBe(false);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("a disabled surface clears the in-flight press", () => {
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  const pressInFlight = { current: false };
+  const { rerender } = renderHook(
+    ({ enabled }) =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled,
+        when: "click",
+        pressInFlight,
+        isInside: () => false,
+        onDismiss: vi.fn(),
+      }),
+    { initialProps: { enabled: true } },
+  );
+  try {
+    press(outside);
+    expect(pressInFlight.current).toBe(true);
+    // Teardown releases the flag: a surface that stopped listening must not
+    // leave its caller holding a blur forever.
+    rerender({ enabled: false });
+    expect(pressInFlight.current).toBe(false);
+  } finally {
+    outside.remove();
+  }
+});
