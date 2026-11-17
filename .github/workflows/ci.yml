@@ -460,6 +460,17 @@ jobs:
         with:
           kind: lint-repository
 
+      # lint-prompt-eval runs the harness's pytest suite. The runner's system
+      # Python has no pytest, and an uninstalled pytest fails the gate the same
+      # way a broken test does, so pin the runner here rather than adding a
+      # requirements file for one dependency of one lint target.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install pytest
+        run: python3 -m pip install --disable-pip-version-check pytest
+
       - name: Install gitleaks
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -468,7 +479,7 @@ jobs:
       - name: Lint repository structure, source audits, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-prompt-eval lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
       - name: Prove each module's go.mod is complete for an out-of-workspace consumer
         run: make lint-go-module-consumer

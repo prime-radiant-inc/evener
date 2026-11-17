@@ -4,13 +4,21 @@ Static checks that gate merges without running tests: formatting, generated-
 output freshness, compile floors, repository source audits, the frontend Biome
 scopes, and the repo secret scan. `make lint` is `LINT_TARGETS`: `lint-naming`,
 `lint-gofmt`, `lint-evenerfuzz`, `lint-eval`, `lint-internal`, `lint-golangci`,
-`lint-generated`, `lint-fuzz-registry`, `lint-package-imports`,
-`lint-go-module-consumer`, `lint-js-toolchain-pins`, `lint-tracked-file-size`,
-`lint-repo-audit`, and `secret-scan`. `make lint` runs all of them; CI enforces
-every one across its split jobs, and each target's trigger says which. The
-frontend Biome scopes are the one static check that lives in the test gate
-instead: `make test-web` runs them through the frontend's own `lint` script, so
-they run once per gate rather than twice.
+`lint-generated`, `lint-fuzz-registry`, `lint-prompt-eval`,
+`lint-package-imports`, `lint-go-module-consumer`, `lint-js-toolchain-pins`,
+`lint-tracked-file-size`, `lint-repo-audit`, and `secret-scan`. `make lint` runs
+all of them; CI enforces every one across its split jobs, and each target's
+trigger says which. The frontend Biome scopes are the one static check that
+lives in the test gate instead: `make test-web` runs them through the frontend's
+own `lint` script, so they run once per gate rather than twice.
+
+`lint-prompt-eval` is the one lint target that runs a test suite rather than a
+static check. The prompt-eval harness is Python whose tests no Go or npm gate
+reaches, so without this target they run nowhere. They are pytest-style, which
+`unittest discover` does not collect — it imports the file, finds no `TestCase`,
+and reports zero tests run — so the target invokes pytest. pytest exits 5 when
+it collects nothing, which makes a renamed or deleted test file fail here
+instead of passing green.
 
 `make tools` installs the gate's only run-time tools, `golangci-lint` and
 `gitleaks`, from the CI-pinned `.tool-versions`. The tools behave differently
@@ -221,6 +229,7 @@ global golangci-lint cache or sibling worktrees.
 | `make lint-gofmt` | Keep every tracked Go source formatter-clean, including the tagged evenerfuzz/eval files golangci-lint's own gofmt pass never compiles. | `gofmt -l` reports nothing for any tracked .go file, tagged or not. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | Any tracked .go file is not gofmt-clean. |
 | `make lint-generated` | Fail if any committed generated output is stale: the two AppWire outputs, the six docs/developing-evener/ target tables and the configuration knob table. | docs/appwire-protocol.md, the generated TypeScript protocol types, the marked target-table regions in docs/developing-evener/'s six family docs, and docs/developing-evener/config-knobs.md all match what `make generate` produces right now. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | `make generate` exits nonzero, an expected output is no longer tracked, or regenerated output differs from what is committed. |
 | `make lint-fuzz-registry` | Wrap `make fuzz-registry-check` so a fuzz target that lands without its registry row fails the required gate instead of sitting undetected. | Every native/Rapid fuzz target in the manifest (scripts/fuzz/fuzz-targets.txt) matches AST-discovered workspace declarations. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond the Go toolchain; static AST analysis only. | A discovered fuzz target has no registry row, or a registry row has no discovered target. |
+| `make lint-prompt-eval` | Run the prompt-eval harness's own Python tests. | The harness's measurement and reporting tests pass, and collection actually finds them (an empty collection is a failure, not a silent green). | Required CI (via make lint); local pre-merge. Under a second. | python3 and pytest; no provider calls, no network, no Docker. | Any harness test fails, or collection finds no test to run. |
 | `make lint-package-imports` | Fail if a web or native import names the AppWire TypeScript package by path instead of by its package name, or native imports the web app's source. | Every import specifier under cmd/evener-hub/frontend/src, mobile-native spells the package @evener/appwire-client (or a subpath its exports map publishes), with no file exempt but the resolver configs and mobile-native/src/metroResolver.test.ts, which asserts that mapping - each named one by one. No mobile-native import reaches into cmd/evener-hub/frontend/src; code both apps need lives in the package. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond a POSIX shell and grep. | Any import specifier in those trees names the package directory or the protocol/ directory it moved out of, a mobile-native import names the web app's source tree, or a swept tree is missing. |
 | `make lint-go-module-consumer` | Prove each workspace module's go.mod is a complete statement of what its own packages need, from a consumer outside the workspace. | A scratch consumer whose go.mod requires just one workspace module (plus directory replaces for its siblings) resolves every import that module's own packages use with GOPROXY=off, so a missing requirement is reported instead of hidden by the workspace. | Required CI (via make lint and the lint-repository lane); local pre-merge. About 12s warm. | The workspace's module cache; the recipe downloads its build list first. | scripts/gate/go-module-consumer-check.sh exits nonzero: a module is missing a requirement, or the consumer probe cannot judge it. |
 | `make lint-js-toolchain-pins` | Fail if Biome, Vitest, TypeScript or React is not an exact version, if the toolchain differs between npm trees (React may), or a biome.jsonc $schema names another Biome. | Every npm tree that declares @biomejs/biome, vitest, @vitest/coverage-v8, typescript, react, react-dom, @types/react or @types/react-dom pins it to an exact version, all trees agree on all but react and react-dom, and each biome.jsonc $schema URL names its tree's Biome version. | Required CI (via make lint); local pre-merge. Well under a second. | node. | A shared toolchain package uses a range, two trees pin different versions, or a biome.jsonc $schema names another Biome version. |
