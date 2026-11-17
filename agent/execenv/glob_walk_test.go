@@ -299,6 +299,14 @@ func (c *listCountingFS) Stat(name string) (fs.FileInfo, error) { return fs.Stat
 // tree several levels deep whose files sort into more than one extension group,
 // nested .gitignore files carrying an exclusion and a negation, and a dot
 // directory the default exclusion drops.
+//
+// It is built entirely in t.TempDir(), because the equivalence these tests check
+// is a property of the pattern handling, not of this repository. A live checkout
+// would make the test's runtime follow the developer's working tree and let a
+// concurrent edit change the tree between two walks (#6649). The fixture carries
+// a file whose name holds braces, so a path is proven to be matched literally
+// and never re-expanded, and a noise directory no pattern here selects, standing
+// in for the unrelated content a real working tree holds.
 func globBraceTree(t *testing.T) (root string) {
 	t.Helper()
 	root = t.TempDir()
@@ -328,6 +336,9 @@ func globBraceTree(t *testing.T) (root string) {
 	}
 	write("top.go", "package top\n")
 	write("top.md", "doc\n")
+	write("alpha/a{b,c}.go", "package alpha\n")
+	write("noise/unrelated.txt", "not part of any pattern here\n")
+	write("noise/scratch{1,2}.log", "ignored by the root rules file\n")
 	return root
 }
 
@@ -385,7 +396,9 @@ func globPerPatternResult(t *testing.T, root, pattern string, includeIgnored boo
 // TestGlobBraceExpansionMatchesEveryAlternativeIdentically is the equivalence
 // half of the shared-walk change: a brace pattern must report exactly the paths,
 // exclusion count and order the per-pattern loop reported, whether or not its
-// alternatives overlap.
+// alternatives overlap. Its tree is built in t.TempDir(), never taken from the
+// checkout, so a developer's working tree — large, and changing under a
+// concurrent editor or agent — cannot slow it or flake it (#6649).
 //
 // The table's axis is why a pattern does or does not share its walk. Two
 // recursive alternatives under one prefix are the case the shared walk
@@ -473,44 +486,6 @@ func TestGlobBraceExpansionListsOverlappingSubtreesOnce(t *testing.T) {
 	wantTwo := single + listings("beta/**/*.go")
 	if twoRoots := listings("{alpha,beta}/**/*.go"); twoRoots > wantTwo {
 		t.Fatalf("brace glob over two prefixes made %d directory listings, want at most %d (one traversal per prefix)", twoRoots, wantTwo)
-	}
-}
-
-// TestGlobBraceExpansionKeepsItsMatchSetIdentical proves the collapse does not
-// change an answer over a real tree with nested .gitignore files, negations and
-// dot directories — this repo's own worktree. It compares against the
-// per-pattern loop on the same tree, so it catches a shared walk that listed a
-// subtree an alternative's own walk never reached, or that dropped a rule's
-// effect on one alternative's matches only.
-func TestGlobBraceExpansionKeepsItsMatchSetIdentical(t *testing.T) {
-	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("abs: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(repoRoot, "agent", "execenv")); err != nil {
-		t.Skipf("repo worktree not present: %v", err)
-	}
-	env := NewLocalExecutionEnvironment(repoRoot)
-
-	for _, pattern := range []string{
-		"agent/**/*.{go,md}",
-		"agent/**/*.{go,_test.go}",
-		"docs/**/*.{go,md}",
-		"agent/{execenv,doctor}/**/*.go",
-	} {
-		for _, includeIgnored := range []bool{false, true} {
-			want, wantExcluded := globPerPatternResult(t, repoRoot, pattern, includeIgnored)
-			got, gotExcluded, gerr := env.GlobWithExclusions(t.Context(), pattern, repoRoot, includeIgnored)
-			if gerr != nil {
-				t.Fatalf("GlobWithExclusions(%q): %v", pattern, gerr)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("GlobWithExclusions(%q, includeIgnored=%v) returned %d paths, want the per-pattern answer's %d", pattern, includeIgnored, len(got), len(want))
-			}
-			if gotExcluded != wantExcluded {
-				t.Fatalf("GlobWithExclusions(%q, includeIgnored=%v) excluded = %d, want %d", pattern, includeIgnored, gotExcluded, wantExcluded)
-			}
-		}
 	}
 }
 
