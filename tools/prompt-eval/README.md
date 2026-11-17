@@ -198,6 +198,14 @@ zero. The `tail` column's median covers only the runs whose share was measured.
 Read `unmeas` before comparing arms on tail share: an arm whose runs were never
 observed finishing has no measured tail at all.
 
+The baseline header covers every baseline rep, and says which bucket each one
+fell in: a measured share, an `unmeasured` count for a graded run with no
+detected acceptance, and a `timed out` count for a rep killed at the cap. Those
+three buckets add up to the `baseline pass` denominator, so a short share list
+is explained rather than reading as a smaller baseline. Treat the spread across
+the shares as the reference: a bimodal baseline (15% to 85% across three reps)
+means an n=3 arm comparison is a screening pass at best.
+
 ## Counting the prose
 
 Tic counts are a proxy. They can tell you a version dropped its em dashes or its bare identifiers; they cannot tell you the writing got better; a version can improve every count here and still write badly, and one that is worse on every count can still be the one you want (the blind read below is what settles that).
