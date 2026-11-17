@@ -383,7 +383,7 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
 // badge that renders it would claim a queue the store has already replaced.
 test("needs-you count refuses a manifest from a replaced generation", () => {
   for (const carried of [
-    { stale: true, loading: true },
+    { stale: true, loading: true, error: null },
     { stale: true, loading: false, error: new Error("read failed") },
   ]) {
     store.setState({
@@ -395,9 +395,6 @@ test("needs-you count refuses a manifest from a replaced generation", () => {
         targetRevision: 1,
         forceToken: 0,
         etag: "m",
-        loading: false,
-        stale: false,
-        error: null,
         generationID: generation,
         ...carried,
       },
