@@ -87,6 +87,7 @@ export {
   waitingOnSubagents,
   whyLine,
   workingActivity,
+  workingJobLine,
 } from "./liveAttention";
 export { applyDelta, normalizeSnapshot, reconcileSnapshot } from "./merge";
 export type { NavigationInvalidationWaiter } from "./revalidator";

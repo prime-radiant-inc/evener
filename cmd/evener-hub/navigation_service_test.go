@@ -616,6 +616,10 @@ func navigationFatRunningJobs(session string, count int) []appwire.EvenerJobInfo
 			JobType: "shell",
 			Status:  "running",
 			Command: strings.Repeat("c", maxNavigationLabelRunes),
+			// A stated intent is what a row leads with, so the fixture carries
+			// one at the wire bound: a row's cost must stay bounded by the
+			// bound, not by what the model happened to write.
+			Intent: strings.Repeat("i", appwire.MaxIntentRunes),
 		}
 	}
 	return jobs

@@ -108,9 +108,7 @@ treated as no read, and the card withholds its read while the connection is not
 ready or after the row stops working, so a resumed card asks afresh. A
 method-not-found answer stops the poll for good. The working status names
 running subagents first, then `Quiet` or `May be stuck`, then `latestIntent`,
-then the running job's own intent, then its command, then the state word;
-without a read it names the running job's intent, else its command, else the
-state word. A job that stated no intent keeps showing its command. The
+then the running job's own intent, then its command, then the state word. The
 [rail activity hook](../../cmd/evener-hub/frontend/src/shell/rail/railActivity.ts)
 owns this read and the status precedence; [session
 activity](session-activity.md#navigation-session-status) records the

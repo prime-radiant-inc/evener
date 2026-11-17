@@ -4,6 +4,7 @@ import { expect, test, vi } from "vitest";
 // consumer's test runner uses, and package-test-files.mjs refuses one.
 import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
 import valueRecordsFixture from "../../../../cmd/evener-hub/testdata/navigation/value-records.json?raw";
+import { MAX_INTENT_CODE_POINTS } from "../../sessionActivity";
 import { completeSession } from "../../testing/navigation";
 import type { NavigationSessionSummary, NavigationSnapshot } from "../../types.gen";
 import {
@@ -1637,9 +1638,9 @@ test("a running job intent is bounded like the activity read's own line", () => 
   const value = snapshot.entities[0]?.value as Record<string, unknown>;
   // The hub cuts the intent to appwire.MaxIntentRunes (200 code points); a
   // longer one is a hub this client never met.
-  value.running_job_intent = "i".repeat(201);
+  value.running_job_intent = "i".repeat(MAX_INTENT_CODE_POINTS + 1);
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot))).toThrow();
-  value.running_job_intent = "i".repeat(200);
+  value.running_job_intent = "i".repeat(MAX_INTENT_CODE_POINTS);
   expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
   delete value.running_job_intent;
 });

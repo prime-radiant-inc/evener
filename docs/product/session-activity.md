@@ -180,6 +180,12 @@ not derive a subagent line from the row's tally, which the card's own Subagents
 row already names. The non-working statuses keep their existing vocabulary
 (`Not started`, `Failed`, or the humanized state).
 
+A row speaks for one job, and the command and intent it carries always come
+from that same job, so a row never pairs one command with another job's
+purpose. Which job is a stated rule rather than list order, which is not
+semantic: foreground work before background, then the lowest job ID, skipping a
+job that states neither.
+
 ## APIs and ownership
 
 Daemon and hub AppWire expose four typed reads:
