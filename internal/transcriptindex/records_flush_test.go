@@ -345,3 +345,83 @@ func TestAStringsFlushWritesOnlyTheAppendedBytes(t *testing.T) {
 		t.Fatalf("strings flush wrote %d bytes; only the appended byte is new", w.written)
 	}
 }
+
+// A buffered table receives its records one append at a time, and a cold
+// rebuild pays whatever the buffer's growth costs for every record it writes.
+// Growing by bare append hands the growth factor to the runtime, which grows a
+// large slice by about a quarter of itself: the copies sum to roughly four
+// times the content, five times what the table ends up holding, which is the
+// allocation the 2026-11-15 audit measured. Doubling instead sums to under two
+// times it.
+//
+// The count below is growth events, not a byte total: it is the mechanism that
+// differs between the two shapes, and it does not drift with the record size,
+// the runtime's size classes, or the size of the table.
+func TestABufferedTableGrowsByDoubling(t *testing.T) {
+	const records = 20000
+	tbl := &table{size: itemRecordSize, buf: []byte{}}
+	record := make([]byte, itemRecordSize)
+	growths := 0
+	capacity := cap(tbl.buf)
+	for range records {
+		if _, err := tbl.append(record); err != nil {
+			t.Fatal(err)
+		}
+		if cap(tbl.buf) != capacity {
+			growths++
+			capacity = cap(tbl.buf)
+		}
+	}
+	// Doubling 20,000 records measured 15 steps; the runtime's quarter-growth
+	// shape measured 33. 24 leaves the doubling shape room for a step or two of
+	// rounding while still failing the runtime's factor.
+	const ceiling = 24
+	if growths > ceiling {
+		t.Fatalf("%d appends grew the buffer %d times, want at most %d; the buffer is growing by the runtime's own factor instead of doubling",
+			records, growths, ceiling)
+	}
+}
+
+// A truncate shortens the buffer but keeps its capacity, and the records it
+// dropped are still in the bytes past the new length. Those bytes are index
+// records a rebuild would carry into the sidecar, so growing back over them
+// must present zeros for any slot the growth does not write.
+func TestATruncatedTableServesZerosWhenItGrowsBack(t *testing.T) {
+	tbl := &table{size: itemRecordSize, buf: []byte{}}
+	filled := make([]byte, itemRecordSize)
+	for i := range filled {
+		filled[i] = 0x7f
+	}
+	for slot := range uint64(4) {
+		if err := tbl.write(slot, filled); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The buffer now holds four records in place; shrinking it leaves all four
+	// in the retained capacity and the capacity itself unchanged.
+	if err := tbl.truncate(1); err != nil {
+		t.Fatal(err)
+	}
+	grown := cap(tbl.buf)
+	// Grow back over slots 1..3, writing only slot 3.
+	if err := tbl.write(3, make([]byte, itemRecordSize)); err != nil {
+		t.Fatal(err)
+	}
+	tbl.n = 4
+	if cap(tbl.buf) != grown {
+		t.Skipf("the growth reallocated, so this fixture cannot exercise the reused capacity")
+	}
+
+	for _, slot := range []uint64{1, 2} {
+		record, err := tbl.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, b := range record {
+			if b != 0 {
+				t.Fatalf("slot %d byte %d = %#x after a truncate and regrowth; a slot the growth never wrote must read as zeros",
+					slot, i, b)
+			}
+		}
+	}
+}
