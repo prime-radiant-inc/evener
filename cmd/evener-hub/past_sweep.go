@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -11,9 +12,19 @@ import (
 
 // hubPastSweep keeps the hub's two session-derived indexes in step with disk:
 // the past index's full rebuild and the message-search refresh that reads the
-// sessions it lists. They run on one ticker because they share one input set —
-// the projects' sessions directories — and because the refresh has to read the
-// rebuilt index to know which transcripts it covers.
+// sessions it lists. They share one input set — the projects' sessions
+// directories — and one interval, so a change is still seen within the bound it
+// was seen in before.
+//
+// They do not share a goroutine. A refresh pass reads every transcript the
+// index owes, and on a cold search.db that is the whole tree: 6.9 s on this
+// host's 13k-session tree with every read refused before one started, and
+// longer when it reads them. One goroutine running the rebuild and then the
+// refresh made the past index's next scan wait behind that whole pass, so a hub
+// that dropped its search.db stopped seeing new sessions for its duration
+// (#6652). Only the first pass is ordered, and it has to be: the refresh cannot
+// list sessions until a rebuild has populated the index, because an empty list
+// reads as "every indexed session is gone".
 //
 // Only the rebuild is gated on the tree digest. SessionTreeStamp folds every
 // file the rebuild reads (each session's meta.json) into one digest for a
@@ -32,12 +43,13 @@ import (
 // size and modification time against the stamp it recorded and reads only what
 // moved, which is the same pair the tree digest folds. So the ungated half
 // costs a stat sweep, not a read of every transcript.
-//
-// The tick interval is unchanged, so a change is still seen within exactly the
-// bound it was seen in before.
 type hubPastSweep struct {
 	past  *hubcore.PastIndex
 	index *hubcore.MessageSearch
+
+	// refresh is one message-search pass. It is a field so a test can hold a
+	// pass open and show that the rebuild does not wait behind it.
+	refresh func(ctx context.Context)
 
 	// lastStamp is the digest the last rebuild observed. A rebuild records the
 	// digest *before* it scans: a write that lands during the scan then makes
@@ -53,7 +65,11 @@ type hubPastSweep struct {
 
 // newHubPastSweep pairs the past index with the message-search index.
 func newHubPastSweep(past *hubcore.PastIndex, index *hubcore.MessageSearch) *hubPastSweep {
-	return &hubPastSweep{past: past, index: index}
+	return &hubPastSweep{
+		past:    past,
+		index:   index,
+		refresh: func(ctx context.Context) { refreshHubMessageSearchOnce(ctx, index, past) },
+	}
 }
 
 // sessionTreeStamp digests the on-disk state the rebuild reads.
@@ -61,9 +77,9 @@ func (s *hubPastSweep) sessionTreeStamp() (uint64, error) {
 	return hubcore.SessionTreeStamp(s.past.StateGlob())
 }
 
-// sweep is one tick's work: rebuild the past index when the tree digest moved,
-// then refresh the message search unconditionally.
-func (s *hubPastSweep) sweep(ctx context.Context) {
+// sweepRebuild is the rebuild half of a tick: rebuild the past index when the
+// tree digest moved.
+func (s *hubPastSweep) sweepRebuild(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -77,7 +93,14 @@ func (s *hubPastSweep) sweep(ctx context.Context) {
 	if !s.seeded || err != nil || stamp != s.lastStamp {
 		s.rebuild(stamp)
 	}
-	refreshHubMessageSearchOnce(ctx, s.index, s.past)
+}
+
+// sweepRefresh is the refresh half of a tick: one ungated message-search pass.
+func (s *hubPastSweep) sweepRefresh(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	s.refresh(ctx)
 }
 
 // rebuildCount reports how many full rebuilds this sweep has run.
@@ -91,20 +114,33 @@ func (s *hubPastSweep) rebuild(stamp uint64) {
 	_, _ = s.past.Rebuild()
 }
 
-// run sweeps every interval until ctx ends. The first pass is not a tick: a hub
-// that just started has a cold search index (a fresh or version-dropped
-// search.db) that must be filled before the first interval elapses, or nothing
-// is searchable until it is.
+// run keeps both indexes in step with disk until ctx ends, each on its own
+// loop. The first pass is not a tick: a hub that just started has a cold search
+// index (a fresh or version-dropped search.db) that must be filled before the
+// first interval elapses, or nothing is searchable until it is.
 func (s *hubPastSweep) run(ctx context.Context, interval time.Duration) {
 	if ctx.Err() != nil {
 		return
 	}
-	stamp, err := s.sessionTreeStamp()
-	if err != nil {
-		componentlog.New("hub").Info("past sweep: session tree stamp", "err", err)
-	}
-	s.rebuild(stamp)
-	refreshHubMessageSearchOnce(ctx, s.index, s.past)
+	firstRebuild := make(chan struct{})
+	var loops sync.WaitGroup
+	loops.Add(2)
+	go func() {
+		defer loops.Done()
+		s.runRebuilds(ctx, interval, firstRebuild)
+	}()
+	go func() {
+		defer loops.Done()
+		s.runRefreshes(ctx, interval, firstRebuild)
+	}()
+	loops.Wait()
+}
+
+// runRebuilds rebuilds on every interval until ctx ends, and closes
+// firstPassDone once the index names sessions.
+func (s *hubPastSweep) runRebuilds(ctx context.Context, interval time.Duration, firstPassDone chan struct{}) {
+	s.sweepRebuild(ctx)
+	close(firstPassDone)
 	ticks, stop := hubTicker(interval)
 	defer stop()
 	for {
@@ -112,7 +148,29 @@ func (s *hubPastSweep) run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticks:
-			s.sweep(ctx)
+			s.sweepRebuild(ctx)
+		}
+	}
+}
+
+// runRefreshes refreshes on every interval until ctx ends, waiting for the
+// rebuild's first pass so an empty index cannot read as "every indexed session
+// was deleted".
+func (s *hubPastSweep) runRefreshes(ctx context.Context, interval time.Duration, firstPassDone <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-firstPassDone:
+	}
+	s.sweepRefresh(ctx)
+	ticks, stop := hubTicker(interval)
+	defer stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			s.sweepRefresh(ctx)
 		}
 	}
 }
