@@ -1417,6 +1417,7 @@ test("thread/model/changed updates modelProvider/model and the new reasoning-eff
         model: "claude-opus-4-1",
         reasoningEffortLevels: ["low", "medium", "high"],
         supportsReasoning: true,
+        defaultReasoningEffort: "high",
       },
     },
     2000,
@@ -1426,10 +1427,11 @@ test("thread/model/changed updates modelProvider/model and the new reasoning-eff
   expect(model.model).toBe("claude-opus-4-1");
   expect(model.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
   expect(model.supportsReasoning).toBe(true);
+  expect(model.defaultReasoningEffort).toBe("high");
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to empty/false when the new payload omits them - it describes the NEW model completely, not a partial patch onto the old one", () => {
+test("thread/model/changed resets reasoningEffortLevels/supportsReasoning/defaultReasoningEffort to empty/false/absent when the new payload omits them - it describes the NEW model completely, not a partial patch onto the old one", () => {
   let model = testHydrate({
     evener: {
       ref: "ref_t",
@@ -1437,8 +1439,10 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
       queue: { revision: 0 },
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsReasoning: true,
+      defaultReasoningEffort: "medium",
     },
   });
+  expect(model.defaultReasoningEffort).toBe("medium");
 
   model = applyNotification(
     model,
@@ -1451,6 +1455,8 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
 
   expect(model.reasoningEffortLevels).toEqual([]);
   expect(model.supportsReasoning).toBe(false);
+  // The old model's default must not survive as a claim about the new one.
+  expect(model.defaultReasoningEffort).toBeUndefined();
   expect(model.modelControlState).toEqual({
     kind: "unsupported",
     canonicalDisplay: { modelProvider: "openai", model: "gpt-5.5" },
@@ -1573,6 +1579,36 @@ test("version-1 model control keeps canonical metadata while legacy model change
     compactionThreshold: 200_000,
     lastFrameAt: 2000,
   });
+});
+
+test("under canonical model control only the canonical model's own frame updates defaultReasoningEffort", () => {
+  const current: ModelControlSnapshot = {
+    authority: { instanceId: "instance-1", bootGeneration: "boot-1" },
+    revision: 4,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: ["minimal", "high"],
+      supportsReasoning: true,
+    },
+  };
+  const held: ThreadModel = {
+    ...testHydrate(),
+    modelControlState: { kind: "ready", snapshot: current },
+    modelProvider: current.active.modelProvider,
+    model: current.active.model,
+    reasoningEffortLevels: current.active.reasoningEffortLevels,
+    supportsReasoning: current.active.supportsReasoning,
+    defaultReasoningEffort: "high",
+  };
+  const frame = (modelProvider: string, model: string, defaultReasoningEffort: string) =>
+    ({
+      method: "thread/model/changed",
+      params: { threadId: "thr_t", ref: "ref_t", modelProvider, model, defaultReasoningEffort },
+    }) as const;
+
+  expect(applyNotification(held, frame("openai", "gpt-5.5", "medium"), 2000).defaultReasoningEffort).toBe("medium");
+  expect(applyNotification(held, frame("deepseek", "deepseek-v4", "low"), 2000).defaultReasoningEffort).toBe("high");
 });
 
 test("a delayed canonical event keeps the last safe recovery display while updating context", () => {

@@ -2,8 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"runtime"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -150,5 +155,117 @@ func TestSteeringWakeReachesTheDaemon(t *testing.T) {
 	}
 	if wakes == 0 {
 		t.Fatal("accepting a steer did not wake the daemon's pending-user-input path")
+	}
+}
+
+// pendingInputJournalFixture records nAccepted settled client mutations in the
+// store's journal, the way a long session accumulates them: the journal is
+// never pruned, so every accepted mutation for the life of the session stays in
+// it.
+func pendingInputJournalFixture(t *testing.T, s *Session, nAccepted int) {
+	t.Helper()
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		for i := range nAccepted {
+			id := fmt.Sprintf("cm-bulk-%05d", i)
+			payload := []byte(`{"input":[{"type":"text","text":"older message"}]}`)
+			sum := sha256.Sum256(payload)
+			snapshot.Journal[id] = clientMutationRecord{
+				ClientMutationID: id,
+				Method:           clientMutationMethodQueue,
+				Actor:            schema.SessionActor{Kind: "human"},
+				// Settled history: this is what makes the journal grow.
+				OperationState:    clientMutationOperationTerminal,
+				ExecutionState:    "incorporated",
+				ProjectionState:   "reflected",
+				Payload:           payload,
+				PayloadHash:       hex.EncodeToString(sum[:]),
+				Result:            []byte(`{"receipt":{"disposition":"applied"}}`),
+				AttemptGeneration: 1,
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("bulk journal fixture: %v", err)
+	}
+}
+
+// TestHasPendingUserInputToRunDoesNotCloneTheJournal keeps the yes/no question
+// cheap as a session ages.
+//
+// Every accepted client mutation stays in the journal for the life of the
+// session, and the predicate runs once per serve-loop iteration since #6462.
+// Answering it by taking a snapshot deep-copies that whole growing journal,
+// which is the one thing this predicate must not do: it reads a few scalars and
+// the head of two lists.
+//
+// The ceiling is bytes, not allocation count, because the failure is a large
+// copy rather than many small ones. A 20,000-record fixture whose payloads and
+// results are ~40 bytes each is several megabytes if it is cloned and a few
+// hundred bytes if it is not, so the ceiling sits far from both. This test must
+// stay serial (no t.Parallel): runtime.MemStats describes the whole process, and
+// a concurrent test in this package would perturb the measurement.
+func TestHasPendingUserInputToRunDoesNotCloneTheJournal(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSessionWithMutationStore(t, s)
+	pendingInputJournalFixture(t, s, 20_000)
+
+	// The fixture holds no runnable work: an empty queue and no steering. The
+	// cheap answer must agree with the cloning one it replaces.
+	if s.hasPendingUserInputToRun() {
+		t.Fatal("a journal of settled history with an empty queue reported work to run")
+	}
+
+	_ = s.hasPendingUserInputToRun() // warm the call once
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	const iters = 20
+	for range iters {
+		_ = s.hasPendingUserInputToRun()
+	}
+	runtime.ReadMemStats(&after)
+	bytesPerOp := float64(after.TotalAlloc-before.TotalAlloc) / float64(iters)
+	t.Logf("hasPendingUserInputToRun over 20,000 journal records allocates %.0f bytes per call", bytesPerOp)
+	// A clone of this fixture is megabytes; the predicate needs no allocation at
+	// all. The ceiling is generous so it pins the clone's absence, not an exact
+	// allocation count that ordinary refactoring could move.
+	const ceiling = 64 * 1024
+	if bytesPerOp > ceiling {
+		t.Fatalf("hasPendingUserInputToRun allocates %.0f bytes per call over 20,000 journal records, ceiling %d; the predicate must not clone the journal", bytesPerOp, ceiling)
+	}
+}
+
+// TestRunnableClientMutationStartTurnIDDoesNotCloneTheJournal is the same guard
+// for the serve loop's other probe. It runs beside the queued-input probe on
+// every iteration, and against the same committed generation, so cloning there
+// pays the journal's whole size a second time for an answer the generation
+// already holds.
+//
+// Serial for the same reason as the test above: runtime.MemStats describes the
+// whole process.
+func TestRunnableClientMutationStartTurnIDDoesNotCloneTheJournal(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	serveSessionWithMutationStore(t, s)
+	pendingInputJournalFixture(t, s, 20_000)
+
+	// The fixture holds no runnable start; the cheap answer must agree.
+	if _, runnable := s.runnableClientMutationStartTurnID(); runnable {
+		t.Fatal("a journal of settled history with no pending execution reported a runnable start")
+	}
+
+	_, _ = s.runnableClientMutationStartTurnID() // warm the call once
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	const iters = 20
+	for range iters {
+		_, _ = s.runnableClientMutationStartTurnID()
+	}
+	runtime.ReadMemStats(&after)
+	bytesPerOp := float64(after.TotalAlloc-before.TotalAlloc) / float64(iters)
+	t.Logf("runnableClientMutationStartTurnID over 20,000 journal records allocates %.0f bytes per call", bytesPerOp)
+	const ceiling = 64 * 1024
+	if bytesPerOp > ceiling {
+		t.Fatalf("runnableClientMutationStartTurnID allocates %.0f bytes per call over 20,000 journal records, ceiling %d; the probe must not clone the journal", bytesPerOp, ceiling)
 	}
 }

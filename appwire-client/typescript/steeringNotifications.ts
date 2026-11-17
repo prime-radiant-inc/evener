@@ -45,9 +45,11 @@ export interface ParsedNotification {
   // A subagent's display name (the delegate frame's name attribute, or its
   // packet's metadata name).
   name?: string;
-  // The quiet watchdog's facts: how long the subagent has been quiet ("10m")
-  // and its last activity, as the daemon wrote them.
-  quiet?: { window: string; lastActivityAt: string };
+  // The quiet watchdog's facts: the silence it measures, and the last
+  // activity, as the daemon wrote them. The silence runs from the last
+  // parent-observable activity, so a repeat of one silent stretch names the
+  // ongoing total ("20m"), not the window the first wake happens to equal.
+  quiet?: { silence: string; lastActivityAt: string };
   // A delegate's mid-work update (the frame's kind="update"): its message is
   // the delegate's own text, and it settles nothing, so it claims no outcome.
   update?: true;
@@ -579,7 +581,7 @@ function delegatePacketNotification(
 function parseQuietWatchdog(body: string): ParsedNotification["quiet"] | null {
   const match = /^quiet for (\S+); last activity: (\S+)$/.exec(decodeNotificationEntities(body));
   if (!match?.[1] || !match[2]) return null;
-  return { window: match[1], lastActivityAt: match[2] };
+  return { silence: match[1], lastActivityAt: match[2] };
 }
 
 function splitNotificationExcerpt(body: string): { prose: string; excerpt: string } {
@@ -772,7 +774,8 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
     const reason = decodeNotificationAttributeEntities(attrs.reason ?? "").trim();
     // Teardown notices are endings, never firings:
     // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
-    // "watch ended:", watchBudgetClearedMessage with "watch cleared:". The
+    // "watch ended:"; older runs' budget auto-clear notice started with
+    // "watch cleared:" and still titles as an ending. The
     // prose/reason carries which watch and why, so the title stays short.
     if (reason.startsWith("watch ended:")) return "Watch ended";
     if (reason.startsWith("watch cleared:")) return "Watch auto-cleared";

@@ -20,6 +20,9 @@ export const ACTIONS = {
   transcriptPageDown: "transcript.pageDown",
   transcriptScrollTop: "transcript.scrollTop",
   transcriptScrollBottom: "transcript.scrollBottom",
+  // Opens find in the focused conversation. Its handler declines anywhere
+  // else, so the browser keeps its own find outside a transcript.
+  transcriptFind: "transcript.find",
   // Reuses the palette's "settings" command id: that command's run owns the
   // behavior (navigate("/settings")), exactly the next-needs-you precedent
   // above.

@@ -422,6 +422,7 @@ export interface Capabilities {
 export interface Causal {
   watch_keys?: WatchKey[];
   chain?: Entry[];
+  fire_keys?: FireKey[];
   chain_truncated?: boolean;
 }
 
@@ -1140,6 +1141,22 @@ export interface EvenerThread {
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
   /**
+   * DefaultReasoningEffort is the effort the session's current model runs
+   * at while ReasoningEffort is unset: the model's stated default, else
+   * medium, clamped to its ladder. A client names this tier where it would
+   * otherwise show a bare "(default)". Absent when the model does not
+   * reason, when its dialect would not carry the tier this session resolves,
+   * from a row the registry cannot resolve, and from an older daemon. A
+   * dialect declines to carry it either because it spells no tier at all —
+   * a row naming no ladder on an API that only spells effort names, or an
+   * enable-only one such as qwen — or because it spells the tier under a
+   * value that is not the tier resolved (a level the ladder refuses, or one
+   * Google renames onto its own enum ceiling). A stated default survives all
+   * of that unless the ladder clamped it to a different tier; live updates
+   * arrive on thread/model/changed.
+   */
+  defaultReasoningEffort?: string;
+  /**
    * VisionModel is the session's vision side-channel setting: "" describes
    * with the session model, "off" disables the side-channel, anything else is
    * a model ref. Snapshot-only like the effort fields beside it; live updates
@@ -1305,6 +1322,12 @@ export interface FeatureSet {
 export interface FencingEpoch {
   bootId: string;
   opSeq: number;
+}
+
+export interface FireKey {
+  watch_id?: string;
+  watch_generation?: string;
+  delivery_id?: string;
 }
 
 export interface GitHeadParams {
@@ -3002,10 +3025,17 @@ export interface NavigationSessionSummary {
   seen_through?: string;
   /**
    * Own-session activity counts are captured before navigation fitting.
-   * RunningJobCommand is the first available command, bounded for display.
+   * RunningJobCommand and RunningJobIntent both come from one running job,
+   * chosen by rule rather than list order (foreground before background,
+   * then the lowest job ID). The command is bounded for display; the intent
+   * is that same job's own `intent` argument, stamped on the job record at
+   * launch, one line of at most appwire.MaxIntentRunes and absent when the
+   * job stated none. The row leads with the intent because the command says
+   * what is executing and the intent says why.
    */
   running_job_count?: number;
   running_job_command?: string;
+  running_job_intent?: string;
   watch_count?: number;
   armed_watch_count?: number;
   /**
@@ -3457,6 +3487,15 @@ export interface QueueState {
    * and UTF-16 location. It is editing metadata, not activation authority.
    */
   mentions?: InputMention[][];
+  /**
+   * ImageCounts is FIFO-aligned with Preview and carries each entry's
+   * image count, so a client can refuse a text-only edit of another
+   * client's queued text+image row — the images the restore seam cannot
+   * carry would otherwise be destroyed by the edit's cancel half. Absent
+   * on old daemons; clients must treat a missing ImageCounts as
+   * "unknown", falling back to the preview's placeholder grammar.
+   */
+  imageCounts?: number[];
 }
 
 export interface RemovedRow {
@@ -5040,6 +5079,12 @@ export interface ThreadModelChangedParams {
   model: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  /**
+   * DefaultReasoningEffort is the effort the new model runs at while the
+   * session's own effort is unset (EvenerThread.DefaultReasoningEffort),
+   * absent under the same conditions.
+   */
+  defaultReasoningEffort?: string;
   contextUsed?: number;
   contextWindow?: number;
   contextPressure?: number;
@@ -6536,7 +6581,7 @@ export const WIRE_FIELD_KEYS = {
   InputItem: ["type", "text", "mentions", "url", "mediaType", "data", "name", "path", "metadata", "voicePresentation"],
   InputMention: ["kind", "name", "offset"],
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
-  QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions"],
+  QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
   EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],

@@ -116,9 +116,9 @@ function openSummary(): HTMLElement {
   return summary;
 }
 
-// --- collapsed at every verbosity, independently of the general baseline ----
+// --- collapsed wherever the actions view shows it, whatever the baseline ----
 
-test.each(["chat", "intent", "tools", "activity", "full"] as const)(
+test.each(["tools", "activity", "full"] as const)(
   "a memory refresh renders a collapsed 'Refreshed my memory' at the %s preset with systemEvents off",
   (level) => {
     renderProjected(project([wireItem()], preset(level)), preset(level));
@@ -127,6 +127,15 @@ test.each(["chat", "intent", "tools", "activity", "full"] as const)(
     expect(screen.getByTestId("memory-context-label").textContent).not.toBe("");
   },
 );
+
+// Chat and Intent fold actions into one-line intent proxies, so the refresh has
+// no row of its own there (Jesse, 2026-11-16). These render the real projection,
+// so the absence is the projector's decision, not a missing fixture.
+test.each(["chat", "intent"] as const)("a memory refresh has no row at the %s preset", (level) => {
+  const config = preset(level, true);
+  renderProjected(project([wireItem()], config), config);
+  expect(screen.queryByTestId("memory-context-item")).toBeNull();
+});
 
 test("systemEvents on does not change the memory refresh's compact disclosure", () => {
   const config = preset("tools", true);
@@ -300,9 +309,11 @@ test("the same memory item id has independent state in another session", () => {
 
 // An explicit choice is authoritative across verbosity changes. Memory ignores
 // the general expansion baseline and Full's open-everything baseline, but a
-// reader's own toggle must hold: opening at Tools then moving through Full to
-// Conversation stays open, and a close stays closed through every level.
-test("an explicit open survives Tools -> Full -> Conversation, and an explicit close stays closed", () => {
+// reader's own toggle must hold: opening at Tools then moving through Full stays
+// open, a close stays closed, and a pass through Conversation - where the
+// actions view has no row at all - leaves the choice intact for the row's
+// return at Tools.
+test("an explicit open survives Tools -> Full -> Conversation -> Tools, and an explicit close stays closed", () => {
   function harness(level: "chat" | "intent" | "tools" | "activity" | "full") {
     const config = preset(level);
     return (
@@ -317,16 +328,23 @@ test("an explicit open survives Tools -> Full -> Conversation, and an explicit c
     );
   }
   const isOpen = () => (screen.getByTestId("memory-context-item") as HTMLDetailsElement).open;
+  const hasRow = () => screen.queryByTestId("memory-context-item") !== null;
   const { rerender } = render(harness("tools"));
   openSummary();
   expect(isOpen()).toBe(true);
-  for (const level of ["full", "chat", "tools"] as const) {
+  for (const level of ["full", "tools"] as const) {
     rerender(harness(level));
     expect(isOpen()).toBe(true);
   }
+  rerender(harness("chat"));
+  expect(hasRow()).toBe(false);
+  rerender(harness("tools"));
+  expect(isOpen()).toBe(true);
   openSummary();
   expect(isOpen()).toBe(false);
-  for (const level of ["full", "tools", "full", "chat"] as const) {
+  rerender(harness("chat"));
+  expect(hasRow()).toBe(false);
+  for (const level of ["full", "tools", "full"] as const) {
     rerender(harness(level));
     expect(isOpen()).toBe(false);
   }

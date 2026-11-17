@@ -80,8 +80,11 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 	tokens := estimateMessagesInputTokens(t, req.Messages)
 	if len(req.Tools) > 0 {
-		b, _ := json.Marshal(req.Tools)
-		tokens += len(b) / 4
+		toolBytes := req.ToolsJSONBytes
+		if toolBytes <= 0 {
+			toolBytes = ToolsJSONBytes(req.Tools)
+		}
+		tokens += toolBytes / 4
 	}
 	if req.ResponseFormat != nil {
 		b, _ := json.Marshal(req.ResponseFormat)
@@ -94,6 +97,21 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 		Provider: req.Provider,
 		Model:    req.Model,
 	}
+}
+
+// ToolsJSONBytes returns the byte length of defs' serialized form: the length
+// the local estimate bills a tool list by. A caller that builds one tool list
+// and prices many requests over it can measure the list once and stamp
+// Request.ToolsJSONBytes, which leaves the estimate byte-identical while
+// skipping the marshal on every request (#6406). An empty list is 0, and a
+// list the encoder rejects is 0 too — the same share today's estimate bills
+// for it, since json.Marshal returns no bytes alongside its error.
+func ToolsJSONBytes(defs []ToolDefinition) int {
+	if len(defs) == 0 {
+		return 0
+	}
+	b, _ := json.Marshal(defs)
+	return len(b)
 }
 
 // EstimateMessagesInputTokens estimates only a message list. It is useful for
@@ -112,6 +130,48 @@ func EstimateMessagesInputTokens(messages []Message) InputTokenCount {
 // counted.
 func EstimateMessagesInputTokensForResolved(res registry.Resolved, messages []Message) InputTokenCount {
 	return estimateMessageList(targetFromResolved(res, "", ""), messages)
+}
+
+// EstimateMessageInputTokenPartsForResolved returns the two additive components
+// estimateMessagesInputTokens sums: the whole list's char count and its count of
+// parts billed at a fixed token price. The caller combines them with
+// TokenParts.Total.
+//
+// It exists so a caller that already holds one prefix's parts can estimate only
+// the messages appended since and get the SAME answer the whole-list estimate
+// would give. That is only sound because the estimator divides the summed chars
+// by four once, over the whole list (see estimateMessagesInputTokens): summing
+// chars first and dividing once at the end cannot round differently, whereas
+// adding per-prefix token counts would.
+func EstimateMessageInputTokenPartsForResolved(res registry.Resolved, messages []Message) TokenParts {
+	t := targetFromResolved(res, "", "")
+	var parts TokenParts
+	for _, m := range messages {
+		c, counted := estimateMessageInputParts(t, m)
+		parts.Chars += c
+		parts.Counted += counted
+	}
+	return parts
+}
+
+// TokenParts is the additive decomposition of a local token estimate.
+type TokenParts struct {
+	// Chars is the summed character count, divided by four once in Total.
+	Chars int
+	// Counted is the parts billed at a fixed token price rather than by size
+	// (images, audio, documents), summed directly.
+	Counted int
+}
+
+// Total is the estimate those parts describe. It is the same arithmetic
+// estimateMessagesInputTokens performs, in the same order.
+func (p TokenParts) Total() int {
+	return p.Counted + p.Chars/4
+}
+
+// Add returns the parts of the concatenated message lists.
+func (p TokenParts) Add(other TokenParts) TokenParts {
+	return TokenParts{Chars: p.Chars + other.Chars, Counted: p.Counted + other.Counted}
 }
 
 func estimateMessageList(t targetInfo, messages []Message) InputTokenCount {

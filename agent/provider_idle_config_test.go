@@ -25,7 +25,7 @@ func TestProviderIdleConfigPersistsAndBuildsRequest(t *testing.T) {
 		cfg.applyDefaults()
 		restored := configFromSnapshot(cfg.toSnapshot())
 		s := &Session{cfg: restored}
-		req := s.buildModelRequest(NewOpenAIProfile("gpt-5.2"), "sys", nil, nil, "")
+		req := s.buildModelRequest(NewOpenAIProfile("gpt-5.2"), "sys", nil, nil, "", 0)
 		if req.AdapterTimeout.Request != 0 {
 			t.Errorf("total deadline=%v, want disabled", req.AdapterTimeout.Request)
 		}

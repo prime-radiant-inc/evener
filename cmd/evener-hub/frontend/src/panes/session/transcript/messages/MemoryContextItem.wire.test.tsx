@@ -29,9 +29,11 @@ afterEach(() => {
   resetDisclosureStoreForTests();
 });
 
-const PRESETS = ["chat", "intent", "tools", "activity", "full"] as const;
+// The presets where the actions view gives the refresh a row of its own; Chat
+// and Intent fold actions into intent proxies and show no refresh row.
+const SHOWN_PRESETS = ["tools", "activity", "full"] as const;
 
-function preset(level: (typeof PRESETS)[number]): TranscriptDisplayConfigV1 {
+function preset(level: (typeof SHOWN_PRESETS)[number]): TranscriptDisplayConfigV1 {
   return makeTranscriptDisplayConfig({ kind: "preset", level }, { systemEvents: true });
 }
 
@@ -84,7 +86,7 @@ const MALFORMED: MemoryContextWireCase = "malformed-project";
 
 // --- every case, every preset: compact heading, closed, no raw in the row ----
 
-test.each(PRESETS)("at the %s preset every recorded refresh is a closed compact heading", (level) => {
+test.each(SHOWN_PRESETS)("at the %s preset every recorded refresh is a closed compact heading", (level) => {
   const config = preset(level);
   for (const name of memoryContextWireCases()) {
     cleanup();

@@ -259,6 +259,20 @@ type EvenerThread struct {
 	ReasoningEffort       string   `json:"reasoningEffort,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
+	// DefaultReasoningEffort is the effort the session's current model runs
+	// at while ReasoningEffort is unset: the model's stated default, else
+	// medium, clamped to its ladder. A client names this tier where it would
+	// otherwise show a bare "(default)". Absent when the model does not
+	// reason, when its dialect would not carry the tier this session resolves,
+	// from a row the registry cannot resolve, and from an older daemon. A
+	// dialect declines to carry it either because it spells no tier at all —
+	// a row naming no ladder on an API that only spells effort names, or an
+	// enable-only one such as qwen — or because it spells the tier under a
+	// value that is not the tier resolved (a level the ladder refuses, or one
+	// Google renames onto its own enum ceiling). A stated default survives all
+	// of that unless the ladder clamped it to a different tier; live updates
+	// arrive on thread/model/changed.
+	DefaultReasoningEffort string `json:"defaultReasoningEffort,omitempty"`
 	// VisionModel is the session's vision side-channel setting: "" describes
 	// with the session model, "off" disables the side-channel, anything else is
 	// a model ref. Snapshot-only like the effort fields beside it; live updates
@@ -441,6 +455,13 @@ type QueueState struct {
 	// Mentions is FIFO-aligned with Texts, retaining each atom's exact kind
 	// and UTF-16 location. It is editing metadata, not activation authority.
 	Mentions [][]InputMention `json:"mentions,omitempty"`
+	// ImageCounts is FIFO-aligned with Preview and carries each entry's
+	// image count, so a client can refuse a text-only edit of another
+	// client's queued text+image row — the images the restore seam cannot
+	// carry would otherwise be destroyed by the edit's cancel half. Absent
+	// on old daemons; clients must treat a missing ImageCounts as
+	// "unknown", falling back to the preview's placeholder grammar.
+	ImageCounts []int `json:"imageCounts,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged

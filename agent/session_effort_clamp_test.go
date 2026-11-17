@@ -24,7 +24,7 @@ func TestBuildModelRequest_ClampsEffortToProfileLevels(t *testing.T) {
 	s := &Session{}
 	profile := withEffortLevels(provider.NewOpenAIProfile("kimi-for-coding"), "minimal", "low", "medium", "high")
 
-	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "xhigh")
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "xhigh", 0)
 
 	if req.ReasoningEffort == nil {
 		t.Fatal("ReasoningEffort is nil, want clamped value")
@@ -38,7 +38,7 @@ func TestBuildModelRequest_KeepsSupportedEffort(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	profile := withEffortLevels(provider.NewOpenAIProfile("m"), "low", "medium", "high")
-	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "medium")
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "medium", 0)
 	if req.ReasoningEffort == nil || *req.ReasoningEffort != "medium" {
 		t.Fatalf("ReasoningEffort = %v, want medium (supported, unchanged)", req.ReasoningEffort)
 	}
@@ -78,7 +78,7 @@ func TestBuildModelRequest_OmitsEffortWhenProfileDoesNotSupportReasoning(t *test
 	s := &Session{}
 	profile := nonReasoningProfile(t, "tiny-chat")
 
-	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "high")
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "high", 0)
 
 	if req.ReasoningEffort != nil {
 		t.Fatalf("ReasoningEffort = %q, want nil (profile declared non-reasoning)", *req.ReasoningEffort)
@@ -108,7 +108,7 @@ func TestBuildModelRequest_ThinkingAlwaysOn_TakesTheDefault(t *testing.T) {
 	profile := alwaysOnThinkingProfile()
 
 	// No session reasoning effort configured (empty string).
-	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "")
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "", 0)
 
 	if req.ReasoningEffort == nil || *req.ReasoningEffort != "high" {
 		t.Fatalf("ReasoningEffort = %v, want high (medium clamped to [low high max])", req.ReasoningEffort)
@@ -122,7 +122,7 @@ func TestBuildModelRequest_ThinkingAlwaysOn_ExplicitEffortWins(t *testing.T) {
 	s := &Session{}
 	profile := alwaysOnThinkingProfile()
 
-	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "max")
+	req := s.buildModelRequest(profile, "sys", []llm.Message{llm.User("hi")}, nil, "max", 0)
 
 	if req.ReasoningEffort == nil || *req.ReasoningEffort != "max" {
 		t.Fatalf("ReasoningEffort = %v, want max (an explicit effort is honored)", req.ReasoningEffort)
@@ -143,7 +143,7 @@ func TestBuildModelRequest_ThinkingAlwaysOn_ReasoningOffOmits(t *testing.T) {
 		t.Fatalf("reasoning=false must clear the ladder: %v %v", p.SupportsReasoning(), p.ReasoningEffortLevels())
 	}
 
-	req := s.buildModelRequest(p, "sys", []llm.Message{llm.User("hi")}, nil, "")
+	req := s.buildModelRequest(p, "sys", []llm.Message{llm.User("hi")}, nil, "", 0)
 	if req.ReasoningEffort != nil {
 		t.Fatalf("ReasoningEffort = %q, want nil (the default reaches reasoning models only)", *req.ReasoningEffort)
 	}

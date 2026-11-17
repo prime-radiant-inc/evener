@@ -13,6 +13,10 @@ import (
 const (
 	FieldDeveloperRole = "developer_role"
 	FieldMaxTokens     = "max_tokens"
+	// FieldGoogleThinkingConfig names the object holding either of google's two
+	// thinking shapes, so a caller reading the send flag does not restate the
+	// path a second time.
+	FieldGoogleThinkingConfig = "generationConfig.thinkingConfig"
 )
 
 // prunable is the authoritative per-protocol table of optional wire fields
@@ -42,8 +46,8 @@ var prunable = map[string]map[string]bool{
 		// thinkingConfig carries either thinkingLevel (Gemini 3.x) or
 		// thinkingBudget (2.5 era); clearing it suppresses thinking for a row
 		// whose model takes no thinking fields at all.
-		"generationConfig.thinkingConfig": true,
-		"toolConfig":                      true, "safetySettings": true, "cachedContent": false, "labels": false,
+		FieldGoogleThinkingConfig: true,
+		"toolConfig":              true, "safetySettings": true, "cachedContent": false, "labels": false,
 	},
 }
 

@@ -40,25 +40,17 @@ type transcriptDoc struct {
 	Entries []transcript.Entry
 }
 
-func loadTranscript(path string) (transcriptDoc, error) {
-	return loadTranscriptContext(context.Background(), path)
-}
-
-// loadTranscriptContext is loadTranscript that stops decoding, with ctx's
-// error, once ctx is cancelled.
+// loadTranscriptContext loads a transcript, stopping decoding with ctx's error
+// once ctx is cancelled.
 func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
 	return scanTranscriptContext(ctx, path, false)
 }
 
-// loadRecordedTranscript loads a session's recorded turns, omitting copies a
-// compaction fold re-appended after its markers (OriginalOrdinal != nil) whose
-// originals already appear earlier in the transcript. Callers that need
-// physical or read_transcript entry coordinates (Transcript, ScanTurnIDs) use
-// loadTranscript instead.
-func loadRecordedTranscript(path string) (transcriptDoc, error) {
-	return loadRecordedTranscriptContext(context.Background(), path)
-}
-
+// loadRecordedTranscriptContext loads a session's recorded turns, omitting
+// copies a compaction fold re-appended after its markers (OriginalOrdinal !=
+// nil) whose originals already appear earlier in the transcript. Callers that
+// need physical or read_transcript entry coordinates (Transcript, ScanTurnIDs)
+// use loadTranscriptContext instead.
 func loadRecordedTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
 	return scanTranscriptContext(ctx, path, true)
 }
@@ -186,13 +178,14 @@ type CountResult struct {
 
 // Count returns how many times a tool was structurally invoked in a session
 // (a content part of kind tool_call whose ToolCall.Name matches), distinct from
-// how many times the tool name merely appears in assistant prose.
-func Count(stateBase, selector, tool string) (CountResult, error) {
+// how many times the tool name merely appears in assistant prose. A cancelled
+// ctx stops the read and returns its error with no result.
+func Count(ctx context.Context, stateBase, selector, tool string) (CountResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return CountResult{}, err
 	}
-	doc, err := loadRecordedTranscript(paths.TranscriptPath)
+	doc, err := loadRecordedTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return CountResult{}, err
 	}
@@ -448,13 +441,14 @@ const DefaultTextMax = 200
 const TextMaxFull = math.MaxInt
 
 // Transcript renders a session's logical turns (a turn map / conversation view),
-// applying the range window and reporting elision honestly.
-func Transcript(stateBase, selector string, opts TranscriptOpts) (TranscriptResult, error) {
+// applying the range window and reporting elision honestly. A cancelled ctx
+// stops the read and returns its error with no result.
+func Transcript(ctx context.Context, stateBase, selector string, opts TranscriptOpts) (TranscriptResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return TranscriptResult{}, err
 	}
-	doc, err := loadTranscript(paths.TranscriptPath)
+	doc, err := loadTranscriptContext(ctx, paths.TranscriptPath)
 	if err != nil {
 		return TranscriptResult{}, err
 	}

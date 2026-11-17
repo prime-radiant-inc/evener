@@ -416,10 +416,11 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "thread/model/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       // ThreadModelChangedParams (appwire/types_turn.go) carries
-      // reasoningEffortLevels/supportsReasoning alongside modelProvider/
-      // model, describing the NEW model's full reasoning profile - not a
-      // partial patch, so an omitted/empty ladder on the new payload
-      // replaces (not preserves) whatever the old model's picker showed.
+      // reasoningEffortLevels/supportsReasoning/defaultReasoningEffort
+      // alongside modelProvider/model, describing the NEW model's full
+      // reasoning profile - not a partial patch, so an omitted/empty ladder or
+      // default on the new payload replaces (not preserves) whatever the old
+      // model's picker showed.
       const context = {
         ...model,
         contextUsed: n.params.contextUsed ?? (n.params.contextWindow !== undefined ? 0 : model.contextUsed),
@@ -429,7 +430,17 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         compactionThreshold: n.params.compactionThreshold ?? 0,
         lastFrameAt: now,
       };
-      if (model.modelControlState.kind === "ready" || model.modelControlState.kind === "recovering") return context;
+      // Under canonical model control the model identity and reasoning profile
+      // come from the control snapshot, so a legacy frame must not rewrite
+      // them. The default tier is the one profile fact the snapshot does not
+      // carry, and a switch's own frame is the only live announcement of it:
+      // take it when this frame describes the canonical model, so a stale
+      // frame naming another model cannot mislabel the one that is running.
+      if (model.modelControlState.kind === "ready" || model.modelControlState.kind === "recovering") {
+        return n.params.modelProvider === model.modelProvider && n.params.model === model.model
+          ? { ...context, defaultReasoningEffort: n.params.defaultReasoningEffort }
+          : context;
+      }
       const canonicalDisplay = { modelProvider: n.params.modelProvider, model: n.params.model };
       return {
         ...context,
@@ -437,6 +448,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         model: n.params.model,
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
+        defaultReasoningEffort: n.params.defaultReasoningEffort,
         modelControlState:
           model.modelControlState.kind === "unsupported"
             ? {

@@ -179,7 +179,7 @@ func TestScrubSessionDecisionsNoStores(t *testing.T) {
 
 func TestScrubSessionDecisionsArchiveError(t *testing.T) {
 	dir := t.TempDir()
-	archive := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(dir, "index.db")))
 	s := &WebServer{cfg: hubcore.WebConfig{Archive: archive}}
 	errs := s.scrubSessionDecisions("s1")
 	if len(errs) != 0 {

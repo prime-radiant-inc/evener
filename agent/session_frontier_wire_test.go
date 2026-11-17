@@ -37,9 +37,11 @@ func (s frontierWireSource) PendingAskSnapshot() (*appwire.PendingQuestion, *app
 func (s frontierWireSource) FailedToolCalls() (int, bool)                             { return s.s.FailedToolCallsSnapshot() }
 func (s frontierWireSource) RestingFailure() *appwire.ThreadFailure                   { return nil }
 func (s frontierWireSource) PendingEscalations() []appwire.SandboxEscalationRequested { return nil }
-func (s frontierWireSource) ReasoningInfo() (string, []string, bool)                  { return "", nil, false }
-func (s frontierWireSource) VisionModel() string                                      { return s.s.VisionModel() }
-func (s frontierWireSource) SessionMeta() schema.SessionMeta                          { return s.s.Meta() }
+func (s frontierWireSource) ReasoningInfo() (string, []string, bool, string) {
+	return "", nil, false, ""
+}
+func (s frontierWireSource) VisionModel() string             { return s.s.VisionModel() }
+func (s frontierWireSource) SessionMeta() schema.SessionMeta { return s.s.Meta() }
 
 func newFrontierWire(t *testing.T, s *agent.Session) (*server.Server, func(bool) appwire.ThreadHistoryReadResponse, func() []events.SessionEvent) {
 	t.Helper()

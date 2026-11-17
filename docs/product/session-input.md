@@ -45,6 +45,18 @@ restoration and failed-start recovery retain the same payload. Start and steer
 records do not enter the exposed input queue, so existing queue promotion and
 drain operations keep their ordinary behavior.
 
+## Redelivery
+
+The journal owns accepted input, so delivery cannot depend on the process-local
+wake that normally runs it. `SubmitPendingUserInput` is the fast path; the serve
+loop's queued-input probe is the backstop, taken beside its durable-start probe
+before it blocks on the wake channel. An accepted message or steer whose wake
+never arrived therefore runs on the next loop iteration instead of waiting for
+the next attach, which is a restart away. The probe asks the same questions the
+wake's claim asks — a claimable queue head, or user steering that is neither
+parked nor held and has a carrier turn to claim — so a Stop's parking still
+holds, and an idle iteration that finds nothing runs no turn.
+
 `schema.Turn` retains the typed payload and daemon-stamped
 `voice_presentation_input_id` (`client:<clientMutationId>`). Provider projection
 appends a separate JSON-escaped data content part on a message copy. It changes
@@ -68,3 +80,7 @@ reconstruction, actual repeated folds and restored model projection, and a typed
 or voice correction appended during summarization. Scripted providers verify
 custody and request shape, not model decisions about spoken references. Those
 require the opt-in live voice journeys.
+
+`TestProcessNextServeInputClaimsDurablePendingInputAfterLostWake` covers the
+redelivery backstop with the wake channel already closed, so it fails if the
+loop stops asking and would otherwise pass only by receiving a kick.

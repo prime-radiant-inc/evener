@@ -802,7 +802,8 @@ the section that keeps regressing
 
 // --- teardown/budget titles ---
 // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
-// "watch ended:"; watchBudgetClearedMessage starts with "watch cleared:".
+// "watch ended:"; the budget auto-clear notice older runs recorded starts with
+// "watch cleared:".
 // Those reasons must title as an ending, never as a firing.
 
 test("a watch-ended notice titles Watch ended, not a firing", () => {
@@ -815,7 +816,7 @@ watch ended: job_x is terminal (status=completed reason=done output_bytes=10); c
 });
 
 test("a budget auto-clear notice titles Watch auto-cleared, not a trigger", () => {
-  // Backend truth: autoClearWatchOverBudgetNotification passes "" as the
+  // Backend truth (older runs): the budget auto-clear notice passed "" as the
   // job id — the cleared target rides the reason, never
   // a job_id attr. (An earlier revision of this fixture used job_id="self";
   // no producer emits that — the NotificationCard "self" guard test pins the
@@ -1976,10 +1977,20 @@ test("the quiet watchdog parses how long the subagent has been quiet", () => {
     title: "Delegate quiet",
     tone: "neutral",
     delegateId: "dlg_1",
-    quiet: { window: "10m", lastActivityAt: "2026-09-28T20:01:00Z" },
+    quiet: { silence: "10m", lastActivityAt: "2026-09-28T20:01:00Z" },
   });
   expect(n?.outcome).toBeUndefined();
   expect(n?.message).toBeUndefined();
+});
+
+// A repeat of one silent stretch names the ongoing total ("quiet for 20m"),
+// not the window (agent/delegate_quiet_watch.go's BeginQuietAttention). The
+// wire fixture above only ever carries a first wake, whose total IS the
+// window, so this pins that the parsed field means the silence on every frame.
+test("a repeat quiet frame's parsed field carries the ongoing total", () => {
+  const frame = `<delegate-notification delegate_id="dlg_1">quiet for 20m; last activity: 2026-09-28T20:01:00Z</delegate-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(frame)), 0);
+  expect(n.quiet).toEqual({ silence: "20m", lastActivityAt: "2026-09-28T20:01:00Z" });
 });
 
 test("the quiet watchdog's prose is handed back as plain text", () => {
@@ -1987,7 +1998,7 @@ test("the quiet watchdog's prose is handed back as plain text", () => {
 quiet for 10m; last activity: 2026&amp;01
 </delegate-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(frame)), 0);
-  expect(n.quiet).toEqual({ window: "10m", lastActivityAt: "2026&01" });
+  expect(n.quiet).toEqual({ silence: "10m", lastActivityAt: "2026&01" });
   expect(n.prose).toBe("quiet for 10m; last activity: 2026&01");
 });
 

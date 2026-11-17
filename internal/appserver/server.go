@@ -368,6 +368,14 @@ func (s *Server) SubscriberCount(threadID string) int {
 	return s.subs.ConnectionCount(threadID)
 }
 
+// SubscriberDeparted returns a channel closed by the next change that can
+// make a thread idle. A waiter re-reads SubscriberCount after every close
+// rather than learning which thread changed, so one close serves every
+// reader; a missed close only delays the next look.
+func (s *Server) SubscriberDeparted() <-chan struct{} {
+	return s.subs.Departed()
+}
+
 // SetBeforeSubscriptionGate installs a callback run immediately before a
 // subscribe, a subscription replacement, or a capture acquires the projection
 // gate. It holds no lock, so a test outside this package can park there to

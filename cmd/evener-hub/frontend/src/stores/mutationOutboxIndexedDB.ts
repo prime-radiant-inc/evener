@@ -40,6 +40,7 @@ type MutationOutboxOperation =
   | "settleReceipt"
   | "transferToRecovery"
   | "updateRecoveryInput"
+  | "retireDeliveredPromoteRecoveries"
   | "preserveRecoveryComposition"
   | "discardRecovery"
   | "resendRecovery"
@@ -1850,6 +1851,62 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         .filter((record) => targetRef === undefined || record.targetRef === targetRef)
         .sort((left, right) => left.intentSequence - right.intentSequence);
     });
+  }
+
+  // A refused promote whose queue entry another transition already SETTLED -
+  // delivered, or confirmed canceled (an input the daemon names retired will
+  // never deliver, so a removed message must not resurrect as refused work)
+  // - is a duplicate the projection suppresses while the proof is visible,
+  // but a bounded transcript window can drop the proof on a reload, so the
+  // hydration path settles the UNEDITED record durably here (render-side
+  // suppression alone would resurrect the row). An edited composition is the
+  // user's own unsent work and survives every sweep
+  // (settlementRetiresRecovery's rule, read structurally).
+  async retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]> {
+    if (settledSourceIds.size === 0) return [];
+    const retired = await this.#write<string[]>(
+      [RECOVERY_STORE, OUTBOX_STORE],
+      "retireDeliveredPromoteRecoveries",
+      async (transaction) => {
+        const store = transaction.objectStore(RECOVERY_STORE);
+        const records = await requestResult<MutationRecoveryRecord[]>(store.getAll());
+        const retiredIds: string[] = [];
+        const sweptRetiredIds: string[] = [];
+        for (const record of records) {
+          if (record.targetRef !== targetRef && record.displayedRef !== targetRef) continue;
+          if (record.recoveryKind !== "rejected") continue;
+          if (record.method !== "turn/promoteQueuedAsSteer") continue;
+          if ((record.compositionRevision ?? 0) > 0) continue;
+          const display = record.optimisticDisplay;
+          const displaySource: Record<string, unknown> | undefined =
+            display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
+          const sourceMutationId =
+            typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
+          if (sourceMutationId === undefined || !settledSourceIds.has(sourceMutationId)) continue;
+          // The recovery's same-wire outbox siblings retire in the same
+          // transaction (discardRecovery's rule): a superseded predecessor a
+          // retry left behind would otherwise transferToRecovery a fresh
+          // refused copy for the already-delivered message off its own delayed
+          // terminal refusal. Their ids publish through the retiredIds
+          // channel, not the return: callers gate on the recoveries they
+          // owned, while the runtime's delivery registrations clear by swept
+          // key exactly as every other wire-family sweep publishes them.
+          sweptRetiredIds.push(
+            ...(await this.#retireWireSiblings(transaction, effectiveWireId(record), {
+              excludeKeys: new Set([record.clientMutationId]),
+              sweepOptimistic: false,
+              sweepRecovery: false,
+            })),
+          );
+          await requestResult(store.delete(record.clientMutationId));
+          retiredIds.push(record.clientMutationId);
+        }
+        if (sweptRetiredIds.length > 0) this.#retiredIdsListener?.(sweptRetiredIds);
+        return retiredIds;
+      },
+    );
+    if (retired.length > 0) this.#notifyQuietly(() => this.#settledListener?.(targetRef));
+    return retired;
   }
 
   async updateRecoveryInput(

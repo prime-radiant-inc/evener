@@ -114,6 +114,39 @@ test("a workspace TranscriptReader needs only its documented reader methods", ()
   mounted.unmount();
 });
 
+test("Find reads an older page in a visible popout while the opener is hidden", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "older" }));
+  fake.on("thread/turns/list", () => ({
+    data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+    nextCursor: undefined,
+  }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  const popdoc = frame.contentDocument;
+  if (!popdoc) throw new Error("missing popout document");
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  vi.spyOn(popdoc, "visibilityState", "get").mockReturnValue("visible");
+  try {
+    const mounted = renderHook(() => useTranscript("ref_a", "pane_a", popdoc));
+    try {
+      act(() => mounted.result.current.findOlder());
+      await act(async () => {
+        await flushUntil(() => fake.calls.some((call) => call.method === "thread/turns/list"));
+      });
+      expect(fake.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+    } finally {
+      mounted.unmount();
+    }
+  } finally {
+    vi.restoreAllMocks();
+    frame.remove();
+  }
+});
+
 test("retiring one reader preserves another reader's demand", async () => {
   vi.useFakeTimers();
   try {

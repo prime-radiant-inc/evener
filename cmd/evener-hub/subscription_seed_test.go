@@ -21,6 +21,13 @@ type seedSubscriptionParams struct {
 // registry holds a live, registered connection rather than a hand-built one.
 func seedSubscription(t *testing.T, server *appserver.Server, threadID string) {
 	t.Helper()
+	seedSubscriptionClient(t, server, threadID)
+}
+
+// seedSubscriptionClient is seedSubscription, returning the seeded client so a
+// test that has to drop the subscription deliberately can close it.
+func seedSubscriptionClient(t *testing.T, server *appserver.Server, threadID string) *appwire.Client {
+	t.Helper()
 	appserver.HandleTyped(server.Router(), seedSubscriptionMethod, func(ctx context.Context, p seedSubscriptionParams) (struct{}, error) {
 		return struct{}{}, appserver.SubscribeWithAdmission(ctx, p.ThreadID, false)
 	})
@@ -37,4 +44,5 @@ func seedSubscription(t *testing.T, server *appserver.Server, threadID string) {
 	if err := client.Request(context.Background(), seedSubscriptionMethod, seedSubscriptionParams{ThreadID: threadID}, nil); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
+	return client
 }

@@ -44,7 +44,7 @@ func TestLiveOnlyReadRejectsSavedHistoryAfterOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	indexPastTranscriptForTest(t, state, id)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -142,5 +142,31 @@ func TestLiveOnlyReadPreservesOutageBeforeOwnershipRecovery(t *testing.T) {
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("relay reads = %d, want 2 (the retry budget, no ownership re-read)", got)
+	}
+}
+
+// A replaced socket retires its subscription under a concurrent baseline read,
+// and the relay marks that refusal automatically retryable. The read that
+// proves the live manager waits it out rather than failing on the first shot:
+// the #6291 shape without a live stack.
+func TestReadLiveManagerRetriesRetryableRefusal(t *testing.T) {
+	var calls int
+	// pollRead waits between reads on the stack's notifications channel and its
+	// context, so a stub stack needs a real client and a live context.
+	read := (&voiceCorrectionStack{ctx: context.Background(), client: appwire.NewClient(nil), instance: "instance"}).readLiveManagerAfter(t, "baseline after device close", func() (appwire.ThreadReadResponse, error) {
+		calls++
+		if calls <= 2 {
+			return appwire.ThreadReadResponse{}, appwire.RetryableSessionUnavailable("thread subscription is unavailable")
+		}
+		return appwire.ThreadReadResponse{
+			BootGeneration: "boot",
+			Thread: appwire.Thread{Evener: appwire.EvenerThread{
+				InstanceID: "instance", Manager: true, MutationStateAuthoritative: true,
+				ConversationProvenance: &appwire.ConversationProvenanceState{Authoritative: true},
+			}},
+		}, nil
+	})
+	if calls != 3 || read.Thread.Evener.InstanceID != "instance" {
+		t.Fatalf("retryable refusal did not converge on the live manager: calls=%d", calls)
 	}
 }

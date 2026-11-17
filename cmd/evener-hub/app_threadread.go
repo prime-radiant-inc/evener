@@ -69,32 +69,36 @@ func pastEntryCost(cfg hubcore.WebConfig, entry hubcore.PastEntry) *registry.Cos
 	return costFor(cfg.Registry, entry.Meta.ProfileID, entry.Meta.Model)
 }
 
-// pastEntryReasoningFacts is the daemonless read's reasoning trio: the effort
+// pastEntryReasoningFacts is the daemonless read's reasoning facts: the effort
 // level the session's saved Config persisted (SetReasoningEffort flushes
 // meta.json, and resume reads it back, so a cold read reporting it is the
-// same fact the resumed daemon would serve), plus the ladder and
-// supportsReasoning the session's own ProfileID/Model resolve to at facts
-// depth — the depth the live envelope's Profile.ReasoningEffortLevels and
-// SupportsReasoning already answer from, so both projections agree on the
-// ladder for the same row. A row the registry cannot resolve reports an
-// empty ladder and no support claim rather than a guess.
-func pastEntryReasoningFacts(cfg hubcore.WebConfig, entry hubcore.PastEntry) (effort string, levels []string, supportsReasoning bool) {
+// same fact the resumed daemon would serve), plus the ladder,
+// supportsReasoning and the unset-effort default the session's own
+// ProfileID/Model resolve to at facts depth — the depth the live envelope's
+// Profile.ReasoningEffortLevels, SupportsReasoning and DefaultReasoningEffort
+// already answer from, so both projections agree on them for the same row. A
+// row the registry cannot resolve reports an empty ladder, no support claim
+// and no default rather than a guess.
+func pastEntryReasoningFacts(cfg hubcore.WebConfig, entry hubcore.PastEntry) (effort string, levels []string, supportsReasoning bool, defaultEffort string) {
 	effort = entry.Meta.Config.ReasoningEffort
 	if cfg.Registry == nil {
-		return effort, nil, false
+		return effort, nil, false, ""
 	}
 	r := cfg.Registry.Get()
 	if r == nil {
-		return effort, nil, false
+		return effort, nil, false, ""
 	}
 	res, err := r.ResolveInstanceModelFacts(entry.Meta.ProfileID, entry.Meta.Model)
 	if err != nil {
-		return effort, nil, false
+		return effort, nil, false, ""
 	}
 	// The live profile answers SupportsReasoning with !Caps.ReasoningDisabled()
 	// (agent/provider/profile.go), so an unstated verdict is supported, not
 	// unsupported: an uncatalogued row on a custom gateway keeps its picker.
-	return effort, res.Caps.EffortValues, !res.Caps.ReasoningDisabled()
+	// The default goes through the same rule, over the same row facts, that the
+	// live envelope applies.
+	levels, supportsReasoning = res.Caps.EffortValues, !res.Caps.ReasoningDisabled()
+	return effort, levels, supportsReasoning, agent.DefaultReasoningEffort(res)
 }
 
 func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {
@@ -1404,16 +1408,17 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	// single-thread read paths recover the figure from the transcript instead —
 	// see stampDerivedTotals.
 	cumulativeUsage := evenerUsageFromCumulative(entry.Meta.CumulativeUsage)
-	// The reasoning trio mirrors the live envelope (cmd/evener/serve.go's
+	// The reasoning facts mirror the live envelope (cmd/evener/serve.go's
 	// liveThreadEnvelopeSource.ReasoningInfo): the current effort is the
 	// session's own persisted setting (Config.ReasoningEffort, written by
-	// Session.SetReasoningEffort and read back on resume), and the ladder plus
-	// supportsReasoning resolve at facts depth from the row the session's own
-	// ProfileID/Model name — the same no-credential read costFor prices through
-	// (spec §10.1), so the web footer's effort control renders beside the model
-	// picker on a cold session too. A row the registry cannot resolve stays
-	// honestly absent: no fabricated ladder, no invented capability.
-	reasoningEffort, reasoningEffortLevels, supportsReasoning := pastEntryReasoningFacts(cfg, entry)
+	// Session.SetReasoningEffort and read back on resume), and the ladder,
+	// supportsReasoning and the unset-effort default resolve at facts depth
+	// from the row the session's own ProfileID/Model name — the same
+	// no-credential read costFor prices through (spec §10.1), so the web
+	// footer's effort control renders beside the model picker on a cold
+	// session too. A row the registry cannot resolve stays honestly absent: no
+	// fabricated ladder, no invented capability, no guessed default.
+	reasoningEffort, reasoningEffortLevels, supportsReasoning, defaultReasoningEffort := pastEntryReasoningFacts(cfg, entry)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
@@ -1432,24 +1437,25 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		// the hub advertises forkFromTurn on these sessions, so the wire must carry
 		// one. AskPending stays false: a past session has no live ask to be pending.
 		Evener: appwire.EvenerThread{
-			Ref:                   ref,
-			InstanceID:            entry.Meta.ID,
-			Manager:               entry.Meta.Manager,
-			ParentRef:             parentRef,
-			Kind:                  kind,
-			ForkLabel:             entry.Meta.ForkLabel,
-			Profile:               entry.Meta.ProfileID,
-			Goal:                  persistedGoalState(entry.Meta.Goal),
-			HumanNote:             entry.Meta.HumanNote,
-			AgentNote:             agent.SanitizeNoteTextForDisplay(entry.Meta.AgentNote),
-			SessionURLs:           persistedSessionURLs(entry.Meta.SessionURLs),
-			Capabilities:          pastThreadCapabilities(),
-			WorkMillis:            entry.Meta.WorkMillis,
-			Usage:                 cumulativeUsage,
-			Cost:                  appwire.EstimateCost(pastEntryCost(cfg, entry), cumulativeUsage),
-			ReasoningEffort:       reasoningEffort,
-			ReasoningEffortLevels: reasoningEffortLevels,
-			SupportsReasoning:     supportsReasoning,
+			Ref:                    ref,
+			InstanceID:             entry.Meta.ID,
+			Manager:                entry.Meta.Manager,
+			ParentRef:              parentRef,
+			Kind:                   kind,
+			ForkLabel:              entry.Meta.ForkLabel,
+			Profile:                entry.Meta.ProfileID,
+			Goal:                   persistedGoalState(entry.Meta.Goal),
+			HumanNote:              entry.Meta.HumanNote,
+			AgentNote:              agent.SanitizeNoteTextForDisplay(entry.Meta.AgentNote),
+			SessionURLs:            persistedSessionURLs(entry.Meta.SessionURLs),
+			Capabilities:           pastThreadCapabilities(),
+			WorkMillis:             entry.Meta.WorkMillis,
+			Usage:                  cumulativeUsage,
+			Cost:                   appwire.EstimateCost(pastEntryCost(cfg, entry), cumulativeUsage),
+			ReasoningEffort:        reasoningEffort,
+			ReasoningEffortLevels:  reasoningEffortLevels,
+			SupportsReasoning:      supportsReasoning,
+			DefaultReasoningEffort: defaultReasoningEffort,
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},

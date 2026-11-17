@@ -43,7 +43,7 @@ func TestManagerModeClearColdRead(t *testing.T) {
 	}
 	roster := hubcore.NewRoster(f.runDir, nil)
 	roster.Refresh()
-	past := hubcore.NewPastIndex(f.stateDir)
+	past := closeOnCleanup(t, hubcore.NewPastIndex(f.stateDir))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

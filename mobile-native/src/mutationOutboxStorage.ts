@@ -913,6 +913,31 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		);
 	}
 
+	// A refused promote whose queue entry another transition already delivered
+	// is a duplicate the projection suppresses while the proof is visible - but
+	// a bounded transcript window can drop the proof on a reload, so the
+	// hydration path settles the UNEDITED record durably here. An edited
+	// composition is the user's own unsent work and survives every sweep
+	// (settlementRetiresRecovery's rule, read structurally).
+	async retireDeliveredPromoteRecoveries(targetRef: string, settledSourceIds: ReadonlySet<string>): Promise<string[]> {
+		if (settledSourceIds.size === 0) return [];
+		const retired: string[] = [];
+		for (const record of await this.listRecovery(targetRef)) {
+			if (record.recoveryKind !== "rejected") continue;
+			if (record.method !== "turn/promoteQueuedAsSteer") continue;
+			if ((record.compositionRevision ?? 0) > 0) continue;
+			const display = record.optimisticDisplay;
+			const displaySource: Record<string, unknown> | undefined =
+				display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
+			const sourceMutationId =
+				typeof displaySource?.sourceMutationId === "string" ? displaySource.sourceMutationId : undefined;
+			if (sourceMutationId === undefined || !settledSourceIds.has(sourceMutationId)) continue;
+			await this.discardRecovery(record.clientMutationId, targetRef);
+			retired.push(record.clientMutationId);
+		}
+		return retired;
+	}
+
 	// The user's Discard on their own message that a Stop held before it left
 	// the phone ("canceled") or whose delivery couldn't be confirmed
 	// ("blockedUnknown"): exactly that row, for exactly that composite target.

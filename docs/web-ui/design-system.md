@@ -144,7 +144,15 @@ losing the conversation that made the evidence relevant.
   session menu and Send at the right. The paperclip returns with the expanded card,
   and focusing or typing grows it back on the spatial recipe (§5). The space
   around the card keeps its outgoing height until the animation starts, so a
-  transcript resting at its end stays there through the fold. A phone's
+  transcript resting at its end stays there through the fold. The fold runs
+  after a completed click outside the card, never at the press: the card is in
+  flow, so folding mid-press would move the pressed control out from under the
+  pointer and swallow its click. The listener reads that click in the capture
+  phase, because a transcript control may consume its own click with
+  `stopPropagation`, and folds on the task after it, so the card's height
+  change cannot land under the control's own handlers. A press that never
+  becomes a click — selecting text, dragging a scroll — leaves the card as it
+  was. A phone's
   resting composer is one line too, but it keeps only the session menu and Send
   there; engaging the editor restores the full row, including Attach and the model
   picker. A desktop card under 620px keeps the stacked control row and the folded
@@ -787,7 +795,7 @@ during implementation (noted inline); this table is the one to trust.
 | **MermaidDiagram** | `{source: string; renderTimeoutMs?: number (10000)}` (`MermaidDiagramProps`) | Renders one model-authored mermaid diagram inline through the two-layer sanitize in `security.ts`, themed to the resolved scheme. Once rendered the container is a button that opens the fullscreen DiagramViewer; while loading it is an inert box, and a failed or timed-out render falls back to the source in CodeBlock styling plus "Couldn't render this diagram." Exported from the barrel like every other widget; Markdown, a sibling, still imports it from `../mermaid`, and the mermaid guard entry (`src/dev/mermaidguard-entry.tsx`) imports the directory so its standalone bundle does not pull in the whole barrel. |
 | **DiffBlock** | `{unified: string}` | Per-line domain notation on already-diffed text (dedicated add/remove tints plus `+`/`−` markers); does not compute a diff itself. |
 | **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow; releaseModifierKeys?: boolean; isSelected?: (node) => boolean \| undefined}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, focused, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. Tree owns the row's box: its root keeps the rows one `--space-2` in from both edges of its container, so each `--radius-control` row is a pill; a `--hover-1` hover wash and a `--hover-2` pressed wash; the press (`--press-scale-row`, reduced-motion gated, and not while a control inside the row is the one pressed); a 1px `--edge` guide rail down each nested level; and, for a row `isSelected` marks, the shared selected-row lift (`--surface-1`, `--shadow-card-ringed`, semibold ink — one recipe with ListRow, `widgets/internal/selectableRow.module.css`), which holds under hover and press. A caller wraps nothing around it and styles nothing on its elements: `renderRow`'s info carries `focused`, true while the treeitem itself (not a control inside it) holds focus, so row content can reveal focus-only affordances (the rail's row actions). A focused row keeps focus when the caller's next `nodes` move it to another branch, and focus falls to a neighbour when its row leaves the tree. `isSelected` adds `aria-selected`; `releaseModifierKeys` lets Alt-held arrows and Alt+Home/End through to the desktop global chords. |
-| **VirtualList** | `{count; estimateSize; renderRow; dynamic?; getItemKey?; onChange?; onLayout?; anchorToEnd?; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex, getScrollElement, isLayoutCurrent, getVisibleRange, scrollToOffset?, isMeasurementReady?}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone unless `dynamic` opts in to `measureElement`. `getItemKey` keys rows by identity, needed by any consumer that prepends; `anchorToEnd` keeps a live-append list pinned to its end while the reader is there (requires `getItemKey`). |
+| **VirtualList** | `{count; estimateSize; renderRow; dynamic?; getItemKey?; onChange?; onLayout?; anchorToEnd?; followEnd?; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex, getScrollElement, isLayoutCurrent, getVisibleRange, scrollToOffset?, isMeasurementReady?}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone unless `dynamic` opts in to `measureElement`. `getItemKey` keys rows by identity, needed by any consumer that prepends; `anchorToEnd` keeps a live-append list pinned to its end while the reader is there (requires `getItemKey`). |
 | **Chevron** | `{direction?: "right"\|"down"\|"left"\|"up" ("right"); size?: number (14)}` | The app's one chevron: every disclosure triangle, tree twisty and dropdown caret draws from it. A square block-level SVG box, so rotating it in CSS cannot overhang its layout box; a fixed direction draws a different path rather than transforming. Decorative, stroke in currentColor. |
 | **ToolIcon** | `{kind: ToolIconKind; size?: number (14); tone?: "alive"\|"attention"\|"danger"}` | The transcript row-kind glyph: one line-art icon per tool family (terminal, file, edit, search, …, with `wrench` for every unregistered or MCP tool), plus `person`/`thought`, the status shapes `check`/`cross`/`alert`/`info`, and two chrome glyphs: `mark`, the evener mark (two level bars) that the rail's brand tile and the agent's SpeakerAvatar both draw, and `shield`, effective access (the New session access tile). They are kinds here so the product mark and the tile glyphs share the family's grid and stroke weight. Same 16-grid stroke grammar and square box as Chevron; single-colour, currentColor. `tone` is for a glyph whose hue IS the state (the activity sidebar's agent and job rows: working, needs you, failed); it is reported as `data-tone` on the `<svg>`. Omitted, the icon inherits the surrounding ink, so a settled row stays in its caller's quiet ink. On the semantic allowlist for its tones. |
 | **SpeakerAvatar** | `{speaker: "user"\|"agent"; size?: number (24)}` | The transcript's round speaker tile at exchange-boundary headers, glyph scaled with the tile. The user wears ToolIcon `person` in `--ink-mid` on a hairline-edged tile. The agent wears ToolIcon `mark`, the evener mark (two level bars, an equals sign), in `--on-accent` on a solid `--accent` tile: the product's own sign, the same glyph the rail header leads with. Decorative (`aria-hidden`) because the header beside it names the speaker in words. |
@@ -1308,26 +1316,45 @@ both compose them. Use existing surface, edge,
 ink, spacing, and tap-size tokens. Do not introduce mobile-only
 colors, type tokens, chip backgrounds, or monospace labels.
 
-Editable text is 16px on phones, and it gets there through the ramp rather
-than per-field: `tokens.css`'s below-900px block sets `--font-size-body` to
-16px and every field takes the body size, so iOS Safari has nothing to
-auto-zoom into. That is what let the viewport meta stop locking zoom (WCAG
-1.4.4 resize text): `index.html` no longer carries
-`maximum-scale=1, user-scalable=no`, and `src/styles/viewport-pin.test.ts`
-fails if either comes back. An auto-growing textarea has a real content-driven
+Editable text is 16px on phones and on any coarse pointer, and it gets there
+through the ramp rather than per-field: `tokens.css`'s below-900px block sets
+`--font-size-body` to 16px, and the touch block beside `--tap-min` floors
+`--font-size-control` at 16px, so iOS Safari has nothing to auto-zoom into on
+any touch device — the iPhone Duo's 951pt inner display in landscape crosses
+the 899px boundary and still runs iOS Safari. Double-tap and pinch zoom are
+gone the same way (Jesse 2026-11-15): `global.css` spends
+`touch-action: pan-x pan-y` under `(any-pointer: coarse)`, which blocks both
+where touch-action carries the viewport (Chromium, Android). iOS Safari does
+not honor touch-action for the viewport pinch — the same accessibility stance
+that makes it ignore `maximum-scale` (Jesse's Duo test after the rule first
+shipped) — so the app entry point (`main.tsx`) installs the
+`shell/pinchVeto.ts` veto, which prevents Safari's non-standard
+`gesturestart`/`gesturechange` events. Safari has also been reported to
+fire those for desktop trackpad pinches, so the veto installs only where
+the coarse query says a touch screen exists, and desktop zoom keeps every
+path. The enlargement paths that remain on touch screens are the in-app
+font-size preference (S/M/L/XL) and the OS Magnifier; a reader who arrives
+already zoomed keeps that zoom and recovers through Safari's Page Zoom
+setting, since the veto removes the pinch way back. The viewport meta
+itself still never locks zoom: modern iOS ignores `maximum-scale` for
+pinch anyway, so a meta lock would add nothing the veto and the coarse
+query do not already own, and `src/styles/viewport-pin.test.ts` fails if
+it comes back. An auto-growing textarea has a real content-driven
 minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
 behavior across breakpoints.
 
-The tap floor is `--tap-min`, 44px (decision 4 of
-2026-07-30-mobile-session-layout-design.md). `tokens.css` declares it under
-`@media (max-width: 899px), (any-pointer: coarse)`, so it holds on phones and on
-any coarse pointer at any width, such as touch laptops and iPad landscape
-(Jesse 2026-10-11). Only the floor widens: the 16px body and phone density
-stay phone-only. Widgets apply it as `min-width`/`min-height` under that same
-query, so desktop sizing never changes; `src/styles/display-gates.test.ts`
-fails if a widget's `var(--tap-min)` sits under any other gate.
+The touch floor query is `@media (max-width: 899px), (any-pointer: coarse)`.
+`--tap-min`, 44px (decision 4 of 2026-07-30-mobile-session-layout-design.md),
+and the 16px `--font-size-control` floor are declared under it, so both hold
+on phones and on any coarse pointer at any width, such as touch laptops and
+iPad landscape (Jesse 2026-10-11). Only the floors widen: the 16px body and
+phone density stay phone-only. Widgets apply `--tap-min` as
+`min-width`/`min-height` under that same query, so desktop sizing never
+changes; `src/styles/display-gates.test.ts` fails if a widget's
+`var(--tap-min)` — or a `--font-size-control` override — sits under any other
+gate.
 
 When a form has one primary completion action, the mobile action band may be
 fixed above `var(--dock-clearance)`. It is a raised surface with a top

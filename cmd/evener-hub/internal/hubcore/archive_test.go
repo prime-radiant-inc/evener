@@ -12,7 +12,7 @@ import (
 )
 
 func TestArchiveStoreKeysDecisionsBySource(t *testing.T) {
-	s := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	s := closeOnCleanup(t, NewArchiveStore(filepath.Join(t.TempDir(), "index.db")))
 	now := time.Unix(1_700_000_000, 0)
 	for _, source := range []string{"", "host-a", "host-b"} {
 		if err := s.Set(source, "project", "proj-a", true, now); err != nil {
@@ -111,7 +111,7 @@ func TestArchiveStoreMigratesLegacyKeyToSourceColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := NewArchiveStore(dbPath)
+	s := closeOnCleanup(t, NewArchiveStore(dbPath))
 	got, err := s.Decisions()
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 	previous := indexMigrationInterleave
 	indexMigrationInterleave = func() {
 		indexMigrationInterleave = nil // the competing migration is one-shot
-		competing := NewArchiveStore(dbPath)
+		competing := closeOnCleanup(t, NewArchiveStore(dbPath))
 		if _, err := competing.Decisions(); err != nil {
 			t.Errorf("competing migration: %v", err)
 		}
@@ -166,7 +166,7 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 	}
 	t.Cleanup(func() { indexMigrationInterleave = previous })
 
-	store := NewArchiveStore(dbPath)
+	store := closeOnCleanup(t, NewArchiveStore(dbPath))
 	got, err := store.Decisions()
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
 
 func fuzzScenarioArchiveStoreSetAndRead(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "index.db")
-	s := NewArchiveStore(db)
+	s := closeOnCleanup(t, NewArchiveStore(db))
 	now := time.Unix(1_700_000_000, 0)
 
 	if err := s.Set("", "session", "sess-1", true, now); err != nil {
@@ -211,7 +211,7 @@ func fuzzScenarioArchiveStoreSetAndRead(t *testing.T) {
 }
 
 func fuzzScenarioArchiveStoreEmptyWhenNoDB(t *testing.T) {
-	s := NewArchiveStore("")
+	s := closeOnCleanup(t, NewArchiveStore(""))
 	got, err := s.Decisions()
 	if err != nil {
 		t.Fatalf("decisions: %v", err)
@@ -230,7 +230,7 @@ func fuzzScenarioArchiveStoreOpenError(t *testing.T) {
 	if err := os.Mkdir(dbPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := NewArchiveStore(dbPath)
+	s := closeOnCleanup(t, NewArchiveStore(dbPath))
 	now := time.Now()
 	err := s.Set("", "session", "sess-1", true, now)
 	if err == nil {
@@ -250,7 +250,7 @@ func fuzzScenarioArchiveStoreMkdirAllError(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := filepath.Join(blocker, "sub", "index.db")
-	s := NewArchiveStore(db)
+	s := closeOnCleanup(t, NewArchiveStore(db))
 	now := time.Now()
 	err := s.Set("", "session", "sess-1", true, now)
 	if err == nil {
@@ -268,7 +268,7 @@ func fuzzScenarioArchiveStoreMkdirAllError(t *testing.T) {
 
 func fuzzScenarioArchiveStoreDelete(t *testing.T) {
 	dir := t.TempDir()
-	store := NewArchiveStore(filepath.Join(dir, "index.db"))
+	store := closeOnCleanup(t, NewArchiveStore(filepath.Join(dir, "index.db")))
 	now := time.Unix(1_700_000_000, 0)
 	_ = store.Set("", "project", "/a/foo", true, now)
 	if err := store.Delete("", "project", "/a/foo"); err != nil {
@@ -284,7 +284,7 @@ func fuzzScenarioArchiveStoreDelete(t *testing.T) {
 // table must not reopen the database, and every write must show in the next
 // read.
 func TestArchiveStoreDecisionsAreCachedUntilAWrite(t *testing.T) {
-	s := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	s := closeOnCleanup(t, NewArchiveStore(filepath.Join(t.TempDir(), "index.db")))
 	opens := 0
 	realOpen := s.openDB
 	s.openDB = func(driver, dsn string) (*sql.DB, error) {

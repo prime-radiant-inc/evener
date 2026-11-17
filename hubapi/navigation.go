@@ -315,9 +315,16 @@ type NavigationSessionSummary struct {
 	// no seen store or an older hub.
 	SeenThrough *time.Time `json:"seen_through,omitempty"`
 	// Own-session activity counts are captured before navigation fitting.
-	// RunningJobCommand is the first available command, bounded for display.
+	// RunningJobCommand and RunningJobIntent both come from one running job,
+	// chosen by rule rather than list order (foreground before background,
+	// then the lowest job ID). The command is bounded for display; the intent
+	// is that same job's own `intent` argument, stamped on the job record at
+	// launch, one line of at most appwire.MaxIntentRunes and absent when the
+	// job stated none. The row leads with the intent because the command says
+	// what is executing and the intent says why.
 	RunningJobCount   int    `json:"running_job_count,omitempty"`
 	RunningJobCommand string `json:"running_job_command,omitempty"`
+	RunningJobIntent  string `json:"running_job_intent,omitempty"`
 	WatchCount        int    `json:"watch_count,omitempty"`
 	ArmedWatchCount   int    `json:"armed_watch_count,omitempty"`
 	// Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain

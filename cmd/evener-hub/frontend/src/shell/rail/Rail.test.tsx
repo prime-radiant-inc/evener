@@ -834,6 +834,22 @@ describe("resource-backed Rail", () => {
     expect(screen.getByTestId("rail-needs-you").textContent).toContain("2 needs you");
   });
 
+  // A generation change keeps the previous manifest's data and marks it stale
+  // until the fresh read lands (provisionalForGeneration), and resets the
+  // attention summary in the same breath. Reading that data anyway kept the
+  // chip lit for a queue the store had already replaced - and if the fresh read
+  // failed, for as long as the failure lasted.
+  test("a stale manifest's needs-you count does not keep the chip lit", () => {
+    const stale = resource({ kind: "manifest" }, manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+    installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
+    navigationStore.setState({
+      manifest: { ...stale, stale: true },
+      attention: { changed: [], summary: null },
+    });
+    render(<Rail />);
+    expect(screen.queryByTestId("rail-needs-you")).toBeNull();
+  });
+
   test("the mark leads the wordmark as decoration, and the chip's dot adds no second status name", () => {
     installState([], manifest({ attentionSummary: { needsYou: 2, error: 0, working: 0 } }));
     render(<Rail />);

@@ -57,7 +57,7 @@ export function notificationLine(
 			const subject = notification.name || delegateTitle(subagent) || notification.description || "Subagent";
 			const ref = subagent?.transcriptRef ?? notification.transcriptRef;
 			const line: NotificationLine = notification.quiet
-				? { kind: "quiet", headline: `${subject} quiet · ${notification.quiet.window}`, failed }
+				? { kind: "quiet", headline: `${subject} quiet · ${notification.quiet.silence}`, failed }
 				: notification.update
 					? { kind: "update", headline: `${subject} sent an update`, failed }
 					: // A report whose ending this client doesn't know still reported.

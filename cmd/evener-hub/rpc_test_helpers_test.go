@@ -49,7 +49,7 @@ func requireWireError(t *testing.T, err error, want int) appwire.WireError {
 // rebuilds it, failing the test if the rebuild reports an error.
 func newRebuiltPastIndex(t testing.TB, glob string) *hubcore.PastIndex {
 	t.Helper()
-	past := hubcore.NewPastIndex(glob)
+	past := closeOnCleanup(t, hubcore.NewPastIndex(glob))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

@@ -115,6 +115,26 @@ func TestRoundTimings_Emitted(t *testing.T) {
 		if rt.SystemPrompt < 0 {
 			t.Errorf("timing[%d].SystemPrompt = %v, expected >= 0", i, rt.SystemPrompt)
 		}
+		// The session advertises tools, so every round hands a non-empty
+		// cached definition list into its request and must report that work.
+		if rt.ToolDefs <= 0 {
+			t.Errorf("timing[%d].ToolDefs = %v, expected > 0", i, rt.ToolDefs)
+		}
+		// Assembling the request from the expanded history is a phase of its
+		// own; a round that reached the model built one.
+		if rt.RequestBuild <= 0 {
+			t.Errorf("timing[%d].RequestBuild = %v, expected > 0", i, rt.RequestBuild)
+		}
+		// LoopOverhead is the residual after every named phase, so the named
+		// phases plus it must reconstruct the round exactly. A phase that is
+		// measured but not subtracted leaves the sum apart by its own
+		// duration, which is what keeps request assembly out of the overhead.
+		named := rt.SystemPrompt + rt.ContextMgmt + rt.HistoryExpand + rt.ToolDefs + rt.RequestBuild +
+			rt.LLMCall + rt.ToolExec + rt.Persistence + rt.AfterAction
+		if got := named + rt.LoopOverhead; got != rt.TotalRound {
+			t.Errorf("timing[%d]: named phases %v + LoopOverhead %v = %v, want TotalRound %v (unaccounted %v)",
+				i, named, rt.LoopOverhead, got, rt.TotalRound, got-rt.TotalRound)
+		}
 		if rt.LLMCall <= 0 {
 			t.Errorf("timing[%d].LLMCall = %v, expected > 0", i, rt.LLMCall)
 		}

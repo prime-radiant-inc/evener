@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThreadModel } from "@evener/appwire-client";
-import { effortLabel, hydrateThread } from "@evener/appwire-client";
+import { applyNotification, effortLabel, hydrateThread } from "@evener/appwire-client";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
@@ -388,10 +388,11 @@ test("falls back to the default effort ladder when the model reasons but names n
 });
 
 // none-vs-(default): an unset reasoning effort is the model running on its own
-// default, NOT the user having picked a level - it must read "(default)", never
-// the first ladder level (which a value-"" select would otherwise display) and
-// never a literal "none".
-test("an unset reasoning effort shows as (default), never the first ladder level or an explicit 'none'", () => {
+// default, NOT the user having picked a level. With no resolved tier (an older
+// daemon, an unresolved row) it must read "(default)", never the first ladder
+// level (which a value-"" select would otherwise display) and never a literal
+// "none".
+test("an unset reasoning effort with no resolved tier shows as (default), never the first ladder level or an explicit 'none'", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -409,6 +410,116 @@ test("an unset reasoning effort shows as (default), never the first ladder level
   // showed "low" while its select sat at "" would be the exact lie this rule
   // exists to prevent.
   expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortLabel("", ladder));
+});
+
+function effortOptionText(select: HTMLSelectElement, value: string): string | null | undefined {
+  return Array.from(select.options).find((option) => option.value === value)?.textContent;
+}
+
+// When the daemon resolves the tier an unset effort runs at, the closed
+// readout shows that tier - what the session actually runs at - exactly as it
+// would show the tier pinned, while the open list keeps the unset option as
+// its own "<tier> (default)" choice so following the default stays distinct
+// from pinning it.
+test("an unset effort shows its resolved tier when closed, and the open list marks that tier as the default", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        supportsReasoning: true,
+        reasoningEffortLevels: ["low", "medium", "high"],
+        defaultReasoningEffort: "high",
+      })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select.value).toBe("");
+  const pinned = effortOptionText(select, "high");
+  expect(pinned).toBeDefined();
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(pinned);
+  // The unset option names the resolved tier but is not that tier pinned.
+  const unset = effortOptionText(select, "");
+  expect(unset).toContain("high");
+  expect(unset).not.toBe(pinned);
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high"]);
+});
+
+test("a pinned effort shows itself, whatever the unset effort would resolve to", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        supportsReasoning: true,
+        reasoningEffortLevels: ["low", "medium", "high"],
+        reasoningEffort: "low",
+        defaultReasoningEffort: "high",
+      })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select.value).toBe("low");
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortOptionText(select, "low"));
+});
+
+// Wire-true: the resolved tier rides the thread snapshot, and a model switch
+// replaces it with the new model's, so the readout never names the previous
+// model's default.
+test("the resolved tier comes off the thread snapshot and follows a model switch", () => {
+  const hydrated = hydrateThread(
+    {
+      thread: {
+        id: "thr_a",
+        sessionId: "sess_a",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "anthropic/claude-sonnet-4-5",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "idle" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "evener",
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          reasoningEffortLevels: ["low", "medium", "high"],
+          supportsReasoning: true,
+          defaultReasoningEffort: "medium",
+        },
+      },
+    },
+    "ref_a",
+    1000,
+  );
+
+  const { rerender } = render(<StatusRow sessionRef="ref_a" model={hydrated} now={1000} />);
+  const select = () => screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  expect(select().value).toBe("");
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortOptionText(select(), "medium"));
+
+  const switched = applyNotification(
+    hydrated,
+    {
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        modelProvider: "anthropic",
+        model: "claude-opus-4-1",
+        reasoningEffortLevels: ["low", "high", "max"],
+        supportsReasoning: true,
+        defaultReasoningEffort: "max",
+      },
+    },
+    2000,
+  );
+  rerender(<StatusRow sessionRef="ref_a" model={switched} now={2000} />);
+  expect(select().value).toBe("");
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe(effortOptionText(select(), "max"));
+  expect(effortOptionText(select(), "")).toContain("max");
 });
 
 // "none" is an explicit off the user chose (llm.ReasoningEffortNone), distinct

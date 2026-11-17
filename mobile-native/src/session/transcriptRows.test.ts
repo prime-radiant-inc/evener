@@ -1,7 +1,14 @@
-import { makeTranscriptDisplayConfig, type ThreadCapabilities, type TurnModel } from "@evener/appwire-client";
+import {
+	makeTranscriptDisplayConfig,
+	type ItemModel,
+	type ThreadCapabilities,
+	type ThreadModel,
+	type TurnModel,
+} from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
 import { type MobileTimelineItem, projectedRow } from "../projectedRows";
+import { readerKey } from "../readerPosition";
 import type { RunStep, TimelineRow } from "../timeline";
 import { type GhostSource, ghosts } from "./ghosts";
 import {
@@ -40,6 +47,12 @@ const reply = (id: string, turnId = "turn_1"): TimelineRow => ({
 	turnId,
 });
 const at = (hour: number, minute: number, day = 26) => new Date(Date.UTC(2026, 8, day, hour, minute)).toISOString();
+// The conversation the rows were projected from, as the store hands it over:
+// one turn holding the items. A Pick<ThreadModel, "turns"> needs each turn's
+// id, status and items, so no cast is needed to build one.
+const thread = (items: readonly ItemModel[]): Pick<ThreadModel, "turns"> => ({
+	turns: [{ id: "turn_1", status: "completed", items: [...items] }],
+});
 const turn = (
 	id: string,
 	startedAt?: string,
@@ -667,13 +680,10 @@ describe("the turn you have seen at the end (ruling 31)", () => {
 });
 
 describe("answers you gave a question", () => {
-	const question = step("q", "ask_user", {
-		detail: {
-			arguments: JSON.stringify({
-				questions: [{ header: "Choice", question: "Keep or drop?", options: [{ label: "Drop them", detail: "" }] }],
-			}),
-		},
+	const questionArgs = JSON.stringify({
+		questions: [{ header: "Choice", question: "Keep or drop?", options: [{ label: "Drop them", detail: "" }] }],
 	});
+	const question = step("q", "ask_user", { detail: { arguments: questionArgs } });
 	const answer: TimelineRow = {
 		kind: "user",
 		id: "ans",
@@ -681,28 +691,72 @@ describe("answers you gave a question", () => {
 		turnId: "turn_1",
 	};
 
+	// The conversation the rows were projected from: the ask calls with the
+	// arguments they asked with, and the user messages with the answer links
+	// the server stamped (the rows themselves carry no link — the hide reads
+	// the model, as the recap it mirrors does).
+	const askItem = (id: string, over: Partial<ItemModel> = {}): ItemModel => ({
+		id,
+		turnId: "turn_1",
+		type: "commandExecution",
+		toolName: "ask_user",
+		status: "completed",
+		text: "",
+		...over,
+	});
+	const askQuestionItem = (id: string, argumentsJSON: string, over: Partial<ItemModel> = {}): ItemModel => ({
+		...askItem(id, over),
+		argumentsJSON,
+	});
+	const message = (id: string, text: string, over: Partial<ItemModel> = {}): ItemModel => ({
+		id,
+		turnId: "turn_1",
+		type: "userMessage",
+		text,
+		...over,
+	});
+
 	it("leave the transcript: the question row shows the answer", () => {
-		expect(hideAnswerMessages([question, answer, reply("r")]).map((row) => row.id)).toEqual(["q", "r"]);
+		const model = thread([askQuestionItem("q", questionArgs), message("ans", answer.text)]);
+		expect(hideAnswerMessages([question, answer, reply("r")], model).rows.map((row) => row.id)).toEqual(["q", "r"]);
+	});
+
+	it("leave a recorded answer row whose transcript key is not its item id", () => {
+		// A recorded reply's row and the model item are one wire item under two
+		// spellings of its identity: history stamps a transcript key, and the row
+		// keys by it (readerKey), while the item keeps the id the daemon minted
+		// (apptranscript's item_user_N). Looking the row up by the item id alone
+		// finds nothing, so every reloaded transcript keeps the duplicate row
+		// #6328 removes.
+		const transcriptKey = "apptranscript-item-v1:turn_1:3:1";
+		const recorded: TimelineRow = { ...answer, transcriptKey };
+		const model = thread([askQuestionItem("q", questionArgs), message("ans", answer.text, { transcriptKey })]);
+		const hidden = hideAnswerMessages([question, recorded, reply("r")], model);
+		expect(hidden.rows.map((row) => row.id)).toEqual(["q", "r"]);
+		expect([...hidden.standIns]).toEqual([[transcriptKey, readerKey(question)]]);
 	});
 
 	it("stay when no question came before them", () => {
-		expect(hideAnswerMessages([user("u"), answer]).map((row) => row.id)).toEqual(["u", "ans"]);
+		const model = thread([message("u", "u"), message("ans", answer.text)]);
+		expect(hideAnswerMessages([user("u"), answer], model).rows.map((row) => row.id)).toEqual(["u", "ans"]);
 	});
 
 	it("stay when the question row before them can't show its questions", () => {
 		const unreadable = step("q", "ask_user", { detail: { arguments: "{not json" } });
-		expect(hideAnswerMessages([unreadable, answer]).map((row) => row.id)).toEqual(["q", "ans"]);
+		const model = thread([askQuestionItem("q", "{not json"), message("ans", answer.text)]);
+		expect(hideAnswerMessages([unreadable, answer], model).rows.map((row) => row.id)).toEqual(["q", "ans"]);
 	});
 
 	it("stay when they only look like answers", () => {
 		const typed: TimelineRow = { kind: "user", id: "typed", text: "[answers]\nsee above", turnId: "turn_1" };
-		expect(hideAnswerMessages([question, typed]).map((row) => row.id)).toEqual(["q", "typed"]);
+		const model = thread([askQuestionItem("q", questionArgs), message("typed", typed.text)]);
+		expect(hideAnswerMessages([question, typed], model).rows.map((row) => row.id)).toEqual(["q", "typed"]);
 	});
 
 	it("stay when their own question can't show itself, even after an earlier answer", () => {
-		// Hiding the first answer clears the flag, so the second answer is judged
-		// against its own question row — one that can't show its questions — and
-		// stays.
+		// The first question's recap claims the first answer, and the second
+		// question's row can't recap anything (its questions don't parse), so
+		// nothing recaps the second answer and it stays.
 		const unreadable = step("q2", "ask_user", { detail: { arguments: "{not json" } });
 		const second: TimelineRow = {
 			kind: "user",
@@ -710,7 +764,13 @@ describe("answers you gave a question", () => {
 			text: '[answers]\n1. [Choice] → "Drop them"',
 			turnId: "turn_1",
 		};
-		expect(hideAnswerMessages([question, answer, unreadable, second]).map((row) => row.id)).toEqual([
+		const model = thread([
+			askQuestionItem("q", questionArgs),
+			message("ans", answer.text),
+			askQuestionItem("q2", "{not json"),
+			message("ans2", second.text),
+		]);
+		expect(hideAnswerMessages([question, answer, unreadable, second], model).rows.map((row) => row.id)).toEqual([
 			"q",
 			"q2",
 			"ans2",
@@ -724,7 +784,192 @@ describe("answers you gave a question", () => {
 			{ kind: "user", id: "plain", text: "[answers] are here", turnId: "turn_1" },
 			reply("r"),
 		];
-		expect(hideAnswerMessages(rows)).toEqual(rows);
+		const model = thread([
+			askQuestionItem("q", questionArgs),
+			message("u", "u"),
+			message("plain", "[answers] are here"),
+		]);
+		expect(hideAnswerMessages(rows, model).rows).toEqual(rows);
+	});
+
+	const proseAnswer: TimelineRow = {
+		kind: "user",
+		id: "prose",
+		text: "sure, go with Yes",
+		turnId: "turn_2",
+	};
+	const proseItem = message("prose", proseAnswer.text, { turnId: "turn_2", answerToTurnIds: ["turn_1"] });
+
+	it("leave the transcript when the answer link names their question's turn", () => {
+		// A free-prose reply the wire stamps with the round it answers shows
+		// beneath its question too (#6328); the raw row must not show as well.
+		const model = thread([askQuestionItem("q", questionArgs), proseItem]);
+		expect(hideAnswerMessages([question, proseAnswer, reply("r")], model).rows.map((row) => row.id)).toEqual([
+			"q",
+			"r",
+		]);
+	});
+
+	it("stay whole when the recap carries only their first line", () => {
+		// The recap is one collapsed line, so a multi-line reply reaches it cut
+		// to its first line and an ellipsis. Hiding the raw row would put the
+		// rest of the answer out of reach on the phone, so it stays.
+		const body = "sure, go with Yes\nthe second line\nand a third";
+		const multiline: TimelineRow = { kind: "user", id: "multi", text: body, turnId: "turn_2" };
+		const model = thread([
+			askQuestionItem("q", questionArgs),
+			message("multi", body, { turnId: "turn_2", answerToTurnIds: ["turn_1"] }),
+		]);
+		expect(hideAnswerMessages([question, multiline], model).rows.map((row) => row.id)).toEqual(["q", "multi"]);
+	});
+
+	it("leave a one-line prose answer, whose recap says all of it", () => {
+		// The same reply on one line has nothing the raw row adds, so the hide
+		// still covers it — the multi-line refusal above is about lost text,
+		// not about prose.
+		const model = thread([askQuestionItem("q", questionArgs), proseItem]);
+		expect(hideAnswerMessages([question, proseAnswer], model).rows.map((row) => row.id)).toEqual(["q"]);
+	});
+
+	it("name a stand-in that the hide itself keeps, so a moved selection cannot land nowhere", () => {
+		// Find moves a selection on a hidden answer to its question row. That
+		// row must survive the hide, or the selection would just move the hole.
+		// The only rows this filter drops are user rows, and a stand-in is
+		// always the ask activity row.
+		const model = thread([askQuestionItem("q", questionArgs), proseItem]);
+		const rows = [question, proseAnswer];
+		const hidden = hideAnswerMessages(rows, model);
+		// The hidden row's own key maps to the question row, and the rows and
+		// the stand-ins come back together so a caller cannot hold one without
+		// the other.
+		expect([...hidden.standIns]).toEqual([[readerKey(proseAnswer), readerKey(question)]]);
+		expect(hidden.rows.map((row) => readerKey(row))).toEqual([readerKey(question)]);
+	});
+
+	it("stay when the turn their link names asked no readable question here", () => {
+		const offWindow: TimelineRow = {
+			kind: "user",
+			id: "off",
+			text: "an answer to a round whose question row is not in these rows",
+			turnId: "turn_2",
+		};
+		const model = thread([
+			askQuestionItem("q", questionArgs),
+			message("off", offWindow.text, { turnId: "turn_2", answerToTurnIds: ["turn_9"] }),
+		]);
+		expect(hideAnswerMessages([question, offWindow], model).rows.map((row) => row.id)).toEqual(["q", "off"]);
+	});
+
+	it("stay when the question their link names cannot show its questions", () => {
+		const unreadable = step("q3", "ask_user", { detail: { arguments: "{not json" }, turnId: "turn_3" });
+		const linked: TimelineRow = { kind: "user", id: "linked", text: "free prose", turnId: "turn_4" };
+		const model = thread([
+			askQuestionItem("q3", "{not json", { turnId: "turn_3" }),
+			message("linked", "free prose", { turnId: "turn_4", answerToTurnIds: ["turn_3"] }),
+		]);
+		expect(hideAnswerMessages([unreadable, linked], model).rows.map((row) => row.id)).toEqual(["q3", "linked"]);
+	});
+
+	it("stay when the question row's own arguments no longer read, even if the model's do", () => {
+		// The rows carry a bounded copy of the arguments (MAX_ITEM_BYTES) while
+		// the model keeps them whole, so a row can lose its questions to the
+		// bound after the model answered fine. The row is what draws the recap;
+		// with no questions it draws none, and the reply must stay visible.
+		const truncated = step("q", "ask_user", { detail: { arguments: '{"questions":[{"header":"Choice"' } });
+		const model = thread([askQuestionItem("q", questionArgs), message("ans", answer.text)]);
+		expect(hideAnswerMessages([truncated, answer], model).rows.map((row) => row.id)).toEqual(["q", "ans"]);
+	});
+
+	it("stay when the question their link names errored, so nothing recaps them", () => {
+		const denied = step("q", "ask_user", { detail: { arguments: questionArgs } });
+		const linked: TimelineRow = { kind: "user", id: "linked", text: "free prose", turnId: "turn_2" };
+		const model = thread([
+			askQuestionItem("q", questionArgs, { error: "ask denied" }),
+			message("linked", "free prose", { turnId: "turn_2", answerToTurnIds: ["turn_1"] }),
+		]);
+		expect(hideAnswerMessages([denied, linked], model).rows.map((row) => row.id)).toEqual(["q", "linked"]);
+	});
+
+	it("stay when the turn their link names holds sibling ask calls the recap cannot choose between", () => {
+		// The link names the execution turn, not the call: with two acked asks
+		// in one turn, free prose could answer either, so the recap refuses to
+		// claim it for either — and the raw row is the only place the answer
+		// shows. Hiding it would lose the answer entirely.
+		const secondArgs = JSON.stringify({
+			questions: [{ header: "Second", question: "Which one?", options: [{ label: "A", detail: "" }] }],
+		});
+		const second = step("q2", "ask_user", { detail: { arguments: secondArgs } });
+		const either: TimelineRow = { kind: "user", id: "either", text: "do the first thing", turnId: "turn_2" };
+		const model = thread([
+			askQuestionItem("q", questionArgs),
+			askQuestionItem("q2", secondArgs),
+			message("either", either.text, { turnId: "turn_2", answerToTurnIds: ["turn_1"] }),
+		]);
+		expect(hideAnswerMessages([question, second, either], model).rows.map((row) => row.id)).toEqual([
+			"q",
+			"q2",
+			"either",
+		]);
+	});
+
+	it("hide a composed reply that names, by a distinct header, which sibling ask it answers", () => {
+		const alphaArgs = JSON.stringify({
+			questions: [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }],
+		});
+		const betaArgs = JSON.stringify({
+			questions: [{ header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "" }] }],
+		});
+		const alpha = step("qa", "ask_user", { detail: { arguments: alphaArgs } });
+		const beta = step("qb", "ask_user", { detail: { arguments: betaArgs } });
+		const either: TimelineRow = { kind: "user", id: "ans", text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2" };
+		const model = thread([
+			askQuestionItem("qa", alphaArgs),
+			askQuestionItem("qb", betaArgs),
+			message("ans", either.text, { turnId: "turn_2", answerToTurnIds: ["turn_1"] }),
+		]);
+		expect(hideAnswerMessages([alpha, beta, either], model).rows.map((row) => row.id)).toEqual(["qa", "qb"]);
+	});
+
+	it("stay when sibling ask calls share the header their composed reply answers", () => {
+		// A shared header cannot say which sibling the reply answered, so no
+		// question row recaps it — and the raw row is the only place it shows.
+		const alphaArgs = JSON.stringify({
+			questions: [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }],
+		});
+		const betaArgs = JSON.stringify({
+			questions: [{ header: "Deploy?", question: "Ship the other one?", options: [{ label: "No", detail: "" }] }],
+		});
+		const alpha = step("qa", "ask_user", { detail: { arguments: alphaArgs } });
+		const beta = step("qb", "ask_user", { detail: { arguments: betaArgs } });
+		const either: TimelineRow = { kind: "user", id: "ans", text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2" };
+		const model = thread([
+			askQuestionItem("qa", alphaArgs),
+			askQuestionItem("qb", betaArgs),
+			message("ans", either.text, { turnId: "turn_2", answerToTurnIds: ["turn_1"] }),
+		]);
+		expect(hideAnswerMessages([alpha, beta, either], model).rows.map((row) => row.id)).toEqual(["qa", "qb", "ans"]);
+	});
+
+	it("hide a linked prose answer and a later composed reply, each beneath its own question", () => {
+		const secondArgs = JSON.stringify({
+			questions: [{ header: "H", question: "?", options: [{ label: "A", detail: "" }] }],
+		});
+		const secondQuestion = step("q2", "ask_user", { detail: { arguments: secondArgs }, turnId: "turn_2" });
+		const composed: TimelineRow = {
+			kind: "user",
+			id: "ans2",
+			text: '[answers]\n1. [H] → "A"',
+			turnId: "turn_3",
+		};
+		const model = thread([
+			askQuestionItem("q", questionArgs),
+			proseItem,
+			askQuestionItem("q2", secondArgs, { turnId: "turn_2" }),
+			message("ans2", composed.text, { turnId: "turn_3" }),
+		]);
+		expect(
+			hideAnswerMessages([question, proseAnswer, secondQuestion, composed], model).rows.map((row) => row.id),
+		).toEqual(["q", "q2"]);
 	});
 });
 
@@ -740,18 +985,16 @@ describe("the answer you gave a question", () => {
 		}),
 	};
 	const answered = { id: "ans-1", turnId: "turn_2", type: "userMessage", text: '[answers]\n1. [Choice] → "Drop them"' };
-	const model = (items: unknown[]) =>
-		({ turns: [{ id: "turn_1", items }] }) as unknown as Parameters<typeof answerTo>[0];
 
 	// The answer keeps the wire's own words, a chosen option quoted as the web
 	// shows it: "You answered: "Drop them"".
 	it("reads your answer, without the package's own framing", () => {
-		expect(answerTo(model([asked, answered]), "ask-1")).toBe('"Drop them"');
+		expect(answerTo(thread([asked, answered]), "ask-1")).toBe('"Drop them"');
 	});
 
 	it("is nothing before you answer, or for a row it can't find", () => {
-		expect(answerTo(model([asked]), "ask-1")).toBeUndefined();
-		expect(answerTo(model([asked, answered]), "gone")).toBeUndefined();
+		expect(answerTo(thread([asked]), "ask-1")).toBeUndefined();
+		expect(answerTo(thread([asked, answered]), "gone")).toBeUndefined();
 		expect(answerTo(null, "ask-1")).toBeUndefined();
 	});
 });

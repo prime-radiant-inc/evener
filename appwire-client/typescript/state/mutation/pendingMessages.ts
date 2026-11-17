@@ -456,8 +456,20 @@ function mergePendingRows<A extends MutationAttachmentRef>(
   // Lineage shares display identity, but only the consuming command owns its
   // actions. A retained source recovery must not make that command editable.
   const consumer = isSteeringRow(row) ? row : isSteeringRow(existing) ? existing : undefined;
+  // Two refused promotions of one still-queued entry (two tabs steering
+  // through the same index shift) share the entry's lineage: the queue-shaped
+  // row is the message, and an unedited refused promote merging into it must
+  // not re-stamp its refused identity over the queue's - the twin would
+  // render as refused work with no controls (the queue-row merge fixes one
+  // recovery; this pass sees the rest).
+  const queueRowOverRefusedPromote =
+    row.method === "queue" &&
+    existing.method === "promote" &&
+    existing.state === "refused" &&
+    (row.state === "queued" || row.state === "held");
   return {
     ...existing,
+    ...(queueRowOverRefusedPromote ? { method: row.method, state: row.state } : {}),
     ...(isSteeringRow(row)
       ? {
           method: row.method,
@@ -707,6 +719,35 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     if (!record) continue;
     const cancelFailure = record.method === "turn/cancelQueued";
     const clearFailure = record.method === "thread/clear";
+    // A promotion names the queue entry it tried to promote in its payload,
+    // and the row's own identity when the entry has one. After a refusal the
+    // record keeps the payload, and the entry may already be DELIVERED - the
+    // drain that won the race consumed it. While the winning consumer is
+    // still a pending mutation, its recorded self owns the entry; once it
+    // settles, the transcript item that replaced the entry speaks in the
+    // consumed input's lineage (the SOURCE mutation's id). Both proofs say
+    // the message is already on screen; neither exists while the entry is
+    // still queued, so the row renders as refused work until delivery. An
+    // EDITED composition is the user's own unsent work and never suppresses:
+    // the row the reader sees is the edited text, not the delivered message
+    // (settlementRetiresRecovery's rule, read structurally here).
+    const revision = (record as { compositionRevision?: number }).compositionRevision;
+    const uneditedPromote = record.method === "turn/promoteQueuedAsSteer" && (revision ?? 0) === 0;
+    const entryLink =
+      uneditedPromote && typeof record.payload?.expectedEntryId === "string" ? [record.payload.expectedEntryId] : [];
+    const display = record.optimisticDisplay;
+    const displaySource: Record<string, unknown> | undefined =
+      display !== null && typeof display === "object" ? (display as Record<string, unknown>) : undefined;
+    const sourceMutationId =
+      uneditedPromote && typeof displaySource?.sourceMutationId === "string"
+        ? displaySource.sourceMutationId
+        : undefined;
+    if (
+      (entryLink.length > 0 && entryLink.every((entryId) => recordedEntryOwners.has(entryId))) ||
+      (sourceMutationId !== undefined &&
+        (isDelivered(sourceMutationId) || recordedLineage.has(`client:${sourceMutationId}`)))
+    )
+      continue;
     let rowId = id;
     if (recovery) {
       rowId = cancelFailure ? `${id}:cancel-failure:${recovery.clientMutationId}` : recoveryRowId(recovery);
@@ -743,7 +784,7 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
       ...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
       ...(record.intentSequence !== undefined ? { intentSequence: record.intentSequence } : {}),
       fromThisClient: input.isOwnMutationRecord(record),
-      queueEntryIds: [],
+      queueEntryIds: entryLink,
       ...(interrupt || cancelFailure || clearFailure ? { interrupt: true } : {}),
       ...(cancelFailure ? { controlFailure: "cancel" } : clearFailure ? { controlFailure: "clear" } : {}),
       ...(recovery
@@ -795,10 +836,14 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     const fullText = queue?.texts?.[index];
     const text = fullText ?? queue?.preview?.[index] ?? "";
     const preview = queue?.preview?.[index];
-    // The placeholder grammar speaks only when no full text says otherwise, so
-    // a text-only message whose literal text is "[image]" stays text-bearing
-    // and keeps its Edit affordance (queueEntryAt applies the same rule).
-    const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
+    // The wire's per-entry imageCounts is authoritative; the preview's
+    // placeholder grammar is the old-daemon fallback, and it speaks only
+    // when no full text says otherwise, so a text-only message whose literal
+    // text is "[image]" stays text-bearing and keeps its Edit affordance
+    // (queueEntryAt applies the same rule).
+    const imageCount =
+      queue?.imageCounts?.[index] ??
+      (fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0);
     const skillNames = canonicalSkillNames(queue?.skillNames?.[index] ?? []);
     const commandNames = canonicalSkillNames(queue?.commandNames?.[index] ?? []);
     const queueMentions = queue?.mentions?.[index];
@@ -855,6 +900,15 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
     if (!owner && mutationId) owner = rows.get(mutationId);
     if (owner) {
       const withQueue = mergeQueueContent(owner, families.get(owner.id), pendingById.get(owner.id));
+      // An unedited refused promote whose entry is STILL in the queue consumed
+      // nothing - the index-shift refusal another client's removal causes.
+      // The message sits in the daemon's queue, so the queue owns the
+      // presentation: method and state come from the queue row, or the user's
+      // still-queued message renders as refused work with no Steer, Edit, or
+      // Remove until something else delivers it. An edited recovery is the
+      // user's own unsent composition and keeps recovery ownership.
+      const refusedPromoteUnedited =
+        withQueue.method === "promote" && withQueue.state === "refused" && !locallyEnded(withQueue);
       const next: PendingMessage<A> = {
         ...withQueue,
         // A queued message's state is the queue's (including the Stop-parked
@@ -862,7 +916,10 @@ export function projectPendingMessages<A extends MutationAttachmentRef = Mutatio
         // Stop cancels an unattempted queue row while the daemon leaves the
         // entry in its queue, so taking the queue's word would render a
         // canceled message as "Queued" with actions that no longer apply.
-        ...(withQueue.method === "queue" && !locallyEnded(withQueue) ? { state: row.state } : {}),
+        ...((withQueue.method === "queue" || refusedPromoteUnedited) && !locallyEnded(withQueue)
+          ? { state: row.state }
+          : {}),
+        ...(refusedPromoteUnedited ? { method: row.method, fromThisClient: row.fromThisClient } : {}),
         ...(row.queueIndex !== undefined ? { queueIndex: row.queueIndex } : {}),
         ...(row.queueEntryId ? { queueEntryId: row.queueEntryId } : {}),
         ...(row.queueRevision !== undefined ? { queueRevision: row.queueRevision } : {}),

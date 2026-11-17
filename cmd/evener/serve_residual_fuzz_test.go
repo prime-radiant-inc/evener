@@ -167,7 +167,7 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_, _ = s.envelopeSource.PendingAskSnapshot()
 	_ = s.envelopeSource.RestingFailure()
 	_ = s.envelopeSource.PendingEscalations()
-	_, _, _ = s.envelopeSource.ReasoningInfo()
+	_, _, _, _ = s.envelopeSource.ReasoningInfo()
 	_ = s.envelopeSource.VisionModel()
 	_ = s.envelopeSource.SessionMeta()
 	modelControl := s.envelopeSource.ModelControlSnapshot()

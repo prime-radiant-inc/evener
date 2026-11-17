@@ -1,6 +1,8 @@
 package doctor
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -69,7 +73,7 @@ func findJob(r JobReport, jobID string) *JobView {
 // the log defines — not a map order that shuffles between runs.
 func TestJobs_ListsFoldedRecordsInAppendOrder(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -90,7 +94,7 @@ func TestJobs_ListsFoldedRecordsInAppendOrder(t *testing.T) {
 // only route to — status, reason, exit code, output bytes, and both timestamps.
 func TestJobs_TerminalStateOfOneJob(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -124,7 +128,7 @@ func TestJobs_TerminalStateOfOneJob(t *testing.T) {
 
 func TestJobs_JobIDFilter(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{JobID: timeoutJobID})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{JobID: timeoutJobID})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -146,7 +150,7 @@ func TestJobs_MissingJobsFileIsCleanAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := Jobs(base, sidA, JobOpts{})
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs on a session that never ran jobs: %v", err)
 	}
@@ -162,7 +166,7 @@ func TestJobs_EmptyJobsFileIsCleanAnswer(t *testing.T) {
 	base := t.TempDir()
 	writeSession(t, stateHomeBucket(base, hash1), sidA)
 
-	r, err := Jobs(base, sidA, JobOpts{})
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs on an empty jobs.jsonl: %v", err)
 	}
@@ -183,8 +187,8 @@ func TestJobs_MalformedLineHandlingMatchesWatches(t *testing.T) {
 		writeSession(t, bucket, sidA)
 		writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), valid+"\n{\"kind\":\"job_fin")
 
-		r, err := Jobs(base, sidA, JobOpts{})
-		_, watchErr := Watches(base, sidA, WatchOpts{})
+		r, err := Jobs(t.Context(), base, sidA, JobOpts{})
+		_, watchErr := Watches(t.Context(), base, sidA, WatchOpts{})
 		if (err == nil) != (watchErr == nil) {
 			t.Fatalf("jobs err = %v but watches err = %v; the two readers must agree", err, watchErr)
 		}
@@ -202,8 +206,8 @@ func TestJobs_MalformedLineHandlingMatchesWatches(t *testing.T) {
 		writeSession(t, bucket, sidA)
 		writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), "{not json}\n"+valid+"\n")
 
-		_, err := Jobs(base, sidA, JobOpts{})
-		_, watchErr := Watches(base, sidA, WatchOpts{})
+		_, err := Jobs(t.Context(), base, sidA, JobOpts{})
+		_, watchErr := Watches(t.Context(), base, sidA, WatchOpts{})
 		if (err == nil) != (watchErr == nil) {
 			t.Fatalf("jobs err = %v but watches err = %v; the two readers must agree", err, watchErr)
 		}
@@ -215,7 +219,7 @@ func TestJobs_MalformedLineHandlingMatchesWatches(t *testing.T) {
 
 func TestJobs_RenderTellsTheTerminalStory(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, _ := Jobs(base, sid, JobOpts{})
+	r, _ := Jobs(t.Context(), base, sid, JobOpts{})
 	out := RenderJobs(r)
 
 	for _, want := range []string{
@@ -249,7 +253,7 @@ func TestEmptyJobsMessage(t *testing.T) {
 // jobs" — it ran jobs, just not that one.
 func TestJobs_UnknownJobIDMessageIsUnambiguous(t *testing.T) {
 	base, sid := jobsFixture(t)
-	r, err := Jobs(base, sid, JobOpts{JobID: absentJobID})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{JobID: absentJobID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +325,7 @@ func jobsFixtureWithDelegate(t *testing.T) (base, sid string) {
 // RenderJobs prints every optional field a job or delegate carries.
 func TestJobs_RenderAllFormattingBranches(t *testing.T) {
 	base, sid := jobsFixtureWithDelegate(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -349,7 +353,7 @@ func TestJobs_RenderAllFormattingBranches(t *testing.T) {
 // failures naming them, and rendered with the report.
 func TestJobs_LegacyDelegateFailures(t *testing.T) {
 	base, sid := jobsFixtureWithDelegate(t)
-	r, err := Jobs(base, sid, JobOpts{})
+	r, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -362,6 +366,70 @@ func TestJobs_LegacyDelegateFailures(t *testing.T) {
 			t.Errorf("rendered failures missing %q; got:\n%s", want, out)
 		}
 	}
+}
+
+// The bounded legacy-failure fold caps a single line at its own window, not
+// just the whole file. jobstore consults MaxBytes only after a whole line is
+// read, so a MaxBytes-only scan of a journal whose head line is huge pays that
+// line's full cost — up to jobstore.DefaultMaxLineBytes, 128 MiB — before the
+// window is ever consulted. A refused line contributes no events, so the fold
+// reports no failures for a journal it could not read into, and never fails the
+// session row that carries it: the failures are a summary of retired state, not
+// an inventory that must be complete.
+// Not parallel: overrides legacyFailureScanMaxBytes and the scan seam.
+func TestJobLegacyFailuresBoundedCapsASingleLine(t *testing.T) {
+	t.Run("requests a line cap within the byte window", func(t *testing.T) {
+		origScan := scanLegacyFailuresJournal
+		var got jobstore.ScanLimits
+		scanLegacyFailuresJournal = func(ctx context.Context, path string, limits jobstore.ScanLimits) ([]jobstore.Event, error) {
+			got = limits
+			return nil, nil
+		}
+		t.Cleanup(func() { scanLegacyFailuresJournal = origScan })
+
+		if _, err := legacyDelegateFailuresBounded(context.Background(), filepath.Join(t.TempDir(), "jobs.jsonl")); err != nil {
+			t.Fatalf("legacyDelegateFailuresBounded: %v", err)
+		}
+		if got.MaxBytes != legacyFailureScanMaxBytes {
+			t.Fatalf("MaxBytes = %d, want the head window %d", got.MaxBytes, legacyFailureScanMaxBytes)
+		}
+		if got.MaxLineBytes <= 0 || got.MaxLineBytes > got.MaxBytes {
+			t.Fatalf("MaxLineBytes = %d with MaxBytes = %d; a line cap within the byte window is what stops one line buffering up to jobstore.DefaultMaxLineBytes", got.MaxLineBytes, got.MaxBytes)
+		}
+	})
+
+	// The line cap's refusal is absorbed like the byte ceiling's, proved
+	// through the sessions-row caller that carries the result: pairing the caps
+	// moves a journal with an oversized in-window line from
+	// ErrScanLimitExceeded (partial events, no error) to ErrLineTooLong (no
+	// events, error), and that must cost the failures summary, not the row.
+	// Not parallel: overrides legacyFailureScanMaxBytes.
+	t.Run("an oversized journal line costs the summary, not the row", func(t *testing.T) {
+		origMax := legacyFailureScanMaxBytes
+		legacyFailureScanMaxBytes = 1 << 12
+		t.Cleanup(func() { legacyFailureScanMaxBytes = origMax })
+
+		base := t.TempDir()
+		bucket := stateHomeBucket(base, hash1)
+		sid := newSessionsTestSID(t)
+		writeSessionsFixtureSession(t, bucket, sid,
+			transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+			[]schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{assistantText("go")}})},
+			schema.SessionMeta{}, legacyFailureJournalEvents(sid, time.Unix(100, 0).UTC()), time.Unix(2, 0).UTC())
+
+		// A line past the window, written raw because it is far larger than any
+		// event the Store itself would append for this fixture.
+		jobsPath := filepath.Join(bucket, "sessions", sid, "jobs.jsonl")
+		appendRawLine(t, jobsPath, fmt.Sprintf(`{"kind":"job_started","seq":99,"job_id":"job_huge","type":"shell","command":"%s"}`+"\n", strings.Repeat("x", 4<<12)))
+
+		res, err := ListSessions(context.Background(), base, SessionsOpts{})
+		if err != nil {
+			t.Fatalf("ListSessions: %v", err)
+		}
+		if len(res.Sessions) != 1 || len(res.Unreadable) != 0 {
+			t.Fatalf("sessions = %d, unreadable = %+v; an oversized journal line must not cost the row", len(res.Sessions), res.Unreadable)
+		}
+	})
 }
 
 // When a session's meta names a job-tree root, its delegates come from the
@@ -384,7 +452,7 @@ func TestJobs_JobTreeRootSessionIDRedirect(t *testing.T) {
 		}}},
 	})
 
-	r, err := Jobs(base, childSID, JobOpts{})
+	r, err := Jobs(t.Context(), base, childSID, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -418,7 +486,7 @@ func TestJobs_DelegateDiagnosticsTornTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := Jobs(base, sidA, JobOpts{})
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
@@ -477,7 +545,7 @@ func TestJobs_DelegateChildRefMatchesRootProjScheme(t *testing.T) {
 		},
 	})
 
-	report, err := Jobs(base, rootSID, JobOpts{})
+	report, err := Jobs(t.Context(), base, rootSID, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}

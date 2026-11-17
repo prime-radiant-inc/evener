@@ -96,8 +96,16 @@ func (s *Session) activityRead(ctx context.Context, params appwire.SessionActivi
 		read.context.AncestryKnown = true
 		return read.withBoundedContext()
 	}
+	// The root row has no delegate descriptor to title from, so it is named the
+	// way the activity tree names the root session: its own label. Computed
+	// before the controller lock because the label reads the session's own
+	// fields under s.mu. A root read names no ancestor, so it skips the read.
+	rootTitle := ""
+	if id != rootID {
+		rootTitle = activityRootTitle(root, s.stateDir, rootID)
+	}
 	controller.mu.Lock()
-	read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, controller.durable)
+	read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, controller.durable, rootTitle)
 	live := id == rootID
 	if !live {
 		if delegateID := read.context.DelegateID; delegateID != "" {
@@ -169,14 +177,15 @@ func retainedActivityRead(ctx context.Context, stateDir, sessionID string, param
 	// the live read and the delegate frame carry.
 	read.context = appwire.SessionActivityContext{Ref: params.Ref, SessionID: id, RootRef: encodeRef("", rootID), Epoch: index.epoch, Availability: "retained", AncestryKnown: id == rootID, ReportPreview: true}
 	if id != rootID {
-		read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, index.delegates)
+		rootTitle := activityRootTitle(nil, stateDir, rootID)
+		read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, index.delegates, rootTitle)
 		if !read.context.AncestryKnown {
 			_, err = read.advanceDelegates(ctx)
 			if err != nil {
 				index.release()
 				return nil, err
 			}
-			read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, index.delegates)
+			read.context.AncestryKnown = activityContextFromDelegates(&read.context, rootID, index.delegates, rootTitle)
 			if !read.context.AncestryKnown && index.delegateComplete {
 				index.release()
 				return nil, appwire.Unavailable("retained delegate ancestry unavailable")
@@ -218,8 +227,23 @@ func sessionSubtreeDelegateIDs(state delegatestore.State, sessionID string) []st
 	return ids
 }
 
+// activityRootTitle names the root ancestor row from the root session's own
+// label. A root matching rootID reads its in-memory name; an absent root, or
+// one whose id does not match, reads the persisted meta, so a retained read
+// and a live read name the row alike.
+func activityRootTitle(root *Session, stateDir, rootID string) string {
+	if root != nil && root.ID() == rootID {
+		return liveActivitySessionLabel(root)
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, rootID)
+	return activityLabelFromMeta(rootID, meta, err)
+}
+
 // Immutable Created descriptors prove lineage independently of status history.
-func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID string, state delegatestore.State) bool {
+//
+// rootTitle names the root row; an empty one leaves its session id, the last
+// resort every other session label shares.
+func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID string, state delegatestore.State, rootTitle string) bool {
 	if result.SessionID == rootID {
 		return true
 	}
@@ -272,6 +296,9 @@ func activityContextFromDelegates(result *appwire.SessionActivityContext, rootID
 		child = owner
 	}
 	slices.Reverse(chain)
+	if rootTitle != "" {
+		chain[0].Title = activitybound.Truncate(rootTitle, activityMaxLabelRunes)
+	}
 	result.Ancestors = chain
 	*target = *result
 	return true

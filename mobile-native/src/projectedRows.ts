@@ -824,10 +824,7 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 	// narrower than the family it replaces.
 	"notes-context",
 	// An automatic memory refresh: a routine context injection like a
-	// shared-notes snapshot. Its lifecycle family keeps it a standalone notice
-	// (lifecycle is not in groupTimeline's internal set), and the native notice
-	// renderer gives the typed kind its own collapsed "Refreshed my memory"
-	// disclosure, as the web renderer does.
+	// shared-notes snapshot, drawn by memoryContextNotice below.
 	MEMORY_CONTEXT_EVENT_KIND,
 ]);
 
@@ -903,7 +900,8 @@ function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notic
 	// the row only when raw.memoryContext validates; either way `text` is the
 	// complete recorded message, which an opened refresh shows as its literal
 	// Source. It keeps the lifecycle family, so groupTimeline leaves it a
-	// standalone row rather than folding it into the internal details group.
+	// standalone row rather than folding it into the internal details group;
+	// the shared projector already hides it at Chat and Intent.
 	if (it.eventKind === MEMORY_CONTEXT_EVENT_KIND) return memoryContextNotice(it);
 	// A system family of "warning" IS the warning tone (systemFamily's own
 	// first branch), so the two are derived from one classification.

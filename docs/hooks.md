@@ -751,6 +751,10 @@ CLI (and a warning in the browser) for each of:
   yet fire; this hook will not run."
 - **An invalid-regex matcher** (e.g. one using lookbehind) — names the plugin,
   event, and matcher; the hook is skipped.
+- **A matcher written in Claude's `mcp__<server>__<tool>` form** — names the
+  plugin, event, and matcher, and the `<server>__<tool>` form to write instead.
+  The hook still loads. Hook matchers see [MCP tools by their registered
+  name](mcp.md#tool-names-failures-and-teardown).
 - **An unsupported handler type** (`http`, `mcp_tool`, `agent`) — names the
   plugin, event, and type; the handler is skipped until implemented.
 

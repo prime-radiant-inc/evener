@@ -316,16 +316,16 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_, _ = rootSessionID(state)
 		writeCoverageTranscript(t, state, "root", []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{coverageToolCall("read", `{}`)}})})
 		writeCoverageTranscript(t, state, "child", []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{coverageToolCall("read", `{}`), coverageToolCall("shell", `{}`)}})})
-		_, _ = allTranscriptToolCounts(state)
-		runnerReadTranscript = func(string, string, doctor.TranscriptOpts) (doctor.TranscriptResult, error) {
+		_, _ = allTranscriptToolCounts(context.Background(), state)
+		runnerReadTranscript = func(context.Context, string, string, doctor.TranscriptOpts) (doctor.TranscriptResult, error) {
 			return doctor.TranscriptResult{}, errors.New("transcript")
 		}
-		_, _ = allTranscriptToolCounts(state)
+		_, _ = allTranscriptToolCounts(context.Background(), state)
 		runnerReadTranscript = oldReadTranscript
-		_, _ = allTranscriptToolCounts("[")
+		_, _ = allTranscriptToolCounts(context.Background(), "[")
 		mustWrite(t, filepath.Join(state, "sessions", ".transcript.jsonl"), "bad")
 		mustWrite(t, filepath.Join(state, "sessions", "bad.transcript.jsonl"), "bad")
-		_, _ = allTranscriptToolCounts(state)
+		_, _ = allTranscriptToolCounts(context.Background(), state)
 
 		suiteDir := t.TempDir()
 		suiteProbes := filepath.Join(suiteDir, "probes")

@@ -1593,14 +1593,27 @@ func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	if s == nil || s.clientMutations == nil {
 		return "", false
 	}
-	snapshot := s.clientMutations.snapshot()
+	// The generation is read in place: this runs once per serve-loop iteration
+	// beside the queued-input probe, and the journal only grows.
+	turnID, runnable := "", false
+	s.clientMutations.read(func(snapshot *clientMutationSnapshot) {
+		turnID, runnable = s.runnableClientMutationStartTurnIn(snapshot)
+	})
+	return turnID, runnable
+}
+
+// runnableClientMutationStartTurnIn is runnableClientMutationStartTurnID's
+// whole decision over one generation. It touches no lock and nothing outside
+// the snapshot it is handed, which is what lets the caller read a generation in
+// place.
+func (s *Session) runnableClientMutationStartTurnIn(snapshot *clientMutationSnapshot) (string, bool) {
+	startTurnID := ""
+	startClaimable := false
 	// Resolve the ordered head once, and only when no fence blocks the claim.
 	// startClaimable tracks claimability separately from the head's turn id so a
 	// start with an empty turn id still returns ("", false) exactly as before.
-	startTurnID := ""
-	startClaimable := false
 	if snapshot.InterruptFence == nil {
-		if startIDs := s.claimableClientMutationStartIDs(&snapshot); len(startIDs) > 0 {
+		if startIDs := s.claimableClientMutationStartIDs(snapshot); len(startIDs) > 0 {
 			startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
 			startClaimable = true
 		}
@@ -2115,6 +2128,21 @@ func (s *clientMutationStore) steeringHeld() bool {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.state.SteeringHeld
+}
+
+// read runs read over the committed generation without cloning it. The answer
+// must be a question about the generation and nothing else: read is called
+// under stateMu.RLock, so it may not take another lock or retain a reference it
+// wrote through.
+//
+// A published generation is immutable -- mutate builds its successor on a
+// clone and commitStateLocked replaces the whole snapshot -- so a reader that
+// only inspects fields sees exactly what snapshot() would have handed it, at
+// no allocation.
+func (s *clientMutationStore) read(read func(*clientMutationSnapshot)) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	read(&s.state)
 }
 
 func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {

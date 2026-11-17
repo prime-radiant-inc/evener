@@ -125,7 +125,7 @@ func TestHubSearchScopesByTheRailsArchiveRules(t *testing.T) {
 		}
 	}
 	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
-	archive := hubcore.NewArchiveStore(filepath.Join(root, "index.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "index.db")))
 	for _, d := range []struct {
 		kind, id string
 		archived bool
@@ -213,7 +213,7 @@ func TestHubSearchDegradesWhenArchiveDecisionsFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	logged := &logCapture{}
-	cfg := hubcore.WebConfig{Past: past, Archive: hubcore.NewArchiveStore(dbPath), Log: logged.logger()}
+	cfg := hubcore.WebConfig{Past: past, Archive: closeOnCleanup(t, hubcore.NewArchiveStore(dbPath)), Log: logged.logger()}
 
 	resp, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "frobnitz"}, time.Now())
 	if err != nil {
@@ -238,7 +238,7 @@ func TestHubSearchFailsClosedOnAScopedQueryWhenDecisionsFail(t *testing.T) {
 	if err := os.WriteFile(dbPath, []byte("not a sqlite database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := hubcore.WebConfig{Archive: hubcore.NewArchiveStore(dbPath), Log: silentLogger()}
+	cfg := hubcore.WebConfig{Archive: closeOnCleanup(t, hubcore.NewArchiveStore(dbPath)), Log: silentLogger()}
 	for _, scope := range []string{appwire.SearchScopeLive, appwire.SearchScopeArchived} {
 		if _, err := hubSearch(context.Background(), cfg, appwire.SearchParams{Query: "x", Scope: scope}, time.Now()); err == nil {
 			t.Errorf("scope %q: hubSearch returned no error with unavailable archive decisions, want it to fail closed", scope)
@@ -496,7 +496,7 @@ func TestHubSearchInSessionsIncludesALiveSessionMatchedOnlyByMessage(t *testing.
 // in a project of the same ID.
 func TestHubSearchLiveArchivedFollowsTheOwningSource(t *testing.T) {
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db")))
 	if err := archive.Set("h", "project", "shared", true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +529,7 @@ func TestHubSearchLiveArchivedFallsBackToThePastEntrysProjectWhenRosterCarriesNo
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
 	pe, sessionID := seedSearchSession(t, projectsRoot, "alpha", now, schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
 	past := newRebuiltPastIndex(t, filepath.Join(projectsRoot, "*"))
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "index.db")))
 	if err := archive.Set("", "project", filepath.Base(pe.StateDir), true, now); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import { expect, test, vi } from "vitest";
 // consumer's test runner uses, and package-test-files.mjs refuses one.
 import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
 import valueRecordsFixture from "../../../../cmd/evener-hub/testdata/navigation/value-records.json?raw";
+import { MAX_INTENT_CODE_POINTS } from "../../sessionActivity";
 import { completeSession } from "../../testing/navigation";
 import type { NavigationSessionSummary, NavigationSnapshot } from "../../types.gen";
 import {
@@ -1614,6 +1615,7 @@ test("compact activity counts survive decoding and reject impossible armed total
   Object.assign(value, {
     running_job_count: 7,
     running_job_command: "command-sentinel",
+    running_job_intent: "intent-sentinel",
     watch_count: 9,
     armed_watch_count: 4,
   });
@@ -1623,11 +1625,24 @@ test("compact activity counts survive decoding and reject impossible armed total
   expect(decoded.snapshot.entities[0]?.value).toMatchObject({
     running_job_count: 7,
     running_job_command: "command-sentinel",
+    running_job_intent: "intent-sentinel",
     watch_count: 9,
     armed_watch_count: 4,
   });
   value.armed_watch_count = 10;
   expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot))).toThrow();
+});
+
+test("a running job intent is bounded like the activity read's own line", () => {
+  const snapshot = liveSnapshot();
+  const value = snapshot.entities[0]?.value as Record<string, unknown>;
+  // The hub cuts the intent to appwire.MaxIntentRunes (200 code points); a
+  // longer one is a hub this client never met.
+  value.running_job_intent = "i".repeat(MAX_INTENT_CODE_POINTS + 1);
+  expect(() => decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot))).toThrow();
+  value.running_job_intent = "i".repeat(MAX_INTENT_CODE_POINTS);
+  expect(decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshot)).status).toBe("snapshot");
+  delete value.running_job_intent;
 });
 
 test("representation 3 rejects a retained representation 2 graph", () => {

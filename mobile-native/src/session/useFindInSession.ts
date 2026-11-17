@@ -3,7 +3,7 @@ import type { FlatList } from "react-native";
 import type { MobileConversation } from "../projectedRows";
 import { ReaderRestoreAttempts, readerKey } from "../readerPosition";
 import { atEnd, type useLiveEndFollow } from "./liveEndFollow";
-import { type FindState, findMatches, stepMatch } from "./findInSession";
+import { type FindState, findMatches, selectedMatch, stepMatch } from "./findInSession";
 import type { TimelineRow } from "../timeline";
 
 /** What Find reads from its screen: the list and its reading position, the
@@ -12,6 +12,8 @@ export interface FindInSessionInputs {
 	find: FindState | null;
 	setFind(find: FindState | null): void;
 	timelineRows: readonly TimelineRow[];
+	answersByRow: ReadonlyMap<string, string>;
+	answerStandIns: ReadonlyMap<string, string>;
 	conversation: MobileConversation | null;
 	focused: boolean;
 	status: string;
@@ -38,6 +40,8 @@ export function useFindInSession({
 	find,
 	setFind,
 	timelineRows,
+	answersByRow,
+	answerStandIns,
 	conversation,
 	focused,
 	status,
@@ -58,12 +62,16 @@ export function useFindInSession({
 }: FindInSessionInputs) {
 	const findQuery = find?.query ?? "";
 	const findHits = useMemo(
-		() => findMatches(timelineRows, findQuery, conversation?.delegates),
-		[timelineRows, findQuery, conversation?.delegates],
+		() => findMatches(timelineRows, findQuery, conversation?.delegates, answersByRow),
+		[timelineRows, findQuery, conversation?.delegates, answersByRow],
 	);
-	const findKey = find?.key ?? null;
-	const findIndex = findKey === null ? -1 : timelineRows.findIndex((row) => readerKey(row) === findKey);
-	const findCurrent = findIndex < 0 ? null : findIndex;
+	// A selected row the transcript stopped showing hands its place to the
+	// question row whose recap now carries it (hideAnswerMessages' stand-in):
+	// the answer is still on screen, so the selection must not evaporate and
+	// send Find paging past the match it was showing.
+	const selectedKey = find?.key ?? null;
+	const findCurrent = selectedMatch(timelineRows, findHits, selectedKey, answerStandIns);
+	const findKey = findCurrent === null ? null : readerKey(timelineRows[findCurrent]);
 	function stepFind(direction: 1 | -1) {
 		if (!find) return;
 		const next = stepMatch(findHits, findCurrent, direction);
@@ -84,6 +92,9 @@ export function useFindInSession({
 		if (!isCurrentReader() || !find?.seeking || !focused || status !== "open" || !conversation) return;
 		// A resumed search first reloads its saved boundary; newer matches
 		// in the fresh window have already been searched.
+		// The saved key, not the remapped one: a stand-in resolves to a row we
+		// have, while a saved key naming nothing here means the boundary is not
+		// loaded yet, which is the case this branch reloads.
 		const next = find.key !== null && findCurrent === null ? null : stepMatch(findHits, findCurrent, -1);
 		if (next !== null) {
 			setFind({ ...find, key: readerKey(timelineRows[next]), seeking: false });

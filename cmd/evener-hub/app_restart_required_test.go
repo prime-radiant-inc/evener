@@ -396,7 +396,7 @@ func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			root := t.TempDir()
 			sessionID := buildRPCParentSession(t, filepath.Join(root, "projects", "upgrade-0000000000"))
-			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
@@ -484,7 +484,7 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
@@ -1063,7 +1063,7 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 					}
 				}
 
-				past := hubcore.NewPastIndex(stateDir)
+				past := closeOnCleanup(t, hubcore.NewPastIndex(stateDir))
 				if _, err := past.Rebuild(); err != nil {
 					t.Fatal(err)
 				}
@@ -1366,7 +1366,7 @@ func TestHubOwnershipUsesProjectStateLayout(t *testing.T) {
 					return rendezvous.Entry{}, errors.New("spawn sentinel")
 				}}}
 				if indexed {
-					cfg.Past = hubcore.NewPastIndex(filepath.Join(root, "missing", "*"))
+					cfg.Past = closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "missing", "*")))
 				}
 				_, err := hubThreadResume(t.Context(), cfg, nil, appwire.ThreadResumeParams{Ref: localAppRef(childID)})
 				if retained && (err == nil || spawned != 0) {
@@ -1524,7 +1524,7 @@ func TestHubClearedOwnerReleasesHistoricalDelegate(t *testing.T) {
 				t.Fatal(err)
 			}
 			newChildID := buildUpgradeDelegate(t, stateDir, newID)
-			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}

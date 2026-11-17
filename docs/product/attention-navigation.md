@@ -38,6 +38,19 @@ it has no human-attention value — and a delegate whose delivered input is not
 yet consumed reads as running work, not attention
 ([`delegateDotState`](../../appwire-client/typescript/delegateDetails.ts)).
 
+Archiving is a clearing verb for the population too, and it reaches the whole
+project as well as a single session. `tierEligible` drops a session whose own
+decision archives it and one whose owning project's decision does, so a
+manually archived project stops claiming attention for every session under it.
+Only the manual decision counts here: the sidebar's age-based auto-archive
+never clears attention, because a needs-you session does not decay. Live
+applies the same manual decisions plus its age rule
+([`LiveSessionArchived`](../../cmd/evener-hub/internal/hubcore/tree.go)), so a
+manually archived session or project cannot leave Live and keep a needs-you
+badge lit. An age-archived session does leave Live while it stays in
+needs-you: the badge is right, and the row joins the band from the hub's tier
+rather than from Live's loaded pages.
+
 ## Live bands on the rail
 
 The rail's Live section answers "who needs me" before anything else. It reads
@@ -54,9 +67,12 @@ order:
   The band also shows needs-you sessions that Live's loaded pages have not
   reached, so a session that needs a person is never behind "+N older", and
   it shows every row of the hub's tier, including one the rail files as
-  archived by age: the tier never decays, and the header's count and Next
-  needs you walk the same rows. The two sections are read separately; while the
-  needs-you section lists a session, its copy is the one the rail shows.
+  archived by age: the tier never decays, and Next needs you walks these
+  rows. The header's chip is a second number: it is the hub's attention
+  summary, which files a failed session under its own error count while the
+  band lists it here, so a failed session shows in the band without adding to
+  the chip. The two sections are read separately; while the needs-you section
+  lists a session, its copy is the one the rail shows.
 - **Working** keeps the hub's Live order.
 - **Idle** is newest finished turn first.
 
@@ -75,7 +91,8 @@ spans hosts and the row is away from this hub, or its host is offline.
 
 A Live row says why it is in its band only where the band's name and the
 row's indicator have not already said it: the kind of attention on a
-Needs-you row, and what a working row is waiting on or running. The words
+Needs-you row, and what a working row is waiting on or what the job it is
+running says it is for, falling back to that job's command. The words
 come from the shared
 [`whyLine`](../../appwire-client/typescript/state/navigation/liveAttention.ts);
 the rail prints its state word and leaves the sentence that only says to
@@ -124,6 +141,20 @@ covers the palette and blocking modals. There is one shared blocked snapshot,
 not one observer per consumer; the palette reads the same controller through
 its own subscription and defers its needs-you actions until the snapshot
 unblocks.
+
+"Needs you" is a claim that a session is waiting on the reader, so the same
+predicate also decides whether there is one to offer. The control appears for
+a resolved next session, or while rows it already holds have another page of
+the queue still to read — the last loaded row has no known successor until
+that page arrives. It does not appear while the queue is merely unread, while
+a read is in flight, or after a read failed: nothing there says a session
+needs the reader, and the manifest's attention count is not evidence on its
+own, because it refreshes on its own schedule and can lag a queue that
+drained. A cold shell and a failed navigation surface therefore show no
+control, and the queue stays reachable through the chord and the palette,
+which demand page zero from the same controller. The sidebar header's count
+comes from the hub's attention summary, not from this predicate, so neither
+surface invents presence on its own.
 
 A long press on the Next button opens the list of other needs-you sessions;
 the button beside it — a More affordance (an ellipsis icon labelled "More

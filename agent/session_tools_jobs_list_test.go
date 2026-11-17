@@ -143,10 +143,14 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 
 func TestJobListReportsDelegationAllowance(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.delegationAllowance = 2
-	if result := jobListState(t, s, nil); result.DelegationAllowance != 2 {
-		t.Fatalf("delegation_allowance = %d, want 2", result.DelegationAllowance)
+	// Reported exactly when some legal grant lets the child delegate, matching
+	// the delegate schema's own elision of the parameter.
+	for _, tc := range []struct{ own, want int }{{2, 2}, {3, 3}, {1, 0}, {0, 0}} {
+		s := newTestSession(t)
+		s.delegationAllowance = tc.own
+		if result := jobListState(t, s, nil); result.DelegationAllowance != tc.want {
+			t.Errorf("allowance %d: delegation_allowance reported %d, want %d", tc.own, result.DelegationAllowance, tc.want)
+		}
 	}
 }
 

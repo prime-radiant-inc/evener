@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -65,7 +66,7 @@ func writeEchoFixtureRun(t *testing.T, text string, gap bool) (packet string, pr
 	stateDir := t.TempDir()
 	rootMeta(t, stateDir, proseRootID)
 	writeFluencyTranscript(t, stateDir, proseRootID, echoTurnsFixture(text, gap))
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}

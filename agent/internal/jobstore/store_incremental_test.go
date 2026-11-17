@@ -83,7 +83,10 @@ func incrementalTestEvent(i int) Event {
 			Kind: EventJobStarted, TS: ts, JobID: jobID, Type: JobShell,
 			Task: strings.Repeat("t", i%17), OwnerSessionID: "ses_owner",
 			VisibleToSession: "ses_owner", StartedAt: &started, OutputPath: "/tmp/out",
-			Provenance: &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}}},
+			Provenance: &provenance.Causal{
+				WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
+				FireKeys:  []provenance.FireKey{{WatchID: "w1", WatchGeneration: "g1", DeliveryID: "d1"}},
+			},
 		}
 	case 1:
 		return Event{
@@ -126,7 +129,10 @@ func incrementalTestEvent(i int) Event {
 				Key:        WatchSendKey{VisibleSessionID: "ses_owner", WatchID: fmt.Sprintf("w_%d", i%3), WatchTarget: "job:1", WatchGeneration: "g1"},
 				DeliveryID: fmt.Sprintf("d%d", i), UpdateSeq: uint64(i), Message: "m",
 				CreatedAt: ts, UpdatedAt: ts,
-				Provenance: &provenance.Causal{Chain: []provenance.Entry{{Kind: "watch", WatchID: "w1"}}},
+				Provenance: &provenance.Causal{
+					Chain:    []provenance.Entry{{Kind: "watch", WatchID: "w1"}},
+					FireKeys: []provenance.FireKey{{WatchID: "w1", WatchGeneration: "g1", DeliveryID: "d1"}},
+				},
 			},
 		}
 	}
@@ -461,6 +467,9 @@ func mutateCausal(p *provenance.Causal) {
 	if len(p.WatchKeys) > 0 {
 		p.WatchKeys[0].WatchID = "mutated"
 	}
+	if len(p.FireKeys) > 0 {
+		p.FireKeys[0].WatchID = "mutated"
+	}
 }
 
 // TestCloneEventCoversEveryReferenceField is the completeness net for
@@ -475,6 +484,7 @@ func TestCloneEventCoversEveryReferenceField(t *testing.T) {
 		"Event.ExitCode",
 		"Event.Provenance",
 		"Event.Provenance.Chain",
+		"Event.Provenance.FireKeys",
 		"Event.Provenance.WatchKeys",
 		"Event.StartedAt",
 		"Event.StructuredResult",
@@ -486,6 +496,7 @@ func TestCloneEventCoversEveryReferenceField(t *testing.T) {
 		"Event.WatchSend",
 		"Event.WatchSend.Provenance",
 		"Event.WatchSend.Provenance.Chain",
+		"Event.WatchSend.Provenance.FireKeys",
 		"Event.WatchSend.Provenance.WatchKeys",
 	}
 	got := referenceFieldPaths(reflect.TypeFor[Event](), "Event", map[reflect.Type]bool{})

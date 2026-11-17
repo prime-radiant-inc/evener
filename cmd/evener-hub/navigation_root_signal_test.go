@@ -48,7 +48,7 @@ func newRootSignalHub(t *testing.T) *rootSignalHub {
 	}
 	h.save(h.rootID, "root", h.base, "")
 	h.save(h.subID, "sub", h.base, h.rootID)
-	h.past = hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	h.past = closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 	if _, err := h.past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

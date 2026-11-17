@@ -45,6 +45,7 @@ export type CurrentTranscriptFields = Pick<
   | "modelProvider"
   | "model"
   | "reasoningEffort"
+  | "defaultReasoningEffort"
   | "visionModel"
   | "askPending"
   | "pendingEscalations"
@@ -848,6 +849,7 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.runningTurnId !== undefined && typeof value.runningTurnId !== "string") return false;
   for (const key of [
     "reasoningEffort",
+    "defaultReasoningEffort",
     "activeTurnStartedAt",
     "lastTurnEndedAt",
     "gitBranch",

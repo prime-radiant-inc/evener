@@ -199,6 +199,157 @@ function inside(boxValue, viewport, label, slack = 0.5) {
   );
 }
 
+// What a reconnect's ready dispatch does with the pages the reader already
+// has, decided from the two handshakes alone and never from a clock.
+//
+// The navigation store compares the sequence the reconnect advertises with the
+// last one the page consumed: at an equal sequence it retains every loaded
+// resource and starts no read (state/navigation/store.ts, the `same` arm),
+// while a sequence past it means the page missed a change and must reload what
+// it holds. A sequence behind the page's own is a protocol error the store
+// refuses, so it can never be a retained reconnect.
+//
+// `deliveredTierReads` are the needs-you section reads the page sent after the
+// old socket closed. A retained reconnect starts none; a reload one starts an
+// offset-zero read the hub answers. This returns which branch must hold, so a
+// caller asserts the branch the handshakes actually name instead of assuming
+// the retained one.
+// The sequence a reconnect's ready dispatch compares, and the sequence the page
+// had consumed at the cut.
+//
+// The store compares the value the reconnect advertises with the last sequence
+// the page consumed (state/navigation/store.ts:899), and the advertised value is
+// the raw `initialize` sequence: invalidations that arrive while subscriptions
+// recover are later than that comparison, so folding them in would report a
+// reload the store never performs.
+//
+// The page's own side is different. Before the cut, every invalidation the page
+// received advanced the sequence it had consumed, so that side is the highest
+// sequence seen - the handshake's own or any invalidation after it. A value
+// behind the consumed one is a protocol error and is never a retained
+// reconnect.
+export function reconnectSequences({ handshakeSequence, invalidations = [] }) {
+  return {
+    // What the page had consumed: the handshake and every invalidation after it
+    // on the same side of the cut.
+    consumed: invalidations.reduce((max, sequence) => Math.max(max, sequence), handshakeSequence),
+    // What a reconnect advertises, and therefore what the store compares: the
+    // raw handshake sequence alone.
+    advertised: handshakeSequence,
+  };
+}
+
+// Whether a rendered needs-you row is a choice a reader can actually take.
+//
+// A row whose refresh failed keeps its place in the list but is no longer
+// selectable, which the component marks aria-disabled (NextNeedsYou.tsx:486).
+// Such a row is still painted, still inside the panel and still the element
+// under its own centre, so a hit test alone would call a tier usable while every
+// choice in it refuses activation.
+export function rowUsable({ exists, ariaDisabled, hit }) {
+  return exists && ariaDisabled !== "true" && hit;
+}
+
+// The needs-you reads the reconnect's own ready dispatch started.
+//
+// At an equal sequence the ready dispatch starts no read, and that is the whole
+// no-reload property. It is not the only thing that reads the tier, though: an
+// invalidation that arrives after the handshake - the seen marker an opened
+// target's own mutation publishes, for one - legitimately refreshes the pages it
+// names. A read sent after that invalidation is caused by it, not by the ready
+// dispatch, so attributing it to the reconnect would reject valid invalidation
+// recovery. Frame order is what separates them: the ready dispatch's reads are
+// sent before the first invalidation that follows the handshake.
+export function readyDispatchTierReads({ reads, firstInvalidationAt }) {
+  if (reads.length === 0) return [];
+  if (firstInvalidationAt === null || firstInvalidationAt === undefined) return reads;
+  return reads.filter((read) => read.at < firstInvalidationAt);
+}
+
+// Every invalidation the page's own handler took on the connection that closed.
+//
+// Closing the old socket is not instant, and the page keeps consuming
+// invalidations until it lands, so the consumed sequence has to be read once
+// that connection is done rather than snapshotted when a reader notices the
+// cut. It also has to come from the page: a frame in the network log is not a
+// frame the page took. close() nulls the client's onmessage before the socket
+// finishes closing (client.ts detachSocketHandlers), so an invalidation
+// arriving in that gap is logged by CDP and dropped by the client. Counting it
+// would overstate what the page consumed, and an overstated consumed sequence
+// against a reconnect that really did move past it calls a genuine reload an
+// equal-sequence reconnect - which then rejects the reads that reload sends.
+// The page-side record holds only the frames its handler was still attached
+// for, so it is what the store actually consumed.
+export function socketInvalidations({ delivered = [], generationId }) {
+  return delivered
+    .filter((params) => params?.generationId === generationId)
+    .map((params) => params.sequence);
+}
+
+// The needs-you offsets the closing connection left the page without.
+//
+// This is the second quantity the wire cannot answer. A sent frame is
+// authoritative - the page called send - but a received one is not: close()
+// nulls the client's onmessage before the socket finishes closing, so an answer
+// that arrives in that gap is logged by CDP and never reaches the page. The
+// page's own record of what its handler took is the only evidence of delivery.
+// The store re-forces exactly the entries a close left stale, so a reconnect at
+// an equal sequence may retry those offsets - and, because this set is
+// intersected with its own reads, nothing else.
+export function lostTierRead({ frames, lostSocketId, reconnectSocketId, deliveredReplyIds = [] }) {
+  const tierRead = (frame) =>
+    frame.direction === "Network.webSocketFrameSent" &&
+    frame.method === "evener/navigation/read" &&
+    frame.params?.resource === "section" &&
+    frame.params?.section === "needs_you";
+  const offsetOf = (frame) => frame.params?.offset ?? 0;
+  // A read the page's handler took an answer for was delivered, whatever the
+  // entry now holds; one it never took left its entry stale.
+  const taken = new Set(deliveredReplyIds);
+  // Only the last read a connection sent at an offset describes the entry it
+  // left: an earlier one was superseded, and its missing answer says nothing
+  // about what the entry holds now.
+  const lastAt = new Map();
+  for (const frame of frames)
+    if (tierRead(frame) && frame.requestId === lostSocketId) lastAt.set(offsetOf(frame), frame);
+  const lost = new Set(
+    [...lastAt].filter(([, frame]) => !taken.has(frame.id)).map(([offset]) => offset),
+  );
+  return [
+    ...new Set(
+      frames
+        .filter((frame) => tierRead(frame) && frame.requestId === reconnectSocketId)
+        .filter((frame) => lost.has(offsetOf(frame)))
+        .map(offsetOf),
+    ),
+  ];
+}
+
+export function reconnectReadyDecision({ consumed, reconnected, deliveredTierReads, retryableOffsets = [] }) {
+  const where = `consumed ${consumed?.sequence} generation ${consumed?.generationId}, ` +
+    `reconnected ${reconnected?.sequence} generation ${reconnected?.generationId}`;
+  assert.ok(consumed, "the loaded tier's navigation handshake was observed");
+  assert.ok(reconnected, `the reconnect reported a navigation handshake (${where})`);
+  assert.notEqual(reconnected.handshakeId, consumed.handshakeId,
+    `the reconnect reported a handshake of its own, not the one the tier loaded under (${where})`);
+  assert.equal(reconnected.generationId, consumed.generationId,
+    `a socket reconnect stays in the navigation generation the loaded tier belongs to (${where})`);
+  if (reconnected.sequence === consumed.sequence) {
+    // The store re-forces an entry the page already holds only when that entry
+    // is stale or errored, which a read the closing socket took down leaves
+    // behind. Those offsets are the only ones a retained reconnect may read
+    // again, and only while the loss is real; with no loss the retained branch
+    // starts no read at all.
+    const reloads = deliveredTierReads.filter((read) => !retryableOffsets.includes(read.offset));
+    assert.deepEqual(reloads.map((read) => read.label), [],
+      `a reconnect at the sequence the page already consumed re-reads no needs-you page it still holds, got ${reloads.map((read) => read.label).join(", ")} (${where})`);
+    return "retained";
+  }
+  assert.ok(reconnected.sequence > consumed.sequence,
+    `a reconnect never moves the navigation sequence backward (${where})`);
+  return "reloaded";
+}
+
 export async function attentionJourney(ctx) {
   const {
     driver,
@@ -1021,40 +1172,272 @@ export async function attentionJourney(ctx) {
   assert.equal(await read(`document.querySelector(${q(LIST)}) === null`), true, "choosing a later-page row closes the list");
   driver.milestone("attention-later-page", { ref: laterRef, rows: laterRow.rows });
 
-  // ---- a real socket reconnect after multiple pages --------------------
+  // ---- a real socket reconnect keeps the tier it already had -----------
+  //
+  // The navigation store's ready dispatch has two branches, chosen by the
+  // sequence the reconnect advertises against the last one the page consumed
+  // (state/navigation/store.ts, the `same` arm): at an equal sequence every
+  // loaded page is retained and no read is started, and past it the change the
+  // page never saw is resolved by reloading what it holds. The tier a reader
+  // is guaranteed after a reconnect is therefore the tier it already had -
+  // present, intact and usable - so this leg asserts that retention and the
+  // no-reload property of the retained branch, and lets
+  // reconnectReadyDecision name which branch the observed handshakes require.
 
+  // The navigation handshake recorded before `to`: the last initialize response
+  // there, with the raw sequence it advertised, the connection that carried it,
+  // and every invalidation of that generation recorded after it. Which of those
+  // numbers decides the branch is reconnectSequences' rule, not this reader's.
+  // The reader also returns the socket so its side's invalidations can be read
+  // from what the page's handler took once that connection is done, rather
+  // than frozen at whatever moment the caller happened to look.
+  const handshakeBefore = (to) => {
+    const initializeIds = new Set(
+      frames
+        .slice(0, to)
+        .filter((frame) => frame.direction === "Network.webSocketFrameSent" && frame.method === "initialize")
+        .map((frame) => frame.id),
+    );
+    const response = frames
+      .slice(0, to)
+      .filter(
+        (frame) =>
+          frame.direction === "Network.webSocketFrameReceived" &&
+          initializeIds.has(frame.id) &&
+          frame.result?.navigation,
+      )
+      .at(-1);
+    if (!response) return null;
+    const capability = response.result.navigation;
+    const invalidations = frames
+      .slice(frames.indexOf(response) + 1, to)
+      .filter(
+        (frame) =>
+          frame.direction === "Network.webSocketFrameReceived" &&
+          frame.method === "evener/navigation/invalidated" &&
+          frame.params?.generationId === capability.generationId,
+      )
+      .map((frame) => frame.params.sequence);
+    return {
+      handshakeId: response.id,
+      frame: response,
+      socketId: response.requestId,
+      generationId: capability.generationId,
+      handshakeSequence: capability.sequence,
+      invalidations,
+    };
+  };
   const beforeReconnect = frames.length;
+  const retainedTierRows = allRows;
+  // The connection the tier was loaded under, identified now so its frames can
+  // be attributed later. Its sequence is not read yet: the page keeps consuming
+  // invalidations until the close lands, and the ones it took are only final
+  // once the socket is gone.
+  const consumedAtCut = handshakeBefore(beforeReconnect);
+  assert.ok(consumedAtCut, "the tier was loaded under a navigation handshake this driver saw");
   // Only conversation owners still mounted have a subscription to recover;
   // the cascade readers the hops and the explicit Close disposed must not be
   // required to re-subscribe.
   const mountedOwners = await read(`[...document.querySelectorAll('[data-composer]')].map((node) => node.dataset.composer)`);
   assert.ok(mountedOwners.length > 0, "the attention scene has mounted conversation owners before the reconnect");
+  // reconnect() returns once every mounted owner's subscription is answered on
+  // the new socket, and those subscriptions are only re-sent because the
+  // client entered its ready dispatch - the dispatch that also runs
+  // navigation's onReady. A tier read the ready path was going to issue is on
+  // the wire before this point, so the no-reload property is settled here with
+  // no clock to race.
   await reconnect({ expectRefs: mountedOwners });
   await wait(`${driver.paneScopeExpr(rootRef)} !== null`, "the source pane survives a real socket reconnect");
-  // What the reader needs after a reconnect is the tier, re-read and answered.
-  // Reads the app issued into the gap while the old socket was closing are
-  // lost with that socket by design, and CI load widens that gap, so those are
-  // recorded rather than failed - the answered tier read is the recovery.
-  const postReconnectReads = () => sent(beforeReconnect).filter((frame) => frame.method === "evener/navigation/read");
-  const tierReadAnswered = (frame) =>
-    answered(frame) && frame.params?.section === "needs_you" && (frame.params?.offset ?? 0) === 0;
-  const readDeadline = Date.now() + 15000;
-  while (Date.now() < readDeadline && !postReconnectReads().some(tierReadAnswered)) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const answeredTierReads = postReconnectReads().filter(tierReadAnswered).length;
-  const unansweredReads = postReconnectReads().filter((frame) => !answered(frame));
-  assert.ok(
-    answeredTierReads > 0,
-    `the app re-reads its needs-you tier after a reconnect and the hub answers it; unanswered ${unansweredReads.map((frame) => `${frame.params?.section ?? "?"} offset ${frame.params?.offset ?? "?"} (${frame.id})`).join(", ")}`,
+  // What the connection the tier loaded under handed to the page before it went
+  // away, read from the page rather than the network log. A received frame in
+  // the log is not a frame the page took: close() nulls the client's onmessage
+  // before the socket finishes closing, so anything arriving in that gap is
+  // logged and dropped. Both quantities this leg takes from that connection -
+  // how far the page consumed, and which tier reads it never got an answer for
+  // - come from here; a sent frame stays authoritative, since the page called
+  // send. The driver stamps the connection it cut, because initialize ids
+  // repeat across connections.
+  const cutRecord = await read(`(() => {
+    const socket = (window.__cascadeSockets ?? []).find((candidate) => candidate.__guardCutSocket === true);
+    if (!socket) return null;
+    return { handshakeId: socket.__deliveredHandshakeId, invalidations: socket.__deliveredInvalidations,
+      replyIds: socket.__deliveredReplyIds };
+  })()`);
+  const reconnectHandshake = handshakeBefore(frames.length);
+  assert.ok(reconnectHandshake, "the reconnect reported a navigation handshake this driver saw");
+  // Without this the two rules below would pass by reading nothing at all: an
+  // absent record reads as "consumed only the handshake, answered no reads" and
+  // would quietly change the branch instead of failing.
+  assert.ok(cutRecord, "the page kept a record of the connection the tier loaded under");
+  assert.equal(cutRecord.handshakeId, consumedAtCut.handshakeId,
+    "the connection the tier loaded under is the one the page recorded that handshake on");
+  // Each side contributes the value the store's comparison uses: the sequence
+  // the page had consumed on the connection that closed, and the raw sequence
+  // the reconnect advertises. The page's side is read from what that
+  // connection's handler took, so an invalidation it took while the close was
+  // in flight is included and one that arrived after the handler was detached
+  // is not; the reconnect's side excludes invalidations arriving during
+  // subscription recovery, which are later than that comparison.
+  assert.notEqual(reconnectHandshake.socketId, consumedAtCut.socketId,
+    "the reconnect's handshake arrived on a connection of its own");
+  const consumed = {
+    ...consumedAtCut,
+    sequence: reconnectSequences({
+      handshakeSequence: consumedAtCut.handshakeSequence,
+      invalidations: socketInvalidations({
+        delivered: cutRecord.invalidations,
+        generationId: consumedAtCut.generationId,
+      }),
+    }).consumed,
+  };
+  const reconnected = { ...reconnectHandshake, sequence: reconnectSequences(reconnectHandshake).advertised };
+  // Reads are attributed to the connection that carried them, so a read the
+  // closing socket still had in flight is not counted as the reconnect's and a
+  // read the reconnect sent is counted however late this reader looks. The
+  // no-reload property governs the ready dispatch, which runs on the new socket.
+  const navigationReads = frames.filter(
+    (frame) =>
+      frame.direction === "Network.webSocketFrameSent" &&
+      frame.method === "evener/navigation/read" &&
+      frame.requestId === reconnectHandshake.socketId,
   );
-  driver.milestone("attention-reconnect-reads", {
-    answeredTierReads,
-    lostToTheClosingSocket: unansweredReads.length,
+  const tierReads = navigationReads.filter(
+    (frame) => frame.params?.resource === "section" && frame.params?.section === "needs_you",
+  );
+  // An invalidation delivered after the reconnect's handshake can legitimately
+  // refresh the tier - the seen marker an opened target publishes is one, and it
+  // is asynchronous, so its timing is not this leg's to control. Reads sent after
+  // that point are caused by it, so only the ones the ready dispatch itself
+  // started are subject to the no-reload property.
+  const firstInvalidationAfterHandshake = frames.findIndex(
+    (frame, at) =>
+      at > frames.indexOf(reconnectHandshake.frame) &&
+      frame.direction === "Network.webSocketFrameReceived" &&
+      frame.method === "evener/navigation/invalidated" &&
+      frame.requestId === reconnectHandshake.socketId &&
+      frame.params?.generationId === reconnectHandshake.generationId,
+  );
+  const tierReadPositions = tierReads.map((read) => ({ read, at: frames.indexOf(read) }));
+  const readyTierReads = readyDispatchTierReads({
+    reads: tierReadPositions,
+    firstInvalidationAt: firstInvalidationAfterHandshake === -1 ? null : firstInvalidationAfterHandshake,
+  }).map((entry) => entry.read);
+  // A tier read whose answer the page lost with the socket that closed leaves
+  // its entry stale, which is the one condition under which the retained branch
+  // re-forces it. Whether an answer was delivered is not readable from the wire
+  // - the CDP log shows the hub's reply whether or not the retired socket's
+  // detached handlers still accepted it - so it is read from the page: the
+  // reconnect's own retry of that offset carries the base the lost read used.
+  // Offsets are the coarsest honest key here, so a lost read blesses a retry of
+  // that offset and nothing more; the row identity asserted below is the
+  // backstop, because a tier that lost its rows cannot render them.
+  const lostTierOffsets = lostTierRead({
+    frames,
+    lostSocketId: consumedAtCut.socketId,
+    reconnectSocketId: reconnectHandshake.socketId,
+    deliveredReplyIds: cutRecord.replyIds,
   });
+  const readyBranch = reconnectReadyDecision({
+    consumed,
+    reconnected,
+    deliveredTierReads: readyTierReads.map((frame) => ({
+      offset: frame.params?.offset ?? 0,
+      label: `offset ${frame.params?.offset ?? 0} (${frame.id})`,
+    })),
+    retryableOffsets: lostTierOffsets,
+  });
+  if (readyBranch === "reloaded") {
+    // The reload is proven by the read it starts, which the ready dispatch
+    // issues synchronously: its sent frame is on the wire before the
+    // subscriptions reconnect() waits on are answered, so this reads a settled
+    // fact rather than racing the answer. Whether the hub has answered is not
+    // this leg's subject - the answered-read round trip is asserted by the
+    // legs that read the tier deliberately.
+    assert.ok(
+      tierReads.some((frame) => (frame.params?.offset ?? 0) === 0),
+      "a reconnect past a change the page never consumed re-reads the needs-you tier from its first page",
+    );
+  }
   const afterReconnect = await focused();
-  assert.equal(afterReconnect.ref, laterRef, "a real reconnect keeps the later-page target's focused pane and URL");
-  await wait(`document.querySelector(${q(`${NEXT}`)}) !== null`, "the control re-derives its tier after reconnect");
+  assert.equal(afterReconnect.ref, laterRef, "a real reconnect keeps the later-page target focused");
+  assert.equal(afterReconnect.url, `/s/${encodeURIComponent(laterRef)}`,
+    "a real reconnect keeps the focused reader's URL");
+  // The tier itself: the control is still offered, the list still opens, and
+  // it renders the same rows in the hub's order that it held before the socket
+  // closed.
+  // A reconnect that dropped the loaded tier would fail every wait below with
+  // the generic "control is visible and hit-testable" text, so the control's
+  // presence is named here as the retention it is.
+  await wait(`document.querySelector(${q(CONTROL)}) !== null`, "the retained tier still offers the control after the reconnect");
+  await controlVisible(null);
+  await awaitNoOuterScrollOrResize("the reader's scroll has settled before the retained tier opens");
+  await activate(MORE, "the More trigger opens the tier retained across the reconnect");
+  await wait(`document.querySelector(${q(LIST)}) !== null`, "the retained attention list opens after the reconnect");
+  // The list omits the session the control sits in, which is the row this leg
+  // opened, so the retained page extent is compared without it.
+  const retainedRowCount = retainedTierRows.length - 1;
+  // Row identity is the retention claim, so it holds only on the retained
+  // branch: a reconnect past a change re-reads the tier, and the hub's current
+  // rows legitimately replace the ones held before the socket closed.
+  let renderedRows = [];
+  if (readyBranch === "retained") {
+    // A panel that has just mounted renders no rows yet, so this waits for the
+    // rendered extent rather than reading whatever the first frame after
+    // opening happened to hold.
+    renderedRows = await wait(`(() => {
+      const rows = [...document.querySelectorAll(${q(ROW)})].map((row) => row.dataset.ref);
+      return rows.length === ${retainedRowCount} ? rows : null;
+    })()`, "the retained attention list renders both loaded pages after the reconnect");
+    assert.deepEqual(
+      renderedRows,
+      retainedTierRows.filter((ref) => ref !== laterRef),
+      "the reconnect retains both loaded needs-you pages in the hub's order",
+    );
+  } else {
+    // The reload replaced the rows, so only their presence is guaranteed here;
+    // what the reload must do is name itself, which the decision already did.
+    renderedRows = await wait(`(() => {
+      const rows = [...document.querySelectorAll(${q(ROW)})].map((row) => row.dataset.ref);
+      return rows.length > 0 ? rows : null;
+    })()`, "the reloaded attention tier renders the hub's current rows after the reconnect");
+  }
+  // Usable, not merely remembered: the retained tier still resolves the
+  // control's next target, and a retained row is still a real clickable row.
+  await wait(`document.querySelector(${q(`${NEXT}`)}) !== null`, "the control resolves the retained tier's next target");
+  const clickableRow = renderedRows[0];
+  // The row's own facts come from the page; whether they add up to a choice a
+  // reader can take is rowUsable's rule, which the unit cases pin. The wait
+  // carries that rule rather than merely the row's existence: a legitimate
+  // reload or retry can leave the retained rows disabled while it is in flight,
+  // and a wait that stopped at existence would assert usability mid-refresh.
+  const clickableFacts = await wait(`(() => {
+    const rowUsable = ${rowUsable.toString()};
+    const row = document.querySelector(${q(`${ROW}[data-ref="${clickableRow}"]`)});
+    if (!row) return null;
+    row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const r = row.getBoundingClientRect();
+    const facts = {
+      exists: true,
+      ariaDisabled: row.getAttribute("aria-disabled"),
+      hit: row.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)),
+    };
+    return rowUsable(facts) ? facts : null;
+  })()`, "the retained row this leg reopens is rendered, enabled and hit-testable after the reconnect");
+  assert.ok(rowUsable(clickableFacts),
+    "a retained needs-you row is a real, selectable target after the reconnect");
+  await key("Escape", 27);
+  await wait(`document.querySelector(${q(LIST)}) === null`, "Escape closes the retained attention list");
+  driver.milestone("attention-reconnect-retained", {
+    ref: laterRef,
+    rows: renderedRows.length,
+    readyBranch,
+    lostTierOffsets,
+    generationId: reconnected.generationId,
+    consumedSequence: consumed.sequence,
+    reconnectSequence: reconnected.sequence,
+    navigationReads: navigationReads.length,
+    tierReads: tierReads.length,
+  });
   driver.milestone("attention-reconnect", { ref: laterRef });
 
   // ---- the clearance spacer never toggles New Content -----------------

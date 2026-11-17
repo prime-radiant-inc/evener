@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // stableWatchDeliveryReceiptIDs lists the delivery ids the controller still
@@ -183,6 +184,188 @@ func TestSupersededStableWatchDelivererBeforeRuntimeCommit(t *testing.T) {
 	requireOnlyStableWatchReceipts(t, fixture, second.DeliveryID)
 }
 
+// watchSendFireRecorded reports whether the fire of deliveryID survives in p's
+// fire record or its diagnostic chain.
+func watchSendFireRecorded(p *provenance.Causal, deliveryID string) bool {
+	if p == nil {
+		return false
+	}
+	for _, fire := range p.FireKeys {
+		if fire.DeliveryID == deliveryID {
+			return true
+		}
+	}
+	for _, entry := range p.Chain {
+		if entry.Kind == "watch" && entry.DeliveryID == deliveryID {
+			return true
+		}
+	}
+	return false
+}
+
+// A coalescing plan prunes the superseded frame's fire from the survivor's
+// ancestry because that frame can never count toward the fuse. The prune is a
+// decision about a frame that stays the current pending frame in the runtime
+// map until the replacement is durable and commits — an fsync and a refold
+// later. A drain in that window must not deliver the frame the fuse can no
+// longer see: if it does, the frame settles delivered while its fire is gone
+// and the runaway fuse counts one fewer delivered ancestor than reality.
+//
+// The plan therefore takes the frame's delivery claim while it prunes, and the
+// persist releases it once the replacement is published. This test drains the
+// superseded frame inside the window, before its replacement's pending event is
+// durable, and requires the reservation to refuse the claim.
+func TestSupersededFramePrunedFireIsNotDeliverableBeforeItsReplacementCommits(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+
+	// A delivered ancestor, so the survivor's ancestry holds a fire the fuse
+	// must still count after the prune.
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "ancestor"})
+	ancestor := fixture.requireOnePending(t).state
+	if delivered, err := jm.deliverPendingWatchSend(cfg, ancestor, false); !delivered || err != nil {
+		t.Fatalf("deliver the ancestor frame: delivered=%t err=%v", delivered, err)
+	}
+
+	// The frame whose fire the coalescing plan will prune.
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventCommunicate,
+		SessionID:  jm.sessionID,
+		Data:       events.CommunicateData{Message: "superseded"},
+		Provenance: provenance.Clone(ancestor.Provenance),
+	})
+	superseded := fixture.requireOnePending(t).state
+
+	var inWindow []pendingWatchSendDelivery
+	var drained bool
+	var delivered bool
+	var drainErr error
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		// Before the replacement's pending event is durable, the durable fold
+		// still names the superseded frame as the pending head, so a drain here
+		// would hand the receiver a frame whose fire is already pruned.
+		if !drained && event.Kind == jobstore.EventWatchSendPending &&
+			event.WatchSend != nil && event.WatchSend.DeliveryID != superseded.DeliveryID && event.WatchSend.UpdateSeq > superseded.UpdateSeq {
+			drained = true
+			inWindow = jm.pendingWatchSendDeliveries(nil)
+			delivered, drainErr = jm.deliverPendingWatchSend(cfg, superseded, false)
+		}
+		return originalAppend(event)
+	}
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:      events.EventCommunicate,
+		SessionID: jm.sessionID,
+		Data:      events.CommunicateData{Message: "survivor"},
+		// A loop's next trigger descends from the frame the receiver actually
+		// took, so the survivor's own lineage carries the delivered ancestor
+		// and never the superseded frame the model never saw.
+		Provenance: provenance.Clone(ancestor.Provenance),
+	})
+	jm.appendEvent = originalAppend
+	if !drained {
+		t.Fatal("the drain never ran inside the replacement's persistence window")
+	}
+	if len(inWindow) != 1 || inWindow[0].state.DeliveryID != superseded.DeliveryID {
+		t.Fatalf("the window's pending frame = %+v, want the superseded frame alone", inWindow)
+	}
+	if drainErr != nil {
+		t.Fatalf("drain the superseded frame in the window: %v", drainErr)
+	}
+	if delivered {
+		t.Fatalf("the drain delivered frame %s after the plan pruned its fire from the survivor's ancestry", superseded.DeliveryID)
+	}
+
+	survivor := fixture.requireOnePending(t).state
+	if watchSendFireRecorded(survivor.Provenance, superseded.DeliveryID) {
+		t.Fatalf("the survivor's fire record still holds the pruned frame %s", superseded.DeliveryID)
+	}
+	// The invariant the prune exists to keep: every frame in the survivor's
+	// ancestry that settled delivered is named in the fire record the fuse
+	// counts. A frame delivered inside the window breaks it.
+	jm.mu.Lock()
+	for _, state := range []jobstore.WatchSendState{ancestor, superseded} {
+		if jm.watchSendDeliveredLocked(state.DeliveryID) && !watchSendFireRecorded(survivor.Provenance, state.DeliveryID) {
+			jm.mu.Unlock()
+			t.Fatalf("frame %s settled delivered but the survivor's fire record cannot count it", state.DeliveryID)
+		}
+	}
+	depth := jm.fuseDepthLocked(cfg, survivor.Provenance)
+	jm.mu.Unlock()
+	if depth != 1 {
+		t.Fatalf("fuse depth over the survivor's ancestry = %d, want 1 (the delivered ancestor alone)", depth)
+	}
+	requireOnlyStableWatchReceipts(t, fixture, survivor.DeliveryID)
+}
+
+// The prune decides the superseded frame can no longer count, but the
+// replacement that decision serves may never become durable. When the
+// persistence fails, the superseded frame is still the published pending
+// frame and is still deliverable, so it must keep its own fire: pruning in
+// place would leave a frame the drain can hand over that the fuse cannot
+// count.
+func TestFailedReplacementLeavesThePublishedFrameWithItsOwnFire(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "ancestor"})
+	ancestor := fixture.requireOnePending(t).state
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventCommunicate,
+		SessionID:  jm.sessionID,
+		Data:       events.CommunicateData{Message: "superseded"},
+		Provenance: provenance.Clone(ancestor.Provenance),
+	})
+	superseded := fixture.requireOnePending(t).state
+	if !watchSendFireRecorded(superseded.Provenance, superseded.DeliveryID) {
+		t.Fatalf("the published frame %s does not name its own fire before the plan runs", superseded.DeliveryID)
+	}
+
+	appendFailure := errors.New("replacement append failed")
+	originalAppend := jm.appendEvent
+	failed := false
+	jm.appendEvent = func(event jobstore.Event) error {
+		if !failed && event.Kind == jobstore.EventWatchSendPending &&
+			event.WatchSend != nil && event.WatchSend.DeliveryID != superseded.DeliveryID {
+			failed = true
+			return appendFailure
+		}
+		return originalAppend(event)
+	}
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventCommunicate,
+		SessionID:  jm.sessionID,
+		Data:       events.CommunicateData{Message: "survivor"},
+		Provenance: provenance.Clone(ancestor.Provenance),
+	})
+	jm.appendEvent = originalAppend
+	if !failed {
+		t.Fatal("the replacement append never failed, so the plan's failure path never ran")
+	}
+
+	published := fixture.requireOnePending(t).state
+	if published.DeliveryID != superseded.DeliveryID {
+		t.Fatalf("the pending frame after a failed replacement = %s, want the superseded frame %s", published.DeliveryID, superseded.DeliveryID)
+	}
+	if !watchSendFireRecorded(published.Provenance, published.DeliveryID) {
+		t.Fatalf("the published frame %s lost its own fire though its replacement never became durable", published.DeliveryID)
+	}
+
+	// The reservation must be gone too: the frame is deliverable again, and a
+	// claim still held would keep it from ever being taken.
+	jm.mu.Lock()
+	_, reserved := jm.deliveringWatchSends[superseded.DeliveryID]
+	jm.mu.Unlock()
+	if reserved {
+		t.Fatalf("the plan's reservation on %s outlived the failed persist", superseded.DeliveryID)
+	}
+	if delivered, err := jm.deliverPendingWatchSend(cfg, published, false); !delivered || err != nil {
+		t.Fatalf("deliver the frame whose replacement failed: delivered=%t err=%v", delivered, err)
+	}
+}
+
 // The receiver takes the first frame, a replacement coalesces over it before
 // its acknowledgement, and the acknowledgement fails. The accepted frame is
 // no longer pending, so nothing would redeliver it: its receipt stays held
@@ -218,6 +401,62 @@ func TestSupersededAcceptedFrameRetriesItsAcknowledgement(t *testing.T) {
 		t.Fatalf("the accepted, unacknowledged frame lost its receipt: %v", got)
 	}
 	requireSettlementRetryAcknowledges(t, fixture, first, second)
+}
+
+// A caller frame whose content is already in the receiver's transcript is
+// certainly delivered: only its delivered record is outstanding, and the
+// settle's last retry records it (completeWatchSendSettle) whether or not the
+// journal ever accepted an earlier attempt. Coalescing over that frame may
+// therefore not prune its fire from the survivor's ancestry. If it does, the
+// fuse counts one fewer delivered ancestor than reality: the frame records
+// delivered after its fire is gone.
+func TestSupersededTranscribedCallerFrameKeepsItsFire(t *testing.T) {
+	t.Parallel()
+	s, jm, _ := installCallerCommunicateWatch(t)
+	attempts := failAppendN(jm, jobstore.EventWatchSendDelivered, 1000)
+	fireCommunicate(jm, "transcribed-first")
+	drainAndAccept(t, s)
+	first := jm.pendingWatchSendDeliveries(nil)
+	if len(first) != 1 {
+		t.Fatalf("pending frames after the failing settle = %d, want the transcribed frame alone", len(first))
+	}
+	transcribed := first[0].state
+	if attempts.Load() == 0 {
+		t.Fatal("test premise broken: the settle never failed, so the frame is not transcribed-but-unsettled")
+	}
+	if !jm.watchSendTranscribed(transcribed.DeliveryID) {
+		t.Fatal("the frame that reached the transcript is not marked transcribed")
+	}
+	if jm.watchSendDelivered(transcribed.DeliveryID) {
+		t.Fatal("test premise broken: a transcribed frame with a failing settle is already delivered")
+	}
+
+	fireCommunicate(jm, "transcribed-second")
+	pending := jm.pendingWatchSendDeliveries(nil)
+	if len(pending) != 1 {
+		t.Fatalf("pending frames after the coalesce = %d, want 1", len(pending))
+	}
+	survivor := pending[0].state
+	if survivor.DeliveryID == transcribed.DeliveryID {
+		t.Fatal("test premise broken: the second fire did not coalesce over the transcribed frame")
+	}
+	if !watchSendFireRecorded(survivor.Provenance, transcribed.DeliveryID) {
+		t.Fatalf("the coalesce pruned frame %s's fire, but its content is already in the receiver's transcript", transcribed.DeliveryID)
+	}
+
+	// The sting of that prune: the settle's last retry marks the frame
+	// delivered. The survivor's fire record must be able to count it.
+	cfg := onlyWatchConfigForTest(t, jm)
+	jm.completeWatchSendSettle(cfg, transcribed)
+	if !jm.watchSendDelivered(transcribed.DeliveryID) {
+		t.Fatal("the transcribed frame did not settle delivered on its last retry")
+	}
+	jm.mu.Lock()
+	depth := jm.fuseDepthLocked(cfg, survivor.Provenance)
+	jm.mu.Unlock()
+	if depth != 1 {
+		t.Fatalf("fuse depth over the survivor's ancestry = %d, want 1 for the delivered transcribed frame", depth)
+	}
 }
 
 // The first frame's deliverer passed its durable check before the
@@ -337,6 +576,49 @@ func TestAcceptedFrameKeepsItsRetryThroughAFailedSupersededRedelivery(t *testing
 	}
 	if !stableWatchSettlementRetrying(jm, first.DeliveryID) {
 		t.Fatal("the accepted frame was not handed to the settlement retry")
+	}
+}
+
+// A frame the receiver durably took whose settlement then failed stays pending,
+// and the next drain redelivers it. The receiver may have resolved the attention
+// and dropped its cause by then, so the redelivery must not register the cause
+// again: a later turn would adopt the finished exchange and count a fresh watch
+// event as deeper than it is, dropping it as runaway.
+func TestRedeliveryDoesNotResurrectAResolvedCause(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	attentionID := stableWatchAttentionID(first)
+	// The receiver takes the frame, then the settlement write fails, which is
+	// what leaves the frame pending with an outstanding acknowledgement.
+	settleFailure := errors.New("settlement write failed")
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, first) {
+			return settleFailure
+		}
+		return originalAppend(event)
+	}
+	if _, err := jm.deliverPendingWatchSend(cfg, first, false); !errors.Is(err, settleFailure) {
+		t.Fatalf("deliver first frame: err = %v, want the settlement failure", err)
+	}
+	jm.appendEvent = originalAppend
+	if !jm.hasUnsettledWatchSend(first.DeliveryID) {
+		t.Fatal("the taken frame was not noted as unsettled, so this test is not exercising a redelivery")
+	}
+	// The receiver resolves the attention, which drops its cause.
+	fixture.controller.attentionCauses.forget(attentionID)
+	if got := fixture.controller.attentionCauses.union([]string{attentionID}); got != nil {
+		t.Fatalf("the resolved attention still holds a cause: %+v", got)
+	}
+	// The next drain redelivers the same pending frame.
+	if _, err := jm.deliverPendingWatchSend(cfg, first, false); err != nil {
+		t.Fatalf("redeliver the taken frame: %v", err)
+	}
+	if got := fixture.controller.attentionCauses.union([]string{attentionID}); got != nil {
+		t.Fatalf("the redelivery resurrected the resolved cause: %+v", got)
 	}
 }
 

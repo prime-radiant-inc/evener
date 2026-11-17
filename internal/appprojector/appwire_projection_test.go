@@ -63,13 +63,14 @@ func TestProject_ModelChanged(t *testing.T) {
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventModelChanged,
 		Data: events.ModelChangedData{
-			OldProvider:           "openai",
-			OldModel:              "gpt-5.4",
-			NewProvider:           "anthropic",
-			NewModel:              "claude-opus-4-6",
-			ReasoningEffortLevels: []string{"low", "high"},
-			SupportsReasoning:     true,
-			MarkerText:            "Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6",
+			OldProvider:            "openai",
+			OldModel:               "gpt-5.4",
+			NewProvider:            "anthropic",
+			NewModel:               "claude-opus-4-6",
+			ReasoningEffortLevels:  []string{"low", "high"},
+			SupportsReasoning:      true,
+			DefaultReasoningEffort: "high",
+			MarkerText:             "Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6",
 		},
 	})
 	// The switch marker is the MODEL_SWITCH entry SetModel records: history
@@ -92,6 +93,9 @@ func TestProject_ModelChanged(t *testing.T) {
 	}
 	if !params.SupportsReasoning || len(params.ReasoningEffortLevels) != 2 {
 		t.Fatalf("params = %+v, want SupportsReasoning=true and 2 effort levels", params)
+	}
+	if params.DefaultReasoningEffort != "high" {
+		t.Fatalf("params.DefaultReasoningEffort = %q, want the new model's unset effort high", params.DefaultReasoningEffort)
 	}
 }
 

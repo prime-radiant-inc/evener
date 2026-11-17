@@ -232,6 +232,17 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
     title: "Scroll the transcript to the bottom",
     chord: "Alt+End",
   },
+  // The browser's own find chord, claimed only while a conversation is
+  // focused: every handler declines elsewhere, and a declined chord is never
+  // preventDefault'd. It fires from editable targets because the reader is
+  // usually in the composer.
+  {
+    id: ACTIONS.transcriptFind,
+    actionId: ACTIONS.transcriptFind,
+    title: "Find in the session",
+    chord: "$mod+F",
+    allowInEditable: true,
+  },
   {
     id: ACTIONS.settingsClose,
     actionId: ACTIONS.settingsClose,

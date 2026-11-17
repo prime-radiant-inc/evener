@@ -94,7 +94,7 @@ function hasRoomToScroll(el: Element, direction: ScrollDirection): boolean {
 /** An element that scrolls vertically on its own, independently of the port. */
 function isIndependentVerticalScroller(el: Element): boolean {
   if (el.scrollHeight <= el.clientHeight) return false;
-  const overflowY = getComputedStyle(el).overflowY;
+  const overflowY = (el.ownerDocument.defaultView ?? window).getComputedStyle(el).overflowY;
   return overflowY === "auto" || overflowY === "scroll";
 }
 
@@ -150,7 +150,8 @@ export function verticalInputCanMovePort(
   direction: ScrollDirection,
 ): boolean {
   if (!portCanScroll(portMetrics, direction)) return false;
-  let node = target instanceof Element ? target : null;
+  // A popout's elements belong to another realm, not the opener's Element.
+  let node = target !== null && (target as Node).nodeType === 1 ? (target as Element) : null;
   while (node !== null && node !== port) {
     if (isIndependentVerticalScroller(node) && hasRoomToScroll(node, direction)) return false;
     node = node.parentElement;

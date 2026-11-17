@@ -450,7 +450,7 @@ func FuzzMsfzCallModelWithFallback(f *testing.F) {
 		t.Cleanup(sess.Close)
 
 		profile := sess.currentProfile()
-		req := sess.buildModelRequest(profile, "system", []llm.Message{llm.User("hi")}, nil, "")
+		req := sess.buildModelRequest(profile, "system", []llm.Message{llm.User("hi")}, nil, "", 0)
 
 		// TRIPWIRE: msfzStreamAdapter is a scripted in-process adapter with no
 		// real I/O; this normally completes in well under a second. 30s only
@@ -543,7 +543,7 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		out, fullHistory := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream, false)
+		out, fullHistory, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream, false)
 
 		// Invariant: every return path leaves a concrete history mode.
 		if out.HistoryMode == "" {
@@ -567,7 +567,7 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 		}
 
 		// Determinism: the same session state + request yields the same decision.
-		again, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream, false)
+		again, _, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream, false)
 		if again.HistoryMode != out.HistoryMode || again.PreviousResponseID != out.PreviousResponseID {
 			t.Fatalf("planning not deterministic:\n first  = mode=%q prev=%q\n second = mode=%q prev=%q",
 				out.HistoryMode, out.PreviousResponseID, again.HistoryMode, again.PreviousResponseID)

@@ -338,7 +338,7 @@ descriptor persisted ParentWatchGranted. The grant is non-transitive.
 watch_parent never grants arbitrary ancestor or sibling access.
 
 All shipped watch semantics remain: event/output/progress filters, every,
-bounded frames, latest-frame-wins coalescing, the delivery budget, list/inspect/
+bounded frames, latest-frame-wins coalescing, list/inspect/
 clear, terminal ordering, observer callbacks, restart cancellation/end notices,
 and append-only deduplicated SessionMeta.ObservedBy UI metadata. Legacy rows
 whose source or receiver is addressed through a delegate JobRecord are ignored
@@ -1105,6 +1105,37 @@ force). It pinned the three historical lifecycle bug classes — no-action
 selection, nil-evidence escalation tolerance, and exhaustion-payload
 overwrite — by mutation, and it is the regression net for any future change
 to the finish path.
+
+### Acceptance precedes packet durability
+
+A terminal communicate returns accepted before its packet is durable, and that
+window is intended rather than a defect. The tool result saying the report was
+accepted is persisted while the generation is still running; the packet is
+prepared only at settlement.
+
+The order is forced. Preparing a packet folds the generation to settling, and
+settling admits no model request: BeginModelRequest requires a running
+generation, and the lifecycle has no settling-to-running edge. SubagentStop
+runs before final settlement and may block the report, which grants the same
+generation exactly one continuation and therefore one more model request. A
+packet prepared before acceptance would foreclose that continuation. A stop
+hook also replaces the delivered report text, so an accept-time packet would
+freeze text the veto exists to suppress. Settlement additionally samples
+operational metadata after shell cleanup, which an accept-time packet cannot
+see.
+
+The cost is a crash window: a process that dies after the accepted tool result
+persists and before CompleteSettlement prepares the packet leaves a running
+generation with no prepared terminal. Restart settles that generation
+failed/runtime_lost, so a report the model was told was accepted is reported as
+lost. The window is one process lifetime and is not corrupt: no reader is served
+a partial or unvouched packet, and the generation's outcome is honest about not
+having settled.
+
+Do not close this window by preparing at acceptance. A durable marker that means
+"an accepted report exists" without entering settling is a separate journal
+change; adding one is the only route that keeps both the continuation and the
+hook veto.
 
 ### communicate
 

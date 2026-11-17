@@ -9,12 +9,12 @@ const DelegateRosterTextMaxRunes = 256
 
 // SlimDelegateForRoster returns d as a thread/read roster row. No client reads
 // the final message, structured result or packet kind from the roster
-// (delegate/updated and jobs/list still carry them), and the delegate runtime
-// stores the brief as both Task and Description, so the Task copy is kept and
-// Description is dropped when it repeats it (the TUI subagent rail names a row
-// from Task alone). The bounded report preview and the logical-owner session id
-// are activity-store data too: the roster omits report payloads by contract, and
-// scoping is the activity read's, not the roster's.
+// (delegate/updated and jobs/list still carry them). A Description is kept only
+// when it says something other than the Task, because a duplicate adds nothing
+// and only journals written by older runtimes carried both. The bounded report
+// preview and the logical-owner session id are activity-store data too: the
+// roster omits report payloads by contract, and scoping is the activity read's,
+// not the roster's.
 func SlimDelegateForRoster(d EvenerDelegateInfo) EvenerDelegateInfo {
 	if d.Description == d.Task {
 		d.Description = ""

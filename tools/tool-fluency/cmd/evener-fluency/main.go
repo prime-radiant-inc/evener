@@ -770,7 +770,7 @@ func isTestCommand(argsJSON string) bool {
 // subagent sessions share the state dir but run their own rounds, so they are
 // excluded the same way rootSessionID excludes them) and computes the
 // phase-discipline metrics defined on probeMetrics.
-func computeProbeMetrics(stateDir string, wireNames map[string]string) (probeMetrics, error) {
+func computeProbeMetrics(ctx context.Context, stateDir string, wireNames map[string]string) (probeMetrics, error) {
 	var m probeMetrics
 	rootID, err := rootSessionID(stateDir)
 	if err != nil {
@@ -780,7 +780,7 @@ func computeProbeMetrics(stateDir string, wireNames map[string]string) (probeMet
 		return m, nil //nolint:nilerr // absent root session is a classified no-run state, not a metrics failure
 	}
 	seenReadTargets := map[string]bool{}
-	tr, err := runnerReadTranscript(stateDir, rootID, doctor.TranscriptOpts{})
+	tr, err := runnerReadTranscript(ctx, stateDir, rootID, doctor.TranscriptOpts{})
 	if err != nil {
 		return m, err
 	}
@@ -859,8 +859,8 @@ func readRepeatKey(canonical, argsJSON string) string {
 // A transcript that cannot be read is surfaced as a finding (the run may
 // still pass its expectations, but the missing metrics are never silently
 // dropped).
-func applyProbeMetrics(res *probeResult, probe probeFile, stateDir string, wireNames map[string]string) {
-	m, err := computeProbeMetrics(stateDir, wireNames)
+func applyProbeMetrics(ctx context.Context, res *probeResult, probe probeFile, stateDir string, wireNames map[string]string) {
+	m, err := computeProbeMetrics(ctx, stateDir, wireNames)
 	if err != nil {
 		res.Findings = append(res.Findings, finding{
 			Category: "infra",
@@ -1000,13 +1000,19 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 		// probe, so the harness removes the session's tree once it is done.
 		_ = sandbox.RemoveSessionScratchTree(id)
 	}
-	if counts, err := allTranscriptToolCounts(stateDir); err == nil {
+	// Collection reads transcripts the finished probe already wrote, so it
+	// runs under its own context: ctx's deadline bounds the probe, and a probe
+	// that ends at that deadline still has readable transcripts whose counts
+	// and metrics belong on the result. Error classification below keeps using
+	// ctx, which is the context that actually cancelled the run.
+	collectCtx := context.Background()
+	if counts, err := allTranscriptToolCounts(collectCtx, stateDir); err == nil {
 		res.ModelToolCounts = counts
 	}
 	// Phase-discipline metrics (#187): read from the root session's transcript
 	// rather than through the enumeration the counts above walk, and reported
 	// per the probe's metrics block.
-	applyProbeMetrics(&res, probe, stateDir, wireNames)
+	applyProbeMetrics(collectCtx, &res, probe, stateDir, wireNames)
 	applyAskExchanges(&res, probe)
 	if err != nil {
 		res.Error = err.Error()
@@ -1414,7 +1420,7 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 // or from reading a transcript. The tool-count aggregation walks every
 // transcript through this enumeration; the phase metrics read the root
 // session's transcript directly.
-func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
+func walkTranscripts(ctx context.Context, stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
 	matches, err := filepath.Glob(filepath.Join(schema.SessionsDir(stateDir), "*"+schema.SessionTranscriptSuffix))
 	if err != nil {
 		return err
@@ -1425,7 +1431,7 @@ func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor
 		if !ok || id == "" {
 			continue
 		}
-		tr, err := runnerReadTranscript(stateDir, id, opts)
+		tr, err := runnerReadTranscript(ctx, stateDir, id, opts)
 		if err != nil {
 			return err
 		}
@@ -1567,9 +1573,9 @@ func transcriptToolCounts(tr doctor.TranscriptResult) map[string]int {
 	return counts
 }
 
-func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
+func allTranscriptToolCounts(ctx context.Context, stateDir string) (map[string]int, error) {
 	counts := map[string]int{}
-	err := walkTranscripts(stateDir, doctor.TranscriptOpts{}, func(tr doctor.TranscriptResult) error {
+	err := walkTranscripts(ctx, stateDir, doctor.TranscriptOpts{}, func(tr doctor.TranscriptResult) error {
 		for tool, n := range transcriptToolCounts(tr) {
 			counts[tool] += n
 		}

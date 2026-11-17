@@ -3,6 +3,9 @@
 // composer settings and its slash command) speaks one language:
 // "" is "(default)" (the session default applies), and "none" is an explicit
 // off the user chose — labelled by whether the model can actually express it.
+// Where the tier an unset effort resolves to is known, an open picker names it
+// on the "" option ("high (default)") and a closed control shows the tier
+// itself, the way it would show a level the user picked.
 
 import { EFFORT_TIERS, FALLBACK_EFFORT_LEVELS } from "./reasoningEffort.gen";
 
@@ -17,6 +20,24 @@ export function effortLabel(level: string, levels: string[]): string {
     return levels.includes("none") ? "none (off)" : "none (provider default)";
   }
   return level;
+}
+
+// The label of an open picker's unset ("") option: "(default)", naming the
+// tier it resolves to when one is known, so following the default stays
+// distinct from pinning that tier explicitly. An unset "none" takes the label
+// the pinned choice carries ("none (off)", or "none (provider default)" when
+// the ladder omits it), because both options mean the same choice to a reader.
+export function effortDefaultLabel(defaultLevel: string | undefined, levels: string[]): string {
+  if (!defaultLevel) return effortLabel("", levels);
+  if (defaultLevel === "none") return effortLabel("none", levels);
+  return `${defaultLevel} (default)`;
+}
+
+// What a closed effort control shows for the current effort: the level's own
+// label, except that an unset effort whose resolved tier is known shows that
+// tier - the effort the session actually runs at - rather than "(default)".
+export function effortReadout(level: string, levels: string[], defaultLevel: string | undefined): string {
+  return effortLabel(level === "" && defaultLevel ? defaultLevel : level, levels);
 }
 
 // The effort lattice ranks the daemon's six reasoning-effort tiers, least to

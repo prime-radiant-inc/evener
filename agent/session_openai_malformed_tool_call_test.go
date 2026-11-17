@@ -508,7 +508,7 @@ func requireTranscriptRawArguments(t *testing.T, lines []string, rawArgs string)
 // the raw argument text for a call whose arguments were not valid JSON.
 func requireDoctorShowsRawArguments(t *testing.T, stateBase, sessionID, rawArgs string) {
 	t.Helper()
-	doc, err := doctor.Transcript(stateBase, sessionID, doctor.TranscriptOpts{})
+	doc, err := doctor.Transcript(t.Context(), stateBase, sessionID, doctor.TranscriptOpts{})
 	if err != nil {
 		t.Fatalf("doctor.Transcript: %v", err)
 	}

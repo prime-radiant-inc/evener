@@ -18,15 +18,15 @@ func TestDoctorDelegateReadOnlyDoesNotMutateState(t *testing.T) {
 	beforeJobs := stableDoctorFileStateOf(t, jobsPath)
 	beforeDelegates := stableDoctorFileStateOf(t, delegatesPath)
 
-	jobs, err := Jobs(base, sid, JobOpts{})
+	jobs, err := Jobs(t.Context(), base, sid, JobOpts{})
 	if err != nil {
 		t.Fatalf("Jobs: %v", err)
 	}
-	watches, err := Watches(base, sid, WatchOpts{})
+	watches, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
-	tree, err := Tree(base, sid, TreeOpts{})
+	tree, err := Tree(t.Context(), base, sid, TreeOpts{})
 	if err != nil {
 		t.Fatalf("Tree: %v", err)
 	}

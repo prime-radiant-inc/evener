@@ -11,6 +11,11 @@ function release(target: EventTarget) {
   target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+/** Await the next macrotask, where the capture fallback's dismissal lands. */
+function nextTask(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 test("a press outside dismisses", () => {
   const panel = document.createElement("div");
   const outside = document.createElement("button");
@@ -179,6 +184,222 @@ test("click mode ignores a click that began inside the surface", () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   } finally {
     panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode dismisses for a control that stops its click's propagation", async () => {
+  // A transcript control that consumes its own click (a file-reference link, a
+  // delegate activity toggle) must still dismiss an in-flow surface. Reading
+  // the click in the bubble phase never sees that event at all.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  outside.addEventListener("click", (event) => event.stopPropagation());
+  document.body.append(panel, outside);
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    release(outside);
+    // The fallback never dismisses inside dispatch: the target's own handlers
+    // run first, and the surface collapses on a later task.
+    expect(onDismiss).not.toHaveBeenCalled();
+    await nextTask();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode runs the pressed control's own handler before it dismisses", async () => {
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  const order: string[] = [];
+  outside.addEventListener("click", () => order.push("control"));
+  document.body.append(panel, outside);
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss: () => order.push("dismiss"),
+      }),
+    );
+    press(outside);
+    release(outside);
+    expect(order).toEqual(["control", "dismiss"]);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("a stopped click still runs the control's own handler before the fallback dismisses", async () => {
+  // The captured click is read before dispatch reaches the target, so the
+  // fallback must not dismiss there: the control's handler runs first, and the
+  // surface collapses only on the later task.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  const order: string[] = [];
+  outside.addEventListener("click", (event) => {
+    order.push("control");
+    event.stopPropagation();
+  });
+  document.body.append(panel, outside);
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss: () => order.push("dismiss"),
+      }),
+    );
+    press(outside);
+    release(outside);
+    expect(order).toEqual(["control"]);
+    await nextTask();
+    expect(order).toEqual(["control", "dismiss"]);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("a stopped click's spent press does not dismiss a later click", async () => {
+  // The fallback consumes the press. A second click with no press of its own
+  // (a script-dispatched click, a synthetic activation) is not a dismissal.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  outside.addEventListener("click", (event) => event.stopPropagation());
+  document.body.append(panel, outside);
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    release(outside);
+    await nextTask();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    // No press precedes this click, so there is nothing to complete.
+    outside.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTask();
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode publishes the in-flight press for a caller whose blur must hold", async () => {
+  // The browser moves focus as mousedown's default action, after every
+  // listener, so an in-flow surface that collapses on blur reflows at the
+  // press. The sink lets that caller hold its blur collapse until the press
+  // completes.
+  const panel = document.createElement("div");
+  const outside = document.createElement("button");
+  document.body.append(panel, outside);
+  const pressInFlight = { current: false };
+  const onDismiss = vi.fn();
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        pressInFlight,
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss,
+      }),
+    );
+    press(outside);
+    expect(pressInFlight.current).toBe(true);
+    release(outside);
+    expect(pressInFlight.current).toBe(false);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("click mode reports no in-flight press for a press inside, or one that never clicks", async () => {
+  const panel = document.createElement("div");
+  const inside = document.createElement("span");
+  const outside = document.createElement("button");
+  panel.append(inside);
+  document.body.append(panel, outside);
+  const pressInFlight = { current: false };
+  try {
+    renderHook(() =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled: true,
+        when: "click",
+        pressInFlight,
+        isInside: (target) => target instanceof Node && panel.contains(target),
+        onDismiss: vi.fn(),
+      }),
+    );
+    press(inside);
+    expect(pressInFlight.current).toBe(false);
+
+    // A press that ends without a click (a drag, a drag-and-drop) must not
+    // leave the hold armed: a later keyboard blur is not part of that press.
+    press(outside);
+    expect(pressInFlight.current).toBe(true);
+    outside.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    await nextTask();
+    expect(pressInFlight.current).toBe(false);
+  } finally {
+    panel.remove();
+    outside.remove();
+  }
+});
+
+test("a disabled surface clears the in-flight press", () => {
+  const outside = document.createElement("button");
+  document.body.append(outside);
+  const pressInFlight = { current: false };
+  const { rerender } = renderHook(
+    ({ enabled }) =>
+      useDismissOnOutsidePress({
+        ownerDocument: document,
+        enabled,
+        when: "click",
+        pressInFlight,
+        isInside: () => false,
+        onDismiss: vi.fn(),
+      }),
+    { initialProps: { enabled: true } },
+  );
+  try {
+    press(outside);
+    expect(pressInFlight.current).toBe(true);
+    // Teardown releases the flag: a surface that stopped listening must not
+    // leave its caller holding a blur forever.
+    rerender({ enabled: false });
+    expect(pressInFlight.current).toBe(false);
+  } finally {
     outside.remove();
   }
 });

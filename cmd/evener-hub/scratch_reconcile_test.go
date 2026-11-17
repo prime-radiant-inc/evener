@@ -26,11 +26,11 @@ func TestReconcileArchivedScratchKeepsCancelledWorkForLaterPass(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), id, project.CanonicalPath, time.Now())
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(projects, "*")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	if err := archive.Set("", "session", id, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +72,11 @@ func testScratchReconcilerRunCancellation(t *testing.T, cancelAtEntry bool) {
 		t.Fatal(err)
 	}
 	writeSessionUpdatedAt(t, filepath.Join(projects, project.ID), id, project.CanonicalPath, time.Now())
-	past := hubcore.NewPastIndex(filepath.Join(projects, "*"))
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(projects, "*")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 	if err := archive.Set("", "session", id, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}

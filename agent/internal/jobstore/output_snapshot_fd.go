@@ -141,7 +141,11 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 		return OutputSnapshot{}, err
 	}
 
-	content, err := readOutputSnapshotWindowFromFile(f, retainedBytes, view.visibleOffset(), maxBytes, fromHead)
+	// Read the window the metadata vouches for, not the file's physical length: a
+	// power crash can leave the log holding a torn suffix past that window, and a
+	// snapshot must not hand those bytes out as output.
+	verified := view.verifiedLength()
+	content, err := readOutputSnapshotWindowFromFile(f, verified, view.visibleOffset(), maxBytes, fromHead)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
@@ -157,7 +161,8 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 		TotalBytes:           view.total,
 		RetainedStart:        view.visibleStart,
 		RetainedStartPartial: view.visiblePartial,
-		Truncated:            view.visibleStart > 0 || int64(maxBytes) < retainedBytes-view.visibleOffset(),
+		Truncated:            view.visibleStart > 0 || int64(maxBytes) < verified-view.visibleOffset(),
+		FileBytes:            retainedBytes,
 	}, nil
 }
 
@@ -177,11 +182,17 @@ func readOutputRangeSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File
 		TotalBytes:           view.total,
 		RetainedStart:        view.visibleStart,
 		RetainedStartPartial: view.visiblePartial,
+		FileBytes:            retainedBytes,
 	}
 	if rangeErr != nil {
 		return snapshot, rangeErr
 	}
-	if view.total-view.fileStart != retainedBytes {
+	// The metadata may vouch for less than the file holds when a crash left a
+	// torn suffix past what the sidecar describes. That suffix is not output, so
+	// the range is read from the vouched window; only a log SHORTER than the
+	// window means the file changed under the read.
+	verified := view.verifiedLength()
+	if verified > retainedBytes {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 

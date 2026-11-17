@@ -119,7 +119,7 @@ func (x *Index) reconstructAtCut(length int64) *Index {
 		return nil
 	}
 	view := &Index{readView: true, transcript: x.transcript, path: x.path,
-		strings: x.strings, prelude: x.prelude,
+		strings: x.strings, prelude: x.prelude, turnSlots: x.turnSlots,
 		meta: meta{Incarnation: x.meta.Incarnation, Length: length, Entries: cutOrdinal,
 			HeaderOffset: x.meta.HeaderOffset, HeaderLength: x.meta.HeaderLength,
 			LatestExecutionTurnSlot: latestExecution},

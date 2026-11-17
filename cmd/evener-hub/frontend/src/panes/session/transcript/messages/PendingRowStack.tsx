@@ -365,16 +365,23 @@ export function PendingRowStack({
     skillNames?: readonly string[],
     commandNames?: readonly string[],
     images?: readonly PendingMessageImage[],
+    sourceMutationId?: string,
   ): Promise<void> {
     if (guardSteerPress()) return;
     setRowBusy(entryId, true);
     try {
-      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
-        text: displayText,
-        skillNames,
-        commandNames,
-        ...(images && images.length > 0 ? { images } : {}),
-      });
+      await threadsStore.getState().promoteQueuedAsSteer(
+        sessionRef,
+        index,
+        entryId,
+        {
+          text: displayText,
+          skillNames,
+          commandNames,
+          ...(images && images.length > 0 ? { images } : {}),
+        },
+        sourceMutationId,
+      );
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't steer with this message now", err));
     } finally {
@@ -685,7 +692,15 @@ export function PendingRowStack({
               // or the entry's Edit would unlock mid-transition.
               const rowText = fullText ?? "";
               const displayText = rowText.trim() !== "" ? rowText : previewText;
-              void handlePromote(index, entryId, displayText, entrySkillNames, entryCommandNames, mergedRow?.images);
+              void handlePromote(
+                index,
+                entryId,
+                displayText,
+                entrySkillNames,
+                entryCommandNames,
+                mergedRow?.images,
+                mutationId,
+              );
             }
           }}
         />

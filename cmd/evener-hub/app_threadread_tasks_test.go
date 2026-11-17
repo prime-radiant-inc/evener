@@ -201,10 +201,12 @@ func (s sessionTaskEnvelopeSource) ContextStatus() (server.ContextMetrics, float
 func (s sessionTaskEnvelopeSource) DetailedStatus() server.DetailedStatus {
 	return server.DetailedStatus{}
 }
-func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
-func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
-func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
-func (s sessionTaskEnvelopeSource) VisionModel() string                     { return "" }
+func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta { return schema.SessionMeta{} }
+func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)    { return 0, false }
+func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool, string) {
+	return "", nil, false, ""
+}
+func (s sessionTaskEnvelopeSource) VisionModel() string { return "" }
 func (s sessionTaskEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }

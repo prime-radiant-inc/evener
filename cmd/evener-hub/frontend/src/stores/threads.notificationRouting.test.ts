@@ -1,6 +1,11 @@
 import { ALL_CAPABILITIES as CAPABILITIES, type TestThreadOverrides, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
-import type { AnyNotification, ThreadReadResponse, ThreadStatus } from "@evener/appwire-client";
+import {
+  type AnyNotification,
+  hydrateThread,
+  type ThreadReadResponse,
+  type ThreadStatus,
+} from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectReadyFakeClient } from "../testing/connectionTestUtils";
@@ -8,7 +13,7 @@ import { resetConnectionStoreForTests } from "./connection";
 import { productionEntryTranscriptForTests, setProductionEntryCacheForTests } from "./entryTranscriptRoutes";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { emitAtResponseCut, markResponseCut } from "./threadHydrationTestUtils";
-import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "./threads";
 
 let cache: SessionEntryCache;
 beforeEach(() => {
@@ -470,6 +475,67 @@ describe("notification routing index (ref / threadId fast path)", () => {
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
     });
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+});
+
+// countEntriesRead installs a shadowing iterator on `map` and returns a reader
+// for how many entries iteration has yielded. `new Map(map)` and every spread
+// drive the source's iterator, so the count is exactly what one whole-map copy
+// of this instance costs.
+function countEntriesRead(map: ReadonlyMap<unknown, unknown>): () => number {
+  let read = 0;
+  const iterate = (map as { [Symbol.iterator](): Iterator<[unknown, unknown]> })[Symbol.iterator];
+  Object.defineProperty(map, Symbol.iterator, {
+    configurable: true,
+    value() {
+      const inner = iterate.call(map);
+      return {
+        next() {
+          const step = inner.next();
+          if (!step.done) read += 1;
+          return step;
+        },
+        [Symbol.iterator]() {
+          return this;
+        },
+      };
+    },
+  });
+  return () => read;
+}
+
+describe("one changed thread costs one entry, not the whole map", () => {
+  // A frame that lands on one model must copy only what it rewrote. The
+  // published map's size may not set the per-frame copy cost: a whole-map copy
+  // reads every entry through the shadowed iterator, so `perFrame` would equal
+  // `size` on every frame.
+  test("a status frame copies entries proportional to the change, not to the map", () => {
+    const size = 400;
+    const refs = Array.from({ length: size }, (_, index) => `ref_${index}`);
+    // putThreadModel is the store's own membership path: it keeps the routing
+    // index correct, so a frame for a seeded ref takes the route production takes.
+    for (const ref of refs) {
+      putThreadModel(ref, hydrateThread({ thread: testThread(ref) } as never, ref, Date.now()));
+    }
+    const fake = connectFakeClient();
+    const frames = 25;
+    const perFrame: number[] = [];
+    for (let index = 0; index < frames; index += 1) {
+      const ref = refs[index % refs.length] as string;
+      const read = countEntriesRead(threadsStore.getState().threads);
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: `thr_${ref}`, ref, status: { type: "active" } },
+      });
+      perFrame.push(read());
+      // Each frame must have landed, or a store that applied nothing would pass
+      // by copying nothing.
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active");
+    }
+
+    expect(threadsStore.getState().threads.size).toBe(size);
+    expect(perFrame.every((entries) => entries < size / 4)).toBe(true);
+    expect(perFrame.reduce((sum, entries) => sum + entries, 0)).toBeLessThan(frames * (size / 4));
   });
 });
 

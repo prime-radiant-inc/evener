@@ -264,6 +264,7 @@ native:agent:.:FuzzShfz_RunShellForeground
 native:agent:.:FuzzShfz_RunShellModes
 native:agent:.:FuzzCovJobShellSeed100
 native:agent:./internal/tool:FuzzApatchApplyPatch
+native:agent:./internal/tool:FuzzApatchCoalescedMatchesSequential
 native:agent:./internal/tool:FuzzApatchParseV4APatchLines
 native:agent:./internal/contextmgr:FuzzCtxmgrCheckpointData
 native:agent:./internal/contextmgr:FuzzCtxmgrSessionLogManageContext

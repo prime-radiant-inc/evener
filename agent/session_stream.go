@@ -315,6 +315,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	toolNames := map[string]string{}
 	communicateText := map[string]string{}
 	communicatePreviewStarted := map[string]bool{}
+	communicatePreviewDecoders := map[string]*communicatePreviewDecoder{}
 	var communicatePreviewOrder []string
 	streamedAssistant := false
 	assistantStarted := false
@@ -403,7 +404,14 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if b := toolArgs[callID]; b != nil {
 			args = b.String()
 		}
-		message, ok := partialJSONStringField(args, "message")
+		// Decode incrementally: this runs once per streamed argument delta, and
+		// re-deriving the whole message each time is quadratic in its length.
+		decoder := communicatePreviewDecoders[callID]
+		if decoder == nil {
+			decoder = &communicatePreviewDecoder{field: "message"}
+			communicatePreviewDecoders[callID] = decoder
+		}
+		message, ok := decoder.message(args)
 		if !ok || message == "" {
 			return
 		}
@@ -477,6 +485,12 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				b := &strings.Builder{}
 				b.Write(ev.ToolCall.Arguments)
 				toolArgs[ev.ToolCall.ID] = b
+				// The end event carries the provider's final arguments, which
+				// replace the accumulated text and need not be an extension of it
+				// (rescueClaudeXMLArgs rewrites them). The incremental decoder's
+				// offsets are only valid while the text it read is a prefix of the
+				// current text, so drop it and decode the final text from scratch.
+				delete(communicatePreviewDecoders, ev.ToolCall.ID)
 				noteContent()
 			}
 			if toolNames[ev.ToolCall.ID] == s.resultToolName() {
@@ -552,6 +566,150 @@ func partialJSONStringField(raw, field string) (string, bool) {
 	}
 	value, _, _ := scanPartialJSONStringBody(rest[1:])
 	return value, true
+}
+
+// communicatePreviewDecoder decodes one call's preview message incrementally.
+//
+// The live preview re-derived the whole message on every argument delta, which
+// is O(deltas x message length) for a single message: a communicate call streams
+// a delta per token, and each one re-decoded the entire message so far. This
+// decodes only the bytes appended since the last delta.
+//
+// It is not a second JSON implementation. Every chunk goes through
+// scanPartialJSONStringBody, the same scanner partialJSONStringField uses, so an
+// escape, a \uXXXX, or a surrogate pair is decoded by exactly the code that
+// decodes it on the one-shot path. Chunks are cut only where the scanner can
+// finish, which is what keeps a sequence split across two deltas intact: the
+// incomplete tail stays buffered and is retried with the next delta.
+type communicatePreviewDecoder struct {
+	field string
+
+	// bodyStart is the offset in the accumulated argument text where the
+	// message's string body begins, valid once found is true. It does not move
+	// after that, so the key search runs once per call rather than per delta.
+	bodyStart int
+	found     bool
+
+	// read is how many bytes of the argument text this decoder has consumed
+	// from bodyStart onward.
+	read int
+	// tail is the consumed-but-undecodable suffix: the start of an escape whose
+	// remaining bytes have not arrived.
+	tail string
+	// closed is true once the value's closing quote was decoded, so later deltas
+	// belong to other fields.
+	closed bool
+	// decoded is the message text decoded so far.
+	decoded strings.Builder
+}
+
+// message returns the decoded message after consuming raw, which must be the
+// complete accumulated argument text for the call.
+func (d *communicatePreviewDecoder) message(raw string) (string, bool) {
+	if !d.found {
+		key := `"` + d.field + `"`
+		_, rest, ok := strings.Cut(raw, key)
+		if !ok {
+			return "", false
+		}
+		colon := strings.Index(rest, ":")
+		if colon < 0 {
+			return "", false
+		}
+		rest = strings.TrimLeft(rest[colon+1:], " \t\r\n")
+		if !strings.HasPrefix(rest, `"`) {
+			return "", false
+		}
+		d.found = true
+		d.bodyStart = len(raw) - len(rest) + 1
+		d.read = 0
+	}
+
+	if d.closed {
+		// The value already ended. Later deltas belong to other fields, so they
+		// must not be decoded into this message.
+		return d.decoded.String(), true
+	}
+	body := raw[d.bodyStart:]
+	// d.read counts bytes of body consumed INCLUDING the buffered tail: the tail
+	// bytes have been fed to the scanner and must not be fed again.
+	if len(body) > d.read {
+		// Decode the buffered tail plus the bytes not yet seen, as one string: the
+		// split must see the joined text, because an escape can be incomplete only
+		// once the new bytes are appended to the tail. Splitting the new bytes alone
+		// would call a tail-plus-fragment decodable and drop the escape.
+		chunk, rest := splitDecodableEscape(d.tail + body[d.read:])
+		value, _, terminated := scanPartialJSONStringBody(chunk)
+		d.decoded.WriteString(value)
+		d.tail = rest
+		// Everything consumed is read; rest is the undecodable suffix and stays
+		// pending, but its bytes are already accounted for in read.
+		d.read = len(body)
+		if terminated {
+			d.closed = true
+		}
+	}
+	return d.decoded.String(), true
+}
+
+// splitDecodableEscape splits s at the first backslash whose escape cannot be
+// decoded from s alone, returning the decodable prefix and the incomplete tail.
+// An incomplete tail is the beginning of an escape split across deltas: a lone
+// backslash, or a \u with fewer than six bytes, extended to twelve when the
+// leading code unit announces a surrogate pair.
+func splitDecodableEscape(s string) (chunk, tail string) {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			// A complete escape is skipped whole, so an escaped quote is never
+			// mistaken for the closing quote and an escape is never handed to the
+			// scanner half-fed.
+			n, ok := escapeWidth(s[i:])
+			if !ok {
+				return s[:i], s[i:]
+			}
+			i += n - 1
+		case '"':
+			// The value's closing quote ends the body; everything after it
+			// belongs to other fields. It stays IN the chunk so the scanner sees
+			// the termination and stops, rather than running on into the next
+			// field's bytes.
+			return s[:i+1], ""
+		}
+	}
+	return s, ""
+}
+
+// escapeWidth returns how many bytes one JSON escape at s[0] ('\\') occupies,
+// and ok=false when s does not yet hold the whole escape.
+//
+// Width is measured by the decoders the scanner itself uses, not by a second
+// reading of the grammar, so a split can never call an escape complete that the
+// scanner then refuses to decode.
+func escapeWidth(s string) (int, bool) {
+	if len(s) < 2 {
+		return 0, false
+	}
+	if s[1] == 'u' {
+		_, tail, ok := unquoteJSONUnicodeEscape(s)
+		if !ok {
+			return 0, false
+		}
+		return len(s) - len(tail), true
+	}
+	if s[1] == '/' {
+		// JSON allows a solidus to be escaped, and scanPartialJSONStringBody
+		// accepts it, but strconv.UnquoteChar is a Go rune unquoter and rejects
+		// it. Without this case the splitter would read \/ as an incomplete
+		// escape and buffer it forever, freezing the preview at the bytes before
+		// it.
+		return 2, true
+	}
+	_, _, tail, err := strconv.UnquoteChar(s, '"')
+	if err != nil {
+		return 0, false
+	}
+	return len(s) - len(tail), true
 }
 
 func unquoteJSONUnicodeEscape(rest string) (rune, string, bool) {

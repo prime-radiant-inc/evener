@@ -152,13 +152,7 @@ func TestSessionActivityReportPreviewHugeRetainedReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Drop this fixture's live cache so the retained read reconstructs the journal.
-	key := s.stateDir + "\x00" + s.ID()
-	sessionActivityIndexes.Lock()
-	if cached := sessionActivityIndexes.entries[key]; cached != nil {
-		delete(sessionActivityIndexes.entries, key)
-		sessionActivityIndexes.order.Remove(cached.element)
-	}
-	sessionActivityIndexes.Unlock()
+	dropSessionActivityIndexCache(s.stateDir, s.ID())
 	retained, err := LoadSessionActivityDelegates(t.Context(), s.stateDir, s.ID(), params)
 	if err != nil {
 		t.Fatal(err)

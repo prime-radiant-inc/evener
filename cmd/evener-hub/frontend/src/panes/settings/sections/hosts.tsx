@@ -11,7 +11,9 @@ import {
   rootsToText,
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
+import { usePaneDocument } from "../../../shell/paneDocument";
 import { useIsMobile } from "../../../shell/useIsMobile";
+import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import {
   clearedOutcomeLine,
   deployRefusalAction,
@@ -210,10 +212,15 @@ export function HostsSection(_props: HostsSectionProps) {
   // flashes the loading state and keeps the last rows on failure, so the idle
   // poll is invisible; the poll is owned by the component like HubResidents'
   // and stops when the section unmounts.
-  useEffect(() => {
-    const id = setInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Both polls below are rendering clocks: the rows and their operation
+  // progress lines are what they refresh, and the work they describe (an
+  // attach, a deploy) continues on the hub whether or not this tab is
+  // watching. A hidden tab pauses them and the first visible frame re-reads,
+  // so the rows are current the moment the reader looks. Both watch the
+  // settings pane's own document: a Settings pane moved to a popout must keep
+  // refreshing while the opener's tab is hidden.
+  const ownerDocument = usePaneDocument();
+  useVisibleInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS, true, ownerDocument);
 
   // The operation poll (S15): every tracked operation that still owes a read is
   // read once per tick, so its row renders progress through the terminal state
@@ -221,8 +228,8 @@ export function HostsSection(_props: HostsSectionProps) {
   // skipped — terminal state ends the loop — while a terminal seed from a
   // replay is still read once for the retained body. Unmount clears the
   // interval and cancels any in-flight read's publish.
-  useEffect(() => {
-    const id = setInterval(() => {
+  useVisibleInterval(
+    () => {
       const tracked = hostOpsStore.getState().operations;
       for (const name of Object.keys(tracked)) {
         const operation = tracked[name];
@@ -235,14 +242,21 @@ export function HostsSection(_props: HostsSectionProps) {
         }
         void hostOpsStore.getState().pollOperation(name);
       }
-    }, OPERATION_POLL_MS);
-    return () => {
-      clearInterval(id);
+    },
+    OPERATION_POLL_MS,
+    true,
+    ownerDocument,
+  );
+
+  // Unmount still cancels any in-flight read's publish, exactly as before.
+  useEffect(
+    () => () => {
       for (const name of Object.keys(hostOpsStore.getState().operations)) {
         hostOpsStore.getState().stopOperationPoll(name);
       }
-    };
-  }, []);
+    },
+    [],
+  );
 
   // A repair dialog can only render for a live row that still names a remnant:
   // when either goes away, drop the target so a LATER remnant on the name never

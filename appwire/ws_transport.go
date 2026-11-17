@@ -77,19 +77,23 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 }
 
 func (t *WSTransport) Recv(ctx context.Context) (Message, error) {
+	msg, _, err := t.recvBound(ctx, nil)
+	return msg, err
+}
+
+// recvBound reads one frame and decodes it through decodeFrameBound, so a large
+// response's result is decoded straight into the storage bind resolves for its
+// id instead of being scanned a second time by the client.
+func (t *WSTransport) recvBound(ctx context.Context, bind frameBinder) (Message, any, error) {
 	_, data, err := readWebSocket(t.conn, ctx)
 	if err != nil {
-		return Message{}, err
+		return Message{}, nil, err
 	}
 	t.rec.RecordRecv(data)
 	if t.observer != nil {
 		t.observer.RecordRecv(data)
 	}
-	var msg Message
-	if err := decodeFrame(&msg, data); err != nil {
-		return Message{}, err
-	}
-	return msg, nil
+	return decodeFrameBound(data, bind)
 }
 
 // Ping implements Pinger: it sends a WebSocket ping and blocks until the peer

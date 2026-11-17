@@ -13,30 +13,31 @@ import (
 //
 // Zero value reports the same thing a daemon with nothing to say reports.
 type stubThreadEnvelopeSource struct {
-	modelControl     appwire.ModelControlSnapshot
-	parkModelControl func()
-	contextPressure  float64
-	contextMetrics   ContextMetrics
-	detailedStatus   DetailedStatus
-	queue            appwire.QueueState
-	pendingMutations []appwire.PendingMutation
-	tasks            *appwire.TaskAggregate
-	taskCalls        int
-	metaCalls        int
-	workMillis       int64
-	usage            *appwire.EvenerUsage
-	turnStartedAt    int64
-	failedToolCalls  int
-	failuresMeasured bool
-	askPending       bool
-	question         *appwire.PendingQuestion
-	failure          *appwire.ThreadFailure
-	escalations      []appwire.SandboxEscalationRequested
-	reasoningEffort  string
-	reasoningLevels  []string
-	supportsReason   bool
-	visionModel      string
-	meta             schema.SessionMeta
+	modelControl           appwire.ModelControlSnapshot
+	parkModelControl       func()
+	contextPressure        float64
+	contextMetrics         ContextMetrics
+	detailedStatus         DetailedStatus
+	queue                  appwire.QueueState
+	pendingMutations       []appwire.PendingMutation
+	tasks                  *appwire.TaskAggregate
+	taskCalls              int
+	metaCalls              int
+	workMillis             int64
+	usage                  *appwire.EvenerUsage
+	turnStartedAt          int64
+	failedToolCalls        int
+	failuresMeasured       bool
+	askPending             bool
+	question               *appwire.PendingQuestion
+	failure                *appwire.ThreadFailure
+	escalations            []appwire.SandboxEscalationRequested
+	reasoningEffort        string
+	reasoningLevels        []string
+	supportsReason         bool
+	defaultReasoningEffort string
+	visionModel            string
+	meta                   schema.SessionMeta
 	// parkOnMeta runs at the start of SessionMeta(), the last facet
 	// refreshFacets samples. Parking there holds a fully-populated sample open.
 	parkOnMeta func()
@@ -111,8 +112,8 @@ func (s *stubThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalat
 	return append([]appwire.SandboxEscalationRequested(nil), s.escalations...)
 }
 
-func (s *stubThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
-	return s.reasoningEffort, s.reasoningLevels, s.supportsReason
+func (s *stubThreadEnvelopeSource) ReasoningInfo() (string, []string, bool, string) {
+	return s.reasoningEffort, s.reasoningLevels, s.supportsReason, s.defaultReasoningEffort
 }
 
 func (s *stubThreadEnvelopeSource) VisionModel() string { return s.visionModel }

@@ -127,6 +127,7 @@ export function queueEntryAt(
     preview?: readonly string[];
     skillNames?: readonly (readonly string[])[];
     commandNames?: readonly (readonly string[])[];
+    imageCounts?: readonly number[];
   },
   index: number,
 ): {
@@ -144,7 +145,12 @@ export function queueEntryAt(
   // A preview is the daemon's compact label, so a literal text message whose
   // own text IS "[image]" must not classify its row as image-bearing: the
   // placeholder grammar speaks only when no full text says otherwise.
-  const imageCount = fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0;
+  // The wire's per-entry ImageCounts is authoritative; the preview's
+  // placeholder grammar is the old-daemon fallback, and it speaks only
+  // when no full text says otherwise.
+  const imageCount =
+    queue.imageCounts?.[index] ??
+    (fullText === undefined || fullText.trim() === "" ? parseImagePlaceholder(preview) : 0);
   return {
     entryId: queue.ids?.[index],
     clientMutationId: queue.clientMutationIds?.[index],
@@ -336,6 +342,41 @@ export function recordedInputLineage(model: ThreadModel | undefined): Set<string
 export function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   const ids = new Set(model?.queue?.clientMutationIds ?? []);
   for (const id of transcriptMutationIds(model)) ids.add(id);
+  return ids;
+}
+
+// Every delivered SOURCE identity a model proves: a recorded item's own id
+// (normal consumption records the source's id with no lineage - the Go
+// transcript projection omits it there), plus the conversation-input lineage
+// a recorded replacement item carries (a promotion or drain inheriting its
+// consumed entry's input). A queue entry's own id is NOT here: still queued
+// means NOT delivered, and a refused promote whose source remains queued (the
+// index-shift refusal another client's removal causes) must keep its
+// recovery. The one delivered-evidence truth every promote-recovery settle
+// reads, so no call site computes a partial set of its own.
+export function deliveredSourceIds(model: ThreadModel | undefined): Set<string> {
+  const ids = transcriptMutationIds(model);
+  for (const turn of model?.turns ?? []) {
+    for (const item of turn.items ?? []) {
+      for (const inputId of item.conversationInputIds ?? []) {
+        if (inputId.startsWith("client:")) ids.add(inputId.slice("client:".length));
+      }
+    }
+  }
+  return ids;
+}
+
+// Every SETTLED source identity a model proves: the delivered identities
+// above, plus the inputs the daemon names retired - a canceled queue entry
+// will never deliver, so a promote recovery linked to it is dead the same
+// way a delivered one is (a removed message must not resurrect as refused
+// work). An edited recovery never rides this set: the storage's own
+// compositionRevision check preserves it there.
+export function settledSourceIds(model: ThreadModel | undefined): Set<string> {
+  const ids = deliveredSourceIds(model);
+  for (const inputId of model?.conversationProvenance?.retiredInputs ?? []) {
+    ids.add(inputId.startsWith("client:") ? inputId.slice("client:".length) : inputId);
+  }
   return ids;
 }
 

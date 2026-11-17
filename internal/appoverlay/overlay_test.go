@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -227,6 +228,64 @@ func TestResetWithNothingStreamedEmitsNothingButStillStartsANewAttempt(t *testin
 	}
 }
 
+// TestADeltaAfterANewRoundOrAttemptNamesThatRoundAndAttempt pins the stream key
+// a delta appends to across every way the attempt changes. The overlay caches
+// the attempt's stream key so a delta does not rebuild it, and a key that
+// outlived its attempt would append a new round's text to the old round's
+// stream.
+func TestADeltaAfterANewRoundOrAttemptNamesThatRoundAndAttempt(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "one"}))
+
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_2"}))
+	second := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "two"}))))
+	if second.Key != "stream:r_2/1:agentMessage" || second.Item.Text != "two" {
+		t.Fatalf("first delta of round r_2 = %+v, want a new stream r_2/1 holding only its own text", second)
+	}
+
+	o.Event(events.New(events.AssistantTextResetData{}))
+	third := upserted(t, one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "three"}))))
+	if third.Key != "stream:r_2/2:agentMessage" || third.Item.Text != "three" {
+		t.Fatalf("first delta of attempt r_2/2 = %+v, want a new stream r_2/2", third)
+	}
+}
+
+// TestADeltaPublishesExactlyKeyFieldAndDelta pins the published overlay/delta
+// frame: one frame per delta, carrying the key, the field and the delta, and
+// nothing else beyond the thread and ref the server stamps. A test asserting on
+// the struct would still pass if a field were renamed on the wire, so this
+// asserts the encoded object's own keys.
+func TestADeltaPublishesExactlyKeyFieldAndDelta(t *testing.T) {
+	o := newOverlay()
+	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
+	o.Event(events.New(events.AssistantTextDeltaData{Delta: "he"}))
+	change := one(t, o.Event(events.New(events.AssistantTextDeltaData{Delta: "llo"})))
+
+	// The server stamps thread and ref on the way out (server/appwire_status_stamps.go);
+	// the overlay must leave them empty.
+	stamped := change.Params.(appwire.OverlayDeltaParams).WithNotificationTarget("th_1", "ref_1")
+	encoded, err := json.Marshal(stamped)
+	if err != nil {
+		t.Fatalf("marshal delta params: %v", err)
+	}
+	var frame map[string]string
+	if err := json.Unmarshal(encoded, &frame); err != nil {
+		t.Fatalf("decode delta frame %s: %v", encoded, err)
+	}
+	keys := make([]string, 0, len(frame))
+	for key := range frame {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	if want := []string{"delta", "field", "key", "ref", "threadId"}; !slices.Equal(keys, want) {
+		t.Fatalf("delta frame carries keys %v, want %v (frame %s)", keys, want, encoded)
+	}
+	if frame["key"] != "stream:r_1/1:agentMessage" || frame["field"] != string(appwire.OverlayDeltaText) || frame["delta"] != "llo" {
+		t.Fatalf("delta frame = %v, want the stream key, the text field and the delta", frame)
+	}
+}
+
 func TestTheRoundsAssistantRecordCoversItsStreamsAndLaterDeltas(t *testing.T) {
 	o := newOverlay()
 	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
@@ -409,16 +468,29 @@ func TestRunningOutputTrimsBackTo192KBWithOneUpsertPastTheCap(t *testing.T) {
 	}
 }
 
-func TestSettledOutputIsTrimmedLikeRunningOutput(t *testing.T) {
+// TestASettledSlotKeepsItsTailAndAColdOneTakesTheEvent pins the settled output
+// contract: TOOL_CALL_END carries a bounded excerpt of the output plus its true
+// byte count, because the same bytes already streamed as deltas. A slot that
+// watched those deltas holds the tail and keeps it, since the excerpt is less.
+// A slot that saw no deltas has only the event, so it takes the event's text.
+func TestASettledSlotKeepsItsTailAndAColdOneTakesTheEvent(t *testing.T) {
 	o := newOverlay()
 	o.Event(events.New(events.RoundStartedData{RoundID: "r_1"}))
-	ended := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: strings.Repeat("x", 1<<20)}))))
-	if len(ended.Item.Output) != trimmedRunningOutputBytes {
-		t.Fatalf("settled output is %d bytes, want %d", len(ended.Item.Output), trimmedRunningOutputBytes)
+
+	o.Event(events.New(events.ToolCallStartData{ToolName: "shell", CallID: "c_warm"}))
+	o.Event(events.New(events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "c_warm", Delta: "the tail the client streamed"}))
+	warm := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{
+		ToolName: "shell", CallID: "c_warm", Output: "excerpt", OutputBytes: 1 << 20,
+	}))))
+	if warm.Item.Output != "the tail the client streamed" {
+		t.Fatalf("settled output = %q, want the tail its deltas carried", warm.Item.Output)
 	}
-	short := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_2", Output: "done"}))))
-	if short.Item.Output != "done" {
-		t.Fatalf("short settled output = %q", short.Item.Output)
+
+	// The event's text is all a slot that missed the stream will ever have, so
+	// it is taken whole when it fits and trimmed only past the running cap.
+	cold := upserted(t, one(t, o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_cold", Output: "done"}))))
+	if cold.Item.Output != "done" {
+		t.Fatalf("cold settled output = %q, want the event's own text", cold.Item.Output)
 	}
 }
 
@@ -703,8 +775,15 @@ func TestTrimmedOutputDoesNotPinTheBufferItGrewIn(t *testing.T) {
 		t.Fatalf("running output holds %d bytes in a %d-byte buffer, want %d in a right-sized one", len(s.output), cap(s.output), trimmedRunningOutputBytes)
 	}
 	o.Event(events.New(events.ToolCallEndData{ToolName: "shell", CallID: "c_1", Output: strings.Repeat("y", 4<<20)}))
+	// The end event's payload is a bounded excerpt, and this slot already holds
+	// the tail its deltas built, so settling leaves that buffer untouched: it
+	// still holds the trimmed tail in its own right-sized allocation rather
+	// than being replaced by (or pinning) the event's text.
 	if len(s.output) != trimmedRunningOutputBytes || cap(s.output) != len(s.output) {
 		t.Fatalf("settled output holds %d bytes in a %d-byte buffer, want %d in a right-sized one", len(s.output), cap(s.output), trimmedRunningOutputBytes)
+	}
+	if !strings.HasPrefix(string(s.output), "x") {
+		t.Fatal("settled output is not the tail the deltas streamed")
 	}
 }
 

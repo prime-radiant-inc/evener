@@ -440,7 +440,11 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!navigationIntCount(value.OmittedDescendants) ||
 		!navigationIntCount(value.RunningJobCount) || !navigationIntCount(value.WatchCount) ||
 		!navigationIntCount(value.ArmedWatchCount) || value.ArmedWatchCount > value.WatchCount ||
-		utf8.RuneCountInString(value.RunningJobCommand) > maxNavigationLabelRunes {
+		utf8.RuneCountInString(value.RunningJobCommand) > maxNavigationLabelRunes ||
+		// The intent holds the same bound the activity read does, so a row and
+		// the read's own latestIntent are cut identically. Excerpt returns its
+		// input only when that input is already one line within the bound.
+		value.RunningJobIntent != appwire.Excerpt(value.RunningJobIntent, appwire.MaxIntentRunes) {
 		return false
 	}
 	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&

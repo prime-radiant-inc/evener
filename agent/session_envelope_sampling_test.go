@@ -165,7 +165,8 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 // "no emit is inside it today" is not one.
 var envelopeSamplingPermittedLocks = map[string]string{
 	"Session.mu": "the emit path re-acquires it (emit -> activeCausalProvenance), " +
-		"so holding it across an emit self-deadlocks on the first execution",
+		"so holding it across an emit self-deadlocks on the first execution; its read " +
+		"lock is a leaf that never emits (TestSessionReadLockIsALeaf)",
 	"Session.executionFrontierMu": "the recorded listener takes only this leaf and releases it before emitting; " +
 		"sampling takes Session.mu then this leaf, so no reverse edge can cycle",
 }

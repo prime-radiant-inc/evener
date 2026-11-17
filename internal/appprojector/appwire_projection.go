@@ -216,6 +216,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				SkillNames:        data.SkillNames,
 				CommandNames:      data.CommandNames,
 				Mentions:          data.Mentions,
+				ImageCounts:       data.ImageCounts,
 			}),
 			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}
@@ -288,17 +289,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventModelChanged:
 		data := eventData[events.ModelChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
-			ThreadID:              p.threadID,
-			Ref:                   p.ref,
-			ModelProvider:         data.NewProvider,
-			Model:                 data.NewModel,
-			ReasoningEffortLevels: data.ReasoningEffortLevels,
-			SupportsReasoning:     data.SupportsReasoning,
-			ContextUsed:           data.ContextUsed,
-			ContextWindow:         data.ContextWindow,
-			ContextPressure:       data.ContextPressure,
-			ContextAssumed:        data.ContextAssumed,
-			CompactionThreshold:   data.CompactionThreshold,
+			ThreadID:               p.threadID,
+			Ref:                    p.ref,
+			ModelProvider:          data.NewProvider,
+			Model:                  data.NewModel,
+			ReasoningEffortLevels:  data.ReasoningEffortLevels,
+			SupportsReasoning:      data.SupportsReasoning,
+			DefaultReasoningEffort: data.DefaultReasoningEffort,
+			ContextUsed:            data.ContextUsed,
+			ContextWindow:          data.ContextWindow,
+			ContextPressure:        data.ContextPressure,
+			ContextAssumed:         data.ContextAssumed,
+			CompactionThreshold:    data.CompactionThreshold,
 		})}
 	case events.EventModelControlChanged:
 		data := eventData[events.ModelControlChangedData](event.Data)

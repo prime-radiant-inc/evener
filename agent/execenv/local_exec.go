@@ -18,16 +18,246 @@ import (
 	"primeradiant.com/evener/envvars"
 )
 
-// ExecCommand runs command through the platform shell in its own process group,
-// rooted at workingDir, defaulting to RootDir. Confined policies require cwd
-// under RootDir; unrestricted off sessions may point elsewhere.
+// ExecCommand runs command in its own process group, rooted at workingDir,
+// defaulting to RootDir, as argv when the line is a bare word list and through
+// the platform shell otherwise (see commandRuntimeForCommand). Confined policies
+// require cwd under RootDir; unrestricted off sessions may point elsewhere.
 // The environment is built from EnvPolicy plus envVars, with any local
 // virtualenv bin directory prepended to PATH. The command is terminated if ctx
 // is cancelled or timeoutMS elapses (default 10000ms), escalating from SIGTERM
 // to SIGKILL. It returns an ExecResult capturing stdout, stderr, exit code,
 // timeout status, and duration.
 func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	return e.execPreparedCommand(ctx, e.commands().Shell(command), timeoutMS, workingDir, envVars)
+	dir, env, timeoutMS, err := e.prepareCommandRun(ctx, timeoutMS, workingDir, envVars)
+	if err != nil {
+		return ExecResult{ExitCode: 127}, err
+	}
+	cmd, runEnv := e.commandRuntimeForCommand(command, dir, env)
+	return e.runCommandStdout(ctx, cmd, timeoutMS, dir, runEnv, nil)
+}
+
+// commandRuntimeForCommand is ExecCommand's runtime choice for one command
+// string, together with the environment that runtime must run with: the program
+// and its arguments directly when the line is a bare word list the child
+// environment resolves exactly as the shell would, and the shell otherwise. Both
+// runtimes then go through runCommandStdout's one lifecycle — configure, start,
+// cancel, terminate, reap, map the exit code — so the choice only removes a fork
+// from a shell tool call: the `bash -o pipefail -c` wrapper (#6447). StreamCommand
+// makes the same choice, through this same function, so the shell tool's ordinary
+// path is not left paying the wrapper.
+//
+// Five resolution differences between bash and os/exec each turn a case back
+// into a shell command rather than a changed exit status:
+//   - bash resolves a bare name only through the CHILD environment's PATH,
+//     while os/exec falls back to this process's own PATH when the child's does
+//     not name the program. That could run a binary the shell would not find,
+//     or run one where the shell would have reported it missing.
+//   - a relative or empty PATH component is relative to the child's working
+//     directory, which bash reaches by chdir and lookPathInEnv does not reach at
+//     all. A child PATH holding one keeps the shell rather than resolving the
+//     name against this process's own directory.
+//   - bash reports a command it cannot execute as 126 (a directory, a
+//     non-executable file), while an exec failure reaches the caller as 127.
+//   - bash runs a file the kernel refuses as a shell script (a shebang-less
+//     text file) where exec fails, and it blocks reading a FIFO where exec
+//     reports an error.
+//   - bash reconciles $PWD with its actual directory; a child inherits this
+//     process's own PWD unless the fast path reconciles it (reconcilePWDEnv).
+//
+// Two shell features can intervene before the program runs. A non-interactive
+// bash sources $BASH_ENV, and it imports an exported function from a
+// BASH_FUNC_<name>%% environment entry; either can shadow the program. A child
+// environment carrying one that names the program keeps the shell (see
+// bashEnvSet and exportedFunctionShadows).
+func (e *LocalExecutionEnvironment) commandRuntimeForCommand(command, dir string, env []string) (commandRuntime, []string) {
+	shell := func() (commandRuntime, []string) { return e.commands().Shell(command), env }
+	if bashEnvSet(env) {
+		return shell()
+	}
+	name, args, ok := argvFromCommandString(command)
+	if !ok {
+		return shell()
+	}
+	if strings.Contains(name, "/") {
+		// A program named by path needs no PATH lookup, and no function can
+		// shadow a word with a separator, but the kernel must be able to run it
+		// for the two paths to agree.
+		path := name
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if kernelLoadsProgram(path) {
+			return e.commands().Argv(name, args...), reconcilePWDEnv(env, dir)
+		}
+		return shell()
+	}
+	// A bare name goes through the child environment's PATH, the one bash
+	// resolves against, and only where that PATH can be resolved without a
+	// working directory this process does not occupy. A name with a separator
+	// never reaches here.
+	if !pathEntriesAreAbsolute(env) {
+		return shell()
+	}
+	resolved, found := lookPathInEnv(name, env)
+	if !found || !kernelLoadsProgram(resolved) || exportedFunctionShadows(name, env) {
+		return shell()
+	}
+	return e.commands().Argv(name, args...), reconcilePWDEnv(env, dir)
+}
+
+// bashEnvSet reports whether env would give bash a $BASH_ENV startup file.
+func bashEnvSet(env []string) bool {
+	for _, kv := range env {
+		if value, ok := strings.CutPrefix(kv, "BASH_ENV="); ok && value != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// exportedFunctionShadows reports whether env carries a bash exported function
+// definition for name. bash imports an environment entry named
+// `BASH_FUNC_<name>%%` as a shell function, which then runs in place of the PATH
+// program of the same name. A non-interactive shell has no other kind of
+// function, so nothing else here can shadow the program.
+func exportedFunctionShadows(name string, env []string) bool {
+	prefix := "BASH_FUNC_" + name + "%%="
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathEntriesAreAbsolute reports whether every component of the child
+// environment's PATH is an absolute directory. bash resolves a relative or empty
+// component against the directory the command runs in; lookPathInEnv resolves it
+// against this process's own directory, so a PATH holding one keeps the shell
+// instead of resolving the name somewhere bash would not look. A PATH that is
+// absent or empty reports false: bash then searches its own built-in default
+// PATH, which this process cannot see.
+func pathEntriesAreAbsolute(env []string) bool {
+	pathPrefix := envvars.Path.Name + "="
+	for _, kv := range slices.Backward(env) {
+		value, ok := strings.CutPrefix(kv, pathPrefix)
+		if !ok {
+			continue
+		}
+		if value == "" {
+			return false
+		}
+		for _, dir := range filepath.SplitList(value) {
+			if dir == "" || !filepath.IsAbs(dir) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// reconcilePWDEnv returns env with PWD naming dir, the way bash leaves it, so a
+// child that reads PWD — as many tools do to find their project root — sees the
+// directory the command runs in rather than the one evener itself runs in.
+//
+// bash keeps an inherited PWD that still names the same directory, preserving a
+// logical spelling reached through a symlink, and otherwise replaces it with the
+// physical path. So does this: an inherited PWD naming dir is left alone, and
+// anything else is replaced by dir's physical path.
+func reconcilePWDEnv(env []string, dir string) []string {
+	pwdPrefix := pwdEnvPrefix
+	inherited, havePWD := "", false
+	for _, kv := range slices.Backward(env) {
+		if rest, ok := strings.CutPrefix(kv, pwdPrefix); ok {
+			inherited, havePWD = rest, true
+			break
+		}
+	}
+	if havePWD && sameDirectory(inherited, dir) {
+		return env
+	}
+	physical := dir
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		physical = resolved
+	}
+	out := slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		return strings.HasPrefix(kv, pwdPrefix)
+	})
+	return append(out, pwdEnvPrefix+physical)
+}
+
+// pwdEnvPrefix is the environment entry bash reconciles with its own directory.
+// It is a shell-set variable rather than a Evener setting, so it is not in the
+// envvars registry.
+const pwdEnvPrefix = "PWD="
+
+// sameDirectory reports whether the two paths name the same existing directory.
+func sameDirectory(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	first, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	second, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(first, second)
+}
+
+// kernelLoadsProgram reports whether execve on path would actually run it, so
+// an argv runtime lands where bash does. Where the two disagree, ExecCommand
+// keeps the shell instead of changing what the caller sees:
+//   - the file is missing, a directory, or not executable: bash reports 126,
+//     where a failed Start reaches the caller as 127;
+//   - the file is not a regular file (a FIFO, a socket, a device): bash reaches
+//     it as a script and blocks reading it, where this check would block in the
+//     open below — before any timeout or cancellation exists to release it;
+//   - the file is not a format the kernel loads (ENOEXEC): bash falls back to
+//     running it as a shell script, while argv fails with "exec format error"
+//     — which is 127, not bash's 126.
+//
+// The accepted formats are the ones execve itself recognizes here: a `#!` line,
+// ELF, and Mach-O (thin or fat). Anything else, including an empty file and a
+// text file with no shebang, keeps the command on the shell.
+// os.Stat follows symlinks, so a link to a regular program is checked as that
+// program.
+func kernelLoadsProgram(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	var header [4]byte
+	n, err := io.ReadFull(f, header[:])
+	if err != nil && n < 2 {
+		return false
+	}
+	magic := header[:n]
+	if n >= 2 && magic[0] == '#' && magic[1] == '!' {
+		return true
+	}
+	if n < 4 {
+		return false
+	}
+	switch {
+	case string(magic) == "\x7fELF",
+		// Mach-O: 32/64-bit, either byte order, and a universal ("fat") header.
+		string(magic) == "\xfe\xed\xfa\xce",
+		string(magic) == "\xce\xfa\xed\xfe",
+		string(magic) == "\xfe\xed\xfa\xcf",
+		string(magic) == "\xcf\xfa\xed\xfe",
+		string(magic) == "\xca\xfe\xba\xbe":
+		return true
+	}
+	return false
 }
 
 // ExecArgv runs a command directly, without a shell, while preserving the same
@@ -67,21 +297,38 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 // and Stdout stays empty on the result, since the buffer nothing streamed
 // into is never read.
 func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string, sink io.Writer) (ExecResult, error) {
+	dir, env, timeoutMS, err := e.prepareCommandRun(ctx, timeoutMS, workingDir, envVars)
+	if err != nil {
+		return ExecResult{ExitCode: 127}, err
+	}
+	return e.runCommandStdout(ctx, cmd, timeoutMS, dir, env, sink)
+}
+
+// prepareCommandRun settles everything a command run needs before a runtime is
+// chosen: the default timeout, the validated working directory, the sandbox
+// confirmation, and the child environment. ExecCommand builds them once so its
+// runtime choice (a PATH lookup) costs no second environment build on the shell
+// tool's critical path.
+func (e *LocalExecutionEnvironment) prepareCommandRun(ctx context.Context, timeoutMS int, workingDir string, envVars map[string]string) (string, []string, int, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000
 	}
 	dir, err := e.resolveCommandWorkingDir(workingDir)
 	if err != nil {
-		return ExecResult{ExitCode: 127}, err
+		return "", nil, timeoutMS, err
 	}
 	if err := e.Wrapper.Confirm(ctx); err != nil {
-		return ExecResult{ExitCode: 127}, err
+		return "", nil, timeoutMS, err
 	}
+	return dir, e.launchEnv(dir, envVars), timeoutMS, nil
+}
 
+// runCommandStdout runs an already-chosen runtime with a prepared directory and
+// child environment, capturing stdout and stderr (or streaming stdout to sink).
+func (e *LocalExecutionEnvironment) runCommandStdout(ctx context.Context, cmd commandRuntime, timeoutMS int, dir string, env []string, sink io.Writer) (ExecResult, error) {
 	start := time.Now()
 	stdout := cappedoutput.New(e.outputCaptureCapBytes())
 	stderr := cappedoutput.New(e.outputCaptureCapBytes())
-	env := e.launchEnv(dir, envVars)
 	config := commandRuntimeConfig{
 		Dir:              dir,
 		Env:              env,
@@ -184,22 +431,37 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}, waitErr
 }
 
-// StreamCommand runs command through the platform shell in its own process
-// group, streaming combined stdout/stderr to out and returning immediately with
-// a handle for waiting on or signalling the command.
+// StreamCommand runs command in its own process group, streaming combined
+// stdout/stderr to out and returning immediately with a handle for waiting on or
+// signalling the command. It is the shell tool's ordinary path
+// (registerShellTools → runShell), so it makes the same runtime choice
+// ExecCommand does, through the same commandRuntimeForCommand: a bare word list
+// runs as argv, everything else through the platform shell.
 func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, workingDir string, envVars map[string]string, out io.Writer) (*StreamHandle, error) {
+	dir, env, err := e.prepareStreamCommand(ctx, workingDir, envVars)
+	if err != nil {
+		return nil, err
+	}
+	cmd, env := e.commandRuntimeForCommand(command, dir, env)
+	return e.startStreamCommand(ctx, cmd, dir, env, out)
+}
+
+// prepareStreamCommand settles everything a streaming run needs before a runtime
+// is chosen — the validated working directory, the cancellation check, and the
+// sandbox confirmation — so the runtime choice costs no second environment build.
+func (e *LocalExecutionEnvironment) prepareStreamCommand(ctx context.Context, workingDir string, envVars map[string]string) (string, []string, error) {
 	if e.runningPIDs == nil {
 		e.runningPIDs = &sync.Map{}
 	}
 	dir, err := e.resolveCommandWorkingDir(workingDir)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	if ctx != nil {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return "", nil, ctx.Err()
 		default:
 		}
 	}
@@ -208,17 +470,23 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		confirmCtx = context.Background()
 	}
 	if err := e.Wrapper.Confirm(confirmCtx); err != nil {
-		return nil, err
+		return "", nil, err
 	}
+	return dir, e.launchEnv(dir, envVars), nil
+}
 
-	cmd := e.commands().Shell(command)
+// startStreamCommand runs an already-chosen runtime with a prepared directory
+// and child environment, streaming combined stdout/stderr to out and returning
+// the handle the caller waits on or signals.
+func (e *LocalExecutionEnvironment) startStreamCommand(ctx context.Context, cmd commandRuntime, dir string, env []string, out io.Writer) (*StreamHandle, error) {
 	combinedOutput := out
 	if combinedOutput == nil {
 		combinedOutput = io.Discard
 	}
 	cmd.Configure(commandRuntimeConfig{
 		Dir:              dir,
-		Env:              e.launchEnv(dir, envVars),
+		Env:              env,
+		ExecutablePath:   launchExecutable(cmd, env),
 		Stdout:           out,
 		Stderr:           out,
 		CombinedOutput:   combinedOutput,

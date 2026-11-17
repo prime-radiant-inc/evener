@@ -91,6 +91,7 @@ import {
   type PendingTurnEntry,
   queueEntryAt,
   recordedInputLineage,
+  settledSourceIds,
   transcriptMutationIds,
   validConsumedClientMutationIds,
 } from "@evener/appwire-client/state/mutation";
@@ -169,6 +170,7 @@ import { isRecoveryFenced, isResumeOnly, isSendResumes, type ResumeOnlySignals }
 import { createSecureUUID } from "./secureUUID";
 import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
 import type { SessionEntryCache } from "./sessionEntryCache";
+import { ShardedMap, shardedMap } from "./shardedMap";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import {
   backgroundHeldRefs,
@@ -274,7 +276,7 @@ export interface PromoteDisplayInput {
 }
 
 export interface ThreadsStoreState {
-  threads: Map<string, ThreadModel>;
+  threads: ReadonlyMap<string, ThreadModel>;
   mutationWriteStalled: boolean;
   // Refs whose durable reconcile failed for a reason other than storage: the
   // ref waits for discovery's retry before anything is dispatched.
@@ -363,7 +365,7 @@ export interface ThreadsStoreState {
   // settles.
   localOpenings: Map<string, number>;
   // Lean child subscriptions are independent from real pane ownership.
-  watchedThreads: Map<string, ThreadModel>;
+  watchedThreads: ReadonlyMap<string, ThreadModel>;
   // Refs whose hydration has been durably rejected by the hub's own
   // deletion fence (data.mutationOutcome === "targetDeleted" - see
   // readThreadHydration's catch below and cmd/evener-hub/app_sources.go's
@@ -496,6 +498,7 @@ export interface ThreadsStoreState {
     index: number,
     expectedEntryId: string,
     display: PromoteDisplayInput,
+    sourceMutationId?: string,
   ): Promise<void>;
   // Removes the queued follow-up at index so it is never consumed (issue
   // #23; also the removal half of the composer's edit-and-recompose flow).
@@ -1471,7 +1474,7 @@ function removeThreadModelIndex(index: ThreadModelIndex, model: ThreadModel): vo
 // resolved through the map. `skippedRefs` mirrors the scan's own exclusion
 // set (a pending hydration owns the ref for this frame).
 function routeByNotificationKey(
-  map: Map<string, ThreadModel>,
+  map: ReadonlyMap<string, ThreadModel>,
   index: ThreadModelIndex,
   n: AnyNotification,
   skippedRefs: ReadonlySet<string> | undefined,
@@ -1573,11 +1576,11 @@ function putThreadModels(
   const patch: Partial<ThreadsStoreState> = {};
   if (threadModel) {
     putThreadModelIndex(threadsIndex, previousThread, threadModel);
-    patch.threads = new Map(state.threads).set(ref, threadModel);
+    patch.threads = shardedMap(state.threads).with(ref, threadModel);
   }
   if (watchedModel) {
     putThreadModelIndex(watchedThreadsIndex, previousWatched, watchedModel);
-    patch.watchedThreads = new Map(state.watchedThreads).set(ref, watchedModel);
+    patch.watchedThreads = shardedMap(state.watchedThreads).with(ref, watchedModel);
   }
   if (!threadModel && !watchedModel) return;
   threadsStore.setState(patch);
@@ -1667,8 +1670,7 @@ function removeThreadModel(ref: string): void {
   });
   threadsStore.setState((s) => {
     if (!s.threads.has(ref) && !s.frameTimes.has(ref) && !s.deletedRefs.has(ref)) return s;
-    const nextThreads = new Map(s.threads);
-    nextThreads.delete(ref);
+    const nextThreads = shardedMap(s.threads).without(ref);
     const nextFrameTimes = new Map(s.frameTimes);
     nextFrameTimes.delete(ref);
     const nextDeletedRefs = new Set(s.deletedRefs);
@@ -1686,9 +1688,7 @@ function removeWatchedThreadModel(ref: string): void {
   if (removed) removeThreadModelIndex(watchedThreadsIndex, removed);
   threadsStore.setState((s) => {
     if (!s.watchedThreads.has(ref)) return s;
-    const nextWatchedThreads = new Map(s.watchedThreads);
-    nextWatchedThreads.delete(ref);
-    return { watchedThreads: nextWatchedThreads };
+    return { watchedThreads: shardedMap(s.watchedThreads).without(ref) };
   });
 }
 
@@ -2002,6 +2002,44 @@ async function pruneSettledTransientRefusals(runtime: MutationRuntime, targetRef
       next.delete(targetRef);
       return { transientRefusalPaces: next };
     });
+  }
+}
+
+// A refused promote that lands in recovery AFTER its queue entry's delivery
+// was already visible (the refusal's transfer follows a hydration that could
+// not see it coming) must settle against the delivery evidence it arrives
+// into: the storage-change notification the transfer fires is the one moment
+// the runtime can reconcile the two without waiting for the next read.
+// Fire-and-forget like the prune above: a storage failure stays contained.
+async function retireDeliveredPromoteRecoveriesForRefs(
+  runtime: MutationRuntime,
+  targetRefs: Iterable<string>,
+): Promise<void> {
+  for (const targetRef of targetRefs) {
+    const settled = settledSourceIds(trackedThreadModel(targetRef));
+    if (settled.size === 0) continue;
+    let retired: string[] = [];
+    try {
+      retired = await runtime.storage.retireDeliveredPromoteRecoveries(targetRef, settled);
+    } catch {
+      continue;
+    }
+    // The retirement deleted rows this tab's projections may still hold: the
+    // storage-side delete reaches IndexedDB but no persistence subscriber
+    // hears it, so a cached recovery row would render again until some later
+    // read re-projects. The dispatcher's own onStorageChange fired BEFORE
+    // this retire ran, so the notification it carried read the row still
+    // present. Only a retirement that removed something owes a fresh one:
+    // the gate keeps ordinary frames from waking the projection refresh for
+    // every session with mere transcript evidence (which would start the
+    // mutation runtime in hosts that never opened it). Sibling tabs hold the
+    // same stale cache with no local retire to clear it, so the wake goes to
+    // them; this tab's own refresh is the notifyMutationPersistence above.
+    if (retired.length > 0) {
+      notifyMutationPersistence([targetRef]);
+      runtime.outbox.announceCrossTabWork(targetRef);
+    }
+    if (!isCurrentMutationRuntime(runtime)) return;
   }
 }
 
@@ -2385,8 +2423,7 @@ function dropUnpinnedModel(ref: string, flush = true): void {
       !state.cacheLifetimes.has(ref)
     )
       return state;
-    const threads = new Map(state.threads);
-    threads.delete(ref);
+    const threads = shardedMap(state.threads).without(ref);
     const frameTimes = new Map(state.frameTimes);
     frameTimes.delete(ref);
     const hydrations = new Map(state.hydrations);
@@ -2722,6 +2759,7 @@ function getMutationRuntime(): MutationRuntime | null {
           notifyMutationPersistence(targetRefs);
         }
         void pruneSettledTransientRefusals(runtime, targetRefs);
+        void retireDeliveredPromoteRecoveriesForRefs(runtime, targetRefs);
       }
     },
     onBlockedMutation: (targetRef, client) => {
@@ -4129,6 +4167,9 @@ export async function discardRecoveryMutation(
     // The removed row's id is resolved: a later settle of a replacement, or
     // unreadable storage, must not keep blocking fallback sends behind it.
     noteHandledMutation(clientMutationId);
+    // The deleted row was shared: sibling tabs cache it with no local
+    // discard to clear, so they get the same wake a retire sends.
+    runtime.outbox.announceCrossTabWork(targetRef);
     notifyMutationPersistence([targetRef]);
   }
   return discarded;
@@ -5892,6 +5933,19 @@ export function observePendingHydrationRetirementsForTests(
   };
 }
 
+// Test-only: the mutation runtime's outbox broadcasts its cross-tab wakeups on
+// the channel this factory returns, so a store test can install a recording
+// channel and assert a retire that removed rows announced to sibling tabs.
+export function installMutationBroadcastChannelForTests(
+  create: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined,
+): () => void {
+  const previous = createMutationBroadcastChannelForTests;
+  createMutationBroadcastChannelForTests = create;
+  return () => {
+    createMutationBroadcastChannelForTests = previous;
+  };
+}
+
 function retirePendingHydration(
   ref: string,
   pending: PendingThreadHydration,
@@ -6458,6 +6512,25 @@ function reconcileAcceptedReadRecovery(ref: string, response: ThreadReadResponse
         });
     }
   }
+  // The same delivery-evidence settle a tracked hydration runs: a repository
+  // read is accepted history too, and its bounded window can hold the
+  // delivered entry's lineage while the refused promote's recovery is what
+  // a reload would resurrect. Repository-owned refs bypass the tracked
+  // hydration's sweep, so this is their boundary.
+  if (runtime && authoritative) {
+    const evidence = settledSourceIds(model);
+    void runtime.storage
+      .retireDeliveredPromoteRecoveries(ref, evidence)
+      .then((retired) => {
+        if (retired.length > 0) {
+          notifyMutationPersistence([ref]);
+          runtime.outbox.announceCrossTabWork(ref);
+        }
+      })
+      .catch(() => {
+        // A later authoritative read runs the same retirement.
+      });
+  }
   if (model.status.type === "restartRequired" || response.thread.evener.resumeRequired === true) {
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
@@ -6594,6 +6667,22 @@ async function publishAndReconcileThreadHydration(
           ),
           { retainDisplayCopy: true, queueEntryIdsById },
         );
+        // A refused promote whose queue entry this response proves delivered
+        // is a duplicate the projection suppresses while the proof is visible
+        // - but the transcript window is bounded, so the proof can age out on
+        // a later read. Settle the unedited recovery durably now (an edited
+        // composition is the user's own unsent work and survives): the
+        // delivered source speaks as a recorded item's own id (normal
+        // consumption) or as a lineage id (inherited input) - never as the
+        // queue's own id, which means still queued, not delivered.
+        if (mutationStateAuthoritative) {
+          const evidence = settledSourceIds(published);
+          const retired = await runtime.storage.retireDeliveredPromoteRecoveries(ref, evidence);
+          if (retired.length > 0) {
+            notifyMutationPersistence([ref]);
+            runtime.outbox.announceCrossTabWork(ref);
+          }
+        }
         if (!current()) return;
         // A bounded transcript or a clear can omit an accepted mutation from
         // the live projection. Retry unresolved records with their original
@@ -6811,15 +6900,22 @@ function publishWatchedHydration(
 // array); changedRefs order differs from the scan's map-iteration order, but
 // its only consumer (handleNotification's frameTimes loop) is
 // order-insensitive, and applyToMap is module-private.
+//
+// The result names the entries the frame changed rather than a rewritten map.
+// The caller applies them to the published map one entry at a time, so a frame
+// that changes one model never copies the entries it did not touch.
 function applyToMap(
-  map: Map<string, ThreadModel>,
+  map: ReadonlyMap<string, ThreadModel>,
   index: ThreadModelIndex,
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
   previousModels: ReadonlyMap<string, ThreadModel> = map,
 ): {
-  next: Map<string, ThreadModel> | null;
+  // The models this frame rewrote, keyed by ref, in fold order. Empty when the
+  // frame changed nothing; the caller then publishes no new map at all. The
+  // caller owns this bag and may project an entry before publishing it.
+  updated: Map<string, ThreadModel>;
   changedRefs: string[];
   acceptedRefs: string[];
   // Refs whose thread/status/changed fold moved them OFF the shut-down set: the
@@ -6827,38 +6923,37 @@ function applyToMap(
   // recovery obligation is the caller's to clear (see handleNotification).
   endedResumeOnlyRefs: string[];
 } {
-  let next: Map<string, ThreadModel> | null = null;
+  const updates = new Map<string, ThreadModel>();
   const changedRefs: string[] = [];
   const acceptedRefs: string[] = [];
   const endedResumeOnlyRefs: string[] = [];
   const routed = routeByNotificationKey(map, index, n, skippedRefs);
-  if (!routed) return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
-  const accept = (model: ThreadModel): void => {
+  if (!routed) return { updated: updates, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+  for (const model of Array.isArray(routed) ? routed : [routed]) {
     acceptedRefs.push(model.ref);
-  };
-  if (Array.isArray(routed)) {
-    for (const model of routed) {
-      accept(model);
-      const folded = foldCanonicalNotification(model, n, now, previousModels.get(model.ref));
-      const updated = folded.model;
-      if (updated === model) continue;
-      next ??= new Map(map);
-      next.set(model.ref, updated);
-      if (folded.endedResumeOnly) endedResumeOnlyRefs.push(model.ref);
-      changedRefs.push(model.ref);
-    }
-    return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+    const folded = foldCanonicalNotification(model, n, now, previousModels.get(model.ref));
+    if (folded.model === model) continue;
+    updates.set(model.ref, folded.model);
+    if (folded.endedResumeOnly) endedResumeOnlyRefs.push(model.ref);
+    changedRefs.push(model.ref);
   }
-  accept(routed);
-  const folded = foldCanonicalNotification(routed, n, now, previousModels.get(routed.ref));
-  const updated = folded.model;
-  if (updated !== routed) {
-    next = new Map(map);
-    next.set(routed.ref, updated);
-    if (folded.endedResumeOnly) endedResumeOnlyRefs.push(routed.ref);
-    changedRefs.push(routed.ref);
-  }
-  return { next, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+  return { updated: updates, changedRefs, acceptedRefs, endedResumeOnlyRefs };
+}
+
+// applyThreadUpdates publishes `updates` over `map`, sharing every entry the
+// frame did not rewrite. `project` may replace a rewritten model with the
+// surface this map publishes for it. Returns null when there is nothing to
+// publish, so a no-op frame keeps the published instance and its subscribers
+// never run.
+function applyThreadUpdates(
+  map: ReadonlyMap<string, ThreadModel>,
+  updates: ReadonlyMap<string, ThreadModel>,
+  project?: (ref: string, model: ThreadModel) => ThreadModel,
+): ReadonlyMap<string, ThreadModel> | null {
+  if (updates.size === 0) return null;
+  let next = shardedMap(map);
+  for (const [ref, model] of updates) next = next.with(ref, project ? project(ref, model) : model);
+  return next;
 }
 
 // A folded notification that moved a ref OFF the shut-down set ends the
@@ -7167,39 +7262,26 @@ function handleNotification(n: AnyNotification): void {
       ? new Set("ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])])
       : EMPTY_PENDING_REFS;
   const {
-    next: reducedThreads,
+    updated: threadUpdates,
     changedRefs: changedThreads,
     acceptedRefs: acceptedThreads,
     endedResumeOnlyRefs: endedThreadsResumeOnly,
   } = applyToMap(threads, threadsIndex, n, now, new Set([...pendingRefs, ...fixtureRecordedRefs]), previousThreads);
   const {
-    next: reducedWatchedThreads,
+    updated: watchedUpdates,
     changedRefs: changedWatchedThreads,
     acceptedRefs: acceptedWatchedThreads,
     endedResumeOnlyRefs: endedWatchedResumeOnly,
   } = applyToMap(watchedThreads, watchedThreadsIndex, n, now, pendingWatchedRefs);
-  let nextThreads = reducedThreads;
-  if (nextThreads) {
-    let projected: Map<string, ThreadModel> | undefined;
-    for (const ref of changedThreads) {
-      const model = nextThreads.get(ref);
-      if (!model || !isEntryTranscriptBackgroundOnly(ref)) continue;
-      projected ??= new Map(nextThreads);
-      projected.set(ref, pruneBackgroundHistoryBodies(model));
-    }
-    if (projected) nextThreads = projected;
-  }
-  let nextWatchedThreads = reducedWatchedThreads;
-  if (nextWatchedThreads) {
-    let projected: Map<string, ThreadModel> | undefined;
-    for (const ref of changedWatchedThreads) {
-      const model = nextWatchedThreads.get(ref);
-      if (!model || watchIncludeTurns.get(ref)) continue;
-      projected ??= new Map(nextWatchedThreads);
-      projected.set(ref, pruneBackgroundHistoryBodies(model));
-    }
-    if (projected) nextWatchedThreads = projected;
-  }
+  // The background-only projection belongs to the entry the frame rewrote, so
+  // it is folded into that entry as it is published rather than into a second
+  // whole-map pass.
+  const nextThreads = applyThreadUpdates(threads, threadUpdates, (ref, model) =>
+    isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(model) : model,
+  );
+  const nextWatchedThreads = applyThreadUpdates(watchedThreads, watchedUpdates, (ref, model) =>
+    watchIncludeTurns.get(ref) ? model : pruneBackgroundHistoryBodies(model),
+  );
   const publishableThreads = nextThreads;
   const publishableChangedThreads = changedThreads;
   const publishableEndedResumeOnly = endedThreadsResumeOnly;
@@ -7441,8 +7523,8 @@ function handleNotification(n: AnyNotification): void {
 // Not every accepted notification invalidates, so this scans only the refs
 // applyToMap actually changed, not the whole map.
 function newlyInvalidatedHistoryRefs(
-  prev: Map<string, ThreadModel>,
-  next: Map<string, ThreadModel> | null,
+  prev: ReadonlyMap<string, ThreadModel>,
+  next: ReadonlyMap<string, ThreadModel> | null,
   candidates: readonly string[],
 ): string[] {
   if (!next) return [];
@@ -8232,6 +8314,22 @@ function forgetConsumedQueueRows(ref: string): void {
 // waiting on a retired input. The queue frame that named the consumption keeps
 // the copy visible until then.
 function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: ThreadModel): void {
+  // The same delivery-evidence settle the read paths run: an accepted live
+  // frame can be the FIRST place a foreign consumer's delivery appears (no
+  // local consumer record means no storage-change callback fires), so this
+  // publication moment settles the refused promote here too.
+  const evidence = settledSourceIds(model);
+  void runtime.storage
+    .retireDeliveredPromoteRecoveries(ref, evidence)
+    .then((retired) => {
+      if (retired.length > 0) {
+        notifyMutationPersistence([ref]);
+        runtime.outbox.announceCrossTabWork(ref);
+      }
+    })
+    .catch(() => {
+      // A later accepted snapshot runs the same retirement.
+    });
   const pending = pendingConsumedSettlements.get(ref);
   // An input the daemon names as retired will never be recorded, so it settles
   // without any transcript evidence. A cancellation announces itself only this
@@ -8410,19 +8508,17 @@ async function requireReadyClient(timeoutMs = REQUIRE_READY_TIMEOUT_MS): Promise
 }
 
 function replaceThread(
-  models: Map<string, ThreadModel>,
+  models: ReadonlyMap<string, ThreadModel>,
   ref: string,
   update: (model: ThreadModel) => ThreadModel,
-): Map<string, ThreadModel> {
+): ReadonlyMap<string, ThreadModel> {
   const current = models.get(ref);
   if (!current) return models;
-  const next = new Map(models);
-  next.set(ref, update(current));
-  return next;
+  return shardedMap(models).with(ref, update(current));
 }
 
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
-  threads: new Map(),
+  threads: ShardedMap.empty(),
   mutationWriteStalled: false,
   mutationReconciliationFailures: new Set(),
   mutationReconciliationStorageBlocked: new Set(),
@@ -8437,7 +8533,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   frameTimes: new Map(),
   hydrations: new Map(),
   localOpenings: new Map(),
-  watchedThreads: new Map(),
+  watchedThreads: ShardedMap.empty(),
   deletedRefs: new Set(),
   repairingRefs: new Set(),
   cacheLifetimes: new Map(),
@@ -9311,7 +9407,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
+  async promoteQueuedAsSteer(ref, index, expectedEntryId, display, sourceMutationId) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
     // turn id that would only add a second way to fail. The optimistic input
@@ -9325,6 +9421,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
       {
         method: COMPOSER_METHODS.promote,
+        // The promoted row's own identity: the queue entry's source
+        // mutation when one exists. A refused promote's recovery row
+        // suppresses through this id after the entry's consumer settles
+        // (the recorded lineage speaks in it), where expectedEntryId's
+        // ownership mapping no longer exists.
+        ...(sourceMutationId !== undefined ? { sourceMutationId } : {}),
         input: [
           ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
           ...(display.images ?? []).map((image) => ({
@@ -10236,10 +10338,10 @@ export function resetThreadsStoreForTests(): void {
   threadsStore.setState(
     {
       ...threadsStore.getInitialState(),
-      threads: new Map(),
+      threads: ShardedMap.empty(),
       frameTimes: new Map(),
       hydrations: new Map(),
-      watchedThreads: new Map(),
+      watchedThreads: ShardedMap.empty(),
       deletedRefs: new Set(),
       repairingRefs: new Set(),
       cacheLifetimes: new Map(),

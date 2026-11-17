@@ -735,14 +735,36 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		// right: the child's report may present a row a user's stop
 		// held out of the automatic drives, so the holds end with it
 		// exactly as a successful arm ends them — and they end BEFORE
-		// the notify below fires, because the notify func drives the
+		// the arm below notifies, because the notify func drives the
 		// receiver synchronously: a hold still in place at the drive's
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
 		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery)
-		receiver.notify()
+		// A non-root receiver gets the same durable arm the root gets
+		// (#6330): armDelegateAttentions opens the receiver's attention
+		// in the controller, waits out a racing attention start, and
+		// paces a retry of its own when the arm refuses, so the wake
+		// outlives the one-shot notify that stranded a parked lane
+		// whenever its next drive was refused. The arm wakes the
+		// receiver once for the batch when it arms anything; when it
+		// refuses before that wake, the committed delivery still wakes
+		// the receiver exactly once, as it did before the arm — the
+		// wake is the delivery's own, and the arm's paced retry owns
+		// only the re-arm.
+		if err := receiver.armDelegateAttentions(attentionIDs); err != nil {
+			c.reportDelegateWakeError(err)
+			receiver.notify()
+		}
+		// The lane's own wake cannot start its consumption generation —
+		// that drive is gated to the root — so the root's attention
+		// drive is poked and its paced retry armed: a selection or start
+		// guard that refuses now (a finishing generation, a leftover
+		// binding) is retried with backoff while the receiver still owes
+		// attention, instead of stranding silently.
+		c.retryDelegateAttentionLater()
 		c.notifyDelegateAttention()
 	case coldDelegateDeliveryReceiver:
+		c.retryDelegateAttentionLater()
 		c.notifyDelegateAttention()
 	}
 	return nil

@@ -827,13 +827,14 @@ func TestListSessionsReportsASessionWithACorruptJournalUnreadable(t *testing.T) 
 func TestListSessions_BoundedTranscriptRead(t *testing.T) {
 	origTail, origOpen := sessionRowTranscriptTailBytes, openDoctorTranscriptFile
 	sessionRowTranscriptTailBytes = 8 << 10
-	var readBytes int64
+	var counting *agenttest.CountingReadSeekCloser
 	openDoctorTranscriptFile = func(path string) (io.ReadSeekCloser, error) {
 		file, err := origOpen(path)
 		if err != nil {
 			return nil, err
 		}
-		return &countingTranscriptRead{ReadSeekCloser: file, read: &readBytes}, nil
+		counting = &agenttest.CountingReadSeekCloser{ReadSeekCloser: file}
+		return counting, nil
 	}
 	t.Cleanup(func() {
 		sessionRowTranscriptTailBytes = origTail
@@ -874,22 +875,12 @@ func TestListSessions_BoundedTranscriptRead(t *testing.T) {
 	if row.Outcome != "end_turn=true decision=approve" {
 		t.Errorf("Outcome = %q, want end_turn=true decision=approve from the tail's final turn", row.Outcome)
 	}
-	if readBytes >= info.Size()/2 {
-		t.Fatalf("transcript read %d of %d bytes (tail bound %d); a bounded header+tail read must stay under half the file", readBytes, info.Size(), sessionRowTranscriptTailBytes)
+	if counting == nil {
+		t.Fatal("transcript open seam was never called, so no read could be counted")
 	}
-}
-
-// countingTranscriptRead counts the bytes a transcript read pulls from the
-// file, so a test can prove a summary stopped reading short of the end.
-type countingTranscriptRead struct {
-	io.ReadSeekCloser
-	read *int64
-}
-
-func (c *countingTranscriptRead) Read(p []byte) (int, error) {
-	n, err := c.ReadSeekCloser.Read(p)
-	*c.read += int64(n)
-	return n, err
+	if counting.Bytes >= info.Size()/2 {
+		t.Fatalf("transcript read %d of %d bytes (tail bound %d); a bounded header+tail read must stay under half the file", counting.Bytes, info.Size(), sessionRowTranscriptTailBytes)
+	}
 }
 
 // TestListSessions_BoundedJobsScan proves the jobs scan is bounded to the

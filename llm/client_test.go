@@ -2,8 +2,11 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -474,6 +477,98 @@ func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
 	case <-drained:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Events() did not close after Close() — pump goroutine leaked")
+	}
+}
+
+// TestClient_Stream_RefusesANilStreamFromAnAdapter verifies that an adapter
+// returning a nil stream with no error cannot reach the stamping wrapper.
+// pump reads the inner stream's channel on every iteration, so a nil inner
+// dereferences it and kills the process; an adapter is a plugin, and a plugin
+// that reports success with nothing to read is a broken contract, not a
+// stream. The caller gets an error it can act on instead of a crash.
+func TestClient_Stream_RefusesANilStreamFromAnAdapter(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls its neighbours with a shared t.
+	c := NewClient()
+	c.Register(&nilStreamAdapter{name: "openai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatalf("Stream returned a nil stream with no error: st=%v", st)
+	}
+	if st != nil {
+		t.Fatalf("Stream returned a stream alongside its error: %v", st)
+	}
+}
+
+// nilStreamAdapter reports success with no stream, the shape a benchmark-only
+// adapter has.
+type nilStreamAdapter struct{ name string }
+
+func (a *nilStreamAdapter) Name() string { return a.name }
+
+func (a *nilStreamAdapter) Complete(context.Context, Request) (Response, error) {
+	return Response{Provider: a.name, Message: Assistant("done")}, nil
+}
+
+func (a *nilStreamAdapter) Stream(context.Context, Request) (Stream, error) { return nil, nil }
+
+// TestClient_Stream_LogsARefusedNilStreamAsAFailure verifies that the durable
+// API log records the refusal, not a successful call that produced nothing.
+// The refusal has to happen inside the adapter handler: middleware wraps that
+// handler, and APILogger settles the call as soon as the handler returns, so a
+// guard above the middleware would leave a success in the log for a call that
+// never produced a stream.
+func TestClient_Stream_LogsARefusedNilStreamAsAFailure(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls its neighbours with a shared t.
+	dir := t.TempDir()
+	logger, err := NewSessionAPILogger(dir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	if err := logger.ReserveSession("s1"); err != nil {
+		t.Fatalf("ReserveSession: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = logger.ReleaseSession("s1")
+		_ = logger.Close()
+	})
+
+	c := NewClient()
+	c.Register(&nilStreamAdapter{name: "openai"})
+	c.Use(logger)
+
+	ctx := WithAPILogContext(context.Background(), "s1")
+	if _, err := c.Stream(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}}); err == nil {
+		t.Fatal("Stream accepted a nil stream from an adapter")
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "sessions", "s1.api.jsonl"))
+	if err != nil {
+		t.Fatalf("read api log: %v", err)
+	}
+	var outcome string
+	for line := range strings.SplitSeq(strings.TrimSpace(string(body)), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Kind    string `json:"kind"`
+			Outcome string `json:"outcome"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("decode api log line: %v", err)
+		}
+		if rec.Kind == "attempt_group_settlement" {
+			outcome = rec.Outcome
+		}
+	}
+	if outcome == "" {
+		t.Fatalf("no settlement record written to the API log:\n%s", body)
+	}
+	if outcome == string(apilog.AttemptSuccess) {
+		t.Fatalf("API log recorded a refused nil stream as %q:\n%s", outcome, body)
 	}
 }
 

@@ -115,7 +115,7 @@ func findWatch(r WatchReport, watchID string) *WatchView {
 
 func TestWatches_CoalescingCollapse(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, err := Watches(base, sid, WatchOpts{})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestWatches_CoalescingCollapse(t *testing.T) {
 
 func TestWatches_Registration(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{})
 	w1 := findWatch(r, "w1")
 	if w1.Generation != "g1" || w1.OwnerSessionID != "obs" || w1.VisibleSessionID != "worker" {
 		t.Errorf("registration not surfaced: %+v", w1)
@@ -154,7 +154,7 @@ func TestWatches_Registration(t *testing.T) {
 
 func TestWatches_DroppedAndEvictedHaveTerminalAndReason(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{})
 	w1 := findWatch(r, "w1")
 	var dropped, evicted *DeliveryView
 	for i := range w1.Deliveries {
@@ -175,7 +175,7 @@ func TestWatches_DroppedAndEvictedHaveTerminalAndReason(t *testing.T) {
 
 func TestWatches_BreakerTelemetryFromStamps(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{})
 	w2 := findWatch(r, "w2")
 	if w2 == nil {
 		t.Fatal("w2 missing")
@@ -197,7 +197,7 @@ func TestWatches_BreakerTelemetryFromStamps(t *testing.T) {
 
 func TestWatches_HealthyWatchHasNoSelfInfluence(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{})
 	w1 := findWatch(r, "w1")
 	if w1.MaxSelfInfluenceDepth != 0 {
 		t.Errorf("w1 MaxSelfInfluenceDepth = %d, want 0", w1.MaxSelfInfluenceDepth)
@@ -209,7 +209,7 @@ func TestWatches_HealthyWatchHasNoSelfInfluence(t *testing.T) {
 
 func TestWatches_SelfLoopsOnlyFilter(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{SelfLoopsOnly: true})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{SelfLoopsOnly: true})
 	if len(r.Watches) != 1 || r.Watches[0].WatchID != "w2" {
 		t.Errorf("SelfLoopsOnly should yield only w2 (where the runaway fuse fired), got %d watches", len(r.Watches))
 	}
@@ -220,7 +220,7 @@ func TestWatches_SelfLoopsOnlyFilter(t *testing.T) {
 
 func TestWatches_WatchIDFilter(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{WatchID: "w1"})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{WatchID: "w1"})
 	if len(r.Watches) != 1 || r.Watches[0].WatchID != "w1" {
 		t.Errorf("WatchID filter should yield only w1, got %d watches", len(r.Watches))
 	}
@@ -228,7 +228,7 @@ func TestWatches_WatchIDFilter(t *testing.T) {
 
 func TestWatches_RenderMentionsCoalescingAndBreaker(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, _ := Watches(base, sid, WatchOpts{})
+	r, _ := Watches(t.Context(), base, sid, WatchOpts{})
 	out := RenderWatches(r)
 	if !strings.Contains(out, "coalescing collapsed") {
 		t.Error("render should note coalescing on w1")
@@ -275,7 +275,7 @@ func TestFilterLabel(t *testing.T) {
 // empty but the session clearly has watches.
 func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 	base, sid := watchesFixture(t)
-	r, err := Watches(base, sid, WatchOpts{WatchID: "w1", SelfLoopsOnly: true})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{WatchID: "w1", SelfLoopsOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestWatches_HistoricalCallerTargetNormalizedToSelf(t *testing.T) {
 			Target: "caller", Condition: "assistant.message", ConfigHash: "cfg1"}},
 	})
 
-	r, err := Watches(base, sid, WatchOpts{})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestWatches_TerminalCatchupRecordedInLog(t *testing.T) {
 			Generation: "g1", EndReason: "completed"}},
 	})
 
-	r, err := Watches(base, sid, WatchOpts{WatchID: "w_catchup"})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{WatchID: "w_catchup"})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}

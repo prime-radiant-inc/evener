@@ -228,24 +228,40 @@ func (r *Runner) Has(event plugin.HookEvent) bool {
 	return len(r.hooks[event]) > 0
 }
 
-// InvalidMatcherDiagnostic describes a registered hook whose matcher is not a
-// valid Go RE2 regex. It carries only the plugin name, event name, offending
-// matcher, and the sanitized warning text — never any hook payload or secret.
-type InvalidMatcherDiagnostic struct {
+// MatcherDiagnostic describes one load-time matcher problem in a registered
+// hook. It carries only the plugin name, event name, offending matcher, a
+// title, and the sanitized warning text — never any hook payload or secret.
+type MatcherDiagnostic struct {
 	PluginName string
 	Event      string
 	Matcher    string
+	Title      string
 	Message    string
 }
 
-// Validate compiles every registered hook's matcher once and returns a
-// diagnostic for each invalid one. It is meant to run at load time so the
-// invalid-matcher warning is emitted exactly once per hook; MatchHooks then
-// skips invalid matchers silently at dispatch (no per-call warning storm and,
-// critically, no dispatch-time EventWarning that could recurse through the
-// Notification hook).
-func (r *Runner) Validate() []InvalidMatcherDiagnostic {
-	var diags []InvalidMatcherDiagnostic
+// Titles for MatcherDiagnostic, one per condition. A client renders the title
+// and the message together, so a reader can tell a skipped hook from one that
+// registers and needs its matcher rewritten.
+const (
+	// MatcherTitleInvalid is a matcher that is not a valid Go RE2 regex; the
+	// hook is skipped at dispatch.
+	MatcherTitleInvalid = "invalid hook matcher"
+	// MatcherTitleMCPForm is a tool-event matcher written in Claude's
+	// mcp__<server>__<tool> form, where evener presents MCP tools as
+	// <server>__<tool>; the hook registers and loads, and the matcher is worth
+	// rewriting in the registered form.
+	MatcherTitleMCPForm = "mcp__-form hook matcher"
+)
+
+// Validate inspects every registered hook's matcher once and returns a
+// diagnostic for each problem it can name statically: a matcher that does not
+// compile, and a tool-event matcher anchored on Claude's mcp__ prefix. It is
+// meant to run at load time so each problem is reported exactly once per hook;
+// MatchHooks then skips uncompilable matchers silently at dispatch (no per-call
+// warning storm and, critically, no dispatch-time EventWarning that could
+// recurse through the Notification hook).
+func (r *Runner) Validate() []MatcherDiagnostic {
+	var diags []MatcherDiagnostic
 	for event, hooks := range r.hooks {
 		for _, hook := range hooks {
 			// An event without a matcher never consults its matcher, so an
@@ -255,11 +271,27 @@ func (r *Runner) Validate() []InvalidMatcherDiagnostic {
 				continue
 			}
 			if _, err := matchTarget(hook.Matcher, ""); err != nil {
-				diags = append(diags, InvalidMatcherDiagnostic{
+				diags = append(diags, MatcherDiagnostic{
 					PluginName: hook.PluginName,
 					Event:      string(event),
 					Matcher:    hook.Matcher,
+					Title:      MatcherTitleInvalid,
 					Message:    invalidMatcherWarning(hook.PluginName, string(event), hook.Matcher),
+				})
+				// One diagnostic per hook: this one is already skipped at
+				// dispatch, so the prefix hint would add nothing to do.
+				continue
+			}
+			// Only a tool-event matcher targets a tool name. A matcher on an
+			// agent type, trigger, reason, or error name names a different
+			// vocabulary, where Claude's MCP prefix says nothing.
+			if matchesToolName(event) && hasMCPMatcherPrefix(hook.Matcher) {
+				diags = append(diags, MatcherDiagnostic{
+					PluginName: hook.PluginName,
+					Event:      string(event),
+					Matcher:    hook.Matcher,
+					Title:      MatcherTitleMCPForm,
+					Message:    mcpMatcherWarning(hook.PluginName, string(event), hook.Matcher),
 				})
 			}
 		}
@@ -296,6 +328,33 @@ func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.Re
 func invalidMatcherWarning(pluginName, event, matcher string) string {
 	return fmt.Sprintf(
 		"plugin %q hook for %s has an invalid matcher %q (not a valid Go RE2 regex; lookbehind/backreferences are unsupported); this hook is skipped and will not fire",
+		pluginName, event, matcher)
+}
+
+// mcpMatcherPrefix is Claude's MCP tool-name prefix, which evener's registered
+// names do not carry: a tool-event matcher sees <server>__<tool>, the name
+// mcp.Manager registers. The one way a target can begin with the prefix is a
+// server literally named "mcp", which the diagnostic cannot see at load time.
+const mcpMatcherPrefix = "mcp__"
+
+// hasMCPMatcherPrefix reports whether a trimmed matcher is anchored on Claude's
+// mcp__ prefix. A leading "^" is stripped because a regex that anchors there is
+// the same statement in regex form. The check is the cheap exact prefix, not an
+// analysis of the regex language: a pattern that reaches the prefix another
+// way, such as ".*mcp__.*", is not reported.
+func hasMCPMatcherPrefix(matcher string) bool {
+	m := strings.TrimPrefix(strings.TrimSpace(matcher), "^")
+	return strings.HasPrefix(m, mcpMatcherPrefix)
+}
+
+// mcpMatcherWarning builds the user-visible warning text for a tool-event
+// matcher written in Claude's mcp__ form. It names the plugin, event, offending
+// matcher, and the registered form that will match, and claims nothing about
+// whether the hook fires: a matcher list can still hold a working alternative,
+// and the check is a prefix hint rather than a proof about the regex.
+func mcpMatcherWarning(pluginName, event, matcher string) string {
+	return fmt.Sprintf(
+		"plugin %q hook for %s has matcher %q written with Claude's \"mcp__\" prefix, but hook matchers see MCP tools by their registered \"<server>__<tool>\" name; write the registered form instead",
 		pluginName, event, matcher)
 }
 

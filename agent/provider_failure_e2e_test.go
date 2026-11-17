@@ -107,7 +107,7 @@ func midStreamDeath() error {
 // itself, so what these tests assert is what an operator actually reads.
 func transcriptOutline(t *testing.T, s *Session) string {
 	t.Helper()
-	res, err := doctor.Transcript(s.stateDir, s.ID(), doctor.TranscriptOpts{Format: "outline"})
+	res, err := doctor.Transcript(t.Context(), s.stateDir, s.ID(), doctor.TranscriptOpts{Format: "outline"})
 	if err != nil {
 		t.Fatalf("doctor.Transcript: %v", err)
 	}

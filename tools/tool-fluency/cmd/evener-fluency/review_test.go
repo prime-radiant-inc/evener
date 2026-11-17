@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -172,7 +173,7 @@ func TestRenderPacketShowsTheMessageTheAppShows(t *testing.T) {
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		assistantTurn(fluencyToolCall("communicate", `{"message":"Short note.","output":{"message":"Structured body."},"end_turn":true}`)),
 	})
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func TestRenderPacketShowsTheFullDelegateBrief(t *testing.T) {
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		assistantTurn(fluencyToolCall("delegate", string(args))),
 	})
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +227,7 @@ func TestRenderPacketShowsTheFullDelegateSendMessage(t *testing.T) {
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		assistantTurn(fluencyToolCall("delegate_send", string(args))),
 	})
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +254,7 @@ func TestRenderPacketShowsDelegateSendRecipient(t *testing.T) {
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		assistantTurn(fluencyToolCall("delegate_send", string(args))),
 	})
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +286,7 @@ func TestRenderPacketShowsTheFullBriefForEachTaskListStep(t *testing.T) {
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		assistantTurn(fluencyToolCall("delegate", string(args))),
 	})
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +363,7 @@ func TestRenderPacketLabelsHarnessSteering(t *testing.T) {
 	parent := schema.NewTurn(schema.TurnSteering, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("also cover the retry path")}})
 	parent.SteeringSource = events.SteeringSourceParent
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{harness, user, parent})
-	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	tr, err := runnerReadTranscript(context.Background(), stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -104,6 +104,15 @@ type Manager struct {
 	lastInputTokens     int // exact input token count from last API response
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
 
+	// estimate is the memo behind EstimateStatusForRevision. It is only ever a
+	// cache of a value the full walk would produce: see estimateMemo. Guarded by
+	// mu.
+	estimate estimateMemo
+	// profileGen counts SetProfile calls. The estimate memo keys on it instead of
+	// comparing the resolved target, which would allocate on the hot path.
+	// Guarded by mu.
+	profileGen uint64
+
 	// assumedWindowDisclosed records that this manager already emitted the
 	// unknown-window disclosure: the assumption is news once per session, not
 	// once per round.

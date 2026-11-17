@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
-	"time"
 	"unsafe"
 
 	"primeradiant.com/evener/agent/events"
@@ -50,26 +49,33 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // pass. The ceiling is PER LANE, because the race detector's instrumentation
 // adds real allocation to the same code path and moves the whole distribution
 // up: a single ceiling cannot hold a margin on both lanes at once. Measured
-// on 2026-11-14, copy-free preparations are 1,333,728 on the plain lane and
-// 1,731,040 (the plateau's maximum over repeated runs) under -race; the
-// smallest copy-bearing preparation is 2,177,504 plain and 2,193,560 under
-// -race (the copy is 1,024 * unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in
-// both). The plain ceiling is 1,750,000 as before. The race ceiling is
-// 1,980,000: 248,960 above the measured race plateau's maximum and 213,560
-// below the smallest race copy-bearing value, so attribution noise and honest
-// drift cannot mask the copy on either side of the bound.
+// on 2026-11-17 with the minimum-of-rounds estimator, after #6406 hoisted the
+// tool-list serialization out of the estimate, copy-free preparations are
+// 1,074,776 on the plain lane and 1,074,808 under -race, and copy-bearing
+// preparations are 1,918,552 and 1,918,584 (the copy is 1,024 *
+// unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in both). Both ceilings are
+// 1,580,000: 505,224 above the plain copy-free measurement and 505,192 above
+// the race one, and 338,552 and 338,584 below the two copy-bearing
+// measurements, so attribution noise and honest drift cannot mask the copy on
+// either side of the bound.
+//
+// The lanes needed different ceilings while the marshal #6406 removed was in
+// the path: it allocated several times more under -race than plain, which is
+// what split the distributions. They coincide now for that reason alone, and
+// the literals stay separate so the per-lane mechanism survives the next
+// change that moves one lane by itself.
 //
 // The race margins are smaller than the copy's own size on purpose: the gap
-// between the plateau and the copy-bearing value there is only 462,520 bytes,
-// so no ceiling can hold half a copy of clearance on both sides. The
-// regression test below therefore requires a quarter copy on each side, the
-// most either lane can offer while still catching the copy.
+// between a copy-free preparation and its copy-bearing partner is 843,776
+// bytes (the copy itself), so no ceiling can hold half a copy of clearance on
+// both sides. The regression test below therefore requires a quarter copy on
+// each side, the most either lane can offer while still catching the copy.
 //
 // Both literals are deliberate: do not derive them from the implementation
 // under test.
 const (
-	maxRequestHistoryBytesPerPreparationPlain int64 = 1_750_000
-	maxRequestHistoryBytesPerPreparationRace  int64 = 1_980_000
+	maxRequestHistoryBytesPerPreparationPlain int64 = 1_580_000
+	maxRequestHistoryBytesPerPreparationRace  int64 = 1_580_000
 )
 
 // maxRequestHistoryBytesPerPreparation is this lane's ceiling. -race is
@@ -188,78 +194,65 @@ func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Messag
 	}
 }
 
-// measureRequestHistoryBytesPerPreparation returns the median attributable
-// allocation observed across five rounds of one preparation. TotalAlloc is a
-// process-global counter, so in a full test binary on a loaded runner any
-// concurrent background allocation lands in every measured window, and
-// neither a minimum nor a median of bare window deltas can discard it. Each
-// round therefore subtracts a control window that runs no preparation: a
-// stationary background rate lands in both windows alike and cancels, while
-// the preparation's own allocation is present in every round and never
-// cancels. The control window opens on the preparation window's closing
-// snapshot, so the two windows tile with no unmeasured gap between them,
-// and its length is the preparation alone, not the preparation plus its
-// reads: each window then carries exactly one load-sensitive memstats lead
-// (the preparation window ends with its closing read, the control window
-// with its own), so a burst-slowed snapshot inflates both spans alike
-// rather than inflating only the control window's. The control window
-// busy-waits rather than sleeps. Staying runnable matters: on a single-P
-// runtime a sleeping window would lend its processor to background
-// allocators that the preparation window starves, and the subtraction would
-// strip real preparation bytes along with the background. The cancellation
-// is first-order: the windows can still differ by memstats-read jitter
-// against the background rate, so the rounds scatter. A round whose control
-// window out-allocates its preparation measures garbage (a burst landing in
-// the control window only) and is discarded; the mirror image, a burst
-// landing only in the preparation window, is absorbed instead — the median
-// of five tolerates two such rounds. That tolerance is not a license for
-// concurrency: the subtraction cancels only a stationary background, so
-// callers must keep this measurement serial — the package's other tests
-// would inject bursty allocation into every window — and mark those tests
-// with a // Serial: comment. The median, not the minimum, summarizes the
-// rounds: a minimum would systematically understate the preparation, and
-// under load that bias would eat the very margin this budget guards. On a
-// quiet process the rounds agree closely, so the median costs nothing there.
+// measureRequestHistoryBytesPerPreparation returns the smallest raw allocation
+// observed across the measurement rounds of one preparation.
+//
+// TotalAlloc is a process-global counter, so in a full test binary on a loaded
+// runner any concurrent background allocation lands inside a measured window.
+// Background can only add bytes to a window: nothing outside the preparation
+// makes a preparation allocate less. The minimum over several rounds is
+// therefore the round least contaminated by background, and it is an upper
+// bound on the bytes truly attributable to one preparation. Crucially it needs
+// no assumption about the background's rate. The estimator this replaced
+// subtracted a busy-waiting control window of the preparation's own length,
+// which cancels a background only when that background delivers the same rate
+// in both windows. It does not when another process competes for cores: the OS
+// decides when a churner runs, so its delivered rate differs between the two
+// windows and the subtraction leaves churn in the attributed figure. That was
+// the flake in #6086, and no window length or control window can repair it,
+// because the rate difference is not a property of this process.
+//
+// A background present in every round still contributes its share of the
+// least-loaded round, since no estimator can subtract bytes it cannot
+// distinguish from the preparation. Callers therefore keep this measurement
+// serial (the // Serial: comments below) so the package's other tests inject no
+// allocation into these windows, and the budget below keeps headroom for one
+// round's share of a hostile background.
+//
+// The minimum is also the safe direction for the budget: it cannot understate a
+// preparation, so a reintroduced dead copy cannot slip under the ceiling. The
+// ceiling's teeth are pinned separately, by
+// TestPrepareModelRequestHistoryCeilingCatchesDeadCopy.
 
-// requestHistoryMeasurementRounds is the round count the helper's median is
-// designed around: five rounds keep the estimator honest under load while the
-// median still absorbs two burst-poisoned rounds.
+// requestHistoryMeasurementRounds is the round count the helper's minimum is
+// designed around.
 const requestHistoryMeasurementRounds = 5
 
 func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session) int64 {
 	t.Helper()
-	var rounds []int64
-	for range requestHistoryMeasurementRounds {
+	return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
+		prepareRequestHistoryRound(t, s)
+	})
+}
+
+// measureRequestHistoryBytesAttributableToPreparation is the estimator over an
+// injectable round. The seam exists so a test can pin the attribution with a
+// round it pollutes itself, deterministically, instead of waiting for a loaded
+// host to produce the same shape by chance; see
+// TestPrepareModelRequestHistoryAttributionIgnoresSparseBackground.
+func measureRequestHistoryBytesAttributableToPreparation(t *testing.T, round func(round int)) int64 {
+	t.Helper()
+	var quietest int64
+	for i := range requestHistoryMeasurementRounds {
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
-		started := time.Now()
-		prepareRequestHistoryRound(t, s)
-		elapsed := time.Since(started)
+		round(i)
 		runtime.ReadMemStats(&after)
-		// Deliberately empty: the control window busy-waits; rationale in
-		// the function doc. It opens on the `after` snapshot above, tiling
-		// against the preparation window with no gap.
-		controlStart := time.Now()
-		for time.Since(controlStart) < elapsed {
+		if delta := int64(after.TotalAlloc - before.TotalAlloc); i == 0 || delta < quietest {
+			quietest = delta
 		}
-		var idleAfter runtime.MemStats
-		runtime.ReadMemStats(&idleAfter)
-		used := int64(after.TotalAlloc-before.TotalAlloc) - int64(idleAfter.TotalAlloc-after.TotalAlloc)
-		if used < 0 {
-			continue
-		}
-		rounds = append(rounds, used)
 	}
-	if len(rounds) == 0 {
-		// No sentinel value would mean anything to the caller's arithmetic.
-		t.Fatalf("every control window out-allocated its preparation: process too loud to measure")
-	}
-	slices.Sort(rounds)
-	mid := len(rounds) / 2
-	if len(rounds)%2 == 1 {
-		return rounds[mid]
-	}
-	return (rounds[mid-1] + rounds[mid]) / 2
+	return quietest
 }
 
 // TestPrepareModelRequestHistoryAllocationBudget pins that a preparation
@@ -314,10 +307,7 @@ func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
 
 	measure := func(copyBearing bool) int64 {
 		t.Helper()
-		var rounds []int64
-		for range requestHistoryMeasurementRounds {
-			var before, after runtime.MemStats
-			runtime.ReadMemStats(&before)
+		return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
 			prepareRequestHistoryRound(t, s)
 			if copyBearing {
 				// The dead copy exactly as the removed code made it: a shallow
@@ -327,11 +317,7 @@ func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
 				s.mu.Unlock()
 				_ = dead
 			}
-			runtime.ReadMemStats(&after)
-			rounds = append(rounds, int64(after.TotalAlloc-before.TotalAlloc))
-		}
-		slices.Sort(rounds)
-		return rounds[len(rounds)/2]
+		})
 	}
 
 	free := measure(false)
@@ -361,106 +347,183 @@ func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
 
 // TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground pins the
 // measurement's attribution: a process that keeps allocating in the
-// background during the measured windows must not move the attributable
-// value. The churner below allocates a fresh buffer each tick, paced on wall
-// clock rather than processor time: both windows then sample whatever rate
-// the loaded host actually delivers, and a stationary rate is exactly what
-// the control-window subtraction cancels. A measurement that counts that
-// delivered churn lands above the band or over the budget ceiling outright;
-// one that attributes away more than the background masks a real regression
-// and lands below the band. The churner's start is awaited and its ticks are
-// counted, so the churned phase cannot silently measure an unchurned
-// process: on multi-P hosts a liveness floor fails the test if the churner
-// went quiet, while single-P runtimes starve it by design and are exempt.
+// background during the measured rounds must report the preparation's own
+// bytes. The churner allocates a fresh buffer per burst, and a handshake
+// (measureWithChurnRounds) puts a fixed, known number of bursts inside each of
+// a majority of the rounds while the churner provably parks for the rest. The
+// estimator's minimum therefore has a clean round to report, and an estimator
+// that summarizes the polluted majority reports the inflated figure. A
+// measurement that counts the churn lands above the band or over the budget
+// ceiling outright; one that attributes away more than the background masks a
+// real regression and lands below the band. The delivered tick count is
+// asserted, so the churned phase cannot silently measure an unchurned process.
 // Serial: it measures process-global TotalAlloc, and allocations from
 // concurrently running tests would land inside every window it measures.
 
-// minimumChurnTicks is a churned measurement window's liveness floor on
-// multi-P hosts. A live churner normally delivers far more, but a short
-// window on a 2-core runner can fall below it under scheduler and GC
-// jitter, so the test retries the window; a dead churner delivers none in
-// any retry.
-// The floor bounds liveness, not sufficiency: the scheduler decides how
-// many of those ticks land inside the preparation windows, no
-// process-wide count can bound that share (under extreme contention it
-// can fall toward zero), so a passing phase total does not prove the
-// churn was meaningfully exercised. The sufficiency teeth live where
-// delivery is guaranteed: CI's own ambient background (at least 950KB
-// per window in the failure this file's budget test was recalibrated
-// from) puts any bare-window measurement over the ceiling on the lane
-// that matters.
-const minimumChurnTicks = 10
+// TestPrepareModelRequestHistoryAttributionIgnoresSparseBackground pins the
+// estimator's attribution against #6086's mechanism deterministically, with no
+// dependence on how a loaded host schedules a churner.
+//
+// The measurement's job is to report the bytes one preparation allocates. It
+// cannot see who allocated them, so background that lands inside a measured
+// round is indistinguishable from the preparation's own bytes. The estimator
+// this test was written against subtracted an equal-length busy-waiting control
+// window and took the median of the differences, which cancels a background
+// only when the background delivers the same rate in both windows. When another
+// process competes for cores, the OS decides when the churner runs, so the rate
+// differs window to window and the subtraction leaves churn in the figure.
+//
+// The round below is a stand-in for a preparation, not the preparation itself
+// (the budget test measures that): it allocates a fixed, known number of bytes,
+// and in three of the five rounds it also allocates a fixed, known background
+// block, synchronously inside the round, so the pollution is a certainty rather
+// than a scheduler outcome. Because the block lands inside the round, the control
+// window the old estimator measured afterwards is clean and subtracts nothing:
+// that estimator reports the polluted majority, which is exactly the recorded
+// failure's shape (1,810,064 over a quiet 1,614,848). Three of five rounds is
+// the majority a median lands on; the estimator's minimum has two clean rounds
+// to report instead.
+//
+// Serial: it measures process-global TotalAlloc, like its siblings.
+func TestPrepareModelRequestHistoryAttributionIgnoresSparseBackground(t *testing.T) {
+	const (
+		preparationBytes = 1 << 20
+		backgroundBytes  = 512 << 10
+		// backgroundFromRound is the first round that carries background. The
+		// three polluted rounds are a majority of requestHistoryMeasurementRounds.
+		backgroundFromRound = 2
+	)
+	attributed := measureRequestHistoryBytesAttributableToPreparation(t, func(round int) {
+		size := preparationBytes
+		if round >= backgroundFromRound {
+			size += backgroundBytes
+		}
+		sink = make([]byte, size)
+	})
+	t.Logf("attributed %d for a %d-byte preparation with %d bytes of background in rounds %d onward of %d, race %v",
+		attributed, preparationBytes, backgroundBytes, backgroundFromRound, requestHistoryMeasurementRounds, raceDetectorEnabled)
+	// The attribution must be a clean round's figure, so background that lands
+	// in most rounds cannot inflate it. An estimator that reports the polluted
+	// majority reads preparationBytes+backgroundBytes here. The bound sits
+	// halfway between the clean and the polluted reading rather than at the
+	// polluted one, because memstats-read jitter moves a reading by tens to
+	// hundreds of bytes: a bound at the polluted value would let a slightly
+	// under-reading polluted estimator pass.
+	if attributed >= preparationBytes+backgroundBytes/2 {
+		t.Fatalf("attributed %d bytes to a %d-byte preparation: %d bytes of background from %d of %d rounds were counted as the preparation's own",
+			attributed, preparationBytes, backgroundBytes, requestHistoryMeasurementRounds-backgroundFromRound, requestHistoryMeasurementRounds)
+	}
+	// It must also not understate: every round held at least the preparation.
+	if attributed < preparationBytes {
+		t.Fatalf("attributed %d bytes to a %d-byte preparation: the estimator reported less than the preparation allocated", attributed, preparationBytes)
+	}
+}
 
-// churnMeasurementAttempts bounds the retries of the churned measurement. Each
-// attempt's own window must carry the liveness floor; ticks are not
-// accumulated across attempts, so a near-quiet window cannot be averaged into
-// a pass.
-const churnMeasurementAttempts = 5
+// churnBurstsPerPollutedRound is the background injected into one polluted
+// measurement round: 20 * 32KB = 640KB, a little under the ~950KB per window
+// the CI failure this file's budget was recalibrated from carried. It is large
+// on purpose: it puts an estimator that reports the polluted majority over the
+// 1,580,000 budget by a wide margin, so the failure is a structural reading and
+// not a few bytes of noise.
+const churnBurstsPerPollutedRound = 20
+
+// churnCleanRounds is how many of the measurement rounds the churner stays
+// provably idle for. The estimator's minimum needs one; two give it a second
+// reading of the same quiet figure, and the remaining three rounds are a
+// majority, so an estimator that summarizes the polluted majority — the median
+// this file used to take — reports the inflated figure.
+const churnCleanRounds = 2
+
+// minimumChurnTicks is the churned phase's liveness floor: background that
+// never arrived would let any attribution pass against an unchurned process.
+// The handshake below delivers churnBurstsPerPollutedRound bursts per polluted
+// round and the test awaits each round's acknowledgement, so this floor is met
+// by construction on every runtime, single- or multi-P; it stays as the
+// assertion that the churn happened rather than as a scheduler-dependent hope.
+const minimumChurnTicks = 10
 
 func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
 	quiet := measureRequestHistoryBytesPerPreparation(t, s)
-	churnCtx, cancelChurn := context.WithCancel(context.Background())
-	t.Cleanup(cancelChurn)
-	churnDone := make(chan struct{})
-	churnStarted := make(chan struct{})
-	var churnTicks atomic.Int64
-	go func() {
-		defer close(churnDone)
-		firstTick := true
-		for churnCtx.Err() == nil {
-			sink = make([]byte, 32<<10)
-			churnTicks.Add(1)
-			if firstTick {
-				firstTick = false
-				close(churnStarted)
-			}
-			time.Sleep(200 * time.Microsecond)
-		}
-	}()
-	<-churnStarted
-	var churned int64
-	churnTicksInWindow := int64(0)
-	attempts := churnMeasurementAttempts
-	if runtime.GOMAXPROCS(0) <= 1 {
-		attempts = 1 // the single processor starves the churner by design
-	}
-	for attempt := 0; attempt < attempts; attempt++ {
-		windowStart := churnTicks.Load()
-		churned = measureRequestHistoryBytesPerPreparation(t, s)
-		churnTicksInWindow = churnTicks.Load() - windowStart
-		if churnTicksInWindow >= minimumChurnTicks {
-			break
-		}
-	}
+	churned, churnTicksInWindow := measureWithChurnRounds(t, s)
 	// A preparation's attributable allocation settles downward as the
 	// session warms, so the churned phase is judged against quiet
 	// measurements that bracket it in warmth, not only the colder one
 	// taken before the churner started.
-	cancelChurn()
-	<-churnDone
 	quietAgain := measureRequestHistoryBytesPerPreparation(t, s)
 	t.Logf("attributable bytes per preparation %d quiet, %d under concurrent churn (%d ticks), %d quiet again, budget %d", quiet, churned, churnTicksInWindow, quietAgain, maxRequestHistoryBytesPerPreparation())
 	if churned >= maxRequestHistoryBytesPerPreparation() {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, budget %d", churned, maxRequestHistoryBytesPerPreparation())
 	}
-	// The band is wide because honest spreads live inside it: the churner's
-	// background arrives in coarse ticks, and the session's own
+	// The band is wide because honest spreads live inside it: the session's own
 	// per-preparation allocation drifts as its projections warm.
 	lo, hi := min(quiet, quietAgain)*6/10, max(quiet, quietAgain)*14/10
 	if churned < lo || churned > hi {
 		t.Fatalf("attributable bytes per preparation %d under concurrent churn, want within [%d, %d] of the quiet measurements %d and %d", churned, lo, hi, quiet, quietAgain)
 	}
-	// A churner that stops delivering would pass every assertion above
-	// against an unchurned process, so on a multi-P host — where the busy
-	// windows cannot take every processor away from a live churner — the
-	// churned phase must have kept it allocating. Single-P runtimes are
-	// exempt: their one processor belongs to the preparation and control
-	// windows, the churner is legitimately silent there, and the hazard
-	// this test pins cannot occur at all.
-	if runtime.GOMAXPROCS(0) > 1 && churnTicksInWindow < minimumChurnTicks {
+	// A churner that stops delivering would pass every assertion above against
+	// an unchurned process. The handshake delivers every burst before its round
+	// closes, so this holds on any runtime, single- or multi-P: the assertion
+	// is no longer excused on a single processor, because a single processor no
+	// longer starves the churner.
+	if churnTicksInWindow < minimumChurnTicks {
 		t.Fatalf("churner delivered %d ticks during the churned phase, want at least %d: the churn measurement was taken without background", churnTicksInWindow, minimumChurnTicks)
 	}
+}
+
+// measureWithChurnRounds measures one preparation while a background goroutine
+// allocates inside a fixed majority of the measurement rounds, and returns the
+// attributable figure with the background ticks it actually delivered.
+//
+// The churner runs only when a round asks it to and each polluted round waits
+// for its acknowledgement, so which rounds carry background is fixed by this
+// function rather than by how the host schedules a goroutine. That is the point:
+// the estimator's job is to attribute the preparation's own bytes while
+// background is running, and a background whose rate the OS decides cannot test
+// that — the host, not the estimator, would decide how much of it each window
+// saw. Here the polluted rounds are provably polluted by churnBurstsPerPollutedRound
+// bursts each, and the clean rounds are provably idle because the churner is
+// parked on its request channel for them.
+//
+// The deterministic reproduction of #6086 lives in
+// TestPrepareModelRequestHistoryAttributionIgnoresSparseBackground, which drives
+// the estimator directly with a round whose own allocation differs between
+// rounds. This helper drives the real preparation, so the background it injects
+// is measured the way the test above intends: as background that must not move
+// the attributable figure.
+func measureWithChurnRounds(t *testing.T, s *Session) (int64, int64) {
+	t.Helper()
+	type churnRequest struct {
+		bursts int
+		done   chan struct{}
+	}
+	requests := make(chan churnRequest)
+	churnerDone := make(chan struct{})
+	var churnTicks atomic.Int64
+	go func() {
+		defer close(churnerDone)
+		for request := range requests {
+			for range request.bursts {
+				sink = make([]byte, 32<<10)
+				churnTicks.Add(1)
+			}
+			close(request.done)
+		}
+	}()
+	t.Cleanup(func() {
+		close(requests)
+		<-churnerDone
+	})
+	attributed := measureRequestHistoryBytesAttributableToPreparation(t, func(round int) {
+		prepareRequestHistoryRound(t, s)
+		if round < churnCleanRounds {
+			return
+		}
+		done := make(chan struct{})
+		requests <- churnRequest{bursts: churnBurstsPerPollutedRound, done: done}
+		<-done
+	})
+	return attributed, churnTicks.Load()
 }
 
 // sink gives the churner's buffers a package-level home so each tick's

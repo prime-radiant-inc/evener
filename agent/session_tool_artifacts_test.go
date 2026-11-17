@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -297,8 +298,20 @@ func TestRetainToolArtifactExecToolPreservesErrorEvent(t *testing.T) {
 	if string(store.puts[0]) != errorOutput {
 		t.Fatalf("stored error output length = %d, want exact %d bytes", len(store.puts[0]), len(errorOutput))
 	}
-	if res.FullOutput != errorOutput || end.Error != errorOutput {
-		t.Fatalf("full error output changed: result length %d, event length %d, want %d", len(res.FullOutput), len(end.Error), len(errorOutput))
+	// The result keeps the whole error output; the end event carries a bounded
+	// excerpt plus the true byte count, so an accumulated tail wins and a cold
+	// slot still renders the head.
+	if res.FullOutput != errorOutput {
+		t.Fatalf("full error output changed: result length %d, want %d", len(res.FullOutput), len(errorOutput))
+	}
+	if got := len([]rune(end.Error)); got != events.ToolEndExcerptRunes {
+		t.Fatalf("end event carried %d runes, want the %d-rune excerpt", got, events.ToolEndExcerptRunes)
+	}
+	if !strings.HasPrefix(errorOutput, end.Error) {
+		t.Fatal("the excerpt is not the head of the error output")
+	}
+	if end.ErrorBytes != len(errorOutput) {
+		t.Fatalf("ErrorBytes=%d, want the true %d-byte length", end.ErrorBytes, len(errorOutput))
 	}
 	if end.Output != "" {
 		t.Fatalf("event Output = %q for error result", end.Output)

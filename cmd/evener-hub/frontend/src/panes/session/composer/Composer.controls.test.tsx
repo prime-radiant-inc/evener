@@ -870,20 +870,30 @@ test("the composer editing attribute follows the editor, not composer controls",
   });
   await waitForMacrotaskInActScope();
 
-  // A press outside the composer ends it, even when focus stayed on body.
+  // A press outside the composer ends it once its click lands, even when focus
+  // stayed on body. The card is in flow, so ending editing at the press would
+  // shrink it before mouseup and move the pressed control out from under the
+  // pointer, swallowing that control's click.
   await act(async () => {
     fireEvent.pointerDown(document.body);
   });
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
+  await act(async () => {
+    fireEvent.click(document.body);
+  });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 
-  // A press outside while the editor still holds focus is a transcript pan,
-  // not an editing exit; only a real focus loss ends it.
+  // A click outside that leaves the editor focused is a transcript pan, not an
+  // editing exit; only a real focus loss ends it.
   await act(async () => {
     editor.focus();
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
   await act(async () => {
     fireEvent.pointerDown(document.body);
+  });
+  await act(async () => {
+    fireEvent.click(document.body);
   });
   expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
   await act(async () => {
@@ -916,6 +926,155 @@ test("the composer editing attribute follows the editor, not composer controls",
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+});
+
+test("an outside press leaves the card folded-open until its click lands", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_press_hold"));
+  await threadsStore.getState().ensureThread("ref_press_hold");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_press_hold"
+        paneId="pane_press_hold"
+        source={createTestComposerSource("ref_press_hold")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_press_hold");
+  await flushPendingTurnsProjectionForTests();
+
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const card = screen.getByTestId("composer-input-card");
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+
+  // The press moves focus off the editor, as a real press does: the browser
+  // runs that default action after pointerdown and before mouseup. The card is
+  // in flow, so folding at the press would shrink it before mouseup and move
+  // the pressed control out from under the pointer, swallowing its click. The
+  // blur paths below must therefore leave the card open.
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+    editor.blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await waitForMacrotaskInActScope();
+  expect(card.hasAttribute("data-folded")).toBe(false);
+
+  // The click lands on the pressed control first, then folds the card.
+  await act(async () => {
+    fireEvent.click(document.body);
+  });
+  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
+});
+
+test("a press that never becomes a click never folds the composer", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_press_drag"));
+  await threadsStore.getState().ensureThread("ref_press_drag");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_press_drag"
+        paneId="pane_press_drag"
+        source={createTestComposerSource("ref_press_drag")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_press_drag");
+  await flushPendingTurnsProjectionForTests();
+
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const card = screen.getByTestId("composer-input-card");
+
+  // Pressing into the transcript to select or scroll blurs the editor, but the
+  // gesture produces no click. Dragging it must not shrink the card mid-gesture.
+  await act(async () => {
+    editor.focus();
+  });
+  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+    editor.blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await waitForMacrotaskInActScope();
+  expect(card.hasAttribute("data-folded")).toBe(false);
+});
+
+test("a clicked control that stops its click's propagation still folds the composer", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => readResponse("ref_press_stop"));
+  await threadsStore.getState().ensureThread("ref_press_stop");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer
+        ref="ref_press_stop"
+        paneId="pane_press_stop"
+        source={createTestComposerSource("ref_press_stop")}
+        focused={false}
+      />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_press_stop");
+  await flushPendingTurnsProjectionForTests();
+
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const card = screen.getByTestId("composer-input-card");
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  // The delegate activity toggle and the file-reference link both consume
+  // their own click, so a listener in the bubble phase never sees it.
+  const controlClicks: number[] = [];
+  let editingWhenControlClickRan: boolean | undefined;
+  const control = document.createElement("button");
+  control.type = "button";
+  control.addEventListener("click", (event) => {
+    event.stopPropagation();
+    controlClicks.push(1);
+    // Captured here, for an assertion below that proves the fold had not run
+    // yet: data-composer-editing is removed synchronously by the fold, so a
+    // fold inside dispatch would already have cleared it.
+    editingWhenControlClickRan = anchor?.hasAttribute("data-composer-editing");
+  });
+  document.body.append(control);
+  try {
+    await act(async () => {
+      editor.focus();
+    });
+    await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+
+    await act(async () => {
+      fireEvent.pointerDown(control);
+      editor.blur();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    });
+    await waitForMacrotaskInActScope();
+    // The press still holds editing open, as it must: the click has not landed.
+    expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(control);
+    });
+    // The control's own handler ran, and the card was still open while it did:
+    // the fold waits for dispatch to finish, so the pressed control wins the
+    // race and keeps its click.
+    expect(controlClicks).toHaveLength(1);
+    expect(editingWhenControlClickRan).toBe(true);
+    // The click's own handler stopped propagation, and folding waits for
+    // dispatch to finish, so the fold arrives on a later task.
+    await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
+    expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+  } finally {
+    control.remove();
+  }
 });
 
 test("a non-primary press holds no composer editing state", async () => {
@@ -1003,14 +1162,18 @@ test("a primary press still holds editing after a non-primary press", async () =
     fireEvent.click(attach);
   });
   await waitForMacrotaskInActScope();
-  // With no hold left, an outside press ends editing.
+  // With no hold left, an outside press ends editing once its click lands.
   await act(async () => {
     fireEvent.pointerDown(document.body);
+  });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+  await act(async () => {
+    fireEvent.click(document.body);
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 });
 
-test("an outside press ends editing while focus sits on a composer control", async () => {
+test("an outside click ends editing while focus sits on a composer control", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_control_focus"));
   await threadsStore.getState().ensureThread("ref_control_focus");
@@ -1044,10 +1207,14 @@ test("an outside press ends editing while focus sits on a composer control", asy
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(true));
 
-  // A press outside is leaving editing even though focus still sits on a
+  // An outside click is leaving editing even though focus still sits on a
   // composer control.
   await act(async () => {
     fireEvent.pointerDown(document.body);
+  });
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
+  await act(async () => {
+    fireEvent.click(document.body);
   });
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 });

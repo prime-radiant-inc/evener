@@ -194,7 +194,7 @@ func managerReadFixture(t *testing.T) (*sessionOperations, *managerReadSource, *
 		t.Fatal(err)
 	}
 	cfg := testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", RemoteHostRegistry: hosts, RemoteHosts: hosts.All()})
-	cfg.SessionSeen = hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))
+	cfg.SessionSeen = closeOnCleanup(t, hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db")))
 	server := appserver.NewServer(appserver.ServerConfig{})
 	owner := &sessionOperations{cfg: cfg, sources: sources, server: server, relays: newHubRelay(server, cfg, sources)}
 	return owner, first, second, appwire.ManagerView{Ref: manager, InstanceID: "manager-instance", Manager: true}

@@ -63,6 +63,15 @@ type Client struct {
 type pendingRequest struct {
 	id ID
 	ch chan pendingResult
+	// newStorage allocates per-frame storage of the caller's target type, and
+	// copyInto moves a finished value into the caller's own target. The read loop
+	// resolves both through this entry by response id, so the id that selects the
+	// storage is the id that selects the channel: a result can never be decoded
+	// for a request that did not name it. The decode goes to storage rather than
+	// the caller's value, so a frame that arrives after the caller gave up writes
+	// memory no caller reads, and only the waiting request itself writes out.
+	newStorage func() any
+	copyInto   func(any)
 }
 
 // pendingResult is one delivery to a waiting request: the response or error
@@ -74,6 +83,11 @@ type pendingResult struct {
 	msg   Message
 	local bool
 	cause error
+	// bound is the response's result already decoded into a request-owned value
+	// of the caller's target type. It is nil whenever the frame took the ordinary
+	// path.
+	bound    any
+	copyInto func(any)
 }
 
 type responseDecodeError struct {
@@ -141,7 +155,7 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 	}
 	go func() {
 		for {
-			msg, err := c.transport.Recv(ctx)
+			msg, bound, err := c.recv(ctx)
 			if err != nil {
 				if c.orderedFrames != nil {
 					c.orderedFrames(msg, err)
@@ -182,7 +196,7 @@ func (c *Client) startWithKeepalive(ctx context.Context, pingInterval, pongTimeo
 				if c.orderedFrames != nil {
 					c.orderedFrames(msg, nil)
 				}
-				pending.ch <- pendingResult{msg: msg}
+				pending.ch <- pendingResult{msg: msg, bound: bound, copyInto: pending.copyInto}
 			}
 		}
 	}()
@@ -262,6 +276,38 @@ func runClientKeepalive(ctx context.Context, pinger Pinger, closeFn func() error
 			}
 		}
 	}
+}
+
+// recv reads one frame. A transport that decodes a large response's result
+// directly gets the storage it should fill resolved from the same pending map
+// the response is then routed through, so the id that picks the storage is the
+// id that picks the waiting request, and a nil answer leaves the frame on the
+// ordinary decode path.
+func (c *Client) recv(ctx context.Context) (Message, any, error) {
+	bound, ok := c.transport.(boundRecvTransport)
+	if !ok {
+		msg, err := c.transport.Recv(ctx)
+		return msg, nil, err
+	}
+	return bound.recvBound(ctx, c.bindResponseStorage)
+}
+
+// bindResponseStorage returns storage for one response result, allocated for the
+// pending request whose id the frame names. It reports nil when no pending
+// request claims the id, or when that request's caller cannot take a directly
+// decoded value, which leaves the frame for the ordinary decode path.
+func (c *Client) bindResponseStorage(idToken []byte) any {
+	var id ID
+	if err := id.UnmarshalJSON(idToken); err != nil {
+		return nil
+	}
+	c.pendingMu.Lock()
+	pending, ok := c.pending[id.String()]
+	c.pendingMu.Unlock()
+	if !ok || pending.newStorage == nil {
+		return nil
+	}
+	return pending.newStorage()
 }
 
 func (c *Client) enqueueNotification(notification Notification) bool {
@@ -372,9 +418,10 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		observe(id)
 	}
 	ch := make(chan pendingResult, 1)
+	newStorage, copyInto := requestTarget(out)
 
 	c.pendingMu.Lock()
-	c.pending[id.String()] = pendingRequest{id: id, ch: ch}
+	c.pending[id.String()] = pendingRequest{id: id, ch: ch, newStorage: newStorage, copyInto: copyInto}
 	c.pendingMu.Unlock()
 
 	if err := c.acquireSendSlot(ctx); err != nil {
@@ -437,6 +484,14 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		return fmt.Errorf("appwire %s: expected response", method)
 	}
 	if out == nil {
+		return nil
+	}
+	if res.bound != nil && res.copyInto != nil {
+		// The frame's result was decoded for this request while the frame was
+		// read. Copying it here, in the caller's own goroutine, is what keeps a
+		// response that raced past this caller's deadline from writing the
+		// caller's value.
+		res.copyInto(res.bound)
 		return nil
 	}
 	if raw, ok := msg.Response.Result.(json.RawMessage); ok {

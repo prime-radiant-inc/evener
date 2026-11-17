@@ -108,8 +108,7 @@ treated as no read, and the card withholds its read while the connection is not
 ready or after the row stops working, so a resumed card asks afresh. A
 method-not-found answer stops the poll for good. The working status names
 running subagents first, then `Quiet` or `May be stuck`, then `latestIntent`,
-then the row's running job command, then the state word; without a read it
-keeps the state word or the running job command. The
+then the running job's own intent, then its command, then the state word. The
 [rail activity hook](../../cmd/evener-hub/frontend/src/shell/rail/railActivity.ts)
 owns this read and the status precedence; [session
 activity](session-activity.md#navigation-session-status) records the
@@ -121,8 +120,8 @@ connection is down. A working session reads `Quiet` after three minutes without
 motion and `May be stuck` after ten, when the meter goes flat and amber and the
 row rises to the top of Working, unless the session waits on subagents. The
 board row's why line puts a subagent wait first, then `Quiet` or `May be
-stuck`, then `latestIntent`, then the running job; the intent outranks the job
-because it says what the job is for.
+stuck`, then `latestIntent`, then the running job's own intent, then its
+command; the intent outranks the command because it says what the job is for.
 
 On the web,
 [`useMarkSessionSeenOnOpen`](../../cmd/evener-hub/frontend/src/panes/session/markSeen.ts)

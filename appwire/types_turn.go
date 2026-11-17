@@ -1347,8 +1347,9 @@ type ThreadNameChangedParams struct {
 }
 
 // ThreadModelChangedParams reports a mid-session model/provider switch.
-// ReasoningEffortLevels and SupportsReasoning describe the NEW profile so a
-// client's effort picker re-keys without a separate model/list round trip.
+// ReasoningEffortLevels, SupportsReasoning and DefaultReasoningEffort describe
+// the NEW profile so a client's effort picker re-keys without a separate
+// model/list round trip.
 type ThreadModelChangedParams struct {
 	ThreadID              string   `json:"threadId"`
 	Ref                   string   `json:"ref"`
@@ -1356,11 +1357,15 @@ type ThreadModelChangedParams struct {
 	Model                 string   `json:"model"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
-	ContextUsed           int      `json:"contextUsed,omitempty"`
-	ContextWindow         int      `json:"contextWindow,omitempty"`
-	ContextPressure       float64  `json:"contextPressure,omitempty"`
-	ContextAssumed        bool     `json:"contextAssumed,omitempty"`
-	CompactionThreshold   int      `json:"compactionThreshold,omitempty"`
+	// DefaultReasoningEffort is the effort the new model runs at while the
+	// session's own effort is unset (EvenerThread.DefaultReasoningEffort),
+	// absent under the same conditions.
+	DefaultReasoningEffort string  `json:"defaultReasoningEffort,omitempty"`
+	ContextUsed            int     `json:"contextUsed,omitempty"`
+	ContextWindow          int     `json:"contextWindow,omitempty"`
+	ContextPressure        float64 `json:"contextPressure,omitempty"`
+	ContextAssumed         bool    `json:"contextAssumed,omitempty"`
+	CompactionThreshold    int     `json:"compactionThreshold,omitempty"`
 }
 
 // ThreadReasoningEffortChangedParams reports a mid-session reasoning-effort

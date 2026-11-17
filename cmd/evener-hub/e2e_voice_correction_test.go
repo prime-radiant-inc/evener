@@ -295,7 +295,10 @@ func (f *voiceCorrectionStack) connect(t *testing.T) map[string]any {
 
 func (f *voiceCorrectionStack) read(t *testing.T) appwire.ThreadReadResponse {
 	t.Helper()
-	read := f.threadRead(t)
+	read, err := f.readThread()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !liveManagerThread(read, f.instance) {
 		e := read.Thread.Evener
 		t.Fatalf("read lost authoritative original manager identity/provenance: boot=%q instance=%q want %q manager=%v mutationAuthority=%v provenance=%+v", read.BootGeneration, e.InstanceID, f.instance, e.Manager, e.MutationStateAuthoritative, e.ConversationProvenance)
@@ -303,13 +306,8 @@ func (f *voiceCorrectionStack) read(t *testing.T) appwire.ThreadReadResponse {
 	return read
 }
 
-func (f *voiceCorrectionStack) threadRead(t *testing.T) appwire.ThreadReadResponse {
-	t.Helper()
-	read, err := f.client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return read
+func (f *voiceCorrectionStack) readThread() (appwire.ThreadReadResponse, error) {
+	return f.client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: f.ref, IncludeTurns: true, ItemLimit: appwire.TranscriptItemPageLimit})
 }
 
 // readLiveManager returns a read that proves the live original manager. A
@@ -319,7 +317,27 @@ func (f *voiceCorrectionStack) threadRead(t *testing.T) appwire.ThreadReadRespon
 // for it instead of treating one such answer as a lost identity.
 func (f *voiceCorrectionStack) readLiveManager(t *testing.T, boundary string) appwire.ThreadReadResponse {
 	t.Helper()
-	return f.pollRead(t, boundary, 50*time.Millisecond, func() appwire.ThreadReadResponse { return f.threadRead(t) }, func(read appwire.ThreadReadResponse) bool {
+	return f.readLiveManagerAfter(t, boundary, f.readThread)
+}
+
+// readLiveManagerAfter is readLiveManager over an explicit read, so a test can
+// drive the retry without a live stack. The relay refuses a read outright while
+// a replaced socket retires its subscription, and that refusal marks itself
+// automatically retryable like any other lost connection; the voice bridge
+// waits it out before holding speech (see voiceBridge.readBaseline). Every
+// other refusal fails here, because a permanent one would only spin.
+func (f *voiceCorrectionStack) readLiveManagerAfter(t *testing.T, boundary string, fetch func() (appwire.ThreadReadResponse, error)) appwire.ThreadReadResponse {
+	t.Helper()
+	return f.pollRead(t, boundary, 50*time.Millisecond, func() appwire.ThreadReadResponse {
+		read, err := fetch()
+		if err != nil {
+			if !voiceRelayOutage(err) {
+				t.Fatal(err)
+			}
+			return appwire.ThreadReadResponse{}
+		}
+		return read
+	}, func(read appwire.ThreadReadResponse) bool {
 		return liveManagerThread(read, f.instance)
 	})
 }

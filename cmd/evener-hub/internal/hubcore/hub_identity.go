@@ -27,8 +27,12 @@ func (s *HubIdentityStore) open() (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(s.dbPath), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + sqliteURIPathEscaper.Replace(s.dbPath) + "?_pragma=busy_timeout(5000)&_txlock=immediate"
-	db, err := sql.Open("sqlite", dsn)
+	// This store shares index.db with the relaxed stores, so it opens with the
+	// same DSN: a hand-built one lands on SQLite's FULL default and pays a
+	// per-commit fsync that no other opener of this file pays. It is not the
+	// first opener of index.db, so the file's journal mode and its durability
+	// are set by whichever store opened it first, not by this one.
+	db, err := sql.Open("sqlite", sqliteDSNImmediate(s.dbPath))
 	if err != nil {
 		return nil, err
 	}

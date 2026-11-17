@@ -188,13 +188,16 @@ Historical context remains recorded history.
 
 The projector turns each section of a memory-context message into its own
 transcript item, so web and native transcripts show each section as a standalone
-**Refreshed my memory** notification. It starts collapsed at every detail level,
-including Full, with System events either on or off. General expansion defaults
-do not open it. Expansion shows the scope, index state and formatted index through
-each client's Markdown renderer. Unavailable and revoked states remain visible on
-the collapsed row; truncated indexes retain their truncation label. A separately
-folded **Source** preserves the section's complete recorded text, including content Markdown
-cannot display. Native resolves that original from the retained conversation when
+**Refreshed my memory** notification from the Tools level up. Chat and Intent
+show the actions view instead, where every action is a one-line intent proxy, so
+no refresh row appears there. Where it shows, it starts collapsed at every
+detail level, including Full, with System events either on or off. General
+expansion defaults do not open it. Expansion shows the scope, index state and
+formatted index through each client's Markdown renderer. Unavailable and revoked
+states remain visible on the collapsed row; truncated indexes retain their
+truncation label. A separately folded **Source** preserves the section's complete
+recorded text, including content Markdown cannot display. Native resolves that
+original from the retained conversation when
 the row opens, so its display-size limit does not clip Source or the malformed
 fallback. Both clients use the shared payload validator; an observation
 that cannot be decoded, including an index change or page notice section, opens as its original text without blocking later valid

@@ -535,6 +535,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
       canonicalDisplay: { modelProvider: thread.modelProvider, model: thread.modelProvider },
     },
     reasoningEffort: thread.evener.reasoningEffort,
+    defaultReasoningEffort: thread.evener.defaultReasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
     manager: thread.evener.manager ?? false,
     askPending: thread.evener.askPending ?? false,

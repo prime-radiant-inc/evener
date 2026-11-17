@@ -486,7 +486,7 @@ func TestForceStopSerializesResumeAndDeletionEntryPoints(t *testing.T) {
 			t.Run(operation+"/"+savedAlias, func(t *testing.T) {
 				stateDir := filepath.Join(t.TempDir(), "force-stop-0000000000")
 				sessionID := buildRPCParentSession(t, stateDir)
-				past := hubcore.NewPastIndex(stateDir)
+				past := closeOnCleanup(t, hubcore.NewPastIndex(stateDir))
 				if _, err := past.Rebuild(); err != nil {
 					t.Fatal(err)
 				}

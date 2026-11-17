@@ -24,7 +24,7 @@ func TestHubRosterArchivedLiveSession(t *testing.T) {
 			name = "archived_initial_snapshot"
 		}
 		t.Run(name, func(t *testing.T) {
-			archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+			archive := closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")))
 			live := hubcore.LiveEntry{
 				Entry:     rendezvous.Entry{WorkspaceRef: "local:worker", SessionID: "worker"},
 				SessionID: "worker", Status: "awaiting", PendingAsk: true,

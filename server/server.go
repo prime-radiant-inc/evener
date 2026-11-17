@@ -892,12 +892,13 @@ func (s *Server) SubmitClientMutationStart(sessionID string) {
 // it claims.
 //
 // The wake is GUARANTEED, for the same reason SubmitNotification's is and with
-// more at stake. A QueuedInput message is the only thing that reaches
-// ProcessPendingUserInput; unlike a durable start there is no probe, so nothing
-// comes back for a dropped kick. The stranding is real and quiet: a job
-// notification occupying the slot while a question is pending is refused by the
-// entry gate, so no turn runs, so no drain tail sweeps the queue — and the
-// client has already been handed a receipt saying its message was accepted.
+// more at stake. The kick is the fast path: a job notification occupying the
+// slot while a question is pending is refused by the entry gate, so no turn
+// runs, so no drain tail sweeps the queue — and the client has already been
+// handed a receipt saying its message was accepted. The serve loop's own
+// queued-input probe (processNextServeInput) is the backstop for a kick that
+// never lands at all, which is what keeps that receipt from depending on a
+// process-local signal.
 //
 // One wake settles any number of dropped ones. The wake runs the queue head as
 // its own turn and that turn's drain tail runs the rest: selectDrainNextAction

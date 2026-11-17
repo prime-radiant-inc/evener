@@ -188,6 +188,16 @@ func defaultDelegateGrant(own int) int {
 	return max(0, own-1)
 }
 
+// canGrantDelegation reports whether a session with this allowance can start
+// a child that itself delegates. Only a positive allowance carries the
+// delegation tools, and the grant rule's largest legal grant is
+// defaultDelegateGrant, so that grant decides whether any legal grant is
+// positive. Advertised capabilities derive from it, so a roster cannot claim
+// what a spawn withholds.
+func canGrantDelegation(own int) bool {
+	return defaultDelegateGrant(own) > 0
+}
+
 // grantedAllowance is the delegate's resolved allowance; createDelegate fills
 // in the default before anything reads it.
 func (a delegateArgs) grantedAllowance() int {

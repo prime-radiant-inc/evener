@@ -2,6 +2,7 @@ package transcriptv2upgrade
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,6 +169,106 @@ func TestReplaceTranscriptRejectsChangedOriginal(t *testing.T) {
 	}
 	assertFileBytes(t, path, changed)
 	assertPathMissing(t, path+".v1.bak")
+}
+
+// TestUpgradeReadsTranscriptsWithFewReads pins both passes' read granularity:
+// one underlying read per 64 KiB, not one per bufio's 4 KiB default.
+// Not parallel: overrides the transcript open seam.
+func TestUpgradeReadsTranscriptsWithFewReads(t *testing.T) {
+	root := t.TempDir()
+	body := largeV1Transcript()
+	path := writeTranscriptFixture(t, root, "large", body, testNow.Add(-time.Hour))
+	headerBytes := bytes.IndexByte(body, '\n') + 1
+	// Four 64 KiB fills is the floor at which a 4 KiB reader pays dozens of
+	// reads where a 64 KiB one pays four, so the bound below separates them.
+	if headerBytes < 4*64*1024 {
+		t.Fatalf("fixture header is %d bytes; it must span at least four 64 KiB fills for the read bound to separate the two buffer sizes", headerBytes)
+	}
+	// The slack covers the EOF probe that ends a pass plus at most one fill
+	// stranded by a line boundary. A 4 KiB reader pays over a hundred reads
+	// on this fixture, far past the bound.
+	readBound := (len(body)+64*1024-1)/(64*1024) + 2
+
+	t.Run("inspect header", func(t *testing.T) {
+		var reads int
+		countTranscriptReads(t, &reads)
+		version, _, err := inspectTranscriptHeader(path)
+		if err != nil {
+			t.Fatalf("inspectTranscriptHeader: %v", err)
+		}
+		if version != legacyFormatVersion {
+			t.Fatalf("version = %d, want %d", version, legacyFormatVersion)
+		}
+		if reads == 0 {
+			t.Fatal("inspectTranscriptHeader bypassed the transcript open seam, so its read count proves nothing")
+		}
+		if reads > readBound {
+			t.Fatalf("inspectTranscriptHeader read a %d byte header with %d underlying reads; a 64 KiB buffer stays at or below %d", headerBytes, reads, readBound)
+		}
+	})
+
+	t.Run("prepare transcript", func(t *testing.T) {
+		var reads int
+		countTranscriptReads(t, &reads)
+		prepared, err := prepareTranscript(path)
+		if err != nil {
+			t.Fatalf("prepareTranscript: %v", err)
+		}
+		if got, want := bytes.Count(prepared.data, []byte{'\n'}), bytes.Count(body, []byte{'\n'}); got != want {
+			t.Fatalf("converted %d records, want all %d", got, want)
+		}
+		if reads == 0 {
+			t.Fatal("prepareTranscript bypassed the transcript open seam, so its read count proves nothing")
+		}
+		if reads > readBound {
+			t.Fatalf("prepareTranscript read a %d byte transcript with %d underlying reads; a 64 KiB buffer stays at or below %d", len(body), reads, readBound)
+		}
+	})
+}
+
+// countTranscriptReads swaps the transcript open seam for one that counts the
+// underlying reads a pass issues.
+func countTranscriptReads(t *testing.T, reads *int) {
+	t.Helper()
+	origOpen := openTranscriptFile
+	openTranscriptFile = func(path string) (transcriptFile, error) {
+		file, err := origOpen(path)
+		if err != nil {
+			return nil, err
+		}
+		return &countingTranscriptFile{transcriptFile: file, reads: reads}, nil
+	}
+	t.Cleanup(func() { openTranscriptFile = origOpen })
+}
+
+// countingTranscriptFile counts the underlying reads a pass issues, so a test
+// can pin a buffer's read granularity without timing anything.
+type countingTranscriptFile struct {
+	transcriptFile
+	reads *int
+}
+
+func (c *countingTranscriptFile) Read(p []byte) (int, error) {
+	*c.reads++
+	return c.transcriptFile.Read(p)
+}
+
+// largeV1Transcript returns a v1 transcript of the shape the read-count test
+// depends on: a header far larger than a 64 KiB buffer, so the header pass
+// crosses many fills, and entries far smaller than a buffer, so every fill
+// after the header is full — a partial fill per line would multiply the read
+// count the bound derives. Only fields Header, Entry and schema.Turn declare
+// appear, because every decode is strict.
+func largeV1Transcript() []byte {
+	const entryCount = 16
+	lines := make([]string, 0, entryCount+1)
+	lines = append(lines, fmt.Sprintf(`{"kind":"header","format_version":1,"session_id":"session-large","profile_id":"test","model":"test","system_prompt":%q}`,
+		strings.Repeat("s", 512*1024)))
+	for i := range entryCount {
+		lines = append(lines, fmt.Sprintf(`{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":%q}]}}}`,
+			i, strings.Repeat("x", 1024)))
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
 func validV1Transcript() []byte {

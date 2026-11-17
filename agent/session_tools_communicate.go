@@ -312,8 +312,9 @@ const (
 // travels the delegate delivery path, which has never carried a watch's causal
 // provenance. A feedback loop between an observer and the parent it watches is
 // bounded the same way for updates as for reports: the update is a communicate
-// event, which the watch on the sender counts toward watchDeliveryBudget, and
-// the watch auto-clears at the budget (TestWatchDeliveryCounterAndBudget).
+// event, which the watch on the sender delivers through its every setting, the
+// runaway self-influence guard on its send rail, and the folding of its
+// undelivered frames.
 func (s *Session) postDelegateUpdate(ctx context.Context, message string) *delegateUpdateDelivery {
 	if !s.reportsToParent() {
 		return nil
@@ -325,7 +326,14 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
-	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	// The parent's turn that consumes the update adopts this turn's lineage
+	// plus the update itself, so what the parent does in reply is known to
+	// descend from this session's message. The controller registers it while
+	// queueing the delivery, so the cause exists before the update is visible.
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message, delegateCause{
+		sessionID: s.id,
+		lineage:   s.activeCausalProvenance(),
+	})
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}

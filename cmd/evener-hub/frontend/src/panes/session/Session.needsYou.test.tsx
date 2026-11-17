@@ -44,7 +44,7 @@ stubSessionSlots();
 
 const NEEDS_YOU_PAGE_KEY = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
 
-function installNeedsYouRows(refs: string[]): void {
+function installNeedsYouRows(refs: string[], remaining = 0): void {
   const rows = refs.map((ref) => ({
     ref,
     host_id: "local",
@@ -59,7 +59,7 @@ function installNeedsYouRows(refs: string[]): void {
   const resources = new Map(navigationStore.getState().resources);
   resources.set(keyID(NEEDS_YOU_PAGE_KEY), {
     key: NEEDS_YOU_PAGE_KEY,
-    data: { generation_id: "g", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    data: { generation_id: "g", revision: 1, sessions: rows, remaining, truncated: false },
     loadedRevision: 1,
     targetRevision: null,
     forceToken: 0,
@@ -232,9 +232,10 @@ function renderAttentionSession(fake: FakeClient, pane: OpenPaneRecord) {
   );
 }
 
-test("a cold focused conversation can demand its first needs-you page before the manifest arrives", async ({
-  onTestFinished,
-}) => {
+// A cold shell knows nothing about who needs the reader, and "Needs you" over
+// an unread queue is a claim the client cannot make. The control waits for a
+// session; the chord still reaches the queue by demanding its first page.
+test("a cold focused conversation shows no control until a session needs the reader", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -251,7 +252,7 @@ test("a cold focused conversation can demand its first needs-you page before the
           params,
           manifest({
             generation_id: "cold-needs-you",
-            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+            sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
           }),
           '"manifest"',
           1,
@@ -261,7 +262,19 @@ test("a cold focused conversation can demand its first needs-you page before the
     }
     if (params.resource === "section" && params.section === "needs_you") {
       pageRequests.push({ offset: params.offset, limit: params.limit });
-      return wireSnapshot(params, { sessions: [], remaining: 0 }, '"page"', 1, "cold-needs-you");
+      return wireSnapshot(
+        params,
+        {
+          sessions: [
+            { ref: "ref_a", state: "awaiting" },
+            { ref: "ref_b", state: "awaiting" },
+          ],
+          remaining: 0,
+        },
+        '"page"',
+        1,
+        "cold-needs-you",
+      );
     }
     throw new Error(`unexpected navigation resource ${params.resource}`);
   });
@@ -278,10 +291,17 @@ test("a cold focused conversation can demand its first needs-you page before the
     await screen.findByRole("textbox", { name: "Message" });
     await flushPendingTurnsProjectionForTests();
 
-    const next = await screen.findByTestId("next-needs-you-next");
+    // Unread queue: nothing claims the reader is needed, and no page was
+    // spent finding out.
+    expect(screen.queryByTestId("next-needs-you")).toBeNull();
     expect(pageRequests).toEqual([]);
-    fireEvent.click(next);
+
+    await act(async () => {
+      manifestGate.resolve();
+      await manifestRead;
+    });
     await waitFor(() => expect(pageRequests).toEqual([{ offset: 0, limit: 50 }]));
+    await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
   } finally {
     view?.unmount();
     releaseNavigation();
@@ -290,7 +310,12 @@ test("a cold focused conversation can demand its first needs-you page before the
   }
 });
 
-test("a focused conversation can retry needs-you after its manifest read fails", async ({ onTestFinished }) => {
+// A failed navigation surface says nothing about who needs the reader, so it
+// earns no control. The queue stays reachable: the retry is the reader's own
+// chord, and the control arrives when a session does.
+test("a failed navigation surface shows no control, and the queue appears once it reads", async ({
+  onTestFinished,
+}) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -299,15 +324,38 @@ test("a focused conversation can retry needs-you after its manifest read fails",
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
   let manifestReads = 0;
+  let manifestFails = true;
   const pageRequests: Array<{ offset?: number; limit?: number }> = [];
   fake.on("evener/navigation/read", (params) => {
     if (params.resource === "manifest") {
       manifestReads += 1;
-      throw new Error("manifest unavailable");
+      if (manifestFails) throw new Error("manifest unavailable");
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "failed-needs-you",
+          sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "failed-needs-you",
+      );
     }
     if (params.resource === "section" && params.section === "needs_you") {
       pageRequests.push({ offset: params.offset, limit: params.limit });
-      return wireSnapshot(params, { sessions: [], remaining: 0 }, '"page"', 1, "failed-needs-you");
+      return wireSnapshot(
+        params,
+        {
+          sessions: [
+            { ref: "ref_a", state: "awaiting" },
+            { ref: "ref_b", state: "awaiting" },
+          ],
+          remaining: 0,
+        },
+        '"page"',
+        1,
+        "failed-needs-you",
+      );
     }
     throw new Error(`unexpected navigation resource ${params.resource}`);
   });
@@ -324,10 +372,19 @@ test("a focused conversation can retry needs-you after its manifest read fails",
     await screen.findByRole("textbox", { name: "Message" });
     await flushPendingTurnsProjectionForTests();
 
-    const next = await screen.findByTestId("next-needs-you-next");
+    expect(screen.queryByTestId("next-needs-you")).toBeNull();
     expect(pageRequests).toEqual([]);
-    fireEvent.click(next);
+
+    // Once navigation answers, the queue it names puts the control up.
+    manifestFails = false;
+    await act(async () => {
+      await navigationStore
+        .getState()
+        .loadManifest()
+        .catch(() => undefined);
+    });
     await waitFor(() => expect(pageRequests).toEqual([{ offset: 0, limit: 50 }]));
+    await waitFor(() => expect(screen.getByTestId("next-needs-you")).toBeTruthy());
   } finally {
     view?.unmount();
     releaseNavigation();
@@ -589,37 +646,41 @@ test("a navigation armed before suppression does not land once suppression unmou
   });
   const fake = connectReadyFakeClient();
   fake.on("thread/read", (params) => attentionRead(params.ref ?? "ref_a"));
-  const manifestGate = deferred<void>();
   const sectionGate = deferred<void>();
   let sectionRequested = false;
+  let firstPageRead = false;
   fake.on("evener/navigation/read", (params) => {
     if (params.resource === "manifest") {
-      return manifestGate.promise.then(() =>
-        wireSnapshot(
-          params,
-          manifest({
-            generation_id: "delayed-needs-you",
-            sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
-          }),
-          '"manifest"',
-          1,
-          "delayed-needs-you",
-        ),
+      return wireSnapshot(
+        params,
+        manifest({
+          generation_id: "delayed-needs-you",
+          sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
+        }),
+        '"manifest"',
+        1,
+        "delayed-needs-you",
       );
     }
     if (params.resource === "section" && params.section === "needs_you") {
+      // The first page answers so the control has a row to offer; the reader's
+      // own demand for the second page is the one left in flight.
+      if (!firstPageRead) {
+        firstPageRead = true;
+        return wireSnapshot(
+          params,
+          { sessions: [{ ref: "ref_a", state: "awaiting" }], remaining: 1 },
+          '"page-0"',
+          1,
+          "delayed-needs-you",
+        );
+      }
       sectionRequested = true;
       return sectionGate.promise.then(() =>
         wireSnapshot(
           params,
-          {
-            sessions: [
-              { ref: "ref_a", state: "awaiting" },
-              { ref: "ref_b", state: "awaiting" },
-            ],
-            remaining: 0,
-          },
-          '"page"',
+          { sessions: [{ ref: "ref_b", state: "awaiting" }], remaining: 0 },
+          '"page-1"',
           1,
           "delayed-needs-you",
         ),
@@ -628,7 +689,6 @@ test("a navigation armed before suppression does not land once suppression unmou
     throw new Error(`unexpected navigation resource ${params.resource}`);
   });
   const releaseNavigation = navigationStore.init(fake, capability("delayed-needs-you"));
-  const manifestRead = navigationStore.getState().loadManifest();
   const pane = attentionSession("delayed-needs-you-pane");
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   window.history.replaceState({}, "", "/s/ref_a");
@@ -639,7 +699,8 @@ test("a navigation armed before suppression does not land once suppression unmou
     await flushPendingTurnsProjectionForTests();
     const next = await screen.findByTestId("next-needs-you-next");
 
-    // The Next click arms a navigation whose page read stays pending.
+    // The Next click arms a navigation whose page read stays pending: the last
+    // loaded row has no known successor, so it asks for the rest of the queue.
     fireEvent.click(next);
     await waitFor(() => expect(sectionRequested).toBe(true));
 
@@ -661,8 +722,6 @@ test("a navigation armed before suppression does not land once suppression unmou
   } finally {
     view.unmount();
     releaseNavigation();
-    manifestGate.resolve();
-    await manifestRead;
   }
 });
 

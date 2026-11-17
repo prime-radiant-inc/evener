@@ -4,7 +4,7 @@ import { type NavigationStoreState, navigationStore } from "../../stores/navigat
 
 /** Resolve a title without expanding a project. Live thread data always wins. */
 export function resolveThreadName(
-  threads: Map<string, ThreadModel>,
+  threads: ReadonlyMap<string, ThreadModel>,
   navigation: unknown,
   ref: string,
 ): string | undefined {

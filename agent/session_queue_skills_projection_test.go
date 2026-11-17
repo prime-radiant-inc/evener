@@ -55,6 +55,7 @@ func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
 		Input: []appwire.InputItem{
 			{Type: "text", Text: "queued text"},
 			{Type: "skill", Name: "probe"},
+			{Type: "image", MediaType: "image/png"},
 		},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationQueue (mixed): %v", err)
@@ -69,6 +70,9 @@ func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
 	}
 	if !slices.Equal(queue.SkillNames[1], []string{"probe"}) {
 		t.Fatalf("mixed entry SkillNames = %+v, want [probe]", queue.SkillNames[1])
+	}
+	if len(queue.ImageCounts) != 2 || queue.ImageCounts[0] != 0 || queue.ImageCounts[1] != 1 {
+		t.Fatalf("projection ImageCounts = %+v, want [0 1]: a text+image entry's image count is the only wire evidence another client's Edit refusal can read (#6360)", queue.ImageCounts)
 	}
 
 	// The event-driven snapshot carries the same per-entry names: a client
@@ -102,5 +106,8 @@ func TestClientMutationProjection_QueueEntrySkillNames(t *testing.T) {
 		!slices.Equal(latest.SkillNames[0], []string{"probe"}) ||
 		!slices.Equal(latest.SkillNames[1], []string{"probe"}) {
 		t.Fatalf("QueueChangedData.SkillNames = %+v, want [[probe] [probe]]", latest.SkillNames)
+	}
+	if len(latest.ImageCounts) != 2 || latest.ImageCounts[0] != 0 || latest.ImageCounts[1] != 1 {
+		t.Fatalf("QueueChangedData.ImageCounts = %+v, want [0 1] FIFO-aligned with the other per-entry arrays", latest.ImageCounts)
 	}
 }

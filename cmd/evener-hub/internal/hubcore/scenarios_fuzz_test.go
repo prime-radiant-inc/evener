@@ -108,6 +108,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry,
 		fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary,
 		fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary,
+		fuzzScenarioNeedsYou_ProjectArchiveUnifiesWithAttentionSummary,
 		fuzzScenarioNewRosterWithEntries,
 		fuzzScenarioNoProjectKeyIsStable,
 		fuzzScenarioNodeTitle_EmptyBaseWithForkLabel,

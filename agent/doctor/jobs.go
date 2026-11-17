@@ -99,17 +99,18 @@ type JobOpts struct {
 // Jobs resolves the selector and reports every job the session ran, folded from
 // jobs.jsonl by the runtime's own jobstore.FoldOrdered — so the list is in the
 // durable append order the log defines and carries the runtime's own numbers.
-func Jobs(stateBase, selector string, opts JobOpts) (JobReport, error) {
+// A cancelled ctx stops the read and returns its error with no partial report.
+func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobReport, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
 		return JobReport{}, err
 	}
-	events, err := jobstore.ReadEvents(paths.JobsPath)
+	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return JobReport{}, err
 	}
 	report := buildJobReport(paths, events, opts)
-	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(paths)
+	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(ctx, paths)
 	if err != nil {
 		return JobReport{}, err
 	}
@@ -173,8 +174,8 @@ type delegateCacheKey struct {
 // the miss path): the miss path calls stableDoctorDelegatesForRoot directly.
 // Callers holding the session's meta already (ListSessions does) can skip the
 // per-session meta read with getForRoot.
-func (c delegateCache) get(paths Paths) (string, delegatestore.State, []string, error) {
-	return c.getForRoot(context.Background(), paths.BucketDir, resolveDelegateRoot(paths))
+func (c delegateCache) get(ctx context.Context, paths Paths) (string, delegatestore.State, []string, error) {
+	return c.getForRoot(ctx, paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // getForRoot is get with a pre-resolved root — the caller already read the
@@ -218,8 +219,8 @@ func delegateRootFromMeta(meta schema.SessionMeta, self string) string {
 
 // stableDoctorDelegates resolves the root session (meta.JobTreeRootSessionID
 // override, else the session itself) and reads that root's delegates.jsonl.
-func stableDoctorDelegates(paths Paths) (string, delegatestore.State, []string, error) {
-	return stableDoctorDelegatesForRoot(context.Background(), paths.BucketDir, resolveDelegateRoot(paths))
+func stableDoctorDelegates(ctx context.Context, paths Paths) (string, delegatestore.State, []string, error) {
+	return stableDoctorDelegatesForRoot(ctx, paths.BucketDir, resolveDelegateRoot(paths))
 }
 
 // stableDoctorDelegatesForRoot reads one resolved root's delegates.jsonl
@@ -326,17 +327,32 @@ func legacyDelegateFailures(events []jobstore.Event) []StateFailure {
 // test shrinks it to prove the bound.
 var legacyFailureScanMaxBytes int64 = 1 << 20
 
+// scanLegacyFailuresJournal is the legacy-failure fold's journal scan seam,
+// following scanJobJournal's convention (agent/jobs_activity_past.go).
+// Production never assigns it; a test swaps it to observe what the fold asks
+// for.
+var scanLegacyFailuresJournal = jobstore.ScanEvents
+
 // legacyDelegateFailuresBounded reads a session's jobs journal bounded by
 // legacyFailureScanMaxBytes and folds the retired-state failures
-// legacyDelegateFailures computes. jobstore reports ErrScanLimitExceeded
-// alongside the events decoded so far; the fold keeps them, because the
-// failures are a summary of retired state, not an inventory that must be
-// complete. Surfaces that already read the whole journal for their own
-// listings — the jobs and watches reports — fold those events directly
-// instead of paying this second read.
+// legacyDelegateFailures computes. MaxLineBytes is set to the same bound
+// because jobstore consults MaxBytes only once a whole line is read: left
+// unset, one line would buffer up to jobstore.DefaultMaxLineBytes (128 MiB)
+// before this 1 MiB scan stopped. Both of jobstore's refusals —
+// ErrScanLimitExceeded, which carries the events decoded so far, and
+// ErrLineTooLong, which carries none — are absorbed, because the failures are
+// a summary of retired state rather than an inventory that must be complete.
+// A single line over the bound therefore costs this summary, exactly as
+// records past the window already do, but never the session row that carries
+// it. Surfaces that already read the whole journal for their own listings —
+// the jobs and watches reports — fold those events directly instead of paying
+// this second read.
 func legacyDelegateFailuresBounded(ctx context.Context, path string) ([]StateFailure, error) {
-	events, err := jobstore.ScanEvents(ctx, path, jobstore.ScanLimits{MaxBytes: legacyFailureScanMaxBytes})
-	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) {
+	events, err := scanLegacyFailuresJournal(ctx, path, jobstore.ScanLimits{
+		MaxBytes:     legacyFailureScanMaxBytes,
+		MaxLineBytes: legacyFailureScanMaxBytes,
+	})
+	if err != nil && !errors.Is(err, jobstore.ErrScanLimitExceeded) && !errors.Is(err, jobstore.ErrLineTooLong) {
 		return nil, err
 	}
 	return legacyDelegateFailures(events), nil

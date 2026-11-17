@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
@@ -580,9 +581,17 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	if first.Metadata.InstanceID != second.Metadata.InstanceID || first.Metadata.GenerationID != second.Metadata.GenerationID {
 		t.Fatalf("same-generation rebound switched target: first=%+v second=%+v", first.Metadata, second.Metadata)
 	}
-	if n := daemon.AppServer().SubscriberCount(ref); n != 1 {
-		t.Fatalf("rebound opened %d upstream subscriptions, want 1", n)
-	}
+	// The rebind's old upstream subscription is not gone the instant the watch
+	// channel closes, so sampling the count here raced the teardown and failed
+	// under load. Wait for the count to settle. This is a liveness check that the
+	// rebind leaves the daemon at one subscription; it cannot be a leak check,
+	// because an unsettled count and a settled one are the same reading here. The
+	// leak check is the end-state assertion after the last cancel.
+	testwait.UntilSeen(t, "the rebound to leave one upstream subscription",
+		func() (bool, string) {
+			n := daemon.AppServer().SubscriberCount(ref)
+			return n == 1, fmt.Sprintf("%d upstream subscriptions", n)
+		})
 	// A new hub owner opens its own subscription after the old one closes.
 	cancelSecond()
 	awaitClosed(rebound)
@@ -601,4 +610,13 @@ func TestManagerWatchRebindCancellationAndHubRestart(t *testing.T) {
 	}
 	cancelThird()
 	awaitClosed(restored)
+	// Every watch is cancelled now, so the daemon should hold no live interest
+	// in the thread. This is the leak check the sampled count above cannot be:
+	// a rebind that never releases its subscription leaves this stuck above
+	// zero, whatever the count did while a rebind was in flight.
+	testwait.UntilSeen(t, "every upstream subscription to close once all watches are cancelled",
+		func() (bool, string) {
+			n := daemon.AppServer().SubscriberCount(ref)
+			return n == 0, fmt.Sprintf("%d upstream subscriptions", n)
+		})
 }

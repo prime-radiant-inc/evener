@@ -1167,17 +1167,30 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 	sess.CloseWithReason("clear")
 }
 
-// processNextServeInput gives durable turn/start work priority over the
+// processNextServeInput gives durable accepted work priority over the
 // process-local wake channel. The caller repeats it after every processed
-// message, so an accepted start still progresses when its wake was coalesced
+// message, so accepted work still progresses when its wake was coalesced
 // because the channel was full.
+//
+// Both probes cover work whose wake never landed: a durable receipt the client
+// already holds must not depend on a signal that lives only as long as one
+// daemon. See the Redelivery section of docs/product/session-input.md.
 func processNextServeInput(
 	ctx context.Context,
 	input <-chan server.InputMessage,
 	sessionID string,
 	process func(server.InputMessage) bool,
 ) bool {
+	if ctx.Err() != nil {
+		// A cancelled daemon runs nothing new. The probes below claim real work
+		// and would start a turn out of shutdown, which delays the teardown the
+		// supervisor is waiting for.
+		return false
+	}
 	if process(server.InputMessage{ClientMutationStart: true, SessionID: sessionID}) {
+		return true
+	}
+	if process(server.InputMessage{QueuedInput: true, SessionID: sessionID}) {
 		return true
 	}
 	select {

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,10 +39,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		note:       note,
 		send:       d.send,
 	}, d.watchedIdentity, d.trigger, d.deliveryID, events.SessionEvent{
-		Kind:       d.eventKind,
-		SessionID:  jm.sessionID,
-		Data:       d.eventData,
-		Provenance: provenance.Clone(d.triggerProvenance),
+		Kind:      d.eventKind,
+		SessionID: jm.sessionID,
+		Data:      d.eventData,
 	}, d.triggerProvenance)
 	if d.rosterPayload != "" {
 		d.frame += d.rosterPayload
@@ -56,7 +56,55 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 	if notice := selfInfluenceNotice(d.selfInfluence, d.gradientDepth, d.truncated); notice != "" {
 		d.frame = notice + "\n" + d.frame
 	}
+	if d.ownMessageHops > 0 {
+		d.frame = ownMessageNotice(d.ownMessageHops) + "\n" + d.frame
+	}
 	return d
+}
+
+// supersededFireStillCountsLocked reports whether a frame superseded by a
+// coalescing successor can still count toward the runaway fuse. A frame the
+// receiver already took, or one whose delivery is in flight or awaiting a
+// settlement retry, may yet be marked delivered; only a frame with no such
+// hold is certain never to count. An enqueue receipt is deliberately not a
+// hold: every stable frame holds one from the moment it is enqueued, before
+// anything delivers it, so treating it as evidence would keep every coalesced
+// frame's fire entry and let dead ids evict the delivered ancestors the fuse
+// counts (#6068). The caller must hold jm.mu.
+//
+// A transcribed caller frame is the same evidence on the caller rail: its
+// content is already in the receiver's transcript, so only its delivered
+// record is outstanding, and the settle's last retry records it delivered
+// (completeWatchSendSettle) whatever happened to its fire entry. It lives in
+// its own map because the receiver-visible half of the settle is done, which
+// is exactly why it must hold its fire.
+func (jm *jobManager) supersededFireStillCountsLocked(deliveryID string) bool {
+	if deliveryID == "" {
+		return true
+	}
+	if jm.watchSendDeliveredLocked(deliveryID) {
+		return true
+	}
+	if _, transcribed := jm.transcribedWatchSends[deliveryID]; transcribed {
+		return true
+	}
+	return jm.watchSendHeldLocked(deliveryID)
+}
+
+// watchSendHeldLocked reports whether a delivery is held by anything that can
+// still settle it: in flight under a claim, taken by the receiver with its
+// settle outstanding, or handed to the settlement retry. The supersession hold
+// and the settleability question both read these, so another kind of hold goes
+// here rather than into each caller. The caller must hold jm.mu.
+func (jm *jobManager) watchSendHeldLocked(deliveryID string) bool {
+	if _, delivering := jm.deliveringWatchSends[deliveryID]; delivering {
+		return true
+	}
+	if _, unsettled := jm.unsettledWatchSends[deliveryID]; unsettled {
+		return true
+	}
+	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
+	return retrying
 }
 
 // recordWatchSend persists a fired send as pending and returns its state.
@@ -67,6 +115,21 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // Pure observation: no delivery, no Session calls (spec §3).
 func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]jobstore.Event) (state jobstore.WatchSendState, cfg *watchConfig, ok bool, err error) {
 	if d.cfg == nil || d.send == nil || !jm.isCurrentWatchSendDelivery(d) {
+		return jobstore.WatchSendState{}, nil, false, nil
+	}
+	// A fire descending from a chain the runaway guard already stopped records
+	// nothing and raises nothing: the stop's one diagnostic has been given. A
+	// teardown end is exempt: it is the last frame its config ever sends, the
+	// watch is deleted as soon as the end commits, so it cannot continue the
+	// chain, and suppressing it makes endHubWatch report a persistence failure
+	// that endHubWatchUntilPersisted then retries forever against a consumer
+	// that has already exited.
+	teardown := len(terminalEvents) != 0 && len(terminalEvents[0]) != 0
+	chainFires := ownWatchFires(d.triggerProvenance, d.cfg.watchID)
+	jm.mu.Lock()
+	stopped := slices.ContainsFunc(chainFires, d.cfg.inStoppedRunawayChain)
+	jm.mu.Unlock()
+	if stopped && !teardown {
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
@@ -105,8 +168,17 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]j
 	if terr != nil {
 		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
+	// The depth fuse still applies to a teardown: a frame that reaches it is
+	// the runaway itself, and dropping it while still detaching the watch is
+	// the documented end of this chain.
 	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
-		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, "runaway")
+		// The diagnostic carries the triggering lineage unchanged, so it is not
+		// a fire, and the stopped chain's fires are remembered, so a turn it
+		// causes stays in the stopped chain.
+		jm.mu.Lock()
+		d.cfg.rememberStoppedRunawayChain(chainFires)
+		jm.mu.Unlock()
+		return state, d.cfg, false, jm.dropWatchSendWithLineage(state, d.cfg, "runaway", d.triggerProvenance)
 	}
 	return state, d.cfg, true, nil
 }
@@ -233,8 +305,16 @@ func (jm *jobManager) deliverPendingWatchSend(cfg *watchConfig, state jobstore.W
 }
 
 func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchConfig, reason string) error {
+	return jm.dropWatchSendWithLineage(state, cfg, reason, nil)
+}
+
+// dropWatchSendWithLineage is dropWatchSend whose diagnostic carries lineage.
+func (jm *jobManager) dropWatchSendWithLineage(state jobstore.WatchSendState, cfg *watchConfig, reason string, lineage *provenance.Causal) error {
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return nil
+	}
+	if state.StableReceiver && jm.delegateController != nil {
+		jm.delegateController.attentionCauses.forget(stableWatchAttentionID(state))
 	}
 	dropped := state
 	dropped.DiagnosticReason = limitWatchText(reason, watchReadErrorMaxChars)
@@ -250,9 +330,9 @@ func (jm *jobManager) dropWatchSend(state jobstore.WatchSendState, cfg *watchCon
 	}
 	jm.removePendingWatchSend(cfg, dropped.Key, dropped.UpdateSeq)
 	jm.releaseStableWatchReceipt(dropped.DeliveryID)
-	jm.enqueueWatchNotifications([]jobNotification{
-		watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason),
-	})
+	diagnostic := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, "watch send failed: delivery_id="+state.DeliveryID+": "+dropped.DiagnosticReason)
+	diagnostic.Provenance = provenance.Clone(lineage)
+	jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	return nil
 }
 
@@ -313,7 +393,43 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		return false, err
 	}
 	attentionID := stableWatchAttentionID(state)
-	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(state))
+	// A frame that carries the hourly backstop notice renders content its
+	// durable pending state does not hold. Persist the exact rendered frame
+	// before the receiver sees it, so a restart between the transcript append
+	// and the delivered marker replays the same content instead of rejecting
+	// the receiver's row as conflicting. The same-seq pending event replaces
+	// the frame in the fold without touching the runtime cursor.
+	rendered := jm.renderWatchSendFrame(cfg, state)
+	if rendered != state.Frame {
+		noticed := state
+		noticed.Frame = rendered
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{
+			Kind:      jobstore.EventWatchSendPending,
+			TS:        jm.now(),
+			WatchSend: &noticed,
+		}}); err != nil {
+			return false, err
+		}
+		// The durable pending state now names the rendered frame, so every
+		// later attempt at this delivery must deliver that frame too: a retry
+		// that re-persisted the original text would leave the durable pending
+		// state conflicting with the row the receiver already holds.
+		jm.rememberRenderedWatchSendFrame(cfg, noticed)
+	}
+	// The receiver's turn that consumes the frame adopts the frame's lineage.
+	//
+	// A frame already noted as unsettled has been durably taken by the
+	// receiver on an earlier attempt, and only its settlement is outstanding.
+	// That receiver may have resolved the attention and dropped the cause by
+	// now, so registering it again would resurrect an exchange the receiver
+	// already finished: a later turn would adopt the stale cause and count a
+	// fresh watch event as deeper than it is, dropping it as runaway. The
+	// retry path re-arms the attention and acknowledges the delivery; it
+	// never needs the cause back.
+	if !jm.hasUnsettledWatchSend(state.DeliveryID) {
+		controller.attentionCauses.remember(attentionID, state.Provenance)
+	}
+	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(rendered))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		if appendErr != nil {
 			// A frame the receiver took on an earlier attempt keeps its
@@ -408,8 +524,46 @@ func stableWatchAttentionID(state jobstore.WatchSendState) string {
 	return "watch:" + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
 }
 
-func stableWatchNotificationContent(state jobstore.WatchSendState) string {
-	lines := strings.Split(state.Frame, "\n")
+// renderWatchSendFrame is the frame text cfg's pending state delivers to a
+// stable receiver: the frame, led by the hourly backstop notice when this frame
+// carries it.
+func (jm *jobManager) renderWatchSendFrame(cfg *watchConfig, state jobstore.WatchSendState) string {
+	if fires := jm.watchSendBackstopFires(cfg, state); fires > 0 {
+		notice := watchBackstopNotice(cfg.watchID, fires) + "\n"
+		// A frame already led by this watch's notice was rendered by an
+		// earlier attempt, and its rendered text is what is durable: leading
+		// it again would deliver the notice twice.
+		if strings.HasPrefix(state.Frame, notice) {
+			return state.Frame
+		}
+		return notice + state.Frame
+	}
+	return state.Frame
+}
+
+// rememberRenderedWatchSendFrame replaces the runtime pending state of a frame
+// whose delivered content differs from the text its pending event carried, so
+// a retry of the same delivery reuses the rendered frame instead of the
+// original. The frame's identity — delivery id and update sequence — is the
+// pending state's, and a pending state that has since moved on is left alone.
+func (jm *jobManager) rememberRenderedWatchSendFrame(cfg *watchConfig, rendered jobstore.WatchSendState) {
+	if cfg == nil {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	current := cfg.pending[rendered.Key]
+	if current == nil || current.DeliveryID != rendered.DeliveryID || current.UpdateSeq != rendered.UpdateSeq {
+		return
+	}
+	pending := rendered
+	cfg.pending[rendered.Key] = &pending
+}
+
+// stableWatchNotificationContent is the attention content a stable receiver
+// gets for frame: the frame without its delivery_id lines.
+func stableWatchNotificationContent(frame string) string {
+	lines := strings.Split(frame, "\n")
 	out := lines[:0]
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "delivery_id:") {
@@ -492,6 +646,12 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	defer releasePersistence()
 
 	record := jm.planWatchSendPending(state, d)
+	// A plan that pruned a superseded frame's fire holds that frame's delivery
+	// claim until this frame is published, so no drain delivers a frame the
+	// fuse can no longer see. Release it on every exit: the success path below
+	// commits the replacement first, and every error return leaves the frame
+	// where it was.
+	defer jm.releaseWatchSendReservation(record)
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
 	}
@@ -668,6 +828,11 @@ type watchSendPendingRecord struct {
 	cfg           *watchConfig
 	key           jobstore.WatchSendKey
 	previous      *jobstore.WatchSendState
+	// reservedDelivery is the delivery id of the frame whose fire the plan
+	// pruned, under a delivery claim the plan took so no drain can deliver it
+	// before this frame is published. persistPendingWatchSend releases it
+	// exactly once, on every exit.
+	reservedDelivery string
 	// persisted is the exact state written to the pending map and event log
 	// (post-coalescing: unioned provenance, recomputed self-influence depth).
 	persisted jobstore.WatchSendState
@@ -706,6 +871,30 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		}
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
+		// A superseded frame the receiver never took can never count toward
+		// the runaway fuse. Its fire entry is spend from the record's bounded
+		// ancestry, and enough of them evict the delivered ancestors the fuse
+		// does count. Drop it here, where supersession is known, and only for
+		// a frame no receipt, claim or delivered marker holds.
+		if !jm.supersededFireStillCountsLocked(existing.DeliveryID) {
+			// Pruning is a decision about a frame that is still the pending
+			// frame in this map until the replacement commits, an fsync and a
+			// store refold later. Hold the frame's delivery claim across that
+			// window, so a drain cannot deliver it after its fire is gone —
+			// the fuse would then count one fewer delivered ancestor than
+			// reality. The claim is released once the replacement is
+			// published, or when the persist fails.
+			if jm.claimWatchSendDeliveryLocked(existing.DeliveryID) {
+				record.reservedDelivery = existing.DeliveryID
+				// Prune a private copy: existing is the published pending frame,
+				// and a replacement that never reaches the store must leave it
+				// deliverable with its own fire still counted.
+				pruned := *existing
+				pruned.Provenance = provenance.Clone(existing.Provenance)
+				provenance.DropSupersededDelivery(pruned.Provenance, existing.DeliveryID)
+				existing = &pruned
+			}
+		}
 		// The coalesced frame stands in for both the superseded delivery and this
 		// one, so it must carry both causes so either's downstream echo is
 		// recognized — and the breaker must judge the UNION: two below-threshold
@@ -767,6 +956,50 @@ func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord
 	}
 }
 
+// releaseWatchSendReservation releases the delivery claim planWatchSendPending
+// took on a superseded frame whose fire it pruned. It runs once per plan, on
+// every exit of the persist that owns the record, and is a no-op for a plan
+// that reserved nothing.
+//
+// The commit sees the reservation as the replaced frame's claim, so it leaves
+// that frame's condition marker in place; the marker names a delivery that can
+// still settle only while a hold exists. With the claim gone, the marker goes
+// with it unless some other hold still owes the frame a settle.
+func (jm *jobManager) releaseWatchSendReservation(record watchSendPendingRecord) {
+	if record.reservedDelivery == "" {
+		return
+	}
+	jm.releaseWatchSendDeliveryClaim(record.reservedDelivery)
+	jm.mu.Lock()
+	if !jm.conditionFrameCanSettleLocked(record.cfg, record.reservedDelivery) {
+		delete(record.cfg.conditionFrames, record.reservedDelivery)
+	}
+	jm.mu.Unlock()
+}
+
+// settleReplacedTranscribedFrameLocked records a caller frame the model already
+// has as delivered after a newer frame replaced its pending state. Its delivery
+// token is stale from then on, so nothing else can retry the record; without
+// this the transcript entry stays behind, never counts as a delivered fire, and
+// a loop that delivers every frame stays under the runaway depth. The pending
+// map is left alone: the replacement installs its own state for the key. The
+// caller holds jm.mu.
+func (jm *jobManager) settleReplacedTranscribedFrameLocked(cfg *watchConfig, replaced *jobstore.WatchSendState) {
+	if replaced == nil || replaced.DeliveryID == "" {
+		return
+	}
+	if _, transcribed := jm.transcribedWatchSends[replaced.DeliveryID]; !transcribed {
+		return
+	}
+	if jm.deliveredWatchSendIDs == nil {
+		jm.deliveredWatchSendIDs = make(map[string]struct{})
+	}
+	jm.deliveredWatchSendIDs[replaced.DeliveryID] = struct{}{}
+	delete(jm.transcribedWatchSends, replaced.DeliveryID)
+	jm.countWatchDeliveryLocked(cfg)
+	jm.settleConditionFrameLocked(cfg, replaced.DeliveryID)
+}
+
 // storeWatchSendPendingRecord installs record's frame as its key's pending
 // frame and returns the delivery id of the replaced frame whose receipt the
 // caller releases, or "" when there is none to release now. A replaced frame
@@ -800,11 +1033,23 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 			}
 			jm.supersededWatchSends[replaced] = struct{}{}
 		} else if !jm.retryUnsettledWatchSendLocked(replaced) {
+			// A caller frame already in the receiver's transcript has no token
+			// left to retry it once this frame replaces its pending state, so
+			// the replacement settles its in-memory accounting here. Its
+			// content stays in the transcript; only the delivered record is
+			// dropped, which is what the settle's retry bound would have done.
+			jm.settleReplacedTranscribedFrameLocked(cfg, current)
 			release = replaced
 		}
 	}
 	persisted := record.persisted
 	cfg.pending[record.key] = &persisted
+	// The frame this one replaced can no longer settle as itself, so its
+	// condition marker goes unless a delivery claim or the settlement retry
+	// still owes it a settle.
+	if current != nil && current.DeliveryID != persisted.DeliveryID && !jm.conditionFrameCanSettleLocked(cfg, current.DeliveryID) {
+		delete(cfg.conditionFrames, current.DeliveryID)
+	}
 	if detached || cfg.rejectingDelivery || jm.closing {
 		jm.rememberDetachedPendingLocked(cfg)
 	}
@@ -904,7 +1149,7 @@ type watchConfigTerminalSnapshot struct {
 	cfg      *watchConfig
 	terminal watchSendTerminalSnapshot
 	// endReason, when set, is recorded to the watch history ring as the config is
-	// detached from the active set (cleared / budget_exhausted). Left empty by
+	// detached from the active set (cleared / replaced / auto_removed_terminal). Left empty by
 	// snapshot callers that are not removing an active watch.
 	endReason  string
 	deliveries int
@@ -1353,18 +1598,12 @@ func (jm *jobManager) kick() {
 // frames in the notification queue: on a long progress interval the queue is
 // empty between frames, and inferring from it would re-announce — and eventually
 // kill — a job the model explicitly said it was waiting on. A cleared watch
-// (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
-// counts as undisposed again. A watch that has just tripped the budget is
-// retained as a temporary excuse while its asynchronous teardown persists the
-// clear and queues the final notification; otherwise the drain can announce in
-// that handoff window before it receives the notification that explains the
-// clear. That window is keyed on conditionFires, the counter the breaker
-// latches on, so it closes when the teardown removes the config.
+// leaves this map, so the job counts as undisposed again.
 func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for key, cfg := range jm.watches {
-		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.conditionFires >= watchDeliveryBudget) {
+		if key.Target == jobID && cfg.conditionFires == 0 {
 			return true
 		}
 	}

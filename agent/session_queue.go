@@ -684,6 +684,7 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 		data.SkillNames = make([][]string, len(s.inputQueue))
 		data.CommandNames = make([][]string, len(s.inputQueue))
 		data.Mentions = make([][]appwire.InputMention, len(s.inputQueue))
+		data.ImageCounts = make([]int, len(s.inputQueue))
 		for i, entry := range s.inputQueue {
 			data.Preview[i] = queuedEntryPreviewLine(entry)
 			data.IDs[i] = entry.ID
@@ -691,6 +692,7 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 			data.SkillNames[i] = slices.Clone(entry.SkillNames)
 			data.CommandNames[i] = slices.Clone(entry.CommandNames)
 			data.Mentions[i] = slices.Clone(entry.Mentions)
+			data.ImageCounts[i] = len(entry.Images)
 		}
 	}
 	return data

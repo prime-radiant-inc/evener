@@ -28,13 +28,7 @@ func TestSessionActivityDelegateNameSurvivesRetainedRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			key := s.stateDir + "\x00" + s.ID()
-			sessionActivityIndexes.Lock()
-			if cached := sessionActivityIndexes.entries[key]; cached != nil {
-				delete(sessionActivityIndexes.entries, key)
-				sessionActivityIndexes.order.Remove(cached.element)
-			}
-			sessionActivityIndexes.Unlock()
+			dropSessionActivityIndexCache(s.stateDir, s.ID())
 			retained, err := LoadSessionActivityDelegates(t.Context(), s.stateDir, s.ID(), params)
 			if err != nil {
 				t.Fatal(err)
@@ -147,13 +141,7 @@ func TestSessionActivityContextDelegateNamesLiveAndRetained(t *testing.T) {
 	for _, retained := range []bool{false, true} {
 		if retained {
 			// Reconstruct from journals, never from the live controller's cached index.
-			key := s.stateDir + "\x00" + s.ID()
-			sessionActivityIndexes.Lock()
-			if cached := sessionActivityIndexes.entries[key]; cached != nil {
-				delete(sessionActivityIndexes.entries, key)
-				sessionActivityIndexes.order.Remove(cached.element)
-			}
-			sessionActivityIndexes.Unlock()
+			dropSessionActivityIndexCache(s.stateDir, s.ID())
 		}
 		leafContext := read(leaf.ChildSessionID, retained)
 		if !leafContext.AncestryKnown || leafContext.Ref != encodeRef("", leaf.ChildSessionID) || leafContext.RootRef != ref || leafContext.ParentRef != encodeRef("", parent.ChildSessionID) || leafContext.SessionID != leaf.ChildSessionID || leafContext.DelegateID != "dlg_leaf" || len(leafContext.Ancestors) != 2 {
@@ -276,13 +264,7 @@ func TestSessionActivityContextAncestorTitleFallsBackToParentTask(t *testing.T) 
 				var err error
 				if retained {
 					// Reconstruct from journals, never from the live controller's cached index.
-					key := s.stateDir + "\x00" + s.ID()
-					sessionActivityIndexes.Lock()
-					if cached := sessionActivityIndexes.entries[key]; cached != nil {
-						delete(sessionActivityIndexes.entries, key)
-						sessionActivityIndexes.order.Remove(cached.element)
-					}
-					sessionActivityIndexes.Unlock()
+					dropSessionActivityIndexCache(s.stateDir, s.ID())
 					summary, err = LoadSessionActivitySummary(t.Context(), s.stateDir, leaf.ChildSessionID, params)
 				} else {
 					summary, err = s.ActivitySummary(t.Context(), params)
@@ -309,6 +291,84 @@ func TestSessionActivityContextAncestorTitleFallsBackToParentTask(t *testing.T) 
 	}
 }
 
+// The root ancestor crumb carries the root session's own label, not its
+// opaque session id, on both the live and retained paths. The root row has no
+// delegate descriptor to title from, so it is named the way every other
+// surface names a session: its own name, else its prompt, else its id. The
+// live name differs from the saved one so each path proves which it read.
+func TestSessionActivityContextRootAncestorTitleUsesSessionLabel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, saved, want string }{
+		{"in-memory name", "Saved meta name", "Root session name"},
+		{"unnamed session", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			s := newSession(t, withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 2, AgentsDocPath: filepath.Join(t.TempDir(), "absent-AGENTS.md")}))
+			rootID := s.ID()
+			s.mu.Lock()
+			s.naming.value = tc.want
+			s.mu.Unlock()
+			at := time.Unix(100, 0).UTC()
+			parent := stableToolDescriptor(s, "dlg_rootcrumb", "")
+			leaf := stableToolDescriptor(s, "dlg_rootleaf", "dlg_rootcrumb")
+			s.delegateController.mu.Lock()
+			_, err := s.delegateController.appendLocked(
+				delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_rootcrumb", TS: at, Created: &delegatestore.DelegateCreated{Descriptor: parent}},
+				delegatestore.Event{Kind: delegatestore.EventDelegateCreated, DelegateID: "dlg_rootleaf", TS: at.Add(time.Second), Created: &delegatestore.DelegateCreated{Descriptor: leaf}},
+			)
+			s.delegateController.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			savePastActivityMetaWithTreeRevision(t, stateDir, rootID, tc.saved, rootID, 0)
+			savePastActivityMetaWithTreeRevision(t, stateDir, leaf.ChildSessionID, "Leaf thread title", rootID, 0)
+			// A live read names the row from the session's in-memory name; a
+			// retained read has no live session and names it from the saved
+			// meta. An unnamed root keeps the id every session label falls back
+			// to, so that case pins the fallback rather than a name.
+			named := func(label string) string {
+				if label == "" {
+					return rootID
+				}
+				return label
+			}
+			want := map[bool]string{false: named(tc.want), true: named(tc.saved)}
+			read := func(retained bool) appwire.SessionActivityContext {
+				t.Helper()
+				params := appwire.SessionActivityReadParams{Ref: encodeRef("", leaf.ChildSessionID)}
+				var summary appwire.SessionActivitySummary
+				var err error
+				if retained {
+					// Reconstruct from journals, never from the live controller's cached index.
+					dropSessionActivityIndexCache(stateDir, rootID)
+					summary, err = LoadSessionActivitySummary(t.Context(), stateDir, leaf.ChildSessionID, params)
+				} else {
+					summary, err = s.ActivitySummary(t.Context(), params)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return summary.Context
+			}
+			for _, retained := range []bool{false, true} {
+				context := read(retained)
+				if !context.AncestryKnown || len(context.Ancestors) != 2 {
+					t.Fatalf("retained=%v lineage = %+v", retained, context)
+				}
+				root := context.Ancestors[0]
+				if root.SessionID != rootID || root.Ref != encodeRef("", rootID) {
+					t.Fatalf("retained=%v root row = %+v, want the root session", retained, root)
+				}
+				if root.Title != want[retained] {
+					t.Errorf("retained=%v root ancestor Title = %q, want %q", retained, root.Title, want[retained])
+				}
+			}
+		})
+	}
+}
+
 func TestSessionActivityContextDelegateNamesRejectInvalidLineage(t *testing.T) {
 	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 2}))
@@ -316,7 +376,7 @@ func TestSessionActivityContextDelegateNamesRejectInvalidLineage(t *testing.T) {
 	d.Name = "Unproven name"
 	state := delegatestore.State{"dlg_invalid": &delegatestore.Aggregate{DelegateID: "dlg_invalid", Descriptor: d}}
 	context := appwire.SessionActivityContext{SessionID: d.ChildSessionID, RootRef: encodeRef("", s.ID())}
-	if activityContextFromDelegates(&context, s.ID(), state) || context.DelegateID != "" || context.ParentRef != "" || len(context.Ancestors) != 0 {
+	if activityContextFromDelegates(&context, s.ID(), state, "") || context.DelegateID != "" || context.ParentRef != "" || len(context.Ancestors) != 0 {
 		t.Fatalf("invalid chain published partial lineage: %+v", context)
 	}
 	if _, present := contextNameFields(t, context)["delegateName"]; present {

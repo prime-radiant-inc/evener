@@ -133,7 +133,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	profile = s.profile
 	sys = s.cachedSystemPrompt
+	// The round's tool-definition work is this hand-off, not a build: the list
+	// is built once at session init (rebuildToolDefsCache) and rebuilt only when
+	// the tool set itself changes, so a round only takes the cached pair.
+	tToolDefsStart := s.sclock().Now()
 	toolDefs := s.cachedToolDefs
+	toolDefsJSONBytes := s.cachedToolDefsJSONBytes
+	t.ToolDefs = time.Since(tToolDefsStart)
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
@@ -142,7 +148,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		s.contextMgr.SetProfile(profile)
 	}
 
-	t.SystemPrompt = time.Since(tPhaseStart)
+	// The tool-definition window is measured inside this one and reported under
+	// its own name, so SystemPrompt takes the remainder: the windows nest, so
+	// the remainder is never negative, and the two together cover the phase
+	// exactly once.
+	t.SystemPrompt = time.Since(tPhaseStart) - t.ToolDefs
 
 	// --- Phase: ContextMgmt ---
 	tPhaseStart = s.sclock().Now()
@@ -304,6 +314,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
+	// --- Phase: RequestBuild ---
+	tPhaseStart = s.sclock().Now()
+
 	// The expanded history keeps the target-policy thinking and every
 	// tool-result payload so the fallback chain can apply each target's own
 	// replay and media policy; the primary request is projected for the
@@ -312,12 +325,8 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
-	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
-	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-	untrimmedReq := s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
-	s.mu.Lock()
-	s.roundFallbackMessages = untrimmedReq.Messages
-	s.mu.Unlock()
+	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
+	s.setRoundFallbackSource(sys, untrimmedHistory)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -331,7 +340,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// projects (presentedTurns), not the earlier capture: a leased round's
 	// snapshot can hold a turn — a parent steer, say — accepted after
 	// historyTurns was taken.
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
+	//
+	// The turns the delta carries come back with it: staging must credit only
+	// the inline deliveries this call actually presents.
+	var deltaTurns []schema.Turn
+	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -378,18 +391,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			untrimmedHistory = append(untrimmedHistory, message)
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
-		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-		untrimmedReq = s.buildModelRequest(profile, sys, untrimmedHistory, toolDefs, reasoningEffort)
-		s.mu.Lock()
-		s.roundFallbackMessages = untrimmedReq.Messages
-		s.mu.Unlock()
+		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
+		s.setRoundFallbackSource(sys, untrimmedHistory)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
+		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -439,8 +449,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inside is the single gate, whichever path built the history; staging
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
-	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns, deltaTurns)
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
+	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
@@ -592,9 +603,15 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
 // when it planned a continuation delta, the full-history message list the delta
-// was cut from, for the retry a rejected anchor forces. heldDropped reports
-// that the request's projection kept a held row out.
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message) {
+// was cut from, for the retry a rejected anchor forces, plus the exact turns
+// the delta carries. heldDropped reports that the request's projection kept a
+// held row out.
+//
+// The delta's turn set is returned because it is the only record of which items
+// this call presents: staging attention coverage must not credit an inline
+// delivery whose tool-results turn sits before the anchor, since the delta never
+// carried it.
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message, []schema.Turn) {
 	if heldDropped {
 		// A projection that kept a held row out is a nonstandard view of the
 		// resident history: no stored exchange matches its prefix, and the
@@ -606,13 +623,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req, nil
+		return req, nil, nil
 	}
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req, nil
+		return req, nil, nil
 	}
 
 	registry := s.responsesContinuationSupportRegistry()
@@ -620,7 +637,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req, nil
+		return req, nil, nil
 	}
 	target := resolvedTargetOf(profile)
 	req = s.applyResponsesContinuationShadowEstimate(profile, req)
@@ -629,13 +646,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.PreviousResponseID = ""
 		req.ConversationID = ""
 		req.Continuation = nil
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -645,7 +662,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -659,10 +676,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil
+		return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil, nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -672,7 +689,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
@@ -696,10 +713,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
-		return responsesContinuationWithInputEstimate(target, req), fullHistory
+		return responsesContinuationWithInputEstimate(target, req), fullHistory, candidate.Delta
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil
+	return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil, nil
 }
 
 func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
@@ -1049,14 +1066,38 @@ func isProviderTerminalError(err error) bool {
 	return strings.HasPrefix(err.Error(), "provider error: ") && ok
 }
 
-// takeRoundFallbackMessages returns and clears the round's unprojected request
-// messages kept for per-target fallback projection (#4563, #4217).
-func (s *Session) takeRoundFallbackMessages() []llm.Message {
+// roundFallbackSource is the round's unprojected request input: the system
+// prompt and the expanded history before the primary target's thinking and
+// media projection. It is kept instead of a built message slice so a round
+// that never falls back does not pay for one (#6442). Only Messages depends on
+// the history a request is built from, so laying it out at the fallback site
+// produces the slice this source would have produced there.
+type roundFallbackSource struct {
+	system  string
+	history []llm.Message
+}
+
+// setRoundFallbackSource records the source the fallback chain lays its own
+// messages out from. The history is this round's own unprojected expansion;
+// the primary's projections replace the slice they return rather than the
+// messages it holds, so this remains the unprojected input either way.
+func (s *Session) setRoundFallbackSource(system string, history []llm.Message) {
+	s.mu.Lock()
+	s.roundFallbackSource = roundFallbackSource{system: system, history: history}
+	s.roundFallbackSourceSet = true
+	s.mu.Unlock()
+}
+
+// takeRoundFallbackSource returns and clears the round's unprojected request
+// source. Clearing keeps a later round from inheriting it, so a round that
+// leaves no source reports false rather than the previous round's input.
+func (s *Session) takeRoundFallbackSource() (roundFallbackSource, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs := s.roundFallbackMessages
-	s.roundFallbackMessages = nil
-	return msgs
+	source := s.roundFallbackSource
+	set := s.roundFallbackSourceSet
+	s.roundFallbackSource, s.roundFallbackSourceSet = roundFallbackSource{}, false
+	return source, set
 }
 
 // suppressRejectedToolResultDocuments records tool-call IDs whose document
@@ -1345,32 +1386,19 @@ func protocolInjectsNativeWebSearch(protocol string) bool {
 // buildModelRequest assembles the llm.Request for one round: it lays out the
 // system prompt + history into messages (honoring SystemPromptAsUser), then
 // applies tools, provider options, reasoning effort, and model metadata.
-func (s *Session) buildModelRequest(profile *provider.Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string) llm.Request {
-	var messages []llm.Message
-	if s.cfg.SystemPromptAsUser {
-		// Combine system prompt with the first user-role message into one
-		// message, since GPT-5.4 ignores the instructions parameter and
-		// follows user messages. That first message is usually the task, but
-		// maybeAppendEnvironmentContext's harness-injected ENVIRONMENT turn
-		// can land ahead of it — the system prompt then combines with that
-		// instead, still leading with instructions in a user-role message.
-		if len(history) > 0 && history[0].Role == llm.RoleUser {
-			messages = make([]llm.Message, len(history))
-			copy(messages, history)
-			messages[0] = prependSystemPromptToUserMessage(sys, history[0])
-		} else {
-			messages = append([]llm.Message{llm.User(sys)}, history...)
-		}
-	} else {
-		messages = append([]llm.Message{llm.System(sys)}, history...)
-	}
-
+//
+// toolDefsJSONBytes is toolDefs' serialized length, and travels beside the list
+// rather than being read from the session so the two cannot disagree: the
+// request prices its tools from it, which keeps the estimate's value identical
+// while sparing every round a re-serialization of the whole schema list (#6406).
+func (s *Session) buildModelRequest(profile *provider.Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string, toolDefsJSONBytes int) llm.Request {
 	idleTimeout, _ := ParseProviderIdleTimeout(s.cfg.ProviderIdleTimeout) // validated at session construction/restore
 	req := llm.Request{
-		Model:    profile.Model(),
-		Provider: profile.ID(),
-		Messages: messages,
-		Tools:    toolDefs,
+		Model:          profile.Model(),
+		Provider:       profile.ID(),
+		Messages:       s.requestMessages(sys, history),
+		Tools:          toolDefs,
+		ToolsJSONBytes: toolDefsJSONBytes,
 		// Ask for a tool call; never force one. A forcing tool_choice leaves a
 		// model that cannot honor it with no legal way to stop, and evener targets
 		// arbitrary gateways and models where that capability is unknowable in
@@ -1401,6 +1429,64 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // defaultReasoningEffort is what a reasoning model runs at when nothing
 // configured it and no model data states a better default.
 const defaultReasoningEffort = "medium"
+
+// requestMessages lays out a request's system prompt and expanded history into
+// the message slice buildModelRequest dispatches. It is the only part of a
+// request that depends on the history it is built from, so the fallback chain
+// lays out its own messages through it instead of paying for a whole second
+// build on rounds that never fall back.
+func (s *Session) requestMessages(sys string, history []llm.Message) []llm.Message {
+	if s.cfg.SystemPromptAsUser {
+		// Combine system prompt with the first user-role message into one
+		// message, since GPT-5.4 ignores the instructions parameter and
+		// follows user messages. That first message is usually the task, but
+		// maybeAppendEnvironmentContext's harness-injected ENVIRONMENT turn
+		// can land ahead of it — the system prompt then combines with that
+		// instead, still leading with instructions in a user-role message.
+		if len(history) > 0 && history[0].Role == llm.RoleUser {
+			messages := make([]llm.Message, len(history))
+			copy(messages, history)
+			messages[0] = prependSystemPromptToUserMessage(sys, history[0])
+			return messages
+		}
+		return append([]llm.Message{llm.User(sys)}, history...)
+	}
+	return append([]llm.Message{llm.System(sys)}, history...)
+}
+
+// DefaultReasoningEffort is the tier a session actually runs at while nothing
+// configured one, so a client can name the tier behind its "(default)" readout
+// instead of guessing. It starts from resolveRequestEffort's unset branch, then
+// answers the one question a readout must not get wrong: whether that tier
+// reaches the provider at all. A dialect that only spells level names drops one
+// its row's ladder cannot vouch for, leaving the provider's own default in
+// charge; naming the dropped tier would present an unknown default as a known
+// one (#6557). Budget-shaped thinking and the OpenRouter pass-through do put an
+// unlisted tier to work, so those keep it. A model's own stated default is
+// reported either way: the row is the evidence for it. Empty for a model that
+// does not reason, which carries no effort at all.
+func DefaultReasoningEffort(res registry.Resolved) string {
+	modelDefault := llm.StatedDefaultEffort(res.Caps)
+	level := resolveRequestEffort("", !res.Caps.ReasoningDisabled(), res.Caps.EffortValues, modelDefault)
+	if level == nil {
+		return ""
+	}
+	// A stated default is the model's own statement about the tier it runs at
+	// when nothing is asked of it, so it holds even where evener cannot spell
+	// it: the provider runs at that tier anyway. A level the ladder clamped
+	// away from that statement is evener's own choice instead, so it must
+	// reach the wire on its own merits — reporting it would name a tier
+	// neither the model nor the wire says.
+	if (modelDefault != "" && *level == modelDefault) || llm.EffortReachesWire(*level, res) {
+		return *level
+	}
+	return ""
+}
+
+// profileDefaultReasoningEffort is DefaultReasoningEffort over profile's row.
+func profileDefaultReasoningEffort(profile *provider.Profile) string {
+	return DefaultReasoningEffort(profile.Resolved())
+}
 
 // resolveRequestEffort is the one rule for the effort a request carries, shared
 // by the primary and fallback paths:
@@ -1484,9 +1570,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// prepared round keeps the
 	// request's own full-history shadows.
 	fallbackHistory := fullHistory
-	if base := s.takeRoundFallbackMessages(); len(base) > 0 {
-		fallbackHistory = base
-	}
+	// Taking the source clears it whether or not a fallback runs, so a later
+	// round cannot inherit this one's input. Its layout waits for the chain
+	// below: a round with no fallback target pays nothing for it (#6442).
+	fallbackSource, hasFallbackSource := s.takeRoundFallbackSource()
 	// The round's fallback chain is fixed here, at the round's model-call
 	// boundary, from a copy taken under s.mu. SetModel revalidates and may
 	// rewrite s.cfg.ModelFallbacks while this round's primary call is
@@ -1582,6 +1669,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// Nothing burned a budget there, so "handled by the retry loop" is false for
 	// that error alone. See modelFallbackEligible.
 	if err != nil && len(fallbacks) > 0 && modelFallbackEligible(err, policy) {
+		if hasFallbackSource {
+			fallbackHistory = s.requestMessages(fallbackSource.system, fallbackSource.history)
+		}
 		// requestedEffort is the snapshot taken under lock in prepareModelRequestWithError,
 		// before it was clamped to the primary model. Using the snapshot (rather
 		// than re-reading live session config) keeps a concurrent runtime effort

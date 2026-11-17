@@ -125,8 +125,11 @@ function mediaBlocks(source: string): { prelude: string; body: string }[] {
   return blocks;
 }
 
+// tokens.css parsed once: every media-block test below shares this walk.
+const TOKENS_BLOCKS = mediaBlocks(CSS);
+
 test("the 44px touch-target floor is declared for phones and coarse pointers (2026-07-30-mobile-session-layout-design.md, decision 4)", () => {
-  const blocks = mediaBlocks(CSS);
+  const blocks = TOKENS_BLOCKS;
   const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
   expect(tapFloor, `tokens.css must have a ${TAP_FLOOR_QUERY} media block`).toBeDefined();
   expect(tapFloor!.body).toMatch(/--tap-min:\s*44px/);
@@ -151,17 +154,19 @@ test("every widget tap floor applies on phones and on coarse pointers", () => {
   }
 });
 
-// --- editable controls are 16px on phones -------------------------------
+// --- editable controls are 16px on phones and on any coarse pointer -------
 //
 // index.html no longer locks zoom (viewport-pin.test.ts), so the guarantee
 // that iOS Safari has nothing to auto-zoom into moves here: every rule that
 // styles an editable control - an input/select/textarea element selector, or
-// one of the classes the widgets and panes put on their own controls - sizes
-// its text from --font-size-control (the ui step on desktop, the body step on
-// phones) or --font-size-body. roborev on PR #947 caught the inputs and
-// selects that still took --font-size-ui after the lock was removed.
+// one of the classes the widgets and panes put on their own editable
+// controls, including the composer's contenteditable .editor - sizes its
+// text from --font-size-control (the ui step on fine-pointer widths, floored
+// at 16px on phones and on any coarse pointer at any width) or
+// --font-size-body. roborev on PR #947 caught the inputs and selects that
+// still took --font-size-ui after the lock was removed.
 const CONTROL_SELECTOR_RE =
-  /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect)(\b|[:.[])/;
+  /(^|[\s,>+~(])(input|select|textarea)(\b|[:.[])|\.(input|select|textarea|textInput|effortSelect|editor)(\b|[:.[])/;
 // var(--font-size-control), or the textarea's max(control, body) - never the
 // body size alone, which the S preference scales under 16px on phones.
 const CONTROL_SIZE_RE =
@@ -177,15 +182,28 @@ function walkCss(dir: string): string[] {
   return found;
 }
 
-test("--font-size-control is the ui step on desktop and the body (16px) step on phones", () => {
+test("--font-size-control is the ui step on fine pointers and floors at 16px on phones and coarse pointers", () => {
   expect(CSS).toMatch(/\n\s*--font-size-control: var\(--font-size-ui\);/);
-  const media = new RegExp(`@media\\s*${escapeRegExp(MOBILE_QUERY)}\\s*\\{([\\s\\S]*?)\\n\\}`).exec(CSS);
-  expect(media).not.toBeNull();
-  // max(16px, …), not the body size alone: the S font-size preference scales
-  // the phone body to 14.4px, and iOS zooms into a 14.4px field just the same
-  // (roborev on PR #947).
-  expect(media![1]).toMatch(/--font-size-control: max\(16px, var\(--font-size-body\)\);/);
-  expect(media![1]).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
+  // The floor shares --tap-min's reach (TAP_FLOOR_QUERY above): phones, and
+  // any coarse pointer at any width. The iPhone Duo's inner display is 951pt
+  // in landscape - past the 899px phone boundary - while still running iOS
+  // Safari, which auto-zooms into any focused field under 16px, so a
+  // phone-only floor leaves it zooming. max(16px, body, ui) is a floor, not an
+  // alias: the S preference scales the phone body to 14.4px and the ui step
+  // to 11.7px, and iOS zooms into a 14.4px field just the same (roborev on
+  // PR #947).
+  const blocks = TOKENS_BLOCKS;
+  const floor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
+  expect(floor, `tokens.css must have a ${TAP_FLOOR_QUERY} media block`).toBeDefined();
+  expect(floor!.body).toMatch(/--font-size-control: max\(16px, var\(--font-size-body\), var\(--font-size-ui\)\);/);
+  for (const block of blocks.filter((b) => b.prelude !== TAP_FLOOR_QUERY)) {
+    expect(block.body, `--font-size-control declared under ${block.prelude}`).not.toMatch(/--font-size-control:/);
+  }
+  // The phone body the floor lifts from stays 16px, so fields match the body
+  // text on phones.
+  const phone = blocks.find((block) => block.prelude === MOBILE_QUERY);
+  expect(phone, "tokens.css must have a phone media block").toBeDefined();
+  expect(phone!.body).toMatch(/--font-size-body: calc\(16px \* var\(--font-scale\)\);/);
 });
 
 test("every rule that sizes an editable control uses --font-size-control or --font-size-body", () => {
@@ -193,12 +211,30 @@ test("every rule that sizes an editable control uses --font-size-control or --fo
   for (const file of walkCss(srcRoot)) {
     const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const selector = block[1]!.trim().split("\n").pop() ?? "";
+      // The whole captured selector, not its last line: a control can sit on
+      // any line of a multi-line selector list.
+      const selector = block[1]!.trim();
       const body = block[2]!;
       if (!CONTROL_SELECTOR_RE.test(selector)) continue;
       if (!/font-size:/.test(body)) continue;
       expect(body, `${file.slice(srcRoot.length + 1)}: ${selector}`).toMatch(CONTROL_SIZE_RE);
     }
+  }
+});
+
+test("tokens.css is the only stylesheet that declares --font-size-control", () => {
+  // The floor's reach is the touch block's media query: a redeclaration in a
+  // pane or widget stylesheet under a narrower gate would silently drop the
+  // 16px floor on wide touch screens (the Duo's 951pt landscape rides the
+  // coarse arm of the query, not the width arm), which is exactly what the
+  // web UI design system doc says this file catches.
+  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const file of walkCss(srcRoot)) {
+    if (file.endsWith("tokens.css")) continue;
+    const css = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css, `${file.slice(srcRoot.length + 1)} redeclares --font-size-control`).not.toMatch(
+      /--font-size-control\s*:/,
+    );
   }
 });
 

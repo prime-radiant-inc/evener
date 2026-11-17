@@ -51,7 +51,7 @@ func receiverWatchFixture(t *testing.T) (base, sid string) {
 // owner on a receiver watch just as they do on the owner's own.
 func TestWatches_ReceiverIdentityReported(t *testing.T) {
 	base, sid := receiverWatchFixture(t)
-	r, err := Watches(base, sid, WatchOpts{})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestWatches_ReceiverIdentityReported(t *testing.T) {
 // owner's own watch reads exactly as it did.
 func TestWatches_RenderNamesTheReceiverOnlyWhenThereIsOne(t *testing.T) {
 	base, sid := receiverWatchFixture(t)
-	r, err := Watches(base, sid, WatchOpts{WatchID: receiverWatchID})
+	r, err := Watches(t.Context(), base, sid, WatchOpts{WatchID: receiverWatchID})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestWatches_RenderNamesTheReceiverOnlyWhenThereIsOne(t *testing.T) {
 		}
 	}
 
-	own, err := Watches(base, sid, WatchOpts{WatchID: ownWatchID})
+	own, err := Watches(t.Context(), base, sid, WatchOpts{WatchID: ownWatchID})
 	if err != nil {
 		t.Fatalf("Watches: %v", err)
 	}

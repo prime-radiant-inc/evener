@@ -19,17 +19,44 @@ type ContextMetrics = schema.ContextMetrics
 // not mutated in place. ContextStatus relies on that same invariant and does
 // not introduce a stronger immutability guarantee.
 //
-// The copy is taken under s.mu and the estimate runs after the unlock.
+// The snapshot is taken under s.mu's read lock and the estimate runs after the
+// unlock. The lock is a reader, not a writer, because the sample must not exclude
+// the emit path's provenance read: on a read/write lock a pending writer blocks new
+// readers, so an exclusive sample here stalls every concurrent emit for the whole
+// sample. The context manager's own lock is taken inside this one (ObserveHistory),
+// and contextmgr never calls back into Session, so the pair has no reverse edge to
+// cycle on.
 func (s *Session) ContextStatus() (ContextMetrics, float64) {
 	if s.contextMgr == nil {
 		return ContextMetrics{}, 0
 	}
-	s.mu.Lock()
-	hist := append([]schema.Turn{}, s.history...)
-	s.mu.Unlock()
+	s.mu.RLock()
+	// Copy only the turns the manager has not walked: an append leaves the
+	// revision alone, so the ordinary post-append sample copies the appended
+	// tail rather than the transcript. The copy was the largest part of a
+	// sample's cost at scale (8.24 MB of 8.96 MB at 10,000 turns), and its only
+	// purpose is to let the estimate run unlocked.
+	covered, _ := s.contextMgr.ObserveHistory(s.historyRevision, len(s.history))
+	var hist []schema.Turn
+	if covered < len(s.history) {
+		hist = append([]schema.Turn{}, s.history[covered:]...)
+	}
+	histLen := len(s.history)
+	revision := s.historyRevision
+	s.mu.RUnlock()
 	// The manager holds the profile that answered the last round (a fallback
 	// replaces it), so its window, usage and source come from one snapshot.
-	metrics, pressure, profile := s.contextMgr.EstimateStatusFor(hist, 0)
+	metrics, pressure, profile, ok := s.contextMgr.EstimateStatusForHistory(hist, histLen, 0, revision)
+	if !ok {
+		// The memo could not answer for the whole history. Take the copy and ask
+		// again rather than report a prefix.
+		s.mu.RLock()
+		hist = append([]schema.Turn{}, s.history...)
+		histLen = len(s.history)
+		revision = s.historyRevision
+		s.mu.RUnlock()
+		metrics, pressure, profile, _ = s.contextMgr.EstimateStatusForHistory(hist, histLen, 0, revision)
+	}
 	_, metrics.WindowSource = budgetingWindow(profile)
 	return metrics, pressure
 }

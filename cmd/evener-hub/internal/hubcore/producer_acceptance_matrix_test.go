@@ -39,7 +39,7 @@ func TestProducerAcceptanceRosterNoopAndOneChange(t *testing.T) {
 
 func TestProducerAcceptancePastNoopAndOneChange(t *testing.T) {
 	root := t.TempDir()
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(root, "projects", "*")))
 	var calls atomic.Int32
 	idx.SetOnChange(func() {
 		calls.Add(1)
@@ -90,7 +90,7 @@ func TestProducerAcceptanceRemoteNormalizesRetainedFailureAndNoop(t *testing.T) 
 }
 
 func TestProducerAcceptancePinOneCallbackPerChangedPath(t *testing.T) {
-	store := NewPinSectionStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewPinSectionStore(filepath.Join(t.TempDir(), "index.db")))
 	var calls atomic.Int32
 	store.SetOnChange(func() {
 		calls.Add(1)
@@ -128,7 +128,7 @@ func TestProducerAcceptancePinOneCallbackPerChangedPath(t *testing.T) {
 }
 
 func TestProducerAcceptanceArchiveHintsAfterSuccessfulWrites(t *testing.T) {
-	store := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewArchiveStore(filepath.Join(t.TempDir(), "index.db")))
 	var calls atomic.Int32
 	store.SetOnChange(func() {
 		calls.Add(1)
@@ -152,7 +152,7 @@ func TestProducerAcceptanceArchiveHintsAfterSuccessfulWrites(t *testing.T) {
 }
 
 func TestProducerAcceptanceFavoriteHintsAfterSuccessfulWrites(t *testing.T) {
-	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	store := closeOnCleanup(t, NewFavoriteStore(filepath.Join(t.TempDir(), "index.db")))
 	var calls atomic.Int32
 	store.SetOnChange(func() {
 		calls.Add(1)

@@ -224,7 +224,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
 
-	// Delegation capability: a grantable allowance (> 0) unlocks the delegation
+	// Delegation capability: a positive allowance unlocks the delegation
 	// and background-jobs prompt surface only when those tools are callable.
 	data.DelegationAllowance = s.delegationAllowance
 	data.CanDelegate = s.canPromptDelegation()

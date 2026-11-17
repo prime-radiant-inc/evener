@@ -182,3 +182,20 @@ test("highlightParts returns a single unmarked part when there is no match or no
   expect(highlightParts("Switch model", "")).toEqual([{ text: "Switch model", mark: false }]);
   expect(highlightParts("Switch model", "zzz")).toEqual([{ text: "Switch model", mark: false }]);
 });
+
+// "İ" lower-cases to "i" plus a combining dot, so an offset into a lower-cased
+// copy is not an offset into the text a snippet or a highlight is cut from.
+test("a hit after a character its lower case makes longer still marks the match", () => {
+  const text = "İ needle";
+  const hits = findInSessionMatches(modelWithTurns([turn("t1", [item("i1", text)])]), "needle");
+  expect(hits).toHaveLength(1);
+  expect(hits[0]?.snippet.filter((part) => part.mark)).toEqual([{ text: "needle", mark: true }]);
+  expect(highlightParts(text, "needle").filter((part) => part.mark)).toEqual([{ text: "needle", mark: true }]);
+});
+
+test("a reply is searched as it reads, the way the session's Find reads it", () => {
+  const reply: ItemModel = { id: "i1", turnId: "t", type: "agentMessage", text: "the build **fail**ed" };
+  const model = { turns: [{ id: "t", status: "completed", items: [reply] }] } as unknown as ThreadModel;
+  expect(findInSessionMatches(model, "build failed")).toHaveLength(1);
+  expect(findInSessionMatches(model, "**fail**")).toHaveLength(0);
+});

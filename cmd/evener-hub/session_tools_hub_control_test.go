@@ -125,13 +125,13 @@ func TestManagerHumanControlsParity(t *testing.T) {
 					} else {
 						writeSession(t, stateDir, projectDeleteCanonicalSessionIDs[0], workDir)
 					}
-					past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+					past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
 					if _, err := past.Rebuild(); err != nil {
 						t.Fatal(err)
 					}
-					return NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries(), Archive: hubcore.NewArchiveStore(filepath.Join(root, "archive.db")), PinSections: hubcore.NewPinSectionStore(filepath.Join(root, "pins.db")), SessionSeen: hubcore.NewSessionSeenStore(filepath.Join(root, "seen.db"))})
+					return NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries(), Archive: closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(root, "archive.db"))), PinSections: closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(root, "pins.db"))), SessionSeen: closeOnCleanup(t, hubcore.NewSessionSeenStore(filepath.Join(root, "seen.db")))})
 				}
-				w := NewWebServer(testWebConfig(t, hubcore.WebConfig{Archive: hubcore.NewArchiveStore(t.TempDir() + "/archive.db"), PinSections: hubcore.NewPinSectionStore(t.TempDir() + "/pins.db"), SessionSeen: hubcore.NewSessionSeenStore(t.TempDir() + "/seen.db")}))
+				w := NewWebServer(testWebConfig(t, hubcore.WebConfig{Archive: closeOnCleanup(t, hubcore.NewArchiveStore(t.TempDir()+"/archive.db")), PinSections: closeOnCleanup(t, hubcore.NewPinSectionStore(t.TempDir()+"/pins.db")), SessionSeen: closeOnCleanup(t, hubcore.NewSessionSeenStore(t.TempDir()+"/seen.db"))}))
 				w.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 				return w
 			}
@@ -570,7 +570,7 @@ func controlStoresSnapshot(t *testing.T, w *WebServer) any {
 
 func TestManagerHumanControlsAttributionAndClosedUnion(t *testing.T) {
 	const managerRef = "local:manager"
-	w := NewWebServer(testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", Archive: hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")), PinSections: hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db")), SessionSeen: hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db"))}))
+	w := NewWebServer(testWebConfig(t, hubcore.WebConfig{HubID: "hub-test", Archive: closeOnCleanup(t, hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))), PinSections: closeOnCleanup(t, hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))), SessionSeen: closeOnCleanup(t, hubcore.NewSessionSeenStore(filepath.Join(t.TempDir(), "seen.db")))}))
 	w.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 	o := &sessionOperations{cfg: w.cfg, sources: w.sources, navigation: w.navigation, resolve: w.resolveTopLevelSessionRef}
 	caller := appwire.ManagerView{Ref: managerRef, InstanceID: "manager-instance", Manager: true}
@@ -662,7 +662,7 @@ func TestManagerStopModesOwners(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			newFixture := func() *WebServer {
-				return NewWebServer(testWebConfig(t, hubcore.WebConfig{Archive: hubcore.NewArchiveStore(t.TempDir() + "/archive.db"), PinSections: hubcore.NewPinSectionStore(t.TempDir() + "/pins.db"), SessionSeen: hubcore.NewSessionSeenStore(t.TempDir() + "/seen.db")}))
+				return NewWebServer(testWebConfig(t, hubcore.WebConfig{Archive: closeOnCleanup(t, hubcore.NewArchiveStore(t.TempDir()+"/archive.db")), PinSections: closeOnCleanup(t, hubcore.NewPinSectionStore(t.TempDir()+"/pins.db")), SessionSeen: closeOnCleanup(t, hubcore.NewSessionSeenStore(t.TempDir()+"/seen.db"))}))
 			}
 			human, manager := newFixture(), newFixture()
 			for _, w := range []*WebServer{human, manager} {

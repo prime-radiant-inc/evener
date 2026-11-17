@@ -16,14 +16,14 @@ import (
 )
 
 // TestSubmitPendingUserInput_DeliveredOnceTheSlotFrees pins that a queued-input
-// wake is guaranteed, not best-effort.
+// wake survives a full channel, not that it is the only path to the work.
 //
-// The queued-input wake is the ONLY way ProcessPendingUserInput is ever reached:
-// cmd/evener/serve.go:1033 runs it in response to a QueuedInput message and
-// nothing else calls it. Unlike a durable start — which processNextServeInput
-// probes for unconditionally at the top of every loop iteration — there is no
-// second path to the work. A dropped wake therefore strands a message the client
-// has already been told was accepted.
+// The kick matters because it is the immediate one: a message accepted while a
+// turn holds the slot should run as soon as the slot frees, not at the next
+// attach. serve.go's processNextServeInput probes for runnable pending input
+// beside its durable-start probe, which is what covers a kick that never lands
+// at all — the case where the client has already been told its message was
+// accepted and no second kick is coming.
 func TestSubmitPendingUserInput_DeliveredOnceTheSlotFrees(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 

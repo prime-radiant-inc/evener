@@ -144,7 +144,7 @@ func TestLocalStoragePreservingMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSettings := settings.Snapshot()
-	favorite := hubcore.NewFavoriteStore(pastPath)
+	favorite := closeOnCleanup(t, hubcore.NewFavoriteStore(pastPath))
 	if err := favorite.Set("local", "session", sessionID, true, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestLocalStoragePreservingMigration(t *testing.T) {
 	if state, ok := reloaded.TargetState(target.Ref, target.ThreadID); !ok || state != hubcore.DeletionStateDeleted {
 		t.Fatalf("deletion fence lost: %s %v", state, ok)
 	}
-	gotFavorites, err := hubcore.NewFavoriteStore(pastPath).Favorites()
+	gotFavorites, err := closeOnCleanup(t, hubcore.NewFavoriteStore(pastPath)).Favorites()
 	if err != nil || !reflect.DeepEqual(gotFavorites, wantFavorites) {
 		t.Fatalf("independent past-index preferences changed: %v", err)
 	}

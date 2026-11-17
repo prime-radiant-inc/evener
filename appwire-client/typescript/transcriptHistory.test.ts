@@ -1384,7 +1384,7 @@ test("hydrateThread keeps absent task aggregate null and distinguishes an author
 // EvenerThread's own doc comment ("read on demand ... rather than pushed on
 // every event") and appwire/protocol.go's Notifications catalog, which has
 // no capabilities/goal/context/usage entry at all.
-test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnStartedAt/reasoningEffortLevels/supportsReasoning verbatim from thread.evener", () => {
+test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnStartedAt/reasoningEffortLevels/supportsReasoning/defaultReasoningEffort verbatim from thread.evener", () => {
   const model = testHydrate({
     evener: {
       ref: "ref_t",
@@ -1400,6 +1400,7 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
       activeTurnStartedAt: 1_000,
       reasoningEffortLevels: ["low", "medium", "high"],
       supportsReasoning: true,
+      defaultReasoningEffort: "high",
     },
   });
 
@@ -1418,6 +1419,7 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
   expect(model.activeTurnStartedAt).toBe(new Date(1_000).toISOString());
   expect(model.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
   expect(model.supportsReasoning).toBe(true);
+  expect(model.defaultReasoningEffort).toBe("high");
 });
 
 test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener omits them (old daemon / source-backed thread)", () => {
@@ -1432,6 +1434,7 @@ test("hydrateThread defaults the wave 5 snapshot-only fields when thread.evener 
   expect(model.activeTurnStartedAt).toBeUndefined();
   expect(model.reasoningEffortLevels).toEqual([]);
   expect(model.supportsReasoning).toBe(false);
+  expect(model.defaultReasoningEffort).toBeUndefined();
 });
 
 // Thread.createdAt/updatedAt are top-level wire fields in Unix SECONDS

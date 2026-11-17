@@ -96,7 +96,11 @@ export const AgentMessageItem = memo(function AgentMessageItem({
     const terminal = !live && closesExchange === true;
     const bubbleClass = opensExchange ? CLASS.bubble : `${CLASS.bubble} ${CLASS.continuation}`;
     const bubble = (
-      <div className={terminal ? `${bubbleClass} ${CLASS.terminal}` : bubbleClass} data-testid="agent-bubble">
+      <div
+        className={terminal ? `${bubbleClass} ${CLASS.terminal}` : bubbleClass}
+        data-testid="agent-bubble"
+        data-message-body=""
+      >
         {prose}
       </div>
     );

@@ -3447,7 +3447,7 @@ func TestRootDelegateAttention_CoverageIncludesAttentionArmedBeforeTurnBegin(t *
 		steeringFor(midTurnID, midContent),
 		steeringFor(unarmedID, midContent),
 	}
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.attentionMu.Lock()
 	staged := maps.Clone(root.attentionStagedIDs)
 	root.attentionMu.Unlock()
@@ -3509,7 +3509,7 @@ func TestRootDelegateAttention_SettledDeltaCreditsNothing(t *testing.T) {
 		`<delegate-notification delegate_id="dlg_delta">delta skip</delegate-notification>`)
 	delta := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}
 
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.promoteStagedAttentionCoverage(delta)
 	if covered := rootCoveredAttention(root); len(covered) != 0 {
 		t.Fatalf("settled delta credited coverage: %v, want nothing", covered)
@@ -3517,7 +3517,7 @@ func TestRootDelegateAttention_SettledDeltaCreditsNothing(t *testing.T) {
 
 	// The full-history round that follows credits normally.
 	full := llm.Request{HistoryMode: llm.HistoryModeFullHistory}
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.promoteStagedAttentionCoverage(full)
 	if _, ok := rootCoveredAttention(root)[attentionID]; !ok {
 		t.Fatal("settled full-history request did not credit the presented attention")
@@ -3533,10 +3533,10 @@ func TestRootDelegateAttention_FailedFullAttemptLeavesNothingForASettledDelta(t 
 		`<delegate-notification delegate_id="dlg_retry">retried as a delta</delegate-notification>`)
 
 	// The full-history attempt stages, then fails: no promotion.
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	// The retry builds and settles as a delta.
 	delta := llm.Request{HistoryMode: llm.HistoryModeResponsesDelta}
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.promoteStagedAttentionCoverage(delta)
 	if covered := rootCoveredAttention(root); len(covered) != 0 {
 		t.Fatalf("a delta retry credited the failed attempt's candidates: %v, want nothing", covered)
@@ -3552,7 +3552,7 @@ func TestRootDelegateAttention_FullHistoryFallbackCreditsWhatItCarried(t *testin
 	root, historyTurns := rootWithMidTurnAttention(t, attentionID,
 		`<delegate-notification delegate_id="dlg_fallback">carried by the fallback</delegate-notification>`)
 
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeFullHistoryFallback})
 	if _, ok := rootCoveredAttention(root)[attentionID]; !ok {
 		t.Fatal("the settled full-history fallback did not credit the attention it carried")
@@ -3592,7 +3592,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 	// content-filter retry whose compaction folds the steering turn away is
 	// the production shape). No promotion happens, and finish must not
 	// consume: the model never saw it in a settled call.
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.attentionMu.Lock()
 	if _, ok := root.attentionStagedIDs[attentionID]; !ok {
 		root.attentionMu.Unlock()
@@ -3616,7 +3616,7 @@ func TestRootDelegateAttention_CoverageCreditsOnlySettledRounds(t *testing.T) {
 
 	// The retry's round settles with the item presented: promotion credits
 	// it, and finish consumes.
-	root.stagePresentedAttentionCoverage(context.Background(), historyTurns)
+	root.stagePresentedAttentionCoverage(context.Background(), historyTurns, nil)
 	root.promoteStagedAttentionCoverage(llm.Request{})
 	if err := root.finishRootDelegateAttentionTurn(nil, nil); err != nil {
 		t.Fatalf("finish with settled coverage: %v", err)

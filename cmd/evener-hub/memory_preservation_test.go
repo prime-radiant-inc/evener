@@ -86,7 +86,7 @@ func TestMemoryPreservationHistoryCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	past := closeOnCleanup(t, hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db")))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,6 @@
 package anthropic
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -329,7 +328,7 @@ func anthropicBase64Source(mediaType string, data []byte) map[string]any {
 	return map[string]any{
 		"type":       "base64",
 		"media_type": mediaType,
-		"data":       base64.StdEncoding.EncodeToString(data),
+		"data":       llm.CachedBase64(data),
 	}
 }
 

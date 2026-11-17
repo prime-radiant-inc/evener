@@ -475,7 +475,7 @@ func repairStableWatchStoreForBootstrap(snapshot stableWatchBootstrapSnapshot, s
 		if open == nil {
 			open = transcript.OpenWriterForSession
 		}
-		if _, err := appendColdDelegateNotificationDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), stableWatchNotificationContent(state), now, open); err != nil {
+		if _, err := appendColdDelegateNotificationDurablyWithOpen(path, sessionID, stableWatchAttentionID(state), stableWatchNotificationContent(state.Frame), now, open); err != nil {
 			return err
 		}
 		if err := store.Append(jobstore.Event{

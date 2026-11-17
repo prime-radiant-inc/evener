@@ -110,3 +110,28 @@ body {
     overflow: hidden;
   }
 }
+
+/* Touch screens pan but never zoom this app (Jesse 2026-11-15): app-like on
+ * every touch device, matching the native app, which has no zoom on any
+ * display. pan-x pan-y keeps scrolling and drops double-tap zoom-to-fit and
+ * pinch zoom where touch-action carries the viewport pinch — Chromium and
+ * Android. iOS Safari does not (the same accessibility stance that makes it
+ * ignore maximum-scale), so Safari's pinch is vetoed in shell/pinchVeto.ts
+ * by preventing its non-standard gesturestart, installed from main.tsx
+ * under this same coarse query — Safari has been reported to fire gesture
+ * events for desktop trackpad pinches too, and the gate keeps those
+ * zooming. The (any-pointer: coarse) media reaches every touch screen at
+ * any width — phones, the iPhone Duo's 951pt inner display in landscape,
+ * iPad, touch laptops. Desktop zoom is untouched: both mechanisms sit under
+ * the coarse query, and a window with no touch screen never matches it.
+ * Component drag gestures (sheet, rail resize, mermaid pan) declare
+ * touch-action: none on their own elements; the intersection keeps those
+ * exactly as they are. A viewport-meta lock is not the alternative: modern
+ * iOS ignores maximum-scale for pinch anyway, so the meta stays unlocked
+ * (viewport-pin.test.ts) and the enlargement paths on touch screens are
+ * the in-app font-size preference and the OS Magnifier. */
+@media (any-pointer: coarse) {
+  body {
+    touch-action: pan-x pan-y;
+  }
+}

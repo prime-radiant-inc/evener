@@ -91,6 +91,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
+	defaultReasoningEffort := envelope.DefaultReasoningEffort
 	legacyProfile := status.Profile
 	legacyModel := status.Model
 	if modelControl != nil {
@@ -161,6 +162,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ReasoningEffort:        reasoningEffort,
 			ReasoningEffortLevels:  reasoningEffortLevels,
 			SupportsReasoning:      supportsReasoning,
+			DefaultReasoningEffort: defaultReasoningEffort,
 			VisionModel:            visionModel,
 			Manager:                manager,
 			LastTurnEndedAt:        lastTurnEndedAt,

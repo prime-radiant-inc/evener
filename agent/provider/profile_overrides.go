@@ -26,6 +26,12 @@ var (
 // before the delegate does any work. An invalid schema returns an error
 // instead of binding.
 //
+// A communicate tool definition whose parameters cannot be deep-copied
+// through JSON also returns an error instead of leaving the `output` schema
+// unspliced: the profile would advertise a result contract the child cannot
+// satisfy. A definition with no parameters or no properties map is returned
+// unchanged, since there is nowhere to splice the schema.
+//
 // Passing nil or an empty map returns p unchanged.
 //
 // Stacking with WithAllowedDecisions: apply this first, then WithAllowedDecisions.
@@ -45,7 +51,11 @@ func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) (*Prof
 	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "communicate" {
-			defs[i] = replaceCommunicateOutputSchema(defs[i], outputSchema)
+			bound, err := replaceCommunicateOutputSchema(defs[i], outputSchema)
+			if err != nil {
+				return nil, fmt.Errorf("bind output schema: %w", err)
+			}
+			defs[i] = bound
 		}
 	}
 	clone.toolDefs = defs
@@ -100,33 +110,37 @@ func WithCheapModel(p *Profile, ref string) *Profile {
 // replaceCommunicateOutputSchema deep-copies td.Parameters and overwrites
 // Parameters.properties.output with a deep copy of outputSchema. It also adds
 // "output" to Parameters.required if not already present.
-func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[string]any) llm.ToolDefinition {
+//
+// A tool definition with no parameters or no properties map is returned
+// unchanged: there is nowhere to splice the schema, and that absence is the
+// profile's own shape rather than a failure to bind.
+func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[string]any) (llm.ToolDefinition, error) {
 	// Deep-copy Parameters via JSON round-trip to avoid mutating shared map state.
 	if td.Parameters != nil {
 		b, err := profileJSONMarshal(td.Parameters)
 		if err != nil {
-			return td
+			return td, fmt.Errorf("marshal tool parameters: %w", err)
 		}
 		var params map[string]any
 		if err := profileJSONUnmarshal(b, &params); err != nil {
-			return td
+			return td, fmt.Errorf("unmarshal tool parameters: %w", err)
 		}
 		td.Parameters = params
 	}
 
 	params := td.Parameters
 	if params == nil {
-		return td
+		return td, nil
 	}
 	props, _ := params["properties"].(map[string]any)
 	if props == nil {
-		return td
+		return td, nil
 	}
 
 	// Deep-copy outputSchema so later mutations by the caller do not leak in.
 	copied, err := deepCopyJSONMap(outputSchema)
 	if err != nil {
-		return td
+		return td, fmt.Errorf("copy output schema: %w", err)
 	}
 	props["output"] = copied
 
@@ -137,7 +151,7 @@ func replaceCommunicateOutputSchema(td llm.ToolDefinition, outputSchema map[stri
 	}
 	params["required"] = topReq
 
-	return td
+	return td, nil
 }
 
 // deepCopyJSONMap returns a deep copy of m via JSON round-trip. Returns an

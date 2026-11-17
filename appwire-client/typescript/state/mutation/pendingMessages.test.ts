@@ -104,6 +104,31 @@ test("a daemon queue row and its local pending row project as one message", () =
   });
 });
 
+test("a foreign text+image queue row carries the wire's image count", () => {
+  // No local family: another client queued this entry, so the wire's
+  // FIFO-aligned imageCounts is the only image evidence the projection
+  // can read (#6360). The preview grammar stays silent for a text-bearing
+  // entry, so the count must come from the wire field or be lost.
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 1,
+      ids: ["q_foreign"],
+      texts: ["look at this"],
+      preview: ["look at this"],
+      imageCounts: [2],
+    },
+  });
+  const rows = project({ model });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "queue:q_foreign",
+    method: "queue",
+    text: "look at this",
+    imageCount: 2,
+  });
+});
+
 test("a queue row keeps the daemon's mentions when it merges with the local row", () => {
   const model = threadModel({
     queue: {
@@ -379,6 +404,270 @@ test("a carried row leaves once a recorded mutation owns its queue entry", () =>
     ],
   });
   expect(rows).toEqual([]);
+});
+
+// The refused-promote duplicate (the live-hub race Jesse reported): the
+// queue drained before the promote's press landed, so the daemon rejected
+// the promote (queue index out of range) and its record moved to recovery.
+// The drain that won the race DELIVERED the entry: the message is already a
+// transcript item. The refused recovery row must not render a second copy
+// of delivered content - its payload names the queue entry it tried to
+// promote, and a recorded mutation owns that entry.
+test("a refused promote does not render when its queue entry is already delivered", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [pending("consumer", "turn/drainAsSteer", "queued text", { queueEntryIds: ["q1"] })],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [{ id: "i1", turnId: "t1", type: "userMessage", text: "queued text", clientMutationId: "consumer" }],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+      }),
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+// The settled state (roborev round 1): the winning drain incorporated, so
+// pendingMutations no longer holds the consumer and its entry ownership
+// vanished with it. The transcript item that replaced the entry is all the
+// proof left, and it speaks in the consumed input's lineage - the entry's
+// SOURCE mutation identity, not the promote's. The refused row must stay
+// suppressed there too, or the duplicate returns on the next read.
+test("a refused promote stays suppressed after its entry's consumer settles", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued text",
+            clientMutationId: "consumer",
+            conversationInputIds: ["client:m_source"],
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        // The store-produced shape: the promote's optimistic display carries
+        // the promoted row's identity beside its input (threads.ts puts it
+        // there), not the payload.
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+      }),
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+// An edited refused promote is the user's OWN unsent composition
+// (compositionRevision above zero): delivery of the ORIGINAL entry must not
+// hide it - the row the reader sees is the edited text, not the delivered
+// message, and suppressing it would strand the composition with no surface
+// at all (roborev round 3, finding 1). The row renders as refused work.
+test("an edited refused promote renders its own composition after its entry's source delivery", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued text",
+            clientMutationId: "consumer",
+            conversationInputIds: ["client:m_source"],
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+        // The composer edited the refused row's text after the refusal.
+        compositionRevision: 2,
+      }),
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: "promote:edited:promote:2", state: "refused" });
+});
+
+// Normal queue consumption records the source mutation id as the delivered
+// userMessage's own clientMutationId, with no conversationInputIds (the
+// daemon's Go projection omits lineage for that path). The suppression and
+// the retirement evidence must both read THAT shape: the recorded item's own
+// identity is the proof the entry delivered (roborev round 5, finding 1).
+test("a refused promote suppresses through a recorded item's own mutation id, no lineage needed", () => {
+  const model = threadModel({
+    queue: { depth: 0, revision: 6, ids: [] },
+    pendingMutations: [],
+    turns: [
+      {
+        id: "t1",
+        status: "completed",
+        items: [
+          {
+            id: "i1",
+            turnId: "t1",
+            type: "userMessage",
+            text: "queued text",
+            // Normal consumption: the source's own id is the item's id. No
+            // conversationInputIds.
+            clientMutationId: "m_source",
+          },
+        ],
+      },
+    ],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 0)",
+      }),
+    ],
+  });
+  expect(rows).toEqual([]);
+});
+
+// A refused promote whose entry is STILL QUEUED (the index-shift refusal:
+// another client removed an earlier entry, so the promote's index no longer
+// matches) consumed nothing. The message sits in the daemon's queue, so the
+// merged row must be the QUEUE's row - method, state, and controls included -
+// or the user's queued message renders as refused work with no Steer, Edit,
+// or Remove until something else delivers it (roborev round 8, finding 1).
+test("a refused promote whose entry is still queued renders as the queue's row with its controls", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 9,
+      ids: ["q1"],
+      clientMutationIds: ["m_source"],
+      texts: ["queued text"],
+      preview: ["queued text"],
+    },
+    pendingMutations: [],
+    turns: [],
+  });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [
+      recovery("promote", "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+        payload: { ref: "ref_a", clientMutationId: "promote", index: 0, expectedEntryId: "q1" },
+        optimisticDisplay: {
+          method: "turn/promoteQueuedAsSteer",
+          input: textInput("queued text"),
+          sourceMutationId: "m_source",
+        },
+        recoveryReason: "promote: queue index 0 out of range (depth 1)",
+      }),
+    ],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    id: "promote",
+    method: "queue",
+    state: "queued",
+    queueIndex: 0,
+    queueEntryId: "q1",
+  });
+});
+
+// Two distinct refused promotions of the same still-queued entry - two tabs
+// steering during the same index shift - leave two recoveries. The queue's
+// presentation must win for BOTH: each unedited recovery merges into the
+// queue row, and neither may render as a second refused row (roborev round
+// 10, finding 1).
+test("two refused promotions of one still-queued entry leave one queue row, not a refused twin", () => {
+  const model = threadModel({
+    queue: {
+      depth: 1,
+      revision: 9,
+      ids: ["q1"],
+      clientMutationIds: ["m_source"],
+      texts: ["queued text"],
+      preview: ["queued text"],
+    },
+    pendingMutations: [],
+    turns: [],
+  });
+  const refusedPromote = (id: string) =>
+    recovery(id, "rejected", "turn/promoteQueuedAsSteer", "queued text", {
+      payload: { ref: "ref_a", clientMutationId: id, index: 0, expectedEntryId: "q1" },
+      optimisticDisplay: {
+        method: "turn/promoteQueuedAsSteer",
+        input: textInput("queued text"),
+        sourceMutationId: "m_source",
+      },
+      recoveryReason: "promote: queue index 0 out of range (depth 1)",
+    });
+  const rows = project({
+    model,
+    mutationStateAuthoritative: true,
+    mutationSnapshotCurrent: true,
+    recovery: [refusedPromote("promote_a"), refusedPromote("promote_b")],
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({
+    method: "queue",
+    state: "queued",
+    queueIndex: 0,
+    queueEntryId: "q1",
+  });
 });
 
 test("a carried row stays while its recorded owner is still only pending", () => {

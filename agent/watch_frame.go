@@ -31,6 +31,14 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 }
 
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {
+	return jm.watchNotificationWithDelivery(cfg, jobID, reason, root, "")
+}
+
+// watchNotificationWithDelivery is watchNotificationFromWatch with a delivery id
+// on the notification's own lineage entry. A no-send condition fire carries
+// one, so the runaway guard can count how many of this watch's fires an
+// event descends from (conditionFireNotificationLocked).
+func (jm *jobManager) watchNotificationWithDelivery(cfg *watchConfig, jobID, reason string, root *provenance.Causal, deliveryID string) jobNotification {
 	n := watchNotification(jobID, reason)
 	if cfg == nil {
 		return n
@@ -47,7 +55,7 @@ func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason
 	if visibleSessionID == "" {
 		visibleSessionID = jm.sessionID
 	}
-	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, "", visibleSessionID, jobID)
+	n.Provenance = provenance.WithWatch(root, cfg.watchID, cfg.generation, deliveryID, visibleSessionID, jobID)
 	if cfg.receiverSessionID != "" {
 		n.receiverSessionID = cfg.receiverSessionID
 		n.receiverNotify = cfg.receiverNotify
@@ -216,12 +224,12 @@ func writeAssistantToolWatchEvent(b *strings.Builder, data events.ToolCallEndDat
 	}
 	writeWatchFrameOptionalField(b, "arguments_json", data.ArgumentsJSON)
 	if data.Output != "" {
-		output, truncated := limitedWatchEventText(data.Output)
+		output, truncated := watchToolEndField(data.Output, data.OutputBytes)
 		writeWatchFrameTextField(b, "output", output)
 		writeWatchFrameBoolField(b, "output_truncated", truncated)
 	}
 	if data.Error != "" {
-		errText, truncated := limitedWatchEventText(data.Error)
+		errText, truncated := watchToolEndField(data.Error, data.ErrorBytes)
 		writeWatchFrameTextField(b, "error", errText)
 		writeWatchFrameBoolField(b, "error_truncated", truncated)
 	}
@@ -244,10 +252,33 @@ func writeJobNotificationWatchEvent(b *strings.Builder, data events.JobFinishedD
 }
 
 func limitedWatchEventText(s string) (string, bool) {
-	const maxEventTextChars = 1000
-	limited := limitWatchText(s, maxEventTextChars)
+	limited := limitWatchText(s, events.ToolEndExcerptRunes)
 	return limited, limited != s
 }
+
+// watchToolEndField renders one text field of an assistant.tool frame. A text
+// the event cut is already its first ToolEndExcerptRunes runes, with the full
+// byte length alongside; the frame renders that excerpt exactly as it rendered
+// the whole text when the event carried it, indicator and flag included, so a
+// frame for a bounded event and one for the same text unbounded are the same
+// bytes.
+//
+// A cut text is the excerpt bound exactly, so it needs room for the indicator
+// even though no second bound applies; the copy is over at most
+// ToolEndExcerptRunes runes, not the output's full length.
+func watchToolEndField(text string, fullBytes int) (string, bool) {
+	if fullBytes <= 0 {
+		return limitedWatchEventText(text)
+	}
+	runes := []rune(text)
+	keep := min(len(runes), toolEndExcerptKeepRunes)
+	return string(runes[:keep]) + watchTruncatedIndicator, true
+}
+
+// toolEndExcerptKeepRunes is how much of a bounded field fits beside the
+// truncation indicator within the excerpt bound. The indicator is ASCII, so its
+// byte length is its rune count.
+const toolEndExcerptKeepRunes = events.ToolEndExcerptRunes - len(watchTruncatedIndicator)
 
 func writeWatchFrameOptionalField(b *strings.Builder, name, value string) {
 	value = limitWatchText(value, watchTriggerMaxChars)

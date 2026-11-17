@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -61,9 +60,10 @@ func TestDelegateAdvertisesAgentTypeEnum(t *testing.T) {
 	}
 }
 
-// TestAgentTypeRosterKeyedOnAllowance verifies that delegate-listing agent types
-// are included in the roster when the session has grantable allowance (> 0) and
-// filtered out when allowance is 0 (leaf/dark behavior).
+// TestAgentTypeRosterKeyedOnAllowance verifies that the roster is listed while
+// the session may start delegates (allowance > 0), that it is filtered out at
+// allowance 0, and that each role's advertised tools are the ones the session's
+// default grant actually gives the child.
 func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -92,7 +92,7 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 		return sess
 	}
 
-	t.Run("allowance=1 advertises delegate-listing type", func(t *testing.T) {
+	t.Run("allowance=1 advertises leaf tools", func(t *testing.T) {
 		sess := makeSession(1)
 		defer sess.Close()
 
@@ -111,21 +111,43 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 			t.Errorf("delegateAgentTypeNames: delegate-listing type %q missing at allowance=1; got %v", "coordinator", typeNames)
 		}
 
-		// The printed tool summary for coordinator should include "delegate" at allowance=1.
-		coordinator := sess.pluginAgents["coordinator"]
-		summary := sess.defaultToolSummaryForAgent(coordinator)
-		if !strings.Contains(summary, "delegate") {
-			t.Errorf("defaultToolSummaryForAgent: summary does not include %q at allowance=1; got %q", "delegate", summary)
+		// defaultDelegateGrant(1) is 0, so every delegate started here is a leaf:
+		// the roles this roster offers must not claim the tools a leaf loses.
+		for _, role := range []string{"coordinator", "all"} {
+			tools := sess.defaultToolNamesForAgent(sess.pluginAgents[role])
+			for _, name := range []string{"delegate", "manage_worktree", "model_list"} {
+				if slices.Contains(tools, name) {
+					t.Errorf("%s advertises %s at allowance=1, but a delegate started here gets allowance 0; tools %v", role, name, tools)
+				}
+			}
 		}
-		// The all-tools role's printed capability set must not advertise tools
-		// every subagent loses at session init (#6080).
+		// The all-tools role's capability set must not advertise tools every
+		// subagent loses at session init (#6080).
 		if sess.reg.Get("urls_add") == nil {
 			t.Fatal("session registry has no urls_add; the roster fixture cannot prove the strip")
 		}
-		allSummary := sess.defaultToolSummaryForAgent(sess.pluginAgents["all"])
+		allTools := sess.defaultToolNamesForAgent(sess.pluginAgents["all"])
 		for _, tool := range []string{"ask_user", "urls_add", "urls_remove"} {
-			if strings.Contains(allSummary, tool) {
-				t.Errorf("all-tools summary advertises %q; got %q", tool, allSummary)
+			if slices.Contains(allTools, tool) {
+				t.Errorf("all-tools roster advertises %q; tools %v", tool, allTools)
+			}
+		}
+	})
+
+	t.Run("allowance=2 advertises delegation tools", func(t *testing.T) {
+		sess := makeSession(2)
+		defer sess.Close()
+
+		// defaultDelegateGrant(2) is 1, so a delegate started here delegates in
+		// turn and the roster must say so for the roles that carry the tool.
+		coordinatorTools := sess.defaultToolNamesForAgent(sess.pluginAgents["coordinator"])
+		if !slices.Contains(coordinatorTools, "delegate") {
+			t.Errorf("coordinator does not advertise delegate at allowance=2; tools %v", coordinatorTools)
+		}
+		allTools := sess.defaultToolNamesForAgent(sess.pluginAgents["all"])
+		for _, name := range []string{"delegate", "manage_worktree", "model_list"} {
+			if !slices.Contains(allTools, name) {
+				t.Errorf("all does not advertise %s at allowance=2; tools %v", name, allTools)
 			}
 		}
 	})
@@ -155,11 +177,10 @@ func TestAgentTypeRosterKeyedOnAllowance(t *testing.T) {
 			t.Errorf("delegateAgentTypeNames: delegate-listing type %q should be absent at allowance=0; got %v", "coordinator", typeNames)
 		}
 
-		// The printed tool summary for coordinator should NOT include "delegate" at allowance=0.
-		coordinator := sess.pluginAgents["coordinator"]
-		summary := sess.defaultToolSummaryForAgent(coordinator)
-		if strings.Contains(summary, "delegate") {
-			t.Errorf("defaultToolSummaryForAgent: summary should not include %q at allowance=0; got %q", "delegate", summary)
+		// A leaf grants nothing, so its roster claims no delegation tools.
+		coordinatorTools := sess.defaultToolNamesForAgent(sess.pluginAgents["coordinator"])
+		if slices.Contains(coordinatorTools, "delegate") {
+			t.Errorf("coordinator roster advertises delegate at allowance=0; tools %v", coordinatorTools)
 		}
 	})
 }
