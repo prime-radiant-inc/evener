@@ -12,7 +12,7 @@ export function revealControl(container, refusedSelector) {
   if (!container) return null;
   const controls = [...container.querySelectorAll("summary, button")];
   const usable = (control) => !control.matches(refusedSelector);
-  const fold = controls.find((control) => usable(control) && control.textContent.trim().endsWith("inactive subagents"));
+  const fold = controls.find((control) => usable(control) && /^\d+ inactive subagents?$/.test(control.textContent.trim()));
   // 4 is Node.DOCUMENT_POSITION_FOLLOWING. The numeric constant keeps the
   // serialized function independent of globals and of a browsing context.
   const DOCUMENT_POSITION_FOLLOWING = 4;

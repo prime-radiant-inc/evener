@@ -30,9 +30,9 @@ function sidebar(markup, doc = document) {
 
 const current = (id) => `<button id="current-${id}" data-activity-anchor="delegate:${id}">running delegate</button>`;
 const inactive = (id) => `<button id="inactive-${id}" data-activity-anchor="delegate:${id}">finished delegate</button>`;
-const fold = ({ id = "inactive-fold", attrs = "" } = {}) => `<div><button id="${id}" ${attrs}>Inactive subagents (51)</button></div>`;
+const fold = ({ id = "inactive-fold", attrs = "" } = {}) => `<details><summary id="${id}" ${attrs}>51 inactive subagents</summary></details>`;
 const show = (id = "show-more") => `<button id="${id}">Show 20 more · 31 remaining</button>`;
-const loadMore = (id = "load-more") => `<button id="${id}">Load more subagents</button>`;
+const loadMore = (id = "load-more") => `<div id="${id}" role="status" aria-label="Loading"><div data-testid="skeleton-line"></div></div>`;
 
 const pick = (root, refused = REFUSED_BUTTON_SELECTOR) => revealControl(root, refused)?.id ?? null;
 
@@ -46,7 +46,7 @@ function evaluateStep(root, selector, topmost) {
 
 function clickRecorder(root) {
   const clicked = { id: null };
-  for (const button of root.querySelectorAll("button"))
+  for (const button of root.querySelectorAll("button, summary"))
     button.addEventListener("click", (event) => { clicked.id = event.currentTarget.id; });
   return clicked;
 }
@@ -67,24 +67,24 @@ test("an open fold (an anchor follows it) presses Show more", () => {
   expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${show()}`))).toBe("show-more");
 });
 
-test("an open fold with every loaded inactive row visible presses the remote boundary", () => {
-  expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${loadMore()}`))).toBe("load-more");
+test("an open fold with every loaded inactive row visible has no control to press", () => {
+  expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${loadMore()}`))).toBeNull();
 });
 
 test("an open fold with both local and remote pages presses Show first", () => {
   expect(pick(sidebar(`${current("a")}${fold()}${inactive("b")}${show()}${loadMore()}`))).toBe("show-more");
 });
 
-test("without a fold only the remote page boundary can reveal a later page", () => {
-  expect(pick(sidebar(`${current("a")}${loadMore()}`))).toBe("load-more");
+test("without a fold the remote page boundary loads automatically", () => {
+  expect(pick(sidebar(`${current("a")}${loadMore()}`))).toBeNull();
 });
 
 test("a closed inactive disclosure outranks a rendered page boundary", () => {
   expect(pick(sidebar(`${current("a")}${fold()}${loadMore()}`))).toBe("inactive-fold");
 });
 
-test("a refused fold is skipped and the page boundary is chosen", () => {
-  expect(pick(sidebar(`${current("a")}${fold({ attrs: 'aria-disabled="true"' })}${loadMore()}`))).toBe("load-more");
+test("a refused fold offers no control while the page boundary loads automatically", () => {
+  expect(pick(sidebar(`${current("a")}${fold({ attrs: 'aria-disabled="true"' })}${loadMore()}`))).toBeNull();
 });
 
 test("a refused fold alone offers no control", () => {
@@ -132,8 +132,8 @@ test("the gate accepts a page boundary when the first page holds only current ro
   const root = sidebar(`${current("a")}${loadMore()}`);
   expect(gate(MISSING_TARGET)).toBe(true);
   const clicked = clickRecorder(root);
-  expect(evaluateStep(root, MISSING_TARGET, root.querySelector("#load-more"))).toEqual({ before: root.textContent });
-  expect(clicked.id).toBe("load-more");
+  expect(evaluateStep(root, MISSING_TARGET, root.querySelector("#load-more"))).toBeNull();
+  expect(clicked.id).toBeNull();
 });
 
 test("the gate accepts a closed fold beside a current row", () => {
@@ -144,12 +144,6 @@ test("the gate accepts a closed fold beside a current row", () => {
 test("the gate is satisfied by the target itself", () => {
   sidebar(`${current("a")}${fold()}`);
   expect(gate(`${CONTAINER} [data-activity-anchor="delegate:a"]`)).toBe(true);
-});
-
-test("the gate stays shut while the only page boundary is refused", () => {
-  const root = sidebar(`${current("a")}${loadMore("load-more-refused")}`);
-  root.querySelector("#load-more-refused").setAttribute("aria-disabled", "true");
-  expect(gate(MISSING_TARGET)).toBe(false);
 });
 
 test("the gate stays shut for a collection with no usable control", () => {

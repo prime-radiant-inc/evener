@@ -30,6 +30,7 @@ export function ActivityPageBoundary({
 }: ActivityPageBoundaryProps) {
   const element = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
+  const currentVisibility = useRef(false);
   const observedRows = useRef(rows);
   const isCurrent = useActivityViewCurrent();
   const admit = useCallback(() => {
@@ -41,6 +42,7 @@ export function ActivityPageBoundary({
   }, [loadMore, resource]);
   useEffect(() => {
     observedRows.current = rows;
+    currentVisibility.current = false;
     setVisible(false);
     const target = element.current;
     if (!target || !enabled || !hasMore || loading || typeof IntersectionObserver !== "function") return;
@@ -49,6 +51,7 @@ export function ActivityPageBoundary({
       (entries) => {
         if (!active || !isCurrent() || observedRows.current !== rows) return;
         const next = entries.some((entry) => entry.isIntersecting);
+        currentVisibility.current = next;
         setVisible(next);
       },
       { rootMargin: "200px" },
@@ -56,6 +59,7 @@ export function ActivityPageBoundary({
     observer.observe(target);
     return () => {
       active = false;
+      currentVisibility.current = false;
       observer.disconnect();
     };
     // A successful page changes rows even when React batches the loading states.
@@ -63,7 +67,7 @@ export function ActivityPageBoundary({
   }, [enabled, hasMore, loading, rows, isCurrent]);
   useEffect(() => {
     if (!isCurrent() || !enabled || !hasMore || loading || error || permanent) return;
-    if (!restore && !visible) return;
+    if (!restore && !(visible && currentVisibility.current)) return;
     const admitPage = () => {
       if (isCurrent() && observedRows.current === rows) void admit();
     };

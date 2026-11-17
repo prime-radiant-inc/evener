@@ -83,6 +83,10 @@
   gap: var(--space-1);
 }
 
+.stack > div > ul {
+  gap: var(--space-1);
+}
+
 .rowContent {
   display: flex;
   align-items: flex-start;

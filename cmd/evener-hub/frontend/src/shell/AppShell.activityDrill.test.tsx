@@ -546,12 +546,10 @@ test.each([
       const sidebarNow = () => within(screen.getByTestId("activity-sidebar"));
       const delegateChildRefs = (ref: string): readonly string[] =>
         sessionActivitySnapshot(client, ref, "session")?.delegates.rows.map((row) => row.childRef) ?? [];
-      // The Agents body's one expandable control is the inactive fold. Open it
-      // when the wanted row is not already current, addressed by structure
-      // (aria-expanded), never by its human-readable label copy.
+      // Open the native inactive disclosure when the wanted row is not current.
       const revealInactive = async (row: RegExp): Promise<void> => {
         if (sidebarNow().queryByRole("button", { name: row })) return;
-        const fold = sidebarNow().queryByRole("button", { expanded: false });
+        const fold = screen.getByTestId("activity-sidebar").querySelector("details:not([open]) > summary");
         if (!fold) throw new Error(`No closed inactive-subagent fold while waiting for ${row}`);
         await act(async () => {
           fireEvent.click(fold);

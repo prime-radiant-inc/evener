@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ActivityPageBoundary } from "./ActivityPageBoundary";
+import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 
 const base = {
   resource: "delegates" as const,
@@ -28,5 +29,28 @@ describe("ActivityPageBoundary", () => {
   it("does not present a permanent page failure as loading", () => {
     render(<ActivityPageBoundary {...base} hasMore loading={false} permanent loadMore={vi.fn()} />);
     expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+  });
+
+  it("waits for the moved boundary to become visible after new rows arrive", async () => {
+    vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+    const loadMore = vi.fn(() => Promise.resolve());
+    const firstRows = [{ id: "first" }];
+    const view = render(
+      <ActivityPageBoundary {...base} rows={firstRows} hasMore loading={false} loadMore={loadMore} />,
+    );
+    await act(async () => ActivityBoundaryObserver.intersect());
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <ActivityPageBoundary
+        {...base}
+        rows={[...firstRows, { id: "second" }]}
+        hasMore
+        loading={false}
+        loadMore={loadMore}
+      />,
+    );
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    await act(async () => ActivityBoundaryObserver.intersect());
+    await waitFor(() => expect(loadMore).toHaveBeenCalledTimes(2));
   });
 });
