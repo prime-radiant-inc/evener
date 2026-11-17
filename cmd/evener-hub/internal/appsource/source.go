@@ -265,12 +265,12 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	complete := response.OlderCursor == ""
 	// A bounded window alone cannot authenticate a formerly complete prefix,
 	// even when it overlaps the retained tail. Follow its actual continuation,
-	// but only across the short prefix a session that just grew past one page
-	// has: the walk costs one daemon round trip per page, so an unbounded one
-	// made every later read of a long session pay for the entire transcript
-	// again (#4689). Past the cap the retained span is dropped and identity
-	// rotates, which turns a cursor naming it into a typed stale error instead
-	// of a silently reused incarnation.
+	// but only across a short hidden prefix: the walk costs one daemon round
+	// trip per page, so the read's paging cost stays bounded no matter how long
+	// the transcript is. Past the cap the retained span is dropped and identity
+	// rotates once, which turns a cursor naming it into a typed stale error
+	// instead of a silently reused incarnation, while the daemon's bounded page
+	// is still served and stored.
 	hiddenPrefix := exists && previous.SourceIdentity == daemonIdentity && previous.Prefix && !complete
 	hiddenPrefixUnverified := false
 	if hiddenPrefix {
@@ -600,10 +600,22 @@ func (s *LocalDaemonSource) localDaemonNativeWindow(ctx context.Context, resolve
 // worth, and the caller rotates identity so those cursors go stale instead.
 const localDaemonHiddenPrefixMaxPages = 4
 
+// localDaemonHiddenAdvanceExtraPages covers the visible page an advance walk
+// re-reads. A bounded-to-complete advance starts at the retained span's last
+// item, not at the daemon page's own boundary, so its walk spans the hidden
+// prefix plus the page the read is serving. Every session the prefix walk
+// authenticates must also pass the advance walk, which therefore reaches at
+// least one page further back: two pages leaves room for the page itself plus
+// one older boundary page.
+const localDaemonHiddenAdvanceExtraPages = 2
+
 // localDaemonHiddenPrefix walks at most localDaemonHiddenPrefixMaxPages pages of
 // hidden history. It reports complete=false, with no error, when the prefix is
-// longer than that: the caller then rotates the snapshot identity rather than
-// paying for the rest of the transcript on every read.
+// longer than that, and then returns the candidates it was given: the caller
+// serves that page under a rotated snapshot identity rather than paying for the
+// rest of the transcript on every read, and the rotated state carries the page's
+// extent so the next read extends it instead of rotating again. A prefix within
+// the bound comes back fully authenticated with complete=true.
 func (s *LocalDaemonSource) localDaemonHiddenPrefix(ctx context.Context, resolved localDaemonItemThread, itemsView, nativeCursor string, current []appitempaging.TranscriptItemCandidate, remaining int) ([]appitempaging.TranscriptItemCandidate, bool, error) {
 	if nativeCursor == "" {
 		return current, true, nil
@@ -611,6 +623,9 @@ func (s *LocalDaemonSource) localDaemonHiddenPrefix(ctx context.Context, resolve
 	history, complete, err := s.localDaemonHiddenHistory(ctx, resolved, itemsView, nativeCursor, current, remaining, localDaemonHiddenPrefixMaxPages)
 	if err != nil {
 		return nil, false, err
+	}
+	if !complete {
+		return current, false, nil
 	}
 	return history, complete, nil
 }
@@ -728,7 +743,11 @@ func (s *LocalDaemonSource) advanceLocalDaemonItemSnapshot(ctx context.Context, 
 	if err != nil {
 		return next, false, err
 	}
-	history, complete, err := s.localDaemonHiddenHistory(ctx, resolved, itemsView, cursor, candidates[boundary:], previous.ItemCount, localDaemonHiddenPrefixMaxPages)
+	// This walk starts at the retained span's last item rather than at the
+	// daemon page's own boundary, so it covers the visible page on top of the
+	// hidden prefix. Its bound carries the visible page, so any session the
+	// prefix walk authenticates also passes here.
+	history, complete, err := s.localDaemonHiddenHistory(ctx, resolved, itemsView, cursor, candidates[boundary:], previous.ItemCount, localDaemonHiddenPrefixMaxPages+localDaemonHiddenAdvanceExtraPages)
 	if ctx.Err() != nil {
 		return next, false, ctx.Err()
 	}
