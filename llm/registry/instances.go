@@ -1219,36 +1219,45 @@ func (r *Registry) Instances() []Instance {
 	def, _, _ := r.DefaultInstance()
 	var out []Instance
 	for _, inst := range r.rankedInstances() {
-		t := r.listingTransport(inst.rec)
-		cred, warns := r.credential(inst.rec, t)
-		h := inst.rec.head
-		base := ""
-		if !inst.rec.curated && inst.rec.providerID != inst.name {
-			base = inst.rec.providerID
-		}
-		baseURL := ""
-		if !h.Hidden {
-			baseURL, _, _ = r.resolveBaseURL(inst.rec, t)
-		}
-		out = append(out, Instance{
-			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: r.listingProtocol(inst.rec), Surface: h.Surface,
-			Auth: t.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
-			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
-			CredentialSource: cred.Source, Warnings: warns,
-			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, t, cred),
-		})
+		out = append(out, r.instanceView(inst, def))
 	}
 	return out
 }
 
-// Instance returns one instance's listing view.
+// Instance returns one instance's listing view: the same row Instances would
+// carry for it, built for this instance alone. Callers that ask for one row
+// (the hub's status and listing paths ask per curated id, hundreds of times a
+// tick) must not pay for every other row's credential resolution and base URL.
 func (r *Registry) Instance(name string) (Instance, bool) {
-	for _, inst := range r.Instances() {
-		if inst.Name == name {
-			return inst, true
-		}
+	inst, ok := r.instances[name]
+	if !ok {
+		return Instance{}, false
 	}
-	return Instance{}, false
+	def, _, _ := r.DefaultInstance()
+	return r.instanceView(inst, def), true
+}
+
+// instanceView is one instance's listing row. Instances and Instance share it
+// so the single-row answer and the listing's row cannot drift.
+func (r *Registry) instanceView(inst *instance, def string) Instance {
+	t := r.listingTransport(inst.rec)
+	cred, warns := r.credential(inst.rec, t)
+	h := inst.rec.head
+	base := ""
+	if !inst.rec.curated && inst.rec.providerID != inst.name {
+		base = inst.rec.providerID
+	}
+	baseURL := ""
+	if !h.Hidden {
+		baseURL, _, _ = r.resolveBaseURL(inst.rec, t)
+	}
+	return Instance{
+		Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: r.listingProtocol(inst.rec), Surface: h.Surface,
+		Auth: t.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
+		Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
+		CredentialSource: cred.Source, Warnings: warns,
+		ShadowedEnvVar: r.shadowedEnvVar(inst.rec, t, cred),
+	}
 }
 
 // HasInstance reports whether the listing would carry the named instance,

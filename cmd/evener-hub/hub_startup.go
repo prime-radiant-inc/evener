@@ -876,17 +876,15 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// past index's rebuild interval (S14).
 	goBackground(func() { refreshHubMessageSearch(ctx, r.messageSearch, past, cfg.PastIndexRebuild) })
 
-	// Attention watcher: derives each live session's attention level from the
-	// same remote-inclusive metas/live the sidebar tree uses (see
-	// web.navigationSnapshot), and broadcasts evener/attention/changed when a
-	// session's level actually transitions (notifications.js drives the tab
-	// title/favicon badge and OS notifications from it). Ticks every 5s and
-	// on-demand via attentionPoke.
-	goBackground(func() { watchHubAttention(ctx, r.attentionPoke, r.archive, web) })
-
-	// Notices watcher: re-derives the hub's notices every few seconds and
-	// broadcasts evener/notices/changed when they change (S11).
-	goBackground(func() { watchHubNotices(ctx, web) })
+	// Snapshot wake: derives each live session's attention level from the same
+	// remote-inclusive metas/live the sidebar tree uses (see
+	// web.navigationSnapshot) and republishes the Manager roster, broadcasting
+	// evener/attention/changed when a session's level actually transitions
+	// (notifications.js drives the tab title/favicon badge and OS notifications
+	// from it); on the same wake it re-derives the hub's notices and broadcasts
+	// evener/notices/changed when they change (S11). Ticks every 5s and, for
+	// attention, on-demand via attentionPoke.
+	startHubSnapshotWatchers(goBackground, ctx, r.attentionPoke, r.archive, web)
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already

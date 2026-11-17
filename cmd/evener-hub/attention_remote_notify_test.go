@@ -39,7 +39,7 @@ func TestWatchHubAttentionNotifiesForRemoteSessionApproval(t *testing.T) {
 	poke := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		watchHubAttention(ctx, poke, archive, web)
+		startHubSnapshotWatchers(func(fn func()) { go fn() }, ctx, poke, archive, web)
 		close(done)
 	}()
 	t.Cleanup(func() {

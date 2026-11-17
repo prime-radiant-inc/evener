@@ -444,6 +444,7 @@ func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
 	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
 	inst, ok := r.Instance("vertex")
+
 	if !ok || inst.CredentialSource != "store" || len(inst.Warnings) != 0 {
 		t.Fatalf("instance = %+v ok=%v; want source store with no warnings", inst, ok)
 	}
@@ -2208,5 +2209,35 @@ func TestCredentialMissingReasonTracksTheSlotState(t *testing.T) {
 				t.Fatalf("gate: MissingReason = %q; want missing=%v", gate.Credential.MissingReason, tt.missing)
 			}
 		})
+	}
+}
+
+// Instance answers one row and Instances answers every row. The hub asks for a
+// single instance on hot paths (the credentials listing asks once per curated
+// id), so Instance builds its row alone instead of scanning a freshly built
+// listing; this pins that the two never disagree about a row.
+func TestInstanceMatchesItsRowInInstances(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{
+		"OPENAI_API_KEY":    "sk-fixture",
+		"ANTHROPIC_API_KEY": "sk-ant-fixture",
+		"HOME":              t.TempDir(),
+	}
+	r := fixtureLoad(t, env, vertexUserInstanceToml)
+	rows := r.Instances()
+	if len(rows) == 0 {
+		t.Fatal("fixture listed no instances")
+	}
+	if _, ok := r.Instance("not-an-instance"); ok {
+		t.Fatal("Instance reported an unknown name as present")
+	}
+	for _, row := range rows {
+		got, ok := r.Instance(row.Name)
+		if !ok {
+			t.Fatalf("Instance(%q) = absent, want the row Instances carries", row.Name)
+		}
+		if !reflect.DeepEqual(got, row) {
+			t.Fatalf("Instance(%q) = %+v, want the Instances row %+v", row.Name, got, row)
+		}
 	}
 }

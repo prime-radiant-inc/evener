@@ -51,40 +51,24 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 	}
 }
 
-func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
-	if ctx.Err() != nil {
-		return
-	}
-	w := hubcore.NewAttentionWatcher(func(p appwire.AttentionChangedPayload) {
-		web.appRPC.BroadcastAll(appwire.NotifyEvenerAttentionChanged, p)
-	})
-	ticks, stop := hubTicker(5 * time.Second)
-	defer stop()
-	run := func() {
-		decisions, _ := archive.Decisions()
-		// Derive from the same remote-inclusive metas/live the navigation tree
-		// uses: sessions on other hosts reach the hub only through the
-		// remote-thread cache, so reading the roster alone left their
-		// question/approval out of the broadcast (#2529).
-		snapshot := web.navigationSnapshot(ctx)
-		m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
-		// Archiving clears human attention, not the Manager's live population.
-		// Reuse top-level eligibility without an archive suppression decision.
-		roster, _ := hubcore.DeriveAttention(snapshot.metas, snapshot.live, nil)
-		web.navigation.roster.Publish(roster, rosterIdentities(snapshot))
-		w.Tick(m, sum)
-	}
-	run()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticks:
-			run()
-		case <-poke:
-			run()
-		}
-	}
+// runHubAttention derives each live session's attention level and republishes
+// the Manager roster from the same snapshot, then lets the attention watcher
+// announce any transition. It is one derivation, so every caller that serves a
+// wake — the shared snapshot wake, or the attention-only loop a test drives —
+// publishes the identical snapshot.
+func runHubAttention(ctx context.Context, web *WebServer, archive *hubcore.ArchiveStore, w *hubcore.AttentionWatcher) {
+	decisions, _ := archive.Decisions()
+	// Derive from the same remote-inclusive metas/live the navigation tree
+	// uses: sessions on other hosts reach the hub only through the
+	// remote-thread cache, so reading the roster alone left their
+	// question/approval out of the broadcast (#2529).
+	snapshot := web.navigationSnapshot(ctx)
+	m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
+	// Archiving clears human attention, not the Manager's live population.
+	// Reuse top-level eligibility without an archive suppression decision.
+	roster, _ := hubcore.DeriveAttention(snapshot.metas, snapshot.live, nil)
+	web.navigation.roster.Publish(roster, rosterIdentities(snapshot))
+	w.Tick(m, sum)
 }
 
 // rosterIdentities retains the workspace ref across thread/clear, when the
@@ -154,16 +138,61 @@ func messageSearchSessions(entries []hubcore.PastEntry) []hubcore.MessageSearchS
 	return sessions
 }
 
-// watchHubNotices announces the hub's notice changes (S11) until ctx ends.
-func watchHubNotices(ctx context.Context, web *WebServer) {
+// startHubSnapshotWatchers starts the hub's periodic snapshot watchers on the
+// one wake that serves all of them (#6422).
+func startHubSnapshotWatchers(start func(func()), ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
 	if ctx.Err() != nil {
 		return
 	}
-	ticks, stop := hubTicker(noticeInterval)
-	defer stop()
-	web.notices.runNoticeWatcher(ctx, ticks, func(ctx context.Context) []appwire.HubNotice {
-		return web.notices.watchRead(ctx)
+	start(func() { watchHubSnapshotWake(ctx, poke, archive, web) })
+}
+
+// watchHubSnapshotWake is the hub's one periodic snapshot wake. Before it,
+// attention (which republishes the Manager roster) and notices each ran their
+// own 5 s ticker, so an idle hub paid two independent derivations of the same
+// state, and the notices' credential listing rebuilt the whole instance listing
+// for every curated provider on every one of its ticks (#6422).
+//
+// One wake does both halves, so neither can starve the other and both keep the
+// cadence they had: the attention roster, evener/attention/changed, and the
+// notices list are all re-derived on each tick, and attention also on each
+// poke. The notices half runs on its own goroutine because its watcher owns the
+// announced-set baseline it diffs against and does its own credential read;
+// keeping that baseline single-owner is what makes the announcements
+// well-ordered. Its wake is a coalesced pulse: a pulse that arrives while the
+// previous derive still runs is dropped, which loses nothing, because the next
+// wake re-derives from current state and announces whatever moved.
+func watchHubSnapshotWake(ctx context.Context, poke <-chan struct{}, archive *hubcore.ArchiveStore, web *WebServer) {
+	if ctx.Err() != nil {
+		return
+	}
+	w := hubcore.NewAttentionWatcher(func(p appwire.AttentionChangedPayload) {
+		web.appRPC.BroadcastAll(appwire.NotifyEvenerAttentionChanged, p)
 	})
+	ticks, stop := hubTicker(snapshotInterval)
+	defer stop()
+	noticeTicks := make(chan time.Time, 1)
+	go web.notices.runNoticeWatcher(ctx, noticeTicks, web.notices.watchRead)
+	run := func() { runHubAttention(ctx, web, archive, w) }
+	pulseNotices := func() {
+		select {
+		case noticeTicks <- time.Time{}:
+		default:
+		}
+	}
+	run()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			run()
+			pulseNotices()
+		case <-poke:
+			run()
+			pulseNotices()
+		}
+	}
 }
 
 // seedHubMarketplaces runs before the hub ever calls ListenAndServe (main.go

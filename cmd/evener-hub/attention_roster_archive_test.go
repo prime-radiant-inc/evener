@@ -45,7 +45,7 @@ func TestHubRosterArchivedLiveSession(t *testing.T) {
 				poke := make(chan struct{})
 				done := make(chan struct{})
 				go func() {
-					watchHubAttention(ctx, poke, archive, web)
+					startHubSnapshotWatchers(func(fn func()) { go fn() }, ctx, poke, archive, web)
 					close(done)
 				}()
 				// The unbuffered poke is accepted only after the initial run has
