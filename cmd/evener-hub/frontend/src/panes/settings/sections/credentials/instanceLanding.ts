@@ -29,6 +29,7 @@ const RENAME_IDENTITY_FIELDS = [
   "vars",
   "apiKeyEnv",
   "credentialHeader",
+  "codexClientVersion",
 ] as const;
 
 /** The request fields the listing's endpointFingerprint is resolved from: the
@@ -53,6 +54,7 @@ export const CLEAR_FIELD_NAMES: Record<ClearFlagKey, string> = {
   clearSurface: "surface",
   clearApiKeyEnv: "apiKeyEnv",
   clearCredentialHeader: "credentialHeader",
+  clearCodexClientVersion: "codexClientVersion",
 };
 
 /** The entry fields this save's params changed, whether a field carries a value
@@ -213,6 +215,10 @@ function authoritativeLandingConfirmed(
 function declaredVarsAndSurfaceLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
+  if (params.codexClientVersion !== undefined && (listed.codexClientVersion ?? "") !== params.codexClientVersion) {
+    return false;
+  }
+  if (params.clearCodexClientVersion && (listed.codexClientVersion ?? "") !== "") return false;
   for (const [key, value] of Object.entries(params.vars ?? {})) {
     if ((listed.vars?.[key] ?? "") !== value) return false;
   }

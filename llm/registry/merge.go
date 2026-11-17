@@ -67,6 +67,7 @@ func mergeTransport(dst *Transport, src Transport) {
 	setIf(&dst.Endpoint, src.Endpoint)
 	setIf(&dst.StreamEndpoint, src.StreamEndpoint)
 	setIf(&dst.ModelsEndpoint, src.ModelsEndpoint)
+	setIf(&dst.CodexClientVersion, src.CodexClientVersion)
 	setIf(&dst.CountTokensEndpoint, src.CountTokensEndpoint)
 	dst.Vars = mergeStringMap(dst.Vars, src.Vars)
 	dst.VarsEnv = mergeStringMap(dst.VarsEnv, src.VarsEnv)

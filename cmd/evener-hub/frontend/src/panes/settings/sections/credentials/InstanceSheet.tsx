@@ -75,6 +75,7 @@ import {
   untouchedIdentityMatches,
 } from "./instanceLanding";
 import { formatModelRowSummary } from "./instanceModelEdit";
+import { CODEX_AUTH_SCHEME } from "./oauthFlow";
 import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
@@ -392,6 +393,10 @@ export function InstanceSheet({
           prevDraft.credentialHeader.trim() !== prevInitial.credentialHeader.trim()
             ? prevDraft.credentialHeader
             : landedDraft.credentialHeader,
+        codexClientVersion:
+          prevDraft.codexClientVersion.trim() !== prevInitial.codexClientVersion.trim()
+            ? prevDraft.codexClientVersion
+            : landedDraft.codexClientVersion,
       };
     });
   }
@@ -762,6 +767,9 @@ export function InstanceSheet({
                     credentialHeader: declared.has("credentialHeader")
                       ? current.credentialHeader
                       : landedDraft.credentialHeader,
+                    codexClientVersion: declared.has("codexClientVersion")
+                      ? current.codexClientVersion
+                      : landedDraft.codexClientVersion,
                   },
             );
           } else {
@@ -1014,6 +1022,9 @@ export function InstanceSheet({
                               surface: draft.surface,
                               apiKeyEnv: draft.apiKeyEnv,
                               credentialHeader: draft.credentialHeader,
+                              ...(instance.auth === CODEX_AUTH_SCHEME
+                                ? { codexClientVersion: draft.codexClientVersion }
+                                : {}),
                             },
                             disabled: busy,
                             copy: {

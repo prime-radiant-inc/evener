@@ -742,6 +742,35 @@ describe("the form", () => {
     expect(within(settings).getByLabelText("Surface")).toBeTruthy();
     expect(within(settings).getByLabelText("API key environment variable")).toBeTruthy();
     expect(within(settings).getByLabelText("Credential header")).toBeTruthy();
+    expect(within(settings).queryByLabelText("Codex client version")).toBeNull();
+  });
+
+  test("shows the Codex model-list version in advanced connection settings", () => {
+    renderSheet(
+      instance({
+        name: "subscription",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        codexClientVersion: "0.166.0",
+      }),
+    );
+    expect(field("Codex client version").value).toBe("0.166.0");
+  });
+
+  test("saves the Codex client version from advanced connection settings", async () => {
+    const V = instance({ name: "subscription", providerId: "openai-codex", auth: "oauth-openai-codex" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({ instances: [V], availableProviders: [] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(V);
+    const user = userEvent.setup();
+    await fill(user, field("Codex client version"), "0.166.0");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "subscription",
+      codexClientVersion: "0.166.0",
+      originClientId: "test-tab",
+    });
   });
 
   test("editing through the shared connection settings still issues the same instance edit", async () => {

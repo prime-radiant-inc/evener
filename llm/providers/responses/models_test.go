@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/providertest"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -70,6 +71,36 @@ func TestListModelsPlatformAndCodexShapes(t *testing.T) {
 	res.Transport.ModelsEndpoint = registry.EndpointUnsupported
 	if _, err := (&Protocol{Client: srv2.Client()}).ListModels(context.Background(), res); !errors.Is(err, llm.ErrModelListingUnsupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestListModelsCodexClientVersion(t *testing.T) {
+	// Not parallel: this registers the package-wide test Codex authenticator.
+	providertest.RegisterStreamingRequiredAuth(t, registry.AuthOAuthOpenAICodex, providertest.StreamingRequiredAuth{})
+	for _, tc := range []struct {
+		name     string
+		auth     string
+		endpoint string
+		version  string
+		wantURI  string
+	}{
+		{name: "default", auth: registry.AuthOAuthOpenAICodex, endpoint: "/models", version: "0.888.0", wantURI: "/v1/models?client_version=0.888.0"},
+		{name: "provider override preserves other query values", auth: registry.AuthOAuthOpenAICodex, endpoint: "/models?region=east&client_version=0.156.1", version: "0.166.0", wantURI: "/v1/models?client_version=0.166.0&region=east"},
+		{name: "other Responses providers unchanged", auth: registry.AuthBearer, endpoint: "/models", version: "0.166.0", wantURI: "/v1/models"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, got := server(t, 200, `{"models":[{"slug":"gpt-6.2-sol"}]}`)
+			res := liveRes(srv, nil)
+			res.Transport.Auth = tc.auth
+			res.Transport.ModelsEndpoint = tc.endpoint
+			res.Transport.CodexClientVersion = tc.version
+			if _, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), res); err != nil {
+				t.Fatal(err)
+			}
+			if got.path != tc.wantURI {
+				t.Fatalf("request URI = %q, want %q", got.path, tc.wantURI)
+			}
+		})
 	}
 }
 

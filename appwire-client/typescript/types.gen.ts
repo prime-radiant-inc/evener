@@ -1843,6 +1843,7 @@ export interface InstanceCreateParams {
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
+  codexClientVersion?: string;
   /**
    * OriginClientId is the client identity the hub echoes into the
    * evener/auth/updated broadcast this create triggers, so the originator
@@ -1867,6 +1868,8 @@ export interface InstanceEditParams {
   clearApiKeyEnv?: boolean;
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
+  codexClientVersion?: string;
+  clearCodexClientVersion?: boolean;
   /**
    * ExpectedEndpointFingerprint is the endpoint this client showed the user
    * for Name (InstanceEntry.endpointFingerprint), checked the way
@@ -1918,6 +1921,11 @@ export interface InstanceEntry {
    */
   apiKeyEnv?: string;
   credentialHeader?: string;
+  /**
+   * CodexClientVersion is the authored codex_client_version override, empty
+   * when the provider inherits the registry's model-discovery default.
+   */
+  codexClientVersion?: string;
   /**
    * Implicit is true for an instance with no authored entry in
    * providers.toml: a curated provider that exists because the environment

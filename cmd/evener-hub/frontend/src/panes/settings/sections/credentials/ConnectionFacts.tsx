@@ -79,7 +79,7 @@ export function ConnectionFacts({ rows, "data-testid": testId }: { rows: Connect
   );
 }
 
-/** The five fields of the full connection editor, built once so the card and
+/** The fields of the full connection editor, built once so the card and
  * the settings sheet cannot drift into different controls or ids. */
 export function connectionSettingsFields({
   idPrefix,
@@ -98,6 +98,7 @@ export function connectionSettingsFields({
     surface: string;
     apiKeyEnv: string;
     credentialHeader: string;
+    codexClientVersion?: string;
   };
   disabled: boolean;
   /** The copy this surface uses for the two fields whose names are not the
@@ -109,9 +110,12 @@ export function connectionSettingsFields({
     credentialHeaderHelp?: ReactNode;
   };
   onVariableChange(key: string, value: string): void;
-  onFieldChange(field: "protocol" | "surface" | "apiKeyEnv" | "credentialHeader", value: string): void;
+  onFieldChange(
+    field: "protocol" | "surface" | "apiKeyEnv" | "credentialHeader" | "codexClientVersion",
+    value: string,
+  ): void;
 }): ConnectionFact[] {
-  const { vars, protocol, surface, apiKeyEnv, credentialHeader } = values;
+  const { vars, protocol, surface, apiKeyEnv, credentialHeader, codexClientVersion } = values;
   const { apiKeyEnvLabel, credentialHeaderPlaceholder, credentialHeaderHelp } = copy;
   return [
     ...variableRows.map(({ key, label }) => {
@@ -187,6 +191,25 @@ export function connectionSettingsFields({
       ),
       help: credentialHeaderHelp,
     },
+    ...(codexClientVersion === undefined
+      ? []
+      : [
+          {
+            key: "codexClientVersion",
+            label: "Codex client version",
+            htmlFor: `${idPrefix}-codex-client-version`,
+            value: (
+              <Input
+                id={`${idPrefix}-codex-client-version`}
+                value={codexClientVersion}
+                disabled={disabled}
+                placeholder="Registry default"
+                onChange={(event) => onFieldChange("codexClientVersion", event.target.value)}
+              />
+            ),
+            help: "Used to discover Codex models. Leave blank to inherit the default.",
+          },
+        ]),
   ];
 }
 

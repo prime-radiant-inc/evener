@@ -37,6 +37,7 @@ describe("draftFor", () => {
       vars: {},
       apiKeyEnv: "",
       credentialHeader: "",
+      codexClientVersion: "",
     });
   });
 
@@ -60,6 +61,14 @@ describe("draftFor", () => {
     );
     expect(draft.apiKeyEnv).toBe("PORTKEY_KEY");
     expect(draft.credentialHeader).toBe("Authorization=Bearer $PORTKEY_KEY");
+  });
+
+  test("carries the authored Codex model-list client version", () => {
+    const draft = draftFor(
+      instance({ name: "subscription", providerId: "openai-codex", codexClientVersion: "0.166.0" }),
+      undefined,
+    );
+    expect(draft.codexClientVersion).toBe("0.166.0");
   });
 });
 
@@ -153,6 +162,18 @@ describe("instanceEditParams", () => {
     expect(instanceEditParams(base, { ...base, credentialHeader: "" })).toEqual({
       name: "a",
       clearCredentialHeader: true,
+    });
+  });
+
+  test("a changed Codex client version is sent and an emptied one is a clear", () => {
+    expect(instanceEditParams(base, { ...base, codexClientVersion: " 0.166.0 " })).toEqual({
+      name: "a",
+      codexClientVersion: "0.166.0",
+    });
+    const authored = { ...base, codexClientVersion: "0.166.0" };
+    expect(instanceEditParams(authored, { ...authored, codexClientVersion: "" })).toEqual({
+      name: "a",
+      clearCodexClientVersion: true,
     });
   });
 

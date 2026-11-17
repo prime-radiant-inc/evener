@@ -88,7 +88,7 @@ const catalogue = [
   provider("openai", "OpenAI"),
   provider("google", "Gemini"),
   provider("openrouter", "OpenRouter"),
-  provider("openai-codex", "OpenAI Codex", ["oauth"]),
+  provider("openai-codex", "OpenAI Codex", ["oauth"], { auth: "oauth-openai-codex" }),
   provider("ollama", "Local endpoint", ["apiKey"], { credentialRequired: false, baseUrl: "http://localhost:8080/v1" }),
   provider("google-vertex", "Google Vertex", ["credentialJson"]),
   {
@@ -2730,6 +2730,52 @@ test("a discovery-only row saves its configuration by authoring the instance", a
     apiKeyEnv: "TEAM_KEY",
   });
   expect(editCalls(client)).toHaveLength(0);
+});
+
+test("a Codex connection saves its model-list client version from advanced settings", async () => {
+  const setupRow = provider("openai-codex", "OpenAI Codex", ["oauth"], { auth: "oauth-openai-codex" });
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow] });
+  await choose(user, "OpenAI Codex");
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("Codex client version"), "0.166.0");
+
+  const created: InstanceEntry = {
+    ...setupRow.setup!,
+    implicit: false,
+    codexClientVersion: "0.166.0",
+  };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [setupRow] };
+  scriptCreate(client, listing);
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/create")?.params).toMatchObject({
+    name: "openai-codex",
+    base: "openai-codex",
+    codexClientVersion: "0.166.0",
+  });
+  expect(editCalls(client)).toHaveLength(0);
+});
+
+test("a confirming listing with another Codex client version is not accepted as the save", async () => {
+  const list = savedList("openai-codex", {
+    auth: "oauth-openai-codex",
+    codexClientVersion: "0.888.0",
+  });
+  const { user, client } = setup(list);
+  await choose(user, "OpenAI Codex");
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("Codex client version"), "0.166.0");
+
+  const saved: InstanceEntry = { ...list.instances[0]!, codexClientVersion: "0.166.0" };
+  scriptEdit(client, { instances: [saved], availableProviders: list.availableProviders });
+  scriptListing(client, {
+    instances: [{ ...list.instances[0]!, codexClientVersion: "0.999.0" }],
+    availableProviders: list.availableProviders,
+  });
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(reasonShown("endpoint-changed")).toBe(true));
 });
 
 // A write whose confirming read fails is not confirmed, so the card keeps the

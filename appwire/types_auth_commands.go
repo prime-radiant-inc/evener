@@ -189,6 +189,9 @@ type InstanceEntry struct {
 	// ahead of them, and the entry omits any header it refuses.
 	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
 	CredentialHeader string `json:"credentialHeader,omitempty"`
+	// CodexClientVersion is the authored codex_client_version override, empty
+	// when the provider inherits the registry's model-discovery default.
+	CodexClientVersion string `json:"codexClientVersion,omitempty"`
 	// Implicit is true for an instance with no authored entry in
 	// providers.toml: a curated provider that exists because the environment
 	// supplies it (an API-key variable, the ADC file) or because the user
@@ -305,14 +308,15 @@ type InstanceListResponse struct {
 // is a variable name and CredentialHeader must reference a $VAR: secrets
 // never cross this boundary (spec §11.2).
 type InstanceCreateParams struct {
-	Name             string            `json:"name"`
-	Base             string            `json:"base"`
-	BaseURL          string            `json:"baseUrl,omitempty"`
-	Protocol         string            `json:"protocol,omitempty"`
-	Surface          string            `json:"surface,omitempty"`
-	Vars             map[string]string `json:"vars,omitempty"`
-	APIKeyEnv        string            `json:"apiKeyEnv,omitempty"`
-	CredentialHeader string            `json:"credentialHeader,omitempty"`
+	Name               string            `json:"name"`
+	Base               string            `json:"base"`
+	BaseURL            string            `json:"baseUrl,omitempty"`
+	Protocol           string            `json:"protocol,omitempty"`
+	Surface            string            `json:"surface,omitempty"`
+	Vars               map[string]string `json:"vars,omitempty"`
+	APIKeyEnv          string            `json:"apiKeyEnv,omitempty"`
+	CredentialHeader   string            `json:"credentialHeader,omitempty"`
+	CodexClientVersion string            `json:"codexClientVersion,omitempty"`
 	// OriginClientId is the client identity the hub echoes into the
 	// evener/auth/updated broadcast this create triggers, so the originator
 	// recognizes its own echo by id instead of refetching as if another client
@@ -349,19 +353,21 @@ type InstanceCreateParams struct {
 // anything, so the empty value is free to mean "remove". Each set/clear
 // pair follows BaseURL/ClearBaseURL: never both meaningful in one request.
 type InstanceEditParams struct {
-	Name                  string            `json:"name"`
-	NewName               string            `json:"newName,omitempty"`
-	BaseURL               string            `json:"baseUrl,omitempty"`
-	ClearBaseURL          bool              `json:"clearBaseUrl,omitempty"`
-	Protocol              string            `json:"protocol,omitempty"`
-	ClearProtocol         bool              `json:"clearProtocol,omitempty"`
-	Surface               string            `json:"surface,omitempty"`
-	ClearSurface          bool              `json:"clearSurface,omitempty"`
-	Vars                  map[string]string `json:"vars,omitempty"`
-	APIKeyEnv             string            `json:"apiKeyEnv,omitempty"`
-	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
-	CredentialHeader      string            `json:"credentialHeader,omitempty"`
-	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	Name                    string            `json:"name"`
+	NewName                 string            `json:"newName,omitempty"`
+	BaseURL                 string            `json:"baseUrl,omitempty"`
+	ClearBaseURL            bool              `json:"clearBaseUrl,omitempty"`
+	Protocol                string            `json:"protocol,omitempty"`
+	ClearProtocol           bool              `json:"clearProtocol,omitempty"`
+	Surface                 string            `json:"surface,omitempty"`
+	ClearSurface            bool              `json:"clearSurface,omitempty"`
+	Vars                    map[string]string `json:"vars,omitempty"`
+	APIKeyEnv               string            `json:"apiKeyEnv,omitempty"`
+	ClearAPIKeyEnv          bool              `json:"clearApiKeyEnv,omitempty"`
+	CredentialHeader        string            `json:"credentialHeader,omitempty"`
+	ClearCredentialHeader   bool              `json:"clearCredentialHeader,omitempty"`
+	CodexClientVersion      string            `json:"codexClientVersion,omitempty"`
+	ClearCodexClientVersion bool              `json:"clearCodexClientVersion,omitempty"`
 	// ExpectedEndpointFingerprint is the endpoint this client showed the user
 	// for Name (InstanceEntry.endpointFingerprint), checked the way
 	// InstanceRemoveParams's is. The edit is applied to the row the client

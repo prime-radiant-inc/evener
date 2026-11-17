@@ -3828,6 +3828,50 @@ func TestInstances_EditClearsACredentialHeaderOverAStaleValue(t *testing.T) {
 	}
 }
 
+func TestInstances_EditCodexClientVersion(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "subscription", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create Codex instance: %v", err)
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "subscription", CodexClientVersion: "0.166.0"}); err != nil {
+		t.Fatalf("Edit Codex version: %v", err)
+	}
+	if got := authoredEntry(t, f.tomlPath, "subscription").Transport.CodexClientVersion; got != "0.166.0" {
+		t.Fatalf("authored Codex client version = %q", got)
+	}
+	if got := entry(t, f.ctl.List(), "subscription").CodexClientVersion; got != "0.166.0" {
+		t.Fatalf("listed authored Codex client version = %q", got)
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "subscription", ClearCodexClientVersion: true}); err != nil {
+		t.Fatalf("clear Codex version: %v", err)
+	}
+	if got := authoredEntry(t, f.tomlPath, "subscription").Transport.CodexClientVersion; got != "" {
+		t.Fatalf("cleared authored Codex client version = %q", got)
+	}
+	res, err := f.ctl.reg.Get().ResolveInstanceListing("subscription")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Transport.CodexClientVersion; got != "0.888.0" {
+		t.Fatalf("resolved default after clear = %q", got)
+	}
+}
+
+func TestInstances_RefuseCodexClientVersionOnOtherProviders(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", CodexClientVersion: "0.166.0"}); err == nil {
+		t.Fatal("non-Codex instance accepted a Codex-only model-list version")
+	} else {
+		requireWireError(t, err, appwire.CodeInvalidParams)
+	}
+	if got := authoredEntry(t, f.tomlPath, "work").Transport.CodexClientVersion; got != "" {
+		t.Fatalf("refused edit wrote Codex client version %q", got)
+	}
+}
+
 func TestInstances_EditRefusesALiteralCredentialHeader(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
