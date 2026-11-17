@@ -3,6 +3,7 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { ActivityBoundaryObserver } from "../../../shell/activitybar/activityPagingTestUtils";
 import { JobsTab } from "../../../shell/activitybar/JobsTab";
 import { deriveScope } from "../../../shell/statusbar/statusScope";
 import { activityPanelStore } from "../../../stores/activityPanel";
@@ -157,6 +158,7 @@ test("visible rows and disclosure survive same-session invalidation failures", a
 });
 
 test("closed failure history does not block later-page current work through refresh and reconnect", async () => {
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
   const client = activityClient();
   let walk = 0;
   client.on("evener/thread/jobs/list", ({ cursor, ref, scope }) => {
@@ -183,7 +185,7 @@ test("closed failure history does not block later-page current work through refr
   render(<ActivityPanelBody sessionRef={ref} model={model()} />);
   await screen.findByRole("treeitem", { name: "1 inactive" });
   expect(screen.queryByRole("treeitem", { name: "First failed history" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Load more jobs" }));
+  await act(async () => ActivityBoundaryObserver.intersect());
   await screen.findByRole("treeitem", { name: "Later current work" });
   expect(screen.getByRole("treeitem", { name: "2 inactive" }).getAttribute("aria-expanded")).toBe("false");
   vi.useFakeTimers();

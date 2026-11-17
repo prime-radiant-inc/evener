@@ -1,4 +1,4 @@
-import { findEntityIds } from "@evener/appwire-client";
+import * as appwire from "@evener/appwire-client";
 import * as docContent from "@evener/appwire-client/docContent";
 import { findFileReferences } from "@evener/appwire-client/docContent";
 import { expect, test, vi } from "vitest";
@@ -24,8 +24,8 @@ test("a file-span hit equals the scan it replaces", () => {
 test("an entity-id hit equals the scan it replaces", () => {
   const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
   const analysis = createAnalysisCache();
-  expect(analysis.entityIds(`see ${id} now`)).toEqual(findEntityIds(`see ${id} now`));
-  expect(analysis.entityIds(`see ${id} now`)).toEqual(findEntityIds(`see ${id} now`));
+  expect(analysis.entityIds(`see ${id} now`)).toEqual(appwire.findEntityIds(`see ${id} now`));
+  expect(analysis.entityIds(`see ${id} now`)).toEqual(appwire.findEntityIds(`see ${id} now`));
 });
 
 test("the same text under a different cwd is a different answer", () => {
@@ -91,4 +91,38 @@ test("a long message's settled head keeps its entries while its tail streams", (
   for (const paragraph of settled) analysis.fileSpans(paragraph, CWD, undefined);
   expect(fileSpy).not.toHaveBeenCalled();
   fileSpy.mockRestore();
+});
+
+// Issue #6602: both memos are keyed per text node or per block, so a long
+// message's own working set is several hundred keys - measured over 150 real
+// assistant answers, up to 922 distinct entity keys on one answer and 1,607
+// for a 400-row x 4-column table. A budget below that evicts each key moments
+// before the next pass asks for it again, so every lookup misses and the memo
+// costs Map churn on top of the scans it exists to remove.
+//
+// Every pass asks for its keys in document order, so the pass that follows a
+// delta asks for the same keys the previous pass did. 300 distinct texts is the
+// working set of a single long answer; the second pass over them must scan
+// nothing at all.
+test("a 300-distinct-text message answers the pass that follows it with no scans", () => {
+  const analysis = createAnalysisCache();
+  const fileSpy = vi.spyOn(docContent, "findFileReferences");
+  const entitySpy = vi.spyOn(appwire, "findEntityIds");
+  const fileTexts = Array.from({ length: 300 }, (_value, index) => `Paragraph ${index} names docs/file-${index}.md`);
+  const entityTexts = Array.from(
+    { length: 300 },
+    (_value, index) => `Paragraph ${index} names job_02wMz5TxvEMoJEDTDGOTil_${String(index).padStart(12, "0")}`,
+  );
+  for (const text of fileTexts) analysis.fileSpans(text, CWD, undefined);
+  for (const text of entityTexts) analysis.entityIds(text);
+  fileSpy.mockClear();
+  entitySpy.mockClear();
+  for (const text of fileTexts) analysis.fileSpans(text, CWD, undefined);
+  for (const text of entityTexts) analysis.entityIds(text);
+  expect({ fileScans: fileSpy.mock.calls.length, entityScans: entitySpy.mock.calls.length }).toEqual({
+    fileScans: 0,
+    entityScans: 0,
+  });
+  fileSpy.mockRestore();
+  entitySpy.mockRestore();
 });

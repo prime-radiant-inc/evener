@@ -1709,7 +1709,7 @@ async function reveal(edge, container) {
   for (let boundary = 0; boundary < 10; boundary++) {
     if (await read(`document.querySelector(${q(selector)}) !== null`)) return selector;
     // The control is found and activated in one page turn (see
-    // revealControlStep). Scrolling a Show or Load more control into view can
+    // revealControlStep). Scrolling a local history control into view can
     // make the page boundary under it load the next page by itself; when that
     // page lands it removes the boundary and the list shifts, so a press
     // measured before it can land on a neighbouring delegate row and drill into

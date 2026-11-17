@@ -174,8 +174,8 @@ func (s *Server) stampCapabilitiesOnStatusChange(method string, params any) any 
 	// own all-false set would take the follow-up composer away from a session
 	// the hub would happily wake — the same wedge in the other direction. So
 	// the close frame leaves the field empty and the hub fills it in with its
-	// own answer as it relays the frame (app_relay.go's
-	// stampClosedThreadCapabilities): a client is never left reading a set the
+	// own answer as it relays the frame (app_relay_types.go's
+	// stampStatusCapabilities): a client is never left reading a set the
 	// departing daemon cut for a turn that is over (kata pk2d).
 	if status.Status.Type == appwire.ThreadStatusClosed {
 		return params

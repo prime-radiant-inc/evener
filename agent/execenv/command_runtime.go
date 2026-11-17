@@ -61,11 +61,21 @@ func (systemCommandRuntimeFactory) Shell(command string) commandRuntime {
 // sole owner of cancellation and termination, exactly like shellCommand's
 // existing (and already-documented) rationale for the shell path.
 func (systemCommandRuntimeFactory) Argv(name string, args ...string) commandRuntime {
-	return &systemCommandRuntime{cmd: execCommand(name, args...)} //nolint:noctx // lifecycle managed by execPreparedCommand's process-group kill
+	return &systemCommandRuntime{cmd: execCommand(name, args...), argv: true} //nolint:noctx // lifecycle managed by execPreparedCommand's process-group kill
 }
 
 type systemCommandRuntime struct {
-	cmd              *exec.Cmd
+	cmd *exec.Cmd
+	// argv marks a runtime that runs a program directly rather than through a
+	// shell. A start failure on this route is a refusal a shell would have
+	// reported as an exit status (see CommandStartError); on the shell route it
+	// stays a launch failure, because bash never reached the point of reporting
+	// a status of its own.
+	argv bool
+	// wrapped marks a runtime whose program a sandbox wrapper replaced, so
+	// Start execs the wrapper. A failure there is the sandbox's, not the
+	// program's refusal, and it keeps its plain start error.
+	wrapped          bool
 	combinedOutput   io.Writer
 	outputReader     *os.File
 	outputDone       chan error
@@ -89,6 +99,10 @@ type systemCommandRuntime struct {
 	bufferedDrain    sync.Once
 	bufferedDrainErr error
 }
+
+// runsArgv reports that this runtime is the argv fast path, so a start refusal
+// it reports is the shell's exit status rather than a launch failure.
+func (c *systemCommandRuntime) runsArgv() bool { return c.argv && !c.wrapped }
 
 // bufferedOutputPipe is one owned stdout/stderr capture: the child writes to
 // writer (an *os.File it inherits directly, so os/exec installs no copier of
@@ -152,6 +166,7 @@ func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 		c.cmd.Err = nil
 	}
 	wrapCommandForSandbox(c.cmd, config.Wrapper, config.Dir)
+	c.wrapped = config.Wrapper != nil
 	c.terminationGrace = config.TerminationGrace
 	if config.CombinedOutput == nil {
 		c.cmd.Stdout = config.Stdout

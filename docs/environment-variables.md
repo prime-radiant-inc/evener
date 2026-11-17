@@ -127,6 +127,7 @@ These are host conventions, not a second Evener configuration file:
 | `XDG_CACHE_HOME` | Cache base |
 | `PATH`, `SHELL` | Executable lookup and shell; session command environments can use the resolved login-shell PATH |
 | `GOCACHE`, `GOMODCACHE`, `GOPATH`, `GOENV` | Go tooling and sandbox cache resolution |
+| `GOGC` | Go collector target for Evener's own processes. Unset means Evener's own target of 200; an exported value is honored as it stands (`off` disables collection, `100` restores Go's default). A value the collector would not honor stops startup instead of being silently read as 100. |
 | `CARGO_HOME`, `RUSTUP_HOME`, `NVM_DIR`, `PYENV_ROOT` | Toolchain paths inherited by core command environments |
 | `SSH_CONNECTION`, `SSH_TTY`, `DISPLAY`, `WAYLAND_DISPLAY` | Headless/graphical login detection |
 | `TMPDIR` | Session-dependent temporary directory, not necessarily private when sandbox is off |

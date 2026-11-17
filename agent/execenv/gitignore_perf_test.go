@@ -122,9 +122,11 @@ func BenchmarkGlobBraceExpansion(b *testing.B) {
 // load-bearing — an earlier version of this benchmark called
 // loadIgnoreSetCached with a cache handed to it, which measured the helper and
 // stayed green while no production call site passed a cache at all. It reports
-// the matcher compiles per call, which is the load-independent evidence: this
-// repo's six rules files cost six compiles on a cold call and none on a repeat
-// over an unchanged tree.
+// two per-call metrics, both load-independent: the matcher compiles, where this
+// repo's six rules files cost six on a cold call and none on a repeat over an
+// unchanged tree, and the directory listings the call charged its budget, which
+// the cache does not change. The listing count is read from the call's own
+// budget, never assumed, so it stays true of whatever tree the checkout holds.
 //
 // The two arms differ only in whether the environment keeps its cache: the
 // "unwarmed" arm gets a fresh environment each iteration, which is what a
@@ -150,11 +152,12 @@ func BenchmarkIgnoreMatcherReuse(b *testing.B) {
 			// A fresh environment per iteration: nothing is cached yet, which is
 			// the cost a session paid on every call before this change.
 			env := NewLocalExecutionEnvironment(repoRoot)
-			if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, NewGlobBudget()); err != nil {
+			budget := NewGlobBudget()
+			if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, budget); err != nil {
 				b.Fatalf("GlobWithBudget: %v", err)
 			}
 			b.ReportMetric(float64(*compiles), "compiles/op")
-			b.ReportMetric(0, "listings/op")
+			b.ReportMetric(float64(budget.listings), "listings/op")
 		}
 	})
 	b.Run("reused-environment", func(b *testing.B) {
@@ -166,11 +169,12 @@ func BenchmarkIgnoreMatcherReuse(b *testing.B) {
 		}
 		for b.Loop() {
 			*compiles = 0
-			if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, NewGlobBudget()); err != nil {
+			budget := NewGlobBudget()
+			if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, budget); err != nil {
 				b.Fatalf("GlobWithBudget: %v", err)
 			}
 			b.ReportMetric(float64(*compiles), "compiles/op")
-			b.ReportMetric(0, "listings/op")
+			b.ReportMetric(float64(budget.listings), "listings/op")
 		}
 	})
 }

@@ -441,14 +441,25 @@ test.each(["doc", "sessionTasks"] as const)(
         await import("../panes/doc/DocPane");
       } else workspaceStore.getState().openPane(type, { ref }, { slot: "secondary" });
     });
-    if (type === "doc") {
-      // The registry's lazy import is separate from the direct import above.
-      await act(async () => await vi.dynamicImportSettled());
-    }
+    // The registry's lazy import is separate from the direct import above.
+    await act(async () => await vi.dynamicImportSettled());
+    // Each pane publishes its ordinary claim from its own mount (useThreadModel
+    // -> useThreadClaim -> ensureThread -> holdForeground), and the desktop host
+    // mounts a pane only once its lazy chunk resolves. Wait for the mount itself
+    // before measuring the handoff, or this row times a cold module load rather
+    // than the swap (#6661).
     if (type === "doc") {
       await waitFor(() => expect(screen.getByRole("button", { name: "Reload" })).not.toBeNull());
+    } else {
+      // A mounted session panel publishes this scaffold marker.
+      await waitFor(() =>
+        expect(document.querySelector(`[data-pane-scaffold="session-panel:tasks:${ref}"]`)).not.toBeNull(),
+      );
     }
     // Both loaded panes own an ordinary claim, but neither can adopt a bridge.
+    // Two claims here is what makes the post-swap count mean "the selected pane
+    // kept only its own claim" instead of "no claim existed at all".
+    expect(snapshot().foreground).toBe(2);
     await act(async () => {
       fixture.setMobile(true);
     });

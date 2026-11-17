@@ -130,8 +130,10 @@ func TestSandboxedGlobReusesIgnoreMatchersAcrossCalls(t *testing.T) {
 }
 
 // TestNilEnvironmentReadsIgnoreRulesUncached pins the fallback the cache has to
-// keep: a nil or struct-literal environment has no cache, so its searches must
-// still read and compile rules instead of panicking or matching nothing.
+// keep: only a nil environment answers a nil cache, so its searches must still
+// read and compile rules instead of panicking or matching nothing. A
+// struct-literal environment takes the other path — ignoreMatcherCacheFor fills
+// its cache in on first use — which the second half of this test asserts.
 func TestNilEnvironmentReadsIgnoreRulesUncached(t *testing.T) {
 	t.Parallel()
 	if cache := (*LocalExecutionEnvironment)(nil).ignoreMatcherCacheFor(); cache != nil {

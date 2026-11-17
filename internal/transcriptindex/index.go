@@ -282,9 +282,12 @@ func (e *EntryError) Unwrap() error { return e.Err }
 // Index is an open transcript index. It is safe for concurrent use, and other
 // handles, in this process or another, may share its sidecar directory.
 type Index struct {
-	mu         sync.Mutex
-	path, dir  string
-	lock       *os.File
+	mu        sync.Mutex
+	path, dir string
+	lock      *os.File
+	// usedAt is when this handle last stamped its sidecar as used, so a read
+	// of a hot session costs at most one stamp an hour (see noteSidecarUse).
+	usedAt     time.Time
 	transcript transcriptFile
 	build      string // the live build's directory name
 	items      table
@@ -562,6 +565,33 @@ func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}
+	healed := false
+	for {
+		heal, err := x.lockedOnce(exclusive, nonblocking, healed, fn)
+		if !heal || healed {
+			return err
+		}
+		// A shared-lock read found the sidecar it was reading gone: a pruner
+		// reclaimed it as superseded, or something else removed it. The index
+		// is derived, so the read the caller wanted is answerable — take the
+		// exclusive lock, rebuild from the transcript, and answer it, rather
+		// than failing a read a rebuild can serve. Once only: a rebuild that
+		// leaves the sidecar gone is a real failure, not another heal.
+		healed, exclusive, nonblocking = true, true, false
+	}
+}
+
+// lockedOnce is lockedMode's body: one attempt under the sidecar lock. heal
+// reports a failure the caller can answer by rebuilding exclusively — the
+// sidecar this handle was reading is gone — which only an ordinary
+// shared-lock read may ask for: an exclusive caller rebuilds through its own
+// step, and a refusing handle answers a refusal instead.
+//
+// healing marks the pass a heal: the caller may now block for the exclusive
+// lock and pay for a full rebuild from the transcript, so the read body runs
+// against a build rather than against the empty state a vanished sidecar
+// leaves.
+func (x *Index) lockedOnce(exclusive, nonblocking, healing bool, fn func() error) (heal bool, err error) {
 	if x.refusing || nonblocking {
 		if err := lockFileTry(x.lock, exclusive); err != nil {
 			// Only contention is busy: a fault on the lock itself — a dead
@@ -569,15 +599,24 @@ func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 			// refresher skips it silently every cycle and the hub answers
 			// it as rebuilding-or-transient, and no diagnosis can name it.
 			if isLockContention(err) {
-				return ErrLockBusy
+				return false, ErrLockBusy
 			}
-			return fmt.Errorf("try lock transcript index: %w", err)
+			return false, fmt.Errorf("try lock transcript index: %w", err)
 		}
 	} else if err := lockFile(x.lock, exclusive); err != nil {
-		return fmt.Errorf("lock transcript index: %w", err)
+		return false, fmt.Errorf("lock transcript index: %w", err)
 	}
 	defer func() { _ = unlockFile(x.lock) }()
-	if err := x.refresh(); err != nil && (!exclusive || x.refusing) {
+	err = x.refresh()
+	if healing && err != nil {
+		// The heal pass owns the exclusive lock precisely to restore the
+		// sidecar it found gone. extend rebuilds when no build is adopted,
+		// which is what a reclaimed sidecar looks like; a rebuild that fails
+		// here is reported as itself.
+		if err := x.healSidecar(); err != nil {
+			return false, err
+		}
+	} else if err != nil && (!exclusive || x.refusing) {
 		// Only an extender may rebuild; a reader with no usable index has
 		// nothing to read. A refusing reader names the sidecar a rebuild
 		// would fix as a refusal, so its repair registers immediately — on
@@ -585,9 +624,12 @@ func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 		// refuse anyway: classifying there keeps an access failure an
 		// ordinary error instead of a masquerading rebuild refusal.
 		if x.refusing && rebuildFixes(err) {
-			return x.refuseRebuild()
+			return false, x.refuseRebuild()
 		}
-		return err
+		// An ordinary handle heals a vanished sidecar by rebuilding, but only
+		// from a read that may block for the exclusive lock: a try-lock read
+		// answers its caller without waiting, as it always did.
+		return !exclusive && !nonblocking && rebuildFixes(err), err
 	}
 	// A refused fallback rebuild marked this handle's build stale: its
 	// memory holds a half-applied scan past the committed counts, and no
@@ -595,12 +637,19 @@ func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 	// old snapshot length. Refuse everything until refresh adopts the
 	// repair's build, the load that clears the mark.
 	if x.refusing && x.stale {
-		return x.refuseRebuild()
+		return false, x.refuseRebuild()
 	}
 	if err := x.reopenSidecars(); err != nil {
-		return err
+		return false, err
 	}
-	return fn()
+	err = fn()
+	if err == nil {
+		// The sidecar served an operation, which is what its age measures:
+		// a handle still being used keeps its projection's sidecar from
+		// looking superseded (see noteSidecarUse).
+		x.noteSidecarUse()
+	}
+	return false, err
 }
 
 // rebuildFixes reports whether a refresh failure describes a sidecar a full
@@ -610,6 +659,23 @@ func (x *Index) lockedMode(exclusive, nonblocking bool, fn func() error) error {
 func rebuildFixes(err error) bool {
 	return errors.Is(err, errNoLiveBuild) || errors.Is(err, errIdentityChanged) ||
 		errors.Is(err, errAnotherFile) || errors.Is(err, errCorrupt)
+}
+
+// healSidecar restores the sidecar a read found gone, running under the
+// exclusive lock: it rebuilds the projection from the transcript, which is
+// what makes an index reclaimed as superseded readable again by the binary
+// that still wanted it. A sidecar that is merely unusable — a projection
+// change, another file's identity, corruption — is replaced the same way,
+// since a rebuild is what rebuildFixes names for all of them.
+func (x *Index) healSidecar() error {
+	if x.refusing {
+		return x.refuseRebuild()
+	}
+	info, err := os.Stat(x.path)
+	if err != nil {
+		return fmt.Errorf("stat transcript: %w", err)
+	}
+	return x.rebuild(info.Size(), "")
 }
 
 // isNotExist keeps a vanished build classified as no-live-build through
@@ -1260,15 +1326,27 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// marks a turn's count inexact when a nameless result's call is gone.
 	x.builder.failures.Reset()
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
+	// Read before the commit: only candidates known now are covered by the
+	// durability the commit below establishes.
+	pruneCandidates := x.supersededPruneCandidates()
 	// The kill seam lives inside writeMeta, after the record flushes: killing
 	// here instead would exit before anything reached the files.
 	if err := x.writeMeta(); err != nil {
 		return err
 	}
-	if err := writeFileAtomically(filepath.Join(x.dir, currentFileName), []byte(name+"\n")); err != nil {
+	// A rebuild is the one commit that lets another sidecar be reclaimed (see
+	// pruneSupersededSidecars), so this build and the pointer naming it are
+	// made durable first: a crash after the prune must leave a complete build
+	// behind, not an empty sidecar and a reclaimed one. Extensions keep the
+	// derived-data rule and skip the fsyncs — they reclaim nothing.
+	if err := x.syncBuild(); err != nil {
+		return err
+	}
+	if err := writeFileDurably(filepath.Join(x.dir, currentFileName), []byte(name+"\n")); err != nil {
 		return err
 	}
 	x.removeOtherBuilds()
+	x.pruneSupersededSidecars(pruneCandidates)
 	return nil
 }
 
@@ -1540,6 +1618,42 @@ func writeFileAtomically(path string, data []byte) error {
 		return fmt.Errorf("publish transcript index: %w", err)
 	}
 	return nil
+}
+
+// writeFileDurably replaces path by rename and syncs the parent directory, so
+// the file survives a crash. A sidecar is derived data and rebuilds from the
+// transcript, so this is used only where something else is about to be deleted
+// on the strength of it: reclaiming a superseded sidecar must not be the reason
+// the only remaining index disappears with the power.
+//
+// Once this returns the new contents survive a crash, which is the durability
+// anchor the pruner needs — the same guarantee fsatomic.Write gives the job
+// store's durable_sha256 record of its own output (*agent/internal/jobstore*,
+// see writeOutputMetaFileFsSyncDir), and the same helper it is built on.
+func writeFileDurably(path string, data []byte) error {
+	if err := fsatomic.Write(path, data, 0o600); err != nil {
+		return fmt.Errorf("publish transcript index durably: %w", err)
+	}
+	return nil
+}
+
+// syncBuild makes the live build's files durable: every record file is fsynced
+// and the build's directory is synced so their names reach the disk. A rebuild
+// runs it before it claims the build is durable, so a crash after that point
+// finds a complete build rather than an empty one.
+func (x *Index) syncBuild() error {
+	if x.build == "" {
+		return nil
+	}
+	for _, f := range []recordFile{x.items.file, x.turns.file, x.updates.file, x.strings.file, x.turnSlotsFile()} {
+		if f == nil {
+			continue
+		}
+		if err := f.Sync(); err != nil && !fsatomic.SyncUnsupported(err) {
+			return fmt.Errorf("sync transcript index build: %w", err)
+		}
+	}
+	return fsatomic.SyncDir(filepath.Join(x.dir, x.build))
 }
 
 func (x *Index) openFiles(create bool) error {

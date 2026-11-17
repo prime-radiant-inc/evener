@@ -6,11 +6,18 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, expect, test, vi } from "vitest";
 import "../../panes/transcript";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { activityClient, activityContext, activityJob, activityWatch } from "../../stores/sessionActivityTestUtils";
+import {
+  activityClient,
+  activityContext,
+  activityJob,
+  activitySummary,
+  activityWatch,
+} from "../../stores/sessionActivityTestUtils";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
 import { deriveScope } from "../statusbar/statusScope";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivityViewport } from "./ActivityViewport";
+import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { JobsTab } from "./JobsTab";
 import { WatchesTab } from "./WatchesTab";
@@ -31,9 +38,14 @@ afterEach(() => {
   resetWorkspaceStoreForTests();
   vi.restoreAllMocks();
   resetConnectionStoreForTests();
+  ActivityBoundaryObserver.reset();
 });
 test("jobs show supplied terminal status and have no invented transcript action", async () => {
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total: 1, active: 0, completed: 1, failed: 1 },
+  }));
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
@@ -58,6 +70,47 @@ test("jobs show supplied terminal status and have no invented transcript action"
   expect(row?.getAttribute("aria-description")).toBe("Command failed");
   expect(row?.querySelector("[data-activity-meta]")?.getAttribute("data-failed")).toBe("true");
   expect(screen.queryByRole("button", { name: /real status/ })).toBeNull();
+});
+test("job history uses its direct-session summary and waits for unknown totals", async () => {
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total: 51, active: 1, completed: 50, failed: 0 },
+  }));
+  client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({ description: "Current job" }),
+      activityJob({ jobId: "done", description: "Finished job", terminal: true, status: "completed" }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  const view = render(<JobsTab now={NOW} scope={scope()} />);
+  expect(await screen.findByText("50 completed jobs")).toBeTruthy();
+  view.unmount();
+  resetConnectionStoreForTests();
+  const unknownClient = activityClient();
+  unknownClient.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: false, total: 0, active: 0, completed: 0, failed: 0 },
+  }));
+  unknownClient.on("evener/thread/jobs/list", ({ ref, scope }) => ({
+    context: activityContext(ref),
+    scope: scope ?? "session",
+    jobs: [
+      activityJob({ description: "Current job" }),
+      activityJob({ jobId: "done", description: "Finished job", terminal: true, status: "completed" }),
+    ],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(unknownClient);
+  render(<JobsTab now={NOW} scope={scope()} />);
+  await screen.findByRole("button", { name: /Current job/ });
+  const history = await screen.findByText("Completed jobs");
+  expect(history.closest("details")?.open).toBe(false);
+  expect(screen.queryByText("Finished job")).toBeNull();
 });
 test("watch tab reads typed receiver state and preserves cadence/delivery vocabulary", async () => {
   const client = activityClient();
@@ -119,6 +172,10 @@ test("watch disclosure reveals its complete condition and keeps equal IDs in dif
 
 test("all terminal jobs fold, and revealed output opens its authoritative owner pane", async () => {
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total: 8, active: 1, completed: 7, failed: 0 },
+  }));
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
@@ -184,6 +241,10 @@ test("all terminal jobs fold, and revealed output opens its authoritative owner 
 
 test("job history disclosure survives remount only for its selected session", async () => {
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total: 1, active: 0, completed: 1, failed: 0 },
+  }));
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
@@ -223,17 +284,12 @@ test("job history disclosure survives remount only for its selected session", as
 
 test("closed terminal history discovers page-three live work and keeps its settled anchor and output", async () => {
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total: 4, active: finished ? 0 : 1, completed: finished ? 4 : 3, failed: 0 },
+  }));
   let finished = false;
-  let intersect: (() => void) | undefined;
-  class Observer {
-    constructor(callback: IntersectionObserverCallback) {
-      intersect = () =>
-        callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
-    }
-    observe() {}
-    disconnect() {}
-  }
-  vi.stubGlobal("IntersectionObserver", Observer);
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
   client.on("evener/thread/jobs/list", ({ ref, scope, cursor }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
@@ -288,11 +344,11 @@ test("closed terminal history discovers page-three live work and keeps its settl
       );
     });
     expect(screen.queryByText("hidden success")).toBeNull();
-    await act(async () => intersect?.());
+    await act(async () => ActivityBoundaryObserver.intersect());
     expect(screen.queryByText("older active")).toBeNull();
     expect(screen.queryByText("older failure")).toBeNull();
-    await act(async () => intersect?.());
-    expect(screen.getByText("older active")).toBeTruthy();
+    await act(async () => ActivityBoundaryObserver.intersect());
+    await screen.findByText("older active");
     expect(screen.queryByText("older failure")).toBeNull();
     expect(screen.queryByText("hidden success")).toBeNull();
     expect(client.calls.filter((call) => call.method === "evener/thread/jobs/list")).toHaveLength(3);

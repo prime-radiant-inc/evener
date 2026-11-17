@@ -17,11 +17,16 @@ import type { Token } from "marked";
 import { markdownLexer } from "./lexer";
 import { closeOpenMarkdown } from "./streaming";
 
-// A markdown segment is a token slice. `window`, when set, is the part of that
-// run still streaming: `tokens` then holds the settled prefix and `window` the
-// bounded live window after it, so the two parse into one div (issue #3208).
+// A markdown segment is a token slice. `closedWindow`, when set, is the part of
+// that run still streaming: `tokens` then holds the settled prefix and
+// `closedWindow` the bounded live window after it, so the two parse into one
+// div (issue #3208). It arrives ALREADY closed: the split that produced it paid
+// closeOpenMarkdown over that exact text, and re-closing it in the renderer
+// walked the window's lines a second time on every windowed frame (issue
+// #6669). The field name carries the contract so a future caller cannot pass
+// raw streaming text in and silently render its open markers literally.
 export type MarkdownSegment =
-  | { kind: "markdown"; tokens: Token[]; window?: string }
+  | { kind: "markdown"; tokens: Token[]; closedWindow?: string }
   | { kind: "mermaid"; text: string };
 
 export function messageMayContainMermaid(source: string): boolean {
@@ -289,19 +294,6 @@ function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null 
   return verdict;
 }
 
-// The tail's first non-blank line, when indented, could still belong to a
-// list item open in the head (indented continuation joins it across the
-// blank line), so it declines the windowed path. Non-indented content can
-// never rejoin a head block across a blank line.
-function tailStartsIndented(tail: string): boolean {
-  const lines = tail.split("\n");
-  for (const line of lines) {
-    if (line.trim() === "") continue;
-    return line.charAt(0) === " " || line.charAt(0) === "\t";
-  }
-  return false;
-}
-
 // True when the tail's first block would EXTEND a list still open at the end
 // of the head. A blank line does not close a list - the next item repeats the
 // marker and joins it - so parsing head and tail separately would render one
@@ -313,16 +305,17 @@ function tailStartsIndented(tail: string): boolean {
 // The head side comes from the cached verdict: it is read from the token
 // stream, not a line scan, because only the token stream knows whether the
 // head's last block really is a list (a `-` line inside a fence or a table
-// cell is not one) - and it must not be re-lexed per render. The tail side is
-// a line scan: the tail is window-bounded, so it costs the same per render as
-// the regex gates beside it.
-function listContinuesAcrossSplit(verdict: HeadGateVerdict, tail: string): boolean {
+// cell is not one) - and it must not be re-lexed per render. The tail side
+// reads the first non-blank line the caller already scanned for the indent
+// gate: one scan of the tail feeds both, so the shared cost is the same per
+// render as the regex gates beside it.
+function listContinuesAcrossSplit(verdict: HeadGateVerdict, tailFirstLine: string): boolean {
   if (verdict.listFamily === null) return false;
   // The sentinel equals no real family, so it would fall through to `false`
   // and ALLOW an unverified split. Decline instead, as the comments above
   // promise, so an unreadable head never takes the windowed path.
   if (verdict.listFamily === LIST_FAMILY_UNKNOWN) return true;
-  return verdict.listFamily === listMarkerFamily(firstNonBlankLine(tail));
+  return verdict.listFamily === listMarkerFamily(tailFirstLine);
 }
 
 // A sound head/tail window split: the settled prefix and its streaming window,
@@ -340,20 +333,32 @@ export function splitLiveWindow(source: string, gateCache: { current: HeadGateVe
   const split = splitLiveSource(source);
   if (split === null) return null;
   const verdict = headGateVerdict(split.head, gateCache);
-  const closedTail = closeOpenMarkdown(split.tail);
   if (
     !verdict.balanced ||
     verdict.hazard ||
     verdict.hasDef ||
     containsLinkDefinition(split.tail) ||
     verdict.htmlStart ||
-    HTML_BLOCK_END.test(split.tail) ||
-    tailStartsIndented(split.tail) ||
-    listContinuesAcrossSplit(verdict, split.tail)
+    HTML_BLOCK_END.test(split.tail)
   ) {
     return null;
   }
-  return { head: split.head, tail: split.tail, closedTail };
+  // ONE line scan of the tail feeds both remaining gates. The tail's first
+  // non-blank line, when indented, could still belong to a list item open in
+  // the head (indented continuation joins it across the blank line), so it
+  // declines the windowed path; non-indented content can never rejoin a head
+  // block across a blank line. That same line is what the list-family
+  // comparison reads. An all-blank tail scans to "", which has no first
+  // character to call a space or tab, so it still reads as not indented.
+  const tailFirstLine = firstNonBlankLine(split.tail);
+  const tailStartsIndented = tailFirstLine.charAt(0) === " " || tailFirstLine.charAt(0) === "\t";
+  if (tailStartsIndented || listContinuesAcrossSplit(verdict, tailFirstLine)) {
+    return null;
+  }
+  // Closed last: it is a whole-tail line walk whose result a declined frame
+  // used to pay for and throw away, and a steady list-headed stream declines
+  // every frame.
+  return { head: split.head, tail: split.tail, closedTail: closeOpenMarkdown(split.tail) };
 }
 
 export function splitMarkdownSegments(closedSource: string, realSource: string | null): MarkdownSegment[] {
@@ -554,7 +559,14 @@ export function splitLiveMarkdownSegments(
     }
     // A fresh segment object each render (never cached whole) so MarkdownSlice
     // re-renders and picks up the grown window while reusing the settled tokens.
-    const windowSegment: MarkdownSegment = { kind: "markdown", tokens: entry.tailTokens, window: split.tail };
+    // The window is split.closedTail, not split.tail: splitLiveWindow already
+    // closed it, and the renderer parses it as given instead of closing the
+    // same text a second time (issue #6669).
+    const windowSegment: MarkdownSegment = {
+      kind: "markdown",
+      tokens: entry.tailTokens,
+      closedWindow: split.closedTail,
+    };
     if (entry.headSegments.length === 0) return [windowSegment];
     return [...entry.headSegments, windowSegment];
   }

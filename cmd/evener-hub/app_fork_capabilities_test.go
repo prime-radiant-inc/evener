@@ -322,7 +322,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 		"ref": "local:root", "status": map[string]any{"type": "active"}, "future_field": 17,
 		"capabilities": map[string]bool{"send": false, "steer": true, "forkFromTurn": false, "futureAction": true},
 	})}
-	got := stampForkCapability(original, true)
+	got := stampStatusCapabilities(original, relayCapabilityAnswers{forkFromTurn: true})
 	var result struct {
 		FutureField  int             `json:"future_field"`
 		Capabilities map[string]bool `json:"capabilities"`
@@ -334,7 +334,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 		t.Fatalf("capability overlay changed unrelated data: %+v", result)
 	}
 	for _, raw := range []string{`{}`, `{"capabilities":null}`, `{"capabilities":false}`} {
-		n := stampForkCapability(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: json.RawMessage(raw)}, true)
+		n := stampStatusCapabilities(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: json.RawMessage(raw)}, relayCapabilityAnswers{forkFromTurn: true})
 		if string(n.Params) != raw {
 			t.Fatalf("missing capability set was fabricated: %s", n.Params)
 		}
@@ -342,7 +342,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 		original := appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: testRawJSON(t, appwire.ThreadStatusChangedParams{
 			Status: status, Capabilities: &appwire.ThreadCapabilities{ForkFromTurn: true},
 		})}
-		got := stampForkCapability(original, true)
+		got := stampStatusCapabilities(original, relayCapabilityAnswers{forkFromTurn: true})
 		var params appwire.ThreadStatusChangedParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatal(err)
@@ -699,7 +699,7 @@ func TestHubForkCapabilityAdvertisesAheadOfOwnershipResolution(t *testing.T) {
 // (internal/appprojector's threadStatus, then server's failure-count and
 // capability stamps), so what that type declares is the whole of what a relayed
 // status notification can carry. The recovery signal it carries lives inside
-// status, which is where stampForkCapability reads the fork fence from; the
+// status, which is where stampStatusCapabilities reads the fork fence from; the
 // wire's other recovery flag, resumeRequired, is a field of EvenerThread on a
 // thread snapshot and is written only by the hub's own read projection. A
 // top-level recovery flag on the notification would have to be declared here
@@ -712,7 +712,7 @@ func TestThreadStatusChangedParamsDeclareNoTopLevelRecoveryFlag(t *testing.T) {
 		if slices.ContainsFunc([]string{"resume", "restart", "recovery"}, func(word string) bool {
 			return strings.Contains(strings.ToLower(name), word)
 		}) {
-			t.Errorf("%s declares top-level field %q; stampForkCapability reads the fork fence only from status", params.Name(), name)
+			t.Errorf("%s declares top-level field %q; stampStatusCapabilities reads the fork fence only from status", params.Name(), name)
 		}
 	}
 }

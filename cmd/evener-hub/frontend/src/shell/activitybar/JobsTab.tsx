@@ -9,6 +9,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { workspaceStore } from "../workspace";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
+import { activityPlaceholderLines } from "./activityPlaceholders";
 import { JobRow } from "./activityRows";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
@@ -19,6 +20,8 @@ const CLASS = {
 export function JobsTab({ scope, now }: ActivityTabBodyProps) {
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "jobs");
   const collection = snapshot?.jobs;
+  const summary = snapshot?.summary?.jobs;
+  const completedTotal = summary?.known ? summary.total - summary.active : null;
   useActivityScrollProgress(
     collection?.rows.map((job) => activityNodeID({ ...job, kind: "shell" })) ?? [],
     collection?.complete ?? false,
@@ -26,7 +29,8 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
   );
   if (collection?.permanent && collection.rows.length === 0)
     return <EmptyState size="compact" title="Jobs unavailable for this session." />;
-  if (!collection || (collection.rows.length === 0 && !collection.complete)) return <Skeleton lines={2} />;
+  if (!collection || (collection.rows.length === 0 && !collection.complete))
+    return <Skeleton lines={summary?.known ? activityPlaceholderLines(summary.total) : undefined} />;
   const running = collection.rows.filter((job) => !job.terminal);
   const completed = collection.rows.filter((job) => job.terminal);
   if (collection.rows.length === 0 && collection.complete)
@@ -54,7 +58,9 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
           id={`${scope.leaf.ref}\0completed-jobs`}
           summary={
             <span>
-              {completed.length} completed {completed.length === 1 ? "job" : "jobs"}
+              {completedTotal === null
+                ? "Completed jobs"
+                : `${completedTotal} completed ${completedTotal === 1 ? "job" : "jobs"}`}
             </span>
           }
         >
@@ -63,7 +69,6 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
       ) : null}
       <ActivityPageBoundary
         resource="jobs"
-        label="jobs"
         rows={collection.rows}
         hasMore={collection.hasMore}
         loading={collection.loading}

@@ -668,7 +668,7 @@ test("a live fenced idle local session offers Send and drives the resume", async
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-// A closed local frame carries send:true (stampClosedThreadCapabilities); it is
+// A closed local frame carries send:true (stampStatusCapabilities); it is
 // not the hub's resume-fenced shape, which clears send:false alongside
 // resumeRequired (applyThreadResumeRequirement). Under R09 the obligation is
 // the Send-resumes face: Send is offered and the store drives the resume.

@@ -132,7 +132,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// A wake that came while the request was in flight, a switch already
 	// picked, or a steer that arrived after the last steering drain began
 	// (and so may not be in this request) retries at once.
-	if s.quotaWakes != wakesBefore || s.pendingModel.model != "" || s.steerArrivals != s.steerArrivalsDrained {
+	if s.quotaWakes != wakesBefore || len(s.pendingModels) > 0 || s.steerArrivals != s.steerArrivalsDrained {
 		wait.wake <- struct{}{}
 	}
 	s.mu.Unlock()

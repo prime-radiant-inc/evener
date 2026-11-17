@@ -42,9 +42,16 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   // again over the same text (issue #6603). A settled message fills a cache
   // once and then holds every block's text and span arrays for as long as it
   // stays mounted, so it keeps none - the effect below releases it on settle.
+  // A non-live render hands the passes NO cache rather than the one this
+  // instance filled (issue #6644): the settle passes hand `analysis` to
+  // enhanceFileReferences and enhanceEntityText, whose cleanup closures then
+  // keep it alive for the message's settled life, however the ref is nulled.
+  // So an in-place settle re-derives every block's analysis once, which is
+  // what a freshly mounted settled message does anyway, and leaves nothing
+  // reachable behind it.
   const analysisRef = useRef<AnalysisCache | null>(null);
   if (live && analysisRef.current === null) analysisRef.current = createAnalysisCache();
-  const analysis = analysisRef.current ?? undefined;
+  const analysis = live ? (analysisRef.current ?? undefined) : undefined;
   // Portal updates must not replace the innerHTML that owns their mount points.
   const markdown = useMemo(() => <Markdown ref={root} source={source} live={live} />, [source, live]);
 
@@ -54,7 +61,8 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   useLayoutEffect(() => {
     // Released after the commit rather than during render: a settled instance
     // keeps no analysis, and a stream that settles in place drops the cache it
-    // filled. The settle pass itself may still answer from it.
+    // filled. The settle passes were handed no cache for the reason above, so
+    // this is the last reference the instance held to it.
     if (!live) analysisRef.current = null;
     const element = root.current;
     if (!element) return;

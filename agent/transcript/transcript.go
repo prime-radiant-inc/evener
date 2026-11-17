@@ -246,6 +246,7 @@ func ReadHeader(ctx context.Context, reader *bufio.Reader, maxLineBytes int) (He
 // DecodeEntry strictly decodes one semantic v2 entry. Raw entry bytes are safe
 // to pass to a projector only after this function succeeds.
 func DecodeEntry(line []byte) (Entry, error) {
+	resumeDecodedEntryBytes.Add(int64(len(line)))
 	var boundary struct {
 		Kind string `json:"kind"`
 	}
@@ -258,6 +259,20 @@ func DecodeEntry(line []byte) (Entry, error) {
 	var entry Entry
 	if err := decodeStrictJSON(line, &entry); err != nil {
 		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
+	}
+	return finalizeEntry(entry)
+}
+
+// finalizeEntry is DecodeEntry's checks after the strict decode: the record
+// kind, the notice payload, and the pre-flag machinery inference. DecodeEntry
+// and the resume scan's single-parse decoder share it so both produce the same
+// entry — and so neither can accept a record DecodeEntry would reject. The kind
+// check repeats DecodeEntry's boundary check by design: that check is what
+// rejects a non-entry record, and a decoder that skipped it would silently
+// resume a transcript holding one.
+func finalizeEntry(entry Entry) (Entry, error) {
+	if err := ValidateRecordKind(entry.Kind); err != nil {
+		return Entry{}, err
 	}
 	if entry.Turn.Kind == schema.TurnNotice {
 		if entry.Turn.Notice == nil {
@@ -272,6 +287,33 @@ func DecodeEntry(line []byte) (Entry, error) {
 	}
 	return entry, nil
 }
+
+// decodeEntryOnePass decodes one entry with a SINGLE strict parse, where
+// DecodeEntry pays two: DecodeEntry reads the record boundary first to classify
+// an unsupported kind or a malformed boundary, then decodes the whole entry.
+// This reader is DecodeEntry's equal oracle-wise and cheaper on the success
+// path, which for a resume is every line of a transcript that runs to hundreds
+// of megabytes.
+//
+// It decodes through decodeStrictJSON, the same function DecodeEntry decodes
+// with, so the strictness is that function's by construction rather than
+// restated here. The one check it cannot get from that call is the record kind,
+// which DecodeEntry reads from the boundary parse it is skipping; finalizeEntry
+// repeats it, and a kind this build does not support falls back to DecodeEntry
+// so the error value and its taxonomy stay single-sourced.
+func decodeEntryOnePass(line []byte) (Entry, error) {
+	var entry Entry
+	if err := decodeStrictJSON(line, &entry); err != nil {
+		return DecodeEntry(line)
+	}
+	return finalizeEntry(entry)
+}
+
+// resumeDecodedEntryBytes accumulates the entry-record payload bytes this
+// process has handed a decoder on the resume path. It is the work measure the
+// resume decode test asserts on: the bytes parsed, independent of how loaded
+// the host is or what the runtime's allocator happened to do.
+var resumeDecodedEntryBytes atomic.Int64
 
 // inferPreFlagMachinery flags block-shaped machinery parts on turns recorded
 // before part flags existed, so those transcripts keep filtering their
@@ -295,6 +337,7 @@ var strictDecoderOptions = jsonv2.JoinOptions(json.DefaultOptionsV1(), jsonv2.Re
 // decodeStrictJSON decodes one line as exactly one JSON value, rejecting
 // unknown members and any trailing value.
 func decodeStrictJSON(line []byte, target any) error {
+	resumeDecodedEntryBytes.Add(int64(len(line)))
 	// RejectUnknownMembers is deliberate and applies to the nested turn, not
 	// just this record's own envelope: a typo'd or renamed field in schema.Turn
 	// (or anything it embeds, like llm.Message) fails loudly here instead of
@@ -1192,11 +1235,29 @@ func resumeWriter(fs afero.Fs, open func() (afero.File, error), expectedSessionI
 	return newWriterOnTail(fs, f, tail, header, tail.moved()), entries, nil
 }
 
+// resumeDecodeStats records the decode work one resume scan did, so a caller
+// that cares about the cost — a test pinning that resume pays one decode pass
+// per entry, not two — can read what actually ran rather than infer it from
+// elapsed time. The zero value means "nobody asked".
+type resumeDecodeStats struct {
+	// EntriesDecoded is how many entry records the scan decoded.
+	EntriesDecoded int
+	// EntryBytesDecoded is the payload bytes those records held.
+	EntryBytesDecoded int64
+}
+
 // scanForResume validates the transcript, truncates any crash tail, positions
 // f at the end, and returns the header, the entries, the next sequence
 // number, and the recorded length: the file's length once any crash tail is
 // cut off.
 func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int, int64, error) {
+	header, entries, nextSeq, recordedLength, _, err := scanForResumeCounting(f, expectedSessionID)
+	return header, entries, nextSeq, recordedLength, err
+}
+
+// scanForResumeCounting is scanForResume, also reporting the decode work it
+// did. See resumeDecodeStats.
+func scanForResumeCounting(f afero.File, expectedSessionID string) (Header, []Entry, int, int64, resumeDecodeStats, error) {
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
@@ -1213,7 +1274,12 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 	hasPartialTail := false
 	headerRead := false
 	var header Header
+	var stats resumeDecodeStats
 	for {
+		// ReadLine, not LineBuffer: a submitted line is retained by the decode
+		// pool past the moment the scan reads the next one, so the framer must
+		// hand over bytes it will not overwrite. The reuse saves an allocation
+		// and a copy per record, and it is what a pool cannot have.
 		line, complete, bytesRead, readErr := ReadLine(reader, DefaultMaxLineBytes)
 		if readErr != nil {
 			// Every submitted line precedes this read in file order, so a
@@ -1222,9 +1288,9 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 			// runs on both arms: no worker outlives the scan.
 			_, entryErr := decode.finish()
 			if entryErr != nil {
-				return Header{}, nil, 0, 0, fmt.Errorf("parse transcript entry: %w", entryErr)
+				return Header{}, nil, 0, 0, stats, fmt.Errorf("parse transcript entry: %w", entryErr)
 			}
-			return Header{}, nil, 0, 0, fmt.Errorf("read transcript for resume: %w", readErr)
+			return Header{}, nil, 0, 0, stats, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
 			hasPartialTail = bytesRead > 0
@@ -1240,31 +1306,35 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 			header, err = DecodeHeader(line)
 			if err != nil {
 				_, _ = decode.finish()
-				return Header{}, nil, 0, 0, fmt.Errorf("parse transcript header: %w", err)
+				return Header{}, nil, 0, 0, stats, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
 				_, _ = decode.finish()
-				return Header{}, nil, 0, 0, &SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: expectedSessionID}
+				return Header{}, nil, 0, 0, stats, &SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: expectedSessionID}
 			}
 			headerRead = true
 			continue
 		}
+		// Counted here, not in the worker: this is what the scan hands a
+		// decoder, and the pool is the thing that decodes it.
+		stats.EntriesDecoded++
+		stats.EntryBytesDecoded += int64(len(line))
 		decode.submit(line)
 	}
 	entries, entryErr := decode.finish()
 	if entryErr != nil {
-		return Header{}, nil, 0, 0, fmt.Errorf("parse transcript entry: %w", entryErr)
+		return Header{}, nil, 0, 0, stats, fmt.Errorf("parse transcript entry: %w", entryErr)
 	}
 	if !headerRead {
 		if hasPartialTail && validLen == 0 {
-			return Header{}, nil, 0, 0, errors.New("transcript has no complete lines")
+			return Header{}, nil, 0, 0, stats, errors.New("transcript has no complete lines")
 		}
-		return Header{}, nil, 0, 0, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
+		return Header{}, nil, 0, 0, stats, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
 	}
 
 	if hasPartialTail {
 		if err := f.Truncate(validLen); err != nil {
-			return Header{}, nil, 0, 0, fmt.Errorf("truncate partial line: %w", err)
+			return Header{}, nil, 0, 0, stats, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
 
@@ -1283,8 +1353,8 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return Header{}, nil, 0, 0, fmt.Errorf("seek to end of transcript: %w", err)
+		return Header{}, nil, 0, 0, stats, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return header, entries, nextSeq, validLen, nil
+	return header, entries, nextSeq, validLen, stats, nil
 }

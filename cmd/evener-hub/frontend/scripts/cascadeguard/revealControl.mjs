@@ -10,17 +10,21 @@
 // single-sidebar call sites.
 export function revealControl(container, refusedSelector) {
   if (!container) return null;
-  const buttons = [...container.querySelectorAll("button")];
-  const usable = (button) => !button.matches(refusedSelector);
-  const fold = buttons.find((button) => usable(button) && button.textContent.trim().startsWith("Inactive subagents ("));
+  const controls = [...container.querySelectorAll("summary, button")];
+  const usable = (control) => !control.matches(refusedSelector);
+  const fold = controls.find(
+    (control) => usable(control) && /^(?:\d+ inactive subagents?|Inactive subagents)$/.test(control.textContent.trim()),
+  );
   // 4 is Node.DOCUMENT_POSITION_FOLLOWING. The numeric constant keeps the
   // serialized function independent of globals and of a browsing context.
   const DOCUMENT_POSITION_FOLLOWING = 4;
-  const inactiveVisible = fold !== undefined && [...container.querySelectorAll("[data-activity-anchor]")]
-    .some((node) => !!(fold.compareDocumentPosition(node) & DOCUMENT_POSITION_FOLLOWING));
+  const inactiveVisible =
+    fold !== undefined &&
+    [...container.querySelectorAll("[data-activity-anchor]")].some(
+      (node) => !!(fold.compareDocumentPosition(node) & DOCUMENT_POSITION_FOLLOWING),
+    );
   if (fold && !inactiveVisible) return fold;
-  return buttons.find((button) => usable(button)
-    && (button.textContent.trim().startsWith("Show ") || button.textContent.trim() === "Load more subagents")) ?? null;
+  return controls.find((control) => usable(control) && control.textContent.trim().startsWith("Show ")) ?? null;
 }
 
 // The one-page-turn expression `reveal` evaluates. It re-checks the target on
@@ -31,12 +35,19 @@ export function revealControl(container, refusedSelector) {
 export function revealControlStep(selector, container, refusedSelector) {
   return `(() => {
     if (document.querySelector(${JSON.stringify(selector)})) return { revealed: true };
-    const b = (${revealControl})(document.querySelector(${JSON.stringify(container)}), ${JSON.stringify(refusedSelector)});
-    if (!b) return null;
+    const mounted = document.querySelector(${JSON.stringify(container)});
+    if (!mounted) return null;
+    const before = mounted.textContent;
+    const b = (${revealControl})(mounted, ${JSON.stringify(refusedSelector)});
+    if (!b) {
+      const pending = mounted.querySelector('[data-testid="skeleton-line"]');
+      if (!pending) return null;
+      pending.scrollIntoView({ block: 'center' });
+      return { before };
+    }
     b.scrollIntoView({ block: 'center' });
     const r = b.getBoundingClientRect();
     if (!b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
-    const before = document.querySelector(${JSON.stringify(container)}).textContent;
     b.click();
     return { before };
   })()`;
@@ -44,11 +55,11 @@ export function revealControlStep(selector, container, refusedSelector) {
 
 // The gate `reveal` polls before its loop: the collection is usable once the
 // target is reachable or the loop has a control to press. A direct collection
-// whose first page holds only current rows has no fold yet, so the gate must
-// accept the page boundary the loop would press; waiting for a fold alone
-// leaves a later-page target unreachable. The control is chosen by the same
-// revealControl the loop presses.
+// whose first page holds only current rows has no fold yet, so the gate accepts
+// the pending boundary the loop scrolls into view. The control is chosen by the
+// same revealControl the loop presses.
 export function revealReadyExpr(selector, container, refusedSelector) {
   return `(() => document.querySelector(${JSON.stringify(selector)}) !== null
-    || (${revealControl})(document.querySelector(${JSON.stringify(container)}), ${JSON.stringify(refusedSelector)}) !== null)()`;
+    || (${revealControl})(document.querySelector(${JSON.stringify(container)}), ${JSON.stringify(refusedSelector)}) !== null
+    || document.querySelector(${JSON.stringify(container)})?.querySelector('[data-testid="skeleton-line"]') != null)()`;
 }

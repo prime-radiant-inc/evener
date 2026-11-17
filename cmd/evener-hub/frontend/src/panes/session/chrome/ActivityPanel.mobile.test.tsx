@@ -2,6 +2,7 @@ import { hydrateThread } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { ActivityBoundaryObserver } from "../../../shell/activitybar/activityPagingTestUtils";
 import { resetActivitySidebarStoreForTests } from "../../../shell/activitybar/activitySidebarStore";
 import { resetChromeStoreForTests } from "../../../shell/chromeStore";
 import { ClientProvider } from "../../../shell/clientContext";
@@ -290,6 +291,7 @@ test("mobile child conversation Back restores Activity and disclosures until exp
 });
 
 test("mobile child Back restores the loaded job extent and expanded older failure with fresh cursors", async () => {
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
   const client = connectActivity();
   const completed = Array.from({ length: 60 }, (_, index) =>
     activityJob({
@@ -348,7 +350,8 @@ test("mobile child Back restores the loaded job extent and expanded older failur
       </ClientProvider>,
     );
     fireEvent.click(await screen.findByRole("button", { name: /^Activity/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
+    await screen.findByRole("status", { name: "Loading" });
+    await act(async () => ActivityBoundaryObserver.intersect());
     fireEvent.click(await screen.findByRole("treeitem", { name: "62 inactive" }));
     fireEvent.click(await screen.findByRole("button", { name: "Show details for Older failed checks" }));
     expect(await screen.findByText("Older failure output")).toBeTruthy();

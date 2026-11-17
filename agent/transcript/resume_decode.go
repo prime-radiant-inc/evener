@@ -172,7 +172,13 @@ func (d *resumeDecoder) work() {
 		if resumeDecodeSeam != nil {
 			resumeDecodeSeam(true)
 		}
-		entry, err := DecodeEntry(job.line)
+		// decodeEntryOnePass, not DecodeEntry: one strict parse per record
+		// instead of DecodeEntry's boundary parse plus the whole-entry decode.
+		// The pool is where resume decodes, so this is where the second pass is
+		// saved; every guarantee the pool makes -- file order, the first file-
+		// order error, no worker outliving finish -- is the collector's, and is
+		// untouched by how a worker decodes.
+		entry, err := decodeEntryOnePass(job.line)
 		if resumeDecodeSeam != nil {
 			resumeDecodeSeam(false)
 		}

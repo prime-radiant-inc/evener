@@ -54,9 +54,9 @@ func TestSessionTreeStampIsStableWhenNothingChanges(t *testing.T) {
 }
 
 // TestSessionTreeStampSeesEverySweptWrite is the gate's safety property: every
-// write either sweep reads must move the digest, or the gate would skip a full
-// pass over content that changed and a client would wait a whole extra interval
-// (or forever) to see it. Each case is a real writer's effect on disk.
+// write the gated rebuild reads must move the digest, or the gate would skip a
+// rebuild over content that changed and a client would wait a whole extra
+// interval (or forever) to see it. Each case is a real writer's effect on disk.
 func TestSessionTreeStampSeesEverySweptWrite(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -72,18 +72,6 @@ func TestSessionTreeStampSeesEverySweptWrite(t *testing.T) {
 			name: "an indexed session meta is rewritten",
 			write: func(t *testing.T, project string) {
 				writeMeta(t, project, schema.SessionMeta{ID: stampSessionID, Name: "renamed", UpdatedAt: time.Unix(1_700_000_200, 0).UTC()})
-			},
-		},
-		{
-			name: "a transcript appears",
-			write: func(t *testing.T, project string) {
-				writeStampTranscript(t, project, stampOtherID, "the new message")
-			},
-		},
-		{
-			name: "an indexed transcript grows",
-			write: func(t *testing.T, project string) {
-				appendStampTranscript(t, project, stampSessionID, "a later message")
 			},
 		},
 	}
@@ -102,14 +90,22 @@ func TestSessionTreeStampSeesEverySweptWrite(t *testing.T) {
 	}
 }
 
-// TestSessionTreeStampIgnoresArtifactsNeitherSweepReads pins the other side:
-// the per-turn artifacts beside a session must not move the digest, or the gate
-// would fire on every turn and buy nothing again.
-func TestSessionTreeStampIgnoresArtifactsNeitherSweepReads(t *testing.T) {
+// TestSessionTreeStampIgnoresArtifactsTheRebuildDoesNotRead pins the other side:
+// what the rebuild never opens must not move the digest, or the gate would fire
+// on every turn and buy nothing again. A transcript is the important one — it
+// grows on every turn, and the rebuild reads only the metas.
+func TestSessionTreeStampIgnoresArtifactsTheRebuildDoesNotRead(t *testing.T) {
 	f := newStampFixture(t)
 	writeMeta(t, f.project, schema.SessionMeta{ID: stampSessionID, Name: "one", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()})
 	writeStampTranscript(t, f.project, stampSessionID, "the first message")
 	before := f.stamp(t)
+
+	// The writer that matters: a turn appends to the transcript.
+	appendStampTranscript(t, f.project, stampSessionID, "a later message")
+	writeStampTranscript(t, f.project, stampOtherID, "a brand new session's first message")
+	if after := f.stamp(t); after != before {
+		t.Fatal("a transcript write moved the digest, so every turn would run a rebuild that finds nothing")
+	}
 
 	sessionsDir := schema.SessionsDir(f.project)
 	for name, body := range map[string]string{
@@ -125,7 +121,7 @@ func TestSessionTreeStampIgnoresArtifactsNeitherSweepReads(t *testing.T) {
 		}
 	}
 	if after := f.stamp(t); after != before {
-		t.Fatal("an artifact neither sweep reads moved the digest, so the gate would fire on every turn")
+		t.Fatal("an artifact the rebuild does not read moved the digest, so the gate would fire on every turn")
 	}
 }
 

@@ -5439,14 +5439,13 @@ it("a pane whose settlement recovered nothing converges from storage after two f
     wireReads += 1;
     return Promise.reject(new Error("wire unavailable"));
   });
-  setSessionCacheStalledOpenForTests(250);
-  setSessionCacheOpenBackstopForTests(40);
   holding = true;
   // The chain's re-open reads 225 rows through the real storage adapter, whose
-  // round trip is host-speed dependent, while the stalled-open window is a wall
-  // clock: a read that outlasts it is abandoned by design. Freeze the clock so
-  // each window fires only where this test advances it, and the convergence
-  // this test asserts is a property of the chain rather than of the host.
+  // round trip is host-speed dependent, while the stalled-open and backstop
+  // windows are wall clocks: a read that outlasts one is abandoned by design.
+  // Freezing the clock with nothing advancing it keeps every window inert, so
+  // the convergence this test asserts is a property of the chain rather than
+  // of the host.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const opened = threadsStore.getState().ensureThread(ref);
   await localReadEntered.promise;
@@ -5464,8 +5463,6 @@ it("a pane whose settlement recovered nothing converges from storage after two f
     expect(wireReads).toBe(2);
   } finally {
     vi.useRealTimers();
-    setSessionCacheStalledOpenForTests(5000);
-    setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
     await lease.release();
   }

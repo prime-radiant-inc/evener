@@ -480,6 +480,17 @@ an observed summary so its counts can become known. A summary with
 `refreshPending` uses the same existing paced summary timer until established
 sources catch up; closing the last holder or going offline cancels that demand.
 
+The web Overview's Agents, Jobs and Watches lists request their next bounded
+page when the existing page boundary approaches the visible viewport. Closed
+inactive-agent or completed-job history does not suppress that demand. The
+boundary presents a static Skeleton while rows remain to be read; it offers no
+manual Load more action. Inactive-agent and completed-job folds use the
+direct-session summary's `total - active` when known, independently of the
+rows downloaded so far. Unknown totals keep an unnumbered history label. Tasks
+continues to use its complete task-list read and sizes its initial Skeleton
+from the authoritative task total. These lists share the Overview's outer
+padding and one compact row gap.
+
 Scoped activity consumers refresh the resources named by
 `evener/thread/activity/changed`, honoring its logical owner and the selected
 session/subtree scope. Delegate field changes are instead applied from the

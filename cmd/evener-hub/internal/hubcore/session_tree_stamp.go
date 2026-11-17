@@ -13,47 +13,50 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-// SessionTreeStamp summarizes the on-disk state both hub sweeps read, without
-// reading any of it: one directory read per project and one lstat per session
-// entry.
+// SessionTreeStamp summarizes the on-disk state the past index's rebuild reads,
+// without reading any of it: one directory read per project and one lstat per
+// session entry.
 //
 // It exists so a sweep tick can tell "nothing on disk moved since the last
 // tick" from "something did" for a small fraction of the cost of re-reading
-// every session's metadata and transcript. Session files are what the past
-// index's Rebuild scans and what MessageSearch.Refresh stamps, so a digest over
-// exactly those files is a proof over exactly the inputs of both: a change the
-// digest cannot see is a change neither sweep could observe either.
+// every session's metadata. The rebuild's whole input is the sessions'
+// *.meta.json files (schema.ListSessionMetas, scanAll), so a digest over
+// exactly those files is a proof over exactly its input: a change the digest
+// cannot see is a change the rebuild could not observe either.
+//
+// It is NOT a proof for MessageSearch.Refresh, and the hub does not use it as
+// one: Refresh runs unconditionally. Refresh needs a transcript's read to
+// succeed, and it defers a session without recording a stamp when that read is
+// refused for a missing sidecar, a contended lock or a stale cursor — none of
+// which moves any file the digest folds, because the sidecar the repair then
+// builds lives in the excluded .index-<projection> directory. Transcripts are
+// therefore not folded at all: the rebuild never reads one, so folding them
+// would buy a full rebuild on every appended turn and find nothing.
 //
 // The digest covers, per project directory the glob matches:
 //
 //   - the project path itself, so a project appearing or disappearing counts;
-//   - every *.meta.json entry's name, size and modification time — the past
-//     index's entire input;
-//   - every session transcript's name, size and modification time — what
-//     MessageSearch.Refresh compares to decide a transcript changed.
+//   - every *.meta.json entry's name, size and modification time.
 //
-// Only a session transcript counts (see sessionTranscriptName): the api and job
-// logs beside it, the boot generations and the meta locks all move on ordinary
-// turns without changing what either index holds, so folding them in would
-// defeat the digest rather than sharpen it.
+// That is the rebuild's entire input. The transcripts, api and job logs, boot
+// generations and meta locks beside the metas all move on ordinary turns
+// without changing what the rebuild reads, so folding them in would defeat the
+// digest rather than sharpen it.
 //
-// Every writer of a covered file moves at least one of the three folded facts.
-// A meta write is a temp file renamed into place (schema.writeSessionMetaLocked),
-// which installs a fresh inode with a new modification time; a transcript append
-// extends the file; a transcript rewrite or a transcript-index rebuild replaces
-// it. Digests of this shape are the same stamp MessageSearch.Refresh already
-// trusts per transcript (TranscriptStamp), applied to the whole tree.
+// Every writer of a covered file moves at least one folded fact: a covered
+// entry's name, its size or its modification time. A meta write is a temp file
+// renamed into place (schema.writeSessionMetaLocked), which installs a fresh
+// inode with a new modification time. A transcript-index rebuild writes only
+// inside its own .index-<projection> directory, so it correctly does not move
+// the digest.
 //
 // An entry that cannot be stat'd is folded in by name with a fixed marker, so a
 // file appearing or disappearing still moves the digest and a transient stat
 // failure cannot silently read as "unchanged": the marker differs from every
 // real (size, mtime) pair.
 //
-// The transcript-index sidecar directories are deliberately excluded. A sidecar
-// rebuild changes what a *first* read of a transcript would see, but Refresh
-// stamps the transcript file, so it already declines to re-read a transcript
-// whose file did not move; folding the sidecars in would only make the digest
-// fire on every append, including the hub's own refresh.
+// The transcript-index sidecar directories are deliberately excluded: they are
+// derived data, and a rebuild writes inside the sidecar directory only.
 func SessionTreeStamp(projectGlob string) (uint64, error) {
 	if projectGlob == "" {
 		return 0, nil
@@ -119,28 +122,13 @@ func foldSessionDirStamp(h hash.Hash64, sessionsDir string) {
 	}
 }
 
-// stampWatchesSessionEntry reports whether a sessions-dir entry feeds one of
-// the sweeps the stamp gates.
+// stampWatchesSessionEntry reports whether a sessions-dir entry is part of the
+// past index rebuild's input.
 func stampWatchesSessionEntry(name string) bool {
-	if strings.HasSuffix(name, schema.SessionMetaSuffix) {
-		// The past index's input. A writer's intermediate "<id>.meta.json.tmp"
-		// does not match this suffix, and does not need to: the rename that
-		// installs the real file moves its own entry within the same write.
-		return true
-	}
-	return sessionTranscriptName(name)
-}
-
-// sessionTranscriptName reports whether name is a session's own transcript
-// file. The transcript index's sidecars live beside it under a longer name
-// (<transcript>.index-<projection>), which this refuses, as it does every other
-// per-session artifact.
-func sessionTranscriptName(name string) bool {
-	if !strings.HasSuffix(name, schema.SessionTranscriptSuffix) {
-		return false
-	}
-	id := strings.TrimSuffix(name, schema.SessionTranscriptSuffix)
-	return identifier.ValidateSessionID(id) == nil
+	// A writer's intermediate "<id>.meta.json.tmp" does not match this suffix,
+	// and does not need to: the rename that installs the real file moves its own
+	// entry within the same write.
+	return strings.HasSuffix(name, schema.SessionMetaSuffix)
 }
 
 func foldStampString(h hash.Hash64, s string) {

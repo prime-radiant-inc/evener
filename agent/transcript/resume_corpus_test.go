@@ -84,7 +84,9 @@ func corpusCases(t *testing.T) []corpusCase {
 		corpusLine(t, 1, corpusTurn(schema.TurnAssistant, "a1")) +
 		corpusLine(t, 2, corpusTurn(schema.TurnUserInput, "u2"))
 	// A checkpoint mid-file: the shape issue #6418 wants to start decoding
-	// from. The three entries before it are the state the fix must not skip.
+	// from. Exactly one entry (seq 0) precedes it, and it is the state the fix
+	// must not skip; the multi-entry prefix lives in
+	// TestResumeReturnsEntriesBeforeTheCompactionAnchor below.
 	checkpoint := corpusHeader +
 		corpusLine(t, 0, corpusTurn(schema.TurnUserInput, "u0")) +
 		corpusLine(t, 1, corpusTurn(schema.TurnCheckpoint, "ck1")) +
@@ -407,7 +409,7 @@ func TestResumeReturnsEntriesBeforeTheCompactionAnchor(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	if len(entries) != 5 {
-		t.Fatalf("resumed %d entries, want all 5: the four before the anchor carry state resume's callers fold", len(entries))
+		t.Fatalf("resumed %d entries, want all 5: the three before the anchor carry state resume's callers fold", len(entries))
 	}
 	if got := entries[0].Turn.AttentionID; got != "att-1" {
 		t.Fatalf("entry 0 attention id = %q, want the pre-anchor steering row", got)

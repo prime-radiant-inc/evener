@@ -103,9 +103,9 @@ func TestFailedTurnStatusFrameKeepsTheSessionOpen(t *testing.T) {
 // own "send: false" would therefore take the follow-up composer away from a
 // session the hub would happily wake — the same wedge in the other direction.
 // So the close frame leaves the field empty; the hub stamps its own answer
-// onto it as it relays the frame (app_relay.go's
-// stampClosedThreadCapabilities), which is what keeps a client from reading
-// back a set the departing daemon cut for a turn that is over (kata pk2d).
+// onto it as it relays the frame (app_relay_types.go's stampStatusCapabilities),
+// which is what keeps a client from reading back a set the departing daemon
+// cut for a turn that is over (kata pk2d).
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
