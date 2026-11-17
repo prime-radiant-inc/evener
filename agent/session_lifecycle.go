@@ -1784,7 +1784,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count pause_turn as a tool round.
 			serverContinuations++
 			timings.TotalRound = time.Since(roundStart)
-			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.RequestBuild - timings.LLMCall
 			s.emit(timings)
 			if serverContinuations >= maxServerContinuations {
 				// Stop the chain on its own budget; the pause responses
@@ -1839,7 +1839,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
-			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.RequestBuild - timings.LLMCall
 			s.emit(timings)
 			continue
 		}
@@ -1958,7 +1958,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
-		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
+		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.RequestBuild - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
 		s.emit(timings)
 
 		// communicate sets the flag, or this round posted question(s) (spec

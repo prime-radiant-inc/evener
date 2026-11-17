@@ -133,8 +133,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	profile = s.profile
 	sys = s.cachedSystemPrompt
+	// The round's tool-definition work is this hand-off, not a build: the list
+	// is built once at session init (rebuildToolDefsCache) and rebuilt only when
+	// the tool set itself changes, so a round only takes the cached pair.
+	tToolDefsStart := s.sclock().Now()
 	toolDefs := s.cachedToolDefs
 	toolDefsJSONBytes := s.cachedToolDefsJSONBytes
+	t.ToolDefs = time.Since(tToolDefsStart)
 	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
 	// the session's configured effort so it is restored when the task ends.
 	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
@@ -143,7 +148,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		s.contextMgr.SetProfile(profile)
 	}
 
-	t.SystemPrompt = time.Since(tPhaseStart)
+	// The tool-definition window is measured inside this one and reported under
+	// its own name, so SystemPrompt takes the remainder: the windows nest, so
+	// the remainder is never negative, and the two together cover the phase
+	// exactly once.
+	t.SystemPrompt = time.Since(tPhaseStart) - t.ToolDefs
 
 	// --- Phase: ContextMgmt ---
 	tPhaseStart = s.sclock().Now()
@@ -305,6 +314,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 
 	t.HistoryExpand = time.Since(tPhaseStart)
 
+	// --- Phase: RequestBuild ---
+	tPhaseStart = s.sclock().Now()
+
 	// The expanded history keeps the target-policy thinking and every
 	// tool-result payload so the fallback chain can apply each target's own
 	// replay and media policy; the primary request is projected for the
@@ -313,7 +325,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
-	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
 	s.setRoundFallbackSource(sys, untrimmedHistory)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
@@ -436,6 +447,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
+	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 

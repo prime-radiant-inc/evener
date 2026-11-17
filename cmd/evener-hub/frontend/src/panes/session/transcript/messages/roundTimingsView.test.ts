@@ -80,6 +80,18 @@ test("a phase whose share rounds to 0% still appears if its own duration rounds 
   expect(phase?.pct).toBe(0);
 });
 
+test("request assembly is its own phase, not folded into overhead", () => {
+  // A round that spends 5ms building its request and 2ms on everything else
+  // the round tracks must report both, so a reader can tell assembly from
+  // overhead.
+  const summary = roundTimingsSummary(
+    raw({ total_round_ns: 20_000_000, request_build_ns: 5_000_000, loop_overhead_ns: 2_000_000 }),
+  );
+  expect(summary?.phases.map((p) => p.key)).toEqual(["request_build_ns", "loop_overhead_ns"]);
+  expect(summary?.phases[0]?.ms).toBe(5);
+  expect(summary?.phases[0]?.pct).toBe(25);
+});
+
 test("no phase reaching 1ms yields an empty phases array and no dominant, total still present", () => {
   const summary = roundTimingsSummary(raw({ total_round_ns: 500, llm_call_ns: 400 }));
   expect(summary?.phases).toEqual([]);

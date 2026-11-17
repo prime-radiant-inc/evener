@@ -164,6 +164,7 @@ func RoundTimingsAnnouncement(data events.RoundTimings) NoticeAnnouncement {
 		"prompt=" + data.SystemPrompt.String(),
 		"history=" + data.HistoryExpand.String(),
 		"tool_defs=" + data.ToolDefs.String(),
+		"request_build=" + data.RequestBuild.String(),
 		"persistence=" + data.Persistence.String(),
 		"after_action=" + data.AfterAction.String(),
 		"overhead=" + data.LoopOverhead.String(),
