@@ -8,7 +8,9 @@ import {
   itemTextPresence,
   markItemIdentityOnly,
   markItemTextOmitted,
+  wireItemToModel,
 } from "./transcriptItems";
+import type { ThreadItem } from "./types.gen";
 
 test("entry item codec preserves omitted text, identity-only markers, and rich recorded fields", () => {
   const omitted = markItemTextOmitted({ id: "item-1", turnId: "turn-1", type: "assistant", text: "" });
@@ -77,29 +79,44 @@ test("the entry item codec round-trips the answer link", () => {
   ).toBeUndefined();
 });
 
-// The same hazard for admission's per-call resolution evidence (#6323): the
-// encoder spreads every key, so an unlisted one rejects the whole write batch
-// and strands cached history for every session with a recorded answer.
-test("the entry item codec round-trips the resolved ask calls", () => {
-  const answered: ItemModel = {
+// Admission's per-call resolution evidence (#6323) has the same cache hazard
+// as the link above - the encoder spreads every key, so an unlisted one
+// rejects the whole write batch and strands cached history for every session
+// with a recorded answer. This starts from a WIRE item and folds through
+// wireItemToModel, because that carry is the load-bearing half: a test that
+// sets the field on an ItemModel directly would still pass if the projection
+// dropped it and live clients went back to guessing by header.
+test("the wire item's resolved ask calls survive projection and cache decoding", () => {
+  const wire: ThreadItem = {
     id: "item-1",
     turnId: "turn-1",
     type: "userMessage",
     text: "sure, go with Yes",
-    answerToTurnIds: ["turn-turn"],
-    resolvedAskCalls: [
-      { turnId: "turn-question", callId: "call-1" },
-      { turnId: "turn-question", callId: "call-2" },
-    ],
+    observation: {
+      ref: "",
+      causalKnown: false,
+      answerToTurnIds: ["turn-question"],
+      resolvedAskCalls: [
+        { turnId: "turn-question", callId: "call-1" },
+        { turnId: "turn-question", callId: "call-2" },
+      ],
+    },
   };
-  const decoded = decodeTranscriptItem(encodeTranscriptItem(answered));
+  const projected = wireItemToModel(wire);
+  expect(projected.answerToTurnIds).toEqual(["turn-question"]);
+  expect(projected.resolvedAskCalls).toEqual([
+    { turnId: "turn-question", callId: "call-1" },
+    { turnId: "turn-question", callId: "call-2" },
+  ]);
+  // And the cache keeps them: the decoder is what a live client reads back.
+  const decoded = decodeTranscriptItem(encodeTranscriptItem(projected));
   expect(decoded?.resolvedAskCalls).toEqual([
     { turnId: "turn-question", callId: "call-1" },
     { turnId: "turn-question", callId: "call-2" },
   ]);
   expect(
     decodeTranscriptItem({
-      ...encodeTranscriptItem(answered),
+      ...encodeTranscriptItem(projected),
       resolvedAskCalls: [{ turnId: "turn-question" }] as unknown as ItemModel["resolvedAskCalls"],
     }),
   ).toBeUndefined();

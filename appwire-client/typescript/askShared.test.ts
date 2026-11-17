@@ -701,7 +701,11 @@ test("a call-stamped answer recaps a free-prose reply beside same-header acked s
     resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
   });
   const model = turnsModel([first, second], [reply]);
-  expect(answeredAskUserSuffix(model, first)).toBe(" — answered: do the first thing");
+  // Assert WHICH reply the recap speaks for, plus that its text carries that
+  // reply's own words - not a hardcoded display phrase, which this suite does
+  // not use as an oracle.
+  expect(answeredAskUserReply(model, first)).toBe(reply);
+  expect(answeredAskUserSuffix(model, first)).toContain(reply.text);
   expect(answeredAskUserSuffix(model, second)).toBeUndefined();
 });
 
@@ -772,6 +776,80 @@ test("a call-stamped composed answer to two same-header calls recaps neither", (
   });
   const reply = userMessage({
     text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Deploy?] → "No"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, second)).toBeUndefined();
+});
+
+test("a call-stamped composed answer naming ONE of two same-header calls still recaps it", () => {
+  // The mirror of the case above: the same two same-header sibling calls, but
+  // the stamp names only the first. Nothing is shared AMONG THE CALLS THE REPLY
+  // CLAIMS, so the one answer line is attributable to that call alone and the
+  // recap is taken as before - the sibling the reply never claimed recaps
+  // nothing.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([{ ...ONE_QUESTION[0], question: "Should I deploy the docs too?" }]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserReply(model, first)).toBe(reply);
+  expect(answeredAskUserSuffix(model, first)).toBeDefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
+test("a call-stamped composed answer naming two same-header calls recaps neither", () => {
+  // The stamp names ONE composed answer for two calls that ask the SAME
+  // header, and the reply carries one line for it. No header repeats among
+  // the answer lines, so the repeat guard above passes - but the line cannot
+  // say which call it answered. Recapping it would show the same value on
+  // both, and whichever call the human actually answered would be replaced.
+  // The stamp proves which calls the reply answers, not that a line is
+  // attributable to either, so both calls keep their raw row.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([{ ...ONE_QUESTION[0], question: "Should I deploy the docs too?" }]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
     turnId: "turn_2",
     answerToTurnIds: ["turn_1"],
     resolvedAskCalls: [

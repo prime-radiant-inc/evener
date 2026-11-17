@@ -179,6 +179,43 @@ function composedReplyRepeatsAHeader(text: string): boolean {
   return false;
 }
 
+// stampedComposedRecapIsAttributable answers the stamp's other, separate
+// question: given that admission named this reply for a call, can the recap
+// be shown for that call at all? The stamp proves which calls the reply
+// ANSWERS; it never proves the recap restates each answer faithfully. Two
+// composed shapes break that, and both keep the raw row instead:
+//
+//   - a header repeats among the answer lines, so the header-keyed parse keeps
+//     only the last line (composedReplyRepeatsAHeader);
+//   - a header identifies more than one QUESTION across the calls the reply
+//     claims. One line cannot say which of them it answered, so recapping it
+//     would show the same value on both and one call would be answered
+//     nothing. Counting questions, not calls, also covers one call that asks
+//     the same header twice (legal: two questions may share a header).
+//
+// Where no header is shared this way every claimed call's answers are its
+// own, and the recap is taken as before - including a reply stamped for only
+// one of two same-header siblings. Free prose names no header, so it is never
+// refused here.
+function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: ItemModel): boolean {
+  if (!reply.text.startsWith("[answers]")) return true;
+  if (composedReplyRepeatsAHeader(reply.text)) return false;
+  const questionsPerHeader = new Map<string, number>();
+  for (const call of items) {
+    if (!isAckedAskCall(call)) continue;
+    // Only calls this reply claims: a same-header sibling the reply did not
+    // answer says nothing about which of its own answers a line is.
+    if (resolvesThisCall(call, reply) !== true) continue;
+    for (const question of parseAskUserQuestions(call) ?? []) {
+      questionsPerHeader.set(question.header, (questionsPerHeader.get(question.header) ?? 0) + 1);
+    }
+  }
+  for (const count of questionsPerHeader.values()) {
+    if (count > 1) return false;
+  }
+  return true;
+}
+
 function composedReplyCoversCall(
   text: string,
   questions: readonly AskUserQuestion[],
@@ -420,13 +457,11 @@ function findAnswerReply(
       const resolved = resolvesThisCall(item, candidate);
       if (resolved === true) {
         // The stamp proves the reply answers THIS call. It does not prove the
-        // recap restates that answer faithfully: a composed reply whose answer
-        // lines repeat a header parses to the LAST such line only, so taking
-        // the recap would silently replace this call's answer with a sibling's
-        // (two same-header calls answered "Yes" and "No" would both recap
-        // "No"). Keep the raw row instead, exactly as the unstamped path's
-        // composedReplyCoversCall refusal does.
-        if (candidate.text.startsWith("[answers]") && composedReplyRepeatsAHeader(candidate.text)) continue;
+        // recap restates that answer faithfully, so the composed form must
+        // also be attributable to a single question per header; when it is
+        // not, keep the raw row, exactly as composedReplyCoversCall does for
+        // the unstamped path.
+        if (!stampedComposedRecapIsAttributable(items, candidate)) continue;
         return candidate;
       }
       if (resolved === false) continue;
