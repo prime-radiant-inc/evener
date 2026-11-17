@@ -1,4 +1,4 @@
-import { WireError } from "./errors";
+import { isModelControlAuthorityStale, mutationErrorData, WireError } from "./errors";
 import type { ThreadModel } from "./model";
 import { sameJsonValue } from "./plainObject";
 import type { ModelControlAuthority, ModelControlSnapshot, ThreadModelSetResponse } from "./types.gen";
@@ -26,6 +26,8 @@ export type ModelControlInput =
   | { kind: "authorityStale" }
   | { kind: "postDispatchFailure" };
 
+export type ModelControlRecoveryInput = Extract<ModelControlInput, { kind: "authorityStale" | "postDispatchFailure" }>;
+
 export type ModelControlDecision = "applied" | "duplicate" | "ignored" | "recovering" | "unsupported";
 
 export interface ModelControlRequestFence {
@@ -38,6 +40,19 @@ export interface ModelControlReduction {
   model: ThreadModel;
   decision: ModelControlDecision;
   replacementReadRequired: boolean;
+}
+
+export function modelControlRecoveryInput(error: unknown): ModelControlRecoveryInput | undefined {
+  if (isModelControlAuthorityStale(error)) return { kind: "authorityStale" };
+  const failure = mutationErrorData(error);
+  if (
+    !(error instanceof WireError) ||
+    failure?.mutationOutcome === "unknown" ||
+    failure?.retryDisposition === "blocked"
+  ) {
+    return { kind: "postDispatchFailure" };
+  }
+  return undefined;
 }
 
 export function sameModelControlAuthority(

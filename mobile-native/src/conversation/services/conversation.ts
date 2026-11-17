@@ -45,14 +45,12 @@ import {
 	acquireThreadSubscription,
 	applyNotification,
 	hydrateThread,
-	isModelControlAuthorityStale,
 	isStaleCursorError,
 	modelControlAuthority,
-	mutationErrorData,
+	modelControlRecoveryInput,
 	reduceModelControl,
 	sameModelControlAuthority,
 	validateThreadModelSetResponse,
-	WireError,
 } from "@evener/appwire-client";
 import type { MobileConversation } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
@@ -1197,18 +1195,8 @@ export function createConversationService<ReadLease = unknown>(
 					expectedBootGeneration: authority.bootGeneration,
 				});
 			} catch (error) {
-				if (isModelControlAuthorityStale(error)) {
-					recoverModelControl(threadRef, expectedThreadId, fence, { kind: "authorityStale" });
-				} else {
-					const failure = mutationErrorData(error);
-					if (
-						!(error instanceof WireError) ||
-						failure?.mutationOutcome === "unknown" ||
-						failure?.retryDisposition === "blocked"
-					) {
-						recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
-					}
-				}
+				const recovery = modelControlRecoveryInput(error);
+				if (recovery) recoverModelControl(threadRef, expectedThreadId, fence, recovery);
 				throw error;
 			}
 			let response: MethodTypes["thread/model/set"]["result"];

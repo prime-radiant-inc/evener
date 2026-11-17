@@ -54,7 +54,6 @@ import {
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
-  isModelControlAuthorityStale,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
@@ -62,6 +61,7 @@ import {
   mergeOlderItemPage,
   modelControlAuthority,
   modelControlDisplay,
+  modelControlRecoveryInput,
   mutationErrorData,
   notificationRoutingKey,
   olderHistoryExhausted,
@@ -9285,18 +9285,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         expectedBootGeneration: authority.bootGeneration,
       });
     } catch (err) {
-      if (isModelControlAuthorityStale(err)) {
-        startModelControlRecovery(ref, { kind: "authorityStale" }, client, fence);
-      } else {
-        const failure = mutationErrorData(err);
-        if (
-          !(err instanceof WireError) ||
-          failure?.mutationOutcome === "unknown" ||
-          failure?.retryDisposition === "blocked"
-        ) {
-          startModelControlRecovery(ref, { kind: "postDispatchFailure" }, client, fence);
-        }
-      }
+      const recovery = modelControlRecoveryInput(err);
+      if (recovery) startModelControlRecovery(ref, recovery, client, fence);
       throw mapConflict(err);
     }
     let response: MethodTypes["thread/model/set"]["result"];

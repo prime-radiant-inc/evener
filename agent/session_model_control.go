@@ -117,12 +117,8 @@ func (s *Session) settleModelControlValidationFailure(fence modelSwitchFence, va
 	s.modelControlPublishMu.Lock()
 	defer s.modelControlPublishMu.Unlock()
 	s.mu.Lock()
-	if !s.modelControlFenceAuthorityMatchesLocked(fence) {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
-		s.mu.Unlock()
-		return response, nil
-	}
-	if !fence.deferred && fence.pickSeq != 0 && fence.pickSeq != s.modelControlRequestSequence {
+	if !s.modelControlFenceAuthorityMatchesLocked(fence) ||
+		!fence.deferred && fence.pickSeq != 0 && fence.pickSeq != s.modelControlRequestSequence {
 		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		return response, nil

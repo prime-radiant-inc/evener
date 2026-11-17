@@ -532,11 +532,13 @@ export type {
   ModelControlDecision,
   ModelControlDisplay,
   ModelControlInput,
+  ModelControlRecoveryInput,
   ModelControlRequestFence,
 } from "./modelControl";
 export {
   modelControlAuthority,
   modelControlDisplay,
+  modelControlRecoveryInput,
   reduceModelControl,
   sameModelControlAuthority,
   validateThreadModelSetResponse,

@@ -7,6 +7,7 @@ import {
   type ModelControlRequestFence,
   modelControlAuthority,
   modelControlDisplay,
+  modelControlRecoveryInput,
   reduceModelControl,
   validateThreadModelSetResponse,
 } from "./modelControl";
@@ -310,6 +311,33 @@ describe("whole-snapshot reconciliation", () => {
 
     expect(first).toMatchObject({ decision: "recovering", replacementReadRequired: true });
     expect(repeated).toMatchObject({ decision: "ignored", replacementReadRequired: false });
+  });
+
+  test.each([
+    [
+      "authority-stale refusal",
+      new WireError("stale", -32602, { evenerErrorInfo: "authorityStale", mutationOutcome: "notAccepted" }),
+      { kind: "authorityStale" },
+    ],
+    ["transport failure", new Error("closed"), { kind: "postDispatchFailure" }],
+    [
+      "unknown mutation outcome",
+      new WireError("unknown", -32603, { mutationOutcome: "unknown" }),
+      { kind: "postDispatchFailure" },
+    ],
+    [
+      "blocked retry",
+      new WireError("blocked", -32603, { mutationOutcome: "notAccepted", retryDisposition: "blocked" }),
+      { kind: "postDispatchFailure" },
+    ],
+    [
+      "settled refusal",
+      new WireError("refused", -32602, { mutationOutcome: "notAccepted", retryDisposition: "none" }),
+      undefined,
+    ],
+    ["ordinary wire error", new WireError("refused", -32602), undefined],
+  ])("classifies model-set recovery after %s", (_, error, expected) => {
+    expect(modelControlRecoveryInput(error)).toEqual(expected);
   });
 
   test("responses and notifications cannot establish or restore authority", () => {
