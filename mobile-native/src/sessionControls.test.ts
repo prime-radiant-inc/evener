@@ -1,8 +1,9 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import type { ModelListResponse, Thread } from "@evener/appwire-client";
+import type { ModelListResponse, Thread, ThreadModelSetParams } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
+import { acceptedModelControl, modelControlRead } from "./modelControlTestUtils";
 import { SessionControls } from "./sessionControls";
 
 async function boundary(actions: {
@@ -52,15 +53,13 @@ async function boundary(actions: {
 	};
 	const wire: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: async (method, params) => {
-			if (method === "thread/read") return { thread };
+			if (method === "thread/read") return modelControlRead(thread);
 			if (method === "model/list") return actions.models?.() ?? { data: [] };
 			if (method === "thread/model/set") {
-				const { modelProvider, model } = params as {
-					modelProvider: string;
-					model: string;
-				};
+				const modelParams = params as ThreadModelSetParams;
+				const { modelProvider, model } = modelParams;
 				await actions.model?.(modelProvider, model);
-				return {};
+				return acceptedModelControl(modelParams);
 			}
 			if (method === "thread/vision-model/set") {
 				await actions.vision?.((params as { visionModel: string }).visionModel);

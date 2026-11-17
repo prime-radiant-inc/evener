@@ -1,12 +1,13 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
-import type { ModelListResponse, Thread, ThreadClearResponse } from "@evener/appwire-client";
+import type { ModelListResponse, Thread, ThreadClearResponse, ThreadModelSetParams } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
 import { createConversationStore } from "./conversation/state/conversation";
 import { CommandNotSentError, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
+import { acceptedModelControl, modelControlRead } from "./modelControlTestUtils";
 import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 const commandContext = {
@@ -69,7 +70,7 @@ function boundary() {
 			],
 		}),
 		lifecycle: async (_method: string, _params: unknown) => ({}),
-		read: async () => ({ thread: structuredClone(thread) }),
+		read: async () => modelControlRead(structuredClone(thread)),
 		set: async (objective: string) => {
 			objectives.push(objective);
 			return { started: false };
@@ -411,9 +412,19 @@ it.each([
 		io.lifecycle = async (actual, params) => {
 			received++;
 			expect(actual).toBe(method);
-			expect(params).toEqual({ ref: "local:test", ...expected });
+			if (actual === "thread/model/set") {
+				expect(params).toEqual({
+					ref: "local:test",
+					...expected,
+					clientMutationId: expect.any(String),
+					expectedInstanceId: "instance",
+					expectedBootGeneration: "test-boot",
+				});
+			} else {
+				expect(params).toEqual({ ref: "local:test", ...expected });
+			}
 			expect(document.getSnapshot().record.unconfirmed).toBe(text);
-			return {};
+			return actual === "thread/model/set" ? acceptedModelControl(params as ThreadModelSetParams) : {};
 		};
 		await submitComposerCommand(document, service, {
 			...commandContext,
