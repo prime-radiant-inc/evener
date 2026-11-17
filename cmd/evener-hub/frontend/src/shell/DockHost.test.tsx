@@ -27,12 +27,15 @@ import {
   activityJob,
 } from "../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import { appendPopout } from "../widgets/internal/popoutTestUtils";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
+import { chromeStore } from "./chromeStore";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { StackHost } from "./mobile/StackHost";
+import { usePaneDocument } from "./paneDocument";
 import { conversationPaneLifetime } from "./paneLifetime";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { usePaneVisible } from "./paneVisibility";
@@ -52,6 +55,7 @@ import {
 // scheme workspace.test.ts uses).
 function DocFixture({ params, focused }: PaneProps) {
   const visible = usePaneVisible();
+  const paneDocument = usePaneDocument();
   const fixtureParams = params as { ref?: string; path?: string };
   const label = fixtureParams.ref ?? fixtureParams.path ?? "unknown";
   return (
@@ -59,6 +63,10 @@ function DocFixture({ params, focused }: PaneProps) {
       <span data-testid={`doc-visibility-${label}`} data-pane-visible={String(visible)}>
         doc pane: {label} (focused={String(focused)})
       </span>
+      <span
+        data-testid={`doc-document-${label}`}
+        data-pane-document={paneDocument === document ? "opener" : "popout"}
+      />
     </div>
   );
 }
@@ -206,6 +214,27 @@ test("renders the content of a pane opened via workspace.openPane", async () => 
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
+});
+
+// Dockview moves a panel's DOM into a popout window without re-rendering the
+// panes, so a pane-bound observer would keep watching the opener's document
+// and stop drawing for a window the user is still looking at. PaneHost carries
+// the registered document into the subtree; this pins that wiring.
+test("a pane moved to a popout publishes the popout's document to its subtree", async () => {
+  const paneId = workspaceStore.getState().openPane("doc", { ref: "ref_pop" });
+  const { frame, doc } = appendPopout();
+  try {
+    render(<DockHost />);
+    const probe = await screen.findByTestId("doc-document-ref_pop");
+    expect(probe.getAttribute("data-pane-document")).toBe("opener");
+
+    act(() => {
+      chromeStore.getState().setPaneDocumentFor(paneId, doc);
+    });
+    await waitFor(() => expect(probe.getAttribute("data-pane-document")).toBe("popout"));
+  } finally {
+    frame.remove();
+  }
 });
 
 // kata fmtz: a pane's own component is React.lazy() (paneRegistry.ts's
