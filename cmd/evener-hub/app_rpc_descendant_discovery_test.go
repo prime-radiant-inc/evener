@@ -95,7 +95,7 @@ func TestHubChildDiscoveryFirstSubscribedRead(t *testing.T) {
 }
 
 func TestHubChildDiscoveryRecoveryBoundaries(t *testing.T) {
-	for _, scenario := range []string{"absent", "owner-replaced", "source-removed", "transport-lost", "deleted", "cancelled", "remote"} {
+	for _, scenario := range []string{"absent", "owner-replaced", "source-removed", "transport-lost", "transport-lost-retried", "deleted", "cancelled", "remote"} {
 		t.Run(scenario, func(t *testing.T) { testHubChildDiscovery(t, scenario) })
 	}
 }
@@ -186,6 +186,26 @@ func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client 
 	return retryChildDiscoveryReads(ctx, t, func() (appwire.ThreadReadResponse, error) {
 		return client.ThreadRead(ctx, params)
 	}, refreshes, reads)
+}
+
+// childDiscoveryIndexLockedOnce answers the first read that reaches a daemon
+// with the transcript index's transient locked answer, so the helper reissues
+// the request. betweenAttempts runs once before that second request, which is
+// where a scenario arranges the daemon state the retry must meet.
+func childDiscoveryIndexLockedOnce(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, betweenAttempts func()) func() (appwire.ThreadReadResponse, error) {
+	injected := false
+	return func() (appwire.ThreadReadResponse, error) {
+		if injected && betweenAttempts != nil {
+			betweenAttempts()
+			betweenAttempts = nil
+		}
+		response, err := client.ThreadRead(ctx, params)
+		if err != nil || injected {
+			return response, err
+		}
+		injected = true
+		return appwire.ThreadReadResponse{}, appwire.TranscriptIndexLocked()
+	}
 }
 
 func retryChildDiscoveryReads(ctx context.Context, t *testing.T, read func() (appwire.ThreadReadResponse, error), refreshes, reads *atomic.Int32) (appwire.ThreadReadResponse, error) {
@@ -337,7 +357,7 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 			}
 			daemon.WireTranscriptHistory(replacement)
 			daemon.ReplaceAppIdentity(next.WithRecordedLength(replacement.TranscriptRecordedLength()).WithBootGeneration("2"), nil)
-		case "transport-lost":
+		case "transport-lost", "transport-lost-retried":
 			// A lost transport refuses the handshake. Shutdown stops the app
 			// server admitting upgrades, but the listener belongs to this test
 			// and keeps accepting and answering 503, so only closing it makes
@@ -361,7 +381,20 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		if scenario == "remote" {
 			params.Ref = "unattached:" + childID
 		}
-		read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
+		if scenario == "transport-lost-retried" {
+			// The daemon is gone by the time the helper reissues the read, and a
+			// real refresh is what publishes that departure. It runs between the
+			// attempts, outside the scenario's hook, so the first attempt still
+			// makes its own live read and the counters stay the scenario's own.
+			betweenAttempts := func() {
+				if refreshErr := previousRefresh(readCtx, roster); refreshErr != nil {
+					t.Errorf("refresh before the retried read: %v", refreshErr)
+				}
+			}
+			read, err = retryChildDiscoveryReads(readCtx, t, childDiscoveryIndexLockedOnce(readCtx, client, params, betweenAttempts), &refreshes, &reads)
+		} else {
+			read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
+		}
 	}
 	if scenario == "remote" {
 		if err == nil || refreshes.Load() != 0 || reads.Load() != 0 {
