@@ -172,6 +172,27 @@ func TestRemoteHubPreservesUnknownModelControlVersionAsUnsupported(t *testing.T)
 	}
 }
 
+// A cold session's read carries no model-control version, because no daemon
+// exists to report one: the remote hub answers it from its past index with
+// changeModel set and no authority. The pick there resolves by resuming, which
+// the remote hub performs behind the mutation, so the mask has to keep
+// changeModel and the picker has to offer it. Requiring a version would disable
+// the picker on every remote exited session.
+func TestRemoteHubColdSessionKeepsModelPick(t *testing.T) {
+	remote := appwire.ThreadCapabilities{
+		ChangeModel:       true,
+		ChangeVisionModel: true,
+	}
+
+	got := maskRemoteThreadCapabilities(remote, forwardedThreadCapabilitiesForTests())
+	if got.ModelControlVersion != 0 {
+		t.Fatalf("cold read model-control version = %d, want 0", got.ModelControlVersion)
+	}
+	if !got.ChangeModel {
+		t.Fatal("a remote cold session lost its model pick, so the picker and phone sheet are disabled and the resume-first path never runs")
+	}
+}
+
 // Every capability a remote thread is allowed to advertise must have a working
 // method behind it. Enumerating the promise here means a field cannot be
 // advertised by the effective policy while its method still fails closed, and a

@@ -190,8 +190,12 @@ func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) 
 	if forwarded.ModelControlVersion != 0 {
 		modelControlVersion = remote.ModelControlVersion
 	}
+	// A cold session's read carries no version because no daemon exists to
+	// report one. The pick there resolves by resuming, so the mask keeps
+	// changeModel unless the remote named a version this controller does not
+	// speak; that daemon could refuse the mutation after the resume.
 	changeModel := remote.ChangeModel && forwarded.ChangeModel &&
-		remote.ModelControlVersion == appwire.ModelControlVersion1 &&
+		remote.ModelControlVersion <= appwire.ModelControlVersion1 &&
 		forwarded.ModelControlVersion == appwire.ModelControlVersion1
 	return appwire.ThreadCapabilities{
 		ModelControlVersion: modelControlVersion,
