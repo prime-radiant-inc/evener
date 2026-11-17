@@ -1174,27 +1174,24 @@ type Session struct {
 	// pendingModels holds the model switches requested while an input was in
 	// flight (SetModel's queue path), together with the live listing each
 	// pick-time preflight fetched, so the boundary application reuses it
-	// instead of enumerating again. Entries are kept in issue order and the
-	// applier takes the newest first; the processing boundary applies them
-	// (applyPendingModelSwitch) so the next turn runs on the newest one that
-	// survives its own deferred validation. An empty slice queues nothing.
-	// Guarded by s.mu.
+	// instead of enumerating again. Insertion order means nothing: the applier
+	// takes the newest entry by issue (popNewestPendingModelLocked), and the
+	// processing boundary applies it (applyPendingModelSwitch) so the next turn
+	// runs on the newest one that survives its own deferred validation. An
+	// empty slice queues nothing. Guarded by s.mu.
 	pendingModels []pendingModelSwitch
 	// modelPickSeq is the issue counter for model picks: SetModel stamps the
 	// current value under s.mu on every admission, so each pick - accepted or
 	// rejected - owns a unique, monotonic id. Guarded by s.mu.
 	modelPickSeq uint64
-	// modelPickStored is the issue of the newest pick the queue stored. It
-	// orders the queue, not the outcome: a store is not acceptance, because
-	// the stored pick still faces the boundary's deferred history check. A
-	// pick whose issue an older stored pick has passed must not displace it.
-	// Guarded by s.mu.
-	modelPickStored uint64
 	// modelPickAccepted is the issue of the newest pick an acceptance point
-	// committed: a busy re-queue, or a profile swap. A pick whose issue is
-	// older was superseded by a newer accepted choice and drops at its commit
-	// check. Validation failures never advance it, so a rejected pick cannot
-	// cancel an earlier accepted one. Guarded by s.mu.
+	// committed: a profile swap. A pick whose issue is older was superseded by
+	// a newer accepted choice and drops at its commit check, and a queued
+	// entry older than it is not applied. A store and a busy re-queue both
+	// leave it alone: neither has passed the boundary's deferred history
+	// check, so neither may cancel another pick. Validation failures never
+	// advance it, so a rejected pick cannot cancel an earlier accepted one.
+	// Guarded by s.mu.
 	modelPickAccepted uint64
 	// modelSwitchPublishMu serializes a switch application's commit through
 	// its publication - the profile swap, the marker record, and the
@@ -2041,16 +2038,16 @@ func (s *Session) queueModelSwitch(model string, pickSeq uint64) error {
 		return s.applyModelSwitch(model, primedInstance, primedListing, fence)
 	}
 	// Last pick wins, but only among picks that pass their own validation.
-	// The store orders the queue; it does not accept the pick, because the
-	// boundary's deferred history check still runs against settled history. A
-	// store that advanced the acceptance watermark would let a pick that is
-	// about to be rejected cancel an earlier accepted one, which is exactly
-	// the outcome this queue exists to avoid. The store watermark guards the
-	// queue alone: a pick an earlier stored or already accepted pick has
-	// passed must not displace the newer queue entry.
-	if pickSeq > s.modelPickStored && pickSeq > s.modelPickAccepted {
+	// Storing neither accepts the pick nor displaces an older queued one: the
+	// boundary's deferred history check still runs against settled history, so
+	// a store that advanced the acceptance watermark would let a pick that is
+	// about to be rejected cancel another, which is the outcome this queue
+	// exists to avoid. The watermark here only skips a store a newer pick has
+	// already committed; ordering is the pop's job (see
+	// popNewestPendingModelLocked), so a slow older pick still queues and can
+	// apply if the newer one fails its deferred check.
+	if pickSeq > s.modelPickAccepted {
 		s.enqueuePendingModelLocked(pendingModelSwitch{model: model, primedInstance: primedInstance, primedListing: primedListing, seq: pickSeq})
-		s.modelPickStored = pickSeq
 		// A call waiting out the old model's usage limit retries on this
 		// one now rather than at the turn boundary it is waiting to reach.
 		s.wakeQuotaWaitLocked()
@@ -2067,17 +2064,15 @@ func (s *Session) enqueuePendingModelLocked(entry pendingModelSwitch) {
 	s.pendingModels = append(s.pendingModels, entry)
 }
 
-// popNewestPendingModelLocked removes and returns the newest queued switch that
-// is still live, the one whose choice the next turn should run on. A queued
-// entry the acceptance watermark has already passed was superseded by a newer
-// accepted pick and is dropped rather than applied. Callers hold s.mu.
+// popNewestPendingModelLocked removes and returns the newest queued switch, the
+// one whose choice the next turn should run on. Entries strictly older than the
+// newest committed pick are dropped: that newer pick already owns the outcome,
+// so an older one must not apply over it. Callers hold s.mu.
 func (s *Session) popNewestPendingModelLocked() (pendingModelSwitch, bool) {
 	live := s.pendingModels[:0]
 	for _, entry := range s.pendingModels {
-		// Strictly older than the acceptance watermark: a newer pick already
-		// committed or re-queued, so this one no longer owns the outcome. An
-		// entry whose own issue IS the watermark is the accepted pick itself,
-		// re-queued by the busy fallback, and must still be applied.
+		// Strictly older than the newest committed pick, so that pick owns the
+		// outcome and this one must not apply over it.
 		if entry.seq < s.modelPickAccepted {
 			continue
 		}
@@ -2228,17 +2223,13 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	if fence.queueWhenBusy && s.turnInFlightLocked() {
 		// A turn started while this at-rest pick was still validating. Queue
 		// for that turn's boundary instead of swapping the profile under it,
-		// carrying the listing this validation already fetched. Re-queueing
-		// accepts the pick, so the watermark advances with it.
+		// carrying the listing this validation already fetched. Queuing is not
+		// accepting: the boundary re-runs the history check against the
+		// history the in-flight turn appended, so this pick can still be
+		// rejected there and must not cancel an older one in the meantime.
+		// The pop orders entries by issue, so it still applies before any
+		// older queued pick that survives.
 		s.enqueuePendingModelLocked(pendingModelSwitch{model: model, primedInstance: listedInstance, primedListing: listing, seq: fence.pickSeq})
-		if s.modelPickStored < fence.pickSeq {
-			s.modelPickStored = fence.pickSeq
-		}
-		// The re-queued pick has already passed every check, including the
-		// settled-history one, so queuing it does accept it.
-		if s.modelPickAccepted < fence.pickSeq {
-			s.modelPickAccepted = fence.pickSeq
-		}
 		s.wakeQuotaWaitLocked()
 		s.mu.Unlock()
 		return nil
