@@ -26,7 +26,7 @@ export function TasksTab({ scope, now }: ActivityTabBodyProps) {
     !!entry && entry.rows !== null && !entry.loading && !entry.failure && !entry.daemonGone && !entry.unsupported,
   );
   if (!model) {
-    return <Skeleton lines={2} />;
+    return <Skeleton lines={scope.counts.tasksTotal || undefined} />;
   }
   return (
     <div className={CLASS.stack}>

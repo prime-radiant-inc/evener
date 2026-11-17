@@ -1,11 +1,10 @@
 import type { SessionActivityCollection } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "../../widgets";
+import { Skeleton } from "../../widgets";
 import { useActivityViewCurrent } from "./ActivityViewport";
 
 interface ActivityPageBoundaryProps {
   resource: SessionActivityCollection;
-  label: string;
   rows: readonly unknown[];
   hasMore: boolean;
   loading: boolean;
@@ -20,7 +19,6 @@ interface ActivityPageBoundaryProps {
 // admission and recovery; an error must not turn visibility into a retry loop.
 export function ActivityPageBoundary({
   resource,
-  label,
   rows,
   hasMore,
   loading,
@@ -32,20 +30,15 @@ export function ActivityPageBoundary({
 }: ActivityPageBoundaryProps) {
   const element = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
-  // A background refresh of the collection must present nothing: only a page
-  // this control actually asked for shows the loading label and disables it.
-  const [pagePending, setPagePending] = useState(false);
   const currentVisibility = useRef(false);
   const observedRows = useRef(rows);
   const isCurrent = useActivityViewCurrent();
   const admit = useCallback(() => {
-    setPagePending(true);
     // Thunked so a synchronous throw reaches the chain: evaluating it as an
-    // argument would escape the catch and leave the control pending forever.
+    // argument would escape the catch and surface an unhandled rejection.
     return Promise.resolve()
       .then(() => loadMore(resource))
-      .catch(() => {})
-      .finally(() => setPagePending(false));
+      .catch(() => {});
   }, [loadMore, resource]);
   useEffect(() => {
     observedRows.current = rows;
@@ -74,7 +67,7 @@ export function ActivityPageBoundary({
   }, [enabled, hasMore, loading, rows, isCurrent]);
   useEffect(() => {
     if (!isCurrent() || !enabled || !hasMore || loading || error || permanent) return;
-    if (!restore && !(visible && currentVisibility.current)) return;
+    if (!restore && !visible) return;
     const admitPage = () => {
       if (isCurrent() && observedRows.current === rows) void admit();
     };
@@ -87,12 +80,10 @@ export function ActivityPageBoundary({
     const timer = setTimeout(admitPage, 100);
     return () => clearTimeout(timer);
   }, [enabled, visible, hasMore, loading, error, permanent, admit, isCurrent, restore, rows]);
-  if (!hasMore) return null;
+  if (!hasMore || permanent) return null;
   return (
     <div ref={element}>
-      <Button variant="quiet" size="sm" disabled={pagePending || permanent} onClick={() => void admit()}>
-        {pagePending ? `Loading ${label}…` : `Load more ${label}`}
-      </Button>
+      <Skeleton lines={1} />
     </div>
   );
 }

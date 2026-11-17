@@ -2,13 +2,14 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { LivenessLine } from "../../panes/session/transcript/flow/LivenessLine";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
 import { ActivitySidebar } from "../activitybar/ActivitySidebar";
+import { ActivityBoundaryObserver } from "../activitybar/activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -335,6 +336,7 @@ test("a phone chip shows its single count and keeps the full fraction accessible
 });
 
 test("footer and tabs explain summary counts through paging and activity changes", async () => {
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
   const ref = "remote:counts";
   const client = activityClient();
   let active = 2;
@@ -392,7 +394,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
-  fireEvent.click(await screen.findByRole("button", { name: "Load more jobs" }));
+  await act(async () => ActivityBoundaryObserver.intersect());
   expectCounts(2, 6);
   await act(async () => {
     page.resolve({

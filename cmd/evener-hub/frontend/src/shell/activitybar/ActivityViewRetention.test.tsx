@@ -8,6 +8,7 @@ import {
   activityContext,
   activityDelegate,
   activityJob,
+  activitySummary,
   activityThread,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
@@ -29,6 +30,10 @@ const mount = () =>
 
 function clientWithHistory() {
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, total: 1, active: 0, completed: 1, failed: 0 },
+  }));
   client.on("evener/thread/jobs/list", ({ ref, scope }) => ({
     context: activityContext(ref),
     scope: scope ?? "session",
@@ -199,6 +204,10 @@ test("an unseen child keeps the ongoing inspection open after an immediate reloa
 test("inactive agent disclosure and locally revealed rows survive reload without copying another session", async () => {
   const makeClient = () => {
     const client = activityClient();
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      delegates: { known: true, active: 0, total: 21, completed: 21, failed: 0 },
+    }));
     client.on("evener/thread/delegates/list", ({ ref, scope }) => ({
       context: activityContext(ref),
       scope: scope ?? "session",
@@ -221,7 +230,7 @@ test("inactive agent disclosure and locally revealed rows survive reload without
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
   mount();
-  fireEvent.click(await screen.findByRole("button", { name: /Inactive subagents/ }));
+  fireEvent.click(await screen.findByText("21 inactive subagents"));
   fireEvent.click(screen.getByRole("button", { name: /Show 1 more/ }));
   expect(screen.getByRole("button", { name: /Finished check 20/ })).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "About" }));

@@ -37,6 +37,57 @@ afterEach(() => {
 });
 const NOW = Date.parse("2026-10-05T00:00:00Z");
 
+it.each([
+  { resource: "delegates" as const, Body: AgentsTab, total: 5 },
+  { resource: "jobs" as const, Body: JobsTab, total: 6 },
+  { resource: "watches" as const, Body: WatchesTab, total: 7 },
+])(
+  "$resource reserves its known direct-session total while the first page loads",
+  async ({ resource, Body, total }) => {
+    const client = activityClient();
+    client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      [resource]: { known: true, total, active: 0, completed: total, failed: 0 },
+    }));
+    let release: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const methods = {
+      delegates: "evener/thread/delegates/list",
+      jobs: "evener/thread/jobs/list",
+      watches: "evener/thread/watches/list",
+    } as const;
+    client.on(methods[resource], async ({ ref, scope }) => {
+      await pending;
+      const context = activityContext(ref);
+      const page = { complete: true, issues: [] };
+      if (resource === "delegates")
+        return {
+          context,
+          scope: scope ?? "session",
+          delegates: [activityDelegate({ ownerRef: ref, rootRef: ref })],
+          page,
+        };
+      if (resource === "jobs")
+        return { context, scope: scope ?? "session", jobs: [activityJob({ ownerRef: ref })], page };
+      return {
+        context,
+        scope: scope ?? "session",
+        watches: [activityWatch({}, ref)],
+        page,
+      };
+    });
+    connectionStore.getState().connect(client);
+    render(<Body now={NOW} scope={scope()} />);
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.getAllByTestId("skeleton-line")).toHaveLength(total);
+    await act(async () => release?.());
+    await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
+    expect(document.querySelectorAll("[data-activity-anchor]")).toHaveLength(1);
+  },
+);
+
 const scope = () =>
   deriveScope(
     createNavigationStore({ persistence: memoryNavigationPersistence() }).getState(),
@@ -199,15 +250,18 @@ it("inactive subagents disclosure publishes its expansion state and controlled l
     ],
     page: { complete: true, issues: [] },
   }));
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, active: 0, total: 1, completed: 1, failed: 0 },
+  }));
   connectionStore.getState().connect(client);
   render(<AgentsTab now={NOW} scope={scope()} />);
-  const fold = await screen.findByRole("button", { name: "Inactive subagents (1)" });
-  expect(fold.getAttribute("aria-expanded")).toBe("false");
+  const fold = await screen.findByText("1 inactive subagent");
+  const disclosure = fold.closest("details");
+  expect(disclosure?.open).toBe(false);
   fireEvent.click(fold);
-  expect(fold.getAttribute("aria-expanded")).toBe("true");
-  const controls = fold.getAttribute("aria-controls");
-  expect(controls).toBeTruthy();
-  expect(document.getElementById(controls as string)).toBeTruthy();
+  expect(disclosure?.open).toBe(true);
+  expect(disclosure?.querySelector("[id]")).toBeTruthy();
 });
 
 it("two activity surfaces for one session publish distinct inactive-list ids", async () => {
@@ -227,6 +281,10 @@ it("two activity surfaces for one session publish distinct inactive-list ids", a
     ],
     page: { complete: true, issues: [] },
   }));
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, active: 0, total: 1, completed: 1, failed: 0 },
+  }));
   connectionStore.getState().connect(client);
   // The sidebar and an ActivityPeek render the same body for the same ref.
   render(
@@ -239,12 +297,12 @@ it("two activity surfaces for one session publish distinct inactive-list ids", a
       </section>
     </>,
   );
-  const folds = await screen.findAllByRole("button", { name: "Inactive subagents (1)" });
+  const folds = await screen.findAllByText("1 inactive subagent");
   expect(folds).toHaveLength(2);
   // The fold state is keyed by ref and therefore shared; the controlled list
   // id must still be unique per rendered surface.
   fireEvent.click(folds[0]!);
-  const controls = folds.map((fold) => fold.getAttribute("aria-controls"));
+  const controls = folds.map((fold) => fold.closest("details")?.querySelector("[id]")?.id);
   expect(controls[0]).toBeTruthy();
   expect(controls[1]).toBeTruthy();
   expect(controls[0]).not.toBe(controls[1]);
@@ -257,7 +315,7 @@ it("two activity surfaces for one session publish distinct inactive-list ids", a
   }
 });
 
-it("closed inactive history does not scan, and disclosed rows page only near the visible boundary", async () => {
+it("closed inactive history still observes the page boundary without admitting offscreen pages", async () => {
   const client = activityClient();
   let observations = 0,
     disconnections = 0,
@@ -290,15 +348,18 @@ it("closed inactive history does not scan, and disclosed rows page only near the
     ],
     page: cursor ? { complete: true, issues: [] } : { complete: false, nextCursor: "next", issues: [] },
   }));
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, active: 0, total: 2, completed: 2, failed: 0 },
+  }));
   try {
     connectionStore.getState().connect(client);
     await act(async () => {
       render(<AgentsTab now={NOW} scope={scope()} />);
     });
-    expect(observations).toBe(0);
-    expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Inactive subagents (1)" }));
     expect(observations).toBe(1);
+    expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
+    fireEvent.click(screen.getByText("2 inactive subagents"));
     await act(async () => intersect?.(false));
     expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
     await act(async () => intersect?.(true));

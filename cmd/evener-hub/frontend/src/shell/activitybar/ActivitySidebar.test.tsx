@@ -30,6 +30,7 @@ import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
+import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { ActivitySidebar as ActivitySidebarUnderTest } from "./activitySidebarTestUtils";
 
@@ -79,6 +80,7 @@ afterEach(() => {
   resetActivitySidebarStoreForTests();
   resetConnectionStoreForTests();
   resetThreadsStoreForTests();
+  ActivityBoundaryObserver.reset();
 });
 
 test("one visible-sidebar clock advances activity rows and expanded watch details without new reads", async () => {
@@ -164,8 +166,13 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")).toBeNull());
 });
 
-test("inactive fold and explicit keyset pages preserve useful loaded rows", async () => {
+test("closed inactive history admits keyset pages and uses the direct-session total", async () => {
   const client = activityClient();
+  vi.stubGlobal("IntersectionObserver", ActivityBoundaryObserver);
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, active: 2, total: 40, completed: 38, failed: 0 },
+  }));
   client.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
     context: activityContext(),
     scope: scope ?? "session",
@@ -191,24 +198,25 @@ test("inactive fold and explicit keyset pages preserve useful loaded rows", asyn
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
   mount();
-  await screen.findByRole("button", { name: /Inactive subagents \(21\)/ });
+  await screen.findByText("38 inactive subagents");
   expect(screen.queryByRole("button", { name: /done 0/ })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /Inactive subagents/ }));
-  expect(screen.getByRole("button", { name: /done 0/ })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /done 20/ })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /Show 1 more/ }));
-  expect(screen.getByRole("button", { name: /done 20/ })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Load more subagents" }));
+  await act(async () => ActivityBoundaryObserver.intersect());
   await screen.findByRole("button", { name: /second bounded page/ });
   expect(screen.getByRole("button", { name: /inspect/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /Load more/ })).toBeNull();
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list").map((c) => c.params)).toEqual([
     { ref, scope: "session" },
     { ref, scope: "session", cursor: "page-two" },
   ]);
+  vi.unstubAllGlobals();
 });
 
 test("a fresh sidebar case starts with inactive delegates folded after a prior reader expanded them", async () => {
   const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    delegates: { known: true, active: 0, total: 1, completed: 1, failed: 0 },
+  }));
   client.on("evener/thread/delegates/list", () => ({
     context: activityContext(),
     scope: "session",
@@ -229,9 +237,10 @@ test("a fresh sidebar case starts with inactive delegates folded after a prior r
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
   mount();
-  await screen.findByRole("button", { name: /Inactive subagents/ });
+  const fold = await screen.findByText("1 inactive subagent");
+  expect(fold.closest("details")?.open).toBe(false);
   expect(screen.queryByRole("button", { name: /Fresh completed delegate/ })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: /Inactive subagents/ }));
+  fireEvent.click(fold);
   expect(screen.getByRole("button", { name: /Fresh completed delegate/ })).toBeTruthy();
 });
 

@@ -146,10 +146,6 @@
   display: block;
 }
 
-.foldButton {
-  padding-top: var(--space-1);
-}
-
 .scope {
   flex: 1;
   min-width: 0;

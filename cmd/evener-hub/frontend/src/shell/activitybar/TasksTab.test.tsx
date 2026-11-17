@@ -189,6 +189,7 @@ describe("TasksTab", () => {
     openTasks({ total: 5, done: 2 });
     renderSidebar();
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.getAllByTestId("skeleton-line")).toHaveLength(5);
   });
 
   test("mounting subscribes to the thread and loads its real task list", async () => {

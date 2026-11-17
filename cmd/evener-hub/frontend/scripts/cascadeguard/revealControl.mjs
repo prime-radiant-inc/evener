@@ -10,17 +10,16 @@
 // single-sidebar call sites.
 export function revealControl(container, refusedSelector) {
   if (!container) return null;
-  const buttons = [...container.querySelectorAll("button")];
-  const usable = (button) => !button.matches(refusedSelector);
-  const fold = buttons.find((button) => usable(button) && button.textContent.trim().startsWith("Inactive subagents ("));
+  const controls = [...container.querySelectorAll("summary, button")];
+  const usable = (control) => !control.matches(refusedSelector);
+  const fold = controls.find((control) => usable(control) && control.textContent.trim().endsWith("inactive subagents"));
   // 4 is Node.DOCUMENT_POSITION_FOLLOWING. The numeric constant keeps the
   // serialized function independent of globals and of a browsing context.
   const DOCUMENT_POSITION_FOLLOWING = 4;
   const inactiveVisible = fold !== undefined && [...container.querySelectorAll("[data-activity-anchor]")]
     .some((node) => !!(fold.compareDocumentPosition(node) & DOCUMENT_POSITION_FOLLOWING));
   if (fold && !inactiveVisible) return fold;
-  return buttons.find((button) => usable(button)
-    && (button.textContent.trim().startsWith("Show ") || button.textContent.trim() === "Load more subagents")) ?? null;
+  return controls.find((control) => usable(control) && control.textContent.trim().startsWith("Show ")) ?? null;
 }
 
 // The one-page-turn expression `reveal` evaluates. It re-checks the target on
@@ -50,5 +49,6 @@ export function revealControlStep(selector, container, refusedSelector) {
 // revealControl the loop presses.
 export function revealReadyExpr(selector, container, refusedSelector) {
   return `(() => document.querySelector(${JSON.stringify(selector)}) !== null
-    || (${revealControl})(document.querySelector(${JSON.stringify(container)}), ${JSON.stringify(refusedSelector)}) !== null)()`;
+    || (${revealControl})(document.querySelector(${JSON.stringify(container)}), ${JSON.stringify(refusedSelector)}) !== null
+    || document.querySelector(${JSON.stringify(container)})?.querySelector('[data-testid="skeleton-line"]') !== null)()`;
 }

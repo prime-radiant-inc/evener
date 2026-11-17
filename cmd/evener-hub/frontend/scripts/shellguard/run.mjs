@@ -1428,6 +1428,17 @@ async function measureActivityRowPadding(send, viewport) {
     const failures = [];
     if (JSON.stringify(outer) !== JSON.stringify(["8px", "12px", "12px", "12px"]))
       failures.push(`Overview outer padding changed: ${JSON.stringify(outer)}`);
+    const rhythm = await evaluate(
+      send,
+      `(() => {
+        const stack = document.querySelector('[data-activity-row-fixture] > div');
+        const tasks = document.querySelector('[data-row-case="task"] ul');
+        if (!stack || !tasks) throw new Error('Activity/task list rhythm fixture missing');
+        return { activity: getComputedStyle(stack).rowGap, tasks: getComputedStyle(tasks).rowGap };
+      })()`,
+    );
+    if (rhythm.activity !== "4px" || rhythm.tasks !== rhythm.activity)
+      failures.push(`Activity and task list gaps differ: ${JSON.stringify(rhythm)}`);
     for (const row of rows) {
       if (
         Math.abs(row.inset - 8) > 0.1 ||
@@ -1469,7 +1480,7 @@ async function measureActivityRowPadding(send, viewport) {
         `${kind} disclosure opens`,
       );
     }
-    return { result: { outer, rows }, failures };
+    return { result: { outer, rhythm, rows }, failures };
   } finally {
     await evaluate(send, "window.activityRowFixture(false)");
   }

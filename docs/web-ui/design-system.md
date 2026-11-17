@@ -191,6 +191,13 @@ losing the conversation that made the evidence relevant.
   Its category strip wraps without shortening labels or counts at narrow widths and XL
   text. About's model, session ID, branch and paths wrap as selectable text. Its body
   scrolls vertically while the page stays fixed. Phone controls retain the tap floor.
+- **Keep Overview's activity lists on one loading and spacing contract.** Agents,
+  Jobs and Watches page automatically at their visible boundary, with a static
+  Skeleton rather than a Load more control. Their inactive/completed folds show
+  direct-session summary totals independently of downloaded rows; an unknown
+  total stays unnumbered. Tasks sizes its initial Skeleton from the authoritative
+  task total. All four lists share the body's padding and the same compact row
+  gap, and Agents/Jobs history uses the same Disclosure treatment.
 - **Preserve useful saved placements.** Workspace restore omits retired Activity
   panes through its unknown-pane handling. Registered panes keep their bodies and
   reachable tabs; valid session routes win before Welcome. Overview restores its

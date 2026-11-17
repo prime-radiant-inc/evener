@@ -150,7 +150,6 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({ sessionRef, m
             <ActivityPageBoundary
               key={`${resource}:${resolvedSessionId}`}
               resource={resource}
-              label={resource}
               rows={snapshot[resource].rows}
               hasMore={snapshot[resource].hasMore}
               loading={snapshot[resource].loading}

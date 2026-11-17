@@ -18,6 +18,7 @@ const CLASS = {
 export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "watches");
   const collection = snapshot?.watches;
+  const total = snapshot?.summary?.watches;
   const watchRows = buildWatchRows(collection?.rows ?? []);
   useActivityScrollProgress(
     watchRows.map((row) => row.id),
@@ -26,7 +27,8 @@ export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
   );
   if (collection?.permanent && collection.rows.length === 0)
     return <EmptyState size="compact" title="Watches unavailable for this session." />;
-  if (!collection || (collection.rows.length === 0 && !collection.complete)) return <Skeleton lines={2} />;
+  if (!collection || (collection.rows.length === 0 && !collection.complete))
+    return <Skeleton lines={total?.known ? total.total || undefined : undefined} />;
   const watches = collection.rows;
   if (watches.length === 0 && collection.complete)
     return <EmptyState size="compact" title="No watches at this level." />;
@@ -37,7 +39,6 @@ export function WatchesTab({ scope, now }: ActivityTabBodyProps) {
       ))}
       <ActivityPageBoundary
         resource="watches"
-        label="watches"
         rows={collection.rows}
         hasMore={collection.hasMore}
         loading={collection.loading}
