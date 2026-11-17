@@ -647,7 +647,7 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		// holds its Applied receipt, so no later accept arrives to send one, and
 		// Changed reaches only Run.
 		if root != nil {
-			root.wakeRunnablePendingUserInputAfterResidency()
+			root.wakeRunnableInputAfterResidency()
 		}
 		return nil, snapshot, evidenceErr
 	}
@@ -691,7 +691,7 @@ func (c *RetirementController) Abort(claim *RetirementClaim, failure string) err
 	// Abort reopens admission, exactly as the evidence refusal above does, so it
 	// owes the input path the same re-probe.
 	if root != nil {
-		root.wakeRunnablePendingUserInputAfterResidency()
+		root.wakeRunnableInputAfterResidency()
 	}
 	return nil
 }

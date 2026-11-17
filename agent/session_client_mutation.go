@@ -1572,21 +1572,28 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
-// wakeRunnablePendingUserInputAfterResidency wakes the queued-input path when
-// admission reopening leaves accepted user input runnable.
+// wakeRunnableInputAfterResidency wakes the input paths when admission
+// reopening leaves accepted work runnable.
 //
 // beginRetirementMutation refuses every lease while the controller is not
-// resident, so durable input can be claimable and still refused: the serve
-// loop's probe finds it, ProcessPendingUserInput takes no turn, and the loop
-// blocks on a channel nothing will write. The return to resident is the
-// transition that makes the claim possible again, and it notifies this path
-// for exactly that reason. Gated on the probe so an idle session -- the
-// ordinary retire, where nothing is waiting -- sends nothing.
+// resident, and both the queued-input path (ProcessPendingUserInput) and the
+// start path (ProcessClientMutationStart) take one. So either can have its
+// work claimable and still refused: the serve loop's probe finds it, the claim
+// returns nothing, and the loop blocks on a channel nothing will write. The
+// return to resident is the transition that makes the claims possible again,
+// and it notifies both paths for exactly that reason. Each wake is gated on its
+// own runnable predicate, so an idle session -- the ordinary retire, where
+// nothing is waiting -- sends nothing.
 //
 // The wake is deliberately its own, not wakePendingUserInput's: that one
 // clears a Stop's parked steer (Session.steeringParked), and reopening
 // admission must not deliver steering the user stopped (issue #174).
-func (s *Session) wakeRunnablePendingUserInputAfterResidency() {
+func (s *Session) wakeRunnableInputAfterResidency() {
+	// A pending start is admitted through the same lease, and its own wake
+	// (sent once at acceptance) has already been consumed by the refused
+	// probe. The fence-clear wake is the same re-probe the Stop path uses: it
+	// fires only when a start is claimable right now.
+	s.wakeRunnableClientMutationStartAfterFence()
 	if !s.hasPendingUserInputToRun() {
 		return
 	}
