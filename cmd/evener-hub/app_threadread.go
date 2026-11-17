@@ -23,7 +23,6 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/transcriptindex"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -96,11 +95,10 @@ func pastEntryReasoningFacts(cfg hubcore.WebConfig, entry hubcore.PastEntry) (ef
 	// The live profile answers SupportsReasoning with !Caps.ReasoningDisabled()
 	// (agent/provider/profile.go), so an unstated verdict is supported, not
 	// unsupported: an uncatalogued row on a custom gateway keeps its picker.
-	// The default goes through the same rule and the same normalization
-	// (Profile.DefaultReasoningEffort) the live envelope applies.
+	// The default goes through the same rule, over the same row facts, that the
+	// live envelope applies.
 	levels, supportsReasoning = res.Caps.EffortValues, !res.Caps.ReasoningDisabled()
-	modelDefault := llm.NormalizeReasoningEffort(registry.StringValue(res.Caps.DefaultEffort))
-	return effort, levels, supportsReasoning, agent.DefaultReasoningEffort(supportsReasoning, levels, modelDefault)
+	return effort, levels, supportsReasoning, agent.DefaultReasoningEffort(res)
 }
 
 func pastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool, error) {

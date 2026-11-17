@@ -1432,21 +1432,35 @@ func (s *Session) requestMessages(sys string, history []llm.Message) []llm.Messa
 	return append([]llm.Message{llm.System(sys)}, history...)
 }
 
-// DefaultReasoningEffort is the effort a request carries while nothing
-// configured one: resolveRequestEffort's unset branch over a model's facts, so
-// a client can name the tier a session whose own effort is unset ("(default)")
-// actually runs at instead of guessing. It is empty for a model that does not
-// reason, which carries no effort at all.
-func DefaultReasoningEffort(supportsReasoning bool, levels []string, modelDefault string) string {
-	if effort := resolveRequestEffort("", supportsReasoning, levels, modelDefault); effort != nil {
-		return *effort
+// DefaultReasoningEffort is the tier a session actually runs at while nothing
+// configured one, so a client can name the tier behind its "(default)" readout
+// instead of guessing. It starts from resolveRequestEffort's unset branch, then
+// answers the one question a readout must not get wrong: whether that tier
+// reaches the provider at all. A dialect that only spells level names drops one
+// its row's ladder cannot vouch for, leaving the provider's own default in
+// charge; naming the dropped tier would present an unknown default as a known
+// one (#6557). Budget-shaped thinking and the OpenRouter pass-through do put an
+// unlisted tier to work, so those keep it. A model's own stated default is
+// reported either way: the row is the evidence for it. Empty for a model that
+// does not reason, which carries no effort at all.
+func DefaultReasoningEffort(res registry.Resolved) string {
+	modelDefault := llm.NormalizeReasoningEffort(registry.StringValue(res.Caps.DefaultEffort))
+	level := resolveRequestEffort("", !res.Caps.ReasoningDisabled(), res.Caps.EffortValues, modelDefault)
+	if level == nil {
+		return ""
+	}
+	// A stated default is the model's own statement about the tier it runs at
+	// when nothing is asked of it, so it holds even where evener cannot spell
+	// it: the provider runs at that tier anyway.
+	if modelDefault != "" || llm.EffortReachesWire(*level, res) {
+		return *level
 	}
 	return ""
 }
 
-// profileDefaultReasoningEffort is DefaultReasoningEffort over profile's facts.
+// profileDefaultReasoningEffort is DefaultReasoningEffort over profile's row.
 func profileDefaultReasoningEffort(profile *provider.Profile) string {
-	return DefaultReasoningEffort(profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
+	return DefaultReasoningEffort(profile.Resolved())
 }
 
 // resolveRequestEffort is the one rule for the effort a request carries, shared

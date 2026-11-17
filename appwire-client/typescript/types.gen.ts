@@ -1143,8 +1143,10 @@ export interface EvenerThread {
    * at while ReasoningEffort is unset: the model's stated default, else
    * medium, clamped to its ladder. A client names this tier where it would
    * otherwise show a bare "(default)". Absent when the model does not
-   * reason, from a row the registry cannot resolve, and from an older
-   * daemon; live updates arrive on thread/model/changed.
+   * reason, when its dialect would not carry the tier this session resolves
+   * (an empty ladder on a dialect that spells level names), from a row the
+   * registry cannot resolve, and from an older daemon; live updates arrive
+   * on thread/model/changed.
    */
   defaultReasoningEffort?: string;
   /**
@@ -5024,7 +5026,8 @@ export interface ThreadModelChangedParams {
   supportsReasoning?: boolean;
   /**
    * DefaultReasoningEffort is the effort the new model runs at while the
-   * session's own effort is unset (EvenerThread.DefaultReasoningEffort).
+   * session's own effort is unset (EvenerThread.DefaultReasoningEffort),
+   * absent under the same conditions.
    */
   defaultReasoningEffort?: string;
   contextUsed?: number;
