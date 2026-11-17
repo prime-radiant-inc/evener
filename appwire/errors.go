@@ -43,15 +43,18 @@ const (
 	ErrorHubLaunch                   ErrorInfo = "hubLaunch"
 	ErrorQueuedDrainPartial          ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown      ErrorInfo = "mutationOutcomeUnknown"
-	ErrorTranscriptItemCursorStale   ErrorInfo = "transcriptItemCursorStale"
-	ErrorTranscriptItemChanged       ErrorInfo = "item-changed"
-	ErrorFetchUnavailableRemote      ErrorInfo = "fetch-unavailable-remote"
-	ErrorWindowUnsupportedOnDaemon   ErrorInfo = "window-unsupported-on-daemon"
-	ErrorItemUnreachableOnCompat     ErrorInfo = "item-unreachable-on-compat"
-	ErrorTranscriptTurnNotFound      ErrorInfo = "transcriptTurnNotFound"
-	ErrorSessionActivityCursorStale  ErrorInfo = "sessionActivityCursorStale"
-	ErrorJobOutputPruned             ErrorInfo = "jobOutputPruned"
-	ErrorInternal                    ErrorInfo = "internal"
+	// ErrorModelControlAuthorityStale distinguishes an authority fence refusal
+	// from target validation and other conflict-class errors.
+	ErrorModelControlAuthorityStale ErrorInfo = "authorityStale"
+	ErrorTranscriptItemCursorStale  ErrorInfo = "transcriptItemCursorStale"
+	ErrorTranscriptItemChanged      ErrorInfo = "item-changed"
+	ErrorFetchUnavailableRemote     ErrorInfo = "fetch-unavailable-remote"
+	ErrorWindowUnsupportedOnDaemon  ErrorInfo = "window-unsupported-on-daemon"
+	ErrorItemUnreachableOnCompat    ErrorInfo = "item-unreachable-on-compat"
+	ErrorTranscriptTurnNotFound     ErrorInfo = "transcriptTurnNotFound"
+	ErrorSessionActivityCursorStale ErrorInfo = "sessionActivityCursorStale"
+	ErrorJobOutputPruned            ErrorInfo = "jobOutputPruned"
+	ErrorInternal                   ErrorInfo = "internal"
 	// ErrorTranscriptHistoryFailed marks a read of a thread whose history
 	// entered its failed state: its projection or rebuild failed for a reason
 	// outside the entries (I/O, a corrupt index) three times in a row, and a
@@ -937,6 +940,36 @@ func MutationNotAccepted(clientMutationID, message string) WireError {
 			// rejections carry (JournaledRejectionCause), and treat an
 			// absent cause as delivery-uncertain - the safe default, since
 			// an outstanding attempt of the same wire can still apply.
+		},
+	}
+}
+
+// ModelControlAuthorityStale refuses a model mutation whose exact thread or
+// daemon authority has retired.
+func ModelControlAuthorityStale(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorModelControlAuthorityStale,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeNotAccepted,
+			RetryDisposition: RetryDispositionNone,
+		},
+	}
+}
+
+// MutationOutcomeUnknownBlocked reports a dispatched mutation whose response
+// cannot prove its outcome and therefore must not be replayed automatically.
+func MutationOutcomeUnknownBlocked(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorMutationOutcomeUnknown,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeUnknown,
+			RetryDisposition: RetryDispositionBlocked,
 		},
 	}
 }

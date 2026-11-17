@@ -2874,7 +2874,7 @@ Underlying Go kind: `struct` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `requestSequence` | uint64 |  |  |
-| `clientMutationId` | string | yes |  |
+| `clientMutationId` | string |  |  |
 | `modelProvider` | string |  |  |
 | `model` | string |  |  |
 | `lifecycle` | [appwire.ModelControlLifecycle](#modelcontrollifecycle) |  |  |
@@ -4961,18 +4961,18 @@ Underlying Go kind: `string` (no struct fields).
 | `ref` | string |  |  |
 | `modelProvider` | string |  |  |
 | `model` | string |  |  |
-| `clientMutationId` | string | yes |  |
-| `expectedInstanceId` | string | yes |  |
-| `expectedBootGeneration` | string | yes |  |
+| `clientMutationId` | string |  |  |
+| `expectedInstanceId` | string |  |  |
+| `expectedBootGeneration` | string |  |  |
 
 
 ### `ThreadModelSetResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `modelControlVersion` | uint | yes |  |
-| `disposition` | [appwire.ModelControlDisposition](#modelcontroldisposition) | yes |  |
-| `modelControl` | \*[appwire.ModelControlSnapshot](#modelcontrolsnapshot) | yes |  |
+| `modelControlVersion` | uint |  |  |
+| `disposition` | [appwire.ModelControlDisposition](#modelcontroldisposition) |  |  |
+| `modelControl` | \*[appwire.ModelControlSnapshot](#modelcontrolsnapshot) |  |  |
 
 
 ### `ThreadNameChangedParams`

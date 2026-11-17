@@ -135,7 +135,7 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"ThreadModelSet", MethodThreadModelSet, `{"ref":"local:th","modelProvider":"openai","model":"gpt","clientMutationId":"cm_model","expectedInstanceId":"instance_1","expectedBootGeneration":"7"}`, ThreadModelSetResponse{ModelControlVersion: ModelControlVersion1, Disposition: ModelControlDispositionAccepted}, func(ctx context.Context, c *Client) error {
+		{"ThreadModelSet", MethodThreadModelSet, `{"ref":"local:th","modelProvider":"openai","model":"gpt","clientMutationId":"cm_model","expectedInstanceId":"instance_1","expectedBootGeneration":"7"}`, ThreadModelSetResponse{ModelControlVersion: ModelControlVersion1, Disposition: ModelControlDispositionAccepted, ModelControl: &ModelControlSnapshot{Authority: ModelControlAuthority{InstanceID: "instance_1", BootGeneration: "7"}, Revision: 1, Active: ModelControlActive{ModelProvider: "openai", Model: "gpt"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.ThreadModelSet(ctx, ThreadModelSetParams{Ref: "local:th", ModelProvider: "openai", Model: "gpt", ClientMutationID: "cm_model", ExpectedInstanceID: "instance_1", ExpectedBootGeneration: "7"})
 			if err != nil {
 				return err

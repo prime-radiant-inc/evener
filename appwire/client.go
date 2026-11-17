@@ -636,8 +636,13 @@ func (c *Client) ThreadClear(ctx context.Context, params ThreadClearParams) (Thr
 
 func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams) (ThreadModelSetResponse, error) {
 	var out ThreadModelSetResponse
-	err := c.request(ctx, MethodThreadModelSet, params, &out)
-	return out, err
+	if err := c.request(ctx, MethodThreadModelSet, params, &out); err != nil {
+		return out, err
+	}
+	if err := ValidateThreadModelSetResponse(out); err != nil {
+		return ThreadModelSetResponse{}, MutationOutcomeUnknownBlocked(params.ClientMutationID, fmt.Sprintf("invalid thread/model/set response: %v", err))
+	}
+	return out, nil
 }
 
 func (c *Client) ThreadNameSet(ctx context.Context, params ThreadNameSetParams) error {

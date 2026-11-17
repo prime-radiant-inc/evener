@@ -2548,7 +2548,7 @@ export interface ModelControlAuthority {
 
 export interface ModelControlDesired {
   requestSequence: number;
-  clientMutationId?: string;
+  clientMutationId: string;
   modelProvider: string;
   model: string;
   lifecycle: string;
@@ -5066,15 +5066,15 @@ export interface ThreadModelSetParams {
   ref: string;
   modelProvider: string;
   model: string;
-  clientMutationId?: string;
-  expectedInstanceId?: string;
-  expectedBootGeneration?: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
+  expectedBootGeneration: string;
 }
 
 export interface ThreadModelSetResponse {
-  modelControlVersion?: number;
-  disposition?: string;
-  modelControl?: ModelControlSnapshot;
+  modelControlVersion: number;
+  disposition: string;
+  modelControl: ModelControlSnapshot | null;
 }
 
 export interface ThreadNameChangedParams {

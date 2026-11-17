@@ -1171,7 +1171,7 @@ const (
 
 type ModelControlDesired struct {
 	RequestSequence  uint64                `json:"requestSequence"`
-	ClientMutationID string                `json:"clientMutationId,omitempty"`
+	ClientMutationID string                `json:"clientMutationId"`
 	ModelProvider    string                `json:"modelProvider"`
 	Model            string                `json:"model"`
 	Lifecycle        ModelControlLifecycle `json:"lifecycle"`
@@ -1195,15 +1195,75 @@ type ThreadModelSetParams struct {
 	Ref                    string `json:"ref"`
 	ModelProvider          string `json:"modelProvider"`
 	Model                  string `json:"model"`
-	ClientMutationID       string `json:"clientMutationId,omitempty"`
-	ExpectedInstanceID     string `json:"expectedInstanceId,omitempty"`
-	ExpectedBootGeneration string `json:"expectedBootGeneration,omitempty"`
+	ClientMutationID       string `json:"clientMutationId"`
+	ExpectedInstanceID     string `json:"expectedInstanceId"`
+	ExpectedBootGeneration string `json:"expectedBootGeneration"`
+}
+
+// Validate refuses a model mutation that cannot be bound to one exact client
+// intent, thread instance, and daemon boot.
+func (p ThreadModelSetParams) Validate() error {
+	switch {
+	case p.Ref == "":
+		return InvalidParams("ref is required")
+	case p.ModelProvider == "":
+		return InvalidParams("modelProvider is required")
+	case p.Model == "":
+		return InvalidParams("model is required")
+	case p.ClientMutationID == "":
+		return InvalidParams("clientMutationId is required")
+	case p.ExpectedInstanceID == "":
+		return InvalidParams("expectedInstanceId is required")
+	case p.ExpectedBootGeneration == "":
+		return InvalidParams("expectedBootGeneration is required")
+	default:
+		return nil
+	}
 }
 
 type ThreadModelSetResponse struct {
-	ModelControlVersion uint                    `json:"modelControlVersion,omitempty"`
-	Disposition         ModelControlDisposition `json:"disposition,omitempty"`
-	ModelControl        *ModelControlSnapshot   `json:"modelControl,omitempty"`
+	ModelControlVersion uint                    `json:"modelControlVersion"`
+	Disposition         ModelControlDisposition `json:"disposition"`
+	ModelControl        *ModelControlSnapshot   `json:"modelControl"`
+}
+
+// ValidateThreadModelSetResponse verifies a successful model mutation carries
+// one complete version-1 snapshot instead of a partial or legacy success.
+func ValidateThreadModelSetResponse(response ThreadModelSetResponse) error {
+	if response.ModelControlVersion != ModelControlVersion1 {
+		return fmt.Errorf("unsupported model-control response version %d", response.ModelControlVersion)
+	}
+	switch response.Disposition {
+	case ModelControlDispositionAccepted, ModelControlDispositionSuperseded:
+	default:
+		return fmt.Errorf("invalid model-control disposition %q", response.Disposition)
+	}
+	if response.ModelControl == nil {
+		return fmt.Errorf("model-control snapshot is required")
+	}
+	snapshot := response.ModelControl
+	if snapshot.Authority.InstanceID == "" || snapshot.Authority.BootGeneration == "" {
+		return fmt.Errorf("model-control authority is incomplete")
+	}
+	if snapshot.Revision == 0 {
+		return fmt.Errorf("model-control revision must be positive")
+	}
+	if snapshot.Active.ModelProvider == "" || snapshot.Active.Model == "" {
+		return fmt.Errorf("model-control active target is incomplete")
+	}
+	if snapshot.Desired == nil {
+		return nil
+	}
+	desired := snapshot.Desired
+	if desired.RequestSequence == 0 || desired.ClientMutationID == "" || desired.ModelProvider == "" || desired.Model == "" {
+		return fmt.Errorf("model-control desired target is incomplete")
+	}
+	switch desired.Lifecycle {
+	case ModelControlLifecyclePending, ModelControlLifecycleApplied, ModelControlLifecycleRejected:
+		return nil
+	default:
+		return fmt.Errorf("invalid model-control desired lifecycle %q", desired.Lifecycle)
+	}
 }
 
 type ThreadModelControlChangedParams struct {

@@ -477,9 +477,16 @@ func TestModelControlProtocolCatalog(t *testing.T) {
 		if method.Name != MethodThreadModelSet {
 			continue
 		}
+		if _, ok := method.Params.(ThreadModelSetParams); !ok {
+			t.Fatalf("thread model set params type = %T, want ThreadModelSetParams", method.Params)
+		}
 		if _, ok := method.Result.(ThreadModelSetResponse); !ok {
 			t.Fatalf("thread model set result type = %T, want ThreadModelSetResponse", method.Result)
 		}
+		assertRequiredJSONFields(t, reflect.TypeFor[ThreadModelSetParams](), "clientMutationId", "expectedInstanceId", "expectedBootGeneration")
+		assertRequiredJSONFields(t, reflect.TypeFor[ThreadModelSetResponse](), "modelControlVersion", "disposition", "modelControl")
+		assertRequiredJSONFields(t, reflect.TypeFor[ModelControlDesired](), "clientMutationId")
+		assertGeneratedModelControlFieldsRequired(t)
 		goto notification
 	}
 	t.Fatalf("method catalog missing %q", MethodThreadModelSet)
@@ -495,6 +502,72 @@ notification:
 		return
 	}
 	t.Fatalf("notification catalog missing %q", NotifyThreadModelControlChanged)
+}
+
+func assertRequiredJSONFields(t *testing.T, typ reflect.Type, names ...string) {
+	t.Helper()
+	remaining := make(map[string]bool, len(names))
+	for _, name := range names {
+		remaining[name] = true
+	}
+	for index := 0; index < typ.NumField(); index++ {
+		jsonName := typ.Field(index).Tag.Get("json")
+		parts := bytes.Split([]byte(jsonName), []byte(","))
+		if !remaining[string(parts[0])] {
+			continue
+		}
+		if len(parts) > 1 && bytes.Equal(parts[1], []byte("omitempty")) {
+			t.Errorf("%s.%s remains optional on the wire", typ.Name(), typ.Field(index).Name)
+		}
+		delete(remaining, string(parts[0]))
+	}
+	for name := range remaining {
+		t.Errorf("%s has no JSON field %q", typ.Name(), name)
+	}
+}
+
+func assertGeneratedModelControlFieldsRequired(t *testing.T) {
+	t.Helper()
+	generated, err := os.ReadFile("../appwire-client/typescript/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name   string
+		fields [][]byte
+	}{
+		{"ThreadModelSetParams", [][]byte{
+			[]byte("clientMutationId: string;"),
+			[]byte("expectedInstanceId: string;"),
+			[]byte("expectedBootGeneration: string;"),
+		}},
+		{"ThreadModelSetResponse", [][]byte{
+			[]byte("modelControlVersion: number;"),
+			[]byte("disposition: string;"),
+			[]byte("modelControl: ModelControlSnapshot | null;"),
+		}},
+		{"ModelControlDesired", [][]byte{
+			[]byte("clientMutationId: string;"),
+		}},
+	}
+	for _, test := range tests {
+		start := bytes.Index(generated, []byte("export interface "+test.name+" {"))
+		if start < 0 {
+			t.Errorf("generated TypeScript has no %s interface", test.name)
+			continue
+		}
+		end := bytes.Index(generated[start:], []byte("\n}"))
+		if end < 0 {
+			t.Errorf("generated TypeScript %s interface is unterminated", test.name)
+			continue
+		}
+		body := generated[start : start+end]
+		for _, field := range test.fields {
+			if !bytes.Contains(body, field) {
+				t.Errorf("generated TypeScript %s is missing required field %q", test.name, field)
+			}
+		}
+	}
 }
 
 func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {

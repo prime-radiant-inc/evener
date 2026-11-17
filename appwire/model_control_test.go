@@ -2,24 +2,48 @@ package appwire
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestModelControlRequestShapes(t *testing.T) {
-	legacy := ThreadModelSetParams{
-		Ref:           "local:th_1",
-		ModelProvider: "work",
-		Model:         "gpt-5.5",
+	valid := ThreadModelSetParams{
+		Ref:                    "local:th_1",
+		ModelProvider:          "work",
+		Model:                  "gpt-5.5",
+		ClientMutationID:       "cm_1",
+		ExpectedInstanceID:     "instance_1",
+		ExpectedBootGeneration: "7",
 	}
-	assertJSONKeys(t, legacy, "ref", "modelProvider", "model")
-
-	capable := legacy
-	capable.ClientMutationID = "cm_1"
-	capable.ExpectedInstanceID = "instance_1"
-	capable.ExpectedBootGeneration = "7"
-	assertJSONKeys(t, capable,
+	assertJSONKeys(t, valid,
 		"ref", "modelProvider", "model", "clientMutationId", "expectedInstanceId", "expectedBootGeneration")
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid params rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ThreadModelSetParams)
+	}{
+		{"ref", func(params *ThreadModelSetParams) { params.Ref = "" }},
+		{"model provider", func(params *ThreadModelSetParams) { params.ModelProvider = "" }},
+		{"model", func(params *ThreadModelSetParams) { params.Model = "" }},
+		{"mutation id", func(params *ThreadModelSetParams) { params.ClientMutationID = "" }},
+		{"instance id", func(params *ThreadModelSetParams) { params.ExpectedInstanceID = "" }},
+		{"boot generation", func(params *ThreadModelSetParams) { params.ExpectedBootGeneration = "" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			params := valid
+			test.mutate(&params)
+			if err := params.Validate(); err == nil {
+				t.Fatal("incomplete model-set params accepted")
+			}
+		})
+	}
 }
 
 func TestModelControlSnapshotCarriersReuseWholeShape(t *testing.T) {
@@ -93,13 +117,119 @@ func TestModelControlSnapshotCarriersReuseWholeShape(t *testing.T) {
 	assertJSONKeys(t, manager, "result", "actor", "model")
 }
 
-func TestModelControlLegacyResponseDecodesUnsupported(t *testing.T) {
-	var response ThreadModelSetResponse
-	if err := json.Unmarshal([]byte(`{}`), &response); err != nil {
-		t.Fatalf("decode legacy model-set response: %v", err)
+func TestValidateThreadModelSetResponseRequiresCompleteVersionOneSnapshot(t *testing.T) {
+	valid := completeModelControlResponse()
+	if err := ValidateThreadModelSetResponse(valid); err != nil {
+		t.Fatalf("valid response rejected: %v", err)
 	}
-	if response.ModelControlVersion != 0 || response.ModelControl != nil || response.Disposition != "" {
-		t.Fatalf("legacy model-set response decoded as capable: %+v", response)
+
+	tests := []struct {
+		name   string
+		mutate func(*ThreadModelSetResponse)
+	}{
+		{"missing version", func(response *ThreadModelSetResponse) { response.ModelControlVersion = 0 }},
+		{"unknown version", func(response *ThreadModelSetResponse) { response.ModelControlVersion = 2 }},
+		{"missing disposition", func(response *ThreadModelSetResponse) { response.Disposition = "" }},
+		{"invalid disposition", func(response *ThreadModelSetResponse) { response.Disposition = "invalid" }},
+		{"missing snapshot", func(response *ThreadModelSetResponse) { response.ModelControl = nil }},
+		{"missing instance", func(response *ThreadModelSetResponse) { response.ModelControl.Authority.InstanceID = "" }},
+		{"missing boot", func(response *ThreadModelSetResponse) { response.ModelControl.Authority.BootGeneration = "" }},
+		{"zero revision", func(response *ThreadModelSetResponse) { response.ModelControl.Revision = 0 }},
+		{"missing active provider", func(response *ThreadModelSetResponse) { response.ModelControl.Active.ModelProvider = "" }},
+		{"missing active model", func(response *ThreadModelSetResponse) { response.ModelControl.Active.Model = "" }},
+		{"zero desired sequence", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.RequestSequence = 0 }},
+		{"missing desired mutation", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.ClientMutationID = "" }},
+		{"missing desired provider", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.ModelProvider = "" }},
+		{"missing desired model", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.Model = "" }},
+		{"invalid desired lifecycle", func(response *ThreadModelSetResponse) { response.ModelControl.Desired.Lifecycle = "invalid" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := completeModelControlResponse()
+			test.mutate(&response)
+			if err := ValidateThreadModelSetResponse(response); err == nil {
+				t.Fatal("incomplete model-set response accepted")
+			}
+		})
+	}
+}
+
+func TestModelControlWireErrorsCarryMachineReadableOutcome(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         WireError
+		wantInfo    ErrorInfo
+		wantOutcome MutationOutcome
+		wantRetry   RetryDisposition
+	}{
+		{
+			name:        "stale authority",
+			err:         ModelControlAuthorityStale("cm_1", "stale"),
+			wantInfo:    ErrorModelControlAuthorityStale,
+			wantOutcome: MutationOutcomeNotAccepted,
+			wantRetry:   RetryDispositionNone,
+		},
+		{
+			name:        "unknown after dispatch",
+			err:         MutationOutcomeUnknownBlocked("cm_1", "unknown"),
+			wantInfo:    ErrorMutationOutcomeUnknown,
+			wantOutcome: MutationOutcomeUnknown,
+			wantRetry:   RetryDispositionBlocked,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, ok := ErrorDataOf(test.err.Data)
+			if !ok {
+				t.Fatalf("error data type = %T, want ErrorData", test.err.Data)
+			}
+			if data.EvenerErrorInfo != test.wantInfo || data.ClientMutationID != "cm_1" || data.MutationOutcome != test.wantOutcome || data.RetryDisposition != test.wantRetry {
+				t.Fatalf("error data = %+v", data)
+			}
+		})
+	}
+}
+
+func TestClientThreadModelSetRejectsMalformedSuccessAsBlockedUnknown(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadModelSet(ctx, ThreadModelSetParams{
+			Ref:                    "local:th_1",
+			ModelProvider:          "work",
+			Model:                  "gpt-5.5",
+			ClientMutationID:       "cm_1",
+			ExpectedInstanceID:     "instance_1",
+			ExpectedBootGeneration: "7",
+		})
+		errCh <- err
+	}()
+
+	var request Message
+	select {
+	case request = <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("model-set request was not written")
+	}
+	transport.reads <- ResponseMessage(request.Request.ID, map[string]any{})
+
+	select {
+	case err := <-errCh:
+		var wire WireError
+		if !errors.As(err, &wire) || wire.Code != CodeInternalError {
+			t.Fatalf("malformed success error = %T %+v, want internal WireError", err, err)
+		}
+		data, ok := ErrorDataOf(wire.Data)
+		if !ok || data.EvenerErrorInfo != ErrorMutationOutcomeUnknown || data.ClientMutationID != "cm_1" || data.MutationOutcome != MutationOutcomeUnknown || data.RetryDisposition != RetryDispositionBlocked {
+			t.Fatalf("malformed success data = %+v, ok = %t", data, ok)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("malformed success did not settle the request")
 	}
 }
 
@@ -157,4 +287,28 @@ func modelControlJSON(t *testing.T, value any, path ...string) json.RawMessage {
 		}
 	}
 	return raw
+}
+
+func completeModelControlResponse() ThreadModelSetResponse {
+	return ThreadModelSetResponse{
+		ModelControlVersion: ModelControlVersion1,
+		Disposition:         ModelControlDispositionAccepted,
+		ModelControl: &ModelControlSnapshot{
+			Authority: ModelControlAuthority{InstanceID: "instance_1", BootGeneration: "7"},
+			Revision:  9,
+			Active: ModelControlActive{
+				ModelProvider:         "work",
+				Model:                 "gpt-5.5",
+				ReasoningEffortLevels: []string{"low", "high"},
+				SupportsReasoning:     true,
+			},
+			Desired: &ModelControlDesired{
+				RequestSequence:  4,
+				ClientMutationID: "cm_1",
+				ModelProvider:    "anthropic",
+				Model:            "claude-opus-4-6",
+				Lifecycle:        ModelControlLifecyclePending,
+			},
+		},
+	}
 }
