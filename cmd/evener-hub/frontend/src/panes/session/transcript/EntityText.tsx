@@ -4,14 +4,22 @@ import { createPortal } from "react-dom";
 import { MERMAID_DIAGRAM_ATTR } from "../../../widgets/mermaid/markers";
 import { EntityRef } from "./EntityRef";
 import { segmentEntityIds } from "./entitySegments";
+import type { AnalysisCache } from "./messages/analysisCache";
 
 const ENTITY_SKIP_SELECTOR = `code, pre, script, style, a, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`;
 const entityEpochs = new WeakMap<HTMLElement, object>();
 
 /** Enhances only plain text owned by a rendered prose root. The original text
  * nodes stay in the tree as empty anchors so cleanup can restore React's DOM
- * exactly before the next enhancement pass. */
-export function enhanceEntityText(root: HTMLElement): { portals: ReactNode[]; cleanup(): void } {
+ * exactly before the next enhancement pass. `analysis` lets a caller that
+ * enhances the same unchanged text after every streamed delta reuse the
+ * previous pass's scan of it; a hit returns exactly what the scan would have
+ * (see messages/analysisCache.ts). */
+export function enhanceEntityText(
+  root: HTMLElement,
+  analysis?: AnalysisCache,
+): { portals: ReactNode[]; cleanup(): void } {
+  const ids = (value: string) => (analysis ? analysis.entityIds(value) : findEntityIds(value));
   const epoch = {};
   entityEpochs.set(root, epoch);
   const mounts: ReactPortal[] = [];
@@ -22,14 +30,14 @@ export function enhanceEntityText(root: HTMLElement): { portals: ReactNode[]; cl
     const node = walker.currentNode as Text;
     const parent = node.parentElement;
     if (!parent || parent.closest(ENTITY_SKIP_SELECTOR)) continue;
-    if (findEntityIds(node.data).length > 0) nodes.push(node);
+    if (ids(node.data).length > 0) nodes.push(node);
   }
 
   for (const node of nodes) {
     const original = node.data;
     const fragment = document.createDocumentFragment();
     let cursor = 0;
-    for (const match of findEntityIds(original)) {
+    for (const match of ids(original)) {
       fragment.append(original.slice(cursor, match.start));
       const host = document.createElement("span");
       host.setAttribute("data-entity-host", "");
