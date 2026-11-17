@@ -745,3 +745,43 @@ test("two call-stamped answers each recap the call they name, in call order", ()
   expect(answeredAskUserSuffix(model, alpha)).toBe(" — answered: yes, ship it");
   expect(answeredAskUserSuffix(model, beta)).toBe(" — answered: Postgres please");
 });
+
+test("a call-stamped composed answer to two same-header calls recaps neither", () => {
+  // Two acked sibling calls in one execution ask the SAME header, and one
+  // composed reply consumed both (the stamp names both calls). Its two answer
+  // lines repeat that header with DIFFERENT values, and the recap's
+  // header-keyed parse keeps only the last - so recapping would show "No" for
+  // the call answered "Yes", silently replacing it. The stamp proves which
+  // calls the reply answers, not that the recap restates either faithfully:
+  // both calls keep their raw row.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([{ ...ONE_QUESTION[0], question: "Should I deploy the docs too?" }]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Deploy?] → "No"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, second)).toBeUndefined();
+});

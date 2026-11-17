@@ -163,6 +163,22 @@ function parseAskAnswerLines(text: string): Map<string, string> {
 // Any reply that fails is one the recap does not fully stand in for, and its
 // raw row must stay: a duplicate row is cosmetic, a silently dropped answer
 // is not.
+//
+// composedReplyRepeatsAHeader is the third rule on its own, because admission's
+// call stamp (#6323) needs the same refusal without the composer-byte-exactness
+// the rest of this predicate demands: the stamp proves WHICH call a reply
+// answers, never that the recap restates that answer faithfully.
+function composedReplyRepeatsAHeader(text: string): boolean {
+  const seen = new Set<string>();
+  for (const line of text.split("\n")) {
+    const answer = parseAskAnswerLine(line);
+    if (!answer) continue;
+    if (seen.has(answer.header)) return true;
+    seen.add(answer.header);
+  }
+  return false;
+}
+
 function composedReplyCoversCall(
   text: string,
   questions: readonly AskUserQuestion[],
@@ -172,6 +188,7 @@ function composedReplyCoversCall(
   if (askedHeaders.size !== questions.length) return false;
   const lines = text.split("\n");
   if (lines[0] !== "[answers]") return false;
+  if (composedReplyRepeatsAHeader(text)) return false;
   const seen = new Set<string>();
   let ordinal = 0;
   for (const line of lines.slice(1)) {
@@ -181,7 +198,6 @@ function composedReplyCoversCall(
     ordinal += 1;
     if (answer.ordinal !== ordinal) return false;
     if (!askedHeaders.has(answer.header)) return false;
-    if (seen.has(answer.header)) return false;
     seen.add(answer.header);
     if (answer.rest.includes(" — note: ")) return false;
   }
@@ -402,7 +418,17 @@ function findAnswerReply(
       // a reply naming this call answers it even beside acked siblings that
       // ask the same header, and one naming only the siblings does not.
       const resolved = resolvesThisCall(item, candidate);
-      if (resolved === true) return candidate;
+      if (resolved === true) {
+        // The stamp proves the reply answers THIS call. It does not prove the
+        // recap restates that answer faithfully: a composed reply whose answer
+        // lines repeat a header parses to the LAST such line only, so taking
+        // the recap would silently replace this call's answer with a sibling's
+        // (two same-header calls answered "Yes" and "No" would both recap
+        // "No"). Keep the raw row instead, exactly as the unstamped path's
+        // composedReplyCoversCall refusal does.
+        if (candidate.text.startsWith("[answers]") && composedReplyRepeatsAHeader(candidate.text)) continue;
+        return candidate;
+      }
       if (resolved === false) continue;
       if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
       continue;
