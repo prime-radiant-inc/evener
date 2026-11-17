@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 )
 
@@ -112,18 +113,25 @@ func benchTrivial(b *testing.B, shell bool) {
 	if runtimeGOOS == "windows" {
 		b.Skip("POSIX fork comparison only")
 	}
+	// Resolve once, so both arms compare one exec with and without the bash
+	// wrapper. /bin/true does not exist on macOS, where it is /usr/bin/true.
+	program, err := exec.LookPath("true")
+	if err != nil {
+		b.Skip("true not available")
+	}
 	dir := b.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
 	b.Cleanup(env.Cleanup)
 	ctx := context.Background()
 	for b.Loop() {
 		var res ExecResult
-		var err error
+		var runErr error
 		if shell {
-			res, err = env.execPreparedCommand(ctx, env.commands().Shell("/bin/true"), 5000, dir, nil)
+			res, runErr = env.execPreparedCommand(ctx, env.commands().Shell(program), 5000, dir, nil)
 		} else {
-			res, err = env.execPreparedCommand(ctx, env.commands().Argv("/bin/true"), 5000, dir, nil)
+			res, runErr = env.execPreparedCommand(ctx, env.commands().Argv(program), 5000, dir, nil)
 		}
+		err = runErr
 		if err != nil || res.ExitCode != 0 {
 			b.Fatalf("trivial command: err=%v res=%+v", err, res)
 		}
