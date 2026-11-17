@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -124,6 +125,38 @@ func TestSweepPicksUpATranscriptAppendOnTheNextTick(t *testing.T) {
 	}
 }
 
+// TestSweepReadsASessionARepairedSidecarMadeReadable is the case a digest gate
+// over the refresh would strand. A transcript whose sidecar this projection has
+// not built is refused with ErrRebuildRequired: Refresh records no stamp and
+// reports no failure, and the repair lane that clears the refusal writes only
+// the excluded .index-<projection> directory. Nothing the tree digest folds
+// moves, so the sweep must reach that session through the refresh it runs
+// unconditionally, not through a changed digest.
+func TestSweepReadsASessionARepairedSidecarMadeReadable(t *testing.T) {
+	f := newSweepFixture(t)
+	// Take the sidecar away so the first sweep meets the refusing path, the
+	// state every session not yet read under this projection is in.
+	transcriptPath := filepath.Join(f.stateDir, "sessions", f.sessionID+".transcript.jsonl")
+	if err := os.RemoveAll(transcriptindex.DirFor(transcriptPath)); err != nil {
+		t.Fatal(err)
+	}
+	sweep := newHubPastSweep(f.past, f.search)
+	ctx := context.Background()
+
+	sweep.sweep(ctx)
+	if f.messageSearchable(t, "first") {
+		t.Fatal("a session with no sidecar is already searchable; the refusing path was not exercised")
+	}
+
+	// The repair lane's effect, and the only write between the two sweeps.
+	indexPastTranscriptForTest(t, f.stateDir, f.sessionID)
+
+	sweep.sweep(ctx)
+	if !f.messageSearchable(t, "first") {
+		t.Fatal("a repaired session was not read on the next sweep; running the refresh only behind the digest strands it")
+	}
+}
+
 // TestSweepSkipsFullPassWhenNothingChanged is the change the issue asks for: an
 // idle sweep must not redo the full scan and refresh. It counts the work, not
 // the time.
@@ -133,10 +166,10 @@ func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	ctx := context.Background()
 
 	sweep.sweep(ctx)
-	before := sweep.fullPassCount()
+	before := sweep.rebuildCount()
 	sweep.sweep(ctx)
 	sweep.sweep(ctx)
-	if got := sweep.fullPassCount() - before; got != 0 {
+	if got := sweep.rebuildCount() - before; got != 0 {
 		t.Fatalf("idle sweeps did full work %d times, want 0", got)
 	}
 
@@ -144,44 +177,11 @@ func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	// be a one-way latch.
 	f.renameSession(t, "Renamed by the client")
 	sweep.sweep(ctx)
-	if got := sweep.fullPassCount() - before; got != 1 {
+	if got := sweep.rebuildCount() - before; got != 1 {
 		t.Fatalf("a changed tree did %d full passes, want exactly 1", got)
 	}
 	entry, ok := f.past.Lookup(f.sessionID)
 	if !ok || entry.Meta.Name != "Renamed by the client" {
 		t.Fatalf("the rename is not in the index: name=%q found=%v", entry.Meta.Name, ok)
-	}
-}
-
-// TestSweepRetriesAfterAFailedRefresh pins that a pass whose message-search
-// refresh could not read every transcript forces the next tick past the gate.
-// MessageSearch.Refresh retries a failed transcript only on its next call, so
-// gating that call away would strand the retry until unrelated disk activity
-// moved the digest.
-func TestSweepRetriesAfterAFailedRefresh(t *testing.T) {
-	f := newSweepFixture(t)
-	sweep := newHubPastSweep(f.past, f.search)
-	ctx := context.Background()
-
-	// An unreadable transcript makes Refresh report a failure without changing
-	// any file's stamp, so the digest alone cannot tell the next tick to retry.
-	// A directory at the transcript path fails the read the same way a
-	// permission error would.
-	transcriptPath := filepath.Join(f.stateDir, "sessions", f.sessionID+".transcript.jsonl")
-	if err := os.Remove(transcriptPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(transcriptPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	sweep.sweep(ctx)
-	if !sweep.retry {
-		t.Fatal("a pass whose refresh reported a failure did not ask for a retry")
-	}
-	before := sweep.fullPassCount()
-	sweep.sweep(ctx)
-	if got := sweep.fullPassCount() - before; got != 1 {
-		t.Fatalf("the tick after a failed refresh did %d full passes, want 1", got)
 	}
 }

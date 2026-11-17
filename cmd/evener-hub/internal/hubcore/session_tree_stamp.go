@@ -77,12 +77,12 @@ func SessionTreeStamp(projectGlob string) (uint64, error) {
 
 // foldSessionDirStamp folds one sessions directory's covered entries into h.
 //
-// It reads the directory through a raw handle and calls Readdir rather than
-// os.ReadDir: os.ReadDir stats every entry and builds a FileInfo for each,
-// which on a sessions dir dominated by per-turn artifacts (api logs, job logs,
-// sidecars) costs several times what this whole digest should. Readdir hands
-// back dirents that already carry the name, and only the handful of entries
-// this function keeps are stat'd.
+// It reads the directory through a raw handle and calls Readdirnames rather
+// than os.ReadDir: os.ReadDir builds a DirEntry for every entry and stats the
+// ones it cannot type from the directory entry, which on a sessions dir
+// dominated by per-turn artifacts (api logs, job logs, sidecars) costs several
+// times what this whole digest should. Readdirnames returns the names and
+// nothing else, so only the handful of entries this function keeps are stat'd.
 func foldSessionDirStamp(h hash.Hash64, sessionsDir string) {
 	dir, err := os.Open(sessionsDir)
 	if err != nil {
@@ -92,8 +92,8 @@ func foldSessionDirStamp(h hash.Hash64, sessionsDir string) {
 		return
 	}
 	defer func() { _ = dir.Close() }()
-	// Readdirnames, not Readdir: a dirent's type is not needed, and this leaves
-	// the lstat entirely to the os.Lstat below, for the kept entries only.
+	// Names only: an entry's type is not needed, so the lstat below is left to
+	// the kept entries and every skipped artifact costs a name comparison.
 	names, err := dir.Readdirnames(-1)
 	if err != nil {
 		foldStampString(h, "\x00unreadable")

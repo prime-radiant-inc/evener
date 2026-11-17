@@ -117,18 +117,16 @@ func rosterIdentities(snapshot navigationSnapshot) func(string) (rosterIdentity,
 // with the transcripts the past index lists, one pass. A refresh reads again
 // only the transcripts that changed.
 //
-// retry reports that some transcript could not be read this pass. Refresh
-// deliberately retries an already-indexed transcript whose read failed on the
-// next call (recording the failure would freeze the loss), so a caller that
-// skips passes must not skip the one after a failed one, or a transient read
-// error would wait for unrelated disk activity to clear.
-//
-// A failed refresh is reported here and nowhere else: it names no remedial
-// action the caller could take, and the next pass retries the transcripts that
-// failed, so the caller gets only whether to run that pass.
-func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex) (retry bool) {
+// Callers must run it every tick, never behind a gate on disk state. Refresh
+// retries, on its next call, what it deferred or failed to read this one
+// (recording a failure would freeze the loss), and several of those deferrals
+// — a transcript whose sidecar this projection has never built, a contended
+// lock, a paging race — leave no trace on disk that a gate could see. The
+// failures are reported here and nowhere else: they name no remedial action a
+// caller could take.
+func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSearch, past *hubcore.PastIndex) {
 	if index == nil || ctx.Err() != nil {
-		return false
+		return
 	}
 	log := componentlog.New("hub")
 	failures, err := index.Refresh(ctx, messageSearchSessions(past.All()))
@@ -138,7 +136,6 @@ func refreshHubMessageSearchOnce(ctx context.Context, index *hubcore.MessageSear
 	if err != nil && ctx.Err() == nil {
 		log.Info(fmt.Sprintf("message search: %v", err))
 	}
-	return len(failures) > 0
 }
 
 // messageSearchSessions is every session the past index lists, with its
