@@ -510,14 +510,14 @@ func assertRequiredJSONFields(t *testing.T, typ reflect.Type, names ...string) {
 	for _, name := range names {
 		remaining[name] = true
 	}
-	for index := 0; index < typ.NumField(); index++ {
-		jsonName := typ.Field(index).Tag.Get("json")
+	for field := range typ.Fields() {
+		jsonName := field.Tag.Get("json")
 		parts := bytes.Split([]byte(jsonName), []byte(","))
 		if !remaining[string(parts[0])] {
 			continue
 		}
 		if len(parts) > 1 && bytes.Equal(parts[1], []byte("omitempty")) {
-			t.Errorf("%s.%s remains optional on the wire", typ.Name(), typ.Field(index).Name)
+			t.Errorf("%s.%s remains optional on the wire", typ.Name(), field.Name)
 		}
 		delete(remaining, string(parts[0]))
 	}

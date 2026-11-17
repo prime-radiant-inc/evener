@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -1239,24 +1240,24 @@ func ValidateThreadModelSetResponse(response ThreadModelSetResponse) error {
 		return fmt.Errorf("invalid model-control disposition %q", response.Disposition)
 	}
 	if response.ModelControl == nil {
-		return fmt.Errorf("model-control snapshot is required")
+		return errors.New("model-control snapshot is required")
 	}
 	snapshot := response.ModelControl
 	if snapshot.Authority.InstanceID == "" || snapshot.Authority.BootGeneration == "" {
-		return fmt.Errorf("model-control authority is incomplete")
+		return errors.New("model-control authority is incomplete")
 	}
 	if snapshot.Revision == 0 {
-		return fmt.Errorf("model-control revision must be positive")
+		return errors.New("model-control revision must be positive")
 	}
 	if snapshot.Active.ModelProvider == "" || snapshot.Active.Model == "" {
-		return fmt.Errorf("model-control active target is incomplete")
+		return errors.New("model-control active target is incomplete")
 	}
 	if snapshot.Desired == nil {
 		return nil
 	}
 	desired := snapshot.Desired
 	if desired.RequestSequence == 0 || desired.ClientMutationID == "" || desired.ModelProvider == "" || desired.Model == "" {
-		return fmt.Errorf("model-control desired target is incomplete")
+		return errors.New("model-control desired target is incomplete")
 	}
 	switch desired.Lifecycle {
 	case ModelControlLifecyclePending, ModelControlLifecycleApplied, ModelControlLifecycleRejected:

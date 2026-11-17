@@ -2,7 +2,6 @@ package appwire
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -207,8 +206,7 @@ func TestModelControlWireErrorsCarryMachineReadableOutcome(t *testing.T) {
 func TestClientThreadModelSetRejectsMalformedSuccessAsBlockedUnknown(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	errCh := make(chan error, 1)
