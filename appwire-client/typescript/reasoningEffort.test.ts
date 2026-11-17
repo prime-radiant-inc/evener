@@ -28,14 +28,21 @@ describe("effortLabel", () => {
 
 describe("effortDefaultLabel", () => {
   test("names the resolved tier and still reads as the default, not that tier pinned", () => {
-    expect(effortDefaultLabel("high")).toContain("high");
-    expect(effortDefaultLabel("high")).not.toBe(effortLabel("high", ["low", "high"]));
-    expect(effortDefaultLabel("high")).not.toBe(effortDefaultLabel("low"));
+    expect(effortDefaultLabel("high", ["low", "high"])).toContain("high");
+    expect(effortDefaultLabel("high", ["low", "high"])).not.toBe(effortLabel("high", ["low", "high"]));
+    expect(effortDefaultLabel("high", ["low", "high"])).not.toBe(effortDefaultLabel("low", ["low", "high"]));
   });
 
   test("is the plain default label while the resolved tier is unknown", () => {
-    expect(effortDefaultLabel(undefined)).toBe(effortLabel("", []));
-    expect(effortDefaultLabel("")).toBe(effortLabel("", []));
+    expect(effortDefaultLabel(undefined, ["low", "high"])).toBe(effortLabel("", []));
+    expect(effortDefaultLabel("", ["low", "high"])).toBe(effortLabel("", []));
+  });
+
+  test("names an unset none by the label the ladder gives none when pinned", () => {
+    // The open picker's unset option and the closed readout name one choice,
+    // so they must agree on the tier an unset effort resolves to (#6566).
+    expect(effortDefaultLabel("none", ["low", "high"])).toBe(effortLabel("none", ["low", "high"]));
+    expect(effortDefaultLabel("none", ["none", "low", "high"])).toBe(effortLabel("none", ["none", "low", "high"]));
   });
 });
 

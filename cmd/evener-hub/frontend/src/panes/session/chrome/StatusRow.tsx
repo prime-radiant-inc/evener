@@ -88,11 +88,12 @@ const CLASS = {
 // (model.defaultReasoningEffort): the closed readout shows that tier, the
 // effort the session actually runs at, and the open list labels the option
 // "<tier> (default)" so following the default stays distinct from pinning
-// the same tier. With no resolution (an older daemon, an unresolved row) both
-// read a plain "(default)". "none" is an explicit off the user chose
-// (llm/types.go ReasoningEffortNone): it displays as "none (off)" and is
-// offered as its own option when the model's ladder lists it (or when the
-// session already runs at it).
+// the same tier. An unset "none" instead reuses that tier's own label, since
+// both options name one choice to a reader. With no resolution (an older
+// daemon, an unresolved row) both read a plain "(default)". "none" is an
+// explicit off the user chose (llm/types.go ReasoningEffortNone): it displays
+// as "none (off)" and is offered as its own option when the model's ladder
+// lists it (or when the session already runs at it).
 function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const toasts = useToasts();
 
@@ -141,7 +142,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
       >
         {options.map((level) => (
           <option key={level} value={level}>
-            {level === "" ? effortDefaultLabel(model.defaultReasoningEffort) : effortLabel(level, levels)}
+            {level === "" ? effortDefaultLabel(model.defaultReasoningEffort, levels) : effortLabel(level, levels)}
           </option>
         ))}
       </select>

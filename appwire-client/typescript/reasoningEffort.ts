@@ -24,9 +24,13 @@ export function effortLabel(level: string, levels: string[]): string {
 
 // The label of an open picker's unset ("") option: "(default)", naming the
 // tier it resolves to when one is known, so following the default stays
-// distinct from pinning that tier explicitly.
-export function effortDefaultLabel(defaultLevel: string | undefined): string {
-  return defaultLevel ? `${defaultLevel} (default)` : effortLabel("", []);
+// distinct from pinning that tier explicitly. An unset "none" takes the label
+// the pinned choice carries ("none (off)", or "none (provider default)" when
+// the ladder omits it), because both options mean the same choice to a reader.
+export function effortDefaultLabel(defaultLevel: string | undefined, levels: string[]): string {
+  if (!defaultLevel) return effortLabel("", levels);
+  if (defaultLevel === "none") return effortLabel("none", levels);
+  return `${defaultLevel} (default)`;
 }
 
 // What a closed effort control shows for the current effort: the level's own
