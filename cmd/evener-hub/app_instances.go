@@ -387,6 +387,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		Models:              instanceModels(r, inst.Name),
 	}
 	if authored != nil {
+		entry.CodexClientVersion = authored.Transport.CodexClientVersion
 		// api_key_env names an environment variable, and the loader takes
 		// whatever string the TOML grammar spells, so a key pasted into that
 		// field loads. It is omitted rather than sent, exactly as
@@ -1030,8 +1031,13 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
 	base := strings.TrimSpace(params.Base)
-	if _, ok := c.reg.Get().Provider(base); !ok {
+	baseProvider, ok := c.reg.Get().Provider(base)
+	if !ok {
 		return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
+	}
+	codexClientVersion := strings.TrimSpace(params.CodexClientVersion)
+	if codexClientVersion != "" && baseProvider.Transport.Auth != registry.AuthOAuthOpenAICodex {
+		return appwire.InvalidParams("codexClientVersion requires a Codex provider")
 	}
 	credentialHeaders, err := credentialHeaderFrom(params.CredentialHeader)
 	if err != nil {
@@ -1078,8 +1084,9 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 		Protocol: strings.TrimSpace(params.Protocol),
 		Surface:  strings.TrimSpace(params.Surface),
 		Transport: registry.Transport{
-			BaseURL: strings.TrimSpace(params.BaseURL),
-			Vars:    trimmedVars(params.Vars),
+			BaseURL:            strings.TrimSpace(params.BaseURL),
+			CodexClientVersion: codexClientVersion,
+			Vars:               trimmedVars(params.Vars),
 		},
 	}
 	if apiKeyEnv != "" {
@@ -1192,6 +1199,12 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 			return instanceNotFound(name)
 		}
 		p = registry.Provider{ID: name}
+	}
+	if strings.TrimSpace(params.CodexClientVersion) != "" {
+		inst, ok := c.reg.Get().Instance(name)
+		if !ok || inst.Auth != registry.AuthOAuthOpenAICodex {
+			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+		}
 	}
 	// The edit is applied to the row the client listed, so the endpoint that row
 	// was served with is asserted before anything is written: a name another
@@ -1340,6 +1353,7 @@ func refuseEditSetClearPair(params appwire.InstanceEditParams) error {
 		{"surface", params.Surface, params.ClearSurface},
 		{"apiKeyEnv", params.APIKeyEnv, params.ClearAPIKeyEnv},
 		{"credentialHeader", params.CredentialHeader, params.ClearCredentialHeader},
+		{"codexClientVersion", params.CodexClientVersion, params.ClearCodexClientVersion},
 	}
 	for _, pair := range pairs {
 		if pair.clear && strings.TrimSpace(pair.set) != "" {
@@ -1446,6 +1460,11 @@ func applyEditFields(p *registry.Provider, params appwire.InstanceEditParams, re
 		p.Surface = ""
 	} else if v := strings.TrimSpace(params.Surface); v != "" {
 		p.Surface = v
+	}
+	if params.ClearCodexClientVersion {
+		p.Transport.CodexClientVersion = ""
+	} else if v := strings.TrimSpace(params.CodexClientVersion); v != "" {
+		p.Transport.CodexClientVersion = v
 	}
 	if params.ClearAPIKeyEnv {
 		p.APIKeyEnv = nil

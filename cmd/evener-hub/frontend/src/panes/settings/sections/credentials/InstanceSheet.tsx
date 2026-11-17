@@ -392,6 +392,10 @@ export function InstanceSheet({
           prevDraft.credentialHeader.trim() !== prevInitial.credentialHeader.trim()
             ? prevDraft.credentialHeader
             : landedDraft.credentialHeader,
+        codexClientVersion:
+          prevDraft.codexClientVersion.trim() !== prevInitial.codexClientVersion.trim()
+            ? prevDraft.codexClientVersion
+            : landedDraft.codexClientVersion,
       };
     });
   }
@@ -762,6 +766,9 @@ export function InstanceSheet({
                     credentialHeader: declared.has("credentialHeader")
                       ? current.credentialHeader
                       : landedDraft.credentialHeader,
+                    codexClientVersion: declared.has("codexClientVersion")
+                      ? current.codexClientVersion
+                      : landedDraft.codexClientVersion,
                   },
             );
           } else {
@@ -1014,6 +1021,9 @@ export function InstanceSheet({
                               surface: draft.surface,
                               apiKeyEnv: draft.apiKeyEnv,
                               credentialHeader: draft.credentialHeader,
+                              ...(instance.auth === "oauth-openai-codex"
+                                ? { codexClientVersion: draft.codexClientVersion }
+                                : {}),
                             },
                             disabled: busy,
                             copy: {
