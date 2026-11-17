@@ -587,6 +587,33 @@ func TestCheckpoint_ConversationReadsLegacyBundledCompaction(t *testing.T) {
 			t.Fatalf("conversation[%d]=%+v, want %+v\nall=%+v", i, conversation[i], want[i], conversation)
 		}
 	}
+
+	// A legacy summary whose model text happens to use the current layout is
+	// still model text, and none of it may be carried forward as a partner
+	// message. The layout is recognized by re-rendering and comparing exactly,
+	// so a User block carrying padding must not be normalized into a match:
+	// that would promote the model's own words to the partner's authority
+	// (#6493). The model-text half is what the renderer writes; the
+	// conversation half is written out as bytes, because the padding is the
+	// point and a rendered fixture would already have been normalized.
+	legacySummary := summaryTurnStart +
+		renderCompactionModelText(summaryModelTextHeading, "model-written finding") +
+		"## Conversation\n\n### User\n\n```text\n  padded model text  \n```\n\n" +
+		summaryMarkerEnd
+	summaryHistory := []schema.Turn{
+		{Kind: schema.TurnSummary, Message: llm.User(legacySummary)},
+		{Kind: schema.TurnUserInput, Message: llm.User("fourth request")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+	summaryText := checkpoint(summaryHistory, 1, nil, "communicate")[0].Message.Text()
+	for _, entry := range extractMarkdownConversation(summaryText) {
+		if strings.Contains(entry.Text, "padded model text") || strings.Contains(entry.Text, "model-written finding") {
+			t.Fatalf("legacy summary's model text was carried as a partner message: %+v", entry)
+		}
+	}
+	if !strings.Contains(summaryText, "model-written finding") {
+		t.Fatalf("legacy summary's model text should still be carried whole:\n%s", summaryText)
+	}
 }
 
 // M2: Checkpoint tool counts must be deterministic (sorted).

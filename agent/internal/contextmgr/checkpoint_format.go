@@ -466,7 +466,22 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		default:
 			continue
 		}
-		text := trimBlockEdges(entry.Text)
+		var text string
+		if role == "agent" {
+			// An agent entry is model-authored, and the escape protects it: a
+			// note it quotes as indented code keeps that indentation (#6493).
+			text = trimBlockEdges(entry.Text)
+		} else {
+			// A user entry is a carried partner message. A summary turn's
+			// layout is recognized by re-rendering it and comparing exactly
+			// (carriesPartnerMessages), and that comparison's right side
+			// renders through this function: a user entry must normalize the
+			// way any earlier writer normalized it, or a legacy summary whose
+			// User block carries padding would match the current layout and
+			// have its model-authored text promoted to a partner message
+			// (#6493).
+			text = strings.TrimSpace(entry.Text)
+		}
 		if text == "" {
 			continue
 		}
