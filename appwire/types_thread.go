@@ -262,10 +262,15 @@ type EvenerThread struct {
 	// at while ReasoningEffort is unset: the model's stated default, else
 	// medium, clamped to its ladder. A client names this tier where it would
 	// otherwise show a bare "(default)". Absent when the model does not
-	// reason, when its dialect would not carry the tier this session resolves
-	// (an empty ladder on a dialect that spells level names), from a row the
-	// registry cannot resolve, and from an older daemon; live updates arrive
-	// on thread/model/changed.
+	// reason, when its dialect would not carry the tier this session resolves,
+	// from a row the registry cannot resolve, and from an older daemon. A
+	// dialect declines to carry it either because it spells no tier at all —
+	// a row naming no ladder on an API that only spells effort names, or an
+	// enable-only one such as qwen — or because it spells the tier under a
+	// value that is not the tier resolved (a level the ladder refuses, or one
+	// Google renames onto its own enum ceiling). A stated default survives all
+	// of that unless the ladder clamped it to a different tier; live updates
+	// arrive on thread/model/changed.
 	DefaultReasoningEffort string `json:"defaultReasoningEffort,omitempty"`
 	// VisionModel is the session's vision side-channel setting: "" describes
 	// with the session model, "off" disables the side-channel, anything else is

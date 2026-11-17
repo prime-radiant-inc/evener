@@ -956,20 +956,26 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 			return budgetSized
 		case "level":
 			// A gateway's no-effort verdict keeps includeThoughts but spells no
-			// level; a row naming no ladder has the level spelled through, and
-			// one naming a ladder spells only a level it vouches for.
+			// level, whatever the row's ladder lists.
 			if registry.BoolValue(caps.EffortParameterUnsupported) {
 				return false
 			}
-			if len(caps.EffortValues) != 0 && !nameCarried {
-				return false
+			// The builder spells the tier through a row with no ladder and only
+			// a vouched level through a row that names one.
+			spelled := tier
+			if len(caps.EffortValues) != 0 {
+				spelled = vouched
+				if spelled == "" {
+					return false
+				}
 			}
-			// The builder writes its wire enum, renaming evener's top two
-			// tiers onto the enum's ceiling and dropping anything above it.
-			// Reporting the vouch answer would name a tier the wire never
-			// spells, so ask the same question the builder answers.
-			switch strings.ToUpper(vouched) {
-			case "", "MINIMAL", "LOW", "MEDIUM", "HIGH", "XHIGH", "MAX":
+			// It then writes its wire enum: only the four tiers that enum spells
+			// are on the wire. Evener's top two are renamed onto the ceiling and
+			// anything else is dropped, so neither carries the tier that was
+			// asked for — reporting either would name a tier the body never
+			// spells, which is the defect this predicate exists to prevent.
+			switch strings.ToUpper(spelled) {
+			case "MINIMAL", "LOW", "MEDIUM", "HIGH":
 				return true
 			}
 			return false

@@ -371,6 +371,56 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			wantCarried: false,
 		},
 		{
+			// A stated default the ladder clamps away is evener's own choice,
+			// not the model's statement: on a dialect that spells no level the
+			// provider still runs at the stated default, so naming the clamped
+			// substitute would report a tier nothing on the wire or in the row
+			// says.
+			name: "a stated default the ladder clamps away claims no tier on a dialect that spells none",
+			profile: chatDialect("qwen", registry.Caps{
+				EffortValues:  []string{"low", "medium"},
+				DefaultEffort: new("high"),
+			}),
+			want:        "",
+			wantCarried: false,
+		},
+		{
+			// The same clamp on a dialect that does spell the level is carried,
+			// because the request really asks for it.
+			name: "a stated default the ladder clamps away reports the clamped tier where the wire spells it",
+			profile: chatDialect("", registry.Caps{
+				EffortValues:  []string{"low", "medium"},
+				DefaultEffort: new("high"),
+			}),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
+			// Google renames evener's top two tiers onto its enum ceiling, so
+			// the body spells HIGH where the request asked for xhigh: a
+			// different tier, which no readout may name.
+			name:        "Google's level shape claims no tier for one its enum renames",
+			profile:     withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "xhigh"),
+			want:        "",
+			wantCarried: false,
+		},
+		{
+			// A row that turns the thinkingConfig field off loses the whole
+			// object to registry.Prune, which runs after the builder and is
+			// therefore invisible to the predicate above. This case pins that
+			// known hole: the reported tier is what a caller gets for this row
+			// today, and the prune is what actually decides the wire.
+			name: "Google's level shape keeps its tier where the row prunes the field away",
+			profile: func() *provider.Profile {
+				p := withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "low", "medium", "high")
+				res := p.Resolved()
+				res.Caps.Fields = map[string]bool{"generationConfig.thinkingConfig": false}
+				return p.WithResolved(res)
+			}(),
+			want:        "medium",
+			wantCarried: true,
+		},
+		{
 			name:        "nothing for a model that does not reason",
 			profile:     nonReasoningProfile(t, "tiny-chat"),
 			want:        "",
@@ -396,22 +446,41 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("DefaultReasoningEffort = %q, want %q", got, tc.want)
 			}
-			carried := slices.Contains(names, tc.want) ||
-				(tc.want != "" && tc.want != llm.ReasoningEffortNone && slices.Contains(budgets, llm.ReasoningBudget(tc.want)))
+			// The tier under test is the one the request actually carried, not
+			// the one that was reported: a case whose report is "" still
+			// carries a tier on the request, and the body must agree about
+			// whether that tier is on the wire. Deriving it from tc.want would
+			// make every negative case a tautology, unable to notice a builder
+			// that started sending a tier for a dialect that spells none.
+			asked := ""
+			if req.ReasoningEffort != nil {
+				asked = *req.ReasoningEffort
+			}
+			if asked == "" {
+				// A model that does not reason never gets an effort on the
+				// request, which is the whole of what this case asserts.
+				if tc.wantCarried {
+					t.Fatal("the request carried no effort but the case expects the wire to carry one")
+				}
+				if reached := llm.EffortReachesWire(tc.want, res); reached {
+					t.Fatalf("EffortReachesWire(%q) = true but no request effort is under test", tc.want)
+				}
+				return
+			}
+			carried := slices.Contains(names, asked) ||
+				(asked != llm.ReasoningEffortNone && slices.Contains(budgets, llm.ReasoningBudget(asked)))
 			if carried != tc.wantCarried {
-				t.Fatalf("the %s body carries effort names %v and thinking budgets %v; wantCarried = %v for %q",
-					res.Protocol, names, budgets, tc.wantCarried, tc.want)
+				t.Fatalf("the %s body carries effort names %v and thinking budgets %v; wantCarried = %v for the requested tier %q (reported %q)",
+					res.Protocol, names, budgets, tc.wantCarried, asked, tc.want)
 			}
 			// The reported tier is right only if the predicate agrees with the
 			// body this same request built. Checking only the reported tier
 			// would let a wrong predicate pass wherever the two happen to
 			// coincide; this is the check that a branch restating a builder's
 			// gate is still true to it.
-			if tc.want != "" {
-				if reached := llm.EffortReachesWire(tc.want, res); reached != carried {
-					t.Fatalf("EffortReachesWire(%q) = %t but the %s body that carries effort names %v and thinking budgets %v answers %t",
-						tc.want, reached, res.Protocol, names, budgets, carried)
-				}
+			if reached := llm.EffortReachesWire(asked, res); reached != carried {
+				t.Fatalf("EffortReachesWire(%q) = %t but the %s body that carries effort names %v and thinking budgets %v answers %t",
+					asked, reached, res.Protocol, names, budgets, carried)
 			}
 		})
 	}

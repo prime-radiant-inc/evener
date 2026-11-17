@@ -1451,8 +1451,11 @@ func DefaultReasoningEffort(res registry.Resolved) string {
 	}
 	// A stated default is the model's own statement about the tier it runs at
 	// when nothing is asked of it, so it holds even where evener cannot spell
-	// it: the provider runs at that tier anyway.
-	if modelDefault != "" || llm.EffortReachesWire(*level, res) {
+	// it: the provider runs at that tier anyway. A level the ladder clamped
+	// away from that statement is evener's own choice instead, so it must
+	// reach the wire on its own merits — reporting it would name a tier
+	// neither the model nor the wire says.
+	if (modelDefault != "" && *level == modelDefault) || llm.EffortReachesWire(*level, res) {
 		return *level
 	}
 	return ""
