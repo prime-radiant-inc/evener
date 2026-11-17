@@ -2401,10 +2401,21 @@ async function runScenarios(driver) {
   await driver.typeText(driver.sessionA, PROSE.queue2);
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.queue2));
+  // The wait below MUST require the daemon's own queued row, not merely a row
+  // whose text carries the prose. This client renders the submit through a
+  // local "waiting" row from the moment its outbox record is written, and the
+  // daemon ACKs the entry into its queue projection a beat later; a text-only
+  // match released the Steer press with depth still 0 (#6678). With an empty
+  // draft and no queue depth, decideSteerRoute answers "none", so the press
+  // sends NOTHING: the second pass then runs as the held turn's ordinary
+  // boundary continuation -- recorded as USER_INPUT, never as the STEERING
+  // turn the Go assertion requires -- which no await in the assertion can
+  // repair. kind "queued" is exactly "the daemon folded the entry into its
+  // queue", the depth decideSteerRoute reads.
   queue = await driver.waitPage(
     driver.withTranscriptTail(
       driver.sessionA,
-      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
+      `(() => { const strip = ${driver.queueStripExpr(driver.sessionA)}; return strip && strip.rows.some((row) => row.kind === "queued" && row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
     ),
     { label: "pending rows with second pass" },
   );
