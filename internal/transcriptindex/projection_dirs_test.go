@@ -1,6 +1,7 @@
 package transcriptindex
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -325,7 +326,7 @@ func TestAReaderOfAReclaimedSidecarKeepsReading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the reclaimed sidecar's open file: %v", err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatalf("the open file's bytes changed under a reader in flight: %d bytes before, %d after", len(before), len(after))
 	}
 
