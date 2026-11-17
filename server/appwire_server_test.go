@@ -582,16 +582,12 @@ func TestServerAppWireThreadModelSetPreservesProviderAndModel(t *testing.T) {
 	var got appwire.ThreadModelSetParams
 	setModelControlTestHook(t, srv, func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 		got = params
-		return appwire.ThreadModelSetResponse{}, nil
+		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted}, nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           "local:s1",
-		ModelProvider: "openai",
-		Model:         "gpt-5",
-	}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadModelSet, strictModelSetParams("preserve-provider-model", "gpt-5")))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
