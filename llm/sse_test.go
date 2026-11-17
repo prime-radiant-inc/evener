@@ -256,10 +256,41 @@ func TestParseSSELineFraming(t *testing.T) {
 		},
 		{
 			// The stream ends right after the CR, so this pins the trailing-CR
-			// strip, not CR line termination: the scan splits on LF only.
+			// strip: the CR ends the line and is not delivered as data.
 			name:  "a trailing carriage return at end of stream is stripped",
 			input: "data: a\r",
 			want:  []SSEEvent{{Data: []byte("a")}},
+		},
+		{
+			// SSE lists CR, LF and CRLF as line terminators. One read carries
+			// both lines, so the scan has to split between them; reading the CR
+			// as data merges them into one payload with the CR left in it.
+			name:  "a bare CR ends a line",
+			input: "data: a\rdata: b\n\n",
+			want:  []SSEEvent{{Data: []byte("a\nb")}},
+		},
+		{
+			// A body framed only with CR, its blank lines included: both events
+			// have to come out of it.
+			name:  "cr-only framing separates events",
+			input: "data: a\r\rdata: b\r\r",
+			want:  []SSEEvent{{Data: []byte("a")}, {Data: []byte("b")}},
+		},
+		{
+			// CRLF is one terminator. Split at the CR and then again at the LF,
+			// the blank line between them would flush the event before its data
+			// line arrived.
+			name:  "a CRLF pair is one line ending",
+			input: "event: delta\r\ndata: a\r\n\r\n",
+			want:  []SSEEvent{{Event: "delta", Data: []byte("a")}},
+		},
+		{
+			// The CR is the last byte of the reader's 4096-byte buffer, so only
+			// the next fragment can say whether it is a bare CR or half of a
+			// CRLF.
+			name:  "a CR at the read buffer boundary still ends the line",
+			input: "data: " + strings.Repeat("a", 4089) + "\r\n\r\n",
+			want:  []SSEEvent{{Data: []byte(strings.Repeat("a", 4089))}},
 		},
 		{
 			name:  "data prefix needs no space",
@@ -443,11 +474,11 @@ func TestParseSSEDataIsOwnedByTheCaller(t *testing.T) {
 // covered, because each has its own line loop.
 func TestParseSSEPerLineAllocationsDoNotScaleWithLineCount(t *testing.T) {
 	// Not parallel: testing.AllocsPerRun must not run beside other tests.
-	measure := func(t *testing.T, lines int, opts ...SSEOption) float64 {
+	measure := func(t *testing.T, lines int, sep string, opts ...SSEOption) float64 {
 		t.Helper()
 		var body bytes.Buffer
 		for range lines {
-			body.WriteString(": keepalive\n")
+			body.WriteString(": keepalive" + sep)
 		}
 		raw := body.Bytes()
 		var parseErr error
@@ -461,13 +492,18 @@ func TestParseSSEPerLineAllocationsDoNotScaleWithLineCount(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name string
+		sep  string
 		opts []SSEOption
 	}{
-		{name: "blocking path"},
-		{name: "read-timeout path", opts: []SSEOption{WithStreamReadTimeout(time.Hour)}},
+		{name: "blocking path", sep: "\n"},
+		{name: "read-timeout path", sep: "\n", opts: []SSEOption{WithStreamReadTimeout(time.Hour)}},
+		// CR-framed lines reach the scan several to a read, so it has to serve
+		// them out of its buffer without taking an allocation per line.
+		{name: "blocking path with CR line endings", sep: "\r"},
+		{name: "read-timeout path with CR line endings", sep: "\r", opts: []SSEOption{WithStreamReadTimeout(time.Hour)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			small, large := measure(t, 32, tc.opts...), measure(t, 128, tc.opts...)
+			small, large := measure(t, 32, tc.sep, tc.opts...), measure(t, 128, tc.sep, tc.opts...)
 			if large > small {
 				t.Fatalf("allocations scale with line count: %v for 32 lines, %v for 128 lines; each line must reuse the read buffer", small, large)
 			}
