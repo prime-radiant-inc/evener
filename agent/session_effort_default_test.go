@@ -304,6 +304,20 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			wantCarried: false,
 		},
 		{
+			// A row that states reasoning off writes nothing, whichever dialect
+			// it names: every builder returns before touching the body. The
+			// caller pre-filters this, so the case pins the predicate itself.
+			name: "a row with reasoning off carries no tier",
+			profile: func() *provider.Profile {
+				p := chatDialect("openrouter", registry.Caps{EffortValues: []string{"low", "medium", "high"}})
+				res := p.Resolved()
+				res.Caps.Reasoning = new(false)
+				return p.WithResolved(res)
+			}(),
+			want:        "",
+			wantCarried: false,
+		},
+		{
 			name:        "a stated off",
 			profile:     reasoningProfile("gateway-model", registry.Caps{EffortValues: []string{"none", "low", "high"}, DefaultEffort: new("none")}),
 			want:        "none",
@@ -428,7 +442,20 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			profile: func() *provider.Profile {
 				p := withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "low", "medium", "high")
 				res := p.Resolved()
-				res.Caps.Fields = map[string]bool{"generationConfig.thinkingConfig": false}
+				res.Caps.Fields = map[string]bool{registry.FieldGoogleThinkingConfig: false}
+				return p.WithResolved(res)
+			}(),
+			want:        "",
+			wantCarried: false,
+		},
+		{
+			// The prune deletes the object, not one shape's contents, so the
+			// budget shape loses its thinkingBudget to the same rule.
+			name: "Google's budget shape claims no tier where the row prunes the field away",
+			profile: func() *provider.Profile {
+				p := withThinkingShape(newGeminiProfile("gemini-2.5-flash"), "budget")
+				res := p.Resolved()
+				res.Caps.Fields = map[string]bool{registry.FieldGoogleThinkingConfig: false}
 				return p.WithResolved(res)
 			}(),
 			want:        "",

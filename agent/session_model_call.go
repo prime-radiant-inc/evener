@@ -1444,7 +1444,7 @@ func (s *Session) requestMessages(sys string, history []llm.Message) []llm.Messa
 // reported either way: the row is the evidence for it. Empty for a model that
 // does not reason, which carries no effort at all.
 func DefaultReasoningEffort(res registry.Resolved) string {
-	modelDefault := llm.NormalizeReasoningEffort(registry.StringValue(res.Caps.DefaultEffort))
+	modelDefault := llm.StatedDefaultEffort(res.Caps)
 	level := resolveRequestEffort("", !res.Caps.ReasoningDisabled(), res.Caps.EffortValues, modelDefault)
 	if level == nil {
 		return ""

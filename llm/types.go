@@ -801,6 +801,14 @@ func NormalizeReasoningEffort(s string) string {
 	}
 }
 
+// StatedDefaultEffort is the effort a row says its model runs at when the
+// request asks for nothing, normalized to the canonical vocabulary so a
+// hand-written "High" or "off" means what it says. Empty means the row states
+// none and the caller applies its own fallback.
+func StatedDefaultEffort(caps registry.Caps) string {
+	return NormalizeReasoningEffort(registry.StringValue(caps.DefaultEffort))
+}
+
 // ReasoningEffortRank returns the ordinal rank of a reasoning-effort level
 // (minimal=1 … max=6), or 0 for empty/unknown values. Use it instead of a
 // local hierarchy so effort comparisons (e.g. a "floor at high" side-channel)
@@ -900,9 +908,11 @@ func VouchedEffort(requested string, levels []string) string {
 // four wire implementations. It also means this is a second copy of those
 // gates, so a branch here is only as right as the last person to read both.
 // TestDefaultReasoningEffort_NamesTheTierTheWireCarries drives the real
-// builders and is what catches a divergence; it does not make divergence
-// impossible, and a gate that runs after the builder (registry.Prune, a
-// provider's generationConfig overlay) is outside what this can see.
+// builders over the pruned body and is what catches a divergence; it does not
+// make divergence impossible. The google branch models the one prune rule that
+// drops the whole thinkingConfig object; any other gate that runs after the
+// builder (a provider's generationConfig overlay) stays outside what this can
+// see.
 //
 // Rows that derive a numeric budget instead of spelling the level (anthropic
 // budget_tokens/budget+effort, the google thinkingConfig) count as reaching
@@ -911,12 +921,20 @@ func VouchedEffort(requested string, levels []string) string {
 func EffortReachesWire(tier string, res registry.Resolved) bool {
 	caps := res.Caps
 	shape := registry.StringValue(caps.ThinkingShape)
+	format := registry.StringValue(caps.ThinkingFormat)
+	capable := caps.EffortCapable()
 	budgetSized := ReasoningBudget(tier) > 0
+	// Every builder returns before writing anything for a row whose reasoning
+	// is off. The only caller pre-filters this, but the arms below would
+	// otherwise each have to know that.
+	if caps.ReasoningDisabled() {
+		return false
+	}
 	// The level name the builders would spell: empty when the ladder refuses
 	// it, which is the vouch gate every name-carrying dialect shares.
 	vouched := VouchedEffort(tier, caps.EffortValues)
 	nameCarried := vouched != ""
-	nameGated := caps.EffortCapable() && nameCarried
+	nameGated := capable && nameCarried
 	// The off tier takes a different gate: only the two dialects with a value
 	// that says "off" write it, and only for a row whose ladder lists the off
 	// level. Every other shape omits the control entirely.
@@ -928,14 +946,14 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		// anthropic and google bodies omit the control entirely.
 		switch res.Protocol {
 		case registry.ProtocolOpenAIChat:
-			switch registry.StringValue(caps.ThinkingFormat) {
+			switch format {
 			case "", "openai":
-				return caps.EffortCapable()
+				return capable
 			case "openrouter":
 				return true
 			}
 		case registry.ProtocolOpenAIResponses:
-			return caps.EffortCapable()
+			return capable
 		}
 		return false
 	}
@@ -954,6 +972,12 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		}
 		return false
 	case registry.ProtocolGoogle:
+		// registry.Prune runs after the builder and deletes the whole
+		// thinkingConfig object, whichever shape spelled into it, so a row that
+		// turns the field off carries neither a level nor a budget.
+		if sends, pinned := caps.Fields[registry.FieldGoogleThinkingConfig]; pinned && !sends {
+			return false
+		}
 		switch shape {
 		case "budget":
 			return budgetSized
@@ -963,19 +987,11 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 			if registry.BoolValue(caps.EffortParameterUnsupported) {
 				return false
 			}
-			// registry.Prune runs after the builder, so a row that turns the
-			// field off loses the level the builder spelled.
-			if sends, pinned := caps.Fields["generationConfig.thinkingConfig"]; pinned && !sends {
-				return false
-			}
 			// The builder spells the tier through a row with no ladder and only
 			// a vouched level through a row that names one.
 			spelled := tier
 			if len(caps.EffortValues) != 0 {
 				spelled = vouched
-				if spelled == "" {
-					return false
-				}
 			}
 			// It then writes its wire enum: only the four tiers that enum spells
 			// are on the wire. Evener's top two are renamed onto the ceiling and
@@ -992,7 +1008,7 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 	case registry.ProtocolOpenAIResponses:
 		return nameGated
 	case registry.ProtocolOpenAIChat:
-		switch registry.StringValue(caps.ThinkingFormat) {
+		switch format {
 		case "openrouter":
 			// The documented exception to the vouch gate: the level passes
 			// through and the gateway maps it to a budget. Only an explicit
