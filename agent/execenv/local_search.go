@@ -171,32 +171,9 @@ func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern 
 			return nil, 0, err
 		}
 	}
-	seen := make(map[string]struct{})
-	var abs []string
-	excluded := 0
-	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern, budget)
-		if err != nil {
-			return nil, 0, err
-		}
-		for _, m := range matches {
-			if !includeIgnored {
-				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
-				if err != nil {
-					return nil, 0, err
-				}
-				if drop {
-					excluded++
-					continue
-				}
-			}
-			path := filepath.Join(base, m)
-			if _, ok := seen[path]; ok {
-				continue
-			}
-			seen[path] = struct{}{}
-			abs = append(abs, path)
-		}
+	abs, excluded, err := globExpandedMatches(ctx, fsys, base, patterns, includeIgnored, ignores, budget, nil)
+	if err != nil {
+		return nil, 0, err
 	}
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
 		return nil, 0, err

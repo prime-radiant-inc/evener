@@ -140,35 +140,9 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 			return nil, 0, err
 		}
 	}
-	seen := make(map[string]struct{})
-	var abs []string
-	excluded := 0
-	for _, pattern := range patterns {
-		matches, err := globMatches(ctx, fsys, pattern, budget)
-		if err != nil {
-			return nil, 0, err
-		}
-		for _, m := range matches {
-			if !includeIgnored {
-				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
-				if err != nil {
-					return nil, 0, err
-				}
-				if drop {
-					excluded++
-					continue
-				}
-			}
-			p := filepath.Join(canonical, m)
-			if s.underMasked(p) {
-				continue
-			}
-			if _, ok := seen[p]; ok {
-				continue
-			}
-			seen[p] = struct{}{}
-			abs = append(abs, p)
-		}
+	abs, excluded, err := globExpandedMatches(ctx, fsys, canonical, patterns, includeIgnored, ignores, budget, s.underMasked)
+	if err != nil {
+		return nil, 0, err
 	}
 	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
 		return nil, 0, err
