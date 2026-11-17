@@ -5442,6 +5442,12 @@ it("a pane whose settlement recovered nothing converges from storage after two f
   setSessionCacheStalledOpenForTests(250);
   setSessionCacheOpenBackstopForTests(40);
   holding = true;
+  // The chain's re-open reads 225 rows through the real storage adapter, whose
+  // round trip is host-speed dependent, while the stalled-open window is a wall
+  // clock: a read that outlasts it is abandoned by design. Freeze the clock so
+  // each window fires only where this test advances it, and the convergence
+  // this test asserts is a property of the chain rather than of the host.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const opened = threadsStore.getState().ensureThread(ref);
   await localReadEntered.promise;
   client.emitNotification({
@@ -5457,6 +5463,7 @@ it("a pane whose settlement recovered nothing converges from storage after two f
     // The chain converged from storage: no further wire read was needed.
     expect(wireReads).toBe(2);
   } finally {
+    vi.useRealTimers();
     setSessionCacheStalledOpenForTests(5000);
     setSessionCacheOpenBackstopForTests(10000);
     threadsStore.getState().releaseThread(ref);
