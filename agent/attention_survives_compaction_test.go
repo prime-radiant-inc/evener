@@ -382,6 +382,14 @@ func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
 		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
 	}
 
+	// The latch is a single slot: any other accepted row replaces both its id
+	// and its cause. The reopened row must therefore carry its cause in the
+	// controller's registry too, or a competing accept between the reopen and
+	// the presenting request strands the recovered lineage.
+	other := "delegate:dlg_worker/delivery/2"
+	controller.attentionCauses.remember(other, provenance.WithWatch(nil, "watch_other", "wg_other", "wd_other", "child-session", ""))
+	sess.holdAcceptedTrigger(other)
+
 	// The recovered turn presents the reopened identity; its lineage must still
 	// descend from the watch the failed generation came from.
 	sess.attentionMu.Lock()

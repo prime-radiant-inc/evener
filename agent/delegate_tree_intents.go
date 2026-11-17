@@ -264,10 +264,12 @@ type delegateCause struct {
 // queued delivery resolves to. Registration follows the queue, not a delivery
 // plan: a delivery queued behind an undelivered head gets no plan, and its
 // attention still needs the lineage. It runs inside the queueing operation, so
-// a delivery that becomes pending is never visible without its cause. A
-// delivery that queues nothing — a stop covering the owner's subtree, a
-// no-action completion, a path with no producing run — registers nothing, so
-// no cause outlives the attention it was meant for. The caller holds c.mu.
+// a delivery is never pending without its cause. A finish that queues no
+// delivery — a stop covering the owner's subtree, a no-action completion, a
+// path with no producing run — registers nothing. A delivery a later subtree
+// stop removes from the queue keeps its entry until the controller closes;
+// that leak is older than this path and is bounded by the controller's life.
+// The caller holds c.mu.
 func (c *delegateTreeController) registerDeliveryCauseLocked(lease delegateLease, deliveryID string, cause delegateCause) {
 	if deliveryID == "" || cause.lineage == nil {
 		return

@@ -4183,6 +4183,19 @@ func TestDelegateAttentionStopAdmittedDuringReopenResolvesFreshRow(t *testing.T)
 	if !resolved {
 		t.Fatal("the reopen never appended a fresh row for the re-check to resolve")
 	}
+	// pendingTurns keeps the row the latch names even once it is resolved, so
+	// a latch left on the discarded row would re-present the report this stop
+	// threw away and survive a compaction that should drop it.
+	lane.delegateSess.attentionMu.Lock()
+	latched := lane.delegateSess.attentionAcceptedID
+	latchedCause := lane.delegateSess.attentionAcceptedCause
+	lane.delegateSess.attentionMu.Unlock()
+	if strings.Contains(latched, "/reopened/") {
+		t.Fatalf("the latch still names the discarded reopened row %q", latched)
+	}
+	if latchedCause != nil {
+		t.Fatal("the discarded reopened row's cause is still latched")
+	}
 	// The stop the re-check answered really is the one in flight: the failing
 	// opener keeps its driver from completing past this point.
 	if !lane.root.delegateController.attentionReopenRefused(lane.fixture.delegateID) {

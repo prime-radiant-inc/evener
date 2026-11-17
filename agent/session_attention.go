@@ -918,26 +918,6 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 	}
 	_, err = s.appendDelegateAttentionMessageDurably(reopenID, message)
 	if err == nil {
-		s.attentionMu.Lock()
-		if s.attentionAcceptedID == attentionID {
-			// The reopened row supersedes the latched trigger — same content,
-			// fresh identity — and the fold keeps the latched trigger's turn
-			// alongside every pending row, so an unleased turn in this window
-			// would render the identical report twice in one request. The
-			// latch and its cause both move to the fresh identity; the next
-			// presenting request clears them.
-			//
-			// The original identity resolved before this reopen, which dropped
-			// the controller's copy, so the latch is the only place its
-			// lineage survived. Handing it to the fresh identity keeps the
-			// recovered turn descending from the watch that produced it;
-			// without this the turn loses that ancestry and restarts the
-			// runaway count. The cause moves unchanged: the reopened row is
-			// the same message re-keyed, not a new one, so it earns no
-			// additional message hop.
-			s.attentionAcceptedID = reopenID
-		}
-		s.attentionMu.Unlock()
 		// The teardown guards ran before the append, but a stop or close can
 		// admit while it was in flight, and the fresh id is invisible to that
 		// stop's plan-time enumeration (no wake notes it), so the row would
@@ -954,6 +934,36 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 			// its transcript still held, and there is nothing to resolve.
 			return "", nil
 		}
+		refused := s.delegateController.attentionReopenRefused(s.owningDelegateID)
+		// The reopened row supersedes the latched trigger — same content,
+		// fresh identity — and the fold keeps the latched trigger's turn
+		// alongside every pending row, so an unleased turn in this window
+		// would render the identical report twice in one request. The latch
+		// and its cause both move to the fresh identity; the next presenting
+		// request clears them.
+		//
+		// The original identity resolved before this reopen, which dropped the
+		// controller's copy, so the latch is the only place its lineage
+		// survived. The cause moves to the fresh identity two ways: latched,
+		// for the presenting request, and in the controller's registry, so it
+		// still survives an accept that replaces the single latch slot first.
+		// It moves unchanged — the reopened row is the same message re-keyed,
+		// not a new one, so it earns no additional message hop.
+		//
+		// A refused reopen latches nothing: the row it would name is the one
+		// this teardown discards, and pendingTurns keeps the row it is told to
+		// keep even when resolved, so latching it would re-present the
+		// discarded report and survive a compaction that should drop it.
+		if !refused {
+			s.attentionMu.Lock()
+			if s.attentionAcceptedID == attentionID {
+				s.attentionAcceptedID = reopenID
+				if s.attentionAcceptedCause != nil {
+					s.delegateController.attentionCauses.remember(reopenID, s.attentionAcceptedCause)
+				}
+			}
+			s.attentionMu.Unlock()
+		}
 		// The superseded source's resident copy never reached a request —
 		// every reopen fires only after a start that failed before presenting
 		// — and the reopened row that just landed carries the same content to
@@ -964,7 +974,7 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 		s.attentionMu.Lock()
 		s.dropResidentDelegateAttentionTurnLocked(attentionID)
 		s.attentionMu.Unlock()
-		if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
+		if refused {
 			if resolveErr := s.resolveAttentionDurably([]string{reopenID}, delegateAttentionDiscarded); resolveErr != nil {
 				return "", resolveErr
 			}
