@@ -89,10 +89,12 @@ func FuzzStreamGenerateCoverage(f *testing.F) {
 		if got, err := result.Response(); got != nil || !errors.Is(err, result.err) {
 			t.Fatalf("empty Response = %#v, %v", got, err)
 		}
-		result.partial = &Response{ID: "partial"}
-		partial := result.PartialResponse()
-		partial.ID = "changed"
-		if result.partial.ID != "partial" {
+		// PartialResponse never aliases internal state.
+		acc := NewStreamAccumulator()
+		acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "x"})
+		aliased := acc.PartialResponse()
+		aliased.ID = "changed"
+		if again := acc.PartialResponse(); again.ID == "changed" {
 			t.Fatal("PartialResponse returned aliased state")
 		}
 
