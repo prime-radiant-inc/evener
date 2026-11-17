@@ -51,11 +51,22 @@ type hubPastSweep struct {
 	// pass open and show that the rebuild does not wait behind it.
 	refresh func(ctx context.Context)
 
-	// lastStamp is the digest the last rebuild observed. A rebuild records the
-	// digest *before* it scans: a write that lands during the scan then makes
-	// the next tick differ and re-runs, where recording after the scan could
-	// swallow it. Zero until the first rebuild runs, and a real digest is
-	// allowed to be zero, so seeded distinguishes "no rebuild yet".
+	// lastStamp is the digest a rebuild that covered the tree observed. The
+	// digest is taken *before* the scan: a write that lands during the scan then
+	// makes the next tick differ and re-runs, where taking it after the scan
+	// could swallow it. Zero until a rebuild covers the tree, and a real digest
+	// is allowed to be zero, so seeded distinguishes "nothing recorded yet".
+	//
+	// It is recorded only when the rebuild covered the tree (see rebuild): a
+	// rebuild that swapped nothing, or that dropped a session it could not
+	// read, leaves the index short of the tree by an amount this digest cannot
+	// express. The digest folds a directory's entries and their stats, so it
+	// does record a sessions dir that disappears or goes unreadable
+	// (foldSessionDirStamp folds an unreadable marker for it); what it cannot
+	// see is an abort, or a per-file listing or read failure underneath a
+	// readdir that succeeded. Recording the digest then would make every later
+	// tick on a quiet tree skip exactly the re-scan the incomplete rebuild
+	// needs.
 	lastStamp uint64
 	seeded    bool
 	// rebuildsCount counts full rebuilds, for a test to assert the gate held
@@ -107,11 +118,23 @@ func (s *hubPastSweep) sweepRefresh(ctx context.Context) {
 func (s *hubPastSweep) rebuildCount() int64 { return s.rebuildsCount.Load() }
 
 // rebuild rescans the projects and records the digest the scan was taken
-// against. It is the whole of what a tick did before the gate existed.
+// against, but only once the scan has covered the tree. An incomplete rebuild
+// leaves the digest unrecorded, so the next tick takes it again and re-scans;
+// that is the whole of what a tick did before the gate existed, paid only by a
+// tick whose rebuild the tree still owes work to.
 func (s *hubPastSweep) rebuild(stamp uint64) {
-	s.lastStamp, s.seeded = stamp, true
 	s.rebuildsCount.Add(1)
 	_, _ = s.past.Rebuild()
+	if s.past.RebuildCoveredTree() {
+		s.lastStamp, s.seeded = stamp, true
+		return
+	}
+	// Close the gate outright. Leaving a previous rebuild's digest in place
+	// would let the next tick on a quiet tree compare equal and skip the
+	// re-scan this incomplete rebuild still owes; clearing seeded forces that
+	// tick to rebuild whatever the digest says, and a rebuild that then covers
+	// the tree records a fresh digest and lets the gate close again.
+	s.seeded = false
 }
 
 // run keeps both indexes in step with disk until ctx ends, each on its own

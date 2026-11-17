@@ -194,6 +194,54 @@ func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	if !ok || entry.Meta.Name != "Renamed by the client" {
 		t.Fatalf("the rename is not in the index: name=%q found=%v", entry.Meta.Name, ok)
 	}
+
+	// The gate may only stay closed when the rebuild that closed it actually
+	// covered the tree. Rename on disk, then park Rebuild after each scan and
+	// fold the row it already holds with a newer stamp, which moves the index's
+	// generation and supersedes every attempt — the contended case Rebuild gives
+	// up on after pastRebuildAttempts. That is the aborted rebuild: the index is
+	// left holding the row it held, and the tree digest over the same files has
+	// not moved since it was taken.
+	f.renameSession(t, "Renamed while the rebuild was aborted")
+	idx := f.past
+	idx.SetBeforeRebuildSwapForTest(func() {
+		if entry, ok := idx.Lookup(f.sessionID); ok {
+			folded := entry.Meta
+			folded.UpdatedAt = folded.UpdatedAt.Add(time.Minute)
+			idx.UpdateMeta(f.sessionID, folded)
+		}
+	})
+	settled := sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 1 {
+		t.Fatalf("the aborted sweep ran %d rebuilds, want 1", got)
+	}
+	if entry, ok := f.past.Lookup(f.sessionID); !ok || entry.Meta.Name != "Renamed by the client" {
+		t.Fatalf("the aborted rebuild changed the index: name=%q found=%v", entry.Meta.Name, ok)
+	}
+
+	// The tick after an aborted rebuild owes it a re-scan even though nothing
+	// on disk has moved since the digest was taken. Recording the digest for
+	// the aborted rebuild is precisely the defect: the gate would decide the
+	// tree is unchanged and never pick the rename up.
+	settled = sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 1 {
+		t.Fatalf("the tick after an aborted rebuild ran %d rebuilds, want 1: the incomplete rebuild left the digest recorded, so the gate skipped the re-scan it owed", got)
+	}
+
+	// Once a rebuild covers the tree again the gate closes: a quiet tree stops
+	// paying for scans, and the rename the aborted rebuild missed is indexed.
+	idx.SetBeforeRebuildSwapForTest(nil)
+	sweep.tick(ctx)
+	if entry, ok := f.past.Lookup(f.sessionID); !ok || entry.Meta.Name != "Renamed while the rebuild was aborted" {
+		t.Fatalf("the rename the aborted rebuild missed is not in the index after a complete rebuild: name=%q found=%v", entry.Meta.Name, ok)
+	}
+	settled = sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 0 {
+		t.Fatalf("the gate stayed open after a complete rebuild: %d idle passes, want 0", got)
+	}
 }
 
 // TestSweepRebuildDoesNotWaitBehindASlowRefresh is #6652: one goroutine running
