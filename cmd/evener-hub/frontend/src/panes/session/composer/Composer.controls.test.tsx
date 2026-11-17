@@ -961,9 +961,18 @@ test("a clicked control that stops its click's propagation still folds the compo
   const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
   // The delegate activity toggle and the file-reference link both consume
   // their own click, so a listener in the bubble phase never sees it.
+  const controlClicks: number[] = [];
+  let editingWhenControlClickRan: boolean | undefined;
   const control = document.createElement("button");
   control.type = "button";
-  control.addEventListener("click", (event) => event.stopPropagation());
+  control.addEventListener("click", (event) => {
+    event.stopPropagation();
+    controlClicks.push(1);
+    // Captured here, for an assertion below that proves the fold had not run
+    // yet: data-composer-editing is removed synchronously by the fold, so a
+    // fold inside dispatch would already have cleared it.
+    editingWhenControlClickRan = anchor?.hasAttribute("data-composer-editing");
+  });
   document.body.append(control);
   try {
     await act(async () => {
@@ -983,6 +992,11 @@ test("a clicked control that stops its click's propagation still folds the compo
     await act(async () => {
       fireEvent.click(control);
     });
+    // The control's own handler ran, and the card was still open while it did:
+    // the fold waits for dispatch to finish, so the pressed control wins the
+    // race and keeps its click.
+    expect(controlClicks).toHaveLength(1);
+    expect(editingWhenControlClickRan).toBe(true);
     // The click's own handler stopped propagation, and folding waits for
     // dispatch to finish, so the fold arrives on a later task.
     await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
