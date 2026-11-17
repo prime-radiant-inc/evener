@@ -394,10 +394,12 @@ An accepted choice is shown immediately, including while the current turn
 finishes on its old model. The typed response, live model-control notification,
 and later reads all replace that snapshot through the shared reducer, so another
 client's newer accepted choice, a deferred rejection, reconnect, and a daemon
-replacement converge on one display. A read without the version-1 capability
-clears that authority and restores conservative legacy behavior: the picker
-sends the old request shape and the label changes only on a canonical model
-change. Closing the desktop picker restores focus to its trigger, including
+replacement converge on one display. The store retires authority before a
+reconnect read, and only its `ready` state may send a model change. An
+unsupported read keeps the transcript usable but disables the picker. A failed
+establishing read settles waiting changes. A stale-authority refusal, response
+loss, or malformed response starts one recovery read without replaying the
+mutation. Closing the desktop picker restores focus to its trigger, including
 after a selection.
 
 ## Directory fields

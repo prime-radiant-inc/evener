@@ -96,10 +96,18 @@ The Session owns the authority identity, revision, active model metadata, and
 accepted desired-model lifecycle. The daemon commits each transition to its
 thread envelope before exposing a successful response. Local and remote hub
 paths forward the typed response and the other two carriers without deriving
-model state. Browser and native clients establish capability only from an
-accepted read, then atomically replace whole snapshots with matching authority
-and newer revision. A later read without version 1 removes that capability and
-returns the client to the legacy canonical-change path.
+model state. Browser and native clients hold one explicit control state:
+`uninitialized`, `ready`, `recovering`, or `unsupported`. An accepted capable
+read is the only transition to `ready`, and only `ready` may send an
+authority-bound model mutation. Reconnect retires that authority before its
+replacement read. An unsupported read leaves the session readable with model
+changes disabled, and every unsuccessful establishing read settles its waiting
+mutations.
+
+The clients atomically replace whole snapshots with matching authority and a
+newer revision. A stale-authority refusal is machine-readable. Response loss or
+a malformed response after dispatch retires the authority and starts one
+replacement read without replaying the mutation.
 
 The model-control revision does not own current reasoning effort or effective
 context status. Those projections keep their existing carriers because the

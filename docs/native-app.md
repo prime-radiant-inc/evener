@@ -81,11 +81,14 @@ and reconnect reads through the same whole-snapshot reducer as the browser.
 Another client's newer choice, a deferred rejection, a reconnect, or a daemon
 replacement therefore replaces the display only through daemon authority.
 
-If a fresh read does not advertise version 1, the phone clears the snapshot,
-sends the legacy model-set request, and keeps showing the canonical model until
-the daemon reports a legacy model change. The Board row keeps its existing name
-fallback when model-catalog metadata is incomplete. Reasoning effort and context
-status continue to update independently from model-control state.
+The phone retires installed authority before a reconnect read. If a fresh read
+does not advertise version 1, it keeps the session readable and the canonical
+model visible but disables model changes. A failed establishing read settles
+waiting model changes. A stale-authority refusal, response loss, or malformed
+response after dispatch starts one recovery read without replaying the model
+mutation. The Board row keeps its existing name fallback when model-catalog
+metadata is incomplete. Reasoning effort and context status continue to update
+independently from model-control state.
 
 ## Share text into a session
 

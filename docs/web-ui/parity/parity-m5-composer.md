@@ -209,9 +209,13 @@ After a version-1 `thread/read`, it sends a mutation UUID and expected authority
 then folds the typed response, `thread/model/controlChanged`, and later reads
 through the shared whole-snapshot reducer. The composer displays an accepted
 pending or applied desired target immediately; a rejected target displays the
-active model. An accepted read without version 1 removes that authority and
-returns to the legacy canonical-notification behavior described below. Current
-reasoning effort and context status retain their independent carriers.
+active model. Reconnect retires authority before rereading, and only the
+`ready` control state may send `thread/model/set`. An absent or unknown version
+keeps the transcript readable and canonical model events visible but disables
+model changes. A failed establishing read settles waiting changes. Stale
+authority or uncertain post-dispatch responses start one replacement read
+without replaying the mutation. Current reasoning effort and context status
+retain their independent carriers.
 
 - [ ] The model-trigger button(s) are disabled whenever `EvenerThreadState.isBusy` is true, tracked via `thread/status/changed` + `turn/started` + `turn/completed` notifications rather than by depending on `renderer.js`'s own subscription ordering — `cmd/evener-hub/assets/model-switch.js:1-11,54-69,304-333`.
 - [ ] Opening the picker is a hard no-op while busy (defense in depth beyond the disabled attribute) — `cmd/evener-hub/assets/model-switch.js:216-218`.

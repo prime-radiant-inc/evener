@@ -148,14 +148,18 @@ model-control snapshot under the thread instance and daemon boot authority.
 is the read source of truth; no read-time callback resamples Session state.
 **S05–S06** carry that same whole snapshot in the typed model-set response,
 `thread/model/controlChanged`, and capable `thread/read`, preserving responses
-through local, remote, resume, and browser-facing hub paths. **S02–S03** use the
-shared reducer to establish or downgrade capability from accepted reads, fence
+through local, remote, resume, and browser-facing hub paths. Manager reads that
+snapshot and injects its authority into `session_control`; it never derives
+mutation authority from canonical model metadata. **S02–S03** hold one explicit
+`uninitialized`, `ready`, `recovering`, or `unsupported` state, retire authority
+before reconnect reads, and send model mutations only from `ready`. They fence
 responses and notifications to the installed authority, replace only with a
 newer revision, and render accepted desired state ahead of the still-active
-model. Without version 1 they send the legacy request shape and wait for the
-canonical legacy change. Context status remains a separate projection because
-a fallback may change the effective window and pressure without changing the
-selected model.
+model. Unsupported or unsuccessful reads keep the session readable and settle
+waiting mutations with model changes disabled. Stale authority and uncertain
+post-dispatch responses start one replacement read without replay. Context
+status remains a separate projection because a fallback may change the
+effective window and pressure without changing the selected model.
 
 For [history serving facts](history-content.md#serving-facts-and-status-comparison),
 **S10** owns saved-index coverage and the execution frontier of each immutable

@@ -1,7 +1,7 @@
 # Model-Switch Authority Is One Revisioned Snapshot
 
 Date: 2026-11-16
-Status: Draft revision
+Status: Implemented
 
 ## Summary
 
@@ -77,7 +77,7 @@ The change fails even when its common path looks right if:
 ## Constraints
 
 - `agent.Session` already assigns model-pick sequence numbers, admits queued switches, applies them at turn boundaries and quota-retry safe points, and learns deferred failures. It owns the snapshot state machine.
-- `thread/model/set` currently returns `EmptyResponse`. This coordinated protocol change makes its authority fields required and its response typed in place; it provides no old-endpoint compatibility path.
+- `thread/model/set` changed in place from `EmptyResponse` to required authority fields and a typed response; it provides no old-endpoint compatibility path.
 - Hubs typed-decode and re-encode model requests, responses, and reads while relaying notifications. Every shipped hop changes together and forwards the complete authority-bound contract.
 - `thread/read` already carries `BootGeneration`, and its thread carries `InstanceID`. Revisions are comparable only inside that identity pair.
 - Live thread snapshots are materialized through the server envelope. The model-control snapshot needs a typed facet updated through `refreshFacets` and read by `appThread`; a callback fallback during read would violate the envelope's single-writer rule and could sample a different transition.

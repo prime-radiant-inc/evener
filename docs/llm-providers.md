@@ -939,19 +939,29 @@ Three carriers transport the same whole snapshot: the typed
 `thread/model/set` response, `thread/model/controlChanged`, and a capable
 `thread/read`. Hubs preserve the typed response through local daemons, remote
 hubs, cold-session resume, and browser-facing RPC. Browser and native clients
-run all three through the shared TypeScript reducer. A read advertising
-`modelControlVersion = 1` establishes or replaces authority; a later accepted
-read without version 1 clears it. Responses and notifications must match the
-established authority, and a newer revision replaces the whole snapshot rather
-than merging fields. The composer shows an accepted pending or applied
-`desired` target immediately, while the running turn continues on `active`; a
-rejected desired target falls back to `active`.
+run all three through the shared TypeScript reducer. Its state is exactly one of
+`uninitialized`, `ready`, `recovering`, or `unsupported`; only `ready` contains
+mutation authority. A read advertising `modelControlVersion = 1` establishes
+or replaces authority. An accepted read without version 1 moves to
+`unsupported`, keeping the session readable while disabling model changes.
+Responses and notifications must match the established authority, and a newer
+revision replaces the whole snapshot rather than merging fields. The composer
+shows an accepted pending or applied `desired` target immediately, while the
+running turn continues on `active`; a rejected desired target falls back to
+`active`.
 
-Capable requests carry a mutation UUID and the expected instance and boot
-identity. Without an accepted version-1 read, clients send the legacy request
-shape, do not invent a pending display, and wait for canonical legacy model
-changes. New daemons still route accepted legacy requests through the snapshot
-state machine so a later capable read cannot recover stale intent.
+Every request carries a mutation UUID and the expected instance and boot
+identity. Reconnect retires installed authority before starting its replacement
+read. A missing, malformed, refused, cancelled, or transport-failed establishing
+read settles mutations waiting on that read. An `authorityStale` refusal is
+machine-readable; it and any response loss or malformed response after dispatch
+move the client to `recovering` and start one replacement read. The client never
+replays that mutation because the daemon may already have accepted it.
+
+Manager follows the same contract: it reads the current snapshot, injects that
+authority into `session_control`, and sends no model mutation when the read does
+not establish `ready`. It does not derive mutation authority from
+`thread/model/changed` or canonical model metadata.
 
 The snapshot owns model provider, model, and the active model's reasoning
 capability. Current reasoning effort and effective context status remain under
@@ -1029,10 +1039,10 @@ pre-dispatch `max_output_tokens` budget error.
 method → `Session.SetReasoningEffort`, validated and clamped against the
 *current* model's ladder before it's applied. A successful change broadcasts
 `thread/reasoning-effort/changed`. Runtime model selection uses the versioned
-model-control snapshot above; `thread/model/changed` remains the compatibility
-carrier for clients without version 1 and retains its context-status fields for
-capable clients. Every subscribed client therefore updates without a follow-up
-read on the healthy live path.
+model-control snapshot above; `thread/model/changed` remains canonical display
+information when model-control authority is unsupported and retains its
+context-status fields for capable clients. Every subscribed client therefore
+updates without a follow-up read on the healthy live path.
 Unlike a model switch, a reasoning-effort change does not append a
 transcript marker.
 
