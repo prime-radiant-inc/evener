@@ -378,6 +378,8 @@ This is one in-place, coordinated pre-release protocol change:
 
 Every hub, daemon, generated client, browser, native client, and Manager adapter in a deployment must upgrade together. The existing method name changes in place; there is no second RPC, old-response decoding, identity-free mutation path, or mixed-version routing guarantee. A read with an absent or unknown version still enters `unsupported` so the conversation remains readable and canonically displayed, but that is conservative failure handling, not compatibility support.
 
+The typed response is structurally complete: its disposition and full snapshot are required. `{}` or any response missing either field is a post-dispatch protocol failure, not an unsupported success. The call fails, automatic retry remains blocked, and the client performs the same one-read recovery used for response loss without replaying the mutation.
+
 Every accepted read re-evaluates authority support. A read without version 1 atomically enters `unsupported`, clears mutation authority, discards its pre-read quarantine, continues canonical display updates, and disables model changes. Notifications never upgrade support by themselves.
 
 This replacement supersedes PR #6345. Do not merge or close #6345 until this replacement passes its behavior gates and Jesse separately authorizes that repository action. Revalidate rather than copying code from that branch.
@@ -414,6 +416,7 @@ This replacement supersedes PR #6345. Do not merge or close #6345 until this rep
 | Session closes after request admission | Call returns an error or superseded result; it cannot report accepted with an unchanged snapshot |
 | A `ready` client's request receives machine-readable `authorityStale` | If its captured authority remains current, the client enters `recovering`, fails the call, and starts one replacement read; an ordinary validation refusal does not recover |
 | Response is lost after pick 1 was dispatched, then pick 2 is accepted | The forwarding path never replays pick 1; one read converges on pick 2 or reports the outcome unknown, and pick 1 cannot resurrect |
+| Successful RPC frame contains `{}` or a partial typed response | Client treats it as a post-dispatch protocol failure with blocked retry, starts one read, and never silently succeeds, enters `unsupported`, or replays the mutation |
 | Manager invokes model action after a complete version-1 read | Hub generates the UUID, injects exact authority, and forwards one mutation |
 | Manager read is unsupported, malformed, refused, or transport-failed | Manager invocation fails locally and sends no mutation |
 | Manager loses a response after dispatch | It may read current state for reporting but never replays the mutation |
@@ -460,6 +463,8 @@ Use a scripted provider with real session, event, envelope, RPC, and snapshot pa
 - stale expected identity cannot mutate a concurrent replacement;
 - slow admission retains origin identity across clear;
 - forwarded hub capability expectations include version 1 and the complete snapshot;
+- AppWire Go and generated TypeScript clients reject `{}` and every partial model-set response as a post-dispatch protocol failure with blocked retry rather than decoding an unsupported success;
+- generated protocol assertions keep the existing `thread/model/set` method and require every request identity field, response disposition, and response snapshot;
 - Manager's model action performs a just-in-time read, injects a generated UUID and exact authority, and sends one mutation on the supported path;
 - Manager's unsupported, malformed, refused, and failed reads send no mutation, and post-dispatch response loss never replays one;
 - generated protocol and TypeScript types are current.
@@ -508,6 +513,7 @@ Drive the real store and composer with the AppWire test client. Prove:
 - an authority mismatch while its replacement read is held cannot send an identity-free request, then enables a request bound to the fresh authority after that read;
 - a machine-readable stale-authority refusal starts one recovery read while an ordinary validation refusal does not;
 - losing the response after dispatch starts recovery without replaying that mutation;
+- an empty or partial successful RPC response fails as a protocol error, starts one recovery read, and never silently succeeds, enters `unsupported`, or replays the mutation;
 - a model-control conflict recovers even when transcript history has already been discarded;
 - a delayed response issued under a replaced authority cannot clear the replacement snapshot;
 - clear removes the old snapshot and waits for replacement read;
@@ -515,7 +521,7 @@ Drive the real store and composer with the AppWire test client. Prove:
 
 ### Native
 
-Cover mutation UUID and expected-authority generation, typed-response forwarding, shared reducer behavior, live notification, establishing-read quarantine and replay, capable-to-unsupported downgrade, unknown-version conversation usability with model changes disabled, delayed retired-authority response, reconnect retirement before the held read, every unsuccessful read settling waiters with zero sends, typed stale-authority recovery, post-dispatch response loss without replay, clear-before-read behavior, and Board-row label fallback.
+Cover mutation UUID and expected-authority generation, typed-response forwarding, shared reducer behavior, live notification, establishing-read quarantine and replay, capable-to-unsupported downgrade, unknown-version conversation usability with model changes disabled, delayed retired-authority response, reconnect retirement before the held read, every unsuccessful read settling waiters with zero sends, typed stale-authority recovery, post-dispatch response loss without replay, `{}` and partial responses failing as protocol errors with one read and no replay, clear-before-read behavior, and Board-row label fallback.
 
 ### Manager
 
@@ -550,7 +556,7 @@ Run `make generate` and commit generated AppWire TypeScript and `docs/appwire-pr
 21. Clients enter `ready` only after a complete version-1 read whose snapshot authority matches the read, and enter `unsupported` on an accepted absent or unknown version without aborting the conversation.
 22. An accepted response always represents an accepted snapshot transition; shutdown cannot return accepted with unchanged state.
 23. Daemons refuse missing or partial mutation authority before sequence assignment without making other session operations unavailable.
-24. `thread/model/set` changes in place as one coordinated protocol. The implementation provides no mixed-version compatibility path, second RPC, or identity-free mutation.
+24. `thread/model/set` changes in place as one coordinated protocol. The implementation provides no mixed-version compatibility path, second RPC, identity-free mutation, or empty-response decoding; `{}` and partial responses are post-dispatch protocol failures with blocked retry and one-read recovery.
 25. No client infers identity from order, target, timing, warning text, or transport request ID.
 26. Default tests exercise real Evener paths below a scripted provider boundary without network or credentials.
 
