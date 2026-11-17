@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -88,20 +87,6 @@ func (r *residencyWakeRig) refuseClaim(t *testing.T) RetirementSnapshot {
 	return snap
 }
 
-// communicateResponse is a model turn that ends the way a real one does.
-func communicateResponse(t *testing.T, message string) llm.Response {
-	t.Helper()
-	args, err := json.Marshal(map[string]any{
-		"end_turn": true,
-		"message":  message,
-		"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}},
-	})
-	if err != nil {
-		t.Fatalf("marshal communicate arguments: %v", err)
-	}
-	return agenttest.ToolCallResponse(llm.ToolCallData{ID: "communicate-residency", Name: "communicate", Arguments: args, Type: "function"})
-}
-
 // TestResidencyReturnWakesRunnableQueuedInput pins the queued-input half.
 //
 // beginRetirementMutation refuses every lease while the controller's phase is
@@ -118,7 +103,7 @@ func communicateResponse(t *testing.T, message string) llm.Response {
 func TestResidencyReturnWakesRunnableQueuedInput(t *testing.T) {
 	t.Parallel()
 	rig := newResidencyWakeRig(t, &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(t, "the queued message ran") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "the queued message ran") },
 	}})
 	if _, err := rig.root.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "residency-return-queue",
@@ -156,7 +141,7 @@ func TestResidencyReturnWakesRunnableQueuedInput(t *testing.T) {
 func TestResidencyReturnWakesRunnableClientMutationStart(t *testing.T) {
 	t.Parallel()
 	rig := newResidencyWakeRig(t, &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(t, "the accepted start ran") },
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "the accepted start ran") },
 	}})
 	response, err := rig.root.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: "residency-return-start",

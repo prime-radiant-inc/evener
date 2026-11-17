@@ -1586,8 +1586,12 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 // nothing is waiting -- sends nothing.
 //
 // The wake is deliberately its own, not wakePendingUserInput's: that one
-// clears a Stop's parked steer (Session.steeringParked), and reopening
-// admission must not deliver steering the user stopped (issue #174).
+// clears the failed-attempt park (Session.steeringParked), and a return to
+// resident is not an event outside the failed attempt. Clearing it here would
+// make every idle-interval refusal the next wake sender and retry a failing
+// steer once per interval -- the paced retry the queue path declines. A steer
+// parked by a Stop is the durable SteeringHeld flag instead, which the
+// hasPendingUserInputToRun gate and steeringCarrierRailOpen already honour.
 func (s *Session) wakeRunnableInputAfterResidency() {
 	// A pending start is admitted through the same lease, and its own wake
 	// (sent once at acceptance) has already been consumed by the refused
