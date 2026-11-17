@@ -496,10 +496,10 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string,
 		return "", delegateMutationPlans{}, err
 	}
 	deliveryID := delegatestore.UpdateDeliveryID(lease.delegateID, appended[0].Seq)
-	// The update's cause rides the queue, like a report's: registered here,
-	// under c.mu, so the delivery is never pending without it. The delivery
-	// appended above is pending by construction.
-	c.rememberDeliveryCauseLocked(deliveryID, cause)
+	// Register the cause here, under c.mu, so the delivery is never pending
+	// without it. Unlike a report, an update always contributes its own
+	// message hop. The delivery appended above is pending by construction.
+	c.rememberDeliveryCause(deliveryID, cause)
 	c.evidenceVersion++
 	var plans delegateMutationPlans
 	// Only the head is planned; an update behind an earlier delivery waits for
@@ -517,6 +517,12 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string,
 func (c *delegateTreeController) deliveryPending(delegateID, deliveryID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.deliveryPendingLocked(delegateID, deliveryID)
+}
+
+// deliveryPendingLocked is deliveryPending for a caller that already holds
+// c.mu.
+func (c *delegateTreeController) deliveryPendingLocked(delegateID, deliveryID string) bool {
 	aggregate := c.durable[delegateID]
 	return aggregate != nil && slices.ContainsFunc(aggregate.PendingDeliveries, func(pending delegatestore.PendingDelivery) bool {
 		return pending.DeliveryID == deliveryID

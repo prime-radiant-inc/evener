@@ -364,15 +364,9 @@ func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
 	t.Parallel()
 	sess := acceptedTriggerSession(t)
 	controller := sess.delegateController
-	if _, err := controller.ReserveAttention(sess, "delegate:dlg_worker/delivery/1"); err != nil {
-		t.Fatalf("ReserveAttention: %v", err)
-	}
-	sess.attentionMu.Lock()
-	trigger := sess.attentionAcceptedID
-	sess.attentionMu.Unlock()
-	if trigger == "" {
-		t.Fatal("setup: the accept latched no trigger")
-	}
+	// The fixture already reserved and accepted this trigger; it is the
+	// attention the latch holds.
+	trigger := "delegate:dlg_worker/delivery/1"
 	// The trigger's cause carries a watch fire, and the accept's resolution
 	// drops the controller's copy, leaving the latch as the only witness.
 	watch := provenance.WithWatch(nil, "watch_loop", "wg_loop", "wd_reopen", "child-session", "")
@@ -380,18 +374,16 @@ func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
 	sess.holdAcceptedTrigger(trigger)
 	controller.attentionCauses.forget(trigger)
 
-	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+	reopened, err := sess.reopenLatchedDelegateAttention()
+	if err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+	if reopened == "" || reopened == trigger {
+		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
 	}
 
 	// The recovered turn presents the reopened identity; its lineage must still
 	// descend from the watch the failed generation came from.
-	sess.attentionMu.Lock()
-	reopened := sess.attentionAcceptedID
-	sess.attentionMu.Unlock()
-	if reopened == "" || reopened == trigger {
-		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
-	}
 	sess.attentionMu.Lock()
 	sess.attentionStagedIDs = map[string]struct{}{reopened: {}}
 	sess.attentionMu.Unlock()

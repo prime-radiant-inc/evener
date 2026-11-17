@@ -35,7 +35,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -249,8 +248,13 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 // delegateCause is the lineage a delivery carries onward: the producing
 // session and the cause it hands to the turn that consumes the delivery. A
 // report carries its finished generation's cumulative cause; an update carries
-// the lineage of the turn that posted it. The zero value carries nothing and
-// registers nothing.
+// the lineage of the turn that posted it.
+//
+// The two paths treat the zero value differently, because they owe different
+// things. A finish with no producing run — a start failure, a runtime-lost
+// recovery — owes no ancestry, so the report path registers nothing for it. An
+// update always owes the hop for its own message, so an update from a turn with
+// no incoming lineage still registers that hop alone.
 type delegateCause struct {
 	sessionID string
 	lineage   *provenance.Causal
@@ -268,21 +272,17 @@ func (c *delegateTreeController) registerDeliveryCauseLocked(lease delegateLease
 	if deliveryID == "" || cause.lineage == nil {
 		return
 	}
-	aggregate := c.durable[lease.delegateID]
-	if aggregate == nil || !slices.ContainsFunc(aggregate.PendingDeliveries, func(pending delegatestore.PendingDelivery) bool {
-		return pending.DeliveryID == deliveryID
-	}) {
+	if !c.deliveryPendingLocked(lease.delegateID, deliveryID) {
 		return
 	}
-	c.rememberDeliveryCauseLocked(deliveryID, cause)
+	c.rememberDeliveryCause(deliveryID, cause)
 }
 
-// rememberDeliveryCauseLocked records cause as the cause of the attention
-// deliveryID resolves to. The caller holds c.mu and has already decided the
-// delivery needs one. A turn with no incoming lineage still contributes its
-// own message hop, so an update from it is known to descend from the message
-// the parent consumes.
-func (c *delegateTreeController) rememberDeliveryCauseLocked(deliveryID string, cause delegateCause) {
+// rememberDeliveryCause records cause, plus a hop for the message it carries,
+// as the cause of the attention deliveryID resolves to. A turn with no
+// incoming lineage still contributes that hop, so the turn consuming the
+// delivery is known to descend from the message that produced it.
+func (c *delegateTreeController) rememberDeliveryCause(deliveryID string, cause delegateCause) {
 	attentionID := delegateAttentionID(deliveryID)
 	c.attentionCauses.remember(attentionID, provenance.WithMessage(cause.lineage, cause.sessionID, attentionID))
 }

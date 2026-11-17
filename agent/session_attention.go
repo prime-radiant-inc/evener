@@ -924,22 +924,17 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 			// fresh identity — and the fold keeps the latched trigger's turn
 			// alongside every pending row, so an unleased turn in this window
 			// would render the identical report twice in one request. The
-			// latch is consumed-and-superseded; the next accept re-latches on
-			// the row it presents.
+			// latch and its cause both move to the fresh identity; the next
+			// presenting request clears them.
 			//
-			// The cause moves to the reopened identity with the latch. The
-			// original identity resolved before this reopen, which dropped the
-			// controller's copy, and the latch is the only place its lineage
-			// survived. Handing it to the fresh identity keeps the recovered
-			// turn descending from the watch that produced it; without this
-			// the turn loses that ancestry and restarts the runaway count.
-			if s.attentionAcceptedCause != nil {
-				reopened := provenance.WithMessage(s.attentionAcceptedCause, s.id, reopenID)
-				if s.delegateController != nil {
-					s.delegateController.attentionCauses.remember(reopenID, reopened)
-				}
-				s.attentionAcceptedCause = reopened
-			}
+			// The original identity resolved before this reopen, which dropped
+			// the controller's copy, so the latch is the only place its
+			// lineage survived. Handing it to the fresh identity keeps the
+			// recovered turn descending from the watch that produced it;
+			// without this the turn loses that ancestry and restarts the
+			// runaway count. The cause moves unchanged: the reopened row is
+			// the same message re-keyed, not a new one, so it earns no
+			// additional message hop.
 			s.attentionAcceptedID = reopenID
 		}
 		s.attentionMu.Unlock()
