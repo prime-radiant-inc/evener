@@ -67,9 +67,22 @@ const (
 	// buffer for every entry — spent about 8.1x. 5.0 sits between them.
 	coldRebuildMaxRatioPlain = 5.0
 
-	// Race: the same rebuild spends about 8.2x under -race, and spent about
-	// 12.7x before the fix. 10.0 sits between them.
-	coldRebuildMaxRatioRace = 10.0
+	// Race: both bounds below were measured, not guessed. Five runs of the
+	// fixed tree spent 8.29, 8.41, 8.44, 8.29 and 8.38x — a 1.8% spread that
+	// tops out at 8.44. The pre-fix tree spent 12.54x and 12.65x, because the
+	// detector's inflation multiplies the per-entry decoder buffers the fix
+	// removed. 11.0 therefore sits 1.30x above the worst healthy sample, a
+	// little more relative room than the plain lane's 5.0 over 3.98 (1.26x),
+	// and 12% below the cheaper of the two regressed samples, so the -race lane
+	// still fails the tree this test exists to reject.
+	//
+	// The window between the two states is narrower under -race than plain
+	// (8.44 to 12.54, against 3.98 to 8.12). If a loaded runner ever pushes the
+	// healthy number past 11.0, that is evidence the -race arm can no longer
+	// tell the states apart, not a reason to raise this again: at that point
+	// the plain lane is carrying the real check and the -race arm is only a
+	// gross-regression bound.
+	coldRebuildMaxRatioRace = 11.0
 )
 
 // coldRebuildMaxRatio is this lane's ceiling, split by build tag so a -race run
