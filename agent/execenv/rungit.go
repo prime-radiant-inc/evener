@@ -17,9 +17,11 @@ var errRunGitShellUnsupported = errors.New("execenv: RunGit cannot build a shell
 
 // RunGit runs `git <args...>` in env. When env implements ArgvExecutor (the
 // real LocalExecutionEnvironment always does) it execs git directly, argv in
-// hand, skipping the platform-shell fork ExecCommand pays for every call and
-// removing the shell-string-interpolation surface that building "git "+args
-// would otherwise reopen. Environments that don't implement ArgvExecutor
+// hand, skipping ExecCommand's classifier and removing the
+// shell-string-interpolation surface that building "git "+args would
+// otherwise reopen. ExecCommand reaches argv for a bare word list itself, so
+// this is its own entry point, not the only way to avoid a shell. Environments
+// that don't implement ArgvExecutor
 // (test fakes, sandboxed/remote environments this package doesn't control)
 // fall back to ExecCommand with each arg shell-escaped, exactly as every git
 // call site behaved before this function existed — except where that escaping
