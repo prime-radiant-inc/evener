@@ -1007,9 +1007,22 @@ export function applyReadResponse<M extends ThreadModel>(
   // one, or link actions stay aimed at a directory the hub no longer serves.
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
+  // A read is the authority on whether a wait is still running, and it omits
+  // what has ended: the spread below keeps any field a read does not name, so a
+  // quota retry retained through a disconnect would survive a read that shows
+  // the call resumed (another client switched models, the turn went on to a
+  // long tool). Thread.evener is required on the wire (types.gen.ts), so a
+  // snapshot naming no resume time genuinely means no wait, not "not asked".
+  // Retire the retry here rather than leaving it to the frame clock or to the
+  // next model-output notification; a live evener/thread/modelRetry arriving
+  // AFTER this read still speaks, which is the pane-open-when-the-limit-hits
+  // case this fix must keep working.
+  const retireQuotaRetry = model.modelRetry?.errorClass === "quota_exceeded" && fields.quotaResumesAt === undefined;
+  const { modelRetry: _retainedRetry, ...baseWithoutRetry } = base;
+  const carried = retireQuotaRetry ? baseWithoutRetry : base;
   let next = withDisplay(
     {
-      ...base,
+      ...carried,
       ...fields,
       ...clearedArtifacts,
       ...clearedScratch,

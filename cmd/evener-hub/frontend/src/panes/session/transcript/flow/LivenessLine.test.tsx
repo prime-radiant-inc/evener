@@ -1,4 +1,4 @@
-import { applyNotification, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
+import { applyNotification, applyReadResponse, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
 import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -494,6 +494,65 @@ test("a usage-limit retry left over from an earlier turn does not explain a new 
       sessionRef="s1"
       turnId="turn_new"
       retry={model.modelRetry}
+    />,
+  );
+
+  const el = screen.queryByTestId("liveness-line");
+  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
+});
+
+// The reconnect shape: this pane dropped while the limit held, another client
+// switched models, and the same turn resumed and went on to a long tool. The
+// read now correctly names no resume time, but a read omits what has ended and
+// the merge keeps every field it omits - so the retained retry survived with
+// its turnId still matching and its countdown still running, and revived a
+// quota chip over work that had resumed. The read is the authority on whether a
+// wait remains; retry it here, in the reconcile.
+test("a read showing the turn resumed retires a quota retry retained from before the reconnect", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 5_000);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    now - 5_000,
+  );
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  // The reconnect read: the same turn, still running, and NO wait - the
+  // failure summary names no resume time because there is none.
+  const resumed = applyReadResponse(
+    model,
+    {
+      thread: testThread({ status: { type: "active" }, evener: {} }),
+      requestGeneration: (model.history?.issuedGeneration ?? 0) + 1,
+    },
+    now,
+  );
+  expect(resumed.quotaResumesAt).toBeUndefined();
+
+  threadsStore.setState({ threads: new Map([["s1", resumed]]) });
+  render(
+    <LivenessLine
+      lastFrameAt={resumed.lastFrameAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={resumed.modelRetry}
     />,
   );
 
