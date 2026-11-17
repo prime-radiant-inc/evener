@@ -1701,14 +1701,22 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 // attempt, a content-filter retry whose compaction then folds the steering
 // turn away) presented nothing the design may consume. Only a turn that
 // coversPresentedAttention stages.
-func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
+//
+// deltaTurns is the exact turn set the planned request carries when it is a
+// responses-continuation delta, nil for a full-history request. An inline
+// delivery staged from a turn the delta does not carry was not presented by
+// this call: a later round's delta settles, and crediting that delivery would
+// adopt the cause of something the model never saw while retiring it for good.
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn, deltaTurns []schema.Turn) {
 	if !s.coversPresentedAttention(ctx) {
 		return
 	}
+	deltaInline := deltaInlineDeliveryIDs(deltaTurns)
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var staged map[string]struct{}
 	var inline map[string]struct{}
+	var inlineInDelta map[string]struct{}
 	for _, turn := range presentedTurns {
 		if turn.AttentionID != "" {
 			if staged == nil {
@@ -1726,11 +1734,41 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 			if inline == nil {
 				inline = make(map[string]struct{})
 			}
-			inline[delegateAttentionID(commit.DeliveryID)] = struct{}{}
+			attentionID := delegateAttentionID(commit.DeliveryID)
+			inline[attentionID] = struct{}{}
+			if _, carried := deltaInline[commit.DeliveryID]; carried {
+				if inlineInDelta == nil {
+					inlineInDelta = make(map[string]struct{})
+				}
+				inlineInDelta[attentionID] = struct{}{}
+			}
 		}
 	}
 	s.attentionStagedIDs = staged
 	s.attentionStagedInlineDeliveries = inline
+	s.attentionStagedDeltaInlineDeliveries = inlineInDelta
+}
+
+// deltaInlineDeliveryIDs returns the delivery ids of the tool-results turns in
+// deltaTurns, the turns a responses-continuation delta carries. nil deltaTurns
+// reports no delta at all, so nothing is scoped in.
+func deltaInlineDeliveryIDs(deltaTurns []schema.Turn) map[string]struct{} {
+	if len(deltaTurns) == 0 {
+		return nil
+	}
+	var ids map[string]struct{}
+	for _, turn := range deltaTurns {
+		for _, commit := range turn.DelegateDeliveryCommits {
+			if commit.DeliveryID == "" {
+				continue
+			}
+			if ids == nil {
+				ids = make(map[string]struct{})
+			}
+			ids[commit.DeliveryID] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // promoteStagedAttentionCoverage credits the staged set of a round whose
@@ -1750,14 +1788,20 @@ func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
 	staged := s.attentionStagedIDs
 	inline := s.attentionStagedInlineDeliveries
+	inlineInDelta := s.attentionStagedDeltaInlineDeliveries
 	s.attentionStagedIDs = nil
 	s.attentionStagedInlineDeliveries = nil
+	s.attentionStagedDeltaInlineDeliveries = nil
 	if settled.HistoryMode == llm.HistoryModeResponsesDelta {
 		// What a delta presents that a steering turn cannot carry: the inline
-		// deliveries whose tool-results turn rode it.
+		// deliveries whose tool-results turn rode it. Only the ones the delta
+		// actually carried count: a delivery staged from a turn before the
+		// continuation anchor was not presented by this call, so adopting its
+		// cause would credit something the model never saw and forget the cause
+		// for good.
 		s.attentionMu.Unlock()
-		if len(inline) != 0 {
-			s.adoptInlineAttentionCauses(inline)
+		if len(inlineInDelta) != 0 {
+			s.adoptInlineAttentionCauses(inlineInDelta)
 		}
 		return
 	}
@@ -1873,6 +1917,7 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
 	s.attentionStagedInlineDeliveries = nil
+	s.attentionStagedDeltaInlineDeliveries = nil
 	s.attentionCausesMergedIDs = nil
 	s.attentionFoldedCovered = nil
 	s.attentionMu.Unlock()

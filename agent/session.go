@@ -1291,6 +1291,13 @@ type Session struct {
 	// turn, so its id is the only trace of what the round presented. Promoted
 	// and reset with attentionStagedIDs. Guarded by attentionMu.
 	attentionStagedInlineDeliveries map[string]struct{}
+	// attentionStagedDeltaInlineDeliveries is the subset of
+	// attentionStagedInlineDeliveries whose tool-results turn the planned
+	// responses-continuation delta carries. A delta presents only turns after
+	// its anchor, so an inline delivery staged from an earlier turn was not
+	// presented by this call and must not be adopted as if it were. Promoted
+	// and reset with the other staged sets. Guarded by attentionMu.
+	attentionStagedDeltaInlineDeliveries map[string]struct{}
 	// attentionCausesMergedIDs names the attention items whose causes have
 	// already joined the running turn's lineage: promoteStagedAttentionCoverage
 	// merges an item's cause at the first settled request that presents it, so

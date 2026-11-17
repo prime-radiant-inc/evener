@@ -305,7 +305,7 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	t.Parallel()
 	sess := acceptedTriggerSession(t)
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
-	sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess))
+	sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess), nil)
 	sess.promoteStagedAttentionCoverage(llm.Request{})
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -344,7 +344,7 @@ func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 	// The delta provably carried no steering turn, so the model saw no
 	// report, and the reopen must fire.
 	sess := acceptedTriggerSession(t)
-	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
+	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess), nil)
 	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
 	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)

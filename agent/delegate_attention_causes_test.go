@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -530,8 +531,11 @@ func TestInlineHeldReportJoinsTheTurnAndRetiresItsCause(t *testing.T) {
 	}
 
 	// The next request presents the resident history, tool-results turn
-	// included. Both a full-history round and a responses delta carried it, so
-	// both must adopt the report's lineage and retire its cause.
+	// included. A full-history round carries every staged turn; a responses
+	// delta carries only the turns it names, so it must be told which of those
+	// is the tool-results turn. Both carry it here, so both must adopt the
+	// report's lineage and retire its cause.
+	presented := currentHistory(t, sess)
 	for _, settled := range []llm.Request{
 		{HistoryMode: llm.HistoryModeFullHistory},
 		{HistoryMode: llm.HistoryModeResponsesDelta},
@@ -539,7 +543,7 @@ func TestInlineHeldReportJoinsTheTurnAndRetiresItsCause(t *testing.T) {
 		sess.replaceActiveProvenance(nil)
 		c.attentionCauses.remember(reportID, provenance.WithWatch(nil, watchID, watchGeneration, deliveryID, "child-session", ""))
 		sess.resetAttentionCoverage()
-		sess.stagePresentedAttentionCoverage(context.Background(), currentHistory(t, sess))
+		sess.stagePresentedAttentionCoverage(context.Background(), presented, presented)
 		sess.promoteStagedAttentionCoverage(settled)
 
 		turn := sess.activeCausalProvenance()
@@ -549,5 +553,84 @@ func TestInlineHeldReportJoinsTheTurnAndRetiresItsCause(t *testing.T) {
 		if cause := c.attentionCauses.union([]string{reportID}); cause != nil {
 			t.Fatalf("%s: the consumed report's cause is still registered after incorporation: %#v", settled.HistoryMode, cause)
 		}
+	}
+}
+
+// A responses delta carries only the turns after its continuation anchor. An
+// inline delivery staged from a tool-results turn BEFORE that anchor was not
+// presented by this call, so a delta that settles must not adopt its cause:
+// that would credit the model with seeing a result it never received AND
+// forget the cause for good, since an inline result is spent on adoption.
+func TestDeltaDoesNotAdoptInlineDeliveryItDidNotCarry(t *testing.T) {
+	const (
+		watchID         = "watch_delta_scope"
+		watchGeneration = "wg_delta_scope"
+	)
+	c, _ := newDelegateControllerTestHarness(t, 2, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
+	plan := finishDelegateDeliveryGeneration(t, c, lease, "HELD_REPORT").deliveries[0]
+	if _, err := deliverDelegatePacket(plan, nil); err != nil {
+		t.Fatalf("deliver held report inline: %v", err)
+	}
+	resolution := <-waiter.resolution
+	if resolution.commit == nil {
+		t.Fatalf("inline delivery resolution carries no commit: %#v", resolution)
+	}
+	deliveryID := plan.deliveryID
+	reportID := delegateAttentionID(deliveryID)
+	sess := newDelegateToolResultPersistenceSession(t, c, afero.NewMemMapFs())
+	sess.queueDelegateDeliveryCommit("send", resolution.commit)
+	if err := appendDelegateToolResultFixture(sess, "send"); err != nil {
+		t.Fatalf("append inline result: %v", err)
+	}
+
+	// A later user message is the delta-eligible suffix: the continuation anchor
+	// sits after the tool-results turn, so the delta does not carry it.
+	sess.appendTurn(schema.TurnUserInput, llm.User("a later message past the anchor"))
+	presented := currentHistory(t, sess)
+	inlineAt := -1
+	for i, turn := range presented {
+		if len(turn.DelegateDeliveryCommits) != 0 {
+			inlineAt = i
+			break
+		}
+	}
+	if inlineAt < 0 {
+		t.Fatalf("no presented turn carries the inline delivery commit: %#v", presented)
+	}
+	deltaTurns := presented[inlineAt+1:]
+	if len(deltaTurns) == 0 {
+		t.Fatal("test has no turn past the inline one for the delta to carry")
+	}
+
+	sess.replaceActiveProvenance(nil)
+	c.attentionCauses.remember(reportID, provenance.WithWatch(nil, watchID, watchGeneration, deliveryID, "child-session", ""))
+	sess.resetAttentionCoverage()
+	sess.stagePresentedAttentionCoverage(context.Background(), presented, deltaTurns)
+	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
+
+	if turn := sess.activeCausalProvenance(); turn != nil {
+		if depth := provenance.SelfInfluenceDepth(turn, watchID, watchGeneration, func(string) bool { return true }); depth != 0 {
+			t.Fatalf("the delta adopted the watch fire of an inline delivery it never carried (depth %d): %#v", depth, turn)
+		}
+	}
+	if cause := c.attentionCauses.union([]string{reportID}); cause == nil {
+		t.Fatal("the delta spent an inline delivery it never carried: its cause is gone, so no later full-history round can present it")
+	}
+
+	// The full-history round that does carry it adopts and retires it, which is
+	// the behavior the delta case above must not preempt.
+	sess.replaceActiveProvenance(nil)
+	sess.resetAttentionCoverage()
+	sess.stagePresentedAttentionCoverage(context.Background(), presented, deltaTurns)
+	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeFullHistory})
+	if turn := sess.activeCausalProvenance(); turn == nil {
+		t.Fatal("the full-history round that carried the inline delivery adopted nothing")
+	} else if depth := provenance.SelfInfluenceDepth(turn, watchID, watchGeneration, func(string) bool { return true }); depth != 1 {
+		t.Fatalf("the full-history round that carried the inline delivery exposes its watch fire at depth %d, want 1: %#v", depth, turn)
+	}
+	if cause := c.attentionCauses.union([]string{reportID}); cause != nil {
+		t.Fatalf("the full-history round left the consumed report's cause registered: %#v", cause)
 	}
 }

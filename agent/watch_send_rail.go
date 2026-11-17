@@ -72,6 +72,13 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 // anything delivers it, so treating it as evidence would keep every coalesced
 // frame's fire entry and let dead ids evict the delivered ancestors the fuse
 // counts (#6068). The caller must hold jm.mu.
+//
+// A transcribed caller frame is the same evidence on the caller rail: its
+// content is already in the receiver's transcript, so only its delivered
+// record is outstanding, and the settle's last retry records it delivered
+// (completeWatchSendSettle) whatever happened to its fire entry. It lives in
+// its own map because the receiver-visible half of the settle is done, which
+// is exactly why it must hold its fire.
 func (jm *jobManager) supersededFireStillCountsLocked(deliveryID string) bool {
 	if deliveryID == "" {
 		return true
@@ -83,6 +90,9 @@ func (jm *jobManager) supersededFireStillCountsLocked(deliveryID string) bool {
 		return true
 	}
 	if _, unsettled := jm.unsettledWatchSends[deliveryID]; unsettled {
+		return true
+	}
+	if _, transcribed := jm.transcribedWatchSends[deliveryID]; transcribed {
 		return true
 	}
 	_, retrying := jm.stableWatchSettlementRetries[deliveryID]
@@ -608,6 +618,12 @@ func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d w
 	defer releasePersistence()
 
 	record := jm.planWatchSendPending(state, d)
+	// A plan that pruned a superseded frame's fire holds that frame's delivery
+	// claim until this frame is published, so no drain delivers a frame the
+	// fuse can no longer see. Release it on every exit: the success path below
+	// commits the replacement first, and every error return leaves the frame
+	// where it was.
+	defer jm.releaseWatchSendReservation(record)
 	if len(record.pendingEvents) == 0 {
 		return state, false, nil
 	}
@@ -784,6 +800,11 @@ type watchSendPendingRecord struct {
 	cfg           *watchConfig
 	key           jobstore.WatchSendKey
 	previous      *jobstore.WatchSendState
+	// reservedDelivery is the delivery id of the frame whose fire the plan
+	// pruned, under a delivery claim the plan took so no drain can deliver it
+	// before this frame is published. persistPendingWatchSend releases it
+	// exactly once, on every exit.
+	reservedDelivery string
 	// persisted is the exact state written to the pending map and event log
 	// (post-coalescing: unioned provenance, recomputed self-influence depth).
 	persisted jobstore.WatchSendState
@@ -828,7 +849,17 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 		// does count. Drop it here, where supersession is known, and only for
 		// a frame no receipt, claim or delivered marker holds.
 		if !jm.supersededFireStillCountsLocked(existing.DeliveryID) {
-			provenance.DropSupersededDelivery(existing.Provenance, existing.DeliveryID)
+			// Pruning is a decision about a frame that is still the pending
+			// frame in this map until the replacement commits, an fsync and a
+			// store refold later. Hold the frame's delivery claim across that
+			// window, so a drain cannot deliver it after its fire is gone —
+			// the fuse would then count one fewer delivered ancestor than
+			// reality. The claim is released once the replacement is
+			// published, or when the persist fails.
+			if jm.claimWatchSendDeliveryLocked(existing.DeliveryID) {
+				record.reservedDelivery = existing.DeliveryID
+				provenance.DropSupersededDelivery(existing.Provenance, existing.DeliveryID)
+			}
 		}
 		// The coalesced frame stands in for both the superseded delivery and this
 		// one, so it must carry both causes so either's downstream echo is
@@ -889,6 +920,30 @@ func (jm *jobManager) commitWatchSendPendingRecord(record watchSendPendingRecord
 	if release := jm.storeWatchSendPendingRecord(record, detached); release != "" {
 		jm.releaseStableWatchReceipt(release)
 	}
+}
+
+// releaseWatchSendReservation releases the delivery claim planWatchSendPending
+// took on a superseded frame whose fire it pruned. It runs once per plan, on
+// every exit of the persist that owns the record, and is a no-op for a plan
+// that reserved nothing.
+//
+// The commit sees the reservation as the replaced frame's claim, so it leaves
+// that frame's condition marker in place; the marker names a delivery that can
+// still settle only while a hold exists. With the claim gone, the marker goes
+// with it unless some other hold still owes the frame a settle.
+func (jm *jobManager) releaseWatchSendReservation(record watchSendPendingRecord) {
+	if record.reservedDelivery == "" {
+		return
+	}
+	jm.releaseWatchSendDeliveryClaim(record.reservedDelivery)
+	if record.cfg == nil {
+		return
+	}
+	jm.mu.Lock()
+	if !jm.conditionFrameCanSettleLocked(record.cfg, record.reservedDelivery) {
+		delete(record.cfg.conditionFrames, record.reservedDelivery)
+	}
+	jm.mu.Unlock()
 }
 
 // storeWatchSendPendingRecord installs record's frame as its key's pending

@@ -175,6 +175,17 @@ func (jm *jobManager) claimWatchSendDelivery(deliveryID string) bool {
 	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
+	return jm.claimWatchSendDeliveryLocked(deliveryID)
+}
+
+// claimWatchSendDeliveryLocked is claimWatchSendDelivery under a held jm.mu. A
+// coalescing plan takes the claim on a frame whose fire it is about to prune,
+// so no drain can deliver that frame before its replacement is published; the
+// persist path releases it. The caller must hold jm.mu.
+func (jm *jobManager) claimWatchSendDeliveryLocked(deliveryID string) bool {
+	if deliveryID == "" {
+		return true
+	}
 	if _, held := jm.deliveringWatchSends[deliveryID]; held {
 		return false
 	}

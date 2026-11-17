@@ -332,7 +332,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// projects (presentedTurns), not the earlier capture: a leased round's
 	// snapshot can hold a turn — a parent steer, say — accepted after
 	// historyTurns was taken.
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
+	//
+	// The turns the delta carries come back with it: staging must credit only
+	// the inline deliveries this call actually presents.
+	var deltaTurns []schema.Turn
+	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -390,7 +394,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
+		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -440,7 +444,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// inside is the single gate, whichever path built the history; staging
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
-	s.stagePresentedAttentionCoverage(ctx, presentedTurns)
+	s.stagePresentedAttentionCoverage(ctx, presentedTurns, deltaTurns)
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
@@ -593,9 +597,15 @@ func (s *Session) growTurnHistoryBaseline(restoredAt []int) {
 
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
 // when it planned a continuation delta, the full-history message list the delta
-// was cut from, for the retry a rejected anchor forces. heldDropped reports
-// that the request's projection kept a held row out.
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message) {
+// was cut from, for the retry a rejected anchor forces, plus the exact turns
+// the delta carries. heldDropped reports that the request's projection kept a
+// held row out.
+//
+// The delta's turn set is returned because it is the only record of which items
+// this call presents: staging attention coverage must not credit an inline
+// delivery whose tool-results turn sits before the anchor, since the delta never
+// carried it.
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool, heldDropped bool) (llm.Request, []llm.Message, []schema.Turn) {
 	if heldDropped {
 		// A projection that kept a held row out is a nonstandard view of the
 		// resident history: no stored exchange matches its prefix, and the
@@ -607,13 +617,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req, nil
+		return req, nil, nil
 	}
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req, nil
+		return req, nil, nil
 	}
 
 	registry := s.responsesContinuationSupportRegistry()
@@ -621,7 +631,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
 		}
-		return req, nil
+		return req, nil, nil
 	}
 	target := resolvedTargetOf(profile)
 	req = s.applyResponsesContinuationShadowEstimate(profile, req)
@@ -630,13 +640,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		req.PreviousResponseID = ""
 		req.ConversationID = ""
 		req.Continuation = nil
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -646,7 +656,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -660,10 +670,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil
+		return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil, nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -673,7 +683,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(target, req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil, nil
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
@@ -697,10 +707,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
-		return responsesContinuationWithInputEstimate(target, req), fullHistory
+		return responsesContinuationWithInputEstimate(target, req), fullHistory, candidate.Delta
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil
+	return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil, nil
 }
 
 func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
