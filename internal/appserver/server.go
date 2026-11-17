@@ -70,9 +70,12 @@ type Server struct {
 	// fanout benchmark reads it to report encodes per record rather than
 	// inferring them from elapsed time.
 	afterFanoutEncoded func(encodes int)
-	// deliveryGateHeld runs after the delivery gate is released with how long
-	// it was held. Production leaves it nil; the fanout benchmark reads it to
-	// report gate hold time rather than measuring the whole call.
+	// deliveryGateHeld runs at the end of the delivery batch with deliveryMu
+	// still held, and reports how long that batch held the gate. Like
+	// afterFanoutEncoded, it must take neither deliveryMu nor projectionMu:
+	// a hook that broadcasts or commits re-enters the gate it is already
+	// under and deadlocks. Production leaves it nil; the fanout benchmark
+	// reads it to report gate hold time rather than measuring the whole call.
 	deliveryGateHeld func(time.Duration)
 	// lifetime is canceled by Shutdown so a background consumer a server owns
 	// can end with it; lifetimeCancel is never nil after NewServer. Both are
