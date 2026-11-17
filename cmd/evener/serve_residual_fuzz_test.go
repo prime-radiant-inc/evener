@@ -171,7 +171,24 @@ func exerciseResidualCallbacks(t *testing.T, s *residualServeServer, sessionID s
 	_ = s.envelopeSource.VisionModel()
 	_ = s.envelopeSource.SessionMeta()
 	modelControl := s.envelopeSource.ModelControlSnapshot()
-	_, _ = s.modelControl(modelControl.Authority)
+	binding, err := s.modelControl(modelControl.Authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := binding.Set(appwire.ThreadModelSetParams{
+		Ref:                    appwire.LocalRef(sessionID).String(),
+		ModelProvider:          modelControl.Active.ModelProvider,
+		Model:                  modelControl.Active.Model,
+		ClientMutationID:       "residual-model-control",
+		ExpectedInstanceID:     modelControl.Authority.InstanceID,
+		ExpectedBootGeneration: modelControl.Authority.BootGeneration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appwire.ValidateThreadModelSetResponse(response); err != nil {
+		t.Fatal(err)
+	}
 	_ = s.visionModel("off")
 	if err := s.name("renamed"); err != nil {
 		t.Error(err)

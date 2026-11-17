@@ -16,6 +16,21 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func serveModelSetParams(t *testing.T, ref, mutationID, providerID, model string, snapshot *appwire.ModelControlSnapshot) appwire.ThreadModelSetParams {
+	t.Helper()
+	if snapshot == nil {
+		t.Fatal("thread/read did not publish model-control authority")
+	}
+	return appwire.ThreadModelSetParams{
+		Ref:                    ref,
+		ModelProvider:          providerID,
+		Model:                  model,
+		ClientMutationID:       mutationID,
+		ExpectedInstanceID:     snapshot.Authority.InstanceID,
+		ExpectedBootGeneration: snapshot.Authority.BootGeneration,
+	}
+}
+
 // waitServeMilestonesInAnyOrder waits for every milestone in wants, in
 // whatever order they arrive.
 func waitServeMilestonesInAnyOrder(ctx context.Context, milestones <-chan string, wants ...string) error {
@@ -156,11 +171,7 @@ func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *tes
 
 	// Drive the switch through the REAL wired path: the thread/model/set RPC
 	// handler, which invokes serve.go's authority-bound Session closure.
-	response, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "openai",
-		Model:         "gpt-switched",
-	})
+	response, err := client.ThreadModelSet(ctx, serveModelSetParams(t, ref, "read-switch", "openai", "gpt-switched", before.Thread.Evener.ModelControl))
 	if err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)
 	}
@@ -306,16 +317,13 @@ func TestServeModelSwitch_SubscribedClientLearnsSwitchAtRest(t *testing.T) {
 	}
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
-	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+	if err != nil {
 		t.Fatalf("ThreadRead subscribe: %v", err)
 	}
 	frames := collectServeModelSwitchFrames(client, ref)
 
-	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "openai",
-		Model:         "gpt-switched",
-	}); err != nil {
+	if _, err := client.ThreadModelSet(ctx, serveModelSetParams(t, ref, "push-switch", "openai", "gpt-switched", read.Thread.Evener.ModelControl)); err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)
 	}
 
@@ -410,7 +418,8 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 	}
 
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()
-	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+	if err != nil {
 		t.Fatalf("ThreadRead subscribe: %v", err)
 	}
 	frames := collectServeModelSwitchFrames(client, ref)
@@ -433,11 +442,7 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 
 	// The pick mid-turn: accepted now, applied at the boundary. This is the
 	// call that used to answer Conflict "session is processing".
-	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "openai",
-		Model:         "gpt-queued",
-	}); err != nil {
+	if _, err := client.ThreadModelSet(ctx, serveModelSetParams(t, ref, "mid-turn-switch", "openai", "gpt-queued", read.Thread.Evener.ModelControl)); err != nil {
 		t.Fatalf("ThreadModelSet during an active turn: %v", err)
 	}
 	releaseFirstNow()
@@ -475,7 +480,7 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 		t.Fatalf("second turn ran on model %q, want the queued switch (%q)", requests[1].Model, "gpt-queued")
 	}
 
-	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
+	read, err = client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatalf("ThreadRead after the queued switch applied: %v", err)
 	}
@@ -656,9 +661,7 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatal("thread/read ChangeModel = false, want true after provider failure")
 	}
 
-	if _, err := client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{
-		Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol",
-	}); err != nil {
+	if _, err := client.ThreadModelSet(ctx, serveModelSetParams(t, ref, "provider-recovery-switch", "openai", "gpt-5.6-sol", read.Thread.Evener.ModelControl)); err != nil {
 		t.Fatalf("ThreadModelSet after provider failure: %v", err)
 	}
 	recovery, err := client.TurnStart(ctx, appwire.TurnStartParams{

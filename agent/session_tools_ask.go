@@ -102,6 +102,15 @@ func (s *Session) HasPendingAsk() bool {
 // SetBootGeneration installs the durably minted generation before serving input.
 func (s *Session) SetBootGeneration(generation string) {
 	s.mu.Lock()
+	s.setBootGenerationLocked(generation)
+	publish := s.transcriptFrontier.publish
+	s.mu.Unlock()
+	if publish != nil {
+		publish(generation)
+	}
+}
+
+func (s *Session) setBootGenerationLocked(generation string) {
 	s.bootGeneration = generation
 	s.modelControlRequestSequence = 0
 	s.pendingModel = pendingModelSwitch{}
@@ -109,11 +118,6 @@ func (s *Session) SetBootGeneration(generation string) {
 		Authority: appwire.ModelControlAuthority{InstanceID: s.id, BootGeneration: generation},
 		Revision:  1,
 		Active:    modelControlActive(s.profile),
-	}
-	publish := s.transcriptFrontier.publish
-	s.mu.Unlock()
-	if publish != nil {
-		publish(generation)
 	}
 }
 

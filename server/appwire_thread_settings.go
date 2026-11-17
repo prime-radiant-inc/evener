@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -44,14 +45,8 @@ func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.Thr
 func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 	params.Model = strings.TrimSpace(params.Model)
 	params.ModelProvider = strings.TrimSpace(params.ModelProvider)
-	if params.Model == "" {
-		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("model is required")
-	}
-	hasMutation := params.ClientMutationID != ""
-	hasInstance := params.ExpectedInstanceID != ""
-	hasGeneration := params.ExpectedBootGeneration != ""
-	if (hasMutation || hasInstance || hasGeneration) && (!hasMutation || !hasInstance || !hasGeneration) {
-		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("model control identity requires client mutation, instance, and boot generation")
+	if err := params.Validate(); err != nil {
+		return appwire.ThreadModelSetResponse{}, err
 	}
 
 	s.mu.RLock()
@@ -60,9 +55,9 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 		return appwire.ThreadModelSetResponse{}, err
 	}
 	authority := appwire.ModelControlAuthority{InstanceID: s.appThreadID, BootGeneration: s.appBootGeneration}
-	if hasInstance && (params.ExpectedInstanceID != authority.InstanceID || params.ExpectedBootGeneration != authority.BootGeneration) {
+	if params.ExpectedInstanceID != authority.InstanceID || params.ExpectedBootGeneration != authority.BootGeneration {
 		s.mu.RUnlock()
-		return appwire.ThreadModelSetResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, "thread instance is stale")
+		return appwire.ThreadModelSetResponse{}, appwire.ModelControlAuthorityStale(params.ClientMutationID, "thread instance is stale")
 	}
 	bind := s.modelControlBindFunc
 	if bind == nil {
@@ -83,9 +78,12 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	}
 	response, err := binding.Set(params)
 	if err != nil {
-		// Every SetModel failure is mapped to InvalidParams deliberately: the
-		// hook's error modes today are all validation-shaped (unknown model,
-		// not a member of the instance's catalog, unresolvable ref). Revisit
+		if _, ok := errors.AsType[appwire.WireError](err); ok {
+			return appwire.ThreadModelSetResponse{}, err
+		}
+		// Unstructured SetModel failures are mapped to InvalidParams deliberately:
+		// the hook's ordinary error modes today are all validation-shaped (unknown
+		// model, not a member of the instance's catalog, unresolvable ref). Revisit
 		// this blanket mapping if SetModel grows I/O failure modes (e.g. a live
 		// ListModels fetch failing), which would deserve a distinct code.
 		return appwire.ThreadModelSetResponse{}, appwire.InvalidParams(err.Error())

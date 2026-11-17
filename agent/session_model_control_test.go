@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -89,28 +90,86 @@ func TestModelControlSnapshotSerializesEmptyEffortLevelsAsArray(t *testing.T) {
 
 func TestModelControlIdentityRejectionDoesNotConsumeSequence(t *testing.T) {
 	t.Parallel()
-	sess := newModelControlSession(t)
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*ModelControlRequest)
+		wantInfo appwire.ErrorInfo
+	}{
+		{name: "empty identity", mutate: func(r *ModelControlRequest) {
+			r.ClientMutationID = ""
+			r.ExpectedInstanceID = ""
+			r.ExpectedBootGeneration = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "mutation only", mutate: func(r *ModelControlRequest) {
+			r.ExpectedInstanceID = ""
+			r.ExpectedBootGeneration = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "instance only", mutate: func(r *ModelControlRequest) {
+			r.ClientMutationID = ""
+			r.ExpectedBootGeneration = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "generation only", mutate: func(r *ModelControlRequest) {
+			r.ClientMutationID = ""
+			r.ExpectedInstanceID = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "mutation and instance", mutate: func(r *ModelControlRequest) {
+			r.ExpectedBootGeneration = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "mutation and generation", mutate: func(r *ModelControlRequest) {
+			r.ExpectedInstanceID = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "instance and generation", mutate: func(r *ModelControlRequest) {
+			r.ClientMutationID = ""
+		}, wantInfo: appwire.ErrorInvalidParams},
+		{name: "stale instance", mutate: func(r *ModelControlRequest) {
+			r.ExpectedInstanceID = "retired"
+		}, wantInfo: appwire.ErrorModelControlAuthorityStale},
+		{name: "stale generation", mutate: func(r *ModelControlRequest) {
+			r.ExpectedBootGeneration = "6"
+		}, wantInfo: appwire.ErrorModelControlAuthorityStale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := newModelControlSession(t)
+			before := sess.ModelControlSnapshot()
+			for len(sess.Events()) > 0 {
+				<-sess.Events()
+			}
+			request := modelControlRequest(sess, "gpt-4.1-mini", "pick")
+			tc.mutate(&request)
 
-	partial := modelControlRequest(sess, "gpt-4.1-mini", "partial")
-	partial.ExpectedBootGeneration = ""
-	if _, err := sess.SetModelControl(partial); err == nil {
-		t.Fatal("partial authority = nil error, want rejection")
-	}
-	stale := modelControlRequest(sess, "gpt-4.1-mini", "stale")
-	stale.ExpectedBootGeneration = "6"
-	if _, err := sess.SetModelControl(stale); err == nil {
-		t.Fatal("stale authority = nil error, want rejection")
-	}
+			_, err := sess.SetModelControl(request)
+			if err == nil {
+				t.Fatal("invalid authority = nil error, want rejection")
+			}
+			wire, ok := errors.AsType[appwire.WireError](err)
+			data, hasData := appwire.ErrorDataOf(wire.Data)
+			if !ok || !hasData || data.EvenerErrorInfo != tc.wantInfo {
+				t.Fatalf("authority error = %T %+v data=%+v, want %q", err, wire, data, tc.wantInfo)
+			}
+			if sess.modelControlRequestSequence != 0 {
+				t.Fatalf("request sequence = %d, want no assignment", sess.modelControlRequestSequence)
+			}
+			if after := sess.ModelControlSnapshot(); !reflect.DeepEqual(after, before) {
+				t.Fatalf("authority refusal changed snapshot: before=%+v after=%+v", before, after)
+			}
+			select {
+			case event := <-sess.Events():
+				t.Fatalf("authority refusal emitted %s", event.Kind)
+			default:
+			}
 
-	response, err := sess.SetModelControl(modelControlRequest(sess, "gpt-4.1-mini", "accepted"))
-	if err != nil {
-		t.Fatalf("valid model control: %v", err)
-	}
-	if response.ModelControl == nil || response.ModelControl.Desired == nil {
-		t.Fatalf("response = %+v, want desired state", response)
-	}
-	if got := response.ModelControl.Desired.RequestSequence; got != 1 {
-		t.Fatalf("request sequence = %d, want 1 after rejected authority checks", got)
+			response, err := sess.SetModelControl(modelControlRequest(sess, "gpt-4.1-mini", "accepted"))
+			if err != nil {
+				t.Fatalf("valid model control: %v", err)
+			}
+			if response.ModelControl == nil || response.ModelControl.Desired == nil {
+				t.Fatalf("response = %+v, want desired state", response)
+			}
+			if got := response.ModelControl.Desired.RequestSequence; got != 1 {
+				t.Fatalf("request sequence = %d, want 1 after rejected authority check", got)
+			}
+		})
 	}
 }
 
@@ -237,18 +296,64 @@ func TestModelControlSameModelPublishesOnlyCanonicalTransition(t *testing.T) {
 	}
 }
 
-func TestModelControlLegacySetModelReplacesDesiredWithoutMutationID(t *testing.T) {
+func TestModelControlIdentityFreeDirectRequestIsRefused(t *testing.T) {
 	t.Parallel()
 	sess := newModelControlSession(t)
 	if _, err := sess.SetModelControl(modelControlRequest(sess, "gpt-4.1-mini", "cm_typed")); err != nil {
 		t.Fatalf("typed switch: %v", err)
 	}
-	if err := sess.SetModel("gpt-5.4"); err != nil {
-		t.Fatalf("legacy SetModel: %v", err)
+	before := sess.ModelControlSnapshot()
+	if _, err := sess.SetModelControl(ModelControlRequest{ModelProvider: "openai", Model: "gpt-5.4"}); err == nil {
+		t.Fatal("identity-free direct request = nil error, want rejection")
 	}
-	got := sess.ModelControlSnapshot()
-	if got.Desired == nil || got.Desired.ClientMutationID != "" || got.Desired.RequestSequence != 2 || got.Desired.Model != "gpt-5.4" {
-		t.Fatalf("legacy desired state = %+v, want sequence 2 without mutation id", got.Desired)
+	if after := sess.ModelControlSnapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("identity-free request changed snapshot: before=%+v after=%+v", before, after)
+	}
+	if sess.modelControlRequestSequence != 1 {
+		t.Fatalf("request sequence = %d, want the accepted request only", sess.modelControlRequestSequence)
+	}
+}
+
+func TestModelControlShutdownAfterSequenceAssignmentIsNotAccepted(t *testing.T) {
+	t.Parallel()
+	adapter := &gatedListingAdapter{name: "openai"}
+	validationStarted := make(chan struct{})
+	releaseValidation := make(chan struct{})
+	adapter.models = []func() ([]registry.Model, error){
+		func() ([]registry.Model, error) {
+			return []registry.Model{{ID: "gpt-5.4"}, {ID: "gpt-4.1-mini"}}, nil
+		},
+		func() ([]registry.Model, error) {
+			close(validationStarted)
+			<-releaseValidation
+			return []registry.Model{{ID: "gpt-5.4"}, {ID: "gpt-4.1-mini"}}, nil
+		},
+	}
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(adapter),
+		withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}),
+	)
+	sess.SetBootGeneration("7")
+	before := sess.ModelControlSnapshot()
+	type result struct {
+		response appwire.ThreadModelSetResponse
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		response, err := sess.SetModelControl(modelControlRequest(sess, "gpt-4.1-mini", "cm_closing"))
+		done <- result{response: response, err: err}
+	}()
+	<-validationStarted
+	sess.Close()
+	close(releaseValidation)
+	got := <-done
+	if got.err == nil && got.response.Disposition == appwire.ModelControlDispositionAccepted {
+		t.Fatalf("shutdown result = %+v, want error or superseded", got.response)
+	}
+	if after := sess.ModelControlSnapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("shutdown changed snapshot without accepting a transition: before=%+v after=%+v", before, after)
 	}
 }
 

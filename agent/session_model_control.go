@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -10,8 +9,8 @@ import (
 )
 
 // ModelControlRequest is one requested change to the session's canonical model.
-// The expected authority fields are all absent for a legacy caller or all
-// present for a version-1 caller.
+// Every request names one client intent and the exact Session generation that
+// may accept it.
 type ModelControlRequest struct {
 	ModelProvider          string
 	Model                  string
@@ -28,17 +27,11 @@ func (r ModelControlRequest) ref() string {
 }
 
 func (s *Session) validateModelControlAuthorityLocked(request ModelControlRequest) error {
-	hasMutation := request.ClientMutationID != ""
-	hasInstance := request.ExpectedInstanceID != ""
-	hasGeneration := request.ExpectedBootGeneration != ""
-	if !hasMutation && !hasInstance && !hasGeneration {
-		return nil
-	}
-	if !hasMutation || !hasInstance || !hasGeneration {
-		return errors.New("model control identity requires client mutation, instance, and boot generation")
+	if request.ClientMutationID == "" || request.ExpectedInstanceID == "" || request.ExpectedBootGeneration == "" {
+		return appwire.InvalidParams("model control identity requires client mutation, instance, and boot generation")
 	}
 	if request.ExpectedInstanceID != s.id || request.ExpectedBootGeneration != s.bootGeneration {
-		return errors.New("model control authority does not match the active session generation")
+		return appwire.ModelControlAuthorityStale(request.ClientMutationID, "model control authority does not match the active session generation")
 	}
 	return nil
 }

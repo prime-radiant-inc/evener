@@ -1924,12 +1924,30 @@ type modelSwitchFence struct {
 // a switch that fails there surfaces as a transcript warning and is dropped
 // rather than retried.
 func (s *Session) SetModel(model string) error {
-	_, err := s.SetModelControl(ModelControlRequest{Model: model})
+	var publish func(string)
+	s.mu.Lock()
+	if s.bootGeneration == "" && !s.closingOrClosedLocked() {
+		s.setBootGenerationLocked("standalone_" + ulid.Make().String())
+		publish = s.transcriptFrontier.publish
+	}
+	authority := appwire.ModelControlAuthority{
+		InstanceID:     s.id,
+		BootGeneration: s.bootGeneration,
+	}
+	s.mu.Unlock()
+	if publish != nil {
+		publish(authority.BootGeneration)
+	}
+	_, err := s.SetModelControl(ModelControlRequest{
+		Model:                  model,
+		ClientMutationID:       "set_model_" + ulid.Make().String(),
+		ExpectedInstanceID:     authority.InstanceID,
+		ExpectedBootGeneration: authority.BootGeneration,
+	})
 	return err
 }
 
-// SetModelControl validates and sequences one model-control request. A
-// version-1 caller supplies all identity fields; a legacy caller supplies none.
+// SetModelControl validates and sequences one authority-bound model-control request.
 func (s *Session) SetModelControl(request ModelControlRequest) (appwire.ThreadModelSetResponse, error) {
 	release, admissionErr := s.beginRetirementMutation("admission")
 	if admissionErr != nil {
@@ -1937,14 +1955,14 @@ func (s *Session) SetModelControl(request ModelControlRequest) (appwire.ThreadMo
 	}
 	defer release()
 	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
-		s.mu.Unlock()
-		return response, nil
-	}
 	if err := s.validateModelControlAuthorityLocked(request); err != nil {
 		s.mu.Unlock()
 		return appwire.ThreadModelSetResponse{}, err
+	}
+	if s.closingOrClosedLocked() {
+		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
+		s.mu.Unlock()
+		return response, nil
 	}
 	s.modelControlRequestSequence++
 	pickSeq := s.modelControlRequestSequence
@@ -1984,7 +2002,7 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 	primedInstance, primedListing := s.primeCodexRoster(model)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
+		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		return response, nil
 	}
@@ -2011,7 +2029,7 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 	s.modelControlPublishMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
+		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		s.modelControlPublishMu.Unlock()
 		return response, nil
@@ -2133,7 +2151,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
+		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		return response, nil
 	}
@@ -2177,7 +2195,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	s.modelControlPublishMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
+		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		s.modelControlPublishMu.Unlock()
 		return response, nil

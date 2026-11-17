@@ -176,6 +176,7 @@ func retirementEngineServer(t *testing.T, adapters ...llm.ProviderAdapter) (*Ser
 	if err != nil {
 		t.Fatal(err)
 	}
+	root.SetBootGeneration("1")
 	t.Cleanup(root.Close)
 	c, err := agent.NewRetirementController(0, retirementRouteClock{})
 	if err != nil {
@@ -185,14 +186,18 @@ func retirementEngineServer(t *testing.T, adapters ...llm.ProviderAdapter) (*Ser
 		t.Fatal(err)
 	}
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", root.ID())
+	stableRef := appwire.LocalRef(root.ID()).String()
+	installModelControlIdentity(t, s, root.ID(), "1", stableRef)
 	s.SetReasoningEffortFunc(root.SetReasoningEffort)
 	modelSource := &stubThreadEnvelopeSource{modelControl: root.ModelControlSnapshot()}
 	s.SetModelControlBindFunc(func(appwire.ModelControlAuthority) (ModelControlBinding, error) {
 		return ModelControlBinding{Envelope: modelSource, Set: func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 			response, err := root.SetModelControl(agent.ModelControlRequest{
-				ModelProvider: params.ModelProvider,
-				Model:         params.Model,
+				ModelProvider:          params.ModelProvider,
+				Model:                  params.Model,
+				ClientMutationID:       params.ClientMutationID,
+				ExpectedInstanceID:     params.ExpectedInstanceID,
+				ExpectedBootGeneration: params.ExpectedBootGeneration,
 			})
 			if response.ModelControl != nil {
 				modelSource.modelControl = *response.ModelControl
@@ -314,7 +319,7 @@ func TestRetirementRoutedEngineEffectsRefused(t *testing.T) {
 		{appwire.MethodTurnCancelQueued, appwire.TurnCancelQueuedParams{ClientMutationID: "route-cancel", ExpectedInstanceID: root.ID()}},
 		{appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{ClientMutationID: "route-interrupt", ExpectedInstanceID: root.ID()}},
 		{appwire.MethodThreadReasoningEffortSet, appwire.ThreadReasoningEffortSetParams{ReasoningEffort: "high"}},
-		{appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Model: "gpt-5.2"}},
+		{appwire.MethodThreadModelSet, modelControlSetParams(appwire.LocalRef(root.ID()).String(), root.ID(), "1", "route-model", "openai", "gpt-5.2")},
 		{appwire.MethodThreadVisionModelSet, appwire.ThreadVisionModelSetParams{VisionModel: "off"}},
 		{appwire.MethodThreadCompactStart, appwire.ThreadCompactStartParams{}},
 		{appwire.MethodEvenerThreadNameSet, appwire.ThreadNameSetParams{Name: "opaque-new"}},

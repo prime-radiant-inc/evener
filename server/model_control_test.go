@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -32,6 +33,29 @@ func modelControlSnapshot(instanceID, generation string, revision uint64, model 
 	}
 }
 
+func modelControlSetParams(ref, instanceID, generation, mutationID, providerID, model string) appwire.ThreadModelSetParams {
+	return appwire.ThreadModelSetParams{
+		Ref:                    ref,
+		ModelProvider:          providerID,
+		Model:                  model,
+		ClientMutationID:       mutationID,
+		ExpectedInstanceID:     instanceID,
+		ExpectedBootGeneration: generation,
+	}
+}
+
+func requireModelControlWireError(t *testing.T, err error, code int, info appwire.ErrorInfo) {
+	t.Helper()
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error type = %T, want appwire.WireError", err)
+	}
+	data, ok := appwire.ErrorDataOf(wire.Data)
+	if !ok || wire.Code != code || data.EvenerErrorInfo != info {
+		t.Fatalf("wire error = %+v data=%+v, want code %d and info %q", wire, data, code, info)
+	}
+}
+
 func TestHandleAppThreadModelSet_CapableResponseAndReadUseOneSnapshot(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	installModelControlIdentity(t, srv, "instance-1", "7", "local:workspace")
@@ -55,11 +79,10 @@ func TestHandleAppThreadModelSet_CapableResponseAndReadUseOneSnapshot(t *testing
 			},
 		}, nil
 	})
-	params := appwire.ThreadModelSetParams{
-		Ref: "local:workspace", ModelProvider: "openrouter", Model: "anthropic/claude-opus",
-		ClientMutationID: "pick-1", ExpectedInstanceID: "instance-1", ExpectedBootGeneration: "7",
-	}
-	response, err := srv.handleAppThreadModelSet(context.Background(), params)
+	params := modelControlSetParams("local:workspace", "instance-1", "7", "pick-1", "openrouter", "anthropic/claude-opus")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	response, err := srv.handleAppThreadModelSet(ctx, params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,51 +106,88 @@ func TestHandleAppThreadModelSet_CapableResponseAndReadUseOneSnapshot(t *testing
 
 func TestHandleAppThreadModelSet_RejectsPartialOrStaleAuthorityBeforeBinding(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		params appwire.ThreadModelSetParams
+		name       string
+		mutate     func(*appwire.ThreadModelSetParams)
+		wantCode   int
+		wantReason appwire.ErrorInfo
 	}{
-		{name: "partial", params: appwire.ThreadModelSetParams{Model: "gpt-5.5", ClientMutationID: "pick-1", ExpectedInstanceID: "instance-1"}},
-		{name: "stale instance", params: appwire.ThreadModelSetParams{Model: "gpt-5.5", ClientMutationID: "pick-1", ExpectedInstanceID: "old", ExpectedBootGeneration: "7"}},
-		{name: "stale generation", params: appwire.ThreadModelSetParams{Model: "gpt-5.5", ClientMutationID: "pick-1", ExpectedInstanceID: "instance-1", ExpectedBootGeneration: "6"}},
+		{name: "empty identity", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ClientMutationID, p.ExpectedInstanceID, p.ExpectedBootGeneration = "", "", ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "mutation only", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ExpectedInstanceID, p.ExpectedBootGeneration = "", ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "instance only", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ClientMutationID, p.ExpectedBootGeneration = "", ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "generation only", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ClientMutationID, p.ExpectedInstanceID = "", ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "mutation and instance", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ExpectedBootGeneration = ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "mutation and generation", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ExpectedInstanceID = ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "instance and generation", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ClientMutationID = ""
+		}, wantCode: appwire.CodeInvalidParams, wantReason: appwire.ErrorInvalidParams},
+		{name: "stale instance", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ExpectedInstanceID = "old"
+		}, wantCode: appwire.CodeConflict, wantReason: appwire.ErrorModelControlAuthorityStale},
+		{name: "stale generation", mutate: func(p *appwire.ThreadModelSetParams) {
+			p.ExpectedBootGeneration = "6"
+		}, wantCode: appwire.CodeConflict, wantReason: appwire.ErrorModelControlAuthorityStale},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			installModelControlIdentity(t, srv, "instance-1", "7", "local:workspace")
+			snapshot := modelControlSnapshot("instance-1", "7", 1, "gpt-5.4")
+			source := &stubThreadEnvelopeSource{modelControl: snapshot}
+			srv.SetThreadEnvelopeSource(source)
 			called := false
 			srv.SetModelControlBindFunc(func(appwire.ModelControlAuthority) (ModelControlBinding, error) {
 				called = true
 				return ModelControlBinding{}, nil
 			})
-			tc.params.Ref = "local:workspace"
-			if _, err := srv.handleAppThreadModelSet(context.Background(), tc.params); err == nil {
+			params := modelControlSetParams("not-a-stable-ref", "instance-1", "7", "pick-1", "openai", "gpt-5.5")
+			if tc.wantReason == appwire.ErrorModelControlAuthorityStale {
+				params.Ref = "local:workspace"
+			}
+			tc.mutate(&params)
+			_, err := srv.handleAppThreadModelSet(context.Background(), params)
+			if err == nil {
 				t.Fatal("expected authority error")
 			}
+			requireModelControlWireError(t, err, tc.wantCode, tc.wantReason)
 			if called {
 				t.Fatal("invalid authority reached the binder")
+			}
+			if !reflect.DeepEqual(source.modelControl, snapshot) {
+				t.Fatalf("authority refusal changed source snapshot: %+v", source.modelControl)
 			}
 		})
 	}
 }
 
-func TestHandleAppThreadModelSet_LegacyRequestStillBindsCurrentAuthority(t *testing.T) {
+func TestHandleAppThreadModelSet_IdentityFreeRequestIsRefused(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	installModelControlIdentity(t, srv, "instance-1", "7", "local:workspace")
 	snapshot := modelControlSnapshot("instance-1", "7", 2, "gpt-5.5")
 	source := &stubThreadEnvelopeSource{modelControl: snapshot}
 	srv.SetThreadEnvelopeSource(source)
-	srv.SetModelControlBindFunc(func(authority appwire.ModelControlAuthority) (ModelControlBinding, error) {
-		if authority != snapshot.Authority {
-			t.Fatalf("authority = %+v, want %+v", authority, snapshot.Authority)
-		}
-		return ModelControlBinding{Envelope: source, Set: func(params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
-			if params.ClientMutationID != "" || params.ExpectedInstanceID != "" || params.ExpectedBootGeneration != "" {
-				t.Fatalf("legacy identity changed: %+v", params)
-			}
-			return appwire.ThreadModelSetResponse{ModelControlVersion: 1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &snapshot}, nil
-		}}, nil
+	called := false
+	srv.SetModelControlBindFunc(func(appwire.ModelControlAuthority) (ModelControlBinding, error) {
+		called = true
+		return ModelControlBinding{}, nil
 	})
-	if _, err := srv.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Ref: "local:workspace", Model: "gpt-5.5"}); err != nil {
-		t.Fatal(err)
+	_, err := srv.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Ref: "local:workspace", ModelProvider: "openai", Model: "gpt-5.5"})
+	if err == nil {
+		t.Fatal("identity-free request = nil error, want rejection")
+	}
+	requireModelControlWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
+	if called {
+		t.Fatal("identity-free request reached the binder")
 	}
 }
 
@@ -189,7 +249,7 @@ func TestHandleAppThreadModelSet_RemainsBoundAcrossConcurrentClear(t *testing.T)
 	})
 	done := make(chan appwire.ThreadModelSetResponse, 1)
 	go func() {
-		response, _ := srv.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Ref: "local:workspace", Model: "gpt-old"})
+		response, _ := srv.handleAppThreadModelSet(context.Background(), modelControlSetParams("local:workspace", "old", "7", "pick-old", "openai", "gpt-old"))
 		done <- response
 	}()
 	<-started

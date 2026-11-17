@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -21,6 +20,10 @@ func setModelControlTestHook(t *testing.T, s *Server, fn func(appwire.ThreadMode
 	return source
 }
 
+func strictModelSetParams(mutationID, model string) appwire.ThreadModelSetParams {
+	return modelControlSetParams("local:s1", "s1", "1", mutationID, "openai", model)
+}
+
 // While a turn runs, the protocol layer must NOT refuse a model switch: the
 // session's SetModel queues it for the turn boundary (the composer's pick-
 // mid-turn contract), so the handler relays to the hook and succeeds. The
@@ -34,7 +37,7 @@ func TestHandleAppThreadModelSet_WhileProcessingReachesTheHook(t *testing.T) {
 	})
 	s.SetProcessing(true)
 
-	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"}); err != nil {
+	if _, err := s.handleAppThreadModelSet(context.Background(), strictModelSetParams("pick-mid-turn", "claude-x")); err != nil {
 		t.Fatalf("a mid-turn switch must not error at the protocol layer: %v", err)
 	}
 	if !called {
@@ -49,16 +52,11 @@ func TestHandleAppThreadModelSet_HookErrorSurfacesAsWireError(t *testing.T) {
 		return appwire.ThreadModelSetResponse{}, hookErr
 	})
 
-	_, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
+	_, err := s.handleAppThreadModelSet(context.Background(), strictModelSetParams("pick-invalid", "claude-x"))
 	if err == nil {
 		t.Fatal("expected an error from the hook")
 	}
-	if !strings.Contains(err.Error(), hookErr.Error()) {
-		t.Fatalf("wire error should carry the hook message, got: %v", err)
-	}
-	if _, ok := errors.AsType[appwire.WireError](err); !ok {
-		t.Fatalf("expected a structured appwire.WireError, got %T: %v", err, err)
-	}
+	requireModelControlWireError(t, err, appwire.CodeInvalidParams, appwire.ErrorInvalidParams)
 }
 
 func TestHandleAppThreadModelSet_SuccessReturnsTypedResponse(t *testing.T) {
@@ -71,7 +69,7 @@ func TestHandleAppThreadModelSet_SuccessReturnsTypedResponse(t *testing.T) {
 		return appwire.ThreadModelSetResponse{Disposition: appwire.ModelControlDispositionAccepted}, nil
 	})
 
-	resp, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{Model: "claude-x"})
+	resp, err := s.handleAppThreadModelSet(context.Background(), strictModelSetParams("pick-success", "claude-x"))
 	if err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
@@ -91,10 +89,9 @@ func TestHandleAppThreadModelSet_PreservesQualifiedModelAndProviderFields(t *tes
 		return appwire.ThreadModelSetResponse{}, nil
 	})
 
-	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
-		ModelProvider: "openrouter",
-		Model:         "anthropic/claude-x",
-	}); err != nil {
+	params := strictModelSetParams("pick-qualified", "anthropic/claude-x")
+	params.ModelProvider = "openrouter"
+	if _, err := s.handleAppThreadModelSet(context.Background(), params); err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
 	if got.ModelProvider != "openrouter" || got.Model != "anthropic/claude-x" {
@@ -113,7 +110,9 @@ func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
 	})
 	_ = source
 
-	if _, err := s.handleAppThreadModelSet(context.Background(), appwire.ThreadModelSetParams{ModelProvider: "anthropic", Model: "claude-opus-4-6"}); err != nil {
+	params := strictModelSetParams("pick-read", "claude-opus-4-6")
+	params.ModelProvider = "anthropic"
+	if _, err := s.handleAppThreadModelSet(context.Background(), params); err != nil {
 		t.Fatalf("handleAppThreadModelSet: %v", err)
 	}
 
