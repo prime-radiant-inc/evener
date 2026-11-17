@@ -1,4 +1,9 @@
-import { configFingerprint, formatQuoteBlock, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
+import {
+  configFingerprint,
+  createTranscriptProjector,
+  formatQuoteBlock,
+  resolveEffectiveConfig,
+} from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { chromeStore } from "../../shell/chromeStore";
@@ -378,7 +383,15 @@ function LiveConversationBody({
     () => resolveEffectiveConfig({ local: displayLocal, hub: displayHub, layout: displayViewport }),
     [displayHub, displayLocal, displayViewport],
   );
-  const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
+  // One projector per mounted conversation, so a streamed delta reuses the
+  // derivation it already paid for: only the streaming turn is re-projected
+  // (see createTranscriptProjector). A projector holds its last model, so it
+  // must not be shared across conversations.
+  const projector = useMemo(() => createTranscriptProjector(), []);
+  const projection = useMemo(
+    () => (model ? projector.project(model, displayConfig) : undefined),
+    [projector, model, displayConfig],
+  );
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
   const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
   const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);

@@ -108,11 +108,18 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	return nil, 0, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, displayRoot ...string) (string, error) {
+// globCached is the same fail-closed stub as glob: this platform never builds a
+// sandboxFS, so the cache its callers thread in is never read. It exists so the
+// off-Unix build keeps compiling against the same call sites.
+func (s *sandboxFS) globCached(ctx context.Context, tool, base, pattern string, includeIgnored bool, budget *GlobBudget, cache *ignoreMatcherCache) ([]string, int, error) {
+	return nil, 0, errSandboxUnsupported()
+}
+
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, cache *ignoreMatcherCache, displayRoot ...string) (string, error) {
 	return "", errSandboxUnsupported()
 }
 
-func (s *sandboxFS) grepConfinedNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, outputRoot string) (string, error) {
+func (s *sandboxFS) grepConfinedNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, cache *ignoreMatcherCache, outputRoot string) (string, error) {
 	return "", errSandboxUnsupported()
 }
 

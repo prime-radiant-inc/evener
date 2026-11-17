@@ -44,8 +44,13 @@ func TestHubRosterArchivedLiveSession(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				poke := make(chan struct{})
 				done := make(chan struct{})
+				// Synchronous starter: the wake loop stays on this goroutine and
+				// waits for its notices watcher, so <-done below means the
+				// watcher has exited. Only then may this test read broker state
+				// such as sub.baseline, which the wake writes under the broker
+				// mutex.
 				go func() {
-					watchHubAttention(ctx, poke, archive, web)
+					startHubSnapshotWatchers(ctx, func(fn func()) { fn() }, poke, archive, web)
 					close(done)
 				}()
 				// The unbuffered poke is accepted only after the initial run has

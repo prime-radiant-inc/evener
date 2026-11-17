@@ -24,6 +24,13 @@ type LocalExecutionEnvironment struct {
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 
+	// ignoreMatchers memoizes the compiled matcher of each .gitignore file this
+	// environment's searches have read, so repeated glob and grep calls compile
+	// a rules file once. It never changes what a matcher matches: an entry is
+	// keyed on the file's own size and modification time, so a rules file that
+	// changes is recompiled on the next call (see ignoreMatcherCache).
+	ignoreMatchers *ignoreMatcherCache
+
 	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, terminationGrace,
 	// and outputCaptureCap are instance-local test seams. Nil/empty values retain
 	// production os/exec, os.Environ, exec.LookPath, os.TempDir, terminateGrace,
@@ -236,11 +243,12 @@ func (c *gitRootCache) lookup(cwd string, compute func() (root string, definitiv
 // rootDir with a fresh PID tracker.
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 	return &LocalExecutionEnvironment{
-		RootDir:     rootDir,
-		runningPIDs: &sync.Map{},
-		gitRoots:    &gitRootCache{m: map[string]string{}},
-		mainRoots:   &gitRootCache{m: map[string]string{}},
-		fs:          afero.NewOsFs(),
+		RootDir:        rootDir,
+		runningPIDs:    &sync.Map{},
+		gitRoots:       &gitRootCache{m: map[string]string{}},
+		mainRoots:      &gitRootCache{m: map[string]string{}},
+		fs:             afero.NewOsFs(),
+		ignoreMatchers: newIgnoreMatcherCache(),
 	}
 }
 

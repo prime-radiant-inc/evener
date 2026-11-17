@@ -1298,8 +1298,11 @@ func (x *Index) scan(length int64) error {
 	bufSize := max(min(unread, 1<<20), 4<<10)
 	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, unread), int(bufSize))
 	offset := x.meta.Length
+	// One buffer for the whole scan: every line's own allocation would otherwise
+	// be paid per entry, which a cold rebuild pays for the entire transcript.
+	var lines transcript.LineBuffer
 	for {
-		line, complete, n, err := transcript.ReadLine(reader, maxLineBytes)
+		line, complete, n, err := lines.ReadLine(reader, maxLineBytes)
 		if err != nil {
 			return err
 		}

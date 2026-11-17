@@ -79,7 +79,6 @@ func TestFilteredFanoutWireBytesMatchPreChangeGolden(t *testing.T) {
 		t.Run(record.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			conns := map[string]*Connection{}
-			index := 0
 			for name, selection := range selections {
 				conn := s.NewConnection(name)
 				conn.setInitialized()
@@ -93,7 +92,6 @@ func TestFilteredFanoutWireBytesMatchPreChangeGolden(t *testing.T) {
 				}
 				s.subs.setContent(conn.id, "thread", 0, filter)
 				conns[name] = conn
-				index++
 			}
 			s.Broadcast("thread", record.method, record.params)
 			for name := range selections {

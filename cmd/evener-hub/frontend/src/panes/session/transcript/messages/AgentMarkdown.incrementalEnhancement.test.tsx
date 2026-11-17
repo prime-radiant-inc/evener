@@ -5,6 +5,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { AgentMarkdown } from "./AgentMarkdown";
+import * as cacheModule from "./analysisCache";
 
 // What this file pins, from issue #6455: the enhancement pass AgentMarkdown
 // runs after each streamed delta must produce exactly the DOM one full pass
@@ -160,6 +161,71 @@ test("a plain re-render of unchanged text equals the first render", () => {
   }
 });
 
+// Issue #6603: the cache earns its memory only across the passes of a stream.
+// Settling remounts AgentMarkdown (AgentMessageItem wraps the live branch in
+// .stream and the settled one without it), so a settled instance fills its
+// cache once and then answers its own pass only - while holding every block's
+// text and its span arrays for as long as the message stays mounted. A settled
+// message therefore keeps no cache at all, and a live one keeps its single
+// cache: the streaming path's reuse must survive the fix.
+test("a settled message creates no analysis cache", () => {
+  const create = vi.spyOn(cacheModule, "createAnalysisCache");
+  const settled = render(view(SETTLED, false));
+  try {
+    expect(create).not.toHaveBeenCalled();
+    // A cache that was never created must not have cost the pass its work.
+    expectDecorated(settled.container);
+  } finally {
+    settled.unmount();
+  }
+});
+
+test("a live message creates one cache and re-renders without another", () => {
+  const create = vi.spyOn(cacheModule, "createAnalysisCache");
+  const streamed = render(view(`${SETTLED}\n\n${TAIL.slice(0, 12)}`, true));
+  try {
+    expect(create).toHaveBeenCalledTimes(1);
+    create.mockClear();
+    act(() => {
+      streamed.rerender(view(`${SETTLED}\n\n${TAIL.slice(0, 24)}`, true));
+    });
+    act(() => {
+      streamed.rerender(view(`${SETTLED}\n\n${TAIL.slice(0, 36)}`, true));
+    });
+    expect(create).not.toHaveBeenCalled();
+  } finally {
+    streamed.unmount();
+  }
+});
+
+// The other half of #6603: an instance that streamed and then settled must not
+// carry its stream's cache into the rest of its settled life. Observable as
+// work, not as a field: an edit that arrives after the settle finds nothing
+// cached, so the pass over it scans every paragraph instead of answering the
+// unchanged ones from the stream. The stream's own final pass is allowed to
+// answer from the cache it filled - the release is what the edit sees.
+test("settling releases the stream's cache, so a later settled edit retains nothing to reuse", () => {
+  const streamed = render(view(`${SETTLED}\n\n${TAIL.slice(0, 12)}`, true));
+  try {
+    act(() => {
+      streamed.rerender(view(`${SETTLED}\n\n${TAIL}`, true));
+    });
+    // Settle as a separate commit, then edit: two settled renders.
+    act(() => {
+      streamed.rerender(view(`${SETTLED}\n\n${TAIL}`, false));
+    });
+    const spy = spyOnAnalysis();
+    const edited = SETTLED.replace("docs/report.md", "docs/report.md plus docs/added.md");
+    act(() => {
+      streamed.rerender(view(`${edited}\n\n${TAIL}`, false));
+    });
+    expect(spy.fileSpans.mock.calls.length).toBeGreaterThanOrEqual(PARAGRAPHS.length);
+    expectDecorated(streamed.container);
+  } finally {
+    streamed.unmount();
+  }
+});
+
 // The work-reduction seam: the shared analysis functions themselves, called
 // through the modules the production code imports. Counting them counts
 // re-derivation of what a block of text names, which is the per-delta scan,
@@ -207,13 +273,15 @@ test("a delta re-derives analysis only for the text it changed", () => {
   }
 });
 
-test("an edit re-derives analysis only for the block it changed", () => {
-  const rendered = render(view(SETTLED, false));
+// The reuse lives on the live path (issue #6603 kept it there and dropped it
+// for settled messages), so the edit case is pinned on a live render.
+test("an edit to a live message re-derives analysis only for the block it changed", () => {
+  const rendered = render(view(`${SETTLED}\n\n${TAIL}`, true));
   try {
     const spy = spyOnAnalysis();
     const edited = SETTLED.replace("docs/report.md", "docs/report.md plus docs/added.md");
     act(() => {
-      rendered.rerender(view(edited, false));
+      rendered.rerender(view(`${edited}\n\n${TAIL}`, true));
     });
     expect(spy.fileSpans.mock.calls.length).toBeLessThanOrEqual(2);
     expect(spy.entityIds.mock.calls.length).toBeLessThanOrEqual(2);

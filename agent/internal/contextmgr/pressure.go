@@ -361,14 +361,16 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 // estimateTokenPartsFor is the estimator's additive decomposition over turns: it
 // projects the turns the way the request builder does and returns the chars and
 // fixed-price token counts the estimate is built from. Summing parts across
-// slices and calling Total once gives exactly the whole-slice answer.
+// slices and calling Total once gives exactly the whole-slice answer, which is
+// what lets the memo keep a prefix's parts and walk only what was appended.
 //
-// The walk prices each turn as it goes rather than projecting the history into a
-// []llm.Message and pricing that list. The intermediate list was a full copy of
-// the conversation on every reading — one allocation of len(turns) messages —
-// and the request path reads this estimate several times per round, so it
-// removed nothing the estimate needed (#6439). The per-message arithmetic and
-// the single divide-by-four are unchanged: see llm.TokenPartEstimator.
+// The walk prices each turn in place against the resolved row its caller already
+// took from the round's profile snapshot, and it must not allocate per turn or
+// per reading: the request path reads this estimate several times per round. Its
+// answer must equal what pricing the projected []llm.Message list gives, since
+// that is the number the compaction thresholds were tuned against. The
+// per-message arithmetic and the single divide-by-four are
+// llm.TokenPartEstimator's.
 func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	estimator := llm.TokenPartEstimatorFor(res)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -79,45 +80,135 @@ func TestDecodeEntryRejectsAMismatchedNoticePayload(t *testing.T) {
 	}
 }
 
+// lineReadResult is one record read, flattened so a whole sequence of reads
+// compares as one value.
+type lineReadResult struct {
+	line      string
+	complete  bool
+	bytesRead int64
+	tooLong   bool
+}
+
+// readLineFunc reads one record through either ReadLine or one LineBuffer's
+// method, so a sequence runs against both implementations unchanged.
+type readLineFunc func(reader *bufio.Reader, maxLineBytes int) ([]byte, bool, int64, error)
+
+// lineReadSequence is one input driven from start to end, with the tuples
+// every reader must return for it.
+type lineReadSequence struct {
+	name         string
+	data         string
+	bufioSize    int
+	maxLineBytes int
+	want         []lineReadResult
+}
+
+// lineReadSequences covers the boundary cases ReadLine exists to handle. Each
+// sequence ends when a read reports an error or an incomplete record, which is
+// also why the last tuple of every sequence is one of those two.
+var lineReadSequences = []lineReadSequence{
+	{
+		name:         "consecutive records with an oversized one drained",
+		data:         "1234\n12345\nok\n",
+		maxLineBytes: 4,
+		want: []lineReadResult{
+			{line: "1234", complete: true, bytesRead: 5},
+			{tooLong: true, bytesRead: 6},
+			{line: "ok", complete: true, bytesRead: 3},
+			// The input ends: one more read reports EOF at no cost.
+			{},
+		},
+	},
+	{
+		// A reader smaller than any line forces ReadSlice's ErrBufferFull path,
+		// so each record reassembles from fragments split across buffer
+		// boundaries. The limit still applies to the whole line.
+		name:         "fragmented records across buffer boundaries",
+		data:         strings.Repeat("a", 64) + "\n" + strings.Repeat("b", 65) + "\n" + "tail\n",
+		bufioSize:    16,
+		maxLineBytes: 64,
+		want: []lineReadResult{
+			{line: strings.Repeat("a", 64), complete: true, bytesRead: 65},
+			{tooLong: true, bytesRead: 66},
+			{line: "tail", complete: true, bytesRead: 5},
+			{},
+		},
+	},
+	{
+		// The sequence a reused buffer is most likely to get wrong: a dropped
+		// line between two good ones, then an unterminated tail. A buffer that
+		// kept the dropped line's bytes, or lost its capacity, corrupts the
+		// record that follows — which no consecutive-complete-lines test sees.
+		name:         "complete, dropped, complete, unterminated tail",
+		data:         "first\n" + strings.Repeat("z", 17) + "\nafter\n" + "unterminated-tail",
+		maxLineBytes: 16,
+		want: []lineReadResult{
+			{line: "first", complete: true, bytesRead: 6},
+			{tooLong: true, bytesRead: 18},
+			{line: "after", complete: true, bytesRead: 6},
+			{bytesRead: int64(len("unterminated-tail"))},
+		},
+	},
+}
+
+// runLineReadSequence drives one reader through one sequence and collects
+// every tuple it returns.
+func runLineReadSequence(read readLineFunc, seq lineReadSequence) []lineReadResult {
+	var reader *bufio.Reader
+	if seq.bufioSize > 0 {
+		reader = bufio.NewReaderSize(strings.NewReader(seq.data), seq.bufioSize)
+	} else {
+		reader = bufio.NewReader(strings.NewReader(seq.data))
+	}
+	var got []lineReadResult
+	for {
+		line, complete, bytesRead, err := read(reader, seq.maxLineBytes)
+		got = append(got, lineReadResult{
+			line:      string(line),
+			complete:  complete,
+			bytesRead: bytesRead,
+			tooLong:   errors.Is(err, ErrLineTooLong),
+		})
+		// ErrLineTooLong is recoverable: the oversized record has been drained
+		// and the next read continues at the following one. Note it also
+		// reports complete=false, so it has to be handled before the short
+		// record case. Any other error, or an unterminated tail, ends the
+		// input. Comparing both readers against the same want table also pins
+		// that they agree, record for record.
+		switch {
+		case errors.Is(err, ErrLineTooLong):
+			continue
+		case err != nil, !complete:
+			return got
+		}
+	}
+}
+
 func TestReadLineBoundExcludesNewlineAndDrainsOversizedRecords(t *testing.T) {
-	reader := bufio.NewReader(strings.NewReader("1234\n12345\nok\n"))
-
-	line, complete, bytesRead, err := ReadLine(reader, 4)
-	if err != nil || !complete || string(line) != "1234" || bytesRead != 5 {
-		t.Fatalf("exact-max line = (%q, %t, %d, %v), want (1234, true, 5, nil)", line, complete, bytesRead, err)
+	readers := []struct {
+		name string
+		open func() readLineFunc
+	}{
+		// ReadLine's signature is readLineFunc's, so the function value is the
+		// direct one.
+		{name: "ReadLine", open: func() readLineFunc { return ReadLine }},
+		// One LineBuffer across the whole sequence: the buffer is what persists
+		// between calls, so a fresh one per record would test nothing.
+		{name: "LineBuffer", open: func() readLineFunc {
+			var b LineBuffer
+			return b.ReadLine
+		}},
 	}
-
-	line, complete, bytesRead, err = ReadLine(reader, 4)
-	if !errors.Is(err, ErrLineTooLong) || complete || line != nil || bytesRead != 6 {
-		t.Fatalf("max+1 line = (%q, %t, %d, %v), want drained ErrLineTooLong", line, complete, bytesRead, err)
-	}
-
-	line, complete, bytesRead, err = ReadLine(reader, 4)
-	if err != nil || !complete || string(line) != "ok" || bytesRead != 3 {
-		t.Fatalf("line after oversized record = (%q, %t, %d, %v), want (ok, true, 3, nil)", line, complete, bytesRead, err)
-	}
-
-	// A reader smaller than any line forces ReadSlice's ErrBufferFull path, so
-	// each record reassembles from fragments split across buffer boundaries.
-	// The limit still applies to the whole line: exactly at the limit succeeds,
-	// one byte over is drained as ErrLineTooLong, and the next line stays
-	// readable.
-	fragmented := strings.Repeat("a", 64) + "\n" + strings.Repeat("b", 65) + "\n" + "tail\n"
-	reader = bufio.NewReaderSize(strings.NewReader(fragmented), 16)
-
-	line, complete, bytesRead, err = ReadLine(reader, 64)
-	if err != nil || !complete || len(line) != 64 || bytesRead != 65 {
-		t.Fatalf("exact-limit fragmented line = (len=%d, %t, %d, %v), want (64, true, 65, nil)", len(line), complete, bytesRead, err)
-	}
-
-	line, complete, bytesRead, err = ReadLine(reader, 64)
-	if !errors.Is(err, ErrLineTooLong) || complete || line != nil || bytesRead != 66 {
-		t.Fatalf("oversized fragmented line = (len=%d, %t, %d, %v), want drained ErrLineTooLong", len(line), complete, bytesRead, err)
-	}
-
-	line, complete, bytesRead, err = ReadLine(reader, 64)
-	if err != nil || !complete || string(line) != "tail" || bytesRead != 5 {
-		t.Fatalf("line after oversized fragmented record = (%q, %t, %d, %v), want (tail, true, 5, nil)", line, complete, bytesRead, err)
+	for _, seq := range lineReadSequences {
+		for _, rd := range readers {
+			t.Run(seq.name+"/"+rd.name, func(t *testing.T) {
+				got := runLineReadSequence(rd.open(), seq)
+				if !reflect.DeepEqual(got, seq.want) {
+					t.Fatalf("%s over %q (max %d) = %+v, want %+v",
+						rd.name, seq.data, seq.maxLineBytes, got, seq.want)
+				}
+			})
+		}
 	}
 }
 
@@ -126,5 +217,20 @@ func TestReadLineDiscardsArbitraryUnterminatedTailWithoutRetention(t *testing.T)
 	line, complete, bytesRead, err := ReadLine(bufio.NewReader(bytes.NewReader(tail)), 4)
 	if err != nil || complete || line != nil || bytesRead != int64(len(tail)) {
 		t.Fatalf("unterminated tail = (len=%d, %t, %d, %v), want (0, false, %d, nil)", len(line), complete, bytesRead, err, len(tail))
+	}
+
+	// The same unterminated tail through a reused buffer must be dropped rather
+	// than kept: a LineBuffer that retained it would hold a megabyte of
+	// capacity for a record it is never going to return. Reading a good line
+	// afterwards also shows the drop left the buffer usable.
+	var b LineBuffer
+	line, complete, bytesRead, err = b.ReadLine(bufio.NewReader(bytes.NewReader(tail)), 4)
+	if err != nil || complete || line != nil || bytesRead != int64(len(tail)) {
+		t.Fatalf("unterminated tail through LineBuffer = (len=%d, %t, %d, %v), want (0, false, %d, nil)", len(line), complete, bytesRead, err, len(tail))
+	}
+	reader := bufio.NewReader(strings.NewReader("next\n"))
+	line, complete, bytesRead, err = b.ReadLine(reader, 4)
+	if err != nil || !complete || string(line) != "next" || bytesRead != 5 {
+		t.Fatalf("line after unterminated tail through LineBuffer = (%q, %t, %d, %v), want (next, true, 5, nil)", line, complete, bytesRead, err)
 	}
 }
