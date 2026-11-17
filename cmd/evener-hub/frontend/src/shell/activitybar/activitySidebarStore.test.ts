@@ -26,7 +26,6 @@ test("About reload preserves another category's view intent", () => {
   store.getState().retarget("remote:a");
   store.getState().openWith("jobs");
   store.getState().setCategoryView("remote:a", "jobs", {
-    shown: 60,
     anchor: { id: "later-page-job", offset: 17 },
   });
   store.getState().setTab("about");
@@ -35,7 +34,6 @@ test("About reload preserves another category's view intent", () => {
   store.getState().retarget("remote:a");
   expect(store.getState()).toMatchObject({ open: false, tab: "about", ref: "remote:a" });
   expect(store.getState().views.get("remote:a")?.categories.jobs).toEqual({
-    shown: 60,
     anchor: { id: "later-page-job", offset: 17 },
   });
   store.getState().openWith();
@@ -530,14 +528,13 @@ test("committed revisit writes are deferred and an already newest view remains a
   }
 });
 
-test("equivalent scroll and disclosure-count choices do not rewrite storage or notify the view", () => {
+test("equivalent scroll choices do not rewrite storage or notify the view", () => {
   const state = activitySidebarStore.getState();
   state.retarget("source:owner");
-  state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -12 }, shown: 40 });
+  state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -12 } });
   const snapshot = activitySidebarStore.getState();
   const writes = vi.spyOn(localStorage, "setItem");
   state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -12 } });
-  state.setCategoryView("source:owner", "agents", { shown: 40 });
   expect(writes).not.toHaveBeenCalled();
   expect(activitySidebarStore.getState()).toBe(snapshot);
   state.setCategoryView("source:owner", "agents", { anchor: { id: "delegate:one", offset: -13 } });
@@ -603,7 +600,7 @@ test("scroll bursts retain latest intent without synchronous persistence per fra
   }
 });
 
-test.each(["close", "category", "retarget", "pagehide", "shown"])(
+test.each(["close", "category", "retarget", "pagehide"])(
   "%s flushes the latest pending anchor and absorbs its timer",
   (boundary) => {
     vi.useFakeTimers();
@@ -617,7 +614,6 @@ test.each(["close", "category", "retarget", "pagehide", "shown"])(
       if (boundary === "category") state.setTab("watches");
       if (boundary === "retarget") state.retarget("source:child");
       if (boundary === "pagehide") window.dispatchEvent(new Event("pagehide"));
-      if (boundary === "shown") state.setCategoryView("source:owner", "jobs", { shown: 40 });
       const saved = JSON.parse(localStorage.getItem(ACTIVITY_VIEW_STORAGE_KEY) ?? "{}");
       expect(saved["source:owner"].categories.jobs.anchor.offset).toBe(19);
       expect(writes).toHaveBeenCalledTimes(1);

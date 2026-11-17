@@ -24,7 +24,7 @@ export function revealControl(container, refusedSelector) {
       (node) => !!(fold.compareDocumentPosition(node) & DOCUMENT_POSITION_FOLLOWING),
     );
   if (fold && !inactiveVisible) return fold;
-  return controls.find((control) => usable(control) && control.textContent.trim().startsWith("Show ")) ?? null;
+  return null;
 }
 
 // The one-page-turn expression `reveal` evaluates. It re-checks the target on

@@ -4,26 +4,22 @@ import { ActivityPageBoundary } from "./ActivityPageBoundary";
 // to the shared owner without acquiring another reader or retry loop.
 
 import { activityNodeID, type SessionDelegate } from "@evener/appwire-client";
-import { useLayoutEffect } from "react";
 import { openTranscript } from "../../panes/session/transcript/openTranscript";
 import { enterAgentCascade } from "../../panes/zoom/actions";
 import { useSessionActivity } from "../../stores/sessionActivity";
-import { Button, Disclosure, EmptyState, InlineNotice, Skeleton } from "../../widgets";
-import { isDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
+import { Disclosure, EmptyState, InlineNotice, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
-import { useActivityScrollAnchor, useActivityScrollProgress, useActivityViewCurrent } from "./ActivityViewport";
+import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
 import { activityPlaceholderLines } from "./activityPlaceholders";
 import { AgentRow } from "./activityRows";
-import { activitySidebarStore, useActivitySidebarStore } from "./activitySidebarStore";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
 };
 
-const PAGE = 20;
 function drill(sub: SessionDelegate): void {
   if (isMobileViewport()) openTranscript(sub.childRef, sub.ownerRef);
   else enterAgentCascade(sub);
@@ -31,23 +27,13 @@ function drill(sub: SessionDelegate): void {
 
 export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps) {
   const foldID = `${scope.leaf.ref}\0inactive-delegates`;
-  const foldOpen = isDisclosureOpen(foldID, false);
-  const shown = useActivitySidebarStore((state) => state.views.get(scope.leaf.ref)?.categories.agents?.shown ?? PAGE);
   const { snapshot, loadMore } = useSessionActivity(scope.leaf.ref, "session", "delegates");
   const collection = snapshot?.delegates;
   const summary = snapshot?.summary?.delegates;
   const inactiveTotal = summary?.known ? summary.total - summary.active : null;
-  const anchorID = useActivityScrollAnchor();
-  const isCurrent = useActivityViewCurrent();
   const rows = collection?.rows ?? [];
   const current = rows.filter((row) => !row.terminal);
   const inactive = rows.filter((row) => row.terminal);
-  const anchorIndex = inactive.findIndex((sub) => activityNodeID({ ...sub, kind: "delegate" }) === anchorID);
-  const visible = Math.max(shown, Math.ceil((anchorIndex + 1) / PAGE) * PAGE);
-  useLayoutEffect(() => {
-    if (anchorID && foldOpen && visible > shown && isCurrent())
-      activitySidebarStore.getState().setCategoryView(scope.leaf.ref, "agents", { shown: visible });
-  }, [anchorID, foldOpen, visible, shown, isCurrent, scope.leaf.ref]);
   useActivityScrollProgress(
     collection?.rows.map((sub) => activityNodeID({ ...sub, kind: "delegate" })) ?? [],
     collection?.complete ?? false,
@@ -78,7 +64,7 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
           }
         >
           <div className={CLASS.stack}>
-            {inactive.slice(0, visible).map((sub) => (
+            {inactive.map((sub) => (
               <AgentRow
                 key={activityNodeID({ ...sub, kind: "delegate" })}
                 sub={sub}
@@ -86,17 +72,6 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
                 onDrill={() => onDrill(sub)}
               />
             ))}
-            {visible < inactive.length ? (
-              <Button
-                variant="quiet"
-                size="sm"
-                onClick={() =>
-                  activitySidebarStore.getState().setCategoryView(scope.leaf.ref, "agents", { shown: visible + PAGE })
-                }
-              >
-                Show {Math.min(PAGE, inactive.length - visible)} more · {inactive.length - visible} remaining
-              </Button>
-            ) : null}
           </div>
         </Disclosure>
       ) : null}
