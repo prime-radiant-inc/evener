@@ -170,6 +170,45 @@ func TestTranscribedFrameWithFailingSettleStopsRetrying(t *testing.T) {
 	}
 }
 
+// A caller frame that reached the transcript, whose delivered record then
+// failed, is retried by the notification pass that still holds its token. A
+// later fire replaces the frame, so that token resolves stale and the retry can
+// never run again. The replacement must not leave the old frame's transcript
+// entry behind: a stranded entry never counts as a delivered fire, so a loop
+// that delivers every frame stays under the runaway depth.
+func TestReplacedTranscribedFrameStillCountsAsDelivered(t *testing.T) {
+	t.Parallel()
+	s, jm, _ := installCallerCommunicateWatch(t)
+	failAppendN(jm, jobstore.EventWatchSendDelivered, 1)
+	// The frame reaches the model, then its delivered record fails, which is
+	// what marks it transcribed with a settle still owed.
+	fireCommunicate(jm, "first")
+	drainAndAccept(t, s)
+	pending := jm.pendingWatchSendDeliveries(nil)
+	if len(pending) == 0 {
+		t.Fatal("setup: no pending frame")
+	}
+	first := pending[0].state.DeliveryID
+	if first == "" {
+		t.Fatal("setup: no pending frame")
+	}
+	if !jm.watchSendTranscribed(first) {
+		t.Fatalf("setup: frame %s is not marked transcribed", first)
+	}
+	// A later fire replaces the transcribed frame before its settle succeeded.
+	fireCommunicate(jm, "second")
+	for range transcribedWatchSendSettleRetries + 2 {
+		drainAndAccept(t, s)
+	}
+	jm.mu.Lock()
+	_, stranded := jm.transcribedWatchSends[first]
+	delivered := jm.watchSendDeliveredLocked(first)
+	jm.mu.Unlock()
+	if stranded && !delivered {
+		t.Fatalf("the replaced frame %s kept a transcript entry that nothing retries and never counts as delivered", first)
+	}
+}
+
 // noSendCommunicateWatch arms a no-send caller watch on communicate and
 // returns its config and the notifications it queues, in order.
 func noSendCommunicateWatch(t *testing.T, jm *jobManager) (*watchConfig, *[]jobNotification) {

@@ -39,10 +39,9 @@ func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDeliv
 		note:       note,
 		send:       d.send,
 	}, d.watchedIdentity, d.trigger, d.deliveryID, events.SessionEvent{
-		Kind:       d.eventKind,
-		SessionID:  jm.sessionID,
-		Data:       d.eventData,
-		Provenance: provenance.Clone(d.triggerProvenance),
+		Kind:      d.eventKind,
+		SessionID: jm.sessionID,
+		Data:      d.eventData,
 	}, d.triggerProvenance)
 	if d.rosterPayload != "" {
 		d.frame += d.rosterPayload
@@ -978,6 +977,29 @@ func (jm *jobManager) releaseWatchSendReservation(record watchSendPendingRecord)
 	jm.mu.Unlock()
 }
 
+// settleReplacedTranscribedFrameLocked records a caller frame the model already
+// has as delivered after a newer frame replaced its pending state. Its delivery
+// token is stale from then on, so nothing else can retry the record; without
+// this the transcript entry stays behind, never counts as a delivered fire, and
+// a loop that delivers every frame stays under the runaway depth. The pending
+// map is left alone: the replacement installs its own state for the key. The
+// caller holds jm.mu.
+func (jm *jobManager) settleReplacedTranscribedFrameLocked(cfg *watchConfig, replaced *jobstore.WatchSendState) {
+	if replaced == nil || replaced.DeliveryID == "" {
+		return
+	}
+	if _, transcribed := jm.transcribedWatchSends[replaced.DeliveryID]; !transcribed {
+		return
+	}
+	if jm.deliveredWatchSendIDs == nil {
+		jm.deliveredWatchSendIDs = make(map[string]struct{})
+	}
+	jm.deliveredWatchSendIDs[replaced.DeliveryID] = struct{}{}
+	delete(jm.transcribedWatchSends, replaced.DeliveryID)
+	jm.countWatchDeliveryLocked(cfg)
+	jm.settleConditionFrameLocked(cfg, replaced.DeliveryID)
+}
+
 // storeWatchSendPendingRecord installs record's frame as its key's pending
 // frame and returns the delivery id of the replaced frame whose receipt the
 // caller releases, or "" when there is none to release now. A replaced frame
@@ -1011,6 +1033,12 @@ func (jm *jobManager) storeWatchSendPendingRecord(record watchSendPendingRecord,
 			}
 			jm.supersededWatchSends[replaced] = struct{}{}
 		} else if !jm.retryUnsettledWatchSendLocked(replaced) {
+			// A caller frame already in the receiver's transcript has no token
+			// left to retry it once this frame replaces its pending state, so
+			// the replacement settles its in-memory accounting here. Its
+			// content stays in the transcript; only the delivered record is
+			// dropped, which is what the settle's retry bound would have done.
+			jm.settleReplacedTranscribedFrameLocked(cfg, current)
 			release = replaced
 		}
 	}
