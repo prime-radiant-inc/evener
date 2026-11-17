@@ -13,9 +13,11 @@ package protocolhttp
 // unchanged.
 //
 // The bytes are the contract. The fallback is what keeps it: a type this file
-// does not name, and a string holding a byte it will not vouch for, is encoded
-// by the same code as before. TestMarshalBodyMatchesStdlib and
-// protocolhttp's TestPrepareBodyBytesMatchStdlib pin that equivalence.
+// does not name is encoded by the same code as before. Strings, including
+// invalid UTF-8, are encoded here — their rules are few enough to mirror, and
+// handing each one to encoding/json cost a transient copy per non-ASCII string.
+// TestMarshalBodyMatchesStdlib and protocolhttp's TestPrepareBodyBytesMatchStdlib
+// pin that equivalence.
 //
 // The buffer is sized from a no-allocation pre-pass over the same tree. That
 // costs one extra walk and saves the doubling chain a growing buffer pays for
@@ -28,6 +30,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"unicode/utf8"
 )
 
 // MarshalBody encodes a built request body, returning bytes the caller owns.
@@ -106,20 +109,26 @@ func bodyJSONSize(v any) int {
 	}
 }
 
-// bodyJSONStringSize bounds appendBodyString's output for s. Printable ASCII
-// costs one byte; each byte that needs escaping costs six, and this counts the
-// worst case only for the bytes that actually appear, so an ordinary tool
-// result is sized exactly.
+// bodyJSONStringSize counts what appendBodyString writes for s, which is why
+// the hint costs nothing for the shapes real traffic has: printable ASCII and
+// valid multibyte text cost one byte each, the seven bytes JSON has a short
+// escape for cost two, and every other escaped ASCII byte costs six.
+//
+// Two cases under-count: U+2028 and U+2029 are three input bytes written as the
+// six-byte \u2028 escape, three short, and an invalid byte is one input byte
+// written as the three-byte U+FFFD, two short. The hint contract tolerates that
+// — the buffer grows once and the bytes never change. They are not counted
+// exactly because doing so costs a full UTF-8 decode of every string a second
+// time, which is the expense this file exists to remove.
 func bodyJSONStringSize(s string) int {
 	size := 2
 	for i := 0; i < len(s); i++ {
-		switch b := s[i]; {
-		case b >= 0x80:
-			// Unproven: appendBodyString hands the whole string to
-			// encoding/json, which may expand one byte to six (\ufffd).
-			return size + len(s)*6
-		case bodyJSONPlain[b]:
+		b := s[i]
+		switch {
+		case b >= 0x80, bodyJSONPlain[b]:
 			size++
+		case bodyJSONShortEscape[b]:
+			size += 2
 		default:
 			size += 6
 		}
@@ -278,55 +287,85 @@ var bodyJSONPlain = func() (plain [256]bool) {
 	return plain
 }()
 
+// bodyJSONShortEscape reports whether b is written as a two-byte escape
+// (\n, \t and the rest) rather than as \u00XX. JSON has a short form for these
+// seven bytes and encoding/json uses it.
+var bodyJSONShortEscape = func() (short [256]bool) {
+	for _, b := range []byte{'"', '\\', '\b', '\f', '\n', '\r', '\t'} {
+		short[b] = true
+	}
+	return short
+}()
+
 const bodyJSONHex = "0123456789abcdef"
+
+// bodyJSONReplacement is the UTF-8 encoding of U+FFFD, which an invalid byte
+// becomes in a JSON string.
+const bodyJSONReplacement = "\ufffd"
 
 // appendBodyString quotes s with encoding/json's escaping: <, > and & become
 // \u003c-style escapes, a control byte gets its short escape where JSON has
 // one and \u00XX otherwise, and 0x7f passes through.
 //
-// A byte at or above 0x80 sends the whole string to encoding/json, which owns
-// invalid-UTF-8 replacement, U+2028 and U+2029, and every multibyte run. The
-// fast path is printable ASCII, which is what tool results and JSON schemas
-// are made of; the edge cases stay with the code that already handled them.
+// Multibyte text is handled here too, not handed to encoding/json. Passing each
+// non-ASCII string to json.Marshal cost a boxing of s and a transient copy of
+// the whole encoding, so allocation scaled with the number of non-ASCII strings
+// — every em dash and every CJK tool result. Mirroring encoding/json's rune
+// rules instead keeps that count flat: a valid rune is copied through, U+2028
+// and U+2029 are escaped, and an invalid byte becomes \ufffd.
 func appendBodyString(dst []byte, s string) []byte {
-	// mark is where this string starts: the multibyte fallback rewinds here,
-	// discarding every byte this call wrote, not just one.
-	mark := len(dst)
 	dst = append(dst, '"')
 	start := 0
-	for i := 0; i < len(s); i++ {
-		b := s[i]
-		if bodyJSONPlain[b] {
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			if bodyJSONPlain[b] {
+				i++
+				continue
+			}
+			dst = append(dst, s[start:i]...)
+			switch b {
+			case '\\', '"':
+				dst = append(dst, '\\', b)
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			default:
+				dst = append(dst, '\\', 'u', '0', '0', bodyJSONHex[b>>4], bodyJSONHex[b&0xF])
+			}
+			i++
+			start = i
 			continue
 		}
-		if b >= 0x80 {
-			// Unproven byte: re-encode the whole string from scratch.
-			src, err := json.Marshal(s)
-			if err != nil {
-				// Marshal of a string cannot fail; quote nothing rather than
-				// emit a half string.
-				return append(dst[:mark], `""`...)
-			}
-			return append(dst[:mark], src...)
-		}
-		dst = append(dst, s[start:i]...)
-		switch b {
-		case '\\', '"':
-			dst = append(dst, '\\', b)
-		case '\b':
-			dst = append(dst, '\\', 'b')
-		case '\f':
-			dst = append(dst, '\\', 'f')
-		case '\n':
-			dst = append(dst, '\\', 'n')
-		case '\r':
-			dst = append(dst, '\\', 'r')
-		case '\t':
-			dst = append(dst, '\\', 't')
+		// Decode the next rune over at most UTFMax bytes, as encoding/json does:
+		// a truncated sequence at the end of s decodes as RuneError with size 1
+		// and is replaced, and a valid rune is copied through with its bytes.
+		c, size := utf8.DecodeRuneInString(s[i:min(i+utf8.UTFMax, len(s))])
+		switch {
+		case c == utf8.RuneError && size == 1:
+			dst = append(dst, s[start:i]...)
+			// The raw three bytes of U+FFFD, not the six-byte \ufffd escape.
+			// Go 1.27's default encoder (encoding/json/internal/jsonwire,
+			// AppendQuote) writes the replacement character itself; the older
+			// !goexperiment.jsonv2 encoder wrote the escape. TestMarshalBody-
+			// MatchesStdlib reads the real bytes, so a toolchain that switches
+			// back fails there instead of changing the wire silently.
+			dst = append(dst, bodyJSONReplacement...)
+		case c == '\u2028' || c == '\u2029':
+			dst = append(dst, s[start:i]...)
+			dst = append(dst, '\\', 'u', '2', '0', '2', bodyJSONHex[c&0xF])
 		default:
-			dst = append(dst, '\\', 'u', '0', '0', bodyJSONHex[b>>4], bodyJSONHex[b&0xF])
+			i += size
+			continue
 		}
-		start = i + 1
+		i += size
+		start = i
 	}
 	dst = append(dst, s[start:]...)
 	return append(dst, '"')

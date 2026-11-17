@@ -46,7 +46,11 @@ func prepareBodyFixtures() map[string]map[string]any {
 		"reasoning": {
 			"model": "m", "max_output_tokens": 16000,
 			"input": []any{
-				map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": longText}}},
+				// longText.String(), not longText: a strings.Builder has no
+				// exported fields, so both encoders emit {} for it and the
+				// escaped text never reaches the []any path this fixture
+				// exists to cover.
+				map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": longText.String()}}},
 				map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "answer \u2028 with & escapes"}}},
 			},
 			"reasoning": map[string]any{"effort": "high", "context": "all_turns"},
@@ -87,6 +91,36 @@ func TestPrepareBodyBytesMatchStdlib(t *testing.T) {
 				t.Fatalf("ContentLength = %d, want %d", p.Request.ContentLength, len(want))
 			}
 		})
+	}
+}
+
+// TestPrepareBodyFixturesCarryRealText guards the fixtures themselves. The
+// reasoning fixture once stored a strings.Builder, which both encoders render
+// as {}, so the test above compared two empty objects and passed while the
+// escaped text never travelled the []any path it exists to cover. A fixture
+// that loses its payload fails here instead of going quiet.
+func TestPrepareBodyFixturesCarryRealText(t *testing.T) {
+	t.Parallel()
+	for name, body := range prepareBodyFixtures() {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if bytes.Contains(raw, []byte(`{}`)) {
+			// Empty containers are legitimate in the "empty" fixture only.
+			if name != "empty" {
+				t.Fatalf("%s: encoded body contains an empty object, so a fixture value is not a string: %s", name, raw)
+			}
+		}
+		if name == "reasoning" {
+			// The escaped text must actually be in the bytes.
+			if !bytes.Contains(raw, []byte(`some tool output line`)) {
+				t.Fatalf("reasoning fixture does not carry the tool text: %s", raw)
+			}
+			if !bytes.Contains(raw, []byte(`\t`)) || !bytes.Contains(raw, []byte(`\n`)) {
+				t.Fatalf("reasoning fixture does not carry escapes: %s", raw)
+			}
+		}
 	}
 }
 

@@ -177,3 +177,33 @@ func TestMarshalBodyAllocationsDoNotScaleWithBody(t *testing.T) {
 		t.Fatalf("MarshalBody allocated %.0f times for 400 turns and %.0f for 4 turns: allocation scales with history", largeAllocs, smallAllocs)
 	}
 }
+
+// TestMarshalBodyRealisticResultIsOneAllocation is the fixture check the first
+// cut of #6409 lacked. Its benchmarks used strings.Repeat("x", n), which has
+// neither a newline nor a multibyte byte, so the encoder's two worst branches
+// were never measured: a size hint that counted every escaped byte as six, and
+// a json.Marshal fallback per non-ASCII string. Real tool output has both. A
+// per-string fallback makes the allocation count scale with the number of
+// non-ASCII strings, which this pins.
+func TestMarshalBodyRealisticResultIsOneAllocation(t *testing.T) {
+	// Not parallel: testing.AllocsPerRun pins GOMAXPROCS to 1.
+	body := benchPrepareBodyResult(400, benchRealisticResult(benchBodyResultBytes))
+	var out []byte
+	allocs := testing.AllocsPerRun(20, func() {
+		var err error
+		if out, err = MarshalBody(body); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs > 1 {
+		t.Fatalf("MarshalBody of a body with newlines and multibyte text allocated %.0f times, want 1: "+
+			"something allocates per string", allocs)
+	}
+	// The hint's whole point: retained bytes stay close to the encoded size.
+	// Six bytes per multibyte byte, or six per newline, shows up here as a
+	// multiple of the output.
+	if grew := float64(cap(out)) / float64(len(out)); grew > 1.10 {
+		t.Fatalf("MarshalBody allocated %d bytes to hold %d: the size hint over-counts by %.0f%%",
+			cap(out), len(out), (grew-1)*100)
+	}
+}

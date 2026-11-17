@@ -150,22 +150,31 @@ func FuzzMarshalBodyMatchesStdlib(f *testing.F) {
 		f.Add(raw)
 	}
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		var body map[string]any
-		if err := dec.Decode(&body); err != nil {
-			return // not a JSON object; the encoder is not asked about it
-		}
-		want, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("stdlib: %v", err)
-		}
-		got, err := MarshalBody(body)
-		if err != nil {
-			t.Fatalf("MarshalBody: %v", err)
-		}
-		if !bytes.Equal(want, got) {
-			t.Fatalf("bytes differ for %s\nwant %s\ngot  %s", raw, want, got)
+		// Both decodings, because they exercise different encoder paths.
+		// Without UseNumber every number becomes a float64, which is what
+		// reaches appendBodyFloat — UseNumber alone turns them all into
+		// json.Number, which falls back to encoding/json and leaves the float
+		// encoder unfuzzed.
+		for _, useNumber := range []bool{false, true} {
+			dec := json.NewDecoder(bytes.NewReader(raw))
+			if useNumber {
+				dec.UseNumber()
+			}
+			var body map[string]any
+			if err := dec.Decode(&body); err != nil {
+				continue // not a JSON object; the encoder is not asked about it
+			}
+			want, err := json.Marshal(body)
+			if err != nil {
+				t.Fatalf("stdlib (useNumber=%t): %v", useNumber, err)
+			}
+			got, err := MarshalBody(body)
+			if err != nil {
+				t.Fatalf("MarshalBody (useNumber=%t): %v", useNumber, err)
+			}
+			if !bytes.Equal(want, got) {
+				t.Fatalf("bytes differ for %s (useNumber=%t)\nwant %s\ngot  %s", raw, useNumber, want, got)
+			}
 		}
 	})
 }
