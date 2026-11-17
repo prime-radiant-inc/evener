@@ -286,7 +286,7 @@ describe("splitLiveMarkdownSegments", () => {
       // tokens plus the streaming window, rendered in one div.
       expect(second.map((s) => s.kind)).toEqual(["markdown", "mermaid", "markdown"]);
       const secondTail = second[2];
-      expect(secondTail?.kind === "markdown" ? secondTail.window : undefined).toContain("plus more");
+      expect(secondTail?.kind === "markdown" ? secondTail.closedWindow : undefined).toContain("plus more");
     } finally {
       spy.mockRestore();
     }
@@ -320,7 +320,7 @@ describe("splitLiveMarkdownSegments", () => {
     // Whole-source lex: the top-level pie is still a diagram, and no windowed
     // markdown segment exists to parse it as a code block instead.
     expect(segments.filter((s) => s.kind === "mermaid")).toHaveLength(1);
-    expect(segments.some((s) => s.kind === "markdown" && s.window !== undefined)).toBe(false);
+    expect(segments.some((s) => s.kind === "markdown" && s.closedWindow !== undefined)).toBe(false);
   });
 
   // Finding: an unreadable head made the gate FAIL OPEN. The sentinel equals

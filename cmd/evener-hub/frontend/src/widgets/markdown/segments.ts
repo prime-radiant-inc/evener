@@ -17,11 +17,16 @@ import type { Token } from "marked";
 import { markdownLexer } from "./lexer";
 import { closeOpenMarkdown } from "./streaming";
 
-// A markdown segment is a token slice. `window`, when set, is the part of that
-// run still streaming: `tokens` then holds the settled prefix and `window` the
-// bounded live window after it, so the two parse into one div (issue #3208).
+// A markdown segment is a token slice. `closedWindow`, when set, is the part of
+// that run still streaming: `tokens` then holds the settled prefix and
+// `closedWindow` the bounded live window after it, so the two parse into one
+// div (issue #3208). It arrives ALREADY closed: the split that produced it paid
+// closeOpenMarkdown over that exact text, and re-closing it in the renderer
+// walked the window's lines a second time on every windowed frame (issue
+// #6669). The field name carries the contract so a future caller cannot pass
+// raw streaming text in and silently render its open markers literally.
 export type MarkdownSegment =
-  | { kind: "markdown"; tokens: Token[]; window?: string }
+  | { kind: "markdown"; tokens: Token[]; closedWindow?: string }
   | { kind: "mermaid"; text: string };
 
 export function messageMayContainMermaid(source: string): boolean {
@@ -554,7 +559,14 @@ export function splitLiveMarkdownSegments(
     }
     // A fresh segment object each render (never cached whole) so MarkdownSlice
     // re-renders and picks up the grown window while reusing the settled tokens.
-    const windowSegment: MarkdownSegment = { kind: "markdown", tokens: entry.tailTokens, window: split.tail };
+    // The window is split.closedTail, not split.tail: splitLiveWindow already
+    // closed it, and the renderer parses it as given instead of closing the
+    // same text a second time (issue #6669).
+    const windowSegment: MarkdownSegment = {
+      kind: "markdown",
+      tokens: entry.tailTokens,
+      closedWindow: split.closedTail,
+    };
     if (entry.headSegments.length === 0) return [windowSegment];
     return [...entry.headSegments, windowSegment];
   }
