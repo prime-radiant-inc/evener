@@ -95,7 +95,7 @@ func TestHubChildDiscoveryFirstSubscribedRead(t *testing.T) {
 }
 
 func TestHubChildDiscoveryRecoveryBoundaries(t *testing.T) {
-	for _, scenario := range []string{"absent", "owner-replaced", "source-removed", "transport-lost", "deleted", "cancelled", "remote"} {
+	for _, scenario := range []string{"absent", "owner-replaced", "source-removed", "transport-lost", "transport-lost-retried", "deleted", "cancelled", "remote"} {
 		t.Run(scenario, func(t *testing.T) { testHubChildDiscovery(t, scenario) })
 	}
 }
@@ -186,6 +186,32 @@ func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client 
 	return retryChildDiscoveryReads(ctx, t, func() (appwire.ThreadReadResponse, error) {
 		return client.ThreadRead(ctx, params)
 	}, refreshes, reads)
+}
+
+// childDiscoveryReadForcingIndexAnswer issues the child read and answers the
+// first attempt that reaches the hub with the transcript index's transient
+// locked answer, so the helper reissues the request the way a live writer's
+// contention makes it. beforeRetry runs before every attempt after the first:
+// the helper reissues with no refresh of its own, and the daemon the first
+// attempt reached can be gone by then, so only a real roster refresh publishes
+// that departure to the reissued read.
+//
+// The answer is forced on a successful first read as well as a real transient
+// one, because the first attempt's own failure is not what this seam is about:
+// the daemon state the retry must meet is.
+func childDiscoveryReadForcingIndexAnswer(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, beforeRetry func()) func() (appwire.ThreadReadResponse, error) {
+	attempts := 0
+	return func() (appwire.ThreadReadResponse, error) {
+		if attempts > 0 && beforeRetry != nil {
+			beforeRetry()
+		}
+		attempts++
+		response, err := client.ThreadRead(ctx, params)
+		if err != nil || attempts > 1 {
+			return response, err
+		}
+		return appwire.ThreadReadResponse{}, appwire.TranscriptIndexLocked()
+	}
 }
 
 func retryChildDiscoveryReads(ctx context.Context, t *testing.T, read func() (appwire.ThreadReadResponse, error), refreshes, reads *atomic.Int32) (appwire.ThreadReadResponse, error) {
@@ -337,8 +363,14 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 			}
 			daemon.WireTranscriptHistory(replacement)
 			daemon.ReplaceAppIdentity(next.WithRecordedLength(replacement.TranscriptRecordedLength()).WithBootGeneration("2"), nil)
-		case "transport-lost":
-			return daemon.AppServer().Shutdown(context.Background())
+		case "transport-lost", "transport-lost-retried":
+			// A lost transport refuses the handshake. Shutdown stops the app
+			// server admitting upgrades, but the listener belongs to this test
+			// and keeps accepting and answering 503, so only closing it makes
+			// the dial fail the way a gone daemon's does.
+			shutdownErr := daemon.AppServer().Shutdown(context.Background())
+			daemonHTTP.Close()
+			return shutdownErr
 		}
 		return nil
 	}
@@ -355,7 +387,24 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		if scenario == "remote" {
 			params.Ref = "unattached:" + childID
 		}
-		read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
+		if scenario == "transport-lost" || scenario == "transport-lost-retried" {
+			// A transport loss answers the first attempt from the saved history,
+			// which the transcript index can refuse with a transient answer. The
+			// helper reissues that request, and by then the daemon is gone: a real
+			// refresh publishes the departure so the retry resolves to no source
+			// and folds to the saved history instead of dialing a dead listener.
+			// Forcing the transient answer puts both scenarios on that path; the
+			// refresh runs outside the scenario's hook, so the first attempt still
+			// makes its own live read and the counters stay the scenario's own.
+			refreshBeforeRetry := func() {
+				if refreshErr := previousRefresh(readCtx, roster); refreshErr != nil {
+					t.Errorf("refresh before the retried read: %v", refreshErr)
+				}
+			}
+			read, err = retryChildDiscoveryReads(readCtx, t, childDiscoveryReadForcingIndexAnswer(readCtx, client, params, refreshBeforeRetry), &refreshes, &reads)
+		} else {
+			read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
+		}
 	}
 	if scenario == "remote" {
 		if err == nil || refreshes.Load() != 0 || reads.Load() != 0 {
