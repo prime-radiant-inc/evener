@@ -28,9 +28,15 @@ import (
 // timestamp. Timestamps carry nanoseconds on every platform this builds for, so
 // an ordinary edit moves the key.
 //
-// It holds one entry per rules path rather than one per version, so its size is
-// bounded by the number of .gitignore files a session has searched through and
-// never by how often they were edited.
+// It holds one entry per rules path rather than one per version, so its size
+// grows with the number of .gitignore files a session has searched through and
+// never with how often they were edited. That number is not bounded either — a
+// long-lived session greps many trees and keeps every one's matchers — so stored
+// charges against the same per-file accounting a call's rules budget uses, and
+// the whole map is dropped once the retained total passes
+// maxGlobIgnoreTotalBytes. That is a ceiling on what a session may pin, not a
+// policy: everything cached after the clear is recompiled, so a tree whose rules
+// fit the bound keeps hitting.
 //
 // Entries are keyed by the rules file's ABSOLUTE path, not by its path relative
 // to whichever base the call searched, because one cache serves an environment
@@ -47,6 +53,9 @@ import (
 type ignoreMatcherCache struct {
 	mu      sync.Mutex
 	entries map[string]ignoreMatcherEntry
+	// stored is the summed charge of every entry, maintained under mu so the
+	// retention bound never has to walk the map.
+	stored int
 }
 
 // ignoreMatcherEntry is one rules file's last compiled version.
@@ -115,14 +124,28 @@ func (c *ignoreMatcherCache) lookup(root, path string, size int64, mod time.Time
 }
 
 // store records entry for root+path, replacing any earlier version. A nil cache
-// drops it.
+// drops it. A store that would take the retained total past
+// maxGlobIgnoreTotalBytes drops every entry first and restarts the total, so a
+// session that has searched enough distinct trees starts over rather than keep
+// growing. The clear happens before this entry is recorded, not after, so an
+// entry larger than the bound on its own still gets cached and the next search
+// of that same tree still hits instead of recompiling and clearing again.
 func (c *ignoreMatcherCache) store(root, path string, entry ignoreMatcherEntry) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[ignoreCacheKey(root, path)] = entry
+	key := ignoreCacheKey(root, path)
+	if old, ok := c.entries[key]; ok {
+		c.stored -= old.cost.charge()
+	}
+	if cost := entry.cost.charge(); c.stored+cost > maxGlobIgnoreTotalBytes {
+		clear(c.entries)
+		c.stored = 0
+	}
+	c.entries[key] = entry
+	c.stored += entry.cost.charge()
 }
 
 // readIgnoreRules reads one .gitignore under the call's budgets and returns that

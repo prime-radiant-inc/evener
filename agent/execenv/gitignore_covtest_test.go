@@ -489,8 +489,10 @@ func writeEntryPointIgnoreTree(t *testing.T) (root string) {
 // nothing. It goes through the exported entry point rather than the helper,
 // because the helper is handed a cache directly and therefore passed while no
 // production call site passed one.
+//
+// It is not parallel: it counts compiles by swapping the package-level
+// compileIgnoreLines seam, and a swap is only sound in the sequential phase.
 func TestGlobReusesIgnoreMatchersAcrossCalls(t *testing.T) {
-	t.Parallel()
 	root := writeEntryPointIgnoreTree(t)
 	env := NewLocalExecutionEnvironment(root)
 	count, reset := countEntryPointCompiles(t)
@@ -559,8 +561,8 @@ func TestGrepReusesIgnoreMatchersAcrossCalls(t *testing.T) {
 // TestGrepExclusionCountReusesIgnoreMatchers covers the second grep entry point,
 // countNativeExcluded, which the rg arm calls to disclose what the default rules
 // skipped. It builds its own grepTreeWalk, so it needs its own wiring.
+// Not parallel, for the same compileIgnoreLines seam reason.
 func TestGrepExclusionCountReusesIgnoreMatchers(t *testing.T) {
-	t.Parallel()
 	root := writeEntryPointIgnoreTree(t)
 	env := NewLocalExecutionEnvironment(root)
 	count, reset := countEntryPointCompiles(t)
@@ -662,4 +664,64 @@ func timeStamp(t *testing.T) (stamp time.Time) {
 		t.Fatal(err)
 	}
 	return info.ModTime().Truncate(time.Second)
+}
+
+// TestIgnoreMatcherCacheDropsEverythingAtTheRetentionBound pins the ceiling the
+// cache has to have: it accumulates every rules file an environment has ever
+// searched, including files since deleted, so its retained total must not grow
+// without limit. It is not enough to stop caching, either — the entries already
+// held have to go, or a session that passed the bound once would sit just under
+// it forever.
+func TestIgnoreMatcherCacheDropsEverythingAtTheRetentionBound(t *testing.T) {
+	// One entry's real charge, measured rather than assumed, so the stub bound
+	// below means "exactly two rules files' worth" whatever the accounting is.
+	fsys := fstest.MapFS{
+		".gitignore": {Data: []byte("*.log\n")},
+		"a.log":      {Data: []byte("x")},
+		"a.go":       {Data: []byte("x")},
+	}
+	cost := ignoreFileCost{path: len(".gitignore"), rules: 1, source: len("*.log\n")}
+	stubMaxGlobIgnoreTotalBytes(t, 2*cost.charge())
+	cache := newIgnoreMatcherCache()
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache); err != nil {
+		t.Fatal(err)
+	}
+	if len(cache.entries) != 1 {
+		t.Fatalf("cache holds %d entries after one search, want 1: this test proves nothing unless the entry under the bound is retained", len(cache.entries))
+	}
+	reset := countCompiles(t)
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache); err != nil {
+		t.Fatal(err)
+	}
+	if *reset != 0 {
+		t.Fatalf("a repeated search of the same tree under the bound compiled %d rules file(s), want 0: the ceiling must not defeat reuse below it", *reset)
+	}
+	// Distinct roots give the same rules file three distinct keys, which is how
+	// one environment accumulating many trees is modeled here. The second fills
+	// the bound exactly; the third crosses it, and crossing is what must drop the
+	// map — leaving only the entry that crossed, so the tree it names still hits.
+	read := func(root string) {
+		t.Helper()
+		if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), root, cache); err != nil {
+			t.Fatalf("loadIgnoreSetCached(%q): %v", root, err)
+		}
+	}
+	read("/two")
+	if len(cache.entries) != 2 {
+		t.Fatalf("cache holds %d entries at the bound, want 2: a store that exactly reaches the bound must not evict", len(cache.entries))
+	}
+	read("/three")
+	if len(cache.entries) != 1 {
+		t.Fatalf("cache holds %d entries after crossing the bound, want 1: the retained total passed maxGlobIgnoreTotalBytes and the earlier trees' matchers were not released", len(cache.entries))
+	}
+	if _, ok := cache.entries[ignoreCacheKey("/three", ".gitignore")]; !ok {
+		t.Fatalf("the entry that crossed the bound is not the one retained: cache holds %d entries, none of them %q", len(cache.entries), ignoreCacheKey("/three", ".gitignore"))
+	}
+	// The clear is a ceiling, not a switch: the tree that is now cached still
+	// hits, so the next search recompiles nothing.
+	*reset = 0
+	read("/three")
+	if *reset != 0 {
+		t.Fatalf("a search of the tree cached by the evicting store compiled %d rules file(s), want 0: the clear must not stop the cache from working", *reset)
+	}
 }
