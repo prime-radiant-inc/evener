@@ -94,22 +94,24 @@ func coldRebuildMaxRatio() float64 {
 	return coldRebuildMaxRatioPlain
 }
 
-// TestColdRebuildSidecarsUnchanged pins that the rebuild still writes exactly
-// the records it wrote before the allocation work: the scan reuses one line
-// buffer and one JSON decode path, and neither may change a byte of items,
-// turns, strings, or the update log.
+// TestColdRebuildSidecarsAreReproducible pins that the rebuild is a function of
+// its input: the scan reuses one line buffer and one JSON decode path, so two
+// rebuilds of one transcript must write byte-identical sidecars.
 //
-// The generator stamps every entry with a fixed timestamp, so the sidecars come
-// out byte-identical from run to run — this test first proves that by rebuilding
-// twice and comparing, which is what makes the golden comparison meaningful.
+// It deliberately does not compare against a recorded digest of the bytes.
+// That was useful while the allocation fix was in flight and "did the bytes
+// stay identical" was the open question, but as a permanent gate it misfires:
+// it fails on any intentional change to schema.Turn's or llm.Message's JSON
+// shape, to the index record format, or to the fixture generator, and its
+// message would blame the rebuild. The index format already has a deliberate
+// version — formatVersion and projectionID, either of which rebuilds every
+// index — so an intentional format change does not need a digest to announce
+// itself, and TestColdRebuildAllocationBudget's assertAllWindows already proves
+// a rebuilt index reads back correctly.
 func TestColdRebuildSidecarsUnchanged(t *testing.T) {
 	path, _, _ := syntheticTranscript(t, coldRebuildTurns)
 	if got, want := rebuildSidecarDigests(t, path), rebuildSidecarDigests(t, path); got != want {
-		t.Fatalf("two rebuilds of one transcript differ, so this fixture cannot pin bytes:\n%s\n%s", got, want)
-	}
-	if got := rebuildSidecarDigests(t, path); got != goldenColdRebuildDigests {
-		t.Fatalf("rebuild sidecars changed; the allocation fix must not alter the index:\ngot:\n%s\nwant:\n%s",
-			got, goldenColdRebuildDigests)
+		t.Fatalf("two rebuilds of one transcript differ, so the rebuild is not a function of its input:\n%s\n%s", got, want)
 	}
 }
 
@@ -137,12 +139,3 @@ func rebuildSidecarDigests(t *testing.T, path string) string {
 	}
 	return out.String()
 }
-
-// goldenColdRebuildDigests is what a cold rebuild of
-// syntheticTranscript(t, coldRebuildTurns) wrote before the allocation fix: the
-// name, byte length and SHA-256 of each of the four sidecar files.
-const goldenColdRebuildDigests = `items 251328 c5c4944d75591f82a87b0f27bc703fc35ce8265fc60796c56f59479df0cb9c78
-turns 87864 88a21f6bada64f1b01b86b957eb7579bac1b72b2a80a6f1279492bc377d26b6a
-strings 20275 06700d3766b38c4a038343eea747b9c072e89d73d2e445a6bff2bb6dc144f468
-updates 30912 9e4e5dc0e7f237b94b66c690314ad4cac70002a8abe7e8f29a1e5d5b31d04d47
-`
