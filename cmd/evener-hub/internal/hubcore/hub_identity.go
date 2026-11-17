@@ -66,12 +66,13 @@ func (s *HubIdentityStore) open() (*sql.DB, error) {
 // retries a lock conflict while doing it.
 //
 // At hub startup this store is normally not the first opener of index.db: the
-// past index opens the file first, so its journal mode and its durability
-// belong to that opener, and a hand-built DSN would land on SQLite's FULL
-// default and pay a per-commit fsync no other opener of this file pays. The
-// store can still be the first opener — startup only logs a failed past-index
-// rebuild, which may leave the file to this store — so it must also work on a
-// brand-new index.db, as it does in this package's tests.
+// past index opens the file first, which fixes the file's journal mode, but
+// the durability setting is not inherited: synchronous is per connection, so
+// every opener sets it in its own DSN. A hand-built DSN would land on SQLite's
+// FULL default and pay a per-commit fsync no other opener of this file pays.
+// The store can still be the first opener — startup only logs a failed
+// past-index rebuild, which may leave the file to this store — so it must also
+// work on a brand-new index.db, as it does in this package's tests.
 //
 // That shared DSN enters WAL on every new connection, and the transition needs
 // the database's exclusive lock. Two connections opening a brand-new index.db
