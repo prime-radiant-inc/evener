@@ -228,11 +228,7 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	if status.Type != appwire.ThreadStatusClosed {
 		return notification
 	}
-	set := pastThreadCapabilities()
-	if !allowFork {
-		set.ForkFromTurn = false
-	}
-	capabilities, err := json.Marshal(set)
+	capabilities, err := json.Marshal(closedThreadCapabilities(allowFork))
 	if err != nil {
 		return notification
 	}
@@ -243,6 +239,19 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	}
 	notification.Params = stamped
 	return notification
+}
+
+// closedThreadCapabilities is the capability set a close frame carries: what
+// this hub can still do for a thread whose daemon is gone (pastThreadCapabilities),
+// with forkFromTurn removed when the caller's ownership fence refused it. One
+// definition, so the single-field close stamp and the relay's one-pass stamp
+// cannot advertise different actions for the same close.
+func closedThreadCapabilities(allowFork bool) appwire.ThreadCapabilities {
+	set := pastThreadCapabilities()
+	if !allowFork {
+		set.ForkFromTurn = false
+	}
+	return set
 }
 
 // relayGaveUpCapabilities is the action set the relay advertises beside the
@@ -303,14 +312,21 @@ func stampResyncTarget(notification appwire.Notification, threadID, ref string) 
 // update. Other permissions and fields remain the daemon's current values.
 func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
 	return patchStatusCapabilities(notification, func(status appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
-		if allowFork && !hubForkRecoveryFenced(appwire.Thread{Status: status}) {
-			capabilities["forkFromTurn"] = json.RawMessage("true")
-		} else {
-			// Clear a stale daemon value as well as refusing to add the action. The
-			// notification is the client's authoritative status transition.
-			capabilities["forkFromTurn"] = json.RawMessage("false")
-		}
+		patchForkCapability(status, capabilities, allowFork)
 	})
+}
+
+// patchForkCapability writes the hub's forkFromTurn answer onto a capability
+// update, the one definition the single-field stamper and the relay's
+// one-pass stamp share.
+func patchForkCapability(status appwire.ThreadStatus, capabilities map[string]json.RawMessage, allowFork bool) {
+	if allowFork && !hubForkRecoveryFenced(appwire.Thread{Status: status}) {
+		capabilities["forkFromTurn"] = json.RawMessage("true")
+		return
+	}
+	// Clear a stale daemon value as well as refusing to add the action. The
+	// notification is the client's authoritative status transition.
+	capabilities["forkFromTurn"] = json.RawMessage("false")
 }
 
 // stampPageBeforeCapability sets the hub's pageBefore answer (hubPagesBefore)
@@ -319,8 +335,14 @@ func stampForkCapability(notification appwire.Notification, allowFork bool) appw
 // at the thread's first status change.
 func stampPageBeforeCapability(notification appwire.Notification, pageBefore bool) appwire.Notification {
 	return patchStatusCapabilities(notification, func(_ appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
-		capabilities["pageBefore"] = json.RawMessage(strconv.FormatBool(pageBefore))
+		patchPageBeforeCapability(capabilities, pageBefore)
 	})
+}
+
+// patchPageBeforeCapability writes the hub's pageBefore answer onto a
+// capability update.
+func patchPageBeforeCapability(capabilities map[string]json.RawMessage, pageBefore bool) {
+	capabilities["pageBefore"] = json.RawMessage(strconv.FormatBool(pageBefore))
 }
 
 // stampVoiceArmCapability answers ThreadCapabilities.VoiceArm for the session
@@ -330,8 +352,88 @@ func stampPageBeforeCapability(notification appwire.Notification, pageBefore boo
 // older-hub behavior.
 func stampVoiceArmCapability(notification appwire.Notification, voiceArm bool) appwire.Notification {
 	return patchStatusCapabilities(notification, func(_ appwire.ThreadStatus, capabilities map[string]json.RawMessage) {
-		capabilities["voiceArm"] = json.RawMessage(strconv.FormatBool(voiceArm))
+		patchVoiceArmCapability(capabilities, voiceArm)
 	})
+}
+
+// patchVoiceArmCapability writes the hub's voiceArm answer onto a capability
+// update.
+func patchVoiceArmCapability(capabilities map[string]json.RawMessage, voiceArm bool) {
+	capabilities["voiceArm"] = json.RawMessage(strconv.FormatBool(voiceArm))
+}
+
+// relayCapabilityAnswers is the set of hub-owned capability answers a relayed
+// status frame carries. Each one is resolved per route, because each depends on
+// the thread that route names: forkFromTurn and voiceArm on the thread's
+// identity and fences, pageBefore on whether this hub pages the ref.
+type relayCapabilityAnswers struct {
+	forkFromTurn bool
+	pageBefore   bool
+	voiceArm     bool
+}
+
+// stampStatusCapabilities stamps every hub-owned capability answer a relayed
+// status frame carries — the closed-thread set, forkFromTurn, pageBefore and
+// voiceArm — in one decode of the params and one encode of the result.
+//
+// The four single-answer stampers above each patch one field and re-encode the
+// whole params map to do it, so running them in sequence cost six to eight JSON
+// passes per route per status frame (four decodes of params, four encodes). The
+// fan-out is the one caller that wants all four answers at once, so it calls
+// this instead and pays one params decode, one status decode, one capability-set
+// decode, and two encodes.
+//
+// What a subscriber receives is unchanged. The output is the same map encoded
+// the same way, so its keys stay sorted and every field the daemon sent beyond
+// the ones this hub rewrites is passed through as it arrived.
+func stampStatusCapabilities(notification appwire.Notification, answers relayCapabilityAnswers) appwire.Notification {
+	if notification.Method != appwire.NotifyThreadStatusChanged {
+		return notification
+	}
+	var params map[string]json.RawMessage
+	if len(notification.Params) == 0 || json.Unmarshal(notification.Params, &params) != nil {
+		return notification
+	}
+	// A status this hub cannot read makes the frame malformed in the same way
+	// patchStatusCapabilities treats it: nothing below rewrites anything. An
+	// absent status is not that — the patches still answer, as they did.
+	var status appwire.ThreadStatus
+	statusRaw, hasStatus := params["status"]
+	statusPresent := hasStatus && len(statusRaw) > 0
+	if statusPresent && json.Unmarshal(statusRaw, &status) != nil {
+		return notification
+	}
+	var capabilities map[string]json.RawMessage
+	if statusPresent && status.Type == appwire.ThreadStatusClosed {
+		// The one frame the daemon cannot describe: what a thread can still be
+		// asked to do once its daemon is gone is this hub's answer.
+		encoded, err := json.Marshal(closedThreadCapabilities(answers.forkFromTurn))
+		if err != nil {
+			return notification
+		}
+		if json.Unmarshal(encoded, &capabilities) != nil {
+			return notification
+		}
+		params["capabilities"] = encoded
+	} else {
+		if raw := params["capabilities"]; len(raw) == 0 || json.Unmarshal(raw, &capabilities) != nil || capabilities == nil {
+			return notification
+		}
+	}
+	patchForkCapability(status, capabilities, answers.forkFromTurn)
+	patchPageBeforeCapability(capabilities, answers.pageBefore)
+	patchVoiceArmCapability(capabilities, answers.voiceArm)
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		return notification
+	}
+	params["capabilities"] = encoded
+	stamped, err := json.Marshal(params)
+	if err != nil {
+		return notification
+	}
+	notification.Params = stamped
+	return notification
 }
 
 // patchStatusCapabilities edits a thread/status/changed frame's capability
