@@ -2757,6 +2757,27 @@ test("a Codex connection saves its model-list client version from advanced setti
   expect(editCalls(client)).toHaveLength(0);
 });
 
+test("a confirming listing with another Codex client version is not accepted as the save", async () => {
+  const list = savedList("openai-codex", {
+    auth: "oauth-openai-codex",
+    codexClientVersion: "0.888.0",
+  });
+  const { user, client } = setup(list);
+  await choose(user, "OpenAI Codex");
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("Codex client version"), "0.166.0");
+
+  const saved: InstanceEntry = { ...list.instances[0]!, codexClientVersion: "0.166.0" };
+  scriptEdit(client, { instances: [saved], availableProviders: list.availableProviders });
+  scriptListing(client, {
+    instances: [{ ...list.instances[0]!, codexClientVersion: "0.999.0" }],
+    availableProviders: list.availableProviders,
+  });
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(reasonShown("endpoint-changed")).toBe(true));
+});
+
 // A write whose confirming read fails is not confirmed, so the card keeps the
 // editor and its draft and reports the failure instead of closing optimistically.
 // While the confirmation is owed, no mutation control is offered: the only

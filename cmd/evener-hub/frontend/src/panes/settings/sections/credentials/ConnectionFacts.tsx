@@ -203,7 +203,7 @@ export function connectionSettingsFields({
                 id={`${idPrefix}-codex-client-version`}
                 value={codexClientVersion}
                 disabled={disabled}
-                placeholder="0.888.0"
+                placeholder="Registry default"
                 onChange={(event) => onFieldChange("codexClientVersion", event.target.value)}
               />
             ),

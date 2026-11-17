@@ -189,6 +189,7 @@ function destination(row: InstanceEntry | undefined): string {
     row.vars,
     row.apiKeyEnv,
     row.credentialHeader,
+    row.codexClientVersion,
     row.hidden,
   ]);
 }
