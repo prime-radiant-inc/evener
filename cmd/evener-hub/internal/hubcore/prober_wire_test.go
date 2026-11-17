@@ -153,9 +153,11 @@ func (s wireProbeEnvelopeSource) RestingFailure() *appwire.ThreadFailure { retur
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return s.escalations
 }
-func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
-func (s wireProbeEnvelopeSource) VisionModel() string                     { return "" }
-func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return s.meta }
+func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool, string) {
+	return "", nil, false, ""
+}
+func (s wireProbeEnvelopeSource) VisionModel() string             { return "" }
+func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta { return s.meta }
 
 // TestStatusProberReadsAppWireStatusIncludingNonAgentJobs drives a real daemon
 // AppWire server through the real typed client. The shell row proves status is

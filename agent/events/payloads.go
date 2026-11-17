@@ -581,9 +581,9 @@ type SessionNameChangedData struct {
 
 // ModelChangedData is the payload for an EventModelChanged event: SetModel
 // committed a provider/model switch. OldProvider/OldModel and
-// NewProvider/NewModel let subscribers diff the change; ReasoningEffortLevels
-// and SupportsReasoning describe the NEW profile so pickers re-key without a
-// separate model/list round trip.
+// NewProvider/NewModel let subscribers diff the change; ReasoningEffortLevels,
+// SupportsReasoning and DefaultReasoningEffort describe the NEW profile so
+// pickers re-key without a separate model/list round trip.
 type ModelChangedData struct {
 	OldProvider           string   `json:"old_provider"`
 	OldModel              string   `json:"old_model"`
@@ -591,6 +591,10 @@ type ModelChangedData struct {
 	NewModel              string   `json:"new_model"`
 	ReasoningEffortLevels []string `json:"reasoning_effort_levels,omitempty"`
 	SupportsReasoning     bool     `json:"supports_reasoning,omitempty"`
+	// DefaultReasoningEffort is the effort the new model runs at while the
+	// session's own effort is unset (agent.DefaultReasoningEffort); empty
+	// when the new model does not reason.
+	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 	// MarkerText is the persisted switch-marker text ("Switched model: <old>
 	// → <new>", plus any warning lines) — the exact text SetModel wrote to
 	// the transcript's TurnModelSwitch turn. The live projector renders it

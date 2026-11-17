@@ -1432,6 +1432,23 @@ func (s *Session) requestMessages(sys string, history []llm.Message) []llm.Messa
 	return append([]llm.Message{llm.System(sys)}, history...)
 }
 
+// DefaultReasoningEffort is the effort a request carries while nothing
+// configured one: resolveRequestEffort's unset branch over a model's facts, so
+// a client can name the tier a session whose own effort is unset ("(default)")
+// actually runs at instead of guessing. It is empty for a model that does not
+// reason, which carries no effort at all.
+func DefaultReasoningEffort(supportsReasoning bool, levels []string, modelDefault string) string {
+	if effort := resolveRequestEffort("", supportsReasoning, levels, modelDefault); effort != nil {
+		return *effort
+	}
+	return ""
+}
+
+// profileDefaultReasoningEffort is DefaultReasoningEffort over profile's facts.
+func profileDefaultReasoningEffort(profile *provider.Profile) string {
+	return DefaultReasoningEffort(profile.SupportsReasoning(), profile.ReasoningEffortLevels(), profile.DefaultReasoningEffort())
+}
+
 // resolveRequestEffort is the one rule for the effort a request carries, shared
 // by the primary and fallback paths:
 //

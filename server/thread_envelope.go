@@ -97,8 +97,11 @@ type threadEnvelope struct {
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
 	SupportsReasoning     bool
+	// DefaultReasoningEffort is the tier the current model runs at while
+	// ReasoningEffort is unset, sampled with the rest of the reasoning facet.
+	DefaultReasoningEffort string
 	// VisionModel is the session's vision side-channel setting ("", "off", or
-	// a model ref), sampled under its own facet beside reasoning's trio.
+	// a model ref), sampled under its own facet beside the reasoning fields.
 	VisionModel string
 	// Name, Preview, LastTurnEndedAt and LastMessage are the facetMeta fields
 	// appThread reads out of schema.SessionMeta. Storing them rather than the
@@ -160,7 +163,7 @@ type ThreadEnvelopeSource interface {
 	// when it rests on none.
 	RestingFailure() *appwire.ThreadFailure
 	PendingEscalations() []appwire.SandboxEscalationRequested
-	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
+	ReasoningInfo() (effort string, levels []string, supportsReasoning bool, defaultEffort string)
 	VisionModel() string
 	SessionMeta() schema.SessionMeta
 }
@@ -454,7 +457,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		}
 	}
 	if facets&facetReasoning != 0 {
-		next.ReasoningEffort, next.ReasoningEffortLevels, next.SupportsReasoning = src.ReasoningInfo()
+		next.ReasoningEffort, next.ReasoningEffortLevels, next.SupportsReasoning, next.DefaultReasoningEffort = src.ReasoningInfo()
 	}
 	if facets&facetVision != 0 {
 		next.VisionModel = src.VisionModel()
@@ -603,6 +606,7 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, cwdSt
 		e.ReasoningEffort = next.ReasoningEffort
 		e.ReasoningEffortLevels = next.ReasoningEffortLevels
 		e.SupportsReasoning = next.SupportsReasoning
+		e.DefaultReasoningEffort = next.DefaultReasoningEffort
 	}
 	if facets&facetVision != 0 {
 		e.VisionModel = next.VisionModel

@@ -2261,18 +2261,19 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
 	s.emit(events.ModelChangedData{
-		OldProvider:           commitPrev.ID(),
-		OldModel:              commitPrev.Model(),
-		NewProvider:           nextProfile.ID(),
-		NewModel:              nextProfile.Model(),
-		ReasoningEffortLevels: nextProfile.ReasoningEffortLevels(),
-		SupportsReasoning:     nextProfile.SupportsReasoning(),
-		MarkerText:            markerText,
-		ContextUsed:           usage.Used,
-		ContextWindow:         usage.Window,
-		ContextPressure:       contextPressure,
-		ContextAssumed:        usage.Assumed,
-		CompactionThreshold:   usage.CompactionThreshold,
+		OldProvider:            commitPrev.ID(),
+		OldModel:               commitPrev.Model(),
+		NewProvider:            nextProfile.ID(),
+		NewModel:               nextProfile.Model(),
+		ReasoningEffortLevels:  nextProfile.ReasoningEffortLevels(),
+		SupportsReasoning:      nextProfile.SupportsReasoning(),
+		DefaultReasoningEffort: profileDefaultReasoningEffort(nextProfile),
+		MarkerText:             markerText,
+		ContextUsed:            usage.Used,
+		ContextWindow:          usage.Window,
+		ContextPressure:        contextPressure,
+		ContextAssumed:         usage.Assumed,
+		CompactionThreshold:    usage.CompactionThreshold,
 	})
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk model stale. Kata wnfz. maybeAutoSave

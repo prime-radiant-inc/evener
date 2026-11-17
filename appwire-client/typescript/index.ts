@@ -551,8 +551,10 @@ export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export {
   EFFORT_TIERS,
+  effortDefaultLabel,
   effortLabel,
   effortOptionLevels,
+  effortReadout,
   FALLBACK_EFFORT_LEVELS,
   sessionEffortLevels,
 } from "./reasoningEffort";

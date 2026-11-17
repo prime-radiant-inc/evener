@@ -374,6 +374,12 @@ export interface ThreadModel {
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
+  // The tier the session's model runs at while reasoningEffort is unset (wire
+  // EvenerThread.defaultReasoningEffort): what an unset "(default)" effort
+  // actually means. Undefined when the model does not reason, the row is
+  // unresolved, or the daemon predates it. Replaced with the rest of the
+  // reasoning profile on thread/model/changed.
+  defaultReasoningEffort?: string;
   visionModel: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards

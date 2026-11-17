@@ -1,7 +1,13 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
-import { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
+import {
+  effortDefaultLabel,
+  effortLabel,
+  effortOptionLevels,
+  effortReadout,
+  sessionEffortLevels,
+} from "./reasoningEffort";
 
 describe("effortLabel", () => {
   test("the empty level is the session default", () => {
@@ -17,6 +23,38 @@ describe("effortLabel", () => {
   test("every other level is its own label", () => {
     expect(effortLabel("high", ["low", "high"])).toBe("high");
     expect(effortLabel("xhigh", [])).toBe("xhigh");
+  });
+});
+
+describe("effortDefaultLabel", () => {
+  test("names the resolved tier and still reads as the default, not that tier pinned", () => {
+    expect(effortDefaultLabel("high")).toContain("high");
+    expect(effortDefaultLabel("high")).not.toBe(effortLabel("high", ["low", "high"]));
+    expect(effortDefaultLabel("high")).not.toBe(effortDefaultLabel("low"));
+  });
+
+  test("is the plain default label while the resolved tier is unknown", () => {
+    expect(effortDefaultLabel(undefined)).toBe(effortLabel("", []));
+    expect(effortDefaultLabel("")).toBe(effortLabel("", []));
+  });
+});
+
+describe("effortReadout", () => {
+  const ladder = ["none", "low", "medium", "high"];
+
+  test("an unset effort shows the tier it resolves to", () => {
+    expect(effortReadout("", ladder, "medium")).toBe(effortLabel("medium", ladder));
+    expect(effortReadout("", ladder, "none")).toBe(effortLabel("none", ladder));
+  });
+
+  test("an unset effort stays the plain default while the resolved tier is unknown", () => {
+    expect(effortReadout("", ladder, undefined)).toBe(effortLabel("", ladder));
+    expect(effortReadout("", ladder, "")).toBe(effortLabel("", ladder));
+  });
+
+  test("a chosen level shows itself whatever the default resolves to", () => {
+    expect(effortReadout("low", ladder, "high")).toBe(effortLabel("low", ladder));
+    expect(effortReadout("none", ladder, "high")).toBe(effortLabel("none", ladder));
   });
 });
 

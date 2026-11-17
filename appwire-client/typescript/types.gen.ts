@@ -1139,6 +1139,15 @@ export interface EvenerThread {
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
   /**
+   * DefaultReasoningEffort is the effort the session's current model runs
+   * at while ReasoningEffort is unset: the model's stated default, else
+   * medium, clamped to its ladder. A client names this tier where it would
+   * otherwise show a bare "(default)". Absent when the model does not
+   * reason, from a row the registry cannot resolve, and from an older
+   * daemon; live updates arrive on thread/model/changed.
+   */
+  defaultReasoningEffort?: string;
+  /**
    * VisionModel is the session's vision side-channel setting: "" describes
    * with the session model, "off" disables the side-channel, anything else is
    * a model ref. Snapshot-only like the effort fields beside it; live updates
@@ -5013,6 +5022,11 @@ export interface ThreadModelChangedParams {
   model: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  /**
+   * DefaultReasoningEffort is the effort the new model runs at while the
+   * session's own effort is unset (EvenerThread.DefaultReasoningEffort).
+   */
+  defaultReasoningEffort?: string;
   contextUsed?: number;
   contextWindow?: number;
   contextPressure?: number;

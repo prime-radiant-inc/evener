@@ -531,6 +531,7 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
     reasoningEffort: thread.evener.reasoningEffort,
+    defaultReasoningEffort: thread.evener.defaultReasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
     manager: thread.evener.manager ?? false,
     askPending: thread.evener.askPending ?? false,
