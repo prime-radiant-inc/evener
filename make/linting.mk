@@ -401,8 +401,10 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
 ##   version across the npm trees; that no tracked file is over 1 MiB beyond a
 ##   short allowlist; the repository source audits in
-##   internal/devtool/repoaudit; and the repo secret scan.
+##   internal/devtool/repoaudit; the prompt-eval harness's own tests; and the
+##   repo secret scan.
 ## trigger: Required CI; local pre-merge.
-## requires: golangci-lint, gitleaks, and the frontend node_modules install.
+## requires: golangci-lint, gitleaks, python3 with pytest, and the frontend
+##   node_modules install. `make tools` installs the first two and not pytest.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.
 lint: $(LINT_TARGETS)

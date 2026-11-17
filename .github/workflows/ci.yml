@@ -462,14 +462,22 @@ jobs:
 
       # lint-prompt-eval runs the harness's pytest suite. The runner's system
       # Python has no pytest, and an uninstalled pytest fails the gate the same
-      # way a broken test does, so pin the runner here rather than adding a
-      # requirements file for one dependency of one lint target.
+      # way a broken test does. The version comes from .tool-versions, beside
+      # golangci-lint and gitleaks, so a new pytest release cannot change this
+      # lane's result with no repo change.
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
       - name: Install pytest
-        run: python3 -m pip install --disable-pip-version-check pytest
+        run: |
+          set -euo pipefail
+          version="$(awk '$1=="pytest" {print $2}' .tool-versions)"
+          if [ -z "$version" ]; then
+            echo "ci: .tool-versions has no pytest pin" >&2
+            exit 1
+          fi
+          python3 -m pip install --disable-pip-version-check "pytest==$version"
 
       - name: Install gitleaks
         run: |
