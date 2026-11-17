@@ -579,6 +579,49 @@ func TestAcceptedFrameKeepsItsRetryThroughAFailedSupersededRedelivery(t *testing
 	}
 }
 
+// A frame the receiver durably took whose settlement then failed stays pending,
+// and the next drain redelivers it. The receiver may have resolved the attention
+// and dropped its cause by then, so the redelivery must not register the cause
+// again: a later turn would adopt the finished exchange and count a fresh watch
+// event as deeper than it is, dropping it as runaway.
+func TestRedeliveryDoesNotResurrectAResolvedCause(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "first"})
+	first := fixture.requireOnePending(t).state
+	attentionID := stableWatchAttentionID(first)
+	// The receiver takes the frame, then the settlement write fails, which is
+	// what leaves the frame pending with an outstanding acknowledgement.
+	settleFailure := errors.New("settlement write failed")
+	originalAppend := jm.appendEvent
+	jm.appendEvent = func(event jobstore.Event) error {
+		if exactWatchSendEvent(event, jobstore.EventWatchSendDelivered, first) {
+			return settleFailure
+		}
+		return originalAppend(event)
+	}
+	if _, err := jm.deliverPendingWatchSend(cfg, first, false); !errors.Is(err, settleFailure) {
+		t.Fatalf("deliver first frame: err = %v, want the settlement failure", err)
+	}
+	jm.appendEvent = originalAppend
+	if !jm.hasUnsettledWatchSend(first.DeliveryID) {
+		t.Fatal("the taken frame was not noted as unsettled, so this test is not exercising a redelivery")
+	}
+	// The receiver resolves the attention, which drops its cause.
+	fixture.controller.attentionCauses.forget(attentionID)
+	if got := fixture.controller.attentionCauses.union([]string{attentionID}); got != nil {
+		t.Fatalf("the resolved attention still holds a cause: %+v", got)
+	}
+	// The next drain redelivers the same pending frame.
+	if _, err := jm.deliverPendingWatchSend(cfg, first, false); err != nil {
+		t.Fatalf("redeliver the taken frame: %v", err)
+	}
+	if got := fixture.controller.attentionCauses.union([]string{attentionID}); got != nil {
+		t.Fatalf("the redelivery resurrected the resolved cause: %+v", got)
+	}
+}
+
 // The receiver takes the first frame but arming its attention fails, and a
 // replacement then coalesces over it. Nothing will redeliver the first frame,
 // so it keeps its receipt and goes to the settlement retry, which arms and

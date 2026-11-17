@@ -409,7 +409,18 @@ func (jm *jobManager) deliverStableWatchSend(cfg *watchConfig, state jobstore.Wa
 		jm.rememberRenderedWatchSendFrame(cfg, noticed)
 	}
 	// The receiver's turn that consumes the frame adopts the frame's lineage.
-	controller.attentionCauses.remember(attentionID, state.Provenance)
+	//
+	// A frame already noted as unsettled has been durably taken by the
+	// receiver on an earlier attempt, and only its settlement is outstanding.
+	// That receiver may have resolved the attention and dropped the cause by
+	// now, so registering it again would resurrect an exchange the receiver
+	// already finished: a later turn would adopt the stale cause and count a
+	// fresh watch event as deeper than it is, dropping it as runaway. The
+	// retry path re-arms the attention and acknowledges the delivery; it
+	// never needs the cause back.
+	if !jm.hasUnsettledWatchSend(state.DeliveryID) {
+		controller.attentionCauses.remember(attentionID, state.Provenance)
+	}
 	_, appendErr := receiver.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(rendered))
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		if appendErr != nil {
