@@ -407,6 +407,7 @@ type recordFile interface {
 	WriteAt(p []byte, off int64) (int, error)
 	Stat() (os.FileInfo, error)
 	Truncate(size int64) error
+	Sync() error
 	Close() error
 }
 

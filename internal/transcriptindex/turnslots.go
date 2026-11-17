@@ -314,6 +314,15 @@ func (x *Index) openTurnSlots(m meta) error {
 	return nil
 }
 
+// turnSlotsFile is the slot table's file, or nil when the build holds none, so
+// a durability sync reaches every file the build reads from.
+func (x *Index) turnSlotsFile() recordFile {
+	if x.turnSlots == nil {
+		return nil
+	}
+	return x.turnSlots.file
+}
+
 // removeOtherTurnSlotTables deletes every table in the build but the live one,
 // after the meta naming it committed.
 func (x *Index) removeOtherTurnSlotTables() {
