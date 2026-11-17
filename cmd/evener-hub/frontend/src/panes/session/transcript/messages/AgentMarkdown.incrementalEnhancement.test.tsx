@@ -237,6 +237,39 @@ function spyOnAnalysis() {
   };
 }
 
+// Issue #6644: nulling analysisRef stops later REUSE, but the settle passes
+// were still handed the stream's cache, and enhanceFileReferences /
+// enhanceEntityText keep that argument in their cleanup closures. Measured
+// with --expose-gc, holding a WeakRef to the cache across an in-place settle
+// and forcing gc while the message stayed mounted: on the pre-change code it
+// was collected 0/6 times after the settle and still 0/6 after two further
+// settled renders, while a control that unmounted first collected 6/6. The fix
+// hands the passes no cache on a non-live render, so no closure of the settle
+// commit's effect captures it; it is then collected at the next commit. The
+// price is re-deriving the settle pass's analysis once, exactly what a freshly
+// mounted settled message does. Observable, like #6603 above, as work: the
+// settle commit must scan every paragraph instead of answering the stream's
+// cache.
+test("an in-place settle hands the enhancement passes no cache, so nothing retains it", () => {
+  const streamed = render(view(`${SETTLED}\n\n${TAIL.slice(0, 12)}`, true));
+  try {
+    act(() => {
+      streamed.rerender(view(`${SETTLED}\n\n${TAIL}`, true));
+    });
+    const spy = spyOnAnalysis();
+    act(() => {
+      streamed.rerender(view(`${SETTLED}\n\n${TAIL}`, false));
+    });
+    // Every settled paragraph is re-derived on the settle commit: a pass that
+    // answered one of them from the stream's cache would be below this.
+    expect(spy.fileSpans.mock.calls.length).toBeGreaterThanOrEqual(PARAGRAPHS.length);
+    expect(spy.entityIds.mock.calls.length).toBeGreaterThanOrEqual(PARAGRAPHS.length);
+    expectDecorated(streamed.container);
+  } finally {
+    streamed.unmount();
+  }
+});
+
 test("a delta re-derives analysis only for the text it changed", () => {
   const spy = spyOnAnalysis();
   const streamed = render(view(SETTLED, true));
