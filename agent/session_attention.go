@@ -950,11 +950,17 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 		// It moves unchanged — the reopened row is the same message re-keyed,
 		// not a new one, so it earns no additional message hop.
 		//
-		// A refused reopen latches nothing: the row it would name is the one
-		// this teardown discards, and pendingTurns keeps the row it is told to
-		// keep even when resolved, so latching it would re-present the
-		// discarded report and survive a compaction that should drop it.
-		if !refused {
+		// A refused reopen leaves no latch behind. The row it would name is the
+		// one this teardown discards, and pendingTurns keeps the row it is told
+		// to keep even when resolved, so a latch left on either identity would
+		// re-present a stopped delegate's report and survive a compaction that
+		// should drop it.
+		if refused {
+			s.attentionMu.Lock()
+			s.attentionAcceptedID = ""
+			s.attentionAcceptedCause = nil
+			s.attentionMu.Unlock()
+		} else {
 			s.attentionMu.Lock()
 			if s.attentionAcceptedID == attentionID {
 				s.attentionAcceptedID = reopenID
