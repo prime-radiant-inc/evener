@@ -118,8 +118,8 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 		{"ShutdownThread", appwire.MethodThreadShutdown, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
 			return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: testControllerRef})
 		}},
-		{"SetThreadModel", appwire.MethodThreadModelSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
-			_, err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef})
+		{"SetThreadModel", appwire.MethodThreadModelSet, true, false, "cmid-SetThreadModel", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef, ClientMutationID: "cmid-SetThreadModel", ExpectedInstanceID: "instance-7", ExpectedBootGeneration: "boot-11", Model: "gpt-5.6-sol"})
 			return err
 		}},
 		{"SetThreadReasoningEffort", appwire.MethodThreadReasoningEffortSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
@@ -169,7 +169,10 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+			source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+				if method == appwire.MethodThreadModelSet {
+					return scriptedReply{result: modelControlResponseForAppSourceTest()}
+				}
 				return scriptedReply{result: map[string]any{}}
 			})
 			if err := tc.invoke(t.Context(), source); err != nil {
@@ -212,7 +215,7 @@ func TestRemoteHubSetThreadModelPreservesTypedResponse(t *testing.T) {
 		}
 	})
 
-	got, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef})
+	got, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef, ClientMutationID: "pick-exact", ExpectedInstanceID: "instance-7", ExpectedBootGeneration: "boot-11", Model: "gpt-5.6-sol"})
 	if err != nil {
 		t.Fatalf("SetThreadModel: %v", err)
 	}
@@ -228,34 +231,39 @@ func TestRemoteHubSetThreadModelPreservesTypedResponse(t *testing.T) {
 	}
 }
 
-func TestRemoteHubSetThreadModelAcceptsVersionZeroFromOldHub(t *testing.T) {
-	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
-		switch method {
-		case appwire.MethodThreadModelSet:
-			return scriptedReply{result: map[string]any{}}
-		case appwire.MethodThreadRead:
-			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
-				ID: "S", Evener: appwire.EvenerThread{Ref: testRemoteRef, Capabilities: appwire.ThreadCapabilities{ChangeModel: true}},
-			}}}
-		default:
-			t.Fatalf("unexpected method %s", method)
-			return scriptedReply{}
-		}
-	})
+func TestRemoteHubSetThreadModelBlocksMalformedSuccess(t *testing.T) {
+	snapshot := modelControlResponseForAppSourceTest().ModelControl
+	for _, tc := range []struct {
+		name   string
+		result any
+	}{
+		{name: "empty", result: map[string]any{}},
+		{name: "version only", result: map[string]any{"modelControlVersion": 1}},
+		{name: "disposition only", result: map[string]any{"disposition": "accepted"}},
+		{name: "snapshot only", result: map[string]any{"modelControl": snapshot}},
+		{name: "version and disposition", result: map[string]any{"modelControlVersion": 1, "disposition": "accepted"}},
+		{name: "version and snapshot", result: map[string]any{"modelControlVersion": 1, "modelControl": snapshot}},
+		{name: "disposition and snapshot", result: map[string]any{"disposition": "accepted", "modelControl": snapshot}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+				return scriptedReply{result: tc.result}
+			})
+			_, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef, ClientMutationID: "pick-malformed", ExpectedInstanceID: "instance-7", ExpectedBootGeneration: "boot-11", Model: "gpt-5.6-sol"})
+			assertModelMutationBlocked(t, err, "pick-malformed")
+		})
+	}
+}
 
-	got, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef})
-	if err != nil {
-		t.Fatalf("SetThreadModel: %v", err)
+func assertModelMutationBlocked(t *testing.T, err error, mutationID string) {
+	t.Helper()
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
 	}
-	if got.ModelControlVersion != 0 || got.ModelControl != nil {
-		t.Fatalf("old-hub response = %+v, want successful version 0", got)
-	}
-	read, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: testControllerRef})
-	if err != nil {
-		t.Fatalf("ReadThread: %v", err)
-	}
-	if read.Thread.Evener.Capabilities.ModelControlVersion != 0 || read.Thread.Evener.ModelControl != nil {
-		t.Fatalf("old-hub read advertised model control: %+v", read.Thread.Evener)
+	data, ok := appwire.ErrorDataOf(wire.Data)
+	if !ok || wire.Code != appwire.CodeInternalError || data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown || data.ClientMutationID != mutationID || data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("blocked model mutation = %+v data=%+v", wire, data)
 	}
 }
 
@@ -469,6 +477,14 @@ func TestRemoteHubMutationOutboundThreadTranslation(t *testing.T) {
 // response becomes ErrorMutationOutcomeUnknown while the same loss on a
 // read-only call stays SessionUnavailable.
 func TestRemoteHubMutationOutcomeUnknownOnResponseLoss(t *testing.T) {
+	t.Run("model mutation is blocked", func(t *testing.T) {
+		source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+			return scriptedReply{closeConn: true}
+		})
+		_, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{Ref: testControllerRef, ClientMutationID: "cmid-model-loss", ExpectedInstanceID: "instance-7", ExpectedBootGeneration: "boot-11", Model: "gpt-5.6-sol"})
+		assertModelMutationBlocked(t, err, "cmid-model-loss")
+	})
+
 	t.Run("mutation", func(t *testing.T) {
 		source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
 			return scriptedReply{closeConn: true}
@@ -525,6 +541,91 @@ func TestRemoteHubMutationOutcomeUnknownOnResponseLoss(t *testing.T) {
 			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorSessionUnavailable)
 		}
 	})
+}
+
+func TestRemoteHubLostModelResponseCannotReplaceNewerPick(t *testing.T) {
+	canonical := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: "instance-7", BootGeneration: "boot-11"},
+		Revision:  1,
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+	}
+	apply := func(raw json.RawMessage) appwire.ThreadModelSetResponse {
+		var params appwire.ThreadModelSetParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			t.Fatalf("decode model pick: %v", err)
+		}
+		canonical.Revision++
+		canonical.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+		return appwire.ThreadModelSetResponse{
+			ModelControlVersion: appwire.ModelControlVersion1,
+			Disposition:         appwire.ModelControlDispositionAccepted,
+			ModelControl:        &canonical,
+		}
+	}
+
+	first, firstCalls := newScriptedRemote(t, "host", func(method string, raw json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadModelSet {
+			t.Fatalf("first connection method = %q, want %q", method, appwire.MethodThreadModelSet)
+		}
+		_ = apply(raw)
+		return scriptedReply{closeConn: true}
+	})
+	_, err := first.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{
+		Ref:                    testControllerRef,
+		ModelProvider:          "openai",
+		Model:                  "gpt-5.6-sol",
+		ClientMutationID:       "pick-lost",
+		ExpectedInstanceID:     canonical.Authority.InstanceID,
+		ExpectedBootGeneration: canonical.Authority.BootGeneration,
+	})
+	assertModelMutationBlocked(t, err, "pick-lost")
+
+	second, secondCalls := newScriptedRemote(t, "host", func(method string, raw json.RawMessage) scriptedReply {
+		switch method {
+		case appwire.MethodThreadModelSet:
+			return scriptedReply{result: apply(raw)}
+		case appwire.MethodThreadRead:
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: testThreadID,
+				Evener: appwire.EvenerThread{
+					Ref:          testRemoteRef,
+					Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+					ModelControl: &canonical,
+				},
+			}}}
+		default:
+			t.Fatalf("second connection method = %q", method)
+			return scriptedReply{}
+		}
+	})
+	accepted, err := second.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{
+		Ref:                    testControllerRef,
+		ModelProvider:          "anthropic",
+		Model:                  "claude-opus-4-6",
+		ClientMutationID:       "pick-newer",
+		ExpectedInstanceID:     canonical.Authority.InstanceID,
+		ExpectedBootGeneration: canonical.Authority.BootGeneration,
+	})
+	if err != nil {
+		t.Fatalf("newer model pick: %v", err)
+	}
+	if accepted.ModelControl == nil || accepted.ModelControl.Active.Model != "claude-opus-4-6" {
+		t.Fatalf("accepted model control = %+v", accepted)
+	}
+
+	diagnostic, err := second.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("diagnostic read: %v", err)
+	}
+	if diagnostic.Thread.Evener.ModelControl == nil || diagnostic.Thread.Evener.ModelControl.Active.Model != "claude-opus-4-6" {
+		t.Fatalf("diagnostic model control = %+v", diagnostic.Thread.Evener.ModelControl)
+	}
+	if got := len(wireCalls(firstCalls())); got != 1 {
+		t.Fatalf("lost pick calls = %d, want 1", got)
+	}
+	if got := len(wireCalls(secondCalls())); got != 2 {
+		t.Fatalf("newer pick plus diagnostic calls = %d, want 2", got)
+	}
 }
 
 // TestRemoteHubMutationPreservesSemanticWireError asserts a semantic wire error

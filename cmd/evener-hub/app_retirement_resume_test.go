@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -568,6 +570,84 @@ func TestRetirementResumeDoesNotReplaceLiveOwner(t *testing.T) {
 	if got := f.launches.Load(); got != 0 {
 		t.Fatalf("replacement launches after cancel = %d, want 0", got)
 	}
+}
+
+func TestModelMutationResumeUsesOnlyPredispatchRefusal(t *testing.T) {
+	const mutationID = "model-resume-policy"
+
+	newFixture := func(t *testing.T) (hubcore.WebConfig, *appsource.Registry, string, *int) {
+		t.Helper()
+		var sessionID string
+		cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+			appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+				return appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: sessionID, SessionID: sessionID, Source: "local",
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}}, nil
+			})
+		})
+		sessionID = sid
+		server, web := newHubRPCTestServerWithWeb(t, cfg)
+		t.Cleanup(server.Close)
+		return cfg, web.sources, "local:" + sessionID, resumeCalls
+	}
+
+	t.Run("proven predispatch refusal retries with unchanged authority", func(t *testing.T) {
+		cfg, sources, ref, resumeCalls := newFixture(t)
+		params := appwire.ThreadModelSetParams{
+			Ref:                    ref,
+			ClientMutationID:       mutationID,
+			ExpectedInstanceID:     "old-instance",
+			ExpectedBootGeneration: "old-boot",
+		}
+		attempts := 0
+		_, err := withSessionResume(t.Context(), cfg, sources, ref, mutationID, nil, func() (appwire.ThreadModelSetResponse, error) {
+			attempts++
+			if params.ExpectedInstanceID != "old-instance" || params.ExpectedBootGeneration != "old-boot" {
+				t.Fatalf("resume rewrote model authority: %+v", params)
+			}
+			if attempts == 1 {
+				return appwire.ThreadModelSetResponse{}, appwire.WireError{
+					Code:    appwire.CodeUnavailable,
+					Message: "session unavailable before dispatch",
+					Data: appwire.ErrorData{
+						EvenerErrorInfo:  appwire.ErrorSessionUnavailable,
+						ClientMutationID: mutationID,
+						MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+						RetryDisposition: appwire.RetryDispositionNone,
+					},
+				}
+			}
+			return appwire.ThreadModelSetResponse{}, appwire.ModelControlAuthorityStale(mutationID, "replacement has new authority")
+		})
+		if attempts != 2 || *resumeCalls != 1 {
+			t.Fatalf("attempts=%d resume calls=%d, want 2/1", attempts, *resumeCalls)
+		}
+		wire, ok := errors.AsType[appwire.WireError](err)
+		if !ok {
+			t.Fatalf("retry error = %T %v, want WireError", err, err)
+		}
+		data, ok := appwire.ErrorDataOf(wire.Data)
+		if !ok || data.EvenerErrorInfo != appwire.ErrorModelControlAuthorityStale || data.ClientMutationID != mutationID || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.RetryDisposition != appwire.RetryDispositionNone {
+			t.Fatalf("stale authority error = %+v data=%+v", wire, data)
+		}
+	})
+
+	t.Run("blocked unknown never resumes or retries", func(t *testing.T) {
+		cfg, sources, ref, resumeCalls := newFixture(t)
+		attempts := 0
+		blocked := appwire.MutationOutcomeUnknownBlocked(mutationID, "model response lost")
+		_, err := withSessionResume(t.Context(), cfg, sources, ref, mutationID, nil, func() (appwire.ThreadModelSetResponse, error) {
+			attempts++
+			return appwire.ThreadModelSetResponse{}, blocked
+		})
+		if attempts != 1 || *resumeCalls != 0 {
+			t.Fatalf("attempts=%d resume calls=%d, want 1/0", attempts, *resumeCalls)
+		}
+		if !reflect.DeepEqual(err, blocked) {
+			t.Fatalf("blocked error = %#v, want %#v", err, blocked)
+		}
+	})
 }
 
 func TestRetirementResumeSameIDReplaysOneStableTurn(t *testing.T) {

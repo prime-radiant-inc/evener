@@ -274,6 +274,11 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	var supportsReasoning atomic.Bool
 	supportsReasoning.Store(false)
+	modelControl := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "cold-profile-boot"},
+		Revision:  1,
+		Active:    appwire.ModelControlActive{ModelProvider: "openai-codex", Model: "gpt-5.2"},
+	}
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        sessionID,
@@ -281,17 +286,23 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 			Source:    "local",
 			Evener: appwire.EvenerThread{
 				Ref:                   params.Ref,
-				Capabilities:          appwire.ThreadCapabilities{ChangeModel: true},
+				Capabilities:          appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+				ModelControl:          &modelControl,
 				ReasoningEffortLevels: nil,
 				SupportsReasoning:     supportsReasoning.Load(),
 			},
 		}}, nil
 	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		if params.ExpectedInstanceID != modelControl.Authority.InstanceID || params.ExpectedBootGeneration != modelControl.Authority.BootGeneration {
+			return appwire.ThreadModelSetResponse{}, appwire.ModelControlAuthorityStale(params.ClientMutationID, "replacement has new authority")
+		}
 		if params.Model != "gpt-6-luna" {
-			return appwire.EmptyResponse{}, nil
+			return appwire.ThreadModelSetResponse{}, appwire.InvalidParams("unexpected model")
 		}
 		supportsReasoning.Store(true)
+		modelControl.Revision++
+		modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh", "max"}, SupportsReasoning: true}
 		daemon.BroadcastAll(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
 			ThreadID:              sessionID,
 			Ref:                   "local:" + sessionID,
@@ -300,7 +311,7 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 			ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh", "max"},
 			SupportsReasoning:     true,
 		})
-		return appwire.EmptyResponse{}, nil
+		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -338,10 +349,31 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 		}
 	}()
 
+	staleMutationID := newMutationID(t)
+	_, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref:                    "local:" + sessionID,
+		ModelProvider:          "openai-codex",
+		Model:                  "gpt-6-luna",
+		ClientMutationID:       staleMutationID,
+		ExpectedInstanceID:     sessionID,
+		ExpectedBootGeneration: "retired-boot",
+	})
+	assertModelAuthorityStale(t, err, staleMutationID)
+
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("thread/read after stale authority: %v", err)
+	}
+	if read.Thread.Evener.ModelControl == nil {
+		t.Fatalf("resumed thread/read returned no model authority: %+v", read.Thread.Evener)
+	}
 	if _, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
-		Ref:           "local:" + sessionID,
-		ModelProvider: "openai-codex",
-		Model:         "gpt-6-luna",
+		Ref:                    "local:" + sessionID,
+		ModelProvider:          "openai-codex",
+		Model:                  "gpt-6-luna",
+		ClientMutationID:       newMutationID(t),
+		ExpectedInstanceID:     read.Thread.Evener.ModelControl.Authority.InstanceID,
+		ExpectedBootGeneration: read.Thread.Evener.ModelControl.Authority.BootGeneration,
 	}); err != nil {
 		t.Fatalf("ThreadModelSet on the cold session: %v", err)
 	}

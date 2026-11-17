@@ -862,16 +862,30 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			var sessionID string
 			var stopped atomic.Bool
+			modelControl := appwire.ModelControlSnapshot{
+				Authority: appwire.ModelControlAuthority{BootGeneration: "force-stop-boot"},
+				Revision:  1,
+				Active:    appwire.ModelControlActive{ModelProvider: "test", Model: "test"},
+			}
 			cfg, sid, resumes := parityResumeFixture(t, func(daemon *appserver.Server) {
 				appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 					if stopped.Load() {
 						return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("daemon exited")
 					}
-					return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Status: appwire.ThreadStatus{Type: "idle"}, Evener: appwire.EvenerThread{Ref: params.Ref, InstanceID: sessionID, Capabilities: appwire.ThreadCapabilities{Send: true, ChangeModel: true, Compact: true}}}}, nil
+					return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Status: appwire.ThreadStatus{Type: "idle"}, Evener: appwire.EvenerThread{Ref: params.Ref, InstanceID: sessionID, Capabilities: appwire.ThreadCapabilities{Send: true, ChangeModel: true, Compact: true, ModelControlVersion: appwire.ModelControlVersion1}, ModelControl: &modelControl}}}, nil
 				})
-				daemon.Router().Handle(method, func(context.Context, json.RawMessage) (any, error) { return appwire.EmptyResponse{}, nil })
+				if method == appwire.MethodThreadModelSet {
+					appserver.HandleTyped(daemon.Router(), method, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+						modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+						modelControl.Revision++
+						return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
+					})
+				} else {
+					daemon.Router().Handle(method, func(context.Context, json.RawMessage) (any, error) { return appwire.EmptyResponse{}, nil })
+				}
 			})
 			sessionID = sid
+			modelControl.Authority.InstanceID = sessionID
 			spawner := cfg.Spawner.(*fakeRPCSpawner)
 			spawn := spawner.resume
 			spawner.resume = func(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
@@ -993,7 +1007,13 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 				t.Fatalf("explicit resume did not clear live fence: %+v", fresh.Thread)
 			}
 
-			if err := client.Request(t.Context(), method, appwire.ThreadModelSetParams{Ref: ref, Model: "test", ModelProvider: "test"}, nil); err != nil {
+			params := appwire.ThreadModelSetParams{Ref: ref, Model: "test", ModelProvider: "test"}
+			if method == appwire.MethodThreadModelSet {
+				params.ClientMutationID = newMutationID(t)
+				params.ExpectedInstanceID = fresh.Thread.Evener.ModelControl.Authority.InstanceID
+				params.ExpectedBootGeneration = fresh.Thread.Evener.ModelControl.Authority.BootGeneration
+			}
+			if err := client.Request(t.Context(), method, params, nil); err != nil {
 				t.Fatalf("fresh action after explicit resume: %v", err)
 			}
 		})

@@ -14,6 +14,10 @@ import (
 // a RemoteHubSource reuses one long-lived client per host, so there is no
 // per-call dial or Initialize to run, and only the error mapping differs.
 func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clientMutationID string, params any, out any) error {
+	return s.mutationCallWithDisposition(ctx, method, clientMutationID, appwire.RetryDispositionAutomatic, params, out)
+}
+
+func (s *RemoteHubSource) mutationCallWithDisposition(ctx context.Context, method string, clientMutationID string, disposition appwire.RetryDisposition, params any, out any) error {
 	// A caller cancellation or deadline stays raw at every step, exactly as
 	// LocalDaemonSource.withClientCallMapper leaves ctx.Err(): the caller's own
 	// context ending is not host unavailability. On the request path this is
@@ -38,7 +42,7 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		return s.remoteHubMutationCallError(clientMutationID, err)
+		return s.remoteHubMutationCallErrorWithDisposition(clientMutationID, disposition, err)
 	}
 	return s.translateOut(client, out)
 }
@@ -49,6 +53,10 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 // provenance before mapCallError replaces a transport failure with an ordinary
 // SessionUnavailable WireError.
 func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, err error) error {
+	return s.remoteHubMutationCallErrorWithDisposition(clientMutationID, appwire.RetryDispositionAutomatic, err)
+}
+
+func (s *RemoteHubSource) remoteHubMutationCallErrorWithDisposition(clientMutationID string, disposition appwire.RetryDisposition, err error) error {
 	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
 		return err
 	}
@@ -57,7 +65,7 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
-	return mutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss", clientMutationID, appwire.RetryDispositionAutomatic)
+	return mutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss", clientMutationID, disposition)
 }
 
 // remoteForwardVoid sends one non-mutation RPC to the remote hub. remote is the
@@ -89,13 +97,17 @@ func remoteForward[R, P any](ctx context.Context, s *RemoteHubSource, method str
 // remoteForwardMutation is remoteForward for a mutation: a lost response is
 // reported against clientMutationID.
 func remoteForwardMutation[R, P any](ctx context.Context, s *RemoteHubSource, method, clientMutationID string, remote *P, ref *string) (R, error) {
+	return remoteForwardMutationWithDisposition[R](ctx, s, method, clientMutationID, appwire.RetryDispositionAutomatic, remote, ref)
+}
+
+func remoteForwardMutationWithDisposition[R, P any](ctx context.Context, s *RemoteHubSource, method, clientMutationID string, disposition appwire.RetryDisposition, remote *P, ref *string) (R, error) {
 	var out, zero R
 	translated, err := s.toRemoteRef(*ref, "")
 	if err != nil {
 		return out, err
 	}
 	*ref = translated.String()
-	if err := s.mutationCall(ctx, method, clientMutationID, *remote, &out); err != nil {
+	if err := s.mutationCallWithDisposition(ctx, method, clientMutationID, disposition, *remote, &out); err != nil {
 		return zero, err
 	}
 	return out, nil
@@ -281,7 +293,14 @@ func (s *RemoteHubSource) ForceStopThread(ctx context.Context, params appwire.Th
 
 func (s *RemoteHubSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 	remote := params
-	return remoteForward[appwire.ThreadModelSetResponse](ctx, s, appwire.MethodThreadModelSet, &remote, &remote.Ref)
+	response, err := remoteForwardMutationWithDisposition[appwire.ThreadModelSetResponse](ctx, s, appwire.MethodThreadModelSet, params.ClientMutationID, appwire.RetryDispositionBlocked, &remote, &remote.Ref)
+	if err != nil {
+		return appwire.ThreadModelSetResponse{}, err
+	}
+	if err := appwire.ValidateThreadModelSetResponse(response); err != nil {
+		return appwire.ThreadModelSetResponse{}, appwire.MutationOutcomeUnknownBlocked(params.ClientMutationID, "invalid thread/model/set response: "+err.Error())
+	}
+	return response, nil
 }
 
 func (s *RemoteHubSource) SetThreadReasoningEffort(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) error {

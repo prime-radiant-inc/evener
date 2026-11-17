@@ -1495,7 +1495,7 @@ func (s *LocalDaemonSource) ShutdownThread(ctx context.Context, params appwire.T
 }
 
 func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
-	return localForward(ctx, s, params.Ref, func(ctx context.Context, client *appwire.Client) (appwire.ThreadModelSetResponse, error) {
+	return localForwardModelMutation(ctx, s, params.Ref, params.ClientMutationID, func(ctx context.Context, client *appwire.Client) (appwire.ThreadModelSetResponse, error) {
 		return client.ThreadModelSet(ctx, params)
 	})
 }
@@ -1676,12 +1676,20 @@ func localForward[R any](ctx context.Context, s *LocalDaemonSource, ref string, 
 // response, or a session that has gone away, is reported against
 // clientMutationID so the caller knows whether the mutation was accepted.
 func localForwardMutation[R any](ctx context.Context, s *LocalDaemonSource, ref, clientMutationID string, call func(context.Context, *appwire.Client) (R, error)) (R, error) {
+	return localForwardMutationWithDisposition(ctx, s, ref, clientMutationID, appwire.RetryDispositionAutomatic, call)
+}
+
+func localForwardModelMutation[R any](ctx context.Context, s *LocalDaemonSource, ref, clientMutationID string, call func(context.Context, *appwire.Client) (R, error)) (R, error) {
+	return localForwardMutationWithDisposition(ctx, s, ref, clientMutationID, appwire.RetryDispositionBlocked, call)
+}
+
+func localForwardMutationWithDisposition[R any](ctx context.Context, s *LocalDaemonSource, ref, clientMutationID string, disposition appwire.RetryDisposition, call func(context.Context, *appwire.Client) (R, error)) (R, error) {
 	var out R
 	entry, err := s.entryForRef(ref, "")
 	if err != nil {
 		return out, localDaemonMutationEntryError(clientMutationID, err)
 	}
-	err = s.withMutationClient(ctx, entry, clientMutationID, func(ctx context.Context, client *appwire.Client) error {
+	err = s.withMutationClientDisposition(ctx, entry, clientMutationID, disposition, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = call(ctx, client)
 		return callErr
@@ -1706,8 +1714,18 @@ func (s *LocalDaemonSource) withMutationClient(
 	clientMutationID string,
 	fn func(context.Context, *appwire.Client) error,
 ) error {
+	return s.withMutationClientDisposition(ctx, entry, clientMutationID, appwire.RetryDispositionAutomatic, fn)
+}
+
+func (s *LocalDaemonSource) withMutationClientDisposition(
+	ctx context.Context,
+	entry rendezvous.Entry,
+	clientMutationID string,
+	disposition appwire.RetryDisposition,
+	fn func(context.Context, *appwire.Client) error,
+) error {
 	return s.withClientCallMapper(ctx, entry, fn, func(err error) error {
-		return localDaemonMutationCallError(clientMutationID, err)
+		return localDaemonMutationCallErrorWithDisposition(clientMutationID, disposition, err)
 	})
 }
 
@@ -1837,6 +1855,10 @@ func localDaemonCallError(err error) error {
 }
 
 func localDaemonMutationCallError(clientMutationID string, err error) error {
+	return localDaemonMutationCallErrorWithDisposition(clientMutationID, appwire.RetryDispositionAutomatic, err)
+}
+
+func localDaemonMutationCallErrorWithDisposition(clientMutationID string, disposition appwire.RetryDisposition, err error) error {
 	// A delivered WireError is an application verdict regardless of its data
 	// shape. Retain that provenance before mapping a transport failure to an
 	// ordinary SessionUnavailable WireError.
@@ -1848,7 +1870,7 @@ func localDaemonMutationCallError(clientMutationID string, err error) error {
 	if !ok || wire.Code != appwire.CodeUnavailable {
 		return mapped
 	}
-	return mutationOutcomeUnknown("mutation outcome is unknown after local daemon response loss", clientMutationID, appwire.RetryDispositionAutomatic)
+	return mutationOutcomeUnknown("mutation outcome is unknown after local daemon response loss", clientMutationID, disposition)
 }
 
 func localDaemonMutationEntryError(clientMutationID string, err error) error {

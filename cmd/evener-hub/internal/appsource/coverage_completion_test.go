@@ -155,6 +155,25 @@ func modelControlResponseForAppSourceTest() appwire.ThreadModelSetResponse {
 	}
 }
 
+func TestLocalDaemonSetThreadModelNamesPreDispatchRefusal(t *testing.T) {
+	source := NewLocalDaemonSource("local", nil, nil)
+	_, err := source.SetThreadModel(t.Context(), appwire.ThreadModelSetParams{
+		Ref:                    "local:missing",
+		Model:                  "gpt-5.6-sol",
+		ClientMutationID:       "local-model-pick",
+		ExpectedInstanceID:     "instance-7",
+		ExpectedBootGeneration: "boot-11",
+	})
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	data, ok := appwire.ErrorDataOf(wire.Data)
+	if !ok || data.ClientMutationID != "local-model-pick" || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("pre-dispatch refusal = %+v data=%+v", wire, data)
+	}
+}
+
 func emptyHandler[T any](context.Context, T) (appwire.EmptyResponse, error) {
 	return appwire.EmptyResponse{}, nil
 }

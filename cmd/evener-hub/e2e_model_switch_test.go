@@ -3,12 +3,25 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
+
+func assertModelAuthorityStale(t *testing.T, err error, mutationID string) {
+	t.Helper()
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("model mutation error = %T %v, want WireError", err, err)
+	}
+	data, ok := appwire.DecodedErrorData(wire.Data)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorModelControlAuthorityStale || data.ClientMutationID != mutationID || data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("stale authority error = %+v data=%+v", wire, data)
+	}
+}
 
 // subscribeThreadNotifications drains the client's notification stream into a
 // model-changed channel and a recovery-resync signal. There is one pump per
@@ -87,6 +100,10 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 	if ref == "" {
 		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
 	}
+	initialModelControl := started.Thread.Evener.ModelControl
+	if initialModelControl == nil {
+		t.Fatalf("thread/start returned no model control snapshot: %+v", started.Thread.Evener)
+	}
 	t.Cleanup(func() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
@@ -126,15 +143,37 @@ func TestE2E_ModelSwitchOnColdSessionReachesTheResumedSubscriber(t *testing.T) {
 
 	// The pane subscribes while the session is cold, the way the session pane
 	// is open on an exited session.
-	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
+	_, err = clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
+	if err != nil {
 		t.Fatalf("thread/read subscribe on the cold session: %v", err)
 	}
 	modelChanged, resynced := subscribeThreadNotifications(client)
 
+	staleMutationID := newMutationID(t)
+	_, err = clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:                    ref,
+		ModelProvider:          "fake",
+		Model:                  fakellm.SwitchTargetID,
+		ClientMutationID:       staleMutationID,
+		ExpectedInstanceID:     initialModelControl.Authority.InstanceID,
+		ExpectedBootGeneration: initialModelControl.Authority.BootGeneration,
+	})
+	assertModelAuthorityStale(t, err, staleMutationID)
+
+	resumed, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatalf("thread/read after stale authority: %v", err)
+	}
+	if resumed.Thread.Evener.ModelControl == nil {
+		t.Fatalf("resumed thread/read returned no model control authority: %+v", resumed.Thread.Evener)
+	}
 	modelControl, err := clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "fake",
-		Model:         fakellm.SwitchTargetID,
+		Ref:                    ref,
+		ModelProvider:          "fake",
+		Model:                  fakellm.SwitchTargetID,
+		ClientMutationID:       newMutationID(t),
+		ExpectedInstanceID:     resumed.Thread.Evener.ModelControl.Authority.InstanceID,
+		ExpectedBootGeneration: resumed.Thread.Evener.ModelControl.Authority.BootGeneration,
 	})
 	if err != nil {
 		t.Fatalf("thread/model/set on the cold session: %v", err)
@@ -295,9 +334,12 @@ func TestE2E_ModelSwitchQueuesMidTurnAndPushesAtRest(t *testing.T) {
 
 	// AT REST: a further pick applies immediately and pushes the same way.
 	atRestControl, err := clientRequest[appwire.ThreadModelSetResponse](ctx, client, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
-		Ref:           ref,
-		ModelProvider: "fake",
-		Model:         fakellm.ModelID,
+		Ref:                    ref,
+		ModelProvider:          "fake",
+		Model:                  fakellm.ModelID,
+		ClientMutationID:       newMutationID(t),
+		ExpectedInstanceID:     midTurnControl.ModelControl.Authority.InstanceID,
+		ExpectedBootGeneration: midTurnControl.ModelControl.Authority.BootGeneration,
 	})
 	if err != nil {
 		t.Fatalf("at-rest thread/model/set: %v", err)
