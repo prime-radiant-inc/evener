@@ -413,23 +413,35 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         compactionThreshold: n.params.compactionThreshold ?? 0,
         lastFrameAt: now,
       };
-      if (model.modelControlVersion === 1) return context;
+      if (model.modelControlState.kind === "ready" || model.modelControlState.kind === "recovering") return context;
+      const canonicalDisplay = { modelProvider: n.params.modelProvider, model: n.params.model };
       return {
         ...context,
         modelProvider: n.params.modelProvider,
         model: n.params.model,
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
+        modelControlState:
+          model.modelControlState.kind === "unsupported"
+            ? {
+                kind: "unsupported",
+                canonicalDisplay,
+                ...(model.modelControlState.observedVersion === undefined
+                  ? {}
+                  : { observedVersion: model.modelControlState.observedVersion }),
+              }
+            : { kind: "uninitialized", canonicalDisplay },
       };
     }
 
     case "thread/model/controlChanged": {
       if (!notificationTargetsThread(n, model)) return model;
-      const result = reduceModelControl(model, { kind: "notification", snapshot: n.params.modelControl });
-      const live = { ...result.model, lastFrameAt: now };
-      return (
-        result.decision === "invalidate" ? { ...live, history: invalidated(model.history ?? EMPTY_HISTORY) } : live
-      ) as M;
+      const result = reduceModelControl(model, {
+        kind: "snapshot",
+        source: "notification",
+        snapshot: n.params.modelControl,
+      });
+      return { ...result.model, lastFrameAt: now } as M;
     }
 
     case "thread/reasoning-effort/changed": {

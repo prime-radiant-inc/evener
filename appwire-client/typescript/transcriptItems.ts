@@ -530,6 +530,10 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // "stay[ing] the model field" for this exact reason. thread/model/changed
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: thread.modelProvider, model: thread.modelProvider },
+    },
     reasoningEffort: thread.evener.reasoningEffort,
     visionModel: thread.evener.visionModel ?? "",
     manager: thread.evener.manager ?? false,

@@ -7,7 +7,7 @@ import { compareBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
-import { projectModelControlSnapshot, reduceModelControl } from "./modelControl";
+import { reduceModelControl } from "./modelControl";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
 export { comparePositions } from "./model";
@@ -1026,15 +1026,8 @@ export function applyReadResponse<M extends ThreadModel>(
       next = mergeVersionedPage(next, next.history, deferred, false);
     }
   }
-  const control =
-    historyFallback(resp) && model.modelControlVersion === 1
-      ? { version: 1, snapshot: model.modelControl }
-      : {
-          version: resp.thread.evener.capabilities?.modelControlVersion ?? 0,
-          snapshot: resp.thread.evener.modelControl,
-        };
-  const heldControl = control.version === 1 ? restoreHeldModelControl(next, model) : next;
-  return publicModel<M>(reduceModelControl(heldControl, { kind: "read", ...control }).model);
+  if (historyFallback(resp)) return publicModel<M>(restoreHeldModelControl(next, model));
+  return publicModel<M>(reduceModelControl(next, modelControlReadInput(resp)).model);
 }
 
 // Splits turns already merged into TurnModel[] back into a HistoryFragment
@@ -1209,22 +1202,50 @@ export function applyReadModel<M extends ThreadModel>(
       next = mergeVersionedPage(next, next.history, deferred, false);
     }
   }
-  const control =
-    fallback && model.modelControlVersion === 1
-      ? { version: 1, snapshot: model.modelControl }
-      : { version: fresh.modelControlVersion ?? 0, snapshot: fresh.modelControl };
-  const heldControl = control.version === 1 ? restoreHeldModelControl(next, model) : next;
-  return publicModel<M>(reduceModelControl(heldControl, { kind: "read", ...control }).model);
+  if (fallback) return publicModel<M>(restoreHeldModelControl(next, model));
+  return publicModel<M>(reduceModelControl(next, hydratedModelControlReadInput(fresh)).model);
 }
 
 function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
-  if (held.modelControlVersion === 1 && held.modelControl) {
-    return projectModelControlSnapshot(next, held.modelControl);
-  }
   return {
     ...next,
-    modelControlVersion: held.modelControlVersion,
-    modelControl: held.modelControl,
+    modelControlState: held.modelControlState,
+    modelProvider: held.modelProvider,
+    model: held.model,
+    reasoningEffortLevels: held.reasoningEffortLevels,
+    supportsReasoning: held.supportsReasoning,
+  };
+}
+
+function modelControlReadInput(resp: ThreadReadResponse): Parameters<typeof reduceModelControl>[1] {
+  return {
+    kind: "readAccepted",
+    version: resp.thread.evener.capabilities?.modelControlVersion,
+    snapshot: resp.thread.evener.modelControl,
+    authority: {
+      instanceId: resp.thread.evener.instanceId ?? "",
+      bootGeneration: resp.bootGeneration ?? "",
+    },
+  };
+}
+
+function hydratedModelControlReadInput(fresh: ThreadModel): Parameters<typeof reduceModelControl>[1] {
+  const state = fresh.modelControlState;
+  if (state.kind === "ready") {
+    return {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: state.snapshot,
+      authority: state.snapshot.authority,
+    };
+  }
+  return {
+    kind: "readAccepted",
+    version: state.kind === "unsupported" ? state.observedVersion : 1,
+    authority: {
+      instanceId: fresh.instanceId ?? "",
+      bootGeneration: fresh.history?.bootGeneration ?? "",
+    },
   };
 }
 
@@ -1349,10 +1370,6 @@ export function hydrateThread(
   frontier: OlderFrontier = frontierFromCursor(resp),
 ): ThreadModel {
   const fields = threadFields(resp, ref, now);
-  const control = {
-    version: resp.thread.evener.capabilities?.modelControlVersion ?? 0,
-    snapshot: resp.thread.evener.modelControl,
-  };
   const olderFrontier = frontier;
   const imageSessionRoute = imageSessionRouteForSession(fields.imageSessionId ?? fields.threadId);
   if (!resp.snapshot) {
@@ -1364,7 +1381,7 @@ export function hydrateThread(
           (resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute)),
         ),
       },
-      { kind: "read", ...control },
+      modelControlReadInput(resp),
     ).model;
   }
   const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
@@ -1381,7 +1398,7 @@ export function hydrateThread(
     history,
     overlayRecord(resp.overlay),
   );
-  return reduceModelControl(model, { kind: "read", ...control }).model;
+  return reduceModelControl(model, modelControlReadInput(resp)).model;
 }
 
 /** The first and last item positions of a read response's fresh window: the

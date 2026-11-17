@@ -4,6 +4,7 @@ import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
 import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw";
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import type { ThreadModel } from "./model";
+import { modelControlDisplay } from "./modelControl";
 import {
   applyNotification,
   notificationTargetsThread,
@@ -1450,6 +1451,10 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
 
   expect(model.reasoningEffortLevels).toEqual([]);
   expect(model.supportsReasoning).toBe(false);
+  expect(model.modelControlState).toEqual({
+    kind: "unsupported",
+    canonicalDisplay: { modelProvider: "openai", model: "gpt-5.5" },
+  });
 });
 
 test("thread/model/changed updates contextUsed, contextWindow, contextPressure, contextAssumed, and compactionThreshold in both directions", () => {
@@ -1527,8 +1532,7 @@ test("version-1 model control keeps canonical metadata while legacy model change
   };
   let model: ThreadModel = {
     ...testHydrate(),
-    modelControlVersion: 1,
-    modelControl: current,
+    modelControlState: { kind: "ready", snapshot: current },
     modelProvider: current.active.modelProvider,
     model: current.active.model,
     reasoningEffortLevels: current.active.reasoningEffortLevels,
@@ -1556,7 +1560,7 @@ test("version-1 model control keeps canonical metadata while legacy model change
     2000,
   );
 
-  expect(model.modelControl).toEqual(current);
+  expect(model.modelControlState).toEqual({ kind: "ready", snapshot: current });
   expect(model).toMatchObject({
     modelProvider: "openai",
     model: "gpt-5.5",
@@ -1568,6 +1572,44 @@ test("version-1 model control keeps canonical metadata while legacy model change
     contextAssumed: true,
     compactionThreshold: 200_000,
     lastFrameAt: 2000,
+  });
+});
+
+test("a delayed canonical event keeps the last safe recovery display while updating context", () => {
+  let model: ThreadModel = {
+    ...testHydrate(),
+    modelControlState: {
+      kind: "recovering",
+      lastSafeDisplay: { modelProvider: "openai", model: "gpt-5.5" },
+    },
+    modelProvider: "openai",
+    model: "gpt-5.5",
+  };
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        modelProvider: "deepseek",
+        model: "deepseek-v4",
+        contextUsed: 80_000,
+        contextWindow: 400_000,
+        contextPressure: 0.2,
+      },
+    },
+    2000,
+  );
+
+  expect(modelControlDisplay(model)).toEqual({ modelProvider: "openai", model: "gpt-5.5" });
+  expect(model).toMatchObject({
+    modelProvider: "openai",
+    model: "gpt-5.5",
+    contextUsed: 80_000,
+    contextWindow: 400_000,
+    contextPressure: 0.2,
   });
 });
 
@@ -1594,8 +1636,7 @@ test("thread/model/controlChanged applies a newer whole snapshot", () => {
   };
   let model: ThreadModel = {
     ...testHydrate(),
-    modelControlVersion: 1,
-    modelControl: initial,
+    modelControlState: { kind: "ready", snapshot: initial },
   };
 
   model = applyNotification(
@@ -1607,7 +1648,7 @@ test("thread/model/controlChanged applies a newer whole snapshot", () => {
     2000,
   );
 
-  expect(model.modelControl).toEqual(updated);
+  expect(model.modelControlState).toEqual({ kind: "ready", snapshot: updated });
   expect(model).toMatchObject({
     modelProvider: "openai",
     model: "gpt-5.5",
@@ -1615,6 +1656,48 @@ test("thread/model/controlChanged applies a newer whole snapshot", () => {
     supportsReasoning: true,
     lastFrameAt: 2000,
   });
+});
+
+test("model-control conflicts enter recovery without invalidating transcript history", () => {
+  const initial: ModelControlSnapshot = {
+    authority: { instanceId: "instance-1", bootGeneration: "boot-1" },
+    revision: 2,
+    active: {
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      reasoningEffortLevels: ["low", "high"],
+      supportsReasoning: true,
+    },
+  };
+  let model: ThreadModel = {
+    ...testHydrate(),
+    modelControlState: { kind: "ready", snapshot: initial },
+    modelProvider: initial.active.modelProvider,
+    model: initial.active.model,
+  };
+  const history = model.history;
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/controlChanged",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        modelControl: {
+          ...initial,
+          active: { ...initial.active, model: "claude-opus-4-6" },
+        },
+      },
+    },
+    2000,
+  );
+
+  expect(model.modelControlState).toEqual({
+    kind: "recovering",
+    lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+  });
+  expect(model.history).toBe(history);
 });
 
 // Warnings reach the model: the reducer's `case "warning"` (see reducer.ts

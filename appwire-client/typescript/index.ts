@@ -275,6 +275,7 @@ export {
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
   isMethodNotFound,
+  isModelControlAuthorityStale,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isTranscriptIndexLockedError,
@@ -526,12 +527,19 @@ export {
   toCatalogOptions,
   withGroupHeads,
 } from "./modelCatalogView";
-export type { ModelControlCarrier, ModelControlDecision, ModelControlRequestFence } from "./modelControl";
+export type {
+  ModelControlClientState,
+  ModelControlDecision,
+  ModelControlDisplay,
+  ModelControlInput,
+  ModelControlRequestFence,
+} from "./modelControl";
 export {
   modelControlAuthority,
   modelControlDisplay,
   reduceModelControl,
   sameModelControlAuthority,
+  validateThreadModelSetResponse,
 } from "./modelControl";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";

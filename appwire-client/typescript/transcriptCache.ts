@@ -211,6 +211,10 @@ export function threadModelFromCurrentState(
     ...state.fields,
     turns: [],
     capabilities: { ...EMPTY_CAPABILITIES },
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: state.fields.modelProvider, model: state.fields.model },
+    },
     // The cached field set does not carry the context-assumption flag, and an
     // unrecorded flag is not an assumption (main's own rebuild default).
     contextAssumed: false,
@@ -261,6 +265,10 @@ export function threadModelFromCache(record: CachedSessionRecord, now: number): 
     status: { type: "" },
     modelProvider: record.modelProvider,
     model: record.model,
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: record.modelProvider, model: record.model },
+    },
     visionModel: "",
     askPending: false,
     pendingEscalations: [],

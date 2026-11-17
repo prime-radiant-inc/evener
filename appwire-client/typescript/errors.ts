@@ -90,6 +90,10 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
+export function isModelControlAuthorityStale(error: unknown): boolean {
+  return error instanceof WireError && error.evenerErrorInfo === "authorityStale";
+}
+
 /** Extracts a payload the hub attached to a rejection under `key` when the
  * rejection is the `evenerErrorInfo` kind named, decoded by `decode`
  * (undefined for a malformed or absent payload, the same as a rejection of a

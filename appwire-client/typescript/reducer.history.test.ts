@@ -97,6 +97,7 @@ test("accepted reads install, replace, and remove model-control authority atomic
   const firstThread = thread([]);
   firstThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
   firstThread.evener.modelControl = modelControlSnapshot(1);
+  firstThread.evener.instanceId = "instance-1";
   let model = hydrateThread(
     {
       thread: firstThread,
@@ -108,8 +109,7 @@ test("accepted reads install, replace, and remove model-control authority atomic
     NOW,
   );
 
-  expect(model.modelControlVersion).toBe(1);
-  expect(model.modelControl).toEqual(firstThread.evener.modelControl);
+  expect(model.modelControlState).toEqual({ kind: "ready", snapshot: firstThread.evener.modelControl });
   expect(model).toMatchObject({ modelProvider: "anthropic", model: "claude-sonnet-4-5" });
 
   const replacementThread = thread([]);
@@ -118,6 +118,7 @@ test("accepted reads install, replace, and remove model-control authority atomic
     instanceId: "instance-2",
     bootGeneration: "boot-2",
   });
+  replacementThread.evener.instanceId = "instance-2";
   model = applyReadResponse(
     model,
     {
@@ -129,8 +130,10 @@ test("accepted reads install, replace, and remove model-control authority atomic
     NOW + 1,
   );
 
-  expect(model.modelControl?.authority).toEqual({ instanceId: "instance-2", bootGeneration: "boot-2" });
-  expect(model.modelControl?.revision).toBe(1);
+  expect(model.modelControlState).toEqual({
+    kind: "ready",
+    snapshot: replacementThread.evener.modelControl,
+  });
 
   const legacyThread = thread([]);
   legacyThread.modelProvider = "deepseek/deepseek-v4";
@@ -145,8 +148,10 @@ test("accepted reads install, replace, and remove model-control authority atomic
     NOW + 2,
   );
 
-  expect(model).not.toHaveProperty("modelControlVersion");
-  expect(model).not.toHaveProperty("modelControl");
+  expect(model.modelControlState).toEqual({
+    kind: "unsupported",
+    canonicalDisplay: { modelProvider: "deepseek/deepseek-v4", model: "deepseek/deepseek-v4" },
+  });
   expect(model).toMatchObject({
     modelProvider: "deepseek/deepseek-v4",
     model: "deepseek/deepseek-v4",
@@ -157,6 +162,7 @@ test("a fallback read updates context without replacing model-control identity",
   const liveThread = thread([]);
   liveThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
   liveThread.evener.modelControl = modelControlSnapshot(4);
+  liveThread.evener.instanceId = "instance-1";
   let model = hydrateThread(
     {
       thread: liveThread,
@@ -181,8 +187,7 @@ test("a fallback read updates context without replacing model-control identity",
 
   model = applyReadResponse(issued, fallback, NOW + 1);
 
-  expect(model.modelControl).toEqual(liveThread.evener.modelControl);
-  expect(model.modelControl?.revision).toBe(4);
+  expect(model.modelControlState).toEqual({ kind: "ready", snapshot: liveThread.evener.modelControl });
   expect(model).toMatchObject({
     modelProvider: "openai",
     model: "gpt-5.5",

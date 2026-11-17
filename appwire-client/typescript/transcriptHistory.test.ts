@@ -72,8 +72,13 @@ test("a legacy read without capabilities hydrates without model-control authorit
 
   const model = hydrateThread(legacy, "ref_t", 1000);
 
-  expect(model.modelControlVersion).toBeUndefined();
-  expect(model.modelControl).toBeUndefined();
+  expect(model.modelControlState).toEqual({
+    kind: "unsupported",
+    canonicalDisplay: {
+      modelProvider: legacy.thread.modelProvider,
+      model: legacy.thread.modelProvider,
+    },
+  });
 });
 
 test("reverse-order normal pages retain a newer tool result without advancing latest completeness", () => {

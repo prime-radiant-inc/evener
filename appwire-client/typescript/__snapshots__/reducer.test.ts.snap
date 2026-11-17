@@ -165,6 +165,13 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "anthropic/claude-sonnet-4-5",
+  "modelControlState": {
+    "canonicalDisplay": {
+      "model": "anthropic/claude-sonnet-4-5",
+      "modelProvider": "anthropic/claude-sonnet-4-5",
+    },
+    "kind": "unsupported",
+  },
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "Auth files",
   "olderCursor": undefined,
@@ -351,6 +358,13 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "claude-opus-4-1",
+  "modelControlState": {
+    "canonicalDisplay": {
+      "model": "claude-opus-4-1",
+      "modelProvider": "anthropic",
+    },
+    "kind": "unsupported",
+  },
   "modelProvider": "anthropic",
   "name": "Refactor plan v2",
   "olderCursor": undefined,
@@ -594,6 +608,13 @@ Double-checking the math.",
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "anthropic/claude-sonnet-4-5",
+  "modelControlState": {
+    "canonicalDisplay": {
+      "model": "anthropic/claude-sonnet-4-5",
+      "modelProvider": "anthropic/claude-sonnet-4-5",
+    },
+    "kind": "unsupported",
+  },
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "",
   "olderCursor": undefined,
@@ -834,6 +855,13 @@ PASS
   "lastTurnEndedAt": undefined,
   "manager": false,
   "model": "anthropic/claude-sonnet-4-5",
+  "modelControlState": {
+    "canonicalDisplay": {
+      "model": "anthropic/claude-sonnet-4-5",
+      "modelProvider": "anthropic/claude-sonnet-4-5",
+    },
+    "kind": "unsupported",
+  },
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "",
   "olderCursor": undefined,

@@ -4,6 +4,7 @@
 // directly.
 
 import type { HistoryServingFacts } from "./historyServing";
+import type { ModelControlClientState } from "./modelControl";
 import type {
   CommandDescriptor,
   ConversationProvenanceState,
@@ -12,7 +13,6 @@ import type {
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
-  ModelControlSnapshot,
   OverlayItem,
   PendingMutation,
   QueueState,
@@ -374,10 +374,9 @@ export interface ThreadModel {
   manager?: boolean;
   modelProvider: string;
   model: string;
-  // Version 1 is one daemon-owned model-control snapshot. Consumers must
-  // replace it whole and compare revisions only within its exact authority.
-  modelControlVersion?: number;
-  modelControl?: ModelControlSnapshot;
+  // One exhaustive state owns both protocol classification and any mutation
+  // authority. Only ready contains an authority-bearing snapshot.
+  modelControlState: ModelControlClientState;
   reasoningEffort?: string;
   visionModel: string;
   askPending: boolean;

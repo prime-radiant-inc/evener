@@ -1,22 +1,25 @@
 import { describe, expect, test } from "vitest";
+import { WireError } from "./errors";
 import type { ThreadModel } from "./model";
 import {
-  type ModelControlCarrier,
-  type ModelControlDecision,
+  type ModelControlClientState,
+  type ModelControlInput,
   type ModelControlRequestFence,
   modelControlAuthority,
   modelControlDisplay,
   reduceModelControl,
+  validateThreadModelSetResponse,
 } from "./modelControl";
-import type { ModelControlSnapshot } from "./types.gen";
+import type { ModelControlAuthority, ModelControlSnapshot, ThreadModelSetResponse } from "./types.gen";
 
-const AUTHORITY = { instanceId: "instance-1", bootGeneration: "boot-1" };
-const REPLACEMENT_AUTHORITY = { instanceId: "instance-2", bootGeneration: "boot-2" };
+const AUTHORITY: ModelControlAuthority = { instanceId: "instance-1", bootGeneration: "boot-1" };
+const REPLACEMENT_AUTHORITY: ModelControlAuthority = { instanceId: "instance-2", bootGeneration: "boot-2" };
+const CANONICAL = { modelProvider: "legacy-provider", model: "legacy-model" };
 
 function snapshot(
   revision: number,
   options: {
-    authority?: typeof AUTHORITY;
+    authority?: ModelControlAuthority;
     provider?: string;
     model?: string;
     levels?: string[];
@@ -37,27 +40,74 @@ function snapshot(
   };
 }
 
-function legacyModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
+function model(
+  state: ModelControlClientState = { kind: "uninitialized", canonicalDisplay: CANONICAL },
+  overrides: Partial<ThreadModel> = {},
+): ThreadModel {
   return {
-    modelProvider: "legacy-provider",
-    model: "legacy-model",
+    ref: "local:thread-1",
+    threadId: "thread-1",
+    name: "Thread",
+    status: "idle",
+    modelProvider: CANONICAL.modelProvider,
+    model: CANONICAL.model,
+    modelControlState: state,
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    capabilities: {},
+    createdAt: "2026-11-17T00:00:00Z",
+    updatedAt: "2026-11-17T00:00:00Z",
+    cwd: "",
     reasoningEffortLevels: [],
     supportsReasoning: false,
     ...overrides,
   } as ThreadModel;
 }
 
-function reduceSequence(
-  initial: ThreadModel,
-  carriers: ModelControlCarrier[],
-): { model: ThreadModel; decision: ModelControlDecision } {
-  let result: { model: ThreadModel; decision: ModelControlDecision } = { model: initial, decision: "ignored" };
-  for (const carrier of carriers) result = reduceModelControl(result.model, carrier);
+function ready(current = snapshot(1)): ThreadModel {
+  return model(
+    { kind: "ready", snapshot: current },
+    {
+      modelProvider: current.active.modelProvider,
+      model: current.active.model,
+      reasoningEffortLevels: current.active.reasoningEffortLevels ?? [],
+      supportsReasoning: current.active.supportsReasoning,
+    },
+  );
+}
+
+function reduceSequence(initial: ThreadModel, inputs: ModelControlInput[]) {
+  let current = initial;
+  let result = reduceModelControl(current, { kind: "connectionRetired" });
+  current = initial;
+  for (const input of inputs) {
+    result = reduceModelControl(current, input);
+    current = result.model;
+  }
   return result;
 }
 
-describe("whole model-control snapshot reconciliation", () => {
-  test("an accepted version-1 read installs the whole snapshot and projects active metadata", () => {
+function completeResponse(): ThreadModelSetResponse {
+  return {
+    modelControlVersion: 1,
+    disposition: "accepted",
+    modelControl: snapshot(2, {
+      desired: {
+        requestSequence: 2,
+        clientMutationId: "mutation-2",
+        modelProvider: "openai",
+        model: "gpt-5.5",
+        lifecycle: "pending",
+      },
+    }),
+  };
+}
+
+describe("explicit model-control state", () => {
+  test("an accepted matching version-1 read establishes ready authority and projects all active metadata", () => {
     const current = snapshot(4, {
       provider: "openai",
       model: "gpt-5.5",
@@ -65,11 +115,15 @@ describe("whole model-control snapshot reconciliation", () => {
       supportsReasoning: true,
     });
 
-    const result = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: current });
+    const result = reduceModelControl(model(), {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: current,
+      authority: AUTHORITY,
+    });
 
-    expect(result.decision).toBe("applied");
-    expect(result.model.modelControlVersion).toBe(1);
-    expect(result.model.modelControl).toEqual(current);
+    expect(result).toMatchObject({ decision: "applied", replacementReadRequired: false });
+    expect(result.model.modelControlState).toEqual({ kind: "ready", snapshot: current });
     expect(result.model).toMatchObject({
       modelProvider: "openai",
       model: "gpt-5.5",
@@ -79,143 +133,217 @@ describe("whole model-control snapshot reconciliation", () => {
     expect(modelControlAuthority(result.model)).toEqual(AUTHORITY);
   });
 
-  test("an accepted read tolerates an empty effort ladder encoded as null", () => {
+  test("an accepted read tolerates a null effort ladder from an older encoder", () => {
     const current = snapshot(1);
     current.active.reasoningEffortLevels = null as unknown as string[];
 
-    const result = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: current });
+    const result = reduceModelControl(model(), {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: current,
+      authority: AUTHORITY,
+    });
 
-    expect(result.decision).toBe("applied");
     expect(result.model.reasoningEffortLevels).toEqual([]);
   });
 
-  test("an accepted unsupported read atomically clears capability and snapshot before exposing legacy metadata", () => {
-    const capable = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(2) }).model;
-    const legacyRead = {
-      ...capable,
-      modelProvider: "legacy-provider-2",
-      model: "legacy-model-2",
-      reasoningEffortLevels: ["low"],
-      supportsReasoning: true,
+  test.each([
+    ["absent", undefined],
+    ["legacy", 0],
+    ["unknown", 2],
+  ])("an accepted %s-version read enters unsupported and preserves canonical display", (_, version) => {
+    const withFreshCanonical = {
+      ...ready(snapshot(5)),
+      modelProvider: "canonical-provider",
+      model: "canonical-model",
     };
 
-    const result = reduceModelControl(legacyRead, { kind: "read", version: 0 });
-
-    expect(result.decision).toBe("applied");
-    expect(result.model).not.toHaveProperty("modelControlVersion");
-    expect(result.model).not.toHaveProperty("modelControl");
-    expect(modelControlDisplay(result.model)).toEqual({
-      modelProvider: "legacy-provider-2",
-      model: "legacy-model-2",
+    const result = reduceModelControl(withFreshCanonical, {
+      kind: "readAccepted",
+      version,
+      authority: AUTHORITY,
     });
+
+    expect(result).toMatchObject({ decision: "unsupported", replacementReadRequired: false });
+    expect(result.model.modelControlState).toEqual({
+      kind: "unsupported",
+      canonicalDisplay: { modelProvider: "canonical-provider", model: "canonical-model" },
+      ...(version === undefined ? {} : { observedVersion: version }),
+    });
+    expect(modelControlAuthority(result.model)).toBeUndefined();
   });
 
   test.each([
-    {
-      name: "response then notification",
-      carriers: [
-        { kind: "response", snapshot: snapshot(2, { model: "claude-opus-4-6" }) },
-        { kind: "notification", snapshot: snapshot(3, { provider: "openai", model: "gpt-5.5" }) },
-      ] satisfies ModelControlCarrier[],
-      revision: 3,
-      model: "gpt-5.5",
+    ["missing snapshot", undefined, AUTHORITY],
+    ["mismatched authority", snapshot(1, { authority: REPLACEMENT_AUTHORITY }), AUTHORITY],
+  ])(
+    "a malformed version-1 read enters recovery without immediately requesting another read: %s",
+    (_, current, authority) => {
+      const initial = ready(snapshot(3));
+
+      const result = reduceModelControl(initial, {
+        kind: "readAccepted",
+        version: 1,
+        snapshot: current,
+        authority,
+      });
+      const repeated = reduceModelControl(result.model, {
+        kind: "readAccepted",
+        version: 1,
+        snapshot: current,
+        authority,
+      });
+
+      expect(result).toMatchObject({ decision: "recovering", replacementReadRequired: false });
+      expect(result.model.modelControlState).toEqual({
+        kind: "recovering",
+        lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+      });
+      expect(repeated).toMatchObject({ decision: "recovering", replacementReadRequired: false });
     },
-    {
-      name: "notification then stale response",
-      carriers: [
-        { kind: "notification", snapshot: snapshot(3, { provider: "openai", model: "gpt-5.5" }) },
-        { kind: "response", snapshot: snapshot(2, { model: "claude-opus-4-6" }) },
-      ] satisfies ModelControlCarrier[],
-      revision: 3,
-      model: "gpt-5.5",
-    },
-  ])("keeps the newest whole snapshot when $name arrives", ({ carriers, revision, model }) => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(1) }).model;
-    const result = reduceSequence(initial, carriers);
+  );
 
-    expect(result.model.modelControl?.revision).toBe(revision);
-    expect(result.model.model).toBe(model);
+  test("a connection retirement preserves canonical model fields but removes authority in every prior state", () => {
+    const states: ModelControlClientState[] = [
+      { kind: "uninitialized", canonicalDisplay: CANONICAL },
+      { kind: "ready", snapshot: snapshot(1, { provider: "openai", model: "gpt-5.5" }) },
+      { kind: "recovering", lastSafeDisplay: { modelProvider: "deepseek", model: "deepseek-v4" } },
+      { kind: "unsupported", canonicalDisplay: CANONICAL, observedVersion: 9 },
+    ];
+
+    for (const state of states) {
+      const initial = model(state);
+      const result = reduceModelControl(initial, { kind: "connectionRetired" });
+      expect(result).toMatchObject({ decision: "applied", replacementReadRequired: false });
+      expect(result.model.modelControlState).toEqual({ kind: "uninitialized", canonicalDisplay: CANONICAL });
+      expect(modelControlAuthority(result.model)).toBeUndefined();
+    }
   });
 
-  test("ignores a lower revision inside the current authority", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(3) }).model;
-    const result = reduceModelControl(initial, {
-      kind: "notification",
-      snapshot: snapshot(2, { model: "claude-opus-4-6" }),
-    });
-
-    expect(result.decision).toBe("ignored");
-    expect(result.model).toBe(initial);
-  });
-
-  test("accepts an exact equal-revision duplicate without replacing state", () => {
-    const current = snapshot(3);
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: current }).model;
-    const result = reduceModelControl(initial, { kind: "response", snapshot: structuredClone(current) });
-
-    expect(result.decision).toBe("duplicate");
-    expect(result.model).toBe(initial);
-  });
-
-  test("invalidates equal-revision content conflicts instead of choosing a value", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(3) }).model;
-    const result = reduceModelControl(initial, {
-      kind: "notification",
-      snapshot: snapshot(3, { model: "claude-opus-4-6" }),
-    });
-
-    expect(result.decision).toBe("invalidate");
-    expect(result.model.modelControlVersion).toBe(1);
-    expect(result.model.modelControl).toBeUndefined();
-  });
-
-  test.each([
-    ["pending", "openai", "gpt-5.5"],
-    ["applied", "openai", "gpt-5.5"],
-    ["rejected", "anthropic", "claude-sonnet-4-5"],
-  ])("projects the %s desired lifecycle without merging records", (lifecycle, provider, model) => {
-    const current = snapshot(2, {
-      desired: {
-        requestSequence: 8,
-        clientMutationId: "mutation-8",
-        modelProvider: "openai",
-        model: "gpt-5.5",
-        lifecycle,
-      },
-    });
-    const state = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: current }).model;
-
-    expect(modelControlDisplay(state)).toEqual({ modelProvider: provider, model });
-  });
-
-  test("an accepted pick survives a refused later call and then yields to its deferred rejection", () => {
+  test("connection retirement drops an old authority's pending intent and preserves only canonical active display", () => {
     const pending = snapshot(2, {
       desired: {
-        requestSequence: 7,
-        clientMutationId: "accepted-pick",
+        requestSequence: 2,
+        clientMutationId: "old-connection-pick",
         modelProvider: "openai",
         model: "gpt-5.5",
         lifecycle: "pending",
       },
     });
-    let state = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(1) }).model;
-    state = reduceModelControl(state, { kind: "response", snapshot: pending }).model;
+    const initial = ready(pending);
 
-    // A direct refusal is a per-call outcome and never enters the shared reducer.
-    expect(modelControlDisplay(state)).toEqual({ modelProvider: "openai", model: "gpt-5.5" });
+    const result = reduceModelControl(initial, { kind: "connectionRetired" });
 
-    state = reduceModelControl(state, {
-      kind: "notification",
-      snapshot: {
-        ...pending,
-        revision: 3,
-        desired: { ...pending.desired!, lifecycle: "rejected" },
-      },
-    }).model;
-    expect(modelControlDisplay(state)).toEqual({ modelProvider: "anthropic", model: "claude-sonnet-4-5" });
+    expect(result.model.modelControlState).toEqual({
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+    });
+    expect(modelControlDisplay(result.model)).toEqual({
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+    });
   });
 
-  test("a foreign accepted pick replaces the local pending choice as one whole snapshot", () => {
+  test("only ready exposes mutation authority", () => {
+    const states: ModelControlClientState[] = [
+      { kind: "uninitialized", canonicalDisplay: CANONICAL },
+      { kind: "recovering", lastSafeDisplay: CANONICAL },
+      { kind: "unsupported", canonicalDisplay: CANONICAL, observedVersion: 3 },
+    ];
+
+    for (const state of states) expect(modelControlAuthority(model(state))).toBeUndefined();
+    expect(modelControlAuthority(ready())).toEqual(AUTHORITY);
+  });
+});
+
+describe("whole-snapshot reconciliation", () => {
+  test("newer carriers replace, lower revisions are ignored, and equal content is duplicate", () => {
+    const current = snapshot(3);
+    const newer = snapshot(4, { provider: "openai", model: "gpt-5.5" });
+
+    const lowerInitial = ready(current);
+    const lower = reduceModelControl(lowerInitial, {
+      kind: "snapshot",
+      source: "response",
+      snapshot: snapshot(2),
+    });
+    const duplicate = reduceModelControl(ready(current), {
+      kind: "snapshot",
+      source: "notification",
+      snapshot: structuredClone(current),
+    });
+    const applied = reduceModelControl(ready(current), { kind: "snapshot", source: "response", snapshot: newer });
+
+    expect(lower).toMatchObject({ decision: "ignored", replacementReadRequired: false });
+    expect(lower.model).toBe(lowerInitial);
+    expect(duplicate).toMatchObject({ decision: "duplicate", replacementReadRequired: false });
+    expect(applied).toMatchObject({ decision: "applied", replacementReadRequired: false });
+    expect(applied.model.modelControlState).toEqual({ kind: "ready", snapshot: newer });
+    expect(applied.model).toMatchObject({ modelProvider: "openai", model: "gpt-5.5" });
+  });
+
+  test.each([
+    ["equal-revision conflict", snapshot(3, { model: "claude-opus-4-6" })],
+    ["authority mismatch", snapshot(1, { authority: REPLACEMENT_AUTHORITY })],
+  ])("a live ready inconsistency enters recovery and requests exactly one read: %s", (_, incoming) => {
+    const initial = ready(snapshot(3));
+
+    const first = reduceModelControl(initial, { kind: "snapshot", source: "notification", snapshot: incoming });
+    const repeated = reduceModelControl(first.model, { kind: "snapshot", source: "notification", snapshot: incoming });
+
+    expect(first).toMatchObject({ decision: "recovering", replacementReadRequired: true });
+    expect(first.model.modelControlState).toEqual({
+      kind: "recovering",
+      lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+    });
+    expect(repeated).toMatchObject({ decision: "ignored", replacementReadRequired: false });
+  });
+
+  test.each([
+    ["authority-stale refusal", { kind: "authorityStale" } as const],
+    ["post-dispatch response loss", { kind: "postDispatchFailure" } as const],
+  ])("$0 enters recovery and requests exactly one read", (_, input) => {
+    const first = reduceModelControl(ready(snapshot(2)), input);
+    const repeated = reduceModelControl(first.model, input);
+
+    expect(first).toMatchObject({ decision: "recovering", replacementReadRequired: true });
+    expect(repeated).toMatchObject({ decision: "ignored", replacementReadRequired: false });
+  });
+
+  test("responses and notifications cannot establish or restore authority", () => {
+    const carrier = { kind: "snapshot", source: "notification", snapshot: snapshot(2) } as const;
+    const states: ModelControlClientState[] = [
+      { kind: "uninitialized", canonicalDisplay: CANONICAL },
+      { kind: "recovering", lastSafeDisplay: CANONICAL },
+      { kind: "unsupported", canonicalDisplay: CANONICAL },
+    ];
+
+    for (const state of states) {
+      const initial = model(state);
+      const result = reduceModelControl(initial, carrier);
+      expect(result).toMatchObject({ decision: "ignored", replacementReadRequired: false });
+      expect(result.model).toBe(initial);
+    }
+  });
+
+  test("response then notification and notification then stale response converge on the newest whole snapshot", () => {
+    const second = snapshot(2, { model: "claude-opus-4-6" });
+    const third = snapshot(3, { provider: "openai", model: "gpt-5.5" });
+
+    const responseFirst = reduceSequence(ready(), [
+      { kind: "snapshot", source: "response", snapshot: second },
+      { kind: "snapshot", source: "notification", snapshot: third },
+    ]);
+    const notificationFirst = reduceSequence(ready(), [
+      { kind: "snapshot", source: "notification", snapshot: third },
+      { kind: "snapshot", source: "response", snapshot: second },
+    ]);
+
+    expect(responseFirst.model.modelControlState).toEqual({ kind: "ready", snapshot: third });
+    expect(notificationFirst.model.modelControlState).toEqual({ kind: "ready", snapshot: third });
+  });
+
+  test("a local pending choice yields atomically to a foreign accepted choice", () => {
     const localPending = snapshot(2, {
       desired: {
         requestSequence: 7,
@@ -236,33 +364,54 @@ describe("whole model-control snapshot reconciliation", () => {
         lifecycle: "applied",
       },
     });
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: localPending }).model;
 
-    const result = reduceModelControl(initial, { kind: "notification", snapshot: foreignApplied });
+    const result = reduceModelControl(ready(localPending), {
+      kind: "snapshot",
+      source: "notification",
+      snapshot: foreignApplied,
+    });
 
-    expect(result.decision).toBe("applied");
-    expect(result.model.modelControl).toEqual(foreignApplied);
+    expect(result.model.modelControlState).toEqual({ kind: "ready", snapshot: foreignApplied });
     expect(modelControlDisplay(result.model)).toEqual({ modelProvider: "deepseek", model: "deepseek-v4" });
   });
 
-  test("a same-model applied snapshot corrects stale profile metadata", () => {
-    const initial = reduceModelControl(legacyModel(), {
-      kind: "read",
-      version: 1,
-      snapshot: snapshot(1, { levels: [], supportsReasoning: false }),
-    }).model;
+  test("pending, applied, and rejected desired lifecycles project the approved display", () => {
+    for (const lifecycle of ["pending", "applied", "rejected"] as const) {
+      const current = snapshot(2, {
+        desired: {
+          requestSequence: 8,
+          clientMutationId: "mutation-8",
+          modelProvider: "openai",
+          model: "gpt-5.5",
+          lifecycle,
+        },
+      });
+      expect(modelControlDisplay(ready(current))).toEqual(
+        lifecycle === "rejected"
+          ? { modelProvider: "anthropic", model: "claude-sonnet-4-5" }
+          : { modelProvider: "openai", model: "gpt-5.5" },
+      );
+    }
+  });
+
+  test("a same-model applied snapshot still corrects active profile metadata", () => {
     const corrected = snapshot(2, {
       levels: ["minimal", "low", "medium", "high"],
       supportsReasoning: true,
       desired: {
         requestSequence: 2,
+        clientMutationId: "same-model",
         modelProvider: "anthropic",
         model: "claude-sonnet-4-5",
         lifecycle: "applied",
       },
     });
 
-    const result = reduceModelControl(initial, { kind: "notification", snapshot: corrected });
+    const result = reduceModelControl(ready(snapshot(1, { levels: [], supportsReasoning: false })), {
+      kind: "snapshot",
+      source: "notification",
+      snapshot: corrected,
+    });
 
     expect(result.model).toMatchObject({
       model: "claude-sonnet-4-5",
@@ -271,73 +420,7 @@ describe("whole model-control snapshot reconciliation", () => {
     });
   });
 
-  test("a version-1 legacy accepted snapshot uses the same whole-state transition", () => {
-    const applied = snapshot(2, {
-      provider: "openai",
-      model: "gpt-5.5",
-      desired: {
-        requestSequence: 4,
-        modelProvider: "openai",
-        model: "gpt-5.5",
-        lifecycle: "applied",
-      },
-    });
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(1) }).model;
-
-    const result = reduceModelControl(initial, { kind: "response", snapshot: applied });
-
-    expect(result.decision).toBe("applied");
-    expect(result.model.modelControl).toEqual(applied);
-  });
-
-  test("a lower-revision same-authority read cannot replace newer held control", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(9) }).model;
-    const recovered = snapshot(2, { provider: "openai", model: "gpt-5.5" });
-
-    const result = reduceModelControl(initial, { kind: "read", version: 1, snapshot: recovered });
-
-    expect(result.decision).toBe("ignored");
-    expect(result.model).toBe(initial);
-  });
-
-  test("an equal-revision conflicting read invalidates held control", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(3) }).model;
-
-    const result = reduceModelControl(initial, {
-      kind: "read",
-      version: 1,
-      snapshot: snapshot(3, { provider: "openai", model: "gpt-5.5" }),
-    });
-
-    expect(result.decision).toBe("invalidate");
-    expect(result.model.modelControl).toBeUndefined();
-  });
-
-  test("an accepted replacement-authority read resets the comparison domain", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(9) }).model;
-    const replacement = snapshot(1, { authority: REPLACEMENT_AUTHORITY, provider: "openai", model: "gpt-5.5" });
-
-    const result = reduceModelControl(initial, { kind: "read", version: 1, snapshot: replacement });
-
-    expect(result.decision).toBe("applied");
-    expect(modelControlAuthority(result.model)).toEqual(REPLACEMENT_AUTHORITY);
-    expect(result.model.modelControl?.revision).toBe(1);
-  });
-
-  test("a current-generation notification from another authority invalidates before comparing revisions", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(9) }).model;
-
-    const result = reduceModelControl(initial, {
-      kind: "notification",
-      snapshot: snapshot(1, { authority: REPLACEMENT_AUTHORITY }),
-    });
-
-    expect(result.decision).toBe("invalidate");
-    expect(result.model.modelControl).toBeUndefined();
-  });
-
-  test("clients can fence a retired response before it reaches the pure reducer", () => {
-    const initial = reduceModelControl(legacyModel(), { kind: "read", version: 1, snapshot: snapshot(1) }).model;
+  test("a retired response stays outside the reducer through the existing request fence", () => {
     const retiredFence: ModelControlRequestFence = {
       authority: AUTHORITY,
       clientGeneration: 1,
@@ -348,40 +431,142 @@ describe("whole model-control snapshot reconciliation", () => {
       clientGeneration: 2,
       readGeneration: 5,
     };
-
-    const response = snapshot(2);
+    const initial = ready();
     const admitted =
       retiredFence.clientGeneration === currentFence.clientGeneration &&
       retiredFence.readGeneration === currentFence.readGeneration &&
       retiredFence.authority.instanceId === currentFence.authority.instanceId &&
       retiredFence.authority.bootGeneration === currentFence.authority.bootGeneration;
-    const result = admitted ? reduceModelControl(initial, { kind: "response", snapshot: response }) : undefined;
+    const result = admitted
+      ? reduceModelControl(initial, { kind: "snapshot", source: "response", snapshot: snapshot(2) })
+      : undefined;
 
     expect(result).toBeUndefined();
-    expect(initial.modelControl?.revision).toBe(1);
+    expect(initial.modelControlState).toEqual({ kind: "ready", snapshot: snapshot(1) });
+  });
+});
+
+describe("model-set response validation", () => {
+  test("returns a complete structurally valid response", () => {
+    const response = completeResponse();
+    expect(validateThreadModelSetResponse(response, "mutation-2")).toEqual(response);
   });
 
-  test("a quarantined newer notification replays after a capable read establishes authority", () => {
-    const quarantined = snapshot(2, { provider: "openai", model: "gpt-5.5" });
-    let state = legacyModel();
+  test.each([
+    ["empty object", {}],
+    ["missing version", { disposition: "accepted", modelControl: completeResponse().modelControl }],
+    ["unknown version", { ...completeResponse(), modelControlVersion: 2 }],
+    ["missing disposition", { modelControlVersion: 1, modelControl: completeResponse().modelControl }],
+    ["invalid disposition", { ...completeResponse(), disposition: "invalid" }],
+    ["missing snapshot", { modelControlVersion: 1, disposition: "accepted" }],
+    ["null snapshot", { ...completeResponse(), modelControl: null }],
+    ["missing authority", { ...completeResponse(), modelControl: { revision: 2, active: snapshot(2).active } }],
+    [
+      "missing instance",
+      { ...completeResponse(), modelControl: { ...snapshot(2), authority: { bootGeneration: "boot-1" } } },
+    ],
+    [
+      "missing boot",
+      { ...completeResponse(), modelControl: { ...snapshot(2), authority: { instanceId: "instance-1" } } },
+    ],
+    ["missing revision", { ...completeResponse(), modelControl: { ...snapshot(2), revision: undefined } }],
+    ["zero revision", { ...completeResponse(), modelControl: { ...snapshot(2), revision: 0 } }],
+    ["missing active", { ...completeResponse(), modelControl: { ...snapshot(2), active: undefined } }],
+    [
+      "missing active provider",
+      { ...completeResponse(), modelControl: { ...snapshot(2), active: { ...snapshot(2).active, modelProvider: "" } } },
+    ],
+    [
+      "missing active model",
+      { ...completeResponse(), modelControl: { ...snapshot(2), active: { ...snapshot(2).active, model: "" } } },
+    ],
+    [
+      "missing effort levels",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          active: { modelProvider: "anthropic", model: "claude", supportsReasoning: true },
+        },
+      },
+    ],
+    [
+      "missing reasoning support",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [] },
+        },
+      },
+    ],
+    [
+      "zero desired sequence",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          desired: { ...completeResponse().modelControl.desired!, requestSequence: 0 },
+        },
+      },
+    ],
+    [
+      "missing desired mutation",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          desired: { ...completeResponse().modelControl.desired!, clientMutationId: "" },
+        },
+      },
+    ],
+    [
+      "missing desired provider",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          desired: { ...completeResponse().modelControl.desired!, modelProvider: "" },
+        },
+      },
+    ],
+    [
+      "missing desired model",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          desired: { ...completeResponse().modelControl.desired!, model: "" },
+        },
+      },
+    ],
+    [
+      "invalid desired lifecycle",
+      {
+        ...completeResponse(),
+        modelControl: {
+          ...snapshot(2),
+          desired: { ...completeResponse().modelControl.desired!, lifecycle: "invalid" },
+        },
+      },
+    ],
+  ])("rejects malformed successful response: %s", (_, value) => {
+    let caught: unknown;
+    try {
+      validateThreadModelSetResponse(value, "mutation-exact");
+    } catch (error) {
+      caught = error;
+    }
 
-    state = reduceModelControl(state, { kind: "read", version: 1, snapshot: snapshot(1) }).model;
-    const replay = reduceModelControl(state, { kind: "notification", snapshot: quarantined });
-
-    expect(replay.decision).toBe("applied");
-    expect(replay.model.modelControl).toEqual(quarantined);
-  });
-
-  test("an unsupported read lets the client discard quarantined version-1 carriers", () => {
-    const quarantined = snapshot(2, { provider: "openai", model: "gpt-5.5" });
-    const read = reduceModelControl(legacyModel(), { kind: "read", version: 0 });
-
-    const replay =
-      read.model.modelControlVersion === 1
-        ? reduceModelControl(read.model, { kind: "notification", snapshot: quarantined })
-        : undefined;
-
-    expect(replay).toBeUndefined();
-    expect(modelControlDisplay(read.model)).toEqual({ modelProvider: "legacy-provider", model: "legacy-model" });
+    expect(caught).toBeInstanceOf(WireError);
+    expect(caught).toMatchObject({
+      code: -32603,
+      data: {
+        evenerErrorInfo: "mutationOutcomeUnknown",
+        clientMutationId: "mutation-exact",
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+      },
+    });
   });
 });

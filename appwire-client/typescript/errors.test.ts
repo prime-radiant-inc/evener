@@ -25,6 +25,7 @@ import {
   isHubLaunchError,
   isInstanceRemoveApplied,
   isMethodNotFound,
+  isModelControlAuthorityStale,
   isTranscriptHistoryFailedError,
   isTranscriptIndexLockedError,
   isTranscriptIndexRebuildingError,
@@ -550,5 +551,21 @@ describe("method-not-found is bound to appwire/errors.go", () => {
   test("any other failure is not", () => {
     expect(isMethodNotFound(new WireError("internal", code("CodeInternalError")))).toBe(false);
     expect(isMethodNotFound(new Error("socket closed"))).toBe(false);
+  });
+});
+
+describe("model-control authority errors", () => {
+  test("recognizes only the authorityStale WireError discriminator", () => {
+    expect(
+      isModelControlAuthorityStale(
+        new WireError("stale", -32602, { evenerErrorInfo: "authorityStale", mutationOutcome: "notAccepted" }),
+      ),
+    ).toBe(true);
+    expect(isModelControlAuthorityStale(new WireError("other", -32602, { evenerErrorInfo: "invalidParams" }))).toBe(
+      false,
+    );
+    expect(isModelControlAuthorityStale(new WireError("same code", -32602))).toBe(false);
+    expect(isModelControlAuthorityStale({ data: { evenerErrorInfo: "authorityStale" } })).toBe(false);
+    expect(isModelControlAuthorityStale(new Error("authorityStale"))).toBe(false);
   });
 });
