@@ -1,5 +1,7 @@
 # Focused Model-Control Snapshot Implementation Plan
 
+> **Superseded:** Use `docs/superpowers/plans/2026-11-17-strict-model-control-client-authority.md`. This plan permits identity-free requests and empty responses that the approved replacement design forbids.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every accepted model choice visible during a running turn and keep browser and native clients converged through one daemon-owned, revisioned model-control snapshot.
