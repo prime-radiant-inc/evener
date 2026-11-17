@@ -858,7 +858,13 @@ func (jm *jobManager) planWatchSendPending(state jobstore.WatchSendState, d watc
 			// published, or when the persist fails.
 			if jm.claimWatchSendDeliveryLocked(existing.DeliveryID) {
 				record.reservedDelivery = existing.DeliveryID
-				provenance.DropSupersededDelivery(existing.Provenance, existing.DeliveryID)
+				// Prune a private copy: existing is the published pending frame,
+				// and a replacement that never reaches the store must leave it
+				// deliverable with its own fire still counted.
+				pruned := *existing
+				pruned.Provenance = provenance.Clone(existing.Provenance)
+				provenance.DropSupersededDelivery(pruned.Provenance, existing.DeliveryID)
+				existing = &pruned
 			}
 		}
 		// The coalesced frame stands in for both the superseded delivery and this

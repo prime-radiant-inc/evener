@@ -299,6 +299,73 @@ func TestSupersededFramePrunedFireIsNotDeliverableBeforeItsReplacementCommits(t 
 	requireOnlyStableWatchReceipts(t, fixture, survivor.DeliveryID)
 }
 
+// The prune decides the superseded frame can no longer count, but the
+// replacement that decision serves may never become durable. When the
+// persistence fails, the superseded frame is still the published pending
+// frame and is still deliverable, so it must keep its own fire: pruning in
+// place would leave a frame the drain can hand over that the fuse cannot
+// count.
+func TestFailedReplacementLeavesThePublishedFrameWithItsOwnFire(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	cfg := fixture.onlyWatchConfig(t)
+	jm := fixture.sourceJM
+
+	onSessionEventKD(jm, events.EventCommunicate, events.CommunicateData{Message: "ancestor"})
+	ancestor := fixture.requireOnePending(t).state
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventCommunicate,
+		SessionID:  jm.sessionID,
+		Data:       events.CommunicateData{Message: "superseded"},
+		Provenance: provenance.Clone(ancestor.Provenance),
+	})
+	superseded := fixture.requireOnePending(t).state
+	if !watchSendFireRecorded(superseded.Provenance, superseded.DeliveryID) {
+		t.Fatalf("the published frame %s does not name its own fire before the plan runs", superseded.DeliveryID)
+	}
+
+	appendFailure := errors.New("replacement append failed")
+	originalAppend := jm.appendEvent
+	failed := false
+	jm.appendEvent = func(event jobstore.Event) error {
+		if !failed && event.Kind == jobstore.EventWatchSendPending &&
+			event.WatchSend != nil && event.WatchSend.DeliveryID != superseded.DeliveryID {
+			failed = true
+			return appendFailure
+		}
+		return originalAppend(event)
+	}
+	jm.onSessionEvent(events.SessionEvent{
+		Kind:       events.EventCommunicate,
+		SessionID:  jm.sessionID,
+		Data:       events.CommunicateData{Message: "survivor"},
+		Provenance: provenance.Clone(ancestor.Provenance),
+	})
+	jm.appendEvent = originalAppend
+	if !failed {
+		t.Fatal("the replacement append never failed, so the plan's failure path never ran")
+	}
+
+	published := fixture.requireOnePending(t).state
+	if published.DeliveryID != superseded.DeliveryID {
+		t.Fatalf("the pending frame after a failed replacement = %s, want the superseded frame %s", published.DeliveryID, superseded.DeliveryID)
+	}
+	if !watchSendFireRecorded(published.Provenance, published.DeliveryID) {
+		t.Fatalf("the published frame %s lost its own fire though its replacement never became durable", published.DeliveryID)
+	}
+
+	// The reservation must be gone too: the frame is deliverable again, and a
+	// claim still held would keep it from ever being taken.
+	jm.mu.Lock()
+	_, reserved := jm.deliveringWatchSends[superseded.DeliveryID]
+	jm.mu.Unlock()
+	if reserved {
+		t.Fatalf("the plan's reservation on %s outlived the failed persist", superseded.DeliveryID)
+	}
+	if delivered, err := jm.deliverPendingWatchSend(cfg, published, false); !delivered || err != nil {
+		t.Fatalf("deliver the frame whose replacement failed: delivered=%t err=%v", delivered, err)
+	}
+}
+
 // The receiver takes the first frame, a replacement coalesces over it before
 // its acknowledgement, and the acknowledgement fails. The accepted frame is
 // no longer pending, so nothing would redeliver it: its receipt stays held
