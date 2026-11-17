@@ -159,6 +159,7 @@ var (
 	Display        = Var{Name: "DISPLAY", Summary: "Used to auto-detect graphical sessions for OpenAI login.", Visibility: Inherited}
 	GoCache        = Var{Name: "GOCACHE", Summary: "Inherited by core-only command environments; the sandbox overlays or redirects it with the other Go caches.", Visibility: Inherited}
 	GoEnv          = Var{Name: "GOENV", Summary: "Names the go env file a sandboxed session reads at start to find a GOPATH set with go env -w (off disables it).", Visibility: Inherited}
+	GoGC           = Var{Name: "GOGC", Summary: "The Go collector's target for evener's own processes. Unset tunes it to 200; an exported value is honored as it stands (off disables collection), and a value the collector would not honor refuses startup.", Visibility: Inherited}
 	GoModCache     = Var{Name: "GOMODCACHE", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	GoPath         = Var{Name: "GOPATH", Summary: "Inherited by core-only command environments.", Visibility: Inherited}
 	Home           = Var{Name: "HOME", Summary: "Home directory fallback for state/config paths and path expansion.", Visibility: Inherited}
@@ -292,6 +293,7 @@ var allVars = []Var{
 	Display,
 	GoCache,
 	GoEnv,
+	GoGC,
 	GoModCache,
 	GoPath,
 	Home,
