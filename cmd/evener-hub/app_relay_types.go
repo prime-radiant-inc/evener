@@ -342,7 +342,6 @@ func stampStatusCapabilities(notification appwire.Notification, answers relayCap
 		if json.Unmarshal(encoded, &capabilities) != nil {
 			return notification
 		}
-		params["capabilities"] = encoded
 	} else {
 		if raw := params["capabilities"]; len(raw) == 0 || json.Unmarshal(raw, &capabilities) != nil || capabilities == nil {
 			return notification
