@@ -80,6 +80,11 @@ type Overlay struct {
 	// slots holds the streams, previews and tool states by overlay key.
 	slots    map[string]*slot
 	nextSlot uint64
+	// streamKeys caches this attempt's stream slot keys by kind, so a delta
+	// looks its slot up without rebuilding "stream:<round>/<attempt>:<kind>".
+	// newAttempt is the only way roundID and attempt change, and it drops
+	// them, so a key can never outlive the attempt it names.
+	streamKeys map[string]string
 
 	notices    noticeRing
 	nextNotice uint32
@@ -97,6 +102,9 @@ type call struct {
 	historyKey string
 	// toolKey is the overlay key the call's tool state took at its start.
 	toolKey string
+	// previewKey is the call's preview overlay key, built once on first use.
+	// It depends only on the call id, so caching it can never go stale.
+	previewKey string
 	// covered reports that the entry settling the call (TOOL_RESULTS, or
 	// COMMUNICATE for a communicate call) is recorded.
 	covered bool
@@ -138,6 +146,7 @@ func New(budget *Budget) *Overlay {
 		discardedRounds: newRecentSet[struct{}](maxRememberedRounds),
 		calls:           newRecentSet[*call](maxRememberedCalls),
 		slots:           map[string]*slot{},
+		streamKeys:      map[string]string{},
 	}
 }
 
@@ -149,6 +158,7 @@ func (o *Overlay) Close() {
 	o.closed = true
 	o.notices.releaseAll(o.budget)
 	clear(o.slots)
+	clear(o.streamKeys)
 	o.calls.clear()
 	o.coveredRounds.clear()
 	o.discardedRounds.clear()
@@ -216,7 +226,7 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 			o.runningTurnID = ""
 		}
 	case events.RoundStartedData:
-		o.roundID, o.attempt = data.RoundID, 1
+		o.newAttempt(data.RoundID, 1)
 		o.roundAuthorship = data.Authorship.Clone()
 	case events.RoundEndedData:
 		return o.endRound(data.RoundID)
@@ -232,7 +242,7 @@ func (o *Overlay) Event(ev events.SessionEvent) []Change {
 	case events.CommunicatePreviewStartData:
 		return o.startPreview(data.CallID, data.Authorship)
 	case events.CommunicatePreviewDeltaData:
-		return o.appendText(previewKey(data.CallID), data.Delta)
+		return o.appendText(o.callPreviewKey(data.CallID), data.Delta)
 	case events.CommunicatePreviewResetData:
 		return o.resetPreview(data.CallID)
 	case events.ToolCallStartData:
@@ -344,8 +354,42 @@ func (o *Overlay) streamID() string {
 	return fmt.Sprintf("%s/%d", o.roundID, o.attempt)
 }
 
+// newAttempt opens the attempt named by roundID and attempt. It is the only
+// place either changes, so the attempt's cached stream keys cannot survive
+// into another one.
+func (o *Overlay) newAttempt(roundID string, attempt int) {
+	o.roundID, o.attempt = roundID, attempt
+	clear(o.streamKeys)
+}
+
+// streamKey is this attempt's slot key for a stream of kind. It is built once
+// per attempt and reused by every delta, which is where the append's cost
+// lives; see appendText.
+func (o *Overlay) streamKey(kind string) string {
+	if key, ok := o.streamKeys[kind]; ok {
+		return key
+	}
+	key := "stream:" + o.streamID() + ":" + kind
+	o.streamKeys[kind] = key
+	return key
+}
+
 func previewKey(callID string) string {
 	return "preview:" + callID
+}
+
+// callPreviewKey is previewKey for a call, built once per call. A call no
+// record knows falls back to previewKey: the slot lookup that follows misses
+// either way, so only that cold case pays for the string.
+func (o *Overlay) callPreviewKey(callID string) string {
+	c, ok := o.calls.get(callID)
+	if !ok {
+		return previewKey(callID)
+	}
+	if c.previewKey == "" {
+		c.previewKey = previewKey(callID)
+	}
+	return c.previewKey
 }
 
 // streamDelta appends to the current attempt's stream of kind. A delta with
@@ -358,11 +402,11 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 	if _, covered := o.coveredRounds.get(o.roundID); covered {
 		return nil
 	}
-	streamID := o.streamID()
-	key := "stream:" + streamID + ":" + kind
+	key := o.streamKey(kind)
 	if _, ok := o.slots[key]; ok {
 		return o.appendText(key, text)
 	}
+	streamID := o.streamID()
 	s := o.newSlot(appwire.OverlayItem{
 		Key:      key,
 		Kind:     appwire.OverlayStream,
@@ -379,7 +423,7 @@ func (o *Overlay) streamDelta(kind, text string) []Change {
 // when it held any, and moves to the next attempt when it is the current one.
 func (o *Overlay) resetStream(streamID string) []Change {
 	if o.roundID != "" && streamID == o.streamID() {
-		o.attempt++
+		o.newAttempt(o.roundID, o.attempt+1)
 	}
 	discarded := false
 	for key, s := range o.slots {
@@ -589,7 +633,7 @@ func (o *Overlay) endRound(roundID string) []Change {
 	o.discardedRounds.delete(roundID)
 	o.coveredRounds.delete(roundID)
 	if o.roundID == roundID {
-		o.roundID, o.attempt = "", 0
+		o.newAttempt("", 0)
 	}
 	var changes []Change
 	if interrupted {
