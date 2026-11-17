@@ -127,15 +127,19 @@ function modelName(modelProvider: string, catalog: readonly ModelDescriptor[] | 
  * levels. */
 export function modelChipLabel(
 	session: Pick<ThreadModel, "modelProvider" | "reasoningEffort" | "reasoningEffortLevels" | "supportsReasoning"> &
-		Partial<Pick<ThreadModel, "model" | "modelControlVersion" | "modelControl">>,
+		Partial<Pick<ThreadModel, "model" | "modelControlState">>,
 	catalog: readonly ModelDescriptor[] | undefined,
 	/** The session's Board row's model_name, when the fleet has the row. */
 	rowName?: string,
 ): string {
-	const target = modelControlDisplay(session as ThreadModel);
+	const target = session.modelControlState
+		? modelControlDisplay(session as ThreadModel)
+		: { modelProvider: session.modelProvider, model: session.model ?? session.modelProvider };
 	const modelProvider =
-		session.modelControlVersion === 1 ? `${target.modelProvider}/${target.model}` : target.modelProvider;
-	const namesActiveModel = target.modelProvider === session.modelProvider && target.model === session.model;
+		session.modelControlState?.kind === "ready" ? `${target.modelProvider}/${target.model}` : target.modelProvider;
+	const namesActiveModel = session.modelControlState
+		? target.modelProvider === session.modelProvider && target.model === session.model
+		: target.modelProvider === session.modelProvider;
 	const name = modelName(modelProvider, catalog, namesActiveModel ? rowName : undefined);
 	const levels = sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	return levels.length > 0 ? `${name} · ${effortName(session.reasoningEffort ?? "")}` : name;

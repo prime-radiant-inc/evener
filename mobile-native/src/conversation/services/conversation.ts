@@ -24,6 +24,7 @@ import type {
 	MethodName,
 	MethodTypes,
 	ModelControlAuthority,
+	ModelControlInput,
 	ModelControlRequestFence,
 	ModelListParams,
 	ModelListResponse,
@@ -44,10 +45,14 @@ import {
 	acquireThreadSubscription,
 	applyNotification,
 	hydrateThread,
+	isModelControlAuthorityStale,
 	isStaleCursorError,
 	modelControlAuthority,
+	mutationErrorData,
 	reduceModelControl,
 	sameModelControlAuthority,
+	validateThreadModelSetResponse,
+	WireError,
 } from "@evener/appwire-client";
 import type { MobileConversation } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
@@ -302,10 +307,14 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
 	}
 	const modelControlVersion = obj.modelControlVersion;
 	if (modelControlVersion !== undefined) {
-		if (modelControlVersion !== 1) {
-			throw new Error('ConversationService: capability "modelControlVersion" is not supported');
+		if (
+			typeof modelControlVersion !== "number" ||
+			!Number.isSafeInteger(modelControlVersion) ||
+			modelControlVersion < 1
+		) {
+			throw new Error('ConversationService: capability "modelControlVersion" is invalid');
 		}
-		caps.modelControlVersion = 1;
+		caps.modelControlVersion = modelControlVersion;
 	}
 	return caps;
 }
@@ -567,6 +576,50 @@ export function createConversationService<ReadLease = unknown>(
 	// completions (an older open resolving after a newer open, or a refresh
 	// resolving after close/reopen) no-ops against the live pair.
 	let openEpoch = 0;
+	type ModelControlReadOutcome = { kind: "ready" } | { kind: "failed"; error: unknown };
+	type ModelControlReadBinding = {
+		ref: string;
+		epoch: number;
+		terminal: Promise<ModelControlReadOutcome>;
+		settle(outcome: ModelControlReadOutcome): void;
+		settled: boolean;
+	};
+	let modelControlReadBinding: ModelControlReadBinding | null = null;
+
+	function settleModelControlRead(binding: ModelControlReadBinding | null, outcome: ModelControlReadOutcome): void {
+		if (binding === null || binding.settled) return;
+		binding.settled = true;
+		binding.settle(outcome);
+	}
+
+	function retireModelControlRead(error: unknown): void {
+		settleModelControlRead(modelControlReadBinding, { kind: "failed", error });
+		modelControlReadBinding = null;
+	}
+
+	function installModelControlRead(threadRef: string, epoch: number): void {
+		let settle: (outcome: ModelControlReadOutcome) => void = () => {};
+		const terminal = new Promise<ModelControlReadOutcome>((resolve) => {
+			settle = resolve;
+		});
+		modelControlReadBinding = { ref: threadRef, epoch, terminal, settle, settled: false };
+	}
+
+	function settleModelControlReadFromModel(epoch: number, model: ThreadModel): void {
+		const binding = modelControlReadBinding;
+		if (binding === null || binding.epoch !== epoch) return;
+		settleModelControlRead(
+			binding,
+			model.modelControlState.kind === "ready"
+				? { kind: "ready" }
+				: { kind: "failed", error: new Error("ConversationService: read did not establish model-control authority") },
+		);
+	}
+
+	function failModelControlRead(epoch: number, error: unknown): void {
+		if (modelControlReadBinding?.epoch === epoch)
+			settleModelControlRead(modelControlReadBinding, { kind: "failed", error });
+	}
 
 	function requireQueueInstance(expected: string): string {
 		const threadRef = requireRef();
@@ -576,6 +629,7 @@ export function createConversationService<ReadLease = unknown>(
 	}
 
 	function beginOpen(threadRef: string): number {
+		retireModelControlRead(new Error("ConversationService: model-control read was replaced"));
 		opening = {
 			ref: threadRef,
 			threadId: ref === threadRef ? threadId : null,
@@ -590,6 +644,7 @@ export function createConversationService<ReadLease = unknown>(
 		// captured only in the epoch; it is NOT written to ref until success.
 		openEpoch += 1;
 		const epoch = openEpoch;
+		installModelControlRead(threadRef, epoch);
 		ref = null;
 		modelScope = null;
 		instanceId = null;
@@ -659,7 +714,72 @@ export function createConversationService<ReadLease = unknown>(
 		}
 	}
 
-	return {
+	async function waitForModelControl(): Promise<{
+		threadRef: string;
+		expectedThreadId: string;
+		authority: ModelControlAuthority;
+		epoch: number;
+	}> {
+		if (acceptedModel?.modelControlState.kind !== "ready") {
+			const binding = modelControlReadBinding;
+			if (binding === null || binding.epoch !== openEpoch) {
+				throw new Error("ConversationService: model control is not established by a current read");
+			}
+			const outcome = await binding.terminal;
+			if (modelControlReadBinding !== binding || binding.epoch !== openEpoch) {
+				throw new Error("ConversationService: model-control read was superseded");
+			}
+			if (outcome.kind === "failed") throw outcome.error;
+		}
+		const threadRef = requireRef();
+		requireCap("changeModel", "changeModel");
+		const authority = acceptedModel === null ? undefined : modelControlAuthority(acceptedModel);
+		if (!authority) throw new Error("ConversationService: model control is not established");
+		return {
+			threadRef,
+			expectedThreadId: nonemptyString(threadId, "thread id"),
+			authority,
+			epoch: openEpoch,
+		};
+	}
+
+	function modelControlFenceCurrent(
+		threadRef: string,
+		expectedThreadId: string,
+		fence: ModelControlRequestFence,
+	): boolean {
+		const currentAuthority = acceptedModel === null ? undefined : modelControlAuthority(acceptedModel);
+		return (
+			openEpoch === fence.clientGeneration &&
+			openEpoch === fence.readGeneration &&
+			ref === threadRef &&
+			threadId === expectedThreadId &&
+			currentAuthority !== undefined &&
+			sameAuthority(fence.authority, currentAuthority)
+		);
+	}
+
+	let startReplacementRead: ((threadRef: string) => void) | null = null;
+
+	function recoverModelControl(
+		threadRef: string,
+		expectedThreadId: string,
+		fence: ModelControlRequestFence,
+		input: Extract<ModelControlInput, { kind: "authorityStale" | "postDispatchFailure" }>,
+	): void {
+		if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence) || acceptedModel === null) return;
+		const reduced = reduceModelControl(acceptedModel, input);
+		acceptedModel = reduced.model;
+		if (reduced.replacementReadRequired) startReplacementRead?.(threadRef);
+	}
+
+	const service: LiveConversationService &
+		ConversationModelCatalog &
+		ConversationGoalActions &
+		ConversationForkActions &
+		ConversationTurnForkActions &
+		ConversationClearActions &
+		ConversationRecoveryActions = {
 		async open(threadRef, _cursor) {
 			pendingProjection = null;
 			// The compatibility cursor is intentionally ignored: open() must send
@@ -671,41 +791,47 @@ export function createConversationService<ReadLease = unknown>(
 			const expectedThreadId = threadId ?? undefined;
 			const epoch = beginOpen(threadRef);
 			const readLease = options.onReadStart?.(threadRef, expectedThreadId);
-			const response: ThreadReadResponse = await subscribedRead(threadRef).read({ includeTurns: true });
-			// Compute ALL response-derived projection work BEFORE committing the
-			// pair — a throw here leaves ref+capabilities null/fail-closed. Only
-			// commit the pair after projection succeeds and the epoch is still
-			// current; a stale successful result returns without committing.
-			const thread = readWithPushedCapabilities(response.thread, epoch);
-			const readInstanceId = nonemptyString(
-				response.thread.evener.instanceId ?? response.thread.id,
-				"thread instance id",
-			);
-			const hydrated = replayOpeningModelControl(
-				{
-					...hydrateThread({ ...response, thread }, threadRef, now()),
-					instanceId: readInstanceId,
-				},
-				response.thread.id,
-				epoch,
-			);
-			const conversation = projectConversation(hydrated, undefined, displayConfig());
-			const caps = extractCapabilities(thread.evener.capabilities);
-			const readModelScope = { harness: thread.source, cwd: thread.cwd };
-			if (openEpoch === epoch) {
-				modelScope = readModelScope;
-				instanceId = readInstanceId;
-				threadId = response.thread.id;
-				ref = threadRef;
-				capabilities = caps;
-				acceptedModel = conversation;
-				opening = null;
+			try {
+				const response: ThreadReadResponse = await subscribedRead(threadRef).read({ includeTurns: true });
+				// Compute ALL response-derived projection work BEFORE committing the
+				// pair — a throw here leaves ref+capabilities null/fail-closed. Only
+				// commit the pair after projection succeeds and the epoch is still
+				// current; a stale successful result returns without committing.
+				const thread = readWithPushedCapabilities(response.thread, epoch);
+				const readInstanceId = nonemptyString(
+					response.thread.evener.instanceId ?? response.thread.id,
+					"thread instance id",
+				);
+				const hydrated = replayOpeningModelControl(
+					{
+						...hydrateThread({ ...response, thread }, threadRef, now()),
+						instanceId: readInstanceId,
+					},
+					response.thread.id,
+					epoch,
+				);
+				const conversation = projectConversation(hydrated, undefined, displayConfig());
+				const caps = extractCapabilities(thread.evener.capabilities);
+				const readModelScope = { harness: thread.source, cwd: thread.cwd };
+				if (openEpoch === epoch) {
+					modelScope = readModelScope;
+					instanceId = readInstanceId;
+					threadId = response.thread.id;
+					ref = threadRef;
+					capabilities = caps;
+					acceptedModel = conversation;
+					opening = null;
+					settleModelControlReadFromModel(epoch, conversation);
+				}
+				// Reconcile the host's durable dispatch gate only for a read whose
+				// projection actually installed: a failed projection or a stale epoch
+				// leaves the gate blocked.
+				if (openEpoch === epoch) await reconcileRead(readLease, response);
+				return conversation;
+			} catch (error) {
+				failModelControlRead(epoch, error);
+				throw error;
 			}
-			// Reconcile the host's durable dispatch gate only for a read whose
-			// projection actually installed: a failed projection or a stale epoch
-			// leaves the gate blocked.
-			if (openEpoch === epoch) await reconcileRead(readLease, response);
-			return conversation;
 		},
 
 		async readProjection(threadRef, heldSnapshot) {
@@ -774,6 +900,7 @@ export function createConversationService<ReadLease = unknown>(
 					capabilities = caps;
 					acceptedModel = conversation;
 					opening = null;
+					settleModelControlReadFromModel(epoch, conversation);
 				}
 				// Reconcile the host's durable dispatch gate only after the projection
 				// installed, so a failed projection or a stale epoch leaves it blocked.
@@ -786,7 +913,10 @@ export function createConversationService<ReadLease = unknown>(
 					hasEarlierItems: thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
 					hasLaterItems: thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
 				};
-			})();
+			})().catch((error) => {
+				failModelControlRead(epoch, error);
+				throw error;
+			});
 			pendingProjection = { ref: threadRef, instanceId: pagingInstance, publish };
 			return publish;
 		},
@@ -973,7 +1103,7 @@ export function createConversationService<ReadLease = unknown>(
 				...hydrateThread({ thread }, response.ref, now()),
 				instanceId: replacementInstance,
 			};
-			const retired = reduceModelControl(hydrated, { kind: "read", version: 0 }).model;
+			const retired = reduceModelControl(hydrated, { kind: "connectionRetired" }).model;
 			const conversation = projectConversation(retired, undefined, displayConfig());
 			const caps = extractCapabilities(thread.evener.capabilities);
 			modelScope = { harness: thread.source, cwd: thread.cwd };
@@ -983,6 +1113,10 @@ export function createConversationService<ReadLease = unknown>(
 			capabilities = caps;
 			acceptedModel = conversation;
 			opening = null;
+			settleModelControlRead(modelControlReadBinding, {
+				kind: "failed",
+				error: new Error("ConversationService: clear requires a replacement model-control read"),
+			});
 			return { conversation, olderCursor: null };
 		},
 
@@ -1045,53 +1179,66 @@ export function createConversationService<ReadLease = unknown>(
 		},
 
 		async changeModel(modelProvider, model) {
-			requireCap("changeModel", "changeModel");
-			const threadRef = requireRef();
-			if (capabilities?.modelControlVersion !== 1) {
-				await client.request("thread/model/set", { ref: threadRef, modelProvider, model });
-				return;
-			}
-			if (acceptedModel === null) throw new Error("ConversationService: model control is not established");
-			const authority = modelControlAuthority(acceptedModel);
-			if (!authority) throw new Error("ConversationService: model control is not established");
-			const expectedThreadId = nonemptyString(threadId, "thread id");
+			const { threadRef, expectedThreadId, authority, epoch } = await waitForModelControl();
 			const fence: ModelControlRequestFence = {
 				authority,
-				clientGeneration: openEpoch,
-				readGeneration: openEpoch,
+				clientGeneration: epoch,
+				readGeneration: epoch,
 			};
 			const clientMutationId = idFactory();
-			const response = await client.request("thread/model/set", {
-				ref: threadRef,
-				modelProvider,
-				model,
-				clientMutationId,
-				expectedInstanceId: authority.instanceId,
-				expectedBootGeneration: authority.bootGeneration,
-			});
-			if (response.modelControlVersion !== 1 || !response.modelControl) return;
-			const currentAuthority = acceptedModel === null ? undefined : modelControlAuthority(acceptedModel);
-			if (
-				openEpoch !== fence.clientGeneration ||
-				openEpoch !== fence.readGeneration ||
-				ref !== threadRef ||
-				threadId !== expectedThreadId ||
-				currentAuthority === undefined ||
-				!sameAuthority(fence.authority, currentAuthority) ||
-				!sameAuthority(fence.authority, response.modelControl.authority)
-			) {
+			let rawResponse: unknown;
+			try {
+				rawResponse = await client.request("thread/model/set", {
+					ref: threadRef,
+					modelProvider,
+					model,
+					clientMutationId,
+					expectedInstanceId: authority.instanceId,
+					expectedBootGeneration: authority.bootGeneration,
+				});
+			} catch (error) {
+				if (isModelControlAuthorityStale(error)) {
+					recoverModelControl(threadRef, expectedThreadId, fence, { kind: "authorityStale" });
+				} else {
+					const failure = mutationErrorData(error);
+					if (
+						!(error instanceof WireError) ||
+						failure?.mutationOutcome === "unknown" ||
+						failure?.retryDisposition === "blocked"
+					) {
+						recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
+					}
+				}
+				throw error;
+			}
+			let response: MethodTypes["thread/model/set"]["result"];
+			try {
+				response = validateThreadModelSetResponse(rawResponse, clientMutationId);
+			} catch (error) {
+				recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
+				throw error;
+			}
+			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) return;
+			const snapshot = response.modelControl;
+			if (!snapshot || !sameAuthority(fence.authority, snapshot.authority)) {
+				recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
+				validateThreadModelSetResponse(undefined, clientMutationId);
 				return;
 			}
-			acceptedModel = reduceModelControl(acceptedModel, {
-				kind: "response",
-				snapshot: response.modelControl,
-			}).model;
+			if (acceptedModel === null) return;
+			const reduced = reduceModelControl(acceptedModel, {
+				kind: "snapshot",
+				source: "response",
+				snapshot,
+			});
+			acceptedModel = reduced.model;
+			if (reduced.replacementReadRequired) startReplacementRead?.(threadRef);
 			notificationHandler?.({
 				method: "thread/model/controlChanged",
 				params: {
 					threadId: expectedThreadId,
 					ref: threadRef,
-					modelControl: response.modelControl,
+					modelControl: snapshot,
 				},
 			});
 		},
@@ -1154,6 +1301,7 @@ export function createConversationService<ReadLease = unknown>(
 			}
 			// Increment the epoch and clear the pair so a refresh that was in
 			// flight before close cannot republish into the closed service.
+			retireModelControlRead(new Error("ConversationService: model-control authority was closed"));
 			openEpoch += 1;
 			opening = null;
 			ref = null;
@@ -1165,4 +1313,8 @@ export function createConversationService<ReadLease = unknown>(
 			notificationHandler = null;
 		},
 	};
+	startReplacementRead = (threadRef) => {
+		void service.readProjection(threadRef).catch(() => {});
+	};
+	return service;
 }

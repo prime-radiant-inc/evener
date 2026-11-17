@@ -81,10 +81,22 @@ const CATALOG: ModelListResponse = {
 const CAPABILITIES = { changeModel: true, changeVisionModel: true } as ThreadCapabilities;
 
 function conversation(over: Partial<MobileConversation> = {}): MobileConversation {
+	const snapshot = {
+		authority: { instanceId: "instance-a", bootGeneration: "7" },
+		revision: 1,
+		active: {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			reasoningEffortLevels: ["low", "medium", "high"],
+			supportsReasoning: true,
+		},
+	};
 	return {
 		ref: REF,
 		capabilities: CAPABILITIES,
 		modelProvider: "anthropic/claude-sonnet-5",
+		model: "anthropic/claude-sonnet-5",
+		modelControlState: { kind: "ready", snapshot },
 		reasoningEffort: "high",
 		reasoningEffortLevels: ["low", "medium", "high"],
 		supportsReasoning: true,
@@ -232,22 +244,24 @@ describe("choosing a model (spec 8.5)", () => {
 			conversation({
 				model: "claude-sonnet-5",
 				modelProvider: "anthropic",
-				modelControlVersion: 1,
-				modelControl: {
-					authority: { instanceId: "instance-a", bootGeneration: "7" },
-					revision: 2,
-					active: {
-						modelProvider: "anthropic",
-						model: "claude-sonnet-5",
-						reasoningEffortLevels: ["low", "medium", "high"],
-						supportsReasoning: true,
-					},
-					desired: {
-						requestSequence: 2,
-						clientMutationId: "request-2",
-						modelProvider: "anthropic",
-						model: "claude-haiku-5",
-						lifecycle: "pending",
+				modelControlState: {
+					kind: "ready",
+					snapshot: {
+						authority: { instanceId: "instance-a", bootGeneration: "7" },
+						revision: 2,
+						active: {
+							modelProvider: "anthropic",
+							model: "claude-sonnet-5",
+							reasoningEffortLevels: ["low", "medium", "high"],
+							supportsReasoning: true,
+						},
+						desired: {
+							requestSequence: 2,
+							clientMutationId: "request-2",
+							modelProvider: "anthropic",
+							model: "claude-haiku-5",
+							lifecycle: "pending",
+						},
 					},
 				},
 			}),
@@ -255,6 +269,23 @@ describe("choosing a model (spec 8.5)", () => {
 		const tree = sheet();
 		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
 		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+	});
+
+	it("disables model choices while model-control authority is recovering", () => {
+		const { calls } = provide(
+			conversation({
+				modelControlState: {
+					kind: "recovering",
+					lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-5" },
+				},
+			}),
+		);
+
+		const choice = pressable(sheet(), "Claude Haiku 5");
+
+		expect(choice?.props.accessibilityState).toMatchObject({ disabled: true });
+		act(() => choice?.props.onPress?.());
+		expect(calls).toEqual([]);
 	});
 
 	it("changes the model, closes, and the session says it applies from the next turn", async () => {
@@ -332,6 +363,8 @@ describe.each([
 		async (fontScale) => {
 			viewport.fontScale = fontScale;
 			const session = conversation({ reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh"] });
+			if (session.modelControlState.kind !== "ready") throw new Error("model fixture is not ready");
+			const modelSnapshot = session.modelControlState.snapshot;
 			const thread: Thread = {
 				id: "thread",
 				sessionId: "session",
@@ -347,7 +380,7 @@ describe.each([
 				turns: [],
 				evener: {
 					ref: REF,
-					instanceId: "instance",
+					instanceId: modelSnapshot.authority.instanceId,
 					queue: { revision: 0 },
 					capabilities: {
 						send: true,
@@ -363,11 +396,13 @@ describe.each([
 						queue: false,
 						goal: false,
 						rename: true,
+						modelControlVersion: 1,
 					},
+					modelControl: modelSnapshot,
 				},
 			};
 			const client = new FakeClient("ready");
-			client.on("thread/read", () => ({ thread }));
+			client.on("thread/read", () => ({ thread, bootGeneration: modelSnapshot.authority.bootGeneration }));
 			client.on("thread/unsubscribe", () => ({}));
 			let response = Promise.withResolvers<Record<string, never>>();
 			client.on(method, () => response.promise);
@@ -407,7 +442,12 @@ describe.each([
 				await act(async () => {
 					choice.props.onPress();
 					if (attempt < 2) response.reject(new WireError("rejection-sentinel", -32603));
-					else response.resolve({});
+					else
+						response.resolve(
+							(method === "thread/model/set"
+								? { modelControlVersion: 1, disposition: "accepted", modelControl: modelSnapshot }
+								: {}) as never,
+						);
 					await settled;
 				});
 				expect(client.calls.filter((call) => call.method === method)).toHaveLength(attempt + 1);

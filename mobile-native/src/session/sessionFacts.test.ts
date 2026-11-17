@@ -165,8 +165,7 @@ describe("the model chip (spec 8.5)", () => {
 		return {
 			modelProvider: "anthropic",
 			model: "claude-sonnet-5",
-			modelControlVersion: 1,
-			modelControl: snapshot,
+			modelControlState: { kind: "ready" as const, snapshot },
 			reasoningEffort: "high",
 			reasoningEffortLevels: ["low", "high"],
 			supportsReasoning: true,

@@ -99,7 +99,11 @@ function makeThread(over: Partial<Thread> = {}): Thread {
 }
 
 function makeReadResponse(thread: Thread, olderCursor?: string): ThreadReadResponse {
-	return { thread, olderCursor };
+	return {
+		thread,
+		olderCursor,
+		...(thread.evener.modelControl ? { bootGeneration: thread.evener.modelControl.authority.bootGeneration } : {}),
+	};
 }
 
 const MODEL_AUTHORITY_A = { instanceId: "instance-a", bootGeneration: "7" } as const;
@@ -974,20 +978,156 @@ describe("ConversationService", () => {
 			expect(call?.params).toMatchObject({ ref: "ref-1" });
 		});
 
-		it("an old daemon receives the legacy model request without speculative state", async () => {
+		it("an unsupported read remains usable but refuses model changes locally", async () => {
 			const { client, service } = setup();
-			client.on("thread/model/set", () => EMPTY_RESPONSE);
-			await service.open("ref-1");
-			const notifications: AnyNotification[] = [];
-			service.subscribeNotifications((notification) => notifications.push(notification));
-			await service.changeModel("openai", "gpt-4");
-			const call = client.calls.find((c) => c.method === "thread/model/set");
-			expect(call?.params).toEqual({
-				ref: "ref-1",
-				modelProvider: "openai",
-				model: "gpt-4",
+			const conversation = await service.open("ref-1");
+
+			expect(conversation.ref).toBe("ref-1");
+			await expect(service.changeModel("openai", "gpt-4")).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		});
+
+		it("an unknown model-control version remains readable but refuses model changes locally", async () => {
+			const thread = makeThread({
+				evener: {
+					...makeThread().evener,
+					capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 2 },
+					modelControl: modelControl(1),
+				},
 			});
-			expect(notifications).toEqual([]);
+			const { client, service } = setup({ thread });
+
+			const conversation = await service.open("ref-1");
+
+			expect(conversation.ref).toBe("ref-1");
+			expect(conversation.modelControlState.kind).toBe("unsupported");
+			await expect(service.changeModel("openai", "gpt-4")).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		});
+
+		it("a model change waits for the current establishing read and sends once with its authority", async () => {
+			const { client, service } = setup();
+			const read = Promise.withResolvers<ThreadReadResponse>();
+			client.on("thread/read", () => read.promise);
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { desired: "gpt-5.5" }),
+			}));
+
+			const opening = service.open("ref-1");
+			const changing = service.changeModel("openai", "gpt-5.5");
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+			read.resolve(makeReadResponse(controlledThread()));
+
+			await opening;
+			await changing;
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1);
+		});
+
+		it("close promptly retires an establishing read waiter without dispatch", async () => {
+			const { client, service } = setup();
+			client.on("thread/read", () => new Promise<ThreadReadResponse>(() => {}));
+			void service.open("ref-1");
+			const changing = service.changeModel("openai", "gpt-5.5");
+
+			service.close();
+
+			await expect(changing).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		});
+
+		it.each([
+			["malformed", (read: PromiseWithResolvers<ThreadReadResponse>) => read.resolve({} as ThreadReadResponse)],
+			[
+				"refused",
+				(read: PromiseWithResolvers<ThreadReadResponse>) => read.reject(new WireError("read refused", -32014)),
+			],
+			[
+				"cancelled",
+				(read: PromiseWithResolvers<ThreadReadResponse>) =>
+					read.reject(Object.assign(new Error("read cancelled"), { name: "AbortError" })),
+			],
+			[
+				"transport-failed",
+				(read: PromiseWithResolvers<ThreadReadResponse>) => read.reject(new Error("connection lost")),
+			],
+		] as const)("a %s establishing read rejects every waiter without dispatch", async (_outcome, settle) => {
+			const { client, service } = setup();
+			const read = Promise.withResolvers<ThreadReadResponse>();
+			client.on("thread/read", () => read.promise);
+			const opening = service.open("ref-1");
+			const changing = service.changeModel("openai", "gpt-5.5");
+			const openRejected = expect(opening).rejects.toThrow();
+			const changeRejected = expect(changing).rejects.toThrow();
+
+			settle(read);
+
+			await Promise.all([openRejected, changeRejected]);
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		});
+
+		it.each([
+			{},
+			{ modelControlVersion: 1 },
+			{ modelControlVersion: 1, disposition: "accepted" },
+			{ modelControlVersion: 1, disposition: "accepted", modelControl: { revision: 2 } },
+		])("a partial model response %j starts one recovery read and is never replayed", async (response) => {
+			const { client, service } = setup({ thread: controlledThread() });
+			await service.open("ref-1");
+			let recoveryReads = 0;
+			client.on("thread/read", () => {
+				recoveryReads += 1;
+				return makeReadResponse(controlledThread(modelControl(2)));
+			});
+			client.on("thread/model/set", () => response as never);
+
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toMatchObject({
+				evenerErrorInfo: "mutationOutcomeUnknown",
+			});
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(3, { desired: "gpt-5.5" }),
+			}));
+			await service.changeModel("openai", "gpt-5.5");
+
+			expect(recoveryReads).toBe(1);
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(2);
+		});
+
+		it.each([
+			[
+				"typed stale authority",
+				new WireError("authority changed", -32602, {
+					evenerErrorInfo: "authorityStale",
+					mutationOutcome: "notAccepted",
+					retryDisposition: "none",
+				}),
+			],
+			["transport loss", new Error("connection lost after dispatch")],
+		] as const)("%s starts one recovery read without replay", async (_name, failure) => {
+			const { client, service } = setup({ thread: controlledThread() });
+			await service.open("ref-1");
+			let recoveryReads = 0;
+			client.on("thread/read", () => {
+				recoveryReads += 1;
+				return makeReadResponse(controlledThread(modelControl(2)));
+			});
+			client.on("thread/model/set", () => {
+				throw failure;
+			});
+
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toBe(failure);
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(3, { desired: "gpt-5.5" }),
+			}));
+			await service.changeModel("openai", "gpt-5.5");
+
+			expect(recoveryReads).toBe(1);
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(2);
 		});
 
 		it("a capable daemon receives a UUID and expected authority, and its typed response is adopted", async () => {
@@ -1051,7 +1191,7 @@ describe("ConversationService", () => {
 			resolveRead(makeReadResponse(controlledThread(modelControl(2))));
 
 			const projection = await read;
-			expect(projection.conversation.modelControl).toEqual(pushed);
+			expect(projection.conversation.modelControlState).toEqual({ kind: "ready", snapshot: pushed });
 			expect(projection.conversation.modelProvider).toBe("anthropic");
 		});
 
@@ -1078,7 +1218,7 @@ describe("ConversationService", () => {
 			});
 			resolveRead(makeReadResponse(makeThread()));
 			const projection = await read;
-			expect(projection.conversation.modelControl).toBeUndefined();
+			expect(projection.conversation.modelControlState.kind).toBe("unsupported");
 			client.emitNotification({
 				method: "thread/status/changed",
 				params: {
@@ -1088,13 +1228,8 @@ describe("ConversationService", () => {
 					capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
 				},
 			});
-			client.on("thread/model/set", () => EMPTY_RESPONSE);
-			await service.changeModel("openai", "gpt-4");
-			expect(client.calls.findLast((call) => call.method === "thread/model/set")?.params).toEqual({
-				ref: "ref-1",
-				modelProvider: "openai",
-				model: "gpt-4",
-			});
+			await expect(service.changeModel("openai", "gpt-4")).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
 
 		it("drops a typed response after a replacement read installs another authority", async () => {
@@ -1107,17 +1242,18 @@ describe("ConversationService", () => {
 				disposition: string;
 				modelControl: ModelControlSnapshot;
 			}) => void;
-			client.on(
-				"thread/model/set",
-				() =>
-					new Promise<{
-						modelControlVersion: number;
-						disposition: string;
-						modelControl: ModelControlSnapshot;
-					}>((resolve) => (resolveSet = resolve)),
-			);
+			let markSetStarted!: () => void;
+			const setStarted = new Promise<void>((resolve) => (markSetStarted = resolve));
+			client.on("thread/model/set", () => {
+				markSetStarted();
+				return new Promise<{
+					modelControlVersion: number;
+					disposition: string;
+					modelControl: ModelControlSnapshot;
+				}>((resolve) => (resolveSet = resolve));
+			});
 			const oldRequest = service.changeModel("openai", "gpt-5.5");
-			await Promise.resolve();
+			await setStarted;
 			client.on("thread/read", () =>
 				makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B }))),
 			);
@@ -1130,7 +1266,11 @@ describe("ConversationService", () => {
 			await oldRequest;
 			expect(delivered).toEqual([]);
 
-			client.on("thread/model/set", () => EMPTY_RESPONSE);
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
+			}));
 			await service.changeModel("openai", "gpt-5.5");
 			expect(client.calls.findLast((call) => call.method === "thread/model/set")?.params).toMatchObject({
 				expectedInstanceId: MODEL_AUTHORITY_B.instanceId,
@@ -1154,8 +1294,7 @@ describe("ConversationService", () => {
 			const projection = await read;
 
 			expect(projection.conversation).toMatchObject({ modelProvider: "legacy/new-model", model: "legacy/new-model" });
-			expect(projection.conversation.modelControlVersion).toBeUndefined();
-			expect(projection.conversation.modelControl).toBeUndefined();
+			expect(projection.conversation.modelControlState.kind).toBe("unsupported");
 		});
 
 		it("a clear response retires model-control authority until a replacement read", async () => {
@@ -1179,9 +1318,7 @@ describe("ConversationService", () => {
 
 			const projection = service.adoptClear(await service.clear());
 
-			expect(projection.conversation.modelControlVersion).toBeUndefined();
-			expect(projection.conversation.modelControl).toBeUndefined();
-			client.on("thread/model/set", () => EMPTY_RESPONSE);
+			expect(projection.conversation.modelControlState.kind).toBe("uninitialized");
 			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toThrow();
 			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
@@ -1534,7 +1671,6 @@ describe("ConversationService", () => {
 				},
 			});
 			const { client, service } = setup({ thread });
-			client.on("thread/model/set", () => EMPTY_RESPONSE);
 			await service.open("ref-1");
 			await expect(service.changeModel("openai", "gpt-4")).rejects.toThrow();
 			expect(client.calls.find((c) => c.method === "thread/model/set")).toBeUndefined();
@@ -2442,7 +2578,6 @@ describe("ConversationService", () => {
 			client.on("turn/interrupt", () => ({ receipt: makeReceipt("interrupt") }) as TurnInterruptResponse);
 			client.on("thread/compact/start", () => EMPTY_RESPONSE);
 			client.on("thread/shutdown", () => EMPTY_RESPONSE);
-			client.on("thread/model/set", () => EMPTY_RESPONSE);
 			client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
 			client.on("evener/thread/name/set", () => EMPTY_RESPONSE);
 			client.on("thread/turns/list", () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse);

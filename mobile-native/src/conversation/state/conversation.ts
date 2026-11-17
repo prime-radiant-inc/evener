@@ -2750,8 +2750,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				let applied = foldNotification(state.conversation, n);
 				const modelControlInvalidated =
 					n.method === "thread/model/controlChanged" &&
-					state.conversation.modelControl !== undefined &&
-					applied.modelControl === undefined;
+					state.conversation.modelControlState.kind === "ready" &&
+					applied.modelControlState.kind === "recovering";
 				// RoboRev round 34: a warning with no active turn is the one frame
 				// the wire drops entirely (and never persists, so no read can carry
 				// it back), yet it is a real diagnostic — the projector emits

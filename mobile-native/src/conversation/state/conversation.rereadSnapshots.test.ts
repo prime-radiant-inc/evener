@@ -81,8 +81,7 @@ function modelControl(
 function modelConversation(snapshot: ModelControlSnapshot): MobileConversation {
 	return makeConversation({
 		instanceId: snapshot.authority.instanceId,
-		modelControlVersion: 1,
-		modelControl: snapshot,
+		modelControlState: { kind: "ready", snapshot },
 		modelProvider: snapshot.active.modelProvider,
 		model: snapshot.active.model,
 		reasoningEffortLevels: [...snapshot.active.reasoningEffortLevels],
@@ -111,7 +110,7 @@ describe("ConversationStore", () => {
 			});
 
 			expect(store.getState().conversation).toMatchObject({
-				modelControl: pending,
+				modelControlState: { kind: "ready", snapshot: pending },
 				modelProvider: "anthropic",
 				model: "claude-sonnet-5",
 			});
@@ -137,7 +136,7 @@ describe("ConversationStore", () => {
 
 			expect(store.getState().conversation).toMatchObject({
 				instanceId: MODEL_AUTHORITY_B.instanceId,
-				modelControl: replacement,
+				modelControlState: { kind: "ready", snapshot: replacement },
 				modelProvider: "anthropic",
 				model: "claude-opus-4-6",
 			});
@@ -168,7 +167,7 @@ describe("ConversationStore", () => {
 			await ctrl.completed(1);
 			await yieldMicrotask();
 
-			expect(store.getState().conversation?.modelControl).toEqual(replacement);
+			expect(store.getState().conversation?.modelControlState).toEqual({ kind: "ready", snapshot: replacement });
 		});
 	});
 

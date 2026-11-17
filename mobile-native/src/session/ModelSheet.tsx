@@ -74,11 +74,12 @@ function ModelSheetBody({
 		if (!catalog && !loadingModels) void controls.loadModels();
 	}, [controls]);
 	const busy = !controls || !ready || state?.pending != null;
+	const modelBusy = busy || (!vision && session.modelControlState.kind !== "ready");
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const modelTarget = modelControlDisplay(session);
 	const current = vision
 		? session.visionModel
-		: session.modelControlVersion === 1
+		: session.modelControlState.kind === "ready"
 			? `${modelTarget.modelProvider}/${modelTarget.model}`
 			: modelTarget.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
@@ -98,6 +99,7 @@ function ModelSheetBody({
 			then?.();
 		});
 	const choose = (model: ModelDescriptor) => {
+		if (!vision && session.modelControlState.kind !== "ready") return;
 		if (`${model.provider}/${model.model}` === current) {
 			finish();
 			return;
@@ -147,7 +149,7 @@ function ModelSheetBody({
 				query={query}
 				visionOnly={vision}
 				current={current}
-				disabled={busy || !canChange}
+				disabled={modelBusy || !canChange}
 				choose={choose}
 				header={
 					<>
