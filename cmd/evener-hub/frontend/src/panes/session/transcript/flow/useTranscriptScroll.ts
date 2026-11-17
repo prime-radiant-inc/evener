@@ -1053,6 +1053,21 @@ export function useTranscriptScroll({
       // Passive admission needs committed geometry. An explicit jump instead
       // confirms its first landing against the live geometry it pinned.
       const layoutCurrent = listRef.current?.isLayoutCurrent() === true;
+      // A port whose content fits is at the bottom of nothing: every offset
+      // satisfies isAtBottom, so the offset cannot say where the reader is. A
+      // port that fitted before this event as well was never scrollable and the
+      // ordinary rules above decide it, so only the TRANSITION from overflowing
+      // to fitting is read here - and content cannot lose its bottom without a
+      // measurement. That measurement is the collapse (issue #4962: every
+      // rendered row measured at height 0 with the live-edge row at 80px,
+      // scrollHeight 80634 -> 80 against a 549px port, offset clamped to 0).
+      // Admitting it as an arrival took the New Content pill away from a reader
+      // who had genuinely wheeled back, and the growth pin then carried them to
+      // the true end when the rows measured again. A reader who was not already
+      // following keeps the position they chose, and the pill offering the way
+      // back to latest.
+      const collapsedToFit =
+        layoutCurrent && m.scrollHeight <= m.clientHeight && previous.scrollHeight > previous.clientHeight;
       // A backward measurement can also leave the old sizer's end before
       // commit. Keep established end-follow intent through that passive gap,
       // but let the reader leave immediately, including during reflow.
@@ -1070,7 +1085,8 @@ export function useTranscriptScroll({
       // it to its own end for a frame. That is not the reader arriving at the
       // end: the landing says where they are once it settles.
       const arrived = atBottom && !heldRef.current && pendingViewAnchorRef.current?.openingRow === undefined;
-      wasAtBottomRef.current = preserveEndFollow || (arrived && (wasFollowingBefore || jumpLanded || layoutCurrent));
+      wasAtBottomRef.current =
+        preserveEndFollow || (arrived && (wasFollowingBefore || jumpLanded || (layoutCurrent && !collapsedToFit)));
       // Only a real arrival (not a one-frame clamp) establishes the intent; a
       // stable-geometry backward move clears it.
       if (arrived && (wasFollowingBefore || jumpLanded || gestured)) {
