@@ -45,6 +45,12 @@ func prepareBodyFixtures() map[string]map[string]any {
 		},
 		"reasoning": {
 			"model": "m", "max_output_tokens": 16000,
+			// store is the field renamingPreparer.PrepareRequest renames to
+			// store_renamed, so the prepare step edits a real field of this body
+			// and the byte comparison below sees the result. Without it the
+			// preparer's body rewrite was a no-op here and the prepare step of
+			// the full path was unproven.
+			"store": true,
 			"input": []any{
 				// longText.String(), not longText: a strings.Builder has no
 				// exported fields, so both encoders emit {} for it and the
@@ -78,6 +84,18 @@ func TestPrepareBodyBytesMatchStdlib(t *testing.T) {
 			p, err := Prepare(context.Background(), &Call{Method: http.MethodPost, URL: URL(res, res.Transport.Endpoint), Body: wire, Req: llm.Request{Model: "m"}, Res: res})
 			if err != nil {
 				t.Fatal(err)
+			}
+			// The byte comparison below compares two encoders reading the same
+			// mutated map, so it passes whether or not the prepare step ran.
+			// Assert the rewrite itself, or the prepare leg of the full path is
+			// unproven: renamingPreparer moves "store" to "store_renamed".
+			if name == "reasoning" {
+				if _, still := wire["store"]; still {
+					t.Fatalf("prepare did not rename store: %v", wire["store"])
+				}
+				if renamed := wire["store_renamed"]; renamed != true {
+					t.Fatalf("store_renamed = %v, want the preparer to have carried true across", renamed)
+				}
 			}
 			want, err := json.Marshal(wire)
 			if err != nil {
