@@ -172,8 +172,9 @@ func TestBuildTreeRowsCarryTheArchivedDecision(t *testing.T) {
 
 // An age-archived live session reaches Needs you (tierEligible clears only an
 // explicit decision), so its row carries the archived fact too: otherwise the
-// Board would keep its unread dot (#4199). A project decision archives a Needs
-// you row the same way, and an unarchived row stays false.
+// Board would keep its unread dot (#4199). A project decision removes the row
+// from the tier outright, the same rule the attention summary applies, and an
+// unarchived row stays false.
 func TestBuildTreeNeedsYouRowCarriesTheArchivedDecision(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	stale := now.Add(-30 * 24 * time.Hour) // beyond archiveWindow: auto-archived
@@ -181,25 +182,38 @@ func TestBuildTreeNeedsYouRowCarriesTheArchivedDecision(t *testing.T) {
 		return schema.SessionMeta{ID: id, CreatedAt: activity, UpdatedAt: activity, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
 	}
 	entry := func(id string) LiveEntry {
-		return LiveEntry{SessionID: id, Status: "awaiting", PendingAsk: true, Entry: rendezvous.Entry{SessionID: id, StartedAt: now, WorkingDir: "/w"}}
+		return LiveEntry{
+			SessionID:  id,
+			Status:     "awaiting",
+			PendingAsk: true,
+			Project:    identifier.Project{ID: "p"},
+			Entry:      rendezvous.Entry{SessionID: id, StartedAt: now, WorkingDir: "/w"},
+		}
 	}
 	for _, tc := range []struct {
 		name      string
 		metas     []schema.SessionMeta
 		decisions map[ArchiveKey]bool
-		want      bool
+		member    bool
+		archived  bool
 	}{
-		{"age-archived", []schema.SessionMeta{meta("awaiting", stale)}, nil, true},
-		{"project-archived", []schema.SessionMeta{meta("awaiting", now)}, map[ArchiveKey]bool{{Kind: "project", ID: "p"}: true}, true},
-		{"unarchived", []schema.SessionMeta{meta("awaiting", now)}, nil, false},
+		{"age-archived", []schema.SessionMeta{meta("awaiting", stale)}, nil, true, true},
+		{"project-archived", []schema.SessionMeta{meta("awaiting", now)}, map[ArchiveKey]bool{{Kind: "project", ID: "p"}: true}, false, false},
+		{"unarchived", []schema.SessionMeta{meta("awaiting", now)}, nil, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tree := BuildTreeAtWithProjects(tc.metas, []LiveEntry{entry("awaiting")}, tc.decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+			if !tc.member {
+				if len(tree.NeedsYou) != 0 {
+					t.Fatalf("NeedsYou tier holds %d rows, want 0", len(tree.NeedsYou))
+				}
+				return
+			}
 			if len(tree.NeedsYou) != 1 {
 				t.Fatalf("NeedsYou tier holds %d rows, want 1", len(tree.NeedsYou))
 			}
-			if got := tree.NeedsYou[0].Archived; got != tc.want {
-				t.Errorf("Needs you row Archived = %v, want %v", got, tc.want)
+			if got := tree.NeedsYou[0].Archived; got != tc.archived {
+				t.Errorf("Needs you row Archived = %v, want %v", got, tc.archived)
 			}
 		})
 	}

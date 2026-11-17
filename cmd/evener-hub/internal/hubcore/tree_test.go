@@ -2373,6 +2373,46 @@ func TestNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) 
 	fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t)
 }
 
+// fuzzScenarioNeedsYou_ProjectArchiveUnifiesWithAttentionSummary: archiving a
+// project is a clearing verb for every session under it, and the Live tier
+// already reads that fact (LiveSessionArchived consults the project decision).
+// The attention summary and the needs-you tier read the session decision only,
+// so an archived project's awaiting session kept the sidebar's needs-you chip
+// and band lit after its Live row was gone — a session nothing can show the
+// reader still claiming to need them. All three now consult the same archive
+// facts.
+func fuzzScenarioNeedsYou_ProjectArchiveUnifiesWithAttentionSummary(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	const path = "/srv/archived/alpha"
+	projects := map[string]identifier.Project{path: {ID: "proj-alpha", CanonicalPath: path}}
+	metas := []schema.SessionMeta{
+		{ID: "A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: path}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "A", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, Project: projects[path]},
+	}
+	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "proj-alpha"}: true}
+
+	tree := BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+	if len(tree.Live) != 0 {
+		t.Fatalf("live = %#v, want none: a manually archived project clears its session from the rail", tree.Live)
+	}
+	if len(tree.NeedsYou) != 0 {
+		t.Fatalf("NeedsYou = %#v, want none: the archived project's session must not linger in the inbox", tree.NeedsYou)
+	}
+	_, sum := DeriveAttention(metas, live, decisions)
+	if sum.NeedsYou != 0 || sum.Error != 0 {
+		t.Fatalf("summary = %+v, want NeedsYou:0 Error:0: an archived project clears its sessions' attention", sum)
+	}
+	if got, want := len(tree.NeedsYou), sum.NeedsYou+sum.Error; got != want {
+		t.Fatalf("tree.NeedsYou has %d entries but the summary counts %d (needsYou+error) for the same inputs — the tier and the badge disagree", got, want)
+	}
+}
+
+func TestNeedsYou_ProjectArchiveUnifiesWithAttentionSummary(t *testing.T) {
+	fuzzScenarioNeedsYou_ProjectArchiveUnifiesWithAttentionSummary(t)
+}
+
 func TestRootIndexTopLevelExcludesNestedAndForkRows(t *testing.T) {
 	roots := NewRootIndex([]schema.SessionMeta{
 		{ID: "top"},

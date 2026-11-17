@@ -1414,9 +1414,10 @@ func (b *treeBuilder) needsYouTier() []TreeNode {
 		// Same tierEligible call attention.go's AttentionSummary uses for its
 		// own inclusion check: only top-level (not a subagent, not a
 		// fork-superseded parent nested under its active continuation) and not
-		// manually archived sessions surface in triage — a nested session's
-		// live continuation is the actionable unit.
-		if !tierEligible(le.SessionID, b.roots, b.lv.runningSubagentIDs, b.decisions) {
+		// manually archived sessions — by their own decision or their project's
+		// — surface in triage; a nested session's live continuation is the
+		// actionable unit.
+		if !tierEligible(le, b.roots, b.lv.runningSubagentIDs, b.decisions) {
 			continue
 		}
 		needsYou = append(needsYou, b.lv.sessionNode(le, meta))

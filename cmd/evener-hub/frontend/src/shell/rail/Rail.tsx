@@ -1023,7 +1023,14 @@ function NavigationRail({
   // A row the bands are holding for its open dialog keeps the tree mounted
   // even when it was the last thing the sections supplied.
   const displayed = nonEmpty(resources) || LIVE_BAND_ORDER.some((band) => liveBands[band].length > 0);
-  const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
+  // The chip counts only what a settled manifest says. A generation change
+  // keeps the previous manifest's data and marks it stale while the attention
+  // summary resets to null, so reading that data anyway kept the chip lit for a
+  // queue the store had already replaced — indefinitely, when the fresh read
+  // failed. The count is a claim that sessions are waiting, and an unsettled
+  // manifest has not said so yet.
+  const settled = !!manifest && !manifest.loading && !manifest.stale && !manifest.error;
+  const needsYou = attention?.needsYou ?? (settled ? (manifest.data?.attentionSummary.needsYou ?? 0) : 0);
   const parentOwnsScroll = scrollOwner === "parent";
   return (
     <div
