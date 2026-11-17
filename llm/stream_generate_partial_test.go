@@ -381,6 +381,13 @@ func TestPartialResponseKeepsTextAcrossATextLessStep(t *testing.T) {
 	}
 	last := Response{Provider: "openai", Model: "m", Message: Assistant("step-three"), Finish: FinishReason{Reason: "stop"}}
 
+	// The third step's events are held behind this channel once it has sent its
+	// TextStart, so the partial read below lands after the promotion decision
+	// for this attempt and before it accumulates any text. Without the hold the
+	// read races the producer, which free-runs past the buffered STEP_FINISH
+	// into this script.
+	releaseStep3 := make(chan struct{})
+
 	c, _ := newScriptedStreamClient(
 		replayEvents(
 			StreamEvent{Type: StreamEventStreamStart},
@@ -392,12 +399,27 @@ func TestPartialResponseKeepsTextAcrossATextLessStep(t *testing.T) {
 			StreamEvent{Type: StreamEventStreamStart},
 			finishEvent(middle),
 		),
-		replayEvents(
-			StreamEvent{Type: StreamEventStreamStart},
-			StreamEvent{Type: StreamEventTextStart, TextID: "t"},
-			StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-three"},
-			finishEvent(last),
-		),
+		func(ctx context.Context, _ Request) (Stream, error) {
+			sctx, cancel := context.WithCancel(ctx)
+			st := NewChanStream(cancel)
+			go func() {
+				defer st.CloseSend()
+				st.Send(StreamEvent{Type: StreamEventStreamStart})
+				st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "t"})
+				// Abandon the hold when the stream closes, so a failing
+				// assertion turns res.Close() into a return instead of a
+				// deadlock against a producer parked here.
+				select {
+				case <-releaseStep3:
+				case <-sctx.Done():
+					return
+				}
+				st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-three"})
+				st.Send(finishEvent(last))
+				cancel()
+			}()
+			return st, nil
+		},
 	)
 	prompt := "hi"
 	rounds := 3
@@ -420,21 +442,49 @@ func TestPartialResponseKeepsTextAcrossATextLessStep(t *testing.T) {
 	}
 	defer res.Close() //nolint:errcheck
 
-	var seen []string
+	// textStarts counts the TextStart events forwarded so far. The middle step
+	// emits none, so the second one belongs to the third step, and reading the
+	// partial there is deterministic: the attempt has been promoted and has not
+	// yet accumulated text.
+	textStarts := 0
+	asserted := false
+	stepBoundaries := 0
 	for ev := range res.Events() {
-		if ev.Type != StreamEventStepFinish {
-			continue
+		switch ev.Type {
+		case StreamEventTextStart:
+			textStarts++
+			if textStarts != 2 {
+				continue
+			}
+			if asserted {
+				continue
+			}
+			asserted = true
+			partial := res.PartialResponse()
+			if partial == nil {
+				t.Fatalf("PartialResponse() = nil at the text start of the step after a text-less step: the text-less step blanked the visible partial (step boundaries seen: %d)", stepBoundaries)
+			}
+			if got := partial.Text(); got != "step-one" {
+				t.Fatalf("partial text at the text start of the step after a text-less step = %q, want %q", got, "step-one")
+			}
+			close(releaseStep3)
+		case StreamEventStepFinish:
+			stepBoundaries++
 		}
-		partial := res.PartialResponse()
-		if partial == nil {
-			t.Fatalf("PartialResponse() = nil at a step boundary after text was delivered (seen %v)", seen)
-		}
-		seen = append(seen, partial.Text())
 	}
-	if len(seen) < 2 {
-		t.Fatalf("observed %d step boundaries (%v), want at least 2", len(seen), seen)
+	if !asserted {
+		// Release the parked producer so res.Close() cannot hang behind it.
+		close(releaseStep3)
+		t.Fatalf("never observed the second TextStart (step boundaries seen: %d): the third step never streamed", stepBoundaries)
 	}
-	if seen[1] != "step-one" {
-		t.Fatalf("partial text at the boundary after a text-less step = %q, want %q", seen[1], "step-one")
+	if stepBoundaries < 2 {
+		t.Fatalf("observed %d step boundaries, want at least 2", stepBoundaries)
+	}
+
+	if _, err := res.Response(); err != nil {
+		t.Fatalf("Response: %v", err)
+	}
+	if got := res.PartialResponse().Text(); got != "step-three" {
+		t.Fatalf("final partial text = %q, want %q", got, "step-three")
 	}
 }
