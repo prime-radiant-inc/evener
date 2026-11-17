@@ -87,7 +87,14 @@ func TestFilteredFanoutWireBytesMatchPreChangeGolden(t *testing.T) {
 				filter := apphistory.NewFilter(selection.Selection())
 				if filter != nil {
 					// The fixture's subscribers were seeded with both overlay
-					// identities, so a delta reaches every reader that kept one.
+					// identities, the way a live subscription seeds what its
+					// snapshot held. Seeding gives every filtered subscriber the
+					// identities, but reach also depends on the selection: an
+					// overlay whose kind the selection drops keeps no identity,
+					// and a tool overlay's delta reaches only a view that keeps
+					// tool calls. That is why tool-delta/hide-tools and
+					// tool-delta/hide-thinking-tools are empty in wire.json
+					// despite being seeded.
 					filter.Seed([]appwire.OverlayItem{streamUpsert.Item, toolUpsert.Item})
 				}
 				s.subs.setContent(conn.id, "thread", 0, filter)
