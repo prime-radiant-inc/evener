@@ -1200,11 +1200,14 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
-	maxSeq := -1
-	// entries is non-nil even for a header-only transcript: the
-	// delegate-attention fold keys on nilness to decide whether it can fold
-	// in memory or must re-read the file.
-	entries := make([]Entry, 0)
+	//
+	// The decode runs on resume_decode.go's bounded pool: it is pure CPU over
+	// independent lines, and on a huge transcript it is the whole of a resumed
+	// daemon's pre-rendezvous wait. This scan still owns the guarantees a
+	// reader of the file sees -- entries in file order, the first file-order
+	// error, and the truncation below -- and the pool reports both, so moving
+	// the decode off this goroutine changes only how long it takes.
+	decode := newResumeDecoder(resumeDecodeWorkerCount(runtime.GOMAXPROCS(0)))
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var validLen int64
 	hasPartialTail := false
@@ -1213,6 +1216,14 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 	for {
 		line, complete, bytesRead, readErr := ReadLine(reader, DefaultMaxLineBytes)
 		if readErr != nil {
+			// Every submitted line precedes this read in file order, so a
+			// failed decode among them is the first file-order error and
+			// outranks the read failure that stopped the scan. finish still
+			// runs on both arms: no worker outlives the scan.
+			_, entryErr := decode.finish()
+			if entryErr != nil {
+				return Header{}, nil, 0, 0, fmt.Errorf("parse transcript entry: %w", entryErr)
+			}
 			return Header{}, nil, 0, 0, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
@@ -1228,22 +1239,21 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 			var err error
 			header, err = DecodeHeader(line)
 			if err != nil {
+				_, _ = decode.finish()
 				return Header{}, nil, 0, 0, fmt.Errorf("parse transcript header: %w", err)
 			}
 			if expectedSessionID != "" && header.SessionID != expectedSessionID {
+				_, _ = decode.finish()
 				return Header{}, nil, 0, 0, &SessionIDMismatchError{HeaderSessionID: header.SessionID, RequestedSessionID: expectedSessionID}
 			}
 			headerRead = true
 			continue
 		}
-		entry, err := DecodeEntry(line)
-		if err != nil {
-			return Header{}, nil, 0, 0, fmt.Errorf("parse transcript entry: %w", err)
-		}
-		entries = append(entries, entry)
-		if entry.Seq > maxSeq {
-			maxSeq = entry.Seq
-		}
+		decode.submit(line)
+	}
+	entries, entryErr := decode.finish()
+	if entryErr != nil {
+		return Header{}, nil, 0, 0, fmt.Errorf("parse transcript entry: %w", entryErr)
 	}
 	if !headerRead {
 		if hasPartialTail && validLen == 0 {
@@ -1258,6 +1268,12 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 		}
 	}
 
+	maxSeq := -1
+	for _, entry := range entries {
+		if entry.Seq > maxSeq {
+			maxSeq = entry.Seq
+		}
+	}
 	// Use max(seq)+1 so resumed writes never collide with existing entries,
 	// even if earlier entries were lost to crash recovery.
 	nextSeq := 0
