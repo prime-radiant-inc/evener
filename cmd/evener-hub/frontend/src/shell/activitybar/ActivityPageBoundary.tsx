@@ -10,7 +10,6 @@ interface ActivityPageBoundaryProps {
   loading: boolean;
   error: unknown;
   permanent: boolean;
-  enabled?: boolean;
   restore?: boolean;
   loadMore(resource: SessionActivityCollection): Promise<void>;
 }
@@ -24,7 +23,6 @@ export function ActivityPageBoundary({
   loading,
   error,
   permanent,
-  enabled = true,
   restore = false,
   loadMore,
 }: ActivityPageBoundaryProps) {
@@ -45,7 +43,7 @@ export function ActivityPageBoundary({
     currentVisibility.current = false;
     setVisible(false);
     const target = element.current;
-    if (!target || !enabled || !hasMore || loading || typeof IntersectionObserver !== "function") return;
+    if (!target || !hasMore || loading || typeof IntersectionObserver !== "function") return;
     let active = true;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -64,9 +62,9 @@ export function ActivityPageBoundary({
     };
     // A successful page changes rows even when React batches the loading states.
     // Re-observe the moved boundary so stale geometry cannot drain unseen pages.
-  }, [enabled, hasMore, loading, rows, isCurrent]);
+  }, [hasMore, loading, rows, isCurrent]);
   useEffect(() => {
-    if (!isCurrent() || !enabled || !hasMore || loading || error || permanent) return;
+    if (!isCurrent() || !hasMore || loading || error || permanent) return;
     if (!restore && !(visible && currentVisibility.current)) return;
     const admitPage = () => {
       if (isCurrent() && observedRows.current === rows) void admit();
@@ -79,7 +77,7 @@ export function ActivityPageBoundary({
     // Yield between fresh pages; failures remain the shared store's concern.
     const timer = setTimeout(admitPage, 100);
     return () => clearTimeout(timer);
-  }, [enabled, visible, hasMore, loading, error, permanent, admit, isCurrent, restore, rows]);
+  }, [visible, hasMore, loading, error, permanent, admit, isCurrent, restore, rows]);
   if (!hasMore || permanent) return null;
   return (
     <div ref={element}>
