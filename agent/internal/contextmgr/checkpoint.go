@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -183,8 +184,16 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnAssistant:
 			// Capture assistant analytical text as working notes.
+			//
+			// The checkpoint is a user-role message, so model-authored text
+			// placed in it speaks in the user's channel. A frame the model
+			// invented on its own turn (<delegate-notification>,
+			// <system-notification>, [answers]) must not survive into the
+			// checkpoint with the spelling a harness-written frame opens with,
+			// or the rollover hands the model its own fabrication back as
+			// input it can cite as a decision (#6493).
 			if text := t.Message.Text(); len(text) > 50 {
-				note := text
+				note := sysmsg.EscapeModelAuthoredFrames(text)
 				if len(note) > 500 {
 					note = note[:500] + "..."
 				}

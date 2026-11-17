@@ -2196,6 +2196,16 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // tool_call/tool_result and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
+	// A model-authored turn can carry a harness input frame the model
+	// invented on its own round (#6493: an assistant turn wrote
+	// <system-notification> and an [answers] block naming a decision nobody
+	// made, and the next request replayed it verbatim, where the model read it
+	// as input). The user-turn channel is the authorization channel, so the
+	// copy handed to the model must not spell a frame the harness writes. Only
+	// the assistant role is escaped: a user-role turn is the partner speaking,
+	// and their bytes are delivered as typed. The stored turn keeps every
+	// byte; this rewrites the projected copy alone.
+	t.Message = escapeModelAuthoredTurnFrames(t.Message)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
