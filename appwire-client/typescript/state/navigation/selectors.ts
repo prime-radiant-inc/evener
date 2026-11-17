@@ -98,21 +98,23 @@ export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessi
   return selectSectionRows("needs_you", state);
 }
 /** How many sessions the header and drawer badges announce as needing the
- * reader. Only a settled manifest may name a count: a generation change keeps
- * the previous manifest's data and marks it stale while the attention summary
- * resets, and a failed read keeps its data behind an error, so either one would
- * announce the previous generation's queue for as long as the unsettled state
- * lasts.
+ * reader.
  *
- * The rows answer only while they belong to the current generation. A
- * generation change carries the previous pages over with loadedRevision null (as
+ * Only evidence from the current generation may name a count. A generation
+ * change carries the previous manifest over with loadedRevision null (as
  * provisionalForGeneration and the revalidator's resetGeneration both do), and
- * a failed re-read keeps them behind an error, so counting them would announce
- * that same replaced queue. An ordinary refresh within one generation keeps
- * loadedRevision, so the count stands rather than blinking to zero. */
+ * a failed read keeps its data behind an error, so either one would announce
+ * the previous generation's queue for as long as the unsettled state lasts.
+ * An ordinary refresh within one generation keeps loadedRevision, so its count
+ * stands rather than blinking to zero.
+ *
+ * The loaded rows follow the same rule for the same reason: a page the previous
+ * generation carried over has loadedRevision null, and a page whose re-read
+ * failed carries an error. Either would announce that replaced queue. A
+ * same-generation page keeps its loadedRevision, so it still answers. */
 export function selectNeedsYouCount(state: NavigationStoreState): number {
   const manifest = state.manifest;
-  if (manifest && !manifest.loading && !manifest.stale && !manifest.error) {
+  if (manifest && manifest.loadedRevision !== null && manifest.error === null) {
     return manifest.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
   }
   return loadedSectionRows(

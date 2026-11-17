@@ -381,14 +381,17 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
 // while the fresh read lands, and any failed read leaves the data in place with
 // an error. Either way the count is the previous generation's answer, and the
 // badge that renders it would claim a queue the store has already replaced.
-test("needs-you count refuses a manifest that is not settled", () => {
-  for (const unsettled of [{ stale: true }, { loading: true }, { error: new Error("read failed") }]) {
+test("needs-you count refuses a manifest from a replaced generation", () => {
+  for (const carried of [
+    { stale: true, loading: true },
+    { stale: true, loading: false, error: new Error("read failed") },
+  ]) {
     store.setState({
       mode: "v3",
       manifest: {
         key: { kind: "manifest" },
         data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 75 }, pin_sections: { count: 0 } } }),
-        loadedRevision: 1,
+        loadedRevision: null,
         targetRevision: 1,
         forceToken: 0,
         etag: "m",
@@ -396,13 +399,37 @@ test("needs-you count refuses a manifest that is not settled", () => {
         stale: false,
         error: null,
         generationID: generation,
-        ...unsettled,
+        ...carried,
       },
       resources: new Map(),
       visibleResourceKeys: new Set(),
     });
     expect(selectNeedsYouCount(store.getState())).toBe(0);
   }
+});
+
+// A refresh inside one generation is not a replaced queue: the manifest keeps
+// its loadedRevision while it re-reads, so the count it already announced stands
+// instead of dropping to whatever rows happen to be loaded.
+test("needs-you count survives a refresh within one generation", () => {
+  store.setState({
+    mode: "v3",
+    manifest: {
+      key: { kind: "manifest" },
+      data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 75 }, pin_sections: { count: 0 } } }),
+      loadedRevision: 1,
+      targetRevision: 2,
+      forceToken: 0,
+      etag: "m",
+      loading: true,
+      stale: true,
+      error: null,
+      generationID: generation,
+    },
+    resources: new Map(),
+    visibleResourceKeys: new Set(),
+  });
+  expect(selectNeedsYouCount(store.getState())).toBe(75);
 });
 
 // The rows are not settled evidence on their own: a generation change marks the
