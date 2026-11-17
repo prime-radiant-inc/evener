@@ -96,18 +96,33 @@ body {
   scroll-margin: var(--focus-ring-scroll-margin);
 }
 
-/* The mobile app shell owns the viewport; panes provide their own scroll
- * containers. The document lock and overscroll containment keep browser/PWA
- * pull-to-refresh, page bounce, and root scroll chaining from moving the app
- * shell while panes retain their own scroll containers. */
+/* The mobile app shell owns the viewport, so the phone layout makes the
+ * document a non-scroller: panes provide their own scroll containers and the
+ * fixed shell (AppShell.module.css) gives the document nothing to scroll. This
+ * is the layout half of the lock, and it stays phone-gated because the fixed
+ * shell is what makes it safe. */
 @media (max-width: 899px) {
-  html {
-    overscroll-behavior: none;
-  }
-
   html,
   body {
     overflow: hidden;
+  }
+}
+
+/* The gesture half of that lock - pull-to-refresh, page bounce, and root
+ * scroll chaining - reaches every touching surface at any width, not only the
+ * phone layout (issue #6471). A wide touch device (an iPad, the iPhone Duo's
+ * 951pt inner display in landscape, a touch laptop) runs the desktop layout
+ * and keeps its own scrolling, but the browser's document gestures still
+ * belong to the app: the two locks now agree about what a touching surface
+ * is, because this query and the (any-pointer: coarse) touch-action block
+ * below both match every coarse pointer. The width arm keeps the phone
+ * layout's lock on a narrow fine-pointer window, which runs the same fixed
+ * shell. Nothing here is a layout property: the desktop document's scrolling
+ * and its 100dvh shell are untouched, and only the overflow lock above makes
+ * the document a non-scroller. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  html {
+    overscroll-behavior: none;
   }
 }
 
