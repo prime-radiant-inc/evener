@@ -27,7 +27,6 @@ import {
   type ReactNode,
   useCallback,
   useContext,
-  useEffect,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -36,6 +35,7 @@ import {
 } from "react";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
+import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import { Chevron, STATE_LABELS, SubagentDot, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
@@ -210,11 +210,9 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
 
 function TreeTickProvider({ live, children }: { live: boolean; children: ReactNode }): ReactNode {
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [live]);
+  // A rendering clock for the live rows' ages: paused while the tab is
+  // hidden, refreshed the moment it is visible again.
+  useVisibleInterval(() => setNow(Date.now()), 1000, live);
   return <TreeNowContext.Provider value={now}>{children}</TreeNowContext.Provider>;
 }
 

@@ -12,6 +12,7 @@ import {
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../shell/useIsMobile";
+import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import {
   clearedOutcomeLine,
   deployRefusalAction,
@@ -210,10 +211,12 @@ export function HostsSection(_props: HostsSectionProps) {
   // flashes the loading state and keeps the last rows on failure, so the idle
   // poll is invisible; the poll is owned by the component like HubResidents'
   // and stops when the section unmounts.
-  useEffect(() => {
-    const id = setInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
-    return () => clearInterval(id);
-  }, []);
+  // Both polls below are rendering clocks: the rows and their operation
+  // progress lines are what they refresh, and the work they describe (an
+  // attach, a deploy) continues on the hub whether or not this tab is
+  // watching. A hidden tab pauses them and the first visible frame re-reads,
+  // so the rows are current the moment the reader looks.
+  useVisibleInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
 
   // The operation poll (S15): every tracked operation that still owes a read is
   // read once per tick, so its row renders progress through the terminal state
@@ -221,28 +224,30 @@ export function HostsSection(_props: HostsSectionProps) {
   // skipped — terminal state ends the loop — while a terminal seed from a
   // replay is still read once for the retained body. Unmount clears the
   // interval and cancels any in-flight read's publish.
-  useEffect(() => {
-    const id = setInterval(() => {
-      const tracked = hostOpsStore.getState().operations;
-      for (const name of Object.keys(tracked)) {
-        const operation = tracked[name];
-        // A ref suppressed from the row (an older incarnation after a
-        // same-name re-add) is still read to its terminal state: render
-        // suppression is the row's decision, and stopping the poll here would
-        // leave the ref non-terminal forever.
-        if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name, operation.id)) {
-          continue;
-        }
-        void hostOpsStore.getState().pollOperation(name);
+  useVisibleInterval(() => {
+    const tracked = hostOpsStore.getState().operations;
+    for (const name of Object.keys(tracked)) {
+      const operation = tracked[name];
+      // A ref suppressed from the row (an older incarnation after a
+      // same-name re-add) is still read to its terminal state: render
+      // suppression is the row's decision, and stopping the poll here would
+      // leave the ref non-terminal forever.
+      if (operation === undefined || !operationNeedsRead(operation) || operationReadPending(name, operation.id)) {
+        continue;
       }
-    }, OPERATION_POLL_MS);
-    return () => {
-      clearInterval(id);
+      void hostOpsStore.getState().pollOperation(name);
+    }
+  }, OPERATION_POLL_MS);
+
+  // Unmount still cancels any in-flight read's publish, exactly as before.
+  useEffect(
+    () => () => {
       for (const name of Object.keys(hostOpsStore.getState().operations)) {
         hostOpsStore.getState().stopOperationPoll(name);
       }
-    };
-  }, []);
+    },
+    [],
+  );
 
   // A repair dialog can only render for a live row that still names a remnant:
   // when either goes away, drop the target so a LATER remnant on the name never

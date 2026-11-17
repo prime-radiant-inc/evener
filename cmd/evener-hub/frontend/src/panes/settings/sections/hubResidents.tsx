@@ -20,6 +20,7 @@
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
+import { useVisibleInterval } from "../../../shell/useVisibleInterval";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, InlineNotice, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -131,14 +132,13 @@ export function HubResidents() {
   // retire or force-stop RPC.
   const [actionErrors, setActionErrors] = useState<Map<string, string>>(() => new Map());
 
-  // Polling lifetime: owned by this component, not the store.
+  // Polling lifetime: owned by this component, not the store. The roster is a
+  // rendering clock — the daemons keep running whatever this tab draws — so it
+  // pauses while hidden and re-reads on the first visible frame.
   useEffect(() => {
     void daemonResidentsStore.getState().refresh();
-    const id = setInterval(() => {
-      void daemonResidentsStore.getState().refresh();
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
   }, []);
+  useVisibleInterval(() => void daemonResidentsStore.getState().refresh(), POLL_INTERVAL_MS);
 
   // Prune per-row retire results and action errors against the latest list.
   // A refusal is NOT superseded by a fresh snapshot: the list's lifecycle

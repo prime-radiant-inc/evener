@@ -2,7 +2,8 @@
 // Cadence" helpers. Hoisted out of Session.tsx so the session pane and its
 // transcript descendants can share the same logic without importing the
 // pane back into this leaf module.
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useState } from "react";
+import { useVisibleInterval } from "../../shell/useVisibleInterval";
 
 // The session clock every relative-age display shares. A timestamp that
 // rewrites itself every few seconds reads as churn, so the floor is 5s:
@@ -35,9 +36,9 @@ export function useSessionNow(): number {
 // time is it" signal.
 export function useNowTick(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
+  // It is a rendering clock: nothing on screen is being read while the tab is
+  // hidden, and the resume tick is what keeps the first visible frame's ages
+  // honest.
+  useVisibleInterval(() => setNow(Date.now()), intervalMs);
   return now;
 }
