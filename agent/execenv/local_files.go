@@ -98,6 +98,11 @@ func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string
 	return out, nil
 }
 
+// errReadFileCapHint is the "and you can still read a window" note read_file
+// adds past the whole-file cap. It is a sentinel so a test can assert the hint
+// was added without matching the wording.
+var errReadFileCapHint = errors.New("read_file can also read a window of it directly: pass offset and limit (for example offset=1, limit=2000)")
+
 // readFileLimitHint adds read_file's own way past the whole-file read cap to the
 // cap's refusal: the shared ReadLimitError text predates the offset/limit
 // window and only points at shell tools, so a model that follows it never finds
@@ -109,7 +114,7 @@ func readFileLimitHint(err error) error {
 	if !capped {
 		return err
 	}
-	return fmt.Errorf("%w. read_file can also read a window of it directly: pass offset and limit (for example offset=1, limit=2000)", rle)
+	return fmt.Errorf("%w; %w", rle, errReadFileCapHint)
 }
 
 // ReadFileAndBytesCtx is ReadFileCtx that also returns the whole file's bytes

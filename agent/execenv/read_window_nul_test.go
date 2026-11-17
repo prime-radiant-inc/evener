@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,15 @@ func TestReadFileWindowScopesTheBinaryRefusal(t *testing.T) {
 		t.Helper()
 		return env.ReadFileCtx(t.Context(), path, &off, &lim)
 	}
+	// mustRefuseBinary asserts the read was refused for a NUL byte, by the
+	// sentinel rather than the wording, so the diagnostic can be reworded
+	// without this test following it.
+	mustRefuseBinary := func(t *testing.T, err error) {
+		t.Helper()
+		if !errors.Is(err, errReadBinaryFile) {
+			t.Fatalf("read = %v, want the binary-file refusal", err)
+		}
+	}
 
 	t.Run("NUL past the window returns the rows", func(t *testing.T) {
 		t.Parallel()
@@ -67,18 +77,14 @@ func TestReadFileWindowScopesTheBinaryRefusal(t *testing.T) {
 		t.Parallel()
 		path := write(t, "nul-window.log", "first\nbinary\x00line\n"+pad)
 		_, err := read(t, path, 1, 2)
-		if err == nil || !strings.Contains(err.Error(), "binary file (NUL byte)") {
-			t.Fatalf("windowed read whose NUL is inside the window = %v, want the binary-file refusal", err)
-		}
+		mustRefuseBinary(t, err)
 	})
 
 	t.Run("NUL before the window refuses", func(t *testing.T) {
 		t.Parallel()
 		path := write(t, "nul-before.log", "binary\x00line\nsecond\n"+pad)
 		_, err := read(t, path, 3, 1)
-		if err == nil || !strings.Contains(err.Error(), "binary file (NUL byte)") {
-			t.Fatalf("windowed read whose NUL is in the skipped prefix = %v, want the binary-file refusal", err)
-		}
+		mustRefuseBinary(t, err)
 	})
 
 	t.Run("NUL past the window still refuses at or below the threshold", func(t *testing.T) {
@@ -87,8 +93,6 @@ func TestReadFileWindowScopesTheBinaryRefusal(t *testing.T) {
 		// NUL check covers every byte — including the one past line 2.
 		path := write(t, "small-nul-tail.log", "first\nsecond\nbinary\x00tail\n")
 		_, err := read(t, path, 1, 2)
-		if err == nil || !strings.Contains(err.Error(), "binary file (NUL byte)") {
-			t.Fatalf("windowed read of a small file with a trailing NUL = %v, want the binary-file refusal", err)
-		}
+		mustRefuseBinary(t, err)
 	})
 }

@@ -59,6 +59,12 @@ var readWindowWholeBelow int64 = 2 * readWindowChunk
 // path as the caller spelled it.
 var errReadBinaryWindow = errors.New("binary content in the read window")
 
+// errReadBinaryFile is read_file's binary refusal. The message carries the path
+// the caller spelled, so the rendered text differs per call; callers that need
+// to tell this refusal from the read cap match the sentinel with errors.Is
+// rather than the wording.
+var errReadBinaryFile = errors.New("binary file (NUL byte)")
+
 // lineWindowRequested reports whether a call asked for a bounded window, as
 // NumberLines reads the arguments: a non-positive value means "unset", so
 // offset=0 or limit=0 is a whole-file read.
@@ -97,7 +103,7 @@ func renderTextRead(path string, b []byte, offsetLine, limitLines *int) (string,
 	}
 	// Basic binary detection.
 	if bytes.IndexByte(b, 0) >= 0 {
-		return "", fmt.Errorf("binary file (NUL byte): %s", path)
+		return "", fmt.Errorf("%w: %s", errReadBinaryFile, path)
 	}
 	return NumberLinesBytes(b, offsetLine, limitLines), nil
 }
@@ -173,7 +179,7 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 	text, err := scanLineWindow(ctx, r, head, start, limit)
 	if err != nil {
 		if errors.Is(err, errReadBinaryWindow) {
-			return "", fmt.Errorf("binary file (NUL byte): %s", displayPath)
+			return "", fmt.Errorf("%w: %s", errReadBinaryFile, displayPath)
 		}
 		return "", readWindowErr(ctx, name, err)
 	}

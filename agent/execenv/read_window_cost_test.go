@@ -201,8 +201,8 @@ func TestReadFileWindowAnswersAFilePastTheWholeFileCap(t *testing.T) {
 	}
 	// The refusal must name read_file's own way past the cap. The shared text
 	// only points at shell tools, so a model that follows it never finds
-	// offset/limit.
-	if !strings.Contains(wholeErr.Error(), "offset and limit") {
-		t.Fatalf("whole-file refusal does not mention offset/limit: %q", wholeErr)
+	// offset/limit. Matched by sentinel, so rewording the hint keeps this test.
+	if !errors.Is(wholeErr, errReadFileCapHint) {
+		t.Fatalf("whole-file refusal does not carry read_file's offset/limit hint: %v", wholeErr)
 	}
 }
