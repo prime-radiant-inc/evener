@@ -637,6 +637,50 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
     const stale = row("s", { state: "active", subagents: { running: 1, failed: 0, done: 0 } });
     expect(kindOf(whyLine({ row: stale, state: "working" }))).toBe("subagents");
   });
+
+  it("names a running job's own intent instead of its command", () => {
+    // The command says what is executing, the intent says why. A job whose
+    // model stated one leads with it, with or without an activity read.
+    const withJobIntent = row("s", {
+      state: "active",
+      running_job_count: 1,
+      running_job_command: "go test ./agent/...",
+      running_job_intent: "Checking the rail's row tests.",
+    });
+    expect(whyLine({ row: withJobIntent, state: "working" })).toEqual({
+      kind: "job",
+      text: "Checking the rail's row tests.",
+    });
+    expect(whyLine({ row: withJobIntent, state: "working" }, { ref: "s", minutes, runningSubagents: 0 }, 0)).toEqual({
+      kind: "job",
+      text: "Checking the rail's row tests.",
+    });
+  });
+
+  it("falls back to the command when a running job stated no intent", () => {
+    // An older daemon, or a model that omitted the argument: the row still
+    // names the work it is doing rather than saying nothing.
+    const bare = row("s", { state: "active", running_job_count: 1, running_job_command: "go test ./agent/..." });
+    expect(whyLine({ row: bare, state: "working" })).toEqual({ kind: "job", text: "Running go test ./agent/..." });
+  });
+
+  it("keeps the activity read's latest intent ahead of a running job's own", () => {
+    // The read's intent is the newest tool call the session started, which is
+    // newer than a job it launched earlier in the same turn.
+    const job = row("s", {
+      state: "active",
+      running_job_count: 1,
+      running_job_command: "go test ./agent/...",
+      running_job_intent: "Checking the rail's row tests.",
+    });
+    expect(
+      whyLine(
+        { row: job, state: "working" },
+        { ref: "s", minutes, runningSubagents: 0, latestIntent: "Fixing it." },
+        0,
+      ),
+    ).toEqual({ kind: "intent", text: "Fixing it." });
+  });
 });
 
 describe("the task line (spec 7.2, S13)", () => {

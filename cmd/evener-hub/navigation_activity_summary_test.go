@@ -145,3 +145,82 @@ func TestNavigationFittingPreservesCompactCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A running job's own stated intent is the row's work text: the command says
+// what is executing, the intent says why. The projector takes it from the same
+// job whose command it takes, bounded like every other row why text.
+func TestNavigationSummaryCarriesTheRunningJobIntent(t *testing.T) {
+	node := hubcore.TreeNode{
+		ID: "root", Kind: "session", State: "active",
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID:   "job-1",
+			JobType: "shell",
+			Status:  "running",
+			Command: "go test ./agent/...",
+			Intent:  "Checking the rail's row tests.",
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := projection.LivePage(0, 50)
+	if len(page.Sessions) != 1 {
+		t.Fatalf("sessions=%d", len(page.Sessions))
+	}
+	row := page.Sessions[0]
+	if row.RunningJobIntent != "Checking the rail's row tests." {
+		t.Fatalf("running_job_intent = %q, want the job's stated intent", row.RunningJobIntent)
+	}
+	if row.RunningJobCommand != "go test ./agent/..." {
+		t.Fatalf("running_job_command = %q, want the command it belongs to", row.RunningJobCommand)
+	}
+}
+
+// A command with no stated intent leaves the field absent, so a client keeps
+// its command fallback rather than rendering an empty line.
+func TestNavigationSummaryOmitsAnUnstatedRunningJobIntent(t *testing.T) {
+	node := hubcore.TreeNode{
+		ID: "root", Kind: "session", State: "active",
+		RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-1", JobType: "shell", Status: "running", Command: "make test"}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(projection.LivePage(0, 50).Sessions[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := fields["running_job_intent"]; present {
+		t.Fatalf("unstated intent reached the wire: %v", fields["running_job_intent"])
+	}
+}
+
+// The intent is cut to the same 200-code-point bound the activity read uses,
+// so one runaway statement cannot widen a row.
+func TestNavigationSummaryBoundsTheRunningJobIntent(t *testing.T) {
+	node := hubcore.TreeNode{
+		ID: "root", Kind: "session", State: "active",
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID: "job-1", JobType: "shell", Status: "running",
+			Command: "make test",
+			Intent:  strings.Repeat("i", 5_000),
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := projection.LivePage(0, 50).Sessions[0].RunningJobIntent
+	if got := utf8.RuneCountInString(intent); got > appwire.MaxIntentRunes {
+		t.Fatalf("running_job_intent is %d runes, want at most %d", got, appwire.MaxIntentRunes)
+	}
+	if intent == "" {
+		t.Fatal("a stated intent was dropped")
+	}
+}

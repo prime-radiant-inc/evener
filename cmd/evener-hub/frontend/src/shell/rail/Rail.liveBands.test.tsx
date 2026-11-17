@@ -187,6 +187,26 @@ test("a row says why it is in its band only where the band and its dot have not 
   expect(why("local:idle")).toBeNull();
 });
 
+test("a working row names its running job's intent, falling back to the command", async () => {
+  await mountRail({
+    live: [
+      session("stated", {
+        state: "active",
+        running_job_count: 1,
+        running_job_command: "go test ./agent/...",
+        running_job_intent: "Checking the rail's row tests.",
+      }),
+      session("unstated", { state: "active", running_job_count: 1, running_job_command: "make test" }),
+    ],
+  });
+  const why = (ref: string) => within(rowFor(ref)).queryByTestId("rail-row-why-text");
+  expect(why("local:stated")?.textContent).toBe("Checking the rail's row tests.");
+  expect(why("local:stated")?.dataset.whyKind).toBe("job");
+  // A job that stated no intent still names the work, so an older daemon and a
+  // model that omitted the argument both keep a useful row.
+  expect(why("local:unstated")?.textContent).toBe("Running make test");
+});
+
 test("a session that starts needing you moves to Needs you, and back out when it is answered", async () => {
   const { hub, announce } = await mountRail({ live: [session("a", { state: "active" }), session("b")] });
   expect(bandNames()).toEqual(["working", "idle"]);

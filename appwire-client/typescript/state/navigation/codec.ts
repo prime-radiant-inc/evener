@@ -239,6 +239,7 @@ const SESSION_KEYS = valueRecordKeys<NavigationSessionSummary>(
     omitted_descendants: "optional",
     running_job_count: "optional",
     running_job_command: "optional",
+    running_job_intent: "optional",
     watch_count: "optional",
     armed_watch_count: "optional",
     tasks: "optional",
@@ -403,6 +404,9 @@ function sessionFieldsValue(value: unknown): value is Record<string, unknown> & 
     optional(value.omitted_descendants, count) &&
     optional(value.running_job_count, count) &&
     optional(value.running_job_command, (item) => boundedString(item, 512)) &&
+    // A stated intent is one line, cut to the same bound the activity read
+    // uses so the row and the read's latestIntent read identically.
+    optional(value.running_job_intent, (item) => boundedString(item, 200) && item !== "") &&
     optional(value.watch_count, count) &&
     optional(value.armed_watch_count, count) &&
     ((value.armed_watch_count as number | undefined) ?? 0) <= ((value.watch_count as number | undefined) ?? 0) &&

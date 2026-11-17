@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -811,6 +812,14 @@ func TestNavigationSessionValueValidatesCompactActivityCounts(t *testing.T) {
 		func(s *hubapi.NavigationSessionSummary) { s.ArmedWatchCount = -1 },
 		func(s *hubapi.NavigationSessionSummary) {
 			s.RunningJobCommand = strings.Repeat("x", maxNavigationLabelRunes+1)
+		},
+		func(s *hubapi.NavigationSessionSummary) {
+			// The intent is bounded to appwire.MaxIntentRunes, narrower than
+			// the command's label bound.
+			s.RunningJobIntent = strings.Repeat("x", appwire.MaxIntentRunes+1)
+		},
+		func(s *hubapi.NavigationSessionSummary) {
+			s.RunningJobIntent = "two\nlines"
 		},
 	} {
 		bad := session

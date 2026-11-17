@@ -341,12 +341,15 @@ export function whyLine(
 }
 
 /** A working row's own words, where nothing louder applies: what the session
- * last set out to do (the read's latest tool intent), else the job it is
- * running, else the bare state word. The intent leads the job because it says
- * what the job is for; the daemon cuts one to a line and drops it when a turn
- * begins (activity_meter.go). */
+ * last set out to do (the read's latest tool intent), else what the job it is
+ * running says it is for (the row's running_job_intent), else the command
+ * itself, else the bare state word. The intent leads the command because it
+ * says what the job is for; the daemon cuts one to a line and drops it when a
+ * turn begins (activity_meter.go). A job that stated no intent keeps showing
+ * its command. */
 function commandOrWorking(row: NavigationSessionSummary, latestIntent?: string): WhyLine {
   if (latestIntent) return { kind: "intent", text: latestIntent };
+  if (row.running_job_intent) return { kind: "job", text: row.running_job_intent };
   const command = row.running_job_command;
   return command ? { kind: "job", text: `Running ${command}` } : { kind: "state", text: "Working" };
 }

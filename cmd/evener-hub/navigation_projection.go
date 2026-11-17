@@ -1622,12 +1622,17 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 			armedWatchCount++
 		}
 	}
-	runningCommand := ""
+	// The command a row shows and the intent it leads with come from ONE job:
+	// pairing them across different jobs would name one command's purpose
+	// beside another's command.
+	runningCommand, runningIntent := "", ""
 	for _, job := range node.RunningJobs {
-		if job.Command != "" {
-			runningCommand = truncateNavigationRunes(job.Command, maxNavigationLabelRunes)
-			break
+		if job.Command == "" && job.Intent == "" {
+			continue
 		}
+		runningCommand = truncateNavigationRunes(job.Command, maxNavigationLabelRunes)
+		runningIntent = appwire.Excerpt(job.Intent, appwire.MaxIntentRunes)
+		break
 	}
 	live := p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended"
 	return hubapi.NavigationSessionSummary{
@@ -1667,6 +1672,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		SeenThrough:       p.projection.seenThrough(ref, live),
 		RunningJobCount:   len(node.RunningJobs),
 		RunningJobCommand: runningCommand,
+		RunningJobIntent:  runningIntent,
 		WatchCount:        len(node.Watches),
 		ArmedWatchCount:   armedWatchCount,
 		Tasks:             navigationTaskProgress(node.Tasks),

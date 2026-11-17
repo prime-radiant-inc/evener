@@ -163,6 +163,7 @@ export function workingStatus(session: RailSession, read: RailActivityRead | nul
     if (quiet?.state === "quiet") return { kind: "quiet", text: `Quiet ${compactDuration(quiet.forMs)}` };
     if (activity.latestIntent) return { kind: "intent", text: activity.latestIntent };
   }
+  if (session.running_job_intent) return { kind: "job", text: session.running_job_intent };
   if (session.running_job_command) return { kind: "job", text: `Running ${session.running_job_command}` };
   return { kind: "state", text: STATUS_LABEL.working };
 }
