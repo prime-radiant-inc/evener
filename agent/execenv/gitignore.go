@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,15 @@ import (
 // It holds one entry per rules path rather than one per version, so its size is
 // bounded by the number of .gitignore files a session has searched through and
 // never by how often they were edited.
+//
+// Entries are keyed by the rules file's ABSOLUTE path, not by its path relative
+// to whichever base the call searched, because one cache serves an environment
+// that searches many bases: a glob rooted at /repo/a and a later one rooted at
+// /repo/b both name ".gitignore", and those are different files. Keying on the
+// relative path would let the second call read the first directory's matcher
+// whenever the two files happened to share a size and modification time, which
+// git-archive tarballs, Nix store paths and coarse-timestamped copies all make
+// easy to arrange.
 //
 // It deliberately caches only the compile of a file discovery has already read,
 // never the ignoreSet as a whole: which rules files exist is discovery's own
@@ -73,35 +83,53 @@ func (e *LocalExecutionEnvironment) ignoreMatcherCacheFor() *ignoreMatcherCache 
 	return e.ignoreMatchers
 }
 
-// lookup returns the entry recorded for path when the file still has the
+// ignoreCacheKey is one rules file's identity in the cache: the absolute
+// filesystem root the searching call was rooted at, and the file's path
+// relative to that root. Both halves are needed for the reason the type comment
+// gives — the cache serves an environment that searches many bases, so the
+// relative path alone does not name a file.
+//
+// A root of "" means the filesystem has no absolute root of its own, which is
+// true only of the in-memory filesystems tests build. There the test's own
+// path namespace is the namespace, and each test has its own cache.
+func ignoreCacheKey(root, relPath string) string {
+	if root == "" {
+		return relPath
+	}
+	return filepath.Join(root, relPath)
+}
+
+// lookup returns the entry recorded for root+path when the file still has the
 // version that entry was built from. A nil cache never hits.
-func (c *ignoreMatcherCache) lookup(path string, size int64, mod time.Time) (ignoreMatcherEntry, bool) {
+func (c *ignoreMatcherCache) lookup(root, path string, size int64, mod time.Time) (ignoreMatcherEntry, bool) {
 	if c == nil {
 		return ignoreMatcherEntry{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.entries[path]
+	entry, ok := c.entries[ignoreCacheKey(root, path)]
 	if !ok || entry.size != size || !entry.mod.Equal(mod) {
 		return ignoreMatcherEntry{}, false
 	}
 	return entry, true
 }
 
-// store records entry for path, replacing any earlier version. A nil cache
+// store records entry for root+path, replacing any earlier version. A nil cache
 // drops it.
-func (c *ignoreMatcherCache) store(path string, entry ignoreMatcherEntry) {
+func (c *ignoreMatcherCache) store(root, path string, entry ignoreMatcherEntry) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[path] = entry
+	c.entries[ignoreCacheKey(root, path)] = entry
 }
 
-// readIgnoreRules reads one .gitignore under the call's budgets and returns the
-// rule lines to compile, whether the file's rules were available, and the
-// matcher cache serves it when it can.
+// readIgnoreRules reads one .gitignore under the call's budgets and returns that
+// file's compiled matcher — nil for a file that compiles no rule — together with
+// whether its rules were available at all. cache, when not nil and when the file
+// still has the size and modification time its entry was built from, supplies the
+// matcher without reading the file again.
 //
 // read is false only for a file that is missing or unreadable; a cache hit
 // answers true, because the caller asks whether rules were available, not where
@@ -114,10 +142,10 @@ func (c *ignoreMatcherCache) store(path string, entry ignoreMatcherEntry) {
 // refused. That is deliberate — the budget bounds what a call retains and reads,
 // and a call that retains the same matchers again really does hold them again
 // for its own duration.
-func readIgnoreRules(ctx context.Context, fsys fs.FS, path string, budget *GlobBudget, cache *ignoreMatcherCache) (matcher *gitignore.GitIgnore, read bool, err error) {
+func readIgnoreRules(ctx context.Context, fsys fs.FS, root, path string, budget *GlobBudget, cache *ignoreMatcherCache) (matcher *gitignore.GitIgnore, read bool, err error) {
 	size, mod, identified := ignoreFileVersion(ctx, fsys, path, cache)
 	if identified {
-		if entry, ok := cache.lookup(path, size, mod); ok {
+		if entry, ok := cache.lookup(root, path, size, mod); ok {
 			if berr := budget.retainIgnoreFile(entry.cost); berr != nil {
 				return nil, false, berr
 			}
@@ -137,7 +165,7 @@ func readIgnoreRules(ctx context.Context, fsys fs.FS, path string, budget *GlobB
 		// a change landing in between leaves the entry stale and the next call
 		// recompiles, rather than letting a later call hit a matcher built from
 		// different bytes.
-		cache.store(path, ignoreMatcherEntry{size: size, mod: mod, matcher: compiled, cost: cost})
+		cache.store(root, path, ignoreMatcherEntry{size: size, mod: mod, matcher: compiled, cost: cost})
 	}
 	return compiled, true, nil
 }
@@ -524,7 +552,7 @@ func eachIgnoreLine(data []byte, visit func(line []byte)) {
 // worth of work rather than each getting its own unbounded pass over the
 // tree.
 func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bool, budget *GlobBudget, scope []ignoreScope) (*ignoreSet, error) {
-	return loadIgnoreSetCached(ctx, fsys, skip, budget, scope, nil)
+	return loadIgnoreSetCached(ctx, fsys, skip, budget, scope, "", nil)
 }
 
 // loadIgnoreSetCached is loadIgnoreSet with a matcher cache: cache, when not
@@ -538,7 +566,7 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 // call-wide rules budget still bounds the aggregate a single call retains and
 // reads; a repeated operation cannot exceed the budget by going through the
 // cache.
-func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath string) bool, budget *GlobBudget, scope []ignoreScope, cache *ignoreMatcherCache) (*ignoreSet, error) {
+func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath string) bool, budget *GlobBudget, scope []ignoreScope, root string, cache *ignoreMatcherCache) (*ignoreSet, error) {
 	set := &ignoreSet{}
 	scopes := narrowIgnoreScopes(scope)
 
@@ -593,7 +621,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if cerr := ctx.Err(); cerr != nil {
 				return set, cerr
 			}
-			matcher, read, berr := readIgnoreRules(ctx, fsys, p, budget, cache)
+			matcher, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
 			if berr != nil {
 				return set, berr
 			}
@@ -700,7 +728,7 @@ func loadIgnoreSetCached(ctx context.Context, fsys fs.FS, skip func(relPath stri
 			if loadedRules[p] {
 				return nil
 			}
-			matcher, read, berr := readIgnoreRules(ctx, fsys, p, budget, cache)
+			matcher, read, berr := readIgnoreRules(ctx, fsys, root, p, budget, cache)
 			if berr != nil {
 				budgetErr = berr
 				return berr

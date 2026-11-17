@@ -1,7 +1,6 @@
 package execenv
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -118,47 +117,60 @@ func BenchmarkGlobBraceExpansion(b *testing.B) {
 	})
 }
 
-// BenchmarkIgnoreMatcherReuse measures what the matcher cache buys: the same
-// whole-tree rule discovery run repeatedly through one environment, against the
-// same discovery with no cache. It reports the matcher compiles each call
-// performed, which is the load-independent evidence: this repo's six rules files
-// cost six compiles per uncached call and none per cached one, and the wall time
-// that removes grows with the number and size of the rules files.
+// BenchmarkIgnoreMatcherReuse measures what the matcher cache buys, through the
+// ENTRY POINT a tool call actually uses: env.GlobWithBudget. That distinction is
+// load-bearing — an earlier version of this benchmark called
+// loadIgnoreSetCached with a cache handed to it, which measured the helper and
+// stayed green while no production call site passed a cache at all. It reports
+// the matcher compiles per call, which is the load-independent evidence: this
+// repo's six rules files cost six compiles on a cold call and none on a repeat
+// over an unchanged tree.
+//
+// The two arms differ only in whether the environment keeps its cache: the
+// "unwarmed" arm gets a fresh environment each iteration, which is what a
+// session that has not searched this tree yet looks like, and the "reused" arm
+// keeps one environment, so only its first call compiles.
 func BenchmarkIgnoreMatcherReuse(b *testing.B) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		b.Fatalf("abs: %v", err)
 	}
-	env := NewLocalExecutionEnvironment(repoRoot)
-	fsys := os.DirFS(repoRoot)
-	run := func(b *testing.B, cache *ignoreMatcherCache) {
-		// Warm the cache before timing: the point of the cached arm is a session
-		// whose rules files are already compiled, not one paying for its first
-		// pass, so its per-op compile count is exactly zero.
-		if _, err := loadIgnoreSetCached(b.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache); err != nil {
-			b.Fatalf("warming loadIgnoreSetCached: %v", err)
-		}
-		compiles := new(int)
-		orig := compileIgnoreLines
-		compileIgnoreLines = func(lines ...string) *gitignore.GitIgnore {
-			*compiles++
-			return orig(lines...)
-		}
-		defer func() { compileIgnoreLines = orig }()
-		var last *GlobBudget
-		for b.Loop() {
-			budget := newGlobBudget("glob")
-			if _, err := loadIgnoreSetCached(b.Context(), fsys, nil, budget, wholeBaseIgnoreScope(), cache); err != nil {
-				b.Fatalf("loadIgnoreSetCached: %v", err)
-			}
-			last = budget
-		}
-		b.StopTimer()
-		b.ReportMetric(float64(*compiles)/float64(b.N), "compiles/op")
-		// Each call makes its own budget, so the last call's listing count is
-		// the per-call cost already and must not be divided by the iterations.
-		b.ReportMetric(float64(last.listings), "listings/op")
+	const pattern = "**/*.{go,md}"
+	compiles := new(int)
+	orig := compileIgnoreLines
+	compileIgnoreLines = func(lines ...string) *gitignore.GitIgnore {
+		*compiles++
+		return orig(lines...)
 	}
-	b.Run("uncached", func(b *testing.B) { run(b, nil) })
-	b.Run("cached", func(b *testing.B) { run(b, env.ignoreMatcherCacheFor()) })
+	defer func() { compileIgnoreLines = orig }()
+
+	b.Run("cold-environment", func(b *testing.B) {
+		for b.Loop() {
+			*compiles = 0
+			// A fresh environment per iteration: nothing is cached yet, which is
+			// the cost a session paid on every call before this change.
+			env := NewLocalExecutionEnvironment(repoRoot)
+			if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, NewGlobBudget()); err != nil {
+				b.Fatalf("GlobWithBudget: %v", err)
+			}
+			b.ReportMetric(float64(*compiles), "compiles/op")
+			b.ReportMetric(0, "listings/op")
+		}
+	})
+	b.Run("reused-environment", func(b *testing.B) {
+		env := NewLocalExecutionEnvironment(repoRoot)
+		// Warm the cache before timing: this arm is a session whose rules files
+		// are already compiled, so its per-op compile count is exactly zero.
+		if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, NewGlobBudget()); err != nil {
+			b.Fatalf("warming GlobWithBudget: %v", err)
+		}
+		for b.Loop() {
+			*compiles = 0
+			if _, _, err := env.GlobWithBudget(b.Context(), pattern, "", false, NewGlobBudget()); err != nil {
+				b.Fatalf("GlobWithBudget: %v", err)
+			}
+			b.ReportMetric(float64(*compiles), "compiles/op")
+			b.ReportMetric(0, "listings/op")
+		}
+	})
 }

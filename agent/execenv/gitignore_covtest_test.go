@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -204,7 +205,7 @@ func TestIgnoreMatcherCacheReusesACompiledMatcher(t *testing.T) {
 	compiles := countCompiles(t)
 	cache := newIgnoreMatcherCache()
 
-	first, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+	first, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestIgnoreMatcherCacheReusesACompiledMatcher(t *testing.T) {
 		t.Fatalf("compiles = %d after the first call, want 2: one per rules file", *compiles)
 	}
 
-	second, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+	second, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +267,7 @@ func TestIgnoreMatcherCacheRecompilesOnAChangedRulesFile(t *testing.T) {
 			}
 			compiles := countCompiles(t)
 			cache := newIgnoreMatcherCache()
-			set, err := loadIgnoreSetCached(t.Context(), old, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+			set, err := loadIgnoreSetCached(t.Context(), old, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -280,7 +281,7 @@ func TestIgnoreMatcherCacheRecompilesOnAChangedRulesFile(t *testing.T) {
 				"a.tmp":      {Data: []byte("x")},
 				"a.bak":      {Data: []byte("x")},
 			}
-			set, err = loadIgnoreSetCached(t.Context(), changed, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+			set, err = loadIgnoreSetCached(t.Context(), changed, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,7 +340,7 @@ func TestIgnoreMatcherCacheKeepsIgnoreSemanticsIdentical(t *testing.T) {
 			if pass == 0 {
 				return loadIgnoreSet(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
 			}
-			return loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+			return loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache)
 		}()
 		if err != nil {
 			t.Fatal(err)
@@ -371,11 +372,11 @@ func TestIgnoreMatcherCacheChargesAHitWhatTheReadPaid(t *testing.T) {
 	}
 	cache := newIgnoreMatcherCache()
 	firstBudget := newGlobBudget("glob")
-	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, firstBudget, wholeBaseIgnoreScope(), cache); err != nil {
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, firstBudget, wholeBaseIgnoreScope(), "", cache); err != nil {
 		t.Fatal(err)
 	}
 	hitBudget := newGlobBudget("glob")
-	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, hitBudget, wholeBaseIgnoreScope(), cache); err != nil {
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, hitBudget, wholeBaseIgnoreScope(), "", cache); err != nil {
 		t.Fatal(err)
 	}
 	if firstBudget.ruleBytes == 0 {
@@ -396,12 +397,12 @@ func TestIgnoreMatcherCacheStillRefusesAHitWhenTheBudgetIsSpent(t *testing.T) {
 		"a.log":      {Data: []byte("x")},
 	}
 	cache := newIgnoreMatcherCache()
-	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache); err != nil {
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache); err != nil {
 		t.Fatal(err)
 	}
 	compiles := countCompiles(t)
 	stubMaxGlobIgnoreTotalBytes(t, 1)
-	set, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+	set, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", cache)
 	if err == nil {
 		t.Fatalf("no error with the rules budget at 1 byte and a warm cache, want a refusal: the hit bought the matcher for free (set has %d dirs)", len(set.dirs))
 	}
@@ -425,14 +426,240 @@ func TestIgnoreMatcherCacheIsNilSafe(t *testing.T) {
 		t.Fatal("a nil environment answered a cache, want nil so its callers read rules uncached")
 	}
 	var c *ignoreMatcherCache
-	c.store(".gitignore", ignoreMatcherEntry{})
-	if _, ok := c.lookup(".gitignore", 0, time.Time{}); ok {
+	c.store("", ".gitignore", ignoreMatcherEntry{})
+	if _, ok := c.lookup("", ".gitignore", 0, time.Time{}); ok {
 		t.Fatal("a nil cache answered a hit")
 	}
 	fsys := fstest.MapFS{
 		".gitignore": {Data: []byte("*.log\n")},
 	}
-	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), nil); err != nil {
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), "", nil); err != nil {
 		t.Fatalf("loadIgnoreSetCached with a nil cache: %v", err)
 	}
+}
+
+// countEntryPointCompiles swaps the matcher compile seam for the duration of a
+// test, returning a function that reports how many compiles have happened so
+// far and a reset for measuring one call at a time.
+func countEntryPointCompiles(t *testing.T) (count func() int, reset func()) {
+	t.Helper()
+	n := 0
+	orig := compileIgnoreLines
+	compileIgnoreLines = func(lines ...string) *gitignore.GitIgnore {
+		n++
+		return orig(lines...)
+	}
+	t.Cleanup(func() { compileIgnoreLines = orig })
+	return func() int { return n }, func() { n = 0 }
+}
+
+// writeEntryPointIgnoreTree lays down a tree with a root rules file, a nested
+// one carrying a negation, and files the rules select and spare.
+func writeEntryPointIgnoreTree(t *testing.T) (root string) {
+	t.Helper()
+	root = t.TempDir()
+	dirs := []string{"sub", "build"}
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		".gitignore":     "*.log\n!important.log\nbuild/\n",
+		"sub/.gitignore": "*.tmp\n",
+		"a.go":           "package a\n",
+		"a.log":          "log\n",
+		"important.log":  "keep\n",
+		"sub/b.go":       "package b\n",
+		"sub/b.log":      "log\n",
+		"sub/b.tmp":      "tmp\n",
+		"build/out.bin":  "bin\n",
+		"keep.txt":       "keep\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// TestGlobReusesIgnoreMatchersAcrossCalls is the test the review asked for: two
+// identical env.Glob calls on one environment, the second of which must compile
+// nothing. It goes through the exported entry point rather than the helper,
+// because the helper is handed a cache directly and therefore passed while no
+// production call site passed one.
+func TestGlobReusesIgnoreMatchersAcrossCalls(t *testing.T) {
+	t.Parallel()
+	root := writeEntryPointIgnoreTree(t)
+	env := NewLocalExecutionEnvironment(root)
+	count, reset := countEntryPointCompiles(t)
+
+	glob := func() []string {
+		matches, err := env.Glob(t.Context(), "**/*", "")
+		if err != nil {
+			t.Fatalf("Glob: %v", err)
+		}
+		return matches
+	}
+	first := glob()
+	if firstCompiles := count(); firstCompiles == 0 {
+		t.Fatal("the first env.Glob compiled no rules file, so the tree has no rules to cache and this test proves nothing")
+	}
+	reset()
+	second := glob()
+	if got := count(); got != 0 {
+		t.Fatalf("the second env.Glob compiled %d rules file(s), want 0: the environment's cache is not reaching Glob's ignore load", got)
+	}
+	if !slices.Equal(first, second) {
+		t.Fatalf("the two calls returned different results, so the cached matchers changed what is matched:\nfirst  = %v\nsecond = %v", first, second)
+	}
+	if slices.ContainsFunc(second, func(p string) bool { return filepath.Base(p) == "a.log" }) {
+		t.Fatalf("an ignored file survived the cached pass: %v", second)
+	}
+	if !slices.ContainsFunc(second, func(p string) bool { return filepath.Base(p) == "important.log" }) {
+		t.Fatalf("the negated file is missing from the cached pass: %v", second)
+	}
+}
+
+// TestGrepReusesIgnoreMatchersAcrossCalls is the same assertion for grep, through
+// the exported env.Grep. grep hands the search to ripgrep when ripgrep is
+// installed, and that subprocess does its own ignore handling, so the test makes
+// rg "absent" through the execLookPath seam to force the native walk — the arm
+// that reads rules through grepTreeWalk. It is not parallel for that reason.
+func TestGrepReusesIgnoreMatchersAcrossCalls(t *testing.T) {
+	root := writeEntryPointIgnoreTree(t)
+	env := NewLocalExecutionEnvironment(root)
+	count, reset := countEntryPointCompiles(t)
+	origLookPath := execLookPath
+	execLookPath = func(string) (string, error) { return "", errors.New("no rg: force the native walk") }
+	t.Cleanup(func() { execLookPath = origLookPath })
+
+	grep := func() string {
+		out, err := env.Grep(t.Context(), "log", root, "", false, 100, "files_with_matches")
+		if err != nil {
+			t.Fatalf("Grep: %v", err)
+		}
+		return out
+	}
+	first := grep()
+	if firstCompiles := count(); firstCompiles == 0 {
+		t.Fatal("the first env.Grep compiled no rules file, so this test proves nothing")
+	}
+	reset()
+	second := grep()
+	if got := count(); got != 0 {
+		t.Fatalf("the second env.Grep compiled %d rules file(s), want 0: the environment's cache is not reaching grep's ignore load", got)
+	}
+	if first != second {
+		t.Fatalf("the two grep calls disagreed:\nfirst  = %q\nsecond = %q", first, second)
+	}
+}
+
+// TestGrepExclusionCountReusesIgnoreMatchers covers the second grep entry point,
+// countNativeExcluded, which the rg arm calls to disclose what the default rules
+// skipped. It builds its own grepTreeWalk, so it needs its own wiring.
+func TestGrepExclusionCountReusesIgnoreMatchers(t *testing.T) {
+	t.Parallel()
+	root := writeEntryPointIgnoreTree(t)
+	env := NewLocalExecutionEnvironment(root)
+	count, reset := countEntryPointCompiles(t)
+
+	excluded := func() int {
+		n, err := env.countNativeExcluded(t.Context(), root, nil)
+		if err != nil {
+			t.Fatalf("countNativeExcluded: %v", err)
+		}
+		return n
+	}
+	first := excluded()
+	if firstCompiles := count(); firstCompiles == 0 {
+		t.Fatal("the first countNativeExcluded compiled no rules file, so this test proves nothing")
+	}
+	reset()
+	second := excluded()
+	if got := count(); got != 0 {
+		t.Fatalf("the second countNativeExcluded compiled %d rules file(s), want 0: the environment's cache is not reaching the exclusion count's ignore load", got)
+	}
+	if first != second {
+		t.Fatalf("the two exclusion counts disagreed: %d then %d", first, second)
+	}
+	if first == 0 {
+		t.Fatal("countNativeExcluded reported nothing excluded, so the tree gave it nothing to count and this test proves nothing")
+	}
+}
+
+// TestIgnoreMatcherCacheSeparatesTwoBasesWithIdenticalTimestamps pins the key:
+// one environment, two bases, each with a .gitignore of the SAME size and the
+// same modification time but different rules. Each call must get its own
+// directory's rules. A cache keyed on the base-relative path serves the first
+// directory's matcher to the second call and silently hides the wrong files.
+func TestIgnoreMatcherCacheSeparatesTwoBasesWithIdenticalTimestamps(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	stamp := timeStamp(t)
+	// Same byte count, same mtime, different rules.
+	const firstRules = "*.aaa\n"
+	const secondRules = "*.bbb\n"
+	if len(firstRules) != len(secondRules) {
+		t.Fatalf("the two rule files differ in length (%d vs %d), so this test cannot prove the key distinguishes them by path alone", len(firstRules), len(secondRules))
+	}
+	for _, d := range []struct{ name, rules string }{{"alpha", firstRules}, {"beta", secondRules}} {
+		dir := filepath.Join(root, d.name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gi := filepath.Join(dir, ".gitignore")
+		if err := os.WriteFile(gi, []byte(d.rules), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(gi, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"x.aaa", "x.bbb", "x.go"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	env := NewLocalExecutionEnvironment(root)
+	names := func(base string) []string {
+		matches, _, err := env.GlobWithBudget(t.Context(), "**/*", base, false, NewGlobBudget())
+		if err != nil {
+			t.Fatalf("GlobWithBudget(%s): %v", base, err)
+		}
+		out := make([]string, 0, len(matches))
+		for _, m := range matches {
+			out = append(out, filepath.Base(m))
+		}
+		return out
+	}
+	alphaFirst := names(filepath.Join(root, "alpha"))
+	if slices.Contains(alphaFirst, "x.aaa") {
+		t.Fatalf("the alpha base did not apply its own *.aaa rule: %v", alphaFirst)
+	}
+	beta := names(filepath.Join(root, "beta"))
+	if slices.Contains(beta, "x.bbb") {
+		t.Fatalf("the beta base applied *.bbb, so its own rules were not read: %v", beta)
+	}
+	// beta's rules are *.bbb, so aaa must be VISIBLE there. Its absence is what
+	// a leaked matcher looks like: alpha's *.aaa rule applied to beta's files.
+	if !slices.Contains(beta, "x.aaa") {
+		t.Fatalf("the beta base did not report x.aaa, so it applied alpha's *.aaa rule: the cache served alpha's matcher to beta, whose .gitignore has the same size and mtime but different rules: %v", beta)
+	}
+}
+
+// timeStamp returns one modification time both rules files are set to.
+func timeStamp(t *testing.T) (stamp time.Time) {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "stamp")
+	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.ModTime().Truncate(time.Second)
 }

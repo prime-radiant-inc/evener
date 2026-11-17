@@ -645,6 +645,12 @@ type grepTreeWalk struct {
 	// walk's own listings.
 	ignoreFS fs.FS
 	budget   *GlobBudget
+	// ignoreRoot is the absolute root ignoreFS walks, so a cached matcher from
+	// this call cannot be confused with one built for a different base that
+	// happens to name the same relative rules path. ignoreCache is the
+	// environment's matcher cache; nil reads and compiles uncached.
+	ignoreRoot  string
+	ignoreCache *ignoreMatcherCache
 	// walk visits every entry beneath root; read returns one file's capped bytes
 	// by its path in the walked filesystem.
 	walk func(fn fs.WalkDirFunc) error
@@ -679,10 +685,10 @@ func (w grepTreeWalk) run() (string, error) {
 // both; the rg arm's empty-result disclosure uses the first.
 func (w grepTreeWalk) runCounts() (excludedByIgnore, oversized int, err error) {
 	// Never list or read into a masked subtree while collecting .gitignore rules.
-	ignores, err := loadIgnoreSet(w.ctx, w.ignoreFS, func(rel string) bool {
+	ignores, err := loadIgnoreSetCached(w.ctx, w.ignoreFS, func(rel string) bool {
 		abs := filepath.Join(w.root, rel)
 		return w.isMasked(abs) || walkSkipsPseudoDir(w.root, abs)
-	}, w.budget, wholeBaseIgnoreScope())
+	}, w.budget, wholeBaseIgnoreScope(), w.ignoreRoot, w.ignoreCache)
 	if err != nil {
 		return 0, 0, err
 	}

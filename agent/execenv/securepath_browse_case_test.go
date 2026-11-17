@@ -64,7 +64,7 @@ func TestBrowseJudgesDescendantsAgainstTheOpenedDirectorysSpelling(t *testing.T)
 		t.Errorf("a masked file was returned through a case-variant base: %v", matches)
 	}
 
-	out, err := s.grepNative(context.Background(), secret, spelled, "", false, 10, "content", 0, nil)
+	out, err := s.grepNative(context.Background(), secret, spelled, "", false, 10, "content", 0, nil, nil)
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}

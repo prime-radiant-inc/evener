@@ -159,14 +159,14 @@ func (e *LocalExecutionEnvironment) GlobWithBudget(ctx context.Context, pattern 
 		defer sfs.release()
 		// Sandboxed: the base is policy-checked and the walk refuses symlink
 		// traversal (no out-of-root match) and drops masked matches.
-		return sfs.glob(ctx, "glob", base, pattern, includeIgnored, budget)
+		return sfs.globCached(ctx, "glob", base, pattern, includeIgnored, budget, e.ignoreMatcherCacheFor())
 	}
 	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(ctx, base, budget)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
 		var err error
-		ignores, err = loadIgnoreSet(ctx, fsys, nil, budget, ignoreScopeForPatterns(patterns))
+		ignores, err = loadIgnoreSetCached(ctx, fsys, nil, budget, ignoreScopeForPatterns(patterns), base, e.ignoreMatcherCacheFor())
 		if err != nil {
 			return nil, 0, err
 		}
@@ -319,7 +319,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.RootDir)
+		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.ignoreMatcherCacheFor(), e.RootDir)
 	}
 
 	// Ripgrep takes no predicate, so a search that skips files walks natively.
@@ -552,6 +552,8 @@ func (e *LocalExecutionEnvironment) countNativeExcluded(ctx context.Context, dir
 		root:        dir,
 		globFilters: globFilters,
 		ignoreFS:    fsys,
+		ignoreRoot:  dir,
+		ignoreCache: e.ignoreMatcherCacheFor(),
 		budget:      budget,
 		walk:        func(fn fs.WalkDirFunc) error { return grepWalk(fsys, ".", fn) },
 	}
@@ -833,6 +835,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
+	ignoreRoot := path
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
@@ -843,6 +846,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			admitDevice: true,
 			rootPseudo:  grepRootIsPseudo(filepath.Join(path, walkRoot)),
 		}
+		ignoreRoot = filepath.Join(path, walkRoot)
 	}
 	walk := grepTreeWalk{
 		ctx:         ctx,
@@ -851,6 +855,8 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 		skip:        skip,
 		root:        path,
 		ignoreFS:    ignoreFS,
+		ignoreRoot:  ignoreRoot,
+		ignoreCache: e.ignoreMatcherCacheFor(),
 		budget:      budget,
 		walk:        func(fn fs.WalkDirFunc) error { return grepWalk(fsys, walkRoot, fn) },
 		read:        func(p string) ([]byte, error) { return grepReadFile(fsys, p) },
