@@ -2,10 +2,15 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
+
+	gitignore "github.com/sabhiram/go-gitignore"
 )
 
 // TestIgnoreSet_Matches_NilSet covers the nil-set path (line 99-100).
@@ -167,4 +172,267 @@ func loadIgnoreSetFromLines(t *testing.T, dir string, lines ...string) *ignoreSe
 		t.Fatal(err)
 	}
 	return set
+}
+
+// countCompiles swaps the matcher compile seam for the duration of a test and
+// returns a pointer to the number of compiles it has seen.
+func countCompiles(t *testing.T) *int {
+	t.Helper()
+	compiles := new(int)
+	orig := compileIgnoreLines
+	compileIgnoreLines = func(lines ...string) *gitignore.GitIgnore {
+		*compiles++
+		return orig(lines...)
+	}
+	t.Cleanup(func() { compileIgnoreLines = orig })
+	return compiles
+}
+
+// TestIgnoreMatcherCacheReusesACompiledMatcher covers the lifetime change the
+// cache exists for: an operation over a tree another operation already read
+// compiles no rules file again, and the reused matchers answer exactly as the
+// freshly compiled ones did.
+func TestIgnoreMatcherCacheReusesACompiledMatcher(t *testing.T) {
+	fsys := fstest.MapFS{
+		".gitignore":     {Data: []byte("*.log\n!keep.log\n")},
+		"sub/.gitignore": {Data: []byte("*.tmp\n")},
+		"sub/a.log":      {Data: []byte("x")},
+		"sub/a.tmp":      {Data: []byte("x")},
+		"keep.log":       {Data: []byte("x")},
+		"a.go":           {Data: []byte("x")},
+	}
+	compiles := countCompiles(t)
+	cache := newIgnoreMatcherCache()
+
+	first, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *compiles != 2 {
+		t.Fatalf("compiles = %d after the first call, want 2: one per rules file", *compiles)
+	}
+
+	second, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *compiles != 2 {
+		t.Fatalf("compiles = %d after the second call, want 2 unchanged: the cache recompiled a rules file whose size and mtime had not changed", *compiles)
+	}
+
+	probes := []struct {
+		path  string
+		isDir bool
+	}{
+		{"sub/a.log", false},
+		{"sub/a.tmp", false},
+		{"keep.log", false},
+		{"a.go", false},
+		{"sub", true},
+	}
+	for _, p := range probes {
+		if got, want := second.matches(p.path, p.isDir), first.matches(p.path, p.isDir); got != want {
+			t.Fatalf("cached matches(%q, dir=%v) = %v, want %v: the reused matcher answered differently from the one it replaced", p.path, p.isDir, got, want)
+		}
+	}
+	if !second.matches("sub/a.log", false) {
+		t.Fatal("the cached set does not ignore sub/a.log, so reusing it lost the rules rather than the compile")
+	}
+	if second.matches("keep.log", false) {
+		t.Fatal("the cached set ignores keep.log, so reusing it dropped the negation")
+	}
+}
+
+// TestIgnoreMatcherCacheRecompilesOnAChangedRulesFile pins the staleness bound:
+// a rules file that gained a rule, or was rewritten to the same byte count at a
+// newer mtime, is recompiled rather than served from the cache.
+func TestIgnoreMatcherCacheRecompilesOnAChangedRulesFile(t *testing.T) {
+	base := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		data    string
+		modTime time.Time
+	}{
+		{name: "appended rule", data: "*.log\n*.tmp\n", modTime: base},
+		{name: "rewritten at the same size", data: "*.bak\n", modTime: base.Add(2 * time.Second)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := fstest.MapFS{
+				".gitignore": {Data: []byte("*.log\n"), ModTime: base},
+				"a.log":      {Data: []byte("x")},
+				"a.tmp":      {Data: []byte("x")},
+				"a.bak":      {Data: []byte("x")},
+			}
+			compiles := countCompiles(t)
+			cache := newIgnoreMatcherCache()
+			set, err := loadIgnoreSetCached(t.Context(), old, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !set.matches("a.log", false) {
+				t.Fatal("the first pass does not ignore a.log, so the rules file was not read")
+			}
+
+			changed := fstest.MapFS{
+				".gitignore": {Data: []byte(tc.data), ModTime: tc.modTime},
+				"a.log":      {Data: []byte("x")},
+				"a.tmp":      {Data: []byte("x")},
+				"a.bak":      {Data: []byte("x")},
+			}
+			set, err = loadIgnoreSetCached(t.Context(), changed, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *compiles != 2 {
+				t.Fatalf("compiles = %d after the rules file changed, want 2: the cache served a matcher built from the old bytes", *compiles)
+			}
+			if tc.name == "appended rule" {
+				if !set.matches("a.tmp", false) {
+					t.Fatal("a.tmp is not ignored after the rules file gained *.tmp, so the appended rule was lost")
+				}
+			} else {
+				if !set.matches("a.bak", false) {
+					t.Fatal("a.bak is not ignored after the rules file was rewritten, so the same-size rewrite was not recompiled")
+				}
+				if set.matches("a.log", false) {
+					t.Fatal("a.log is still ignored after the rules file dropped *.log, so the old matcher was reused")
+				}
+			}
+		})
+	}
+}
+
+// TestIgnoreMatcherCacheKeepsIgnoreSemanticsIdentical compares a cached pass
+// with an uncached one over the shapes that make ignore handling subtle: a
+// nested rules file that overrides its parent, a negation inside one file, a
+// directory-only rule, and a path outside every rules file's reach.
+func TestIgnoreMatcherCacheKeepsIgnoreSemanticsIdentical(t *testing.T) {
+	fsys := fstest.MapFS{
+		".gitignore":        {Data: []byte("*.log\n!important.log\nbuild/\n")},
+		"sub/.gitignore":    {Data: []byte("!keep.log\n*.gen.go\n")},
+		"sub/a.log":         {Data: []byte("x")},
+		"sub/keep.log":      {Data: []byte("x")},
+		"sub/a.gen.go":      {Data: []byte("x")},
+		"sub/a.go":          {Data: []byte("x")},
+		"build/out.bin":     {Data: []byte("x")},
+		"important.log":     {Data: []byte("x")},
+		"other/untouched.y": {Data: []byte("x")},
+	}
+	probes := []struct {
+		path  string
+		isDir bool
+	}{
+		{"sub/a.log", false},
+		{"sub/keep.log", false},
+		{"sub/a.gen.go", false},
+		{"sub/a.go", false},
+		{"build", true},
+		{"build/out.bin", false},
+		{"important.log", false},
+		{"other/untouched.y", false},
+	}
+	cache := newIgnoreMatcherCache()
+	uncached := make([]bool, len(probes))
+	for pass := range 2 {
+		set, err := func() (*ignoreSet, error) {
+			if pass == 0 {
+				return loadIgnoreSet(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope())
+			}
+			return loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+		}()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, p := range probes {
+			got := set.matches(p.path, p.isDir)
+			if pass == 0 {
+				uncached[i] = got
+				continue
+			}
+			if got != uncached[i] {
+				t.Fatalf("cached matches(%q, dir=%v) = %v, want %v from the uncached pass: the cache changed ignore semantics", p.path, p.isDir, got, uncached[i])
+			}
+		}
+	}
+	if !slices.Contains(uncached, true) || !slices.Contains(uncached, false) {
+		t.Fatalf("uncached answers = %v, want both true and false so the comparison exercises ignoring and keeping", uncached)
+	}
+}
+
+// TestIgnoreMatcherCacheChargesAHitWhatTheReadPaid pins the budget interaction:
+// a cache hit is charged exactly what the read that populated it paid, so a
+// repeated operation spends the same rules budget as the first one.
+func TestIgnoreMatcherCacheChargesAHitWhatTheReadPaid(t *testing.T) {
+	fsys := fstest.MapFS{
+		".gitignore":     {Data: []byte("# a comment\n*.log\n\n*.tmp\n")},
+		"sub/.gitignore": {Data: []byte("build/\n")},
+		"a.log":          {Data: []byte("x")},
+	}
+	cache := newIgnoreMatcherCache()
+	firstBudget := newGlobBudget("glob")
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, firstBudget, wholeBaseIgnoreScope(), cache); err != nil {
+		t.Fatal(err)
+	}
+	hitBudget := newGlobBudget("glob")
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, hitBudget, wholeBaseIgnoreScope(), cache); err != nil {
+		t.Fatal(err)
+	}
+	if firstBudget.ruleBytes == 0 {
+		t.Fatal("ruleBytes = 0 after reading two rules files, want a charge")
+	}
+	if hitBudget.ruleBytes != firstBudget.ruleBytes {
+		t.Fatalf("ruleBytes = %d on a cache hit, want %d as the reading call paid: the hit skipped part of the charge, so repeating an operation could buy rules the budget refuses", hitBudget.ruleBytes, firstBudget.ruleBytes)
+	}
+}
+
+// TestIgnoreMatcherCacheStillRefusesAHitWhenTheBudgetIsSpent pins the other
+// half of that interaction: a hit whose charge would cross the call-wide rules
+// budget is refused, not served. Without it a session could re-read a huge
+// rules file any number of times for free.
+func TestIgnoreMatcherCacheStillRefusesAHitWhenTheBudgetIsSpent(t *testing.T) {
+	fsys := fstest.MapFS{
+		".gitignore": {Data: []byte("*.log\n")},
+		"a.log":      {Data: []byte("x")},
+	}
+	cache := newIgnoreMatcherCache()
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache); err != nil {
+		t.Fatal(err)
+	}
+	compiles := countCompiles(t)
+	stubMaxGlobIgnoreTotalBytes(t, 1)
+	set, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), cache)
+	if err == nil {
+		t.Fatalf("no error with the rules budget at 1 byte and a warm cache, want a refusal: the hit bought the matcher for free (set has %d dirs)", len(set.dirs))
+	}
+	var budgetErr *globBudgetError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("error = %v, want a *globBudgetError", err)
+	}
+	if budgetErr.kind != budgetRulesTotal {
+		t.Fatalf("globBudgetError.kind = %v, want budgetRulesTotal", budgetErr.kind)
+	}
+	if *compiles != 0 {
+		t.Fatalf("compiles = %d while refusing a hit, want 0: the refusal should come from the charge, not from a recompile", *compiles)
+	}
+}
+
+// TestIgnoreMatcherCacheIsNilSafe covers the environments built as struct
+// literals, which have no cache to reach and must still read their rules.
+func TestIgnoreMatcherCacheIsNilSafe(t *testing.T) {
+	t.Parallel()
+	if cache := (*LocalExecutionEnvironment)(nil).ignoreMatcherCacheFor(); cache != nil {
+		t.Fatal("a nil environment answered a cache, want nil so its callers read rules uncached")
+	}
+	var c *ignoreMatcherCache
+	c.store(".gitignore", ignoreMatcherEntry{})
+	if _, ok := c.lookup(".gitignore", 0, time.Time{}); ok {
+		t.Fatal("a nil cache answered a hit")
+	}
+	fsys := fstest.MapFS{
+		".gitignore": {Data: []byte("*.log\n")},
+	}
+	if _, err := loadIgnoreSetCached(t.Context(), fsys, nil, newGlobBudget("glob"), wholeBaseIgnoreScope(), nil); err != nil {
+		t.Fatalf("loadIgnoreSetCached with a nil cache: %v", err)
+	}
 }
