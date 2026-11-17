@@ -8,6 +8,7 @@ import type { AnyNotification, ThreadModel, TranscriptProjection } from "@evener
 import {
   applyNotification,
   createTranscriptProjector,
+  entryDisplayKey,
   hydrateThread,
   makeTranscriptDisplayConfig,
   projectThread,
@@ -261,5 +262,73 @@ describe("per-delta projection work", () => {
     expect(settled.turns.map((turn) => turn.id)).toEqual(streamed.turns.map((turn) => turn.id));
     const settledLive = settled.turns.at(-1)?.entries.at(-1);
     expect(settledLive?.item.text).toBe("done");
+  });
+
+  test("a rebuilt turn that changes which round key it claims does not leave a later reused turn stale", () => {
+    // displayKeyFor hands a round's key to the first projected item that claims
+    // it. When an earlier turn starts claiming a key that a later turn used to
+    // own, that later turn must lose it - and if the later turn is reused, it
+    // keeps the old key. Two rows then share a display key, and a renderer
+    // keying by it reconciles the wrong rows.
+    const twoTurns = (roundInFirst: boolean): ThreadModel => {
+      const items = (turnId: string, entry: number, items: object[]) => ({
+        id: turnId,
+        status: "completed",
+        version: 1,
+        itemsView: "",
+        items: items.map((item) => ({ turnId, status: "completed", position: { entry, item: 0 }, ...item })),
+      });
+      return hydrateThread(
+        {
+          thread: {
+            id: "thr_roundkey",
+            sessionId: "sess_roundkey",
+            preview: "roundkey",
+            ephemeral: false,
+            modelProvider: "test",
+            createdAt: 1,
+            updatedAt: 1,
+            status: { type: "active" },
+            cwd: "/tmp/project",
+            cliVersion: "1.0.0",
+            source: "evener",
+            evener: { ref: "ref_roundkey", capabilities: {}, queue: { revision: 0 } },
+            turns: [
+              items("turn-a", 1, [
+                roundInFirst
+                  ? { id: "a-1", type: "agentMessage", roundId: "r1", text: "reply from a" }
+                  : { id: "a-1", type: "commandExecution", description: "ran" },
+              ]),
+              items("turn-b", 2, [{ id: "b-1", type: "agentMessage", roundId: "r1", text: "reply from b" }]),
+            ],
+          },
+          items: [],
+        } as never,
+        "ref_roundkey",
+        1000,
+      );
+    };
+
+    const first = twoTurns(false);
+    const projector = createTranscriptProjector();
+    const before = projector.project(first, CONFIG);
+    const keys = (projection: TranscriptProjection) =>
+      projection.turns.map((turn) => turn.entries.map((entry) => `${entry.id}:${entryDisplayKey(entry)}`).join(","));
+    expect(keys(before).at(-1)).toContain("b-1:round:r1:agentMessage");
+
+    // Only turn a changed, so turn b is the object that must be reused.
+    const updated = twoTurns(true);
+    const firstTurn = first.turns.at(0);
+    const secondTurn = first.turns.at(1);
+    const updatedTurn = updated.turns.at(0);
+    if (firstTurn === undefined || secondTurn === undefined || updatedTurn === undefined) throw new Error("no turns");
+    const next: ThreadModel = { ...first, turns: [updatedTurn, secondTurn] };
+    const reused = projector.project(next, CONFIG);
+    const full = projectThread(next, CONFIG);
+
+    // The whole contract: same display key on every entry as a full projection.
+    expect(keys(reused)).toEqual(keys(full));
+    // And the round key moved to the earlier turn, as a full projection gives it.
+    expect(keys(reused).at(-1)).toContain("b-1:b-1");
   });
 });

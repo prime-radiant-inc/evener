@@ -563,6 +563,19 @@ interface TurnProjection {
   readonly rankSignature: string;
 }
 
+// displayKeyFor gives a round's key to the first item that claims it, in
+// projection order. Two passes over the same turns can hand the same round's
+// key to different turns when a turn's payload changes type, so a reused turn's
+// claim is only safe to stand when the turns rebuilt before it claim exactly
+// what they claimed last time.
+function sameRoundKeys(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (const [index, key] of left.entries()) {
+    if (key !== right[index]) return false;
+  }
+  return true;
+}
+
 function rankSignature(turn: TurnModel): string {
   let signature = "";
   for (const item of turn.items) {
@@ -783,11 +796,20 @@ class IncrementalTranscriptProjector implements TranscriptProjector {
     // replayed from the reused turns so a rebuilt turn's display key matches
     // what a full derivation would give it.
     const keyedRounds = new Set<string>();
+    // Whether the round keys claimed so far still match what this pass started
+    // from. A rebuilt turn can start claiming a key an earlier pass gave to a
+    // later turn, or stop claiming one that a later turn would then take; either
+    // way every later cached entry's displayKey is now untrustworthy, so reuse
+    // stops for the rest of the list. A streamed delta keeps claiming the same
+    // round key, so the common path stays incremental.
+    let keysMatchPreviousPass = true;
     let projectedIndex = 0;
     for (const [index, turn] of turns.entries()) {
       const cached = previous[index];
       const reused =
-        cached !== undefined && cached.turn === turn && cached.startIndex === projectedIndex ? cached : undefined;
+        keysMatchPreviousPass && cached !== undefined && cached.turn === turn && cached.startIndex === projectedIndex
+          ? cached
+          : undefined;
       if (reused !== undefined) {
         for (const key of reused.tookRoundKeys) keyedRounds.add(key);
         parts.push(reused);
@@ -802,6 +824,9 @@ class IncrementalTranscriptProjector implements TranscriptProjector {
         keyedRounds,
         projectedIndex,
       );
+      if (cached !== undefined && !sameRoundKeys(part.tookRoundKeys, cached.tookRoundKeys)) {
+        keysMatchPreviousPass = false;
+      }
       parts.push(part);
       projectedIndex += part.entryCount;
     }
