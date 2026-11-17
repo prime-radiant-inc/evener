@@ -86,14 +86,14 @@ func TestRelayedStatusFrameCarriesThePageBeforeAnswer(t *testing.T) {
 		}
 		return params.Capabilities
 	}
-	if caps := decode(stampPageBeforeCapability(frame(`{"send":true}`), true)); !caps.PageBefore || !caps.Send {
+	if caps := decode(stampStatusCapabilities(frame(`{"send":true}`), relayCapabilityAnswers{pageBefore: true})); !caps.PageBefore || !caps.Send {
 		t.Fatalf("stamped capabilities = %+v, want pageBefore beside the daemon's send", caps)
 	}
-	if caps := decode(stampPageBeforeCapability(frame(`{"send":true,"pageBefore":true}`), false)); caps.PageBefore {
+	if caps := decode(stampStatusCapabilities(frame(`{"send":true,"pageBefore":true}`), relayCapabilityAnswers{})); caps.PageBefore {
 		t.Fatalf("stamped capabilities = %+v, want a stale pageBefore cleared", caps)
 	}
 	other := appwire.Notification{Method: appwire.NotifyThreadNameChanged, Params: json.RawMessage(`{"threadId":"t1"}`)}
-	if got := stampPageBeforeCapability(other, true); string(got.Params) != string(other.Params) {
+	if got := stampStatusCapabilities(other, relayCapabilityAnswers{pageBefore: true}); string(got.Params) != string(other.Params) {
 		t.Fatalf("a non-status frame changed: %s", got.Params)
 	}
 }

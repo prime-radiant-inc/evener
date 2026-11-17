@@ -25,8 +25,8 @@
 // The close frame is the same defect at the other end of a session's life
 // (kata pk2d) and the last cases here are its own: a daemon cannot describe
 // what the thread it is leaving can still be asked to do, so the HUB stamps
-// that frame on the way past (cmd/evener-hub/app_relay.go's
-// stampClosedThreadCapabilities). Without it a session that shut down mid-turn
+// that frame on the way past (cmd/evener-hub/app_relay_types.go's
+// stampStatusCapabilities). Without it a session that shut down mid-turn
 // keeps send=false, and an ended composer is a follow-up card gated on exactly
 // that bit — so the whole composer disappears.
 

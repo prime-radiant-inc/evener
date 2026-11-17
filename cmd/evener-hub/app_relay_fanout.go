@@ -130,8 +130,8 @@ func (r *hubRelay) startAcknowledgedFanout(
 			// gone.
 			if strings.HasPrefix(target.relayKey, "local:") {
 				notification = enrichOutputImageNotification(target.thread.SessionID, target.thread.CWD, target.argsByCallID, notification)
-				// Both stampers return the frame untouched for any other
-				// method, so the method is checked before the answer is
+				// The stamp and the three resolvers behind it answer only a status
+				// frame, so the method is checked before the answers are
 				// computed rather than after. This is the hottest path the
 				// projection sits on — every frame of every subscribed
 				// session — and the projection is not free: it scans the
@@ -139,11 +139,18 @@ func (r *hubRelay) startAcknowledgedFanout(
 				// deletion store. enrichOutputImageNotification above
 				// guards itself the same way.
 				if notification.Method == appwire.NotifyThreadStatusChanged {
-					ownsFork := applyHubForkCapability(r.cfg, target.thread).Evener.Capabilities.ForkFromTurn
-					notification = stampClosedThreadCapabilities(notification, ownsFork)
-					notification = stampForkCapability(notification, ownsFork)
-					notification = stampPageBeforeCapability(notification, hubPagesBefore(r.cfg, target.thread.Evener.Ref))
-					notification = stampVoiceArmCapability(notification, hubVoiceArm(r.cfg, target.thread))
+					// The three answers are the route's: they depend on the
+					// thread it names, so they are resolved here rather than
+					// shared across the fan-out. One stamp applies all of them
+					// in one decode and one encode of the params, where the
+					// four single-answer stampers this replaces cost six to
+					// eight JSON passes each way.
+					answers := relayCapabilityAnswers{
+						forkFromTurn: applyHubForkCapability(r.cfg, target.thread).Evener.Capabilities.ForkFromTurn,
+						pageBefore:   hubPagesBefore(r.cfg, target.thread.Evener.Ref),
+						voiceArm:     hubVoiceArm(r.cfg, target.thread),
+					}
+					notification = stampStatusCapabilities(notification, answers)
 				}
 			}
 			if r.cfg.RelayHooks.BeforeCanonicalPublish != nil {

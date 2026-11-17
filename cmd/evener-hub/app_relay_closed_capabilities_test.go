@@ -169,8 +169,11 @@ func TestClosedThreadCapabilitiesMatchTheReadThatWouldAnswerTheReload(t *testing
 }
 
 // Every other status is the daemon's own to describe, and it already does. The
-// hub rewriting those would be the same wedge in the other direction: a live
-// daemon's set replaced by the set for a thread that is not running.
+// hub rewriting that set wholesale would be the same wedge in the other
+// direction: a live daemon's set replaced by the set for a thread that is not
+// running. So on any status but close the daemon's own capability set is kept,
+// and the hub only answers the fields the daemon cannot know (forkFromTurn,
+// pageBefore, voiceArm) — it does not substitute pastThreadCapabilities.
 func TestRelayedStatusFramesOtherThanCloseAreLeftToTheDaemon(t *testing.T) {
 	daemonSet := appwire.ThreadCapabilities{Send: true, Compact: true, Interrupt: true}
 	original := appwire.Notification{
@@ -183,10 +186,27 @@ func TestRelayedStatusFramesOtherThanCloseAreLeftToTheDaemon(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original, true)
+	got := stampStatusCapabilities(original, relayCapabilityAnswers{forkFromTurn: true})
 
-	if string(got.Params) != string(original.Params) {
-		t.Fatalf("idle frame was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
+	var params appwire.ThreadStatusChangedParams
+	if err := json.Unmarshal(got.Params, &params); err != nil {
+		t.Fatalf("unmarshal stamped idle frame: %v", err)
+	}
+	if params.Capabilities == nil {
+		t.Fatalf("stamped idle frame lost the daemon's set: %s", got.Params)
+	}
+	// The daemon's own answers survive...
+	if !params.Capabilities.Send || !params.Capabilities.Compact || !params.Capabilities.Interrupt {
+		t.Fatalf("stamped idle capabilities = %+v, want the daemon's send/compact/interrupt", *params.Capabilities)
+	}
+	// ...and the close-only set is not substituted for them.
+	if params.Capabilities.Queue || params.Capabilities.Shutdown || params.Capabilities.SkillInput {
+		t.Fatalf("idle frame received the closed-thread set: %+v", *params.Capabilities)
+	}
+	// The fields this hub owns are answered on any status, which is what keeps
+	// the composer's fork action from vanishing at the first status change.
+	if !params.Capabilities.ForkFromTurn {
+		t.Fatalf("idle frame lost the hub's fork answer: %+v", *params.Capabilities)
 	}
 }
 
@@ -202,7 +222,7 @@ func TestNonStatusNotificationsPassTheCloseStampUntouched(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original, true)
+	got := stampStatusCapabilities(original, relayCapabilityAnswers{forkFromTurn: true})
 
 	if string(got.Params) != string(original.Params) {
 		t.Fatalf("history/updated was rewritten to %s, want it untouched (%s)", got.Params, original.Params)
@@ -224,7 +244,7 @@ func TestCloseStampPreservesFieldsItDoesNotUnderstand(t *testing.T) {
 		}),
 	}
 
-	got := stampClosedThreadCapabilities(original, true)
+	got := stampStatusCapabilities(original, relayCapabilityAnswers{forkFromTurn: true})
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(got.Params, &fields); err != nil {

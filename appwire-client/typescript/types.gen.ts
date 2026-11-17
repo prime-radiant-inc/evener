@@ -5370,7 +5370,7 @@ export interface ThreadStatusChangedParams {
    * A CLOSE frame is the one status a daemon does not fill in: what a thread
    * can still be asked to do once its daemon is gone is the hub's answer, not
    * the departing daemon's. The hub stamps that frame as it relays it
-   * (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
+   * (cmd/evener-hub/app_relay_types.go's stampStatusCapabilities), so a close
    * still arrives carrying a set — the same one the next thread/read returns.
    * A client that read the daemon's own all-false set there would lose the
    * follow-up composer for a session the hub would happily resume.
