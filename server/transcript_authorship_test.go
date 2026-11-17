@@ -422,11 +422,12 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() { _, err := sess.ProcessInput(ctx, "root-task", nil); done <- err }()
-	// Join the turn on every exit path. On the failure path the deferred cancel
-	// below does unblock the provider gates, but nothing waits for the turn to
-	// leave, so its exit is incidental rather than proven. The cleanup cancels
-	// first and then joins; sync.OnceValue keeps the single receive shared with
-	// the real path above, so the join still happens exactly once.
+	// Join the turn on every exit path. On the failure path the `defer cancel()`
+	// does unblock the provider gates, but nothing waits for the turn to leave,
+	// so its exit is incidental rather than proven. The cleanup cancels first
+	// and then joins; sync.OnceValue keeps the single receive shared with the
+	// `joined()` call after close(p.finishRoot), so the join still happens
+	// exactly once.
 	joined := sync.OnceValue(func() error { return <-done })
 	t.Cleanup(func() {
 		cancel()
