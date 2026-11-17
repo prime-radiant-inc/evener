@@ -792,7 +792,12 @@ func (c *delegateTreeController) stopForResult(result delegateStopResult) *deleg
 }
 
 func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *delegateStopState) error {
-	return c.drainStop(ctx, stop, nil)
+	// The close's own drain runs the same reconciliation as the stop driver, so
+	// it must hand its plans to the same root runtime. A nil root drops every
+	// plan the drain settles on the close path, including a lost-result warning
+	// -- the notice a closing session most needs, since the result is gone and
+	// the session is about to stop being the place its owner would look.
+	return c.drainStop(ctx, stop, c.rootRuntime)
 }
 
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
