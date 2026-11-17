@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,7 +92,24 @@ func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string
 		return e.readFileWindowedCtx(ctx, path, offsetLine, limitLines)
 	}
 	out, _, err := e.ReadFileAndBytesCtx(ctx, path, nil, nil)
-	return out, err
+	if err != nil {
+		return "", readFileLimitHint(err)
+	}
+	return out, nil
+}
+
+// readFileLimitHint adds read_file's own way past the whole-file read cap to the
+// cap's refusal: the shared ReadLimitError text predates the offset/limit
+// window and only points at shell tools, so a model that follows it never finds
+// the tool capability this change adds. edit_file and apply_patch share
+// ReadLimitError and keep the shared text, so the hint belongs here, at the
+// read_file entry, rather than in the error type.
+func readFileLimitHint(err error) error {
+	rle, capped := errors.AsType[*ReadLimitError](err)
+	if !capped {
+		return err
+	}
+	return fmt.Errorf("%w. read_file can also read a window of it directly: pass offset and limit (for example offset=1, limit=2000)", rle)
 }
 
 // ReadFileAndBytesCtx is ReadFileCtx that also returns the whole file's bytes
@@ -120,19 +136,7 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, pat
 		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
-		// Best-effort "did you mean" suggestion for a genuine missing-file miss
-		// (never for a permission error or a directory-not-a-file error). Skipped
-		// when sandboxed: the diagnostic listing walks plain os.Stat/os.ReadDir
-		// outside the confined resolver, and could name a masked or denied
-		// directory's contents that the sandbox would otherwise keep the model
-		// from seeing. Off/unsandboxed is the default mode, so this still covers
-		// the common case; sandboxed sessions just get the raw ENOENT.
-		if sfs == nil && errors.Is(err, fs.ErrNotExist) {
-			if suggestion := readFileNotFoundSuggestion(abs); suggestion != "" {
-				return "", nil, fmt.Errorf("%w. %s", err, suggestion)
-			}
-		}
-		return "", nil, err
+		return "", nil, e.mapReadFileErr(sfs, abs, err)
 	}
 	out, rerr := renderTextRead(path, b, offsetLine, limitLines)
 	if rerr != nil {

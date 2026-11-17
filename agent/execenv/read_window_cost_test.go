@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,5 +130,79 @@ func TestReadFileWindowReadsANearEOFFWindow(t *testing.T) {
 	// claim this test carries is the allocation one, measured separately.
 	if read := counter.Bytes(); read > int64(len(content))+readWindowByteBudget {
 		t.Fatalf("near-EOF read pulled %d bytes for a %d-byte file", read, len(content))
+	}
+}
+
+// sparseTextOversize writes a real text prefix longer than the windowed read's
+// whole-file threshold and then extends the file past MaxWholeFileReadBytes with
+// os.Truncate, so the tail is a hole rather than written bytes. The prefix is
+// what the window reads: a hole would read as NULs and refuse the window as
+// binary, so the sparse part must sit past everything the test asks for.
+func sparseTextOversize(t *testing.T, path string) (prefixRows int) {
+	t.Helper()
+	const row = "line of representative text content here\n"
+	// Two rows past the 128 KiB threshold, so the prefix alone is enough to put
+	// the read on the scanning path whatever the hole contributes.
+	prefixRows = readWindowNULFloor/len(row) + 2
+	prefix := strings.Repeat(row, prefixRows)
+	if len(prefix) <= readWindowNULFloor {
+		t.Fatalf("prefix is %d bytes, want past the %d-byte whole-file threshold", len(prefix), readWindowNULFloor)
+	}
+	if err := os.WriteFile(path, []byte(prefix), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	if err := os.Truncate(path, MaxWholeFileReadBytes+1); err != nil {
+		t.Fatalf("truncate %s past the cap: %v", path, err)
+	}
+	return prefixRows
+}
+
+// TestReadFileWindowAnswersAFilePastTheWholeFileCap is the 2 GiB sparse-log case
+// from the issue at a fixture-sized cost: a file past MaxWholeFileReadBytes is
+// refused by a whole-file read and answered by an offset/limit read. It is the
+// contract the windowed read exists for — the cap bounded what a read holds, not
+// what it may look at — so the two entries must differ here, and the whole-file
+// refusal must still be the typed one.
+func TestReadFileWindowAnswersAFilePastTheWholeFileCap(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	path := filepath.Join(dir, "oversize.log")
+	rows := sparseTextOversize(t, path)
+	if info, err := os.Stat(path); err != nil || info.Size() <= MaxWholeFileReadBytes {
+		t.Fatalf("fixture = %v bytes (err %v), want past the %d-byte cap", info, err, MaxWholeFileReadBytes)
+	}
+
+	offset, limit := 1, 20
+	out, err := env.ReadFileCtx(t.Context(), "oversize.log", &offset, &limit)
+	if err != nil {
+		t.Fatalf("windowed read of an oversize file: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(got) != limit {
+		t.Fatalf("window = %d rows, want %d: %q", len(got), limit, out)
+	}
+	if !strings.HasPrefix(got[0], "   1\tline of representative") || !strings.HasPrefix(got[limit-1], "  20\tline of representative") {
+		t.Fatalf("window rows are not lines 1-%d of the file: first %q last %q", limit, got[0], got[limit-1])
+	}
+	if rows < limit {
+		t.Fatalf("fixture holds %d rows, fewer than the %d-row window", rows, limit)
+	}
+
+	_, wholeErr := env.ReadFileCtx(t.Context(), "oversize.log", nil, nil)
+	rle, capped := errors.AsType[*ReadLimitError](wholeErr)
+	if !capped {
+		t.Fatalf("whole-file read of an oversize file err = %v, want a *ReadLimitError", wholeErr)
+	}
+	if rle.Limit != MaxWholeFileReadBytes {
+		t.Fatalf("ReadLimitError.Limit = %d, want %d", rle.Limit, MaxWholeFileReadBytes)
+	}
+	// The refusal must name read_file's own way past the cap. The shared text
+	// only points at shell tools, so a model that follows it never finds
+	// offset/limit.
+	if !strings.Contains(wholeErr.Error(), "offset and limit") {
+		t.Fatalf("whole-file refusal does not mention offset/limit: %q", wholeErr)
 	}
 }

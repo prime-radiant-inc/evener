@@ -146,7 +146,7 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 	n, herr := io.ReadFull(r, head)
 	head = head[:n]
 	if herr != nil && !errors.Is(herr, io.EOF) && !errors.Is(herr, io.ErrUnexpectedEOF) {
-		return "", readWindowErr(name, herr)
+		return "", readWindowErr(ctx, name, herr)
 	}
 	// Only the head decides whether the whole file is needed. renderTextRead
 	// decides again over the bytes a whole-file read returns, so a file that
@@ -162,7 +162,7 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 		// handle takes one watcher per call.
 		b, over, err := readBounded(ctx, io.MultiReader(bytes.NewReader(head), r), nil, MaxWholeFileReadBytes)
 		if err != nil {
-			return "", readWindowErr(name, err)
+			return "", readWindowErr(ctx, name, err)
 		}
 		if over {
 			return "", &ReadLimitError{Limit: MaxWholeFileReadBytes}
@@ -175,7 +175,7 @@ func readNumberedWindowCtx(ctx context.Context, displayPath, name string, r io.R
 		if errors.Is(err, errReadBinaryWindow) {
 			return "", fmt.Errorf("binary file (NUL byte): %s", displayPath)
 		}
-		return "", readWindowErr(name, err)
+		return "", readWindowErr(ctx, name, err)
 	}
 	return text, nil
 }
@@ -190,9 +190,18 @@ func readDeadlineOf(r io.Reader) readDeadlineSetter {
 }
 
 // readWindowErr maps a windowed read's failure to read_file's error shapes: a
-// read deadline that fired is the shared stall error the whole-file reads
-// report, everything else passes through.
-func readWindowErr(name string, err error) error {
+// cancelled call reports its cancellation, a read deadline that fired with a
+// live context is the shared stall error the whole-file reads report, and
+// everything else passes through.
+//
+// The context check comes first because armStreamDeadline ends a blocked read by
+// yanking its deadline to now: a cancellation and a genuine stall both reach
+// here as os.ErrDeadlineExceeded, and only the context says which one happened.
+// readBounded orders the same two checks the same way.
+func readWindowErr(ctx context.Context, name string, err error) error {
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		return fmt.Errorf("read %q: %w", name, errGrepStreamStalled)
 	}
@@ -220,6 +229,12 @@ func scanLineWindow(ctx context.Context, r io.Reader, head []byte, start, limit 
 	buf := make([]byte, readWindowChunk)
 	empties := 0
 	eof := false
+	// readErr is an error a Read returned alongside its final bytes. The bytes
+	// are good; the error is not EOF, so it must surface on the next refill
+	// rather than be dropped — otherwise the read reports a clean EOF and hands
+	// back a truncated window as success, where the whole-file path surfaces the
+	// same error from io.ReadAll. io.EOF is the only error that ends cleanly.
+	var readErr error
 	// refill replaces pending with the next chunk of the file. It reports false
 	// at EOF. It does NOT judge the chunk's bytes: a chunk can extend past the
 	// window's last line, and those bytes are neither part of the answer nor
@@ -227,6 +242,11 @@ func scanLineWindow(ctx context.Context, r io.Reader, head []byte, start, limit 
 	// it consumes, at the point it consumes them.
 	refill := func() (bool, error) {
 		for {
+			if readErr != nil {
+				err := readErr
+				readErr = nil
+				return false, err
+			}
 			if eof {
 				return false, nil
 			}
@@ -237,9 +257,13 @@ func scanLineWindow(ctx context.Context, r io.Reader, head []byte, start, limit 
 			if n > 0 {
 				pending = buf[:n]
 				empties = 0
-				// A read may hand back data and an error together. The data is
-				// good, and the error's consequence is EOF from then on.
-				eof = err != nil
+				switch {
+				case err == nil:
+				case errors.Is(err, io.EOF):
+					eof = true
+				default:
+					readErr = err
+				}
 				return true, nil
 			}
 			if err != nil {
@@ -285,12 +309,20 @@ func scanLineWindow(ctx context.Context, r io.Reader, head []byte, start, limit 
 	var (
 		out    strings.Builder
 		line   []byte
-		held   int64
 		number = start
 	)
 	// The window is what a caller sees, so the whole-file cap bounds it as the
 	// cap bounded a whole-file read: a handle whose stat size understates what it
 	// yields (a procfs special, a stream) is refused rather than accumulated.
+	//
+	// It bounds the RENDERED size — the rows already written plus the row being
+	// accumulated — not the line content alone. An empty line contributes no
+	// content but still writes a number, a tab and a newline, so a file of empty
+	// lines read with a huge limit would otherwise pass every content check while
+	// out grew to gigabytes.
+	overCap := func() bool {
+		return int64(out.Len())+int64(len(line)) > MaxWholeFileReadBytes
+	}
 	for emitted := 0; emitted < limit; emitted++ {
 		i := bytes.IndexByte(pending, '\n')
 		if i < 0 {
@@ -298,8 +330,7 @@ func scanLineWindow(ctx context.Context, r io.Reader, head []byte, start, limit 
 				return "", errReadBinaryWindow
 			}
 			line = append(line, pending...)
-			held += int64(len(pending))
-			if held > MaxWholeFileReadBytes {
+			if overCap() {
 				return "", &ReadLimitError{Limit: MaxWholeFileReadBytes}
 			}
 			pending = nil
@@ -324,8 +355,7 @@ func scanLineWindow(ctx context.Context, r io.Reader, head []byte, start, limit 
 			return "", errReadBinaryWindow
 		}
 		line = append(line, pending[:i]...)
-		held += int64(i)
-		if held > MaxWholeFileReadBytes {
+		if overCap() {
 			return "", &ReadLimitError{Limit: MaxWholeFileReadBytes}
 		}
 		pending = pending[i+1:]

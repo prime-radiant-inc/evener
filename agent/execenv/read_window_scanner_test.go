@@ -1,6 +1,8 @@
 package execenv
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -8,17 +10,35 @@ import (
 // TestScanLineWindowMatchesNumberLinesBytes is the scanner's own differential:
 // every fixture is rendered twice, once by the scanner and once by
 // NumberLinesBytes over the whole fixture, and the two must agree byte for
-// byte. This file is the only one that names symbols introduced with the
-// windowed read, so the contract checks in read_window_equivalence_test.go stay
-// runnable against the pre-change code.
-//
-// Not parallel: readWindowWholeBelow is package-wide.
+// byte.
 func TestScanLineWindowMatchesNumberLinesBytes(t *testing.T) {
-	orig := readWindowWholeBelow
-	readWindowWholeBelow = 0
-	t.Cleanup(func() { readWindowWholeBelow = orig })
+	t.Parallel()
+	fixtures := readWindowScannerFixtures()
+	windows := readWindowScannerWindows()
+	for _, f := range fixtures {
+		for _, w := range windows {
+			off, lim := w.offset, w.limit
+			want := NumberLinesBytes([]byte(f.body), &off, &lim)
+			got, err := scanLineWindow(t.Context(), strings.NewReader(f.body), nil, w.offset, w.limit)
+			if err != nil {
+				t.Errorf("%s offset=%d limit=%d: scanner error %v", f.name, w.offset, w.limit, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s offset=%d limit=%d:\n scanner = %q\n want    = %q", f.name, w.offset, w.limit, got, want)
+			}
+		}
+	}
+}
 
-	fixtures := []struct {
+// readWindowScannerFixtures are the bodies the scanner differential runs over.
+// They live in a helper so the ReadFileCtx differential below drives exactly the
+// same set with the threshold at 0.
+func readWindowScannerFixtures() []struct {
+	name string
+	body string
+} {
+	return []struct {
 		name string
 		body string
 	}{
@@ -45,22 +65,48 @@ func TestScanLineWindowMatchesNumberLinesBytes(t *testing.T) {
 		{"line exactly a chunk", strings.Repeat("y", readWindowChunk) + "\nz\n"},
 		{"CRLF splits on the chunk edge", strings.Repeat("x", readWindowChunk-1) + "\r\nsecond\n"},
 	}
-	windows := []struct{ offset, limit int }{
+}
+
+// readWindowScannerWindows are the windows the scanner differential requests.
+func readWindowScannerWindows() []struct{ offset, limit int } {
+	return []struct{ offset, limit int }{
 		{1, 1}, {1, 2}, {1, 10}, {1, DefaultReadLines},
 		{2, 1}, {2, 10}, {3, 2},
 		{1, 500}, {500, 1}, {501, 3}, {999, 1}, {1000, 1}, {1001, 1},
 	}
-	for _, f := range fixtures {
-		for _, w := range windows {
+}
+
+// TestReadFileWindowForcesTheScanOnSmallFixtures is where readWindowWholeBelow's
+// override earns its keep. The variable is what keeps a small file on the
+// whole-file path, so setting it to 0 makes every fixture scan — the same
+// fixtures and windows as the scanner differential above, but through
+// ReadFileCtx, which no other small-fixture test reaches.
+//
+// Not parallel: readWindowWholeBelow is package-wide.
+func TestReadFileWindowForcesTheScanOnSmallFixtures(t *testing.T) {
+	orig := readWindowWholeBelow
+	readWindowWholeBelow = 0
+	t.Cleanup(func() { readWindowWholeBelow = orig })
+
+	dir := t.TempDir()
+	env := NewLocalExecutionEnvironment(dir)
+	t.Cleanup(env.Cleanup)
+
+	for _, f := range readWindowScannerFixtures() {
+		path := filepath.Join(t.TempDir(), "fixture.txt")
+		if err := os.WriteFile(path, []byte(f.body), 0o644); err != nil {
+			t.Fatalf("%s: write fixture: %v", f.name, err)
+		}
+		for _, w := range readWindowScannerWindows() {
 			off, lim := w.offset, w.limit
 			want := NumberLinesBytes([]byte(f.body), &off, &lim)
-			got, err := scanLineWindow(t.Context(), strings.NewReader(f.body), nil, w.offset, w.limit)
+			got, err := env.ReadFileCtx(t.Context(), path, &off, &lim)
 			if err != nil {
-				t.Errorf("%s offset=%d limit=%d: scanner error %v", f.name, w.offset, w.limit, err)
+				t.Errorf("%s offset=%d limit=%d: ReadFileCtx error %v", f.name, w.offset, w.limit, err)
 				continue
 			}
 			if got != want {
-				t.Errorf("%s offset=%d limit=%d:\n scanner = %q\n want    = %q", f.name, w.offset, w.limit, got, want)
+				t.Errorf("%s offset=%d limit=%d: scanned entry diverged\n got  = %q\n want = %q", f.name, w.offset, w.limit, got, want)
 			}
 		}
 	}
