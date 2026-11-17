@@ -632,12 +632,23 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		c.phase = "resident"
 		c.eligibleSince = time.Time{}
 		snapshot := c.snapshotWithBlockersLocked(blockers)
+		root := claim.root
 		c.mu.Unlock()
 		// The refusal returned the controller to the resident phase and dropped
 		// the interval, exactly like Abort/AttachRoot/BeginMutation. Notify after
 		// dropping the lock so Run re-evaluates the settled process and re-arms
 		// the idle timer instead of waiting for an unrelated event.
 		c.Changed()
+		// The same return reopens admission, so it also owes the input path
+		// whatever the closed window refused. The evidence that refused this
+		// claim is the work itself: a queue head claimable before the phase left
+		// resident is refused a lease for the read, and this refusal is what
+		// makes it claimable again. Nothing else wakes it -- the client already
+		// holds its Applied receipt, so no later accept arrives to send one, and
+		// Changed reaches only Run.
+		if root != nil {
+			root.wakeRunnablePendingUserInputAfterResidency()
+		}
 		return nil, snapshot, evidenceErr
 	}
 	snapshot := c.snapshotWithBlockersLocked(blockers)
@@ -674,8 +685,14 @@ func (c *RetirementController) Abort(claim *RetirementClaim, failure string) err
 	default:
 		c.failure = "prepare_failed"
 	}
+	root := c.root
 	c.mu.Unlock()
 	c.Changed()
+	// Abort reopens admission, exactly as the evidence refusal above does, so it
+	// owes the input path the same re-probe.
+	if root != nil {
+		root.wakeRunnablePendingUserInputAfterResidency()
+	}
 	return nil
 }
 

@@ -1572,6 +1572,36 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
+// wakeRunnablePendingUserInputAfterResidency wakes the queued-input path when
+// admission reopening leaves accepted user input runnable.
+//
+// beginRetirementMutation refuses every lease while the controller is not
+// resident, so durable input can be claimable and still refused: the serve
+// loop's probe finds it, ProcessPendingUserInput takes no turn, and the loop
+// blocks on a channel nothing will write. The return to resident is the
+// transition that makes the claim possible again, and it notifies this path
+// for exactly that reason. Gated on the probe so an idle session -- the
+// ordinary retire, where nothing is waiting -- sends nothing.
+//
+// The wake is deliberately its own, not wakePendingUserInput's: that one
+// clears a Stop's parked steer (Session.steeringParked), and reopening
+// admission must not deliver steering the user stopped (issue #174).
+func (s *Session) wakeRunnablePendingUserInputAfterResidency() {
+	if !s.hasPendingUserInputToRun() {
+		return
+	}
+	s.mu.Lock()
+	wake := s.pendingUserInputWake
+	s.mu.Unlock()
+	if wake != nil {
+		wake()
+		return
+	}
+	// No daemon drives this session (a bare caller, or a subagent): notify is
+	// the only wake it has.
+	s.notify()
+}
+
 // runnableClientMutationStartTurnID reports the next turn the start path can run
 // and whether it is runnable right now. Its start branch mirrors
 // claimClientMutationStart's fence guard exactly: NO start is reported runnable
