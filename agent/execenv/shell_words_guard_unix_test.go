@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// TestExecCommandKeepsTheShellForANonRegularProgram proves finding 6. An
+// TestExecCommandKeepsTheShellForANonRegularProgram pins that a non-regular
+// program keeps the shell. An
 // executable-mode FIFO passes a permission check and then blocks in os.Open,
 // which runs before any timeout or cancellation exists to release it. bash
 // refuses a FIFO as a command (126), so the fast path must refuse it too — and

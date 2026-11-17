@@ -221,8 +221,8 @@ func sameDirectory(a, b string) bool {
 //     — which is 127, not bash's 126.
 //
 // The accepted formats are the ones execve itself recognizes here: a `#!` line,
-// ELF, Mach-O (thin or fat), and PE/COFF. Anything else, including an empty file
-// and a text file with no shebang, keeps the command on the shell.
+// ELF, and Mach-O (thin or fat). Anything else, including an empty file and a
+// text file with no shebang, keeps the command on the shell.
 // os.Stat follows symlinks, so a link to a regular program is checked as that
 // program.
 func kernelLoadsProgram(path string) bool {
@@ -249,7 +249,6 @@ func kernelLoadsProgram(path string) bool {
 	}
 	switch {
 	case string(magic) == "\x7fELF",
-		string(magic) == "MZ",
 		// Mach-O: 32/64-bit, either byte order, and a universal ("fat") header.
 		string(magic) == "\xfe\xed\xfa\xce",
 		string(magic) == "\xce\xfa\xed\xfe",

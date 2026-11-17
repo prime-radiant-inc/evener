@@ -494,10 +494,12 @@ func TestExecCommandKeepsTheShellForAProgramTheChildPathCannotResolve(t *testing
 	}
 
 	// A program named by path needs no lookup on either side.
-	if _, err := env.ExecCommand(context.Background(), "/bin/true", 5000, "", nil); err != nil {
+	program := filepath.Join(t.TempDir(), "binary")
+	writeExecFixture(t, program, "#!/bin/sh\nexit 0\n")
+	if _, err := env.ExecCommand(context.Background(), program, 5000, "", nil); err != nil {
 		t.Fatalf("ExecCommand: %v", err)
 	}
-	if len(factory.argv) != 1 || !slices.Equal(factory.argv[0], []string{"/bin/true"}) {
+	if len(factory.argv) != 1 || !slices.Equal(factory.argv[0], []string{program}) {
 		t.Fatalf("argv = %q, want the path-shaped program on the fast path", factory.argv)
 	}
 }
@@ -522,6 +524,7 @@ func TestExecCommandKeepsTheShellForAPathThatIsNotExecutable(t *testing.T) {
 		return path
 	}
 	shebang := writeExec("shebang", "#!/bin/sh\nexit 0\n")
+	program := writeExec("program", "#!/bin/sh\nexit 0\n")
 	noShebang := writeExec("plain", "exit 0\n")
 	// A stray NUL does not make a text file a program: execve still returns
 	// ENOEXEC (bash: 126 "cannot execute binary file"), so a NUL is not a
@@ -540,7 +543,7 @@ func TestExecCommandKeepsTheShellForAPathThatIsNotExecutable(t *testing.T) {
 	env, factory := recordingCommandEnv(t)
 	ctx := context.Background()
 
-	for _, path := range []string{shebang, "/bin/true"} {
+	for _, path := range []string{shebang, program} {
 		factory.shell, factory.argv = nil, nil
 		if _, err := env.ExecCommand(ctx, path, 5000, "", nil); err != nil {
 			t.Fatalf("ExecCommand(%q): %v", path, err)
@@ -560,11 +563,12 @@ func TestExecCommandKeepsTheShellForAPathThatIsNotExecutable(t *testing.T) {
 	}
 }
 
-// TestStreamCommandChoosesTheSameRuntimeAsExecCommand pins finding 1: the shell
-// tool does not call ExecCommand, it calls StreamCommand (registerShellTools →
-// runShell), so a selection made only in ExecCommand left ordinary shell tool
-// calls paying the `bash -o pipefail -c` wrapper this change removes. Both
-// entry points must hand the same command to the same runtime.
+// TestStreamCommandChoosesTheSameRuntimeAsExecCommand pins that both entry points
+// choose one runtime: the shell tool does not call ExecCommand, it calls
+// StreamCommand (registerShellTools → runShell), so a selection made only in
+// ExecCommand left ordinary shell tool calls paying the `bash -o pipefail -c`
+// wrapper this change removes. Both entry points must hand the same command to
+// the same runtime.
 func TestStreamCommandChoosesTheSameRuntimeAsExecCommand(t *testing.T) {
 	t.Parallel()
 

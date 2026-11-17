@@ -51,9 +51,10 @@ func runBothWays(t *testing.T, root string, inherited []string, command, working
 	return shell, fast, factory
 }
 
-// TestExecCommandKeepsTheShellForABareNameTheKernelCannotLoad proves finding 2. A
-// bare name resolves through the child PATH, and the file it resolves to need
-// not be a format execve runs: an executable, shebang-less script (a venv's
+// TestExecCommandKeepsTheShellForABareNameTheKernelCannotLoad pins that a bare
+// name resolving to a file the kernel cannot load keeps the shell. A bare name
+// resolves through the child PATH, and the file it resolves to need not be a
+// format execve runs: an executable, shebang-less script (a venv's
 // console script, for instance) is run by bash as a shell script, where an argv
 // runtime fails with ENOEXEC and the caller sees 127 instead of the script's own
 // exit status. The resolved PATH target must pass the same kernelLoadsProgram
@@ -98,7 +99,8 @@ func TestExecCommandKeepsTheShellForABareNameTheKernelCannotLoad(t *testing.T) {
 	}
 }
 
-// TestExecCommandKeepsTheShellForARelativePathEntry proves finding 3. bash
+// TestExecCommandKeepsTheShellForARelativePathEntry pins that a relative PATH
+// entry keeps the shell. bash
 // resolves a relative PATH component against the directory the command runs in;
 // a lookup done by this process would resolve it against Evener's own directory
 // and could fall through to a later absolute entry, running a different program
@@ -141,7 +143,8 @@ func TestExecCommandKeepsTheShellForARelativePathEntry(t *testing.T) {
 	}
 }
 
-// TestExecCommandKeepsTheShellForAnExportedFunction proves finding 4. $BASH_ENV
+// TestExecCommandKeepsTheShellForAnExportedFunction pins that an exported shell
+// function keeps the shell. $BASH_ENV
 // is not the only way a shell function arrives: bash imports an exported
 // function definition from a BASH_FUNC_<name>%% environment entry, and the
 // default environment filter passes such an entry through. With BASH_ENV unset,
@@ -187,10 +190,11 @@ func TestExecCommandKeepsTheShellForAnExportedFunction(t *testing.T) {
 	}
 }
 
-// TestExecCommandFastPathMatchesTheShellOnPWD proves finding 5. A command runs in
-// the prepared working directory, but the argv child inherits this process's own
-// $PWD; bash reconciles PWD with the directory it actually runs in. A tool that
-// reads PWD as its project root would otherwise see the wrong one.
+// TestExecCommandFastPathMatchesTheShellOnPWD pins that the fast path reports the
+// same PWD the shell would. A command runs in the prepared working directory, but
+// the argv child inherits this process's own $PWD; bash reconciles PWD with the
+// directory it actually runs in. A tool that reads PWD as its project root would
+// otherwise see the wrong one.
 func TestExecCommandFastPathMatchesTheShellOnPWD(t *testing.T) {
 	t.Parallel()
 	if runtimeGOOS == "windows" {
@@ -205,6 +209,12 @@ func TestExecCommandFastPathMatchesTheShellOnPWD(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// TMPDIR is a symlink on macOS, so the run directory the process chdirs to
+	// and the spelling bash reports must be compared through the resolved path.
+	want, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	inherited := fixturePathEnv("/usr/local/bin", "/usr/bin", "/bin")
 
 	shell, fast, factory := runBothWays(t, root, inherited, "printenv PWD", sub)
@@ -214,8 +224,8 @@ func TestExecCommandFastPathMatchesTheShellOnPWD(t *testing.T) {
 	if fast.Stdout != shell.Stdout {
 		t.Fatalf("fast-path PWD = %q, the shell's PWD = %q", fast.Stdout, shell.Stdout)
 	}
-	if strings.TrimSpace(fast.Stdout) != sub {
-		t.Fatalf("PWD = %q, want the working directory %q", fast.Stdout, sub)
+	if got := strings.TrimSpace(fast.Stdout); got != want {
+		t.Fatalf("PWD = %q, want the working directory %q", got, want)
 	}
 }
 
