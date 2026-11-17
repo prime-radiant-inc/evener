@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -499,7 +500,9 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 		s.comm.updated = true
 	}
 	s.mu.Unlock()
-	s.emitWithProvenance(data, causal)
+	// The recorded turn above retains causal; the live envelope gets its own
+	// copy so a durable record and a delivered event never share one stamp.
+	s.emitWithProvenance(data, provenance.Clone(causal))
 	return nil
 }
 

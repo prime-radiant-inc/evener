@@ -122,11 +122,11 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		// session owns, whose owner stream already carries it.
 		for _, runtime := range ancestorRuntimes {
 			if runtime != ownerRuntime {
-				runtime.emitWithProvenance(data, row.descriptor.Provenance)
+				runtime.emitWithProvenance(data, provenance.Clone(row.descriptor.Provenance))
 			}
 		}
 		if ownerRuntime != nil {
-			ownerRuntime.emitWithProvenance(data, row.descriptor.Provenance)
+			ownerRuntime.emitWithProvenance(data, provenance.Clone(row.descriptor.Provenance))
 			continue
 		}
 		s.mu.Lock()

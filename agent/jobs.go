@@ -1130,7 +1130,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
 		OriginItemID:     originItemID,
-	}, e.Provenance)
+	}, provenance.Clone(e.Provenance))
 }
 
 func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
@@ -1183,7 +1183,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
 		OriginItemID:     originItemID,
-	}, e.Provenance)
+	}, provenance.Clone(e.Provenance))
 }
 
 // errJobNotFound is the shared not-found error for a job lookup by id. It points
