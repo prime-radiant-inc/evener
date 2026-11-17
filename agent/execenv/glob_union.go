@@ -129,7 +129,22 @@ func globUnionGroups(patterns []string) (groups []globUnionGroup, singles []stri
 // per-pattern loop this replaces, so the call stays bounded by one call's
 // worth of listing and match work however many alternatives the pattern
 // expands into.
+//
+// Every pattern is validated before any traversal starts. A per-pattern walk
+// gets that check for free, because doublestar.GlobWalk validates its pattern
+// before walking, but the shared walk's only validator is doublestar.Match
+// inside the visit callback — so a malformed alternative would be rejected only
+// where the cover walk happened to offer it a path. A pattern like
+// "missing/**/{a,b}[" would then answer an empty list and a nil error merely
+// because "missing" is absent. Validating here makes a bad pattern fail with
+// the same error it always did, whatever the tree holds and whichever branch
+// would have run.
 func globCandidatesForPatterns(ctx context.Context, fsys fs.FS, patterns []string, budget *GlobBudget) ([]globCandidate, error) {
+	for _, pattern := range patterns {
+		if !doublestar.ValidatePattern(pattern) {
+			return nil, doublestar.ErrBadPattern
+		}
+	}
 	groups, singles := globUnionGroups(patterns)
 	if len(groups) == 0 {
 		// No two patterns share a walk, so every answer comes from the same

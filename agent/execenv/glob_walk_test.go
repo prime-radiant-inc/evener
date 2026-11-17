@@ -617,6 +617,49 @@ func TestGlobBraceExpansionNeverListsASubtreeItsPatternsCannotReach(t *testing.T
 	}
 }
 
+// TestGlobBraceExpansionRejectsAMalformedAlternative pins that sharing a walk
+// does not turn a bad pattern into an empty success. A per-pattern walk gets
+// that check from doublestar.GlobWalk, which validates before walking; the
+// shared walk's only validator is doublestar.Match inside the visit callback,
+// so it rejected a malformed alternative only where the cover walk happened to
+// offer it a path. "missing/**/{a,b}[" against a base with no "missing" walked
+// nowhere, matched nothing, and answered a nil error.
+//
+// Both tree shapes are exercised, because the empty one is what hid the defect:
+// with files present the walk reached a path and the error surfaced, so a test
+// over a populated tree alone would have passed against the bug.
+func TestGlobBraceExpansionRejectsAMalformedAlternative(t *testing.T) {
+	empty := t.TempDir()
+	populated := t.TempDir()
+	for _, rel := range []string{"a.go", "sub/b.go"} {
+		p := filepath.Join(populated, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("package b\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tree := range []struct{ name, root string }{{"empty", empty}, {"populated", populated}} {
+		env := NewLocalExecutionEnvironment(tree.root)
+		for _, pattern := range []string{
+			"missing/**/{a,b}[",
+			"**/{a,b}[",
+			"**/a[",
+			"{**/a[,x.go}",
+		} {
+			t.Run(tree.name+"/"+pattern, func(t *testing.T) {
+				for _, includeIgnored := range []bool{false, true} {
+					matches, _, err := env.GlobWithExclusions(t.Context(), pattern, tree.root, includeIgnored)
+					if err == nil {
+						t.Fatalf("GlobWithExclusions(%q, includeIgnored=%v) on the %s tree = (%v, nil error), want the bad-pattern error: a malformed alternative must fail however much of the tree the walk reaches", pattern, includeIgnored, tree.name, matches)
+					}
+				}
+			})
+		}
+	}
+}
+
 // recordingFS is a listCountingFS that also records every listed directory name,
 // so a test can assert on which directories a walk entered rather than only how
 // many.
