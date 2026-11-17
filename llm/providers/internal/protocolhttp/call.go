@@ -8,7 +8,6 @@ package protocolhttp
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -109,7 +108,7 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	}
 	p := &Prepared{Request: httpReq, PrunedFields: pruned}
 	if c.Body != nil {
-		b, err := json.Marshal(c.Body)
+		b, err := MarshalBody(c.Body)
 		if err != nil {
 			return nil, err
 		}
