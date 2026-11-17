@@ -35,6 +35,13 @@ func effortRegistry(tb testing.TB) *hubcore.ProviderRegistry {
 						DefaultEffort: new("High"),
 					}},
 					"chat-model": {Caps: registry.Caps{Reasoning: new(false)}},
+					// A reasoning row whose ladder vouches for the medium
+					// fallback, so a cold read can name the tier the daemon
+					// would send.
+					"laddered-model": {Caps: registry.Caps{
+						Reasoning:    new(true),
+						EffortValues: []string{"low", "medium", "high"},
+					}},
 				}},
 			}),
 		}, extra...)...)
@@ -134,9 +141,11 @@ func TestPastEntryThread_ReasoningFactsHonestWithoutRegistry(t *testing.T) {
 
 // TestPastEntryThread_DefaultReasoningEffort pins the cold read's unset-effort
 // default to the rule the live envelope applies (agent.DefaultReasoningEffort):
-// the row's stated default, normalized, else medium; nothing for a row that
-// does not reason or that no registry resolves. A session left at "(default)"
-// reads the same tier whether or not its daemon is running.
+// the row's stated default, normalized, else the medium fallback when the row's
+// ladder vouches for it; nothing for a row that does not reason, for one whose
+// dialect would drop the fallback (an empty ladder on a level-name dialect), or
+// that no registry resolves. A session left at "(default)" reads the same tier
+// whether or not its daemon is running.
 func TestPastEntryThread_DefaultReasoningEffort(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -145,7 +154,8 @@ func TestPastEntryThread_DefaultReasoningEffort(t *testing.T) {
 		want     string
 	}{
 		{name: "the row's stated default", registry: true, model: "stated-model", want: "high"},
-		{name: "the medium fallback for a row that states none", registry: true, model: "house-model", want: "medium"},
+		{name: "the medium fallback the ladder vouches for", registry: true, model: "laddered-model", want: "medium"},
+		{name: "nothing for a row whose dialect drops an unvouched fallback", registry: true, model: "house-model", want: ""},
 		{name: "nothing for a row that does not reason", registry: true, model: "chat-model", want: ""},
 		{name: "nothing without a registry", registry: false, model: "stated-model", want: ""},
 	}
