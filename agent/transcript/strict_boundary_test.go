@@ -189,18 +189,14 @@ func TestReadLineBoundExcludesNewlineAndDrainsOversizedRecords(t *testing.T) {
 		name string
 		open func() readLineFunc
 	}{
-		{name: "ReadLine", open: func() readLineFunc {
-			return func(reader *bufio.Reader, maxLineBytes int) ([]byte, bool, int64, error) {
-				return ReadLine(reader, maxLineBytes)
-			}
-		}},
+		// ReadLine's signature is readLineFunc's, so the function value is the
+		// direct one.
+		{name: "ReadLine", open: func() readLineFunc { return ReadLine }},
 		// One LineBuffer across the whole sequence: the buffer is what persists
 		// between calls, so a fresh one per record would test nothing.
 		{name: "LineBuffer", open: func() readLineFunc {
 			var b LineBuffer
-			return func(reader *bufio.Reader, maxLineBytes int) ([]byte, bool, int64, error) {
-				return b.ReadLine(reader, maxLineBytes)
-			}
+			return b.ReadLine
 		}},
 	}
 	for _, seq := range lineReadSequences {

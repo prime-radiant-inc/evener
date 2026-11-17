@@ -108,7 +108,7 @@ func coldRebuildMaxRatio() float64 {
 // index — so an intentional format change does not need a digest to announce
 // itself, and TestColdRebuildAllocationBudget's assertAllWindows already proves
 // a rebuilt index reads back correctly.
-func TestColdRebuildSidecarsUnchanged(t *testing.T) {
+func TestColdRebuildSidecarsAreReproducible(t *testing.T) {
 	path, _, _ := syntheticTranscript(t, coldRebuildTurns)
 	if got, want := rebuildSidecarDigests(t, path), rebuildSidecarDigests(t, path); got != want {
 		t.Fatalf("two rebuilds of one transcript differ, so the rebuild is not a function of its input:\n%s\n%s", got, want)
