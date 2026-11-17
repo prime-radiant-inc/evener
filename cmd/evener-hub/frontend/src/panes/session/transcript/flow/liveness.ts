@@ -126,7 +126,11 @@ export function formatRetryWait(retry: RetryWait | QuotaWait): string {
   // it so the reader can tell a fresh wait from one hours in.
   if (retry.errorClass === "quota_exceeded") {
     const wait = retry.inProgress ? "in progress" : `resumes in ${compactDuration(retry.delayMs)}`;
-    return `${formatRetryCause(retry.errorClass)} — ${wait} — ${formatExactGap(retry.groupElapsedMs)} on this call`;
+    // The snapshot's instant knows no elapsed time; inventing "0s on this
+    // call" would claim a fresh wait a reload cannot prove. Only a wait
+    // that actually reported one renders the elapsed suffix.
+    const elapsed = retry.groupElapsedMs > 0 ? ` — ${formatExactGap(retry.groupElapsedMs)} on this call` : "";
+    return `${formatRetryCause(retry.errorClass)} — ${wait}${elapsed}`;
   }
   const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
   const attempt =
@@ -205,14 +209,24 @@ export function describeLiveness(
   // updates for 3h", a stall report for a scheduled pause. The instant form
   // is the read snapshot's (a pane that re-hydrated, with no notification);
   // the retry form is the live announcement, whose delay runs to the reset.
-  // A live quota retry's own delay runs to the same reset; its RetryWait
-  // carries the call's elapsed time, which the bare instant cannot, so the
-  // live form renders directly and only the snapshot's synthesizes.
-  if (quotaRemainingMs !== undefined) {
-    return { level: "retrying", text: formatRetryWait(quotaWaitFrom(quotaRemainingMs)) };
-  }
   const liveQuotaWait = retry !== undefined && retry.errorClass === "quota_exceeded" && !retry.inProgress;
-  if (liveQuotaWait) return { level: "retrying", text: formatRetryWait(retry) };
+  // A live quota retry and the instant its reducer stamped name the same
+  // wait. The instant's remaining time is the honest countdown (measured
+  // from this render's now, while the retry's delayMs was measured when the
+  // announcement landed); the retry's own elapsed time is the one the
+  // instant cannot know. Either source alone renders alone: the instant
+  // without the retry (a reload) invents no elapsed time, the retry without
+  // the instant (a caller handing only the notification) keeps its own delay.
+  if (quotaRemainingMs !== undefined) {
+    const elapsed = liveQuotaWait ? retry.groupElapsedMs : 0;
+    return {
+      level: "retrying",
+      text: formatRetryWait({ ...quotaWaitFrom(quotaRemainingMs), groupElapsedMs: elapsed }),
+    };
+  }
+  if (liveQuotaWait) {
+    return { level: "retrying", text: formatRetryWait(retry) };
+  }
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.

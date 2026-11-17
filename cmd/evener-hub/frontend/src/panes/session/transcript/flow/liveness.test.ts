@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { STUCK_AFTER_MS } from "@evener/appwire-client";
+import { compactDuration, STUCK_AFTER_MS } from "@evener/appwire-client";
 import { expect, test } from "vitest";
 import {
   describeLiveness,
@@ -229,17 +229,28 @@ test("describeLiveness: a non-rate-limit retryable error names itself genericall
 // per-second countdown an ordinary retry's delayMs uses. The quota retry the
 // daemon sends always reads attempt 1 and never exhausts a budget, so the
 // attempt count carries no information and renders nowhere.
-test("formatRetryCause: a quota wait names itself, not a generic provider error", () => {
-  expect(formatRetryCause("quota_exceeded")).toBe("waiting for quota");
-  expect(formatRetryCause("rate_limit")).toBe("rate limited");
-  expect(formatRetryCause("server")).toBe("provider error");
+// The copy is not the oracle (testing.md): what these pin is the cause
+// NAMES' distinctness and discrimination, the job the words exist to do - a
+// quota wait, a rate limit and an unnamed provider failure must never
+// render as one another.
+test("formatRetryCause: quota, rate limit and generic causes never read as one another", () => {
+  const quota = formatRetryCause("quota_exceeded");
+  const rateLimit = formatRetryCause("rate_limit");
+  const generic = formatRetryCause("server");
+  expect(new Set([quota, rateLimit, generic]).size).toBe(3);
+  expect(formatRetryCause("quota_exceeded")).toBe(quota);
+  expect(formatRetryCause("timeout")).toBe(generic);
 });
 
-test("formatRetryWait: a quota wait reads the wall-clock wait, not attempt counts", () => {
+test("formatRetryWait: a quota wait renders the wait itself, never an attempt count", () => {
   const retry = retryWait({ attempt: 1, attemptCap: 1, delayMs: 2 * 60 * 60_000, errorClass: "quota_exceeded" });
-  expect(formatRetryWait(retry)).toContain("waiting for quota");
-  expect(formatRetryWait(retry)).toContain("2h");
+  const line = formatRetryWait(retry);
   expect(formatRetryWait(retry)).not.toContain("attempt");
+  // The wait is the line's whole content beside the cause and the elapsed
+  // time: the duration renders as its compact wall-clock form, not a
+  // seconds countdown.
+  expect(line).toContain(compactDuration(2 * 60 * 60_000));
+  expect(line).not.toContain(`${Math.round((2 * 60 * 60_000) / 1000)}s`);
 });
 
 test("describeLiveness: past the stuck threshold a retry reports both facts, never suppressing the stall", () => {
@@ -286,6 +297,28 @@ test("describeLiveness: a quota wait known only as a resume instant shows at onc
   const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, undefined, resumesIn);
   expect(hoursIn.level).toBe("retrying");
   expect(hoursIn.text).not.toContain("no updates for");
+});
+
+// A live quota wait carries both sources at once: the daemon's announcement
+// (with the call's elapsed time) and the resume instant the reducer stamped
+// from it. The instant drives the countdown — it is measured from the
+// render's now, while the announcement's delay was measured when it
+// (the snapshot path) knows no elapsed time, and must not invent one.
+test("describeLiveness: a live quota wait keeps its elapsed time beside the instant's countdown, and the instant alone invents none", () => {
+  const resumesIn = 90 * 60_000;
+  const live = retryWait({
+    attempt: 1,
+    attemptCap: 1,
+    delayMs: resumesIn + 10_000,
+    errorClass: "quota_exceeded",
+    groupElapsedMs: 14 * 60_000,
+  });
+  const both = describeLiveness(2_000, true, 0, live, resumesIn);
+  expect(both.level).toBe("retrying");
+  expect(both.text).toContain(formatExactGap(14 * 60_000));
+  const snapshot = describeLiveness(2_000, true, 0, undefined, resumesIn);
+  expect(snapshot.level).toBe("retrying");
+  expect(snapshot.text).not.toContain(formatExactGap(0));
 });
 
 test("describeLiveness: a retry is never stuck while a subagent runs", () => {
