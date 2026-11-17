@@ -184,10 +184,12 @@ test("a deliberate retry recovers a failed boundary page", async () => {
   navigationStore.init(client, capability("retry-generation"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   const controller = createNeedsYouController();
-  expect(controller.getSnapshot().readFailed).toBe(true);
+  // The failed first page leaves no session to offer, so the control has
+  // nothing to show, while the controller still owes the reader a retry.
+  expect(controller.getSnapshot().choices).toEqual([]);
+  expect(controller.getSnapshot().canLoadMore).toBe(true);
   await controller.loadMore();
   expect(offsets).toEqual([0, 0]);
-  expect(controller.getSnapshot().readFailed).toBe(false);
   expect(controller.getSnapshot().choices.map((choice) => choice.summary.ref)).toEqual(["local:recovered"]);
   controller.dispose();
 });
@@ -527,7 +529,9 @@ test("a failed later page keeps healthy choices selectable and retries the same 
   const generation = navigationStore.getState().clientGenerationID;
   await controller.loadMore();
   expect(offsets).toEqual([0, 2]);
-  expect(controller.getSnapshot().readFailed).toBe(true);
+  // The failed later page keeps the queue it already had, so the control
+  // still has sessions to offer while the retry is owed.
+  expect(controller.getSnapshot().canLoadMore).toBe(true);
   expect(controller.getSnapshot().choices.find((choice) => choice.summary.ref === "local:b")?.selectable).toBe(true);
 
   const before = window.history.length;
@@ -542,7 +546,6 @@ test("a failed later page keeps healthy choices selectable and retries the same 
   await controller.loadMore();
   expect(offsets).toEqual([0, 2, 2]);
   expect(navigationStore.getState().clientGenerationID).toBe(generation);
-  expect(controller.getSnapshot().readFailed).toBe(false);
   expect(controller.getSnapshot().choices.map((choice) => choice.summary.ref)).toEqual([
     "local:a",
     "local:b",

@@ -44,20 +44,35 @@ func promotedAttentionLevel(normalized string, askPending, pendingEscalation boo
 // population both DeriveAttention's summary and BuildTree's needs-you tier
 // (tree.go) draw from: top-level — neither a subagent nor a fork-superseded
 // parent nested under its active continuation (roots) — and not manually
-// archived. A subagent is one its persisted meta says so or one a live entry
+// archived, by its own decision or by the decision on the project that owns
+// it. A subagent is one its persisted meta says so or one a live entry
 // reports as its running child (runningSubagents, see RunningSubagentIDs), so
 // a subagent whose meta is missing is still excluded. A live session that
 // neither source names is top-level and unarchived by definition. One
 // function, both callers, so population membership can't become two
 // independently-maintained copies again — the same failure mode
 // promotedAttentionLevel above already fixed for state promotion.
-func tierEligible(sessionID string, roots *RootIndex, runningSubagents map[string]bool, decisions map[ArchiveKey]bool) bool {
+//
+// The project half reads the manual decision only, not Live's whole
+// SessionArchived rule: needs_you never decays with age (see DeriveAttention
+// below), while Live drops an age-archived row. An archived project is a
+// clearing verb for every session under it, and Live already honours it, so
+// skipping it here left the badge and the tier claiming a session the rail
+// no longer listed.
+func tierEligible(entry LiveEntry, roots *RootIndex, runningSubagents map[string]bool, decisions map[ArchiveKey]bool) bool {
+	sessionID := entry.SessionID
 	if roots.IsSubagent(sessionID) || runningSubagents[sessionID] || roots.IsNested(sessionID) {
 		return false
 	}
 	// Archive suppression: only an explicit user archive decision clears
 	// attention — archive is a clearing verb (spec v5, round-4 A4/B7).
 	if d := decisionFor(decisions, sessionID); d != nil && *d {
+		return false
+	}
+	// The owning source's project decision clears too: LiveSessionArchived
+	// already drops such a row from Live, so keeping it here would light a
+	// count and a band for a session no section can show.
+	if projectArchivedDecision(decisions, entry.Project.ID, []string{liveEntrySource(entry)}) {
 		return false
 	}
 	return true
@@ -99,7 +114,7 @@ func DeriveAttentionFromRoots(roots *RootIndex, meta func(id string) (schema.Ses
 		if le.SessionID == "" {
 			continue
 		}
-		if !tierEligible(le.SessionID, roots, runningSubagents, decisions) {
+		if !tierEligible(le, roots, runningSubagents, decisions) {
 			continue
 		}
 		state := NormalizeState(le.Status)

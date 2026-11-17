@@ -390,6 +390,12 @@ disappears entirely while neither would. Nothing floats over the transcript's
 bottom edge, and no clearance band pads its end, until there is something to
 float.
 
+That predicate also answers whether anything needs the reader: Next mounts for
+a session it can offer, or for rows already loaded while another page of the
+queue is still to read, and stays unmounted while the queue is unread, a read
+is in flight, or a read failed. A manifest count with no loaded row behind it
+never mounts it.
+
 The control hides while an IME composition is in progress, while a question or
 approval is pending in the focused conversation, or while the command palette or
 another blocking modal owns interaction. It returns when that state ends. Editor

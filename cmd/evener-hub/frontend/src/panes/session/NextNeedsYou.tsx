@@ -27,19 +27,20 @@ export interface NextNeedsYouProps {
 // Whether the control has anything to offer right now: the one predicate both
 // the control's own render gate and ConversationBody's slot-mounting decision
 // read, so a control with nothing to show never pads the stack it floats in.
-// A loaded page holding only the current session is not the whole queue:
-// demand stays visible while another page may exist, a read failed, or a page
-// is loading. On a cold shell the first manifest read is also enough to offer
-// page zero; after a manifest was known, reconnects stay quiet until the
-// queue returns or a read fails.
+// "Needs you" is a claim that a session is waiting on the reader, so only a
+// session to offer earns it: a resolved next session, or rows already loaded
+// while another page of them is still to read. Waiting on a read, a read that
+// failed, and a manifest count with no row behind it are all states where
+// nothing is known to need the reader, and the manifest's count on its own is
+// not evidence - it refreshes on its own schedule and can lag a queue that
+// drained.
 export function nextNeedsYouVisible(snapshot: NeedsYouSnapshot, hidden: boolean): boolean {
-  return (
-    !hidden &&
-    !snapshot.blocked &&
-    (snapshot.nextRef !== null ||
-      snapshot.readFailed ||
-      (snapshot.canLoadMore && (snapshot.choices.length > 0 || snapshot.loading || snapshot.canLoadInitialPage)))
-  );
+  if (hidden || snapshot.blocked) return false;
+  if (snapshot.nextRef !== null) return true;
+  // No resolved successor, but loaded rows and another page of them: the last
+  // loaded row has no known successor until that page arrives (see
+  // resolveNextRef), so the control is how the reader asks for it.
+  return snapshot.canLoadMore && snapshot.choices.length > 0;
 }
 
 // The same decision as one subscribed boolean, for consumers far larger than

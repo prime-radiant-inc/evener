@@ -14,7 +14,11 @@
 //
 // The needs-you section's rows join as the hub sends them, archived ones
 // included: the hub's tier never decays with age, and the header's count and
-// Next needs you both walk the same rows.
+// Next needs you both walk the same rows. The header's chip is a second number,
+// though: it is the hub's attention summary, which files a failed session under
+// its own error count while the tier lists it in this band. A failed session
+// therefore shows here without adding to the chip — it is a failure the reader
+// can see in the band, not a session waiting on them.
 import { LOCAL_HOST, type NavigationSessionSummary, type Source } from "@evener/appwire-client";
 import {
   type Band,

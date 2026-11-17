@@ -377,6 +377,34 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
   expect(selectNextSectionOffset("needs_you", state)).toBe(4);
 });
 
+// A generation change keeps the previous manifest's data and marks it stale
+// while the fresh read lands, and any failed read leaves the data in place with
+// an error. Either way the count is the previous generation's answer, and the
+// badge that renders it would claim a queue the store has already replaced.
+test("needs-you count refuses a manifest that is not settled", () => {
+  for (const unsettled of [{ stale: true }, { loading: true }, { error: new Error("read failed") }]) {
+    store.setState({
+      mode: "v3",
+      manifest: {
+        key: { kind: "manifest" },
+        data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 75 }, pin_sections: { count: 0 } } }),
+        loadedRevision: 1,
+        targetRevision: 1,
+        forceToken: 0,
+        etag: "m",
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: generation,
+        ...unsettled,
+      },
+      resources: new Map(),
+      visibleResourceKeys: new Set(),
+    });
+    expect(selectNeedsYouCount(store.getState())).toBe(0);
+  }
+});
+
 test("needs-you cursor uses limit as the same-offset canonical tie-break", () => {
   const row = (ref: string) => ({
     ref,

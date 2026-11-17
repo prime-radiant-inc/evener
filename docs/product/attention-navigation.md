@@ -38,6 +38,16 @@ it has no human-attention value — and a delegate whose delivered input is not
 yet consumed reads as running work, not attention
 ([`delegateDotState`](../../appwire-client/typescript/delegateDetails.ts)).
 
+Archiving is a clearing verb for the population too, and it reaches the whole
+project as well as a single session. `tierEligible` drops a session whose own
+decision archives it and one whose owning project's decision does, so a
+manually archived project stops claiming attention for every session under it.
+Only the manual decision counts here: the sidebar's age-based auto-archive
+never clears attention, because a needs-you session does not decay. The Live
+tier already applies the same archive facts
+([`LiveSessionArchived`](../../cmd/evener-hub/internal/hubcore/tree.go)), so a
+session cannot leave Live and keep a needs-you badge lit.
+
 ## Live bands on the rail
 
 The rail's Live section answers "who needs me" before anything else. It reads
@@ -125,6 +135,20 @@ covers the palette and blocking modals. There is one shared blocked snapshot,
 not one observer per consumer; the palette reads the same controller through
 its own subscription and defers its needs-you actions until the snapshot
 unblocks.
+
+"Needs you" is a claim that a session is waiting on the reader, so the same
+predicate also decides whether there is one to offer. The control appears for
+a resolved next session, or while rows it already holds have another page of
+the queue still to read — the last loaded row has no known successor until
+that page arrives. It does not appear while the queue is merely unread, while
+a read is in flight, or after a read failed: nothing there says a session
+needs the reader, and the manifest's attention count is not evidence on its
+own, because it refreshes on its own schedule and can lag a queue that
+drained. A cold shell and a failed navigation surface therefore show no
+control, and the queue stays reachable through the chord and the palette,
+which demand page zero from the same controller. The sidebar header's count
+comes from the hub's attention summary, not from this predicate, so neither
+surface inventing presence on its own.
 
 A long press on the Next button opens the list of other needs-you sessions;
 the button beside it — a More affordance (an ellipsis icon labelled "More

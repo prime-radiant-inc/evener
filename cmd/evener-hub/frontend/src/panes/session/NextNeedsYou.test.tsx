@@ -17,36 +17,38 @@ const row = needsYouRow;
 
 function installRows(rows: NavigationSessionSummary[] = [row("local:a"), row("local:b")], manifestCount = rows.length) {
   installNeedsYouPage(0, rows);
-  navigationStore.setState({
-    mode: "v3",
-    manifest: {
-      key: { kind: "manifest" },
-      data: {
-        generation_id: "g",
-        revision: 1,
-        sources: [],
-        attentionSummary: { needsYou: manifestCount, error: 0, working: 0 },
-        sections: {
-          live: { count: 0 },
-          needs_you: { count: manifestCount },
-          pin_sections: { count: 0 },
-        },
-        catalogs: {
-          projects: { count: 0 },
-          archived_projects: { count: 0 },
-          test_runs: { count: 0 },
-        },
-      },
-      loadedRevision: 1,
-      targetRevision: null,
-      forceToken: 0,
-      etag: null,
-      loading: false,
-      stale: false,
-      error: null,
-      generationID: "g",
-    },
-  });
+  navigationStore.setState({ mode: "v3", manifest: manifestEntry({ count: manifestCount, loading: false }) });
+}
+
+/** A manifest resource reporting `count` needs-you sessions, or one whose read
+ * is still in flight (`data: null`, `loading: true`). */
+function manifestEntry({
+  count = 0,
+  loading,
+}: {
+  count?: number;
+  loading: boolean;
+}): NonNullable<ReturnType<typeof navigationStore.getState>["manifest"]> {
+  const data = {
+    generation_id: "g",
+    revision: 1,
+    sources: [],
+    attentionSummary: { needsYou: count, error: 0, working: 0 },
+    sections: { live: { count: 0 }, needs_you: { count }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  };
+  return {
+    key: { kind: "manifest" },
+    data: loading ? null : data,
+    loadedRevision: loading ? null : 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: null,
+    loading,
+    stale: false,
+    error: null,
+    generationID: "g",
+  };
 }
 
 function seedSource(): string {
@@ -478,6 +480,81 @@ test("the control hides when the known queue holds no other eligible session", (
   });
   expect(screen.getByTestId("next-needs-you")).toBeTruthy();
   view.unmount();
+});
+
+// A control that offers "Needs you" over an empty queue is not an affordance,
+// it is a false claim: the reader is told to look for a session that does not
+// exist. Only a row the controller can actually offer may put it on screen;
+// waiting on a read, a failed read and an unread manifest are all states where
+// nothing is known to need the reader.
+test("a manifest whose advertised queue returns no rows leaves the control unmounted", () => {
+  installNeedsYouPage(0, []);
+  navigationStore.setState({ mode: "v3", manifest: manifestEntry({ count: 3, loading: false }) });
+  seedSource();
+
+  render(controlTree());
+
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+});
+
+test("a manifest still loading over no loaded queue leaves the control unmounted", () => {
+  navigationStore.setState({ mode: "v3", manifest: manifestEntry({ loading: true }) });
+  seedSource();
+
+  render(controlTree());
+
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+});
+
+test("a failed needs-you read over no rows leaves the control unmounted", () => {
+  installNeedsYouPage(0, [], { data: null, error: new Error("read failed") });
+  navigationStore.setState({ mode: "v3", manifest: manifestEntry({ count: 0, loading: false }) });
+  seedSource();
+
+  render(controlTree());
+
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+});
+
+test("an unavailable navigation surface leaves the control unmounted", () => {
+  navigationStore.setState({ mode: "error", manifest: null });
+  seedSource();
+
+  render(controlTree());
+
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+});
+
+// The queue is not empty once its own page says another page exists: the
+// loaded rows are real sessions, and the last one has no known successor until
+// that page arrives, so the control must stay to ask for it.
+test("a loaded queue with more to read keeps the control mounted", () => {
+  installNeedsYouPage(0, [row("local:a"), row("local:b")], {
+    data: { generation_id: "g", revision: 1, sessions: [row("local:a"), row("local:b")], remaining: 3 },
+  });
+  navigationStore.setState({ mode: "v3", manifest: manifestEntry({ count: 5, loading: false }) });
+  window.history.replaceState({}, "", "/s/local%3Ab");
+  const id = workspaceStore.getState().openPane("session", { ref: "local:b" });
+  workspaceStore.getState().focusPane(id);
+
+  render(controlTree());
+
+  expect(screen.getByTestId("next-needs-you")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("next-needs-you-more"));
+  expect(screen.getByTestId("next-needs-you-load-more")).toBeTruthy();
+});
+
+// A row whose page is refreshing is still a session that needs the reader.
+// Its page's refresh must not take the control away mid-cycle.
+test("a refreshing page keeps the control mounted", () => {
+  installRows();
+  seedSource();
+  render(controlTree());
+  expect(screen.getByTestId("next-needs-you")).toBeTruthy();
+
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
+
+  expect(screen.getByTestId("next-needs-you")).toBeTruthy();
 });
 
 test("More requests the next bounded page when more data exists", async () => {

@@ -97,8 +97,18 @@ function selectSectionRows(section: "live" | "needs_you", state: NavigationStore
 export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessionSummary[] {
   return selectSectionRows("needs_you", state);
 }
+/** How many sessions the header and drawer badges announce as needing the
+ * reader. Only a settled manifest may name a count: a generation change keeps
+ * the previous manifest's data and marks it stale while the attention summary
+ * resets, and a failed read keeps its data behind an error, so either one would
+ * announce the previous generation's queue for as long as the unsettled state
+ * lasts. The loaded rows are the reader's own settled evidence, so they cap the
+ * answer when the manifest has nothing current to say. */
 export function selectNeedsYouCount(state: NavigationStoreState): number {
-  return state.manifest?.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
+  const rows = selectNeedsYouRows(state).length;
+  const manifest = state.manifest;
+  if (!manifest || manifest.loading || manifest.stale || manifest.error) return rows;
+  return manifest.data?.sections.needs_you.count ?? rows;
 }
 function sectionPages(section: "live" | "needs_you", state: NavigationStoreState): ResourceState[] {
   return [...state.resources.values()].filter(

@@ -27,9 +27,7 @@ export type NeedsYouSnapshot = {
   choices: readonly NeedsYouChoice[];
   nextRef: string | null;
   canLoadMore: boolean;
-  canLoadInitialPage: boolean;
   loading: boolean;
-  readFailed: boolean;
   blocked: boolean;
   modalOpenCount: number;
 };
@@ -138,7 +136,6 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
   let started = false;
   let modalOpen = typeof document !== "undefined" && !!document.querySelector('[aria-modal="true"]');
   let modalOpenCount = 0;
-  let hasReadManifest = !!navigationStore.getState().manifest?.data;
   let source = sourceIdentity();
   let routeSerial = 0;
   const listeners = new Set<() => void>();
@@ -160,18 +157,14 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     });
     const nextRef = resolveNextRef(state);
     const pages = needsYouPages(state);
-    const failed = pages.some((page) => !!page.error);
     const loading = pages.some((page) => page.loading);
     const canLoadMore = needsYouCanDemand(state);
-    const canLoadInitialPage = !hasReadManifest && state.mode === "v3" && state.manifest?.loading === true;
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
       nextRef:
         nextRef && choices.some((choice) => choice.summary.ref === nextRef && choice.selectable) ? nextRef : null,
       canLoadMore,
-      canLoadInitialPage,
       loading,
-      readFailed: failed || !!state.manifest?.error || state.mode === "error",
       blocked: modalOpen || paletteStore.getState().open,
       modalOpenCount,
     });
@@ -192,9 +185,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       }) &&
       next.nextRef === snapshot.nextRef &&
       next.canLoadMore === snapshot.canLoadMore &&
-      next.canLoadInitialPage === snapshot.canLoadInitialPage &&
       next.loading === snapshot.loading &&
-      next.readFailed === snapshot.readFailed &&
       next.blocked === snapshot.blocked;
     const counterChanged = next.modalOpenCount !== snapshot.modalOpenCount;
     if (samePublicState && !counterChanged) return;
@@ -322,9 +313,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     started = true;
     syncModalDocuments();
     modalOpen = anyModalOpen();
-    if (navigationStore.getState().manifest?.data) hasReadManifest = true;
     unsubscribeNavigation = navigationStore.subscribe((state, previous) => {
-      if (state.manifest?.data) hasReadManifest = true;
       if (state.clientGenerationID !== previous.clientGenerationID) cancel();
       emit();
     });
