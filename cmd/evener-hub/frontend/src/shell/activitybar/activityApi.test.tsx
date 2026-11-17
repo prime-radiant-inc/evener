@@ -41,9 +41,10 @@ it.each([
   { resource: "delegates" as const, Body: AgentsTab, total: 5 },
   { resource: "jobs" as const, Body: JobsTab, total: 6 },
   { resource: "watches" as const, Body: WatchesTab, total: 7 },
+  { resource: "jobs" as const, Body: JobsTab, total: 301, expectedLines: 20 },
 ])(
   "$resource reserves its known direct-session total while the first page loads",
-  async ({ resource, Body, total }) => {
+  async ({ resource, Body, total, expectedLines = total }) => {
     const client = activityClient();
     client.on("evener/thread/activity/read", ({ ref, scope }) => ({
       ...activitySummary(ref, scope),
@@ -81,7 +82,7 @@ it.each([
     connectionStore.getState().connect(client);
     render(<Body now={NOW} scope={scope()} />);
     expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
-    expect(screen.getAllByTestId("skeleton-line")).toHaveLength(total);
+    expect(screen.getAllByTestId("skeleton-line")).toHaveLength(expectedLines);
     await act(async () => release?.());
     await waitFor(() => expect(screen.queryByRole("status", { name: "Loading" })).toBeNull());
     expect(document.querySelectorAll("[data-activity-anchor]")).toHaveLength(1);

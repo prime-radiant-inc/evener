@@ -9,6 +9,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { workspaceStore } from "../workspace";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
+import { activityPlaceholderLines } from "./activityPlaceholders";
 import { JobRow } from "./activityRows";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
@@ -29,7 +30,7 @@ export function JobsTab({ scope, now }: ActivityTabBodyProps) {
   if (collection?.permanent && collection.rows.length === 0)
     return <EmptyState size="compact" title="Jobs unavailable for this session." />;
   if (!collection || (collection.rows.length === 0 && !collection.complete))
-    return <Skeleton lines={summary?.known ? summary.total || undefined : undefined} />;
+    return <Skeleton lines={summary?.known ? activityPlaceholderLines(summary.total) : undefined} />;
   const running = collection.rows.filter((job) => !job.terminal);
   const completed = collection.rows.filter((job) => job.terminal);
   if (collection.rows.length === 0 && collection.complete)

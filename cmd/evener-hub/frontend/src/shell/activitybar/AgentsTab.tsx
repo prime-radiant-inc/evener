@@ -14,6 +14,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { isMobileViewport } from "../useIsMobile";
 import { useActivityScrollAnchor, useActivityScrollProgress, useActivityViewCurrent } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
+import { activityPlaceholderLines } from "./activityPlaceholders";
 import { AgentRow } from "./activityRows";
 import { activitySidebarStore, useActivitySidebarStore } from "./activitySidebarStore";
 import type { ActivityTabBodyProps } from "./activityTabs";
@@ -55,7 +56,7 @@ export function AgentsTab({ scope, now, onDrill = drill }: ActivityTabBodyProps)
   if (collection?.permanent && collection.rows.length === 0)
     return <EmptyState size="compact" title="Subagents unavailable for this session." />;
   if (!collection || (collection.rows.length === 0 && !collection.complete)) {
-    return <Skeleton lines={summary?.known ? summary.total || undefined : undefined} />;
+    return <Skeleton lines={summary?.known ? activityPlaceholderLines(summary.total) : undefined} />;
   }
   return (
     <div className={CLASS.stack}>

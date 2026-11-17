@@ -41,7 +41,9 @@ const pick = (root, refused = REFUSED_BUTTON_SELECTOR) => revealControl(root, re
 // jsdom has no layout or hit testing. Install the two browser boundaries the
 // driver's expression uses and evaluate the expression exactly as run.mjs does.
 function evaluateStep(root, selector, topmost) {
-  root.ownerDocument.defaultView.Element.prototype.scrollIntoView = () => {};
+  root.ownerDocument.defaultView.Element.prototype.scrollIntoView = function () {
+    this.dataset.scrolled = "true";
+  };
   root.ownerDocument.elementFromPoint = () => topmost ?? root.querySelector("#inactive-fold");
   return new Function(`return ${revealControlStep(selector, CONTAINER, REFUSED_BUTTON_SELECTOR)}`)();
 }
@@ -148,7 +150,7 @@ test("the gate accepts a page boundary when the first page holds only current ro
   const root = sidebar(`${current("a")}${loadMore()}`);
   expect(gate(MISSING_TARGET)).toBe(true);
   const clicked = clickRecorder(root);
-  expect(evaluateStep(root, MISSING_TARGET, root.querySelector("#load-more"))).toBeNull();
+  expect(evaluateStep(root, MISSING_TARGET, root.querySelector("#load-more"))).toEqual({ before: root.textContent });
   expect(clicked.id).toBeNull();
 });
 
@@ -165,6 +167,19 @@ test("the gate is satisfied by the target itself", () => {
 test("the gate stays shut for a collection with no usable control", () => {
   sidebar(current("a"));
   expect(gate(MISSING_TARGET)).toBe(false);
+});
+
+test("the gate stays shut while the sidebar is not mounted", () => {
+  expect(gate(MISSING_TARGET)).toBe(false);
+});
+
+test("an automatic pending boundary is scrolled into view without a click", () => {
+  const root = sidebar(`${current("a")}${loadMore()}`);
+  const boundary = root.querySelector("#load-more");
+  const clicked = clickRecorder(root);
+  expect(evaluateStep(root, MISSING_TARGET, boundary)).toEqual({ before: root.textContent });
+  expect(boundary.querySelector('[data-testid="skeleton-line"]').dataset.scrolled).toBe("true");
+  expect(clicked.id).toBeNull();
 });
 
 test("reconnect observer recognizes both history read aliases", () => {
