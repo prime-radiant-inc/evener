@@ -5,14 +5,17 @@ package contextmgr
 //
 // The estimator is the "fallback" branch of estimateUsedTokensFor and the
 // incremental walk behind the memo: both reach estimateTokenPartsFor, which
-// projects every turn to an llm.Message and then prices the list. At 800 turns
-// that projection is a full copy of the message list on every reading, and the
-// request path takes several readings per request (the fold's note elicitation,
-// the full-history estimate carried into admission, and the status sample).
+// walks the turns and prices each one in place. The request path takes several
+// readings per request (the fold's note elicitation, the full-history estimate
+// carried into admission, and the status sample), so the walk is on a hot path
+// and must not allocate. It once did: it projected the turns into a fresh
+// []llm.Message and priced that list, a full copy of the conversation per
+// reading.
 //
-// BenchmarkEstimateTokenPartsFor measures that one function against histories of
-// 50, 200 and 800 turns, so the fix that reads the round's turn snapshot
-// directly can be compared with the implementation that rebuilt it.
+// BenchmarkEstimateTokenPartsFor guards that: it measures the walk against
+// histories of 50, 200 and 800 turns, and it must report zero allocations per
+// reading at every size. The before-and-after figures belong in the commit that
+// made the change, not here.
 
 import (
 	"fmt"
