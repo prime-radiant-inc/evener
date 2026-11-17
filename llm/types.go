@@ -924,6 +924,8 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 		if !caps.EffortOffCapable() {
 			return false
 		}
+		// The chat-completions and Responses dialects spell an off value; the
+		// anthropic and google bodies omit the control entirely.
 		switch res.Protocol {
 		case registry.ProtocolOpenAIChat:
 			switch registry.StringValue(caps.ThinkingFormat) {
@@ -932,7 +934,8 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 			case "openrouter":
 				return true
 			}
-			return false
+		case registry.ProtocolOpenAIResponses:
+			return caps.EffortCapable()
 		}
 		return false
 	}
@@ -958,6 +961,11 @@ func EffortReachesWire(tier string, res registry.Resolved) bool {
 			// A gateway's no-effort verdict keeps includeThoughts but spells no
 			// level, whatever the row's ladder lists.
 			if registry.BoolValue(caps.EffortParameterUnsupported) {
+				return false
+			}
+			// registry.Prune runs after the builder, so a row that turns the
+			// field off loses the level the builder spelled.
+			if sends, pinned := caps.Fields["generationConfig.thinkingConfig"]; pinned && !sends {
 				return false
 			}
 			// The builder spells the tier through a row with no ladder and only

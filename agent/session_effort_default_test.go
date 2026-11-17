@@ -310,6 +310,21 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			wantCarried: true,
 		},
 		{
+			// The Responses dialect spells its own off value, on the same
+			// off-capable gate the chat dialects use.
+			name: "a stated off rides the Responses body its ladder vouches for",
+			profile: func() *provider.Profile {
+				p := resolveTestProfile("responses-gateway", responsesGateway, "house-model")
+				res := p.Resolved()
+				res.Caps.Reasoning = new(true)
+				res.Caps.EffortValues = []string{"none", "low", "high"}
+				res.Caps.DefaultEffort = new("none")
+				return p.WithResolved(res)
+			}(),
+			want:        "none",
+			wantCarried: true,
+		},
+		{
 			// The budget+effort shape carries the tier two ways: a numeric
 			// budget sized from it, or a level name its ladder vouches for.
 			// A ladder that refuses the tier still leaves the budget to size.
@@ -406,19 +421,18 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 		},
 		{
 			// A row that turns the thinkingConfig field off loses the whole
-			// object to registry.Prune, which runs after the builder and is
-			// therefore invisible to the predicate above. This case pins that
-			// known hole: the reported tier is what a caller gets for this row
-			// today, and the prune is what actually decides the wire.
-			name: "Google's level shape keeps its tier where the row prunes the field away",
+			// object to registry.Prune, which runs after the builder, so the
+			// level the builder spelled never reaches the wire and no tier may
+			// be claimed for it.
+			name: "Google's level shape claims no tier where the row prunes the field away",
 			profile: func() *provider.Profile {
 				p := withThinkingShape(newGeminiProfile("gemini-3.8-flash"), "level", "low", "medium", "high")
 				res := p.Resolved()
 				res.Caps.Fields = map[string]bool{"generationConfig.thinkingConfig": false}
 				return p.WithResolved(res)
 			}(),
-			want:        "medium",
-			wantCarried: true,
+			want:        "",
+			wantCarried: false,
 		},
 		{
 			name:        "nothing for a model that does not reason",
@@ -441,6 +455,11 @@ func TestDefaultReasoningEffort_NamesTheTierTheWireCarries(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildBody: %v", err)
 			}
+			// The request pipeline prunes disabled fields after the builder, so
+			// the body that actually reaches the wire is the pruned one. Reading
+			// the builder's output alone would let the test call a tier carried
+			// that production deletes.
+			registry.Prune(body, res.Caps, res.Protocol)
 			names, budgets := wireEffortEvidence(body)
 			got := profileDefaultReasoningEffort(tc.profile)
 			if got != tc.want {
