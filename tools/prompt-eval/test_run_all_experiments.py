@@ -58,6 +58,19 @@ NOT_ACCEPTANCE = [
     # Echoed source: a job_status result quoting the script the agent wrote.
     "overfull(v)==0",
     " if n==0",
+    # A per-paragraph dump that lists the overfull distances it found. Real
+    # output from baseline rep1, which reached a genuinely clean workspace
+    # without ever printing a count the pattern recognises (#6606). The leading
+    # total is not zero and the list is evidence of work still to do, so
+    # matching it would invent an acceptance point the run never had.
+    "baseline overfulls: [(0.10312, 13, 14), (18.03828, 13, 14), "
+    "(1.90868, 19, 20)] total: 77.97862",
+    # The same dump's per-paragraph section: a label and a word family, no count.
+    "--- paragraph idx 0 (input line approx ) --- "
+    "'vulnerable' -> ['defenseless', 'exposed', 'susceptible', 'weak']",
+    # A compile log whose only mention of the verdict is the warnings it found.
+    "Overfull \\hbox (0.10312pt too wide) in paragraph at lines 5--6 "
+    "\\OT1/cmr/m/n/10 many cu-ri-ous na-tures to me and also made",
 ]
 
 
@@ -531,3 +544,56 @@ def test_the_pass_column_and_the_share_denominator_agree(rae):
     # describe the same set.
     assert summary["shares"] == [0.25]
     assert summary["unmeasured_tails"] == 0
+
+
+def test_a_pass_with_no_acceptance_point_is_not_a_clean_pass(rae):
+    """A verifier pass with no detected acceptance point is marked unmeasured (#6606).
+
+    The workspace check says the deliverable is correct. It says nothing about
+    whether the agent knew it was done, which is what the tail measures. Five of
+    the 67 passing runs in the overfull-hbox matrix reached a clean workspace
+    without ever printing a recognised count, and calling those a clean pass
+    reported an unmeasured tail as a measured one.
+    """
+    measured_pass = rae.RunResult(arm="arm", task="overfull-hbox", rep=0,
+                                  final_compiles_clean=True, timed_out=False,
+                                  acceptance_call_index=12, runaway_share=0.3,
+                                  total_calls=20)
+    unmeasured_pass = rae.RunResult(arm="arm", task="overfull-hbox", rep=1,
+                                    final_compiles_clean=True, timed_out=False,
+                                    acceptance_call_index=None, runaway_share=0.0,
+                                    total_calls=34)
+
+    assert rae.run_verdict(measured_pass) == "passed"
+    assert rae.run_verdict(unmeasured_pass) == "passed-unmeasured"
+    # Both count as passes -- the deliverable is correct -- but the row records
+    # how many of them rest on no measurement.
+    (summary,) = rae.summarise([measured_pass, unmeasured_pass])
+    assert summary["pass"] == 2
+    assert summary["pass_unmeasured"] == 1
+    assert summary["shares"] == [0.3]
+
+
+def test_an_unmeasured_pass_is_distinguishable_from_a_measured_pass(rae):
+    """The two must not collapse to the same row (#6606).
+
+    This is the whole point: a measured pass and a pass nobody measured must be
+    told apart from the summary alone, because the tail of the second is
+    unmeasurable and the arm it belongs to cannot be read as though it stopped.
+    """
+    measured_only = [
+        rae.RunResult(arm="arm", task="overfull-hbox", rep=0,
+                      final_compiles_clean=True, acceptance_call_index=10,
+                      runaway_share=0.2, total_calls=20),
+    ]
+    unmeasured_only = [
+        rae.RunResult(arm="arm", task="overfull-hbox", rep=0,
+                      final_compiles_clean=True, acceptance_call_index=None,
+                      runaway_share=0.0, total_calls=20),
+    ]
+
+    (measured,) = rae.summarise(measured_only)
+    (unmeasured,) = rae.summarise(unmeasured_only)
+    assert measured["pass"] == unmeasured["pass"] == 1
+    assert measured["pass_unmeasured"] == 0
+    assert unmeasured["pass_unmeasured"] == 1

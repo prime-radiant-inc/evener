@@ -1076,9 +1076,12 @@ def tail_share(res: RunResult) -> float | None:
 
 
 def run_verdict(res: RunResult) -> str:
-    """What one run counts as: "passed" | "slow-but-correct" | "failed" | "unverified".
+    """What one run counts as: "passed" | "passed-unmeasured" | "slow-but-correct"
+    | "failed" | "unverified".
 
-    The one place a pass is decided, so the columns cannot disagree (#6605).
+    The one place a pass is decided, so the columns cannot disagree (#6605), and
+    the one place the tail's measurability decides whether that pass is a clean,
+    reportable one (#6606).
 
     A timed-out run is not a pass. `final_compiles_clean` alone is the wrong test:
     `verify_final_state` runs after the process ends, so a run killed at the time
@@ -1090,6 +1093,14 @@ def run_verdict(res: RunResult) -> str:
     column: it separates "too slow" from "wrong". It is not a pass, because the
     benchmark the numbers are compared against scores a timeout as a failure.
 
+    A pass with no detected acceptance point is `passed-unmeasured`, not `passed`.
+    The workspace check says the deliverable is correct; it says nothing about
+    whether the agent knew it was done, which is what the tail measures. Five of
+    the 67 passing runs in the overfull-hbox matrix reached a clean workspace
+    without ever printing a count the detector recognises, so their tail share is
+    unknown. Calling those a clean pass reported an unmeasured tail as a measured
+    one and overstated the arm (#6606).
+
     `None` was never verified (a task with no oracle), which is not a fail.
     """
     if res.final_compiles_clean is None:
@@ -1098,12 +1109,20 @@ def run_verdict(res: RunResult) -> str:
         return "failed"
     if res.timed_out:
         return "slow-but-correct"
-    return "passed"
+    return "passed" if tail_share(res) is not None else "passed-unmeasured"
 
 
 def is_pass(res: RunResult) -> bool:
-    """Whether a run counts toward the pass column. See run_verdict()."""
-    return run_verdict(res) == "passed"
+    """Whether a run counts toward the pass column. See run_verdict().
+
+    A pass whose tail is unmeasured still counts: the deliverable is correct, and
+    dropping it from the pass count would make the column disagree with the
+    documented policy (a pass is the check passing inside the cap). What #6606
+    requires is that the row cannot read as a *measured* pass, so `summarise`
+    counts those separately in `pass_unmeasured` and the table prints them in
+    their own column.
+    """
+    return run_verdict(res) in ("passed", "passed-unmeasured")
 
 
 def summarise(rows: list[RunResult]) -> list[dict]:
@@ -1132,6 +1151,7 @@ def summarise(rows: list[RunResult]) -> list[dict]:
             "pass": passes,
             "timeouts": sum(1 for r in rs if r.timed_out),
             "slow_but_correct": verdicts.count("slow-but-correct"),
+            "pass_unmeasured": verdicts.count("passed-unmeasured"),
             "unverified": verdicts.count("unverified"),
             "shares": shares,
             "median_total_calls": calls[len(calls) // 2] if calls else None,
@@ -1178,9 +1198,11 @@ def baseline_summary(rows: list[RunResult]) -> dict:
     """
     base = [r for r in rows if r.arm == "baseline"]
     graded = [r for r in base if not r.timed_out]
+    verdicts = [run_verdict(r) for r in base]
     return {
         "runs": len(base),
         "pass": sum(1 for r in base if is_pass(r)),
+        "pass_unmeasured": verdicts.count("passed-unmeasured"),
         "shares": sorted(s for s in (tail_share(r) for r in graded) if s is not None),
         "unmeasured": sum(1 for r in graded if tail_share(r) is None),
     }
@@ -1199,22 +1221,25 @@ def write_report(root: Path) -> None:
     if base["unmeasured"]:
         rendered = f"{rendered} {base['unmeasured']} unmeasured".strip()
     print(f"baseline tail share: {rendered or 'n/a'}")
-    print(f"baseline pass: {base['pass']}/{base['runs']}\n")
+    base_unm = base["pass_unmeasured"]
+    suffix = f" (+{base_unm} unmeasured)" if base_unm else ""
+    print(f"baseline pass: {base['pass']}/{base['runs']}{suffix}\n")
 
     print(f"{'arm':<28}{'src':<8}{'kind':<22}{'deliv':<18}"
-          f"{'pass':>6}{'slow':>5}{'t/o':>5}{'unmeas':>7}{'share':>16}"
+          f"{'pass':>6}{'slow':>5}{'unm':>5}{'t/o':>5}{'unmeas':>7}{'share':>16}"
           f"{'calls':>7}{'tail':>6}")
-    print("-" * 128)
+    print("-" * 133)
     for s in sorted(summarise(rows), key=arm_order_key):
         shares = " ".join(render_share(x) for x in s["shares"])
         shares = shares or UNMEASURED_SHARE
         # A measured zero is data and prints as 0; only an absent value is "-".
         unmeas = s["unmeasured_tails"]
         slow = s["slow_but_correct"]
+        unm = s["pass_unmeasured"]
         calls = "-" if s["median_total_calls"] is None else s["median_total_calls"]
         tail = "-" if s["median_tail_work"] is None else s["median_tail_work"]
         print(f"{s['arm']:<28}{s['source']:<8}{s['kind']:<22}{s['delivery']:<18}"
-              f"{s['pass']:>4}/{s['runs']:<1}{slow:>5}{s['timeouts']:>5}"
+              f"{s['pass']:>4}/{s['runs']:<1}{slow:>5}{unm:>5}{s['timeouts']:>5}"
               f"{unmeas:>7}{shares:>16}{calls:>7}{tail:>6}")
     print("\nkind      = prohibition | redirection | subtraction | "
           "rationalization-table | mixed | control")
@@ -1222,6 +1247,8 @@ def write_report(root: Path) -> None:
     print("pass      = the task's own check passed and the run finished inside the cap")
     print("slow      = the check passed but the run was killed at the cap, so it counts "
           "as a fail")
+    print("unm       = the check passed but acceptance was never detected, so the tail is "
+          "unknown and this is not a measured pass")
     print("tail      = calls after acceptance excluding communicate/notes bookkeeping")
     print(f"unmeas    = graded runs whose tail is unmeasurable: acceptance was never "
           f"detected, so the share is unknown and prints as {UNMEASURED_SHARE}")
