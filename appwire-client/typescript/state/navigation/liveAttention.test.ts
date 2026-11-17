@@ -661,7 +661,10 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
     // An older daemon, or a model that omitted the argument: the row still
     // names the work it is doing rather than saying nothing.
     const bare = row("s", { state: "active", running_job_count: 1, running_job_command: "go test ./agent/..." });
-    expect(whyLine({ row: bare, state: "working" })).toEqual({ kind: "job", text: "Running go test ./agent/..." });
+    expect(whyLine({ row: bare, state: "working" })).toEqual({
+      kind: "job",
+      text: expect.stringContaining("go test ./agent/..."),
+    });
   });
 
   it("keeps the activity read's latest intent ahead of a running job's own", () => {

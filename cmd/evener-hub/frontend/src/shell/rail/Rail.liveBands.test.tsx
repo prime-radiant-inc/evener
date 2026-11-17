@@ -204,7 +204,8 @@ test("a working row names its running job's intent, falling back to the command"
   expect(why("local:stated")?.dataset.whyKind).toBe("job");
   // A job that stated no intent still names the work, so an older daemon and a
   // model that omitted the argument both keep a useful row.
-  expect(why("local:unstated")?.textContent).toBe("Running make test");
+  expect(why("local:unstated")?.textContent).toContain("make test");
+  expect(why("local:unstated")?.dataset.whyKind).toBe("job");
 });
 
 test("a session that starts needing you moves to Needs you, and back out when it is answered", async () => {

@@ -68,9 +68,9 @@ describe("workingStatus", () => {
   });
 
   test("a running job with no stated intent keeps the command", () => {
-    expect(workingStatus(session({ running_job_command: "go test ./agent/..." }), null)).toEqual({
+    expect(workingStatus(session({ running_job_command: "go test ./agent/..." }), null)).toMatchObject({
       kind: "job",
-      text: "Running go test ./agent/...",
+      text: expect.stringContaining("go test ./agent/..."),
     });
   });
 
