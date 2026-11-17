@@ -43,10 +43,13 @@ project as well as a single session. `tierEligible` drops a session whose own
 decision archives it and one whose owning project's decision does, so a
 manually archived project stops claiming attention for every session under it.
 Only the manual decision counts here: the sidebar's age-based auto-archive
-never clears attention, because a needs-you session does not decay. The Live
-tier already applies the same archive facts
+never clears attention, because a needs-you session does not decay. Live
+applies the same manual decisions plus its age rule
 ([`LiveSessionArchived`](../../cmd/evener-hub/internal/hubcore/tree.go)), so a
-session cannot leave Live and keep a needs-you badge lit.
+manually archived session or project cannot leave Live and keep a needs-you
+badge lit. An age-archived session does leave Live while it stays in
+needs-you: the badge is right, and the row joins the band from the hub's tier
+rather than from Live's loaded pages.
 
 ## Live bands on the rail
 
