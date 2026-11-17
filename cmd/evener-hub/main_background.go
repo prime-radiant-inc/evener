@@ -54,9 +54,9 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 
 // runHubAttention derives each live session's attention level and republishes
 // the Manager roster from the same snapshot, then lets the attention watcher
-// announce any transition. It is one derivation, so every caller that serves a
-// wake — the shared snapshot wake, or the attention-only loop a test drives —
-// publishes the identical snapshot.
+// announce any transition. watchHubSnapshotWake is its one caller, so the
+// initial derive, the tick and the poke that reach it publish the identical
+// snapshot.
 func runHubAttention(ctx context.Context, web *WebServer, archive *hubcore.ArchiveStore, w *hubcore.AttentionWatcher) {
 	decisions, _ := archive.Decisions()
 	// Derive from the same remote-inclusive metas/live the navigation tree

@@ -410,7 +410,9 @@ func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams, key []
 	if inst, ok := r.Instance(name); ok {
 		return c.instanceStatusKeyed(key, inst), nil
 	}
-	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+	// One fact, so one accessor: Provider deep-copies the whole record, and
+	// List reaches this branch once per credential-less implicit provider.
+	if implicit, ok := r.ProviderIsImplicit(name); ok && implicit {
 		res, err := r.ResolveInstancePresence(name)
 		if err != nil {
 			//nolint:nilerr // a provider the registry cannot resolve is reported as unsupported, which is the answer, not an RPC failure
