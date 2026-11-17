@@ -51,14 +51,18 @@ func resumeDecodeWorkerCount(gomaxprocs int) int {
 }
 
 // resumeDecodeBudget charges raw entry-line bytes until their decode finishes.
+// limit is the byte count that may be held at once: production sets it from
+// resumeDecodeInFlightBytes, and a test sets a small one on a budget it built
+// so the blocking path can be reached without 64 MiB of queued lines.
 type resumeDecodeBudget struct {
-	mu   sync.Mutex
-	cond *sync.Cond
-	used int64
+	mu    sync.Mutex
+	cond  *sync.Cond
+	used  int64
+	limit int64
 }
 
 func newResumeDecodeBudget() *resumeDecodeBudget {
-	b := &resumeDecodeBudget{}
+	b := &resumeDecodeBudget{limit: resumeDecodeInFlightBytes}
 	b.cond = sync.NewCond(&b.mu)
 	return b
 }
@@ -69,7 +73,7 @@ func newResumeDecodeBudget() *resumeDecodeBudget {
 func (b *resumeDecodeBudget) acquire(n int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for b.used > 0 && b.used+n > resumeDecodeInFlightBytes {
+	for b.used > 0 && b.used+n > b.limit {
 		b.cond.Wait()
 	}
 	b.used += n

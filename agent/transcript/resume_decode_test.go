@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/spf13/afero"
@@ -467,4 +468,81 @@ func TestResumeDecodeBudgetAdmitsOneOversizedLine(t *testing.T) {
 	if used := budget.used; used != 0 {
 		t.Fatalf("budget used = %d after release, want 0", used)
 	}
+}
+
+// smallResumeDecodeBudget returns a budget with a small limit, so the blocking
+// path is reachable without queueing 64 MiB of entry lines. Production sets the
+// limit from resumeDecodeInFlightBytes; this only overrides the value.
+func smallResumeDecodeBudget(limit int64) *resumeDecodeBudget {
+	b := newResumeDecodeBudget()
+	b.limit = limit
+	return b
+}
+
+// TestResumeDecodeBudgetBlocksWhileTheLimitIsHeld pins that an acquire which
+// would exceed the limit waits while bytes are held. It is the half of the
+// budget that keeps the pool's memory bounded: without it the limit silently
+// stops applying and a resume holds one maximum-size record per worker.
+//
+// synctest makes "still blocked" exact rather than a guess: the bubble does not
+// advance while any goroutine can still run, so reaching the assertion proves
+// the acquire is parked on the condition variable.
+func TestResumeDecodeBudgetBlocksWhileTheLimitIsHeld(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		budget := smallResumeDecodeBudget(100)
+		budget.acquire(80)
+
+		var wg sync.WaitGroup
+		acquired := false
+		wg.Go(func() {
+			budget.acquire(30) // 80+30 > 100, so this cannot proceed yet
+			acquired = true
+		})
+
+		// Blocks until every goroutine in the bubble is blocked, which is only
+		// true if the acquire above is parked rather than done.
+		synctest.Wait()
+		if acquired {
+			t.Fatal("acquire proceeded while the held bytes plus its own exceeded the limit")
+		}
+
+		// Releasing must wake it: this is the Broadcast's job, and without it
+		// the goroutine stays parked and the Wait below reports the hang.
+		budget.release(80)
+		wg.Wait()
+		if !acquired {
+			t.Fatal("acquire never proceeded after the held bytes were released")
+		}
+		if used := budget.used; used != 30 {
+			t.Fatalf("budget used = %d, want the released line's replacement to be 30", used)
+		}
+	})
+}
+
+// TestResumeDecodeBudgetProceedsUnderTheLimit pins the other half: an acquire
+// that fits inside the limit proceeds immediately, so the budget bounds held
+// bytes rather than serialising every acquire.
+func TestResumeDecodeBudgetProceedsUnderTheLimit(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		budget := smallResumeDecodeBudget(100)
+		budget.acquire(60)
+
+		var wg sync.WaitGroup
+		acquired := false
+		wg.Go(func() {
+			budget.acquire(40) // 60+40 == 100, exactly the limit
+			acquired = true
+		})
+
+		synctest.Wait()
+		if !acquired {
+			t.Fatal("acquire blocked although the held bytes plus its own fit the limit exactly")
+		}
+		wg.Wait()
+		if used := budget.used; used != 100 {
+			t.Fatalf("budget used = %d, want 100", used)
+		}
+	})
 }
