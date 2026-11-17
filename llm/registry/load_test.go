@@ -381,7 +381,7 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 		t.Fatalf("codex layers = %v", got)
 	}
 	h := codex.head
-	if h.Protocol != ProtocolOpenAIResponses || h.Transport.Auth != AuthOAuthOpenAICodex || h.Transport.BaseURL != "{BASE_URL}" || h.Transport.Vars["BASE_URL"] != "https://chatgpt.com/backend-api/codex" || h.Transport.ModelsEndpoint != "/models?client_version=0.156.1" {
+	if h.Protocol != ProtocolOpenAIResponses || h.Transport.Auth != AuthOAuthOpenAICodex || h.Transport.BaseURL != "{BASE_URL}" || h.Transport.Vars["BASE_URL"] != "https://chatgpt.com/backend-api/codex" || h.Transport.ModelsEndpoint != "/models" || h.Transport.CodexClientVersion != "0.888.0" {
 		t.Fatalf("codex head: %+v", h.Transport)
 	}
 	if h.Transport.CountTokensEndpoint != EndpointUnsupported {
@@ -404,6 +404,22 @@ func TestLoad_CuratedBaseChainAndInheritModelsFalse(t *testing.T) {
 	openai := r.curated["openai"]
 	if openai.head.Transport.CountTokensEndpoint != "/responses/input_tokens" || openai.head.Headers["OpenAI-Organization"] != "$OPENAI_ORG_ID" {
 		t.Fatalf("openai head: %+v", openai.head)
+	}
+}
+
+func TestLoad_CodexClientVersionInheritsAndOverrides(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, `
+[providers.subscription]
+base = "openai-codex"
+codex_client_version = "0.166.0"
+`)
+	res, err := r.ResolveInstanceListing("subscription")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Transport.CodexClientVersion != "0.166.0" || res.Transport.ModelsEndpoint != "/models" {
+		t.Fatalf("Codex discovery transport = %+v", res.Transport)
 	}
 }
 

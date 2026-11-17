@@ -207,7 +207,8 @@ api_key_env = []
 base_url = "{BASE_URL}"
 vars = { "BASE_URL" = "https://chatgpt.com/backend-api/codex" }
 vars_env = { "BASE_URL" = "OPENAI_CODEX_BASE_URL" }
-models_endpoint = "/models?client_version=0.156.1"
+models_endpoint = "/models"
+codex_client_version = "0.888.0"
 count_tokens_endpoint = "-"
 headers = { "OpenAI-Organization" = "", "OpenAI-Project" = "" }
 default_model = "gpt-5.6"

@@ -171,6 +171,7 @@ type transportSchema struct {
 	Endpoint            string            `toml:"endpoint"`
 	StreamEndpoint      string            `toml:"stream_endpoint"`
 	ModelsEndpoint      string            `toml:"models_endpoint"`
+	CodexClientVersion  string            `toml:"codex_client_version"`
 	CountTokensEndpoint string            `toml:"count_tokens_endpoint"`
 	Vars                map[string]string `toml:"vars"`
 	VarsEnv             map[string]string `toml:"vars_env"`
@@ -183,7 +184,7 @@ func (ts transportSchema) transport() Transport {
 
 func (ts transportSchema) isZero() bool {
 	return ts.Preset == "" && ts.Auth == "" && ts.AuthHeader == "" && ts.BaseURL == "" && ts.HostRule == "" &&
-		ts.Endpoint == "" && ts.StreamEndpoint == "" && ts.ModelsEndpoint == "" && ts.CountTokensEndpoint == "" &&
+		ts.Endpoint == "" && ts.StreamEndpoint == "" && ts.ModelsEndpoint == "" && ts.CodexClientVersion == "" && ts.CountTokensEndpoint == "" &&
 		len(ts.Vars) == 0 && len(ts.VarsEnv) == 0 && len(ts.Body) == 0
 }
 

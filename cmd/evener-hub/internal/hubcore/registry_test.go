@@ -367,6 +367,31 @@ func TestInstanceIdentityUsesListingRowProtocol(t *testing.T) {
 	}
 }
 
+func TestInstanceIdentityIncludesCodexClientVersion(t *testing.T) {
+	mk := func(t *testing.T, version string) *registry.Registry {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "providers.toml")
+		cfg := "[providers.codex]\nbase = \"openai-codex\"\ncodex_client_version = \"" + version + "\"\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := registry.Load(
+			registry.WithConfigPath(path),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if instanceIdentity(mk(t, "0.888.0"), "codex") == instanceIdentity(mk(t, "0.166.0"), "codex") {
+		t.Fatal("live listing identity must change with the Codex model-list version")
+	}
+}
+
 // The identity fingerprint never executes a credential command: the hub
 // fingerprints at load, before any session exists, so running one would
 // prompt the user's password manager with no session launched and spend

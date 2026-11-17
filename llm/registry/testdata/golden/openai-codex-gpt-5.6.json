@@ -8,7 +8,8 @@
     "base_url": "https://chatgpt.com/backend-api/codex",
     "endpoint": "/responses",
     "stream_endpoint": "/responses",
-    "models_endpoint": "/models?client_version=0.156.1",
+    "models_endpoint": "/models",
+    "codex_client_version": "0.888.0",
     "count_tokens_endpoint": "-",
     "vars": {
       "BASE_URL": "https://chatgpt.com/backend-api/codex"

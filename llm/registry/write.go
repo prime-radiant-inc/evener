@@ -110,6 +110,7 @@ func transportInto(t map[string]any, tr Transport) {
 	setString(t, "endpoint", tr.Endpoint)
 	setString(t, "stream_endpoint", tr.StreamEndpoint)
 	setString(t, "models_endpoint", tr.ModelsEndpoint)
+	setString(t, "codex_client_version", tr.CodexClientVersion)
 	setString(t, "count_tokens_endpoint", tr.CountTokensEndpoint)
 	setStringMap(t, "vars", tr.Vars)
 	setStringMap(t, "vars_env", tr.VarsEnv)
