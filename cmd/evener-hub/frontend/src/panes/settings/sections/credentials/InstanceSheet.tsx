@@ -75,6 +75,7 @@ import {
   untouchedIdentityMatches,
 } from "./instanceLanding";
 import { formatModelRowSummary } from "./instanceModelEdit";
+import { CODEX_AUTH_SCHEME } from "./oauthFlow";
 import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
@@ -1021,7 +1022,7 @@ export function InstanceSheet({
                               surface: draft.surface,
                               apiKeyEnv: draft.apiKeyEnv,
                               credentialHeader: draft.credentialHeader,
-                              ...(instance.auth === "oauth-openai-codex"
+                              ...(instance.auth === CODEX_AUTH_SCHEME
                                 ? { codexClientVersion: draft.codexClientVersion }
                                 : {}),
                             },

@@ -47,7 +47,7 @@ import {
 import type { FormError } from "./formError";
 import { draftFor, type InstanceDraft, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
-import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { appliedSelfRead, confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -2116,7 +2116,7 @@ function SelectedConnection({
                       vars: settingsVars,
                       ...settingsDraft,
                       codexClientVersion:
-                        row?.auth === "oauth-openai-codex" ? settingsDraft.codexClientVersion : undefined,
+                        row?.auth === CODEX_AUTH_SCHEME ? settingsDraft.codexClientVersion : undefined,
                     },
                     disabled: instanceEditsBlocked,
                     copy: {

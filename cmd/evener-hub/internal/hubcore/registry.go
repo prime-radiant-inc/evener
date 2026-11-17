@@ -317,10 +317,7 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	// The endpoint view the listing resolves through: row-aware and
 	// mint-free, the same shape ResolveInstanceListing fetches with.
 	if res, err := r.ResolveInstanceTransport(name); err == nil {
-		endpoint = res.Transport.ModelsEndpoint
-		if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
-			endpoint += "\x00" + res.Transport.CodexClientVersion
-		}
+		endpoint = res.Transport.ModelsEndpoint + "\x00" + res.Transport.CodexClientVersion
 		proto = res.Protocol
 		if fp, ok := r.AuthFingerprint(name); ok {
 			authprint = fp
