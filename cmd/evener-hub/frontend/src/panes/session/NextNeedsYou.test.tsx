@@ -390,6 +390,22 @@ test("opening a list with no available control focuses the list", () => {
   expect(document.activeElement).toBe(screen.getByLabelText("Needs you sessions"));
 });
 
+test("a queue holding only the row being read offers nothing", () => {
+  // The reader's own session is not a session to offer. With the page
+  // refreshing (stale + loading, so demand stays true and the row is not
+  // selectable) and no other row loaded, the control must stay unmounted
+  // rather than mount with nowhere to go.
+  installRows([row("local:a")], 1);
+  seedSource();
+  act(() => updateNeedsYouPage(0, { stale: true, loading: true }));
+
+  render(controlTree());
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+
+  act(() => updateNeedsYouPage(0, { stale: true, loading: false, error: new Error("refresh failed") }));
+  expect(screen.queryByTestId("next-needs-you")).toBeNull();
+});
+
 test("a refused page does not refuse rows from another current page", () => {
   installRows([row("local:a"), row("local:b")]);
   installNeedsYouPage(50, [row("local:c")]);
@@ -671,7 +687,7 @@ test("the mount boolean isolates queue churn from its subscribing pane", async (
   const renders = { count: 0 };
   function MountProbe() {
     renders.count += 1;
-    const mounts = useNextNeedsYouMount(false);
+    const mounts = useNextNeedsYouMount("local:a", false);
     return <div data-testid="mount-probe">{String(mounts)}</div>;
   }
   render(

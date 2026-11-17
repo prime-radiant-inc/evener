@@ -405,6 +405,71 @@ test("needs-you count refuses a manifest that is not settled", () => {
   }
 });
 
+// The rows are not settled evidence on their own: a generation change marks the
+// carried-over pages stale with loadedRevision null, and a failed re-read keeps
+// them behind an error. The badge must not count those, or it announces the
+// replaced queue for as long as the re-read takes - and for good if it fails.
+// A same-generation refresh keeps loadedRevision, so it must keep counting.
+test("needs-you count ignores rows carried over from a replaced generation", () => {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const row = (ref: string) => ({
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "",
+    state: "awaiting",
+    kind: "session",
+    live: false,
+    children: [],
+  });
+  const page = (loadedRevision: number | null, extra: Record<string, unknown> = {}) => ({
+    key,
+    data: { generation_id: generation, revision: 1, sessions: [row("a"), row("b")], remaining: 0, truncated: false },
+    loadedRevision,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "a",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+    ...extra,
+  });
+  const staleManifest = {
+    key: { kind: "manifest" } as const,
+    data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } } }),
+    loadedRevision: null,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "m",
+    loading: false,
+    stale: true,
+    error: null,
+    generationID: generation,
+  };
+
+  for (const carried of [page(null, { stale: true }), page(null, { error: new Error("read failed") })]) {
+    store.setState({
+      mode: "v3",
+      manifest: staleManifest,
+      resources: new Map([[keyID(key), carried]]),
+      visibleResourceKeys: new Set([keyID(key)]),
+    });
+    expect(selectNeedsYouCount(store.getState())).toBe(0);
+  }
+
+  // A refresh within the same generation keeps the loaded revision: the rows
+  // are still this generation's, so the count stands rather than blinking.
+  store.setState({
+    mode: "v3",
+    manifest: staleManifest,
+    resources: new Map([[keyID(key), page(1, { stale: true })]]),
+    visibleResourceKeys: new Set([keyID(key)]),
+  });
+  expect(selectNeedsYouCount(store.getState())).toBe(2);
+});
+
 test("needs-you cursor uses limit as the same-offset canonical tie-break", () => {
   const row = (ref: string) => ({
     ref,

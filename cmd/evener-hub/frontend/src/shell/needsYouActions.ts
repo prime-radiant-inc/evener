@@ -27,6 +27,8 @@ export type NeedsYouSnapshot = {
   choices: readonly NeedsYouChoice[];
   nextRef: string | null;
   canLoadMore: boolean;
+  /** The `remaining` the last loaded page reported: rows the queue holds past it. */
+  remaining: number;
   loading: boolean;
   blocked: boolean;
   modalOpenCount: number;
@@ -159,11 +161,13 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
     const pages = needsYouPages(state);
     const loading = pages.some((page) => page.loading);
     const canLoadMore = needsYouCanDemand(state);
+    const remaining = selectSectionRemaining("needs_you", state);
     return Object.freeze({
       choices: Object.freeze(choices.map((choice) => Object.freeze(choice))),
       nextRef:
         nextRef && choices.some((choice) => choice.summary.ref === nextRef && choice.selectable) ? nextRef : null,
       canLoadMore,
+      remaining,
       loading,
       blocked: modalOpen || paletteStore.getState().open,
       modalOpenCount,
@@ -185,6 +189,7 @@ export function createNeedsYouController(options: NeedsYouControllerOptions = {}
       }) &&
       next.nextRef === snapshot.nextRef &&
       next.canLoadMore === snapshot.canLoadMore &&
+      next.remaining === snapshot.remaining &&
       next.loading === snapshot.loading &&
       next.blocked === snapshot.blocked;
     const counterChanged = next.modalOpenCount !== snapshot.modalOpenCount;

@@ -64,9 +64,12 @@ order:
   The band also shows needs-you sessions that Live's loaded pages have not
   reached, so a session that needs a person is never behind "+N older", and
   it shows every row of the hub's tier, including one the rail files as
-  archived by age: the tier never decays, and the header's count and Next
-  needs you walk the same rows. The two sections are read separately; while the
-  needs-you section lists a session, its copy is the one the rail shows.
+  archived by age: the tier never decays, and Next needs you walks these
+  rows. The header's chip is a second number: it is the hub's attention
+  summary, which files a failed session under its own error count while the
+  band lists it here, so a failed session shows in the band without adding to
+  the chip. The two sections are read separately; while the needs-you section
+  lists a session, its copy is the one the rail shows.
 - **Working** keeps the hub's Live order.
 - **Idle** is newest finished turn first.
 
@@ -148,7 +151,7 @@ drained. A cold shell and a failed navigation surface therefore show no
 control, and the queue stays reachable through the chord and the palette,
 which demand page zero from the same controller. The sidebar header's count
 comes from the hub's attention summary, not from this predicate, so neither
-surface inventing presence on its own.
+surface invents presence on its own.
 
 A long press on the Next button opens the list of other needs-you sessions;
 the button beside it — a More affordance (an ellipsis icon labelled "More

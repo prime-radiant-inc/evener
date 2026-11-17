@@ -28,19 +28,25 @@ export interface NextNeedsYouProps {
 // the control's own render gate and ConversationBody's slot-mounting decision
 // read, so a control with nothing to show never pads the stack it floats in.
 // "Needs you" is a claim that a session is waiting on the reader, so only a
-// session to offer earns it: a resolved next session, or rows already loaded
-// while another page of them is still to read. Waiting on a read, a read that
-// failed, and a manifest count with no row behind it are all states where
-// nothing is known to need the reader, and the manifest's count on its own is
-// not evidence - it refreshes on its own schedule and can lag a queue that
-// drained.
-export function nextNeedsYouVisible(snapshot: NeedsYouSnapshot, hidden: boolean): boolean {
+// session to offer earns it: a resolved next session, or a row other than the
+// one being read, or a page reporting more of the queue behind the rows already
+// loaded. Waiting on a read, a read that failed, and a manifest count with no
+// row behind it are all states where nothing is known to need the reader, and
+// the manifest's count on its own is not evidence - it refreshes on its own
+// schedule and can lag a queue that drained.
+export function nextNeedsYouVisible(snapshot: NeedsYouSnapshot, sessionRef: string, hidden: boolean): boolean {
   if (hidden || snapshot.blocked) return false;
   if (snapshot.nextRef !== null) return true;
-  // No resolved successor, but loaded rows and another page of them: the last
-  // loaded row has no known successor until that page arrives (see
-  // resolveNextRef), so the control is how the reader asks for it.
-  return snapshot.canLoadMore && snapshot.choices.length > 0;
+  // No resolved successor, but another page still to read: the last loaded row
+  // has no known successor until that page arrives (see resolveNextRef), so the
+  // control is how the reader asks for it. The page's own remaining count is
+  // evidence of that queue on its own, and it survives a page the hub trimmed
+  // to fit. A queue whose only loaded row is the reader's own and which reports
+  // nothing behind it has no session to offer, so it mounts nothing.
+  return (
+    snapshot.canLoadMore &&
+    (snapshot.remaining > 0 || snapshot.choices.some((choice) => choice.summary.ref !== sessionRef))
+  );
 }
 
 // The same decision as one subscribed boolean, for consumers far larger than
@@ -53,12 +59,12 @@ export function nextNeedsYouVisible(snapshot: NeedsYouSnapshot, hidden: boolean)
 // approval) and changes re-render the caller itself, so the closure below
 // always reads the current value; the controller is stable across snapshot
 // changes, so the subscription itself does not churn.
-export function useNextNeedsYouMount(hidden: boolean): boolean {
+export function useNextNeedsYouMount(sessionRef: string, hidden: boolean): boolean {
   const controller = useOptionalNeedsYouController();
   const subscribe = useCallback((listener: () => void) => controller?.subscribe(listener) ?? (() => {}), [controller]);
   const getMount = useCallback(
-    () => (controller ? nextNeedsYouVisible(controller.getSnapshot(), hidden) : false),
-    [controller, hidden],
+    () => (controller ? nextNeedsYouVisible(controller.getSnapshot(), sessionRef, hidden) : false),
+    [controller, sessionRef, hidden],
   );
   return useSyncExternalStore(subscribe, getMount, getMount);
 }
@@ -117,7 +123,7 @@ function OwnedNextNeedsYou({
   const nextChoice = snapshot.choices.find((choice) => choice.summary.ref === snapshot.nextRef);
   const nextTitle = nextChoice?.summary.title?.trim() ?? "";
   const otherChoices = snapshot.choices.filter((choice) => choice.summary.ref !== sessionRef);
-  const visible = nextNeedsYouVisible(snapshot, hidden);
+  const visible = nextNeedsYouVisible(snapshot, sessionRef, hidden);
 
   const moreRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLElement>(null);

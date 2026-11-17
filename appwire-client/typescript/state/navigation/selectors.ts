@@ -102,13 +102,24 @@ export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessi
  * the previous manifest's data and marks it stale while the attention summary
  * resets, and a failed read keeps its data behind an error, so either one would
  * announce the previous generation's queue for as long as the unsettled state
- * lasts. The loaded rows are the reader's own settled evidence, so they cap the
- * answer when the manifest has nothing current to say. */
+ * lasts.
+ *
+ * The rows answer only while they belong to the current generation. A
+ * generation change carries the previous pages over with loadedRevision null (as
+ * provisionalForGeneration and the revalidator's resetGeneration both do), and
+ * a failed re-read keeps them behind an error, so counting them would announce
+ * that same replaced queue. An ordinary refresh within one generation keeps
+ * loadedRevision, so the count stands rather than blinking to zero. */
 export function selectNeedsYouCount(state: NavigationStoreState): number {
-  const rows = selectNeedsYouRows(state).length;
   const manifest = state.manifest;
-  if (!manifest || manifest.loading || manifest.stale || manifest.error) return rows;
-  return manifest.data?.sections.needs_you.count ?? rows;
+  if (manifest && !manifest.loading && !manifest.stale && !manifest.error) {
+    return manifest.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
+  }
+  return loadedSectionRows(
+    state,
+    (key) => key.kind === "section" && key.section === "needs_you",
+    (resource) => resource.loadedRevision !== null && resource.error === null,
+  ).length;
 }
 function sectionPages(section: "live" | "needs_you", state: NavigationStoreState): ResourceState[] {
   return [...state.resources.values()].filter(
@@ -177,12 +188,14 @@ export function selectLiveRows(state: NavigationStoreState): NavigationSessionSu
 function loadedSectionRows(
   state: NavigationStoreState,
   predicate: (key: Extract<ResourceKey, { kind: "section" | "pin_section" }>) => boolean,
+  scope: (resource: ResourceState) => boolean = () => true,
 ): NavigationSessionSummary[] {
   const pages: Array<{ offset: number; limit: number; sessions: NavigationSessionSummary[] }> = [];
   for (const resource of state.resources.values()) {
     if (
       (resource.key.kind !== "section" && resource.key.kind !== "pin_section") ||
       !predicate(resource.key) ||
+      !scope(resource) ||
       !state.visibleResourceKeys.has(keyID(resource.key)) ||
       resource.data === null
     )

@@ -305,7 +305,7 @@ function LiveConversationBody({
   // fixture outside AppShell has no floating control. The mount flag is one
   // subscribed boolean (see useNextNeedsYouMount), so queue churn re-renders
   // the small control, not this whole pane.
-  const nextNeedsYouMounts = useNextNeedsYouMount(attentionHidden);
+  const nextNeedsYouMounts = useNextNeedsYouMount(ref, attentionHidden);
   const pendingEntries = usePendingTurnEntries(ref);
   const blockedRows = useBlockedMessageEntries(ref);
   const canceledRows = useCanceledMessageEntries(ref);
