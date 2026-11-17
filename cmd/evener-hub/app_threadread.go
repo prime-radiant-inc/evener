@@ -1297,7 +1297,7 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 //
 // It is the hub's answer to "what can still be done with this thread", which is
 // why the relay hands the same set to a client at the moment a session closes
-// (stampClosedThreadCapabilities) rather than leaving it to read a set the
+// (stampStatusCapabilities' closed branch) rather than leaving it to read a set the
 // departing daemon cut for a turn that is over. One definition, so the pushed
 // set and the read that follows it cannot drift.
 func pastThreadCapabilities() appwire.ThreadCapabilities {

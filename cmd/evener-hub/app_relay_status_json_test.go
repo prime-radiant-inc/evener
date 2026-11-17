@@ -46,8 +46,8 @@ func TestRelayedStatusFrameParamsAreTheSameJSONAsBeforeTheOnePassStamp(t *testin
 		`{"threadId":"status-json","ref":"local:status-json","status":{"type":"active"},"capabilities":null}`,
 		`{"threadId":"status-json","ref":"local:status-json","status":{"type":"restartRequired"},"capabilities":{"send":true,"forkFromTurn":true}}`,
 		// An open status with no capability set: the old path left this one
-		// untouched (patchStatusCapabilities refuses to fabricate a set), so the
-		// one-pass stamp must not add one either.
+		// untouched (a patch refuses to fabricate a set), so the one-pass stamp
+		// must not add one either.
 		`{"threadId":"status-json","ref":"local:status-json","status":{"type":"active"}}`,
 	}
 	want := []string{
