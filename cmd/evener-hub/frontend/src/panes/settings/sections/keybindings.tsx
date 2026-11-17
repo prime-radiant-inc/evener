@@ -290,10 +290,11 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
 
   return (
     <div className={CLASS.captureWrap}>
-      {/* Clicking away cancels: the box is modal-ish, and focus leaving it
-          (another row's chord button, the toggle) ends the capture via
-          onBlur; the completed-click dismissal above covers clicks that never
-          move focus (non-focusable text, empty space). The
+      {/* Clicking away cancels: the box is modal-ish. A press outside - on a
+          focusable control or on plain text - ends the capture on that press's
+          COMPLETED click, and the blur it triggers is held in between. Only a
+          focus move with no press behind it, such as Tab, ends it via onBlur.
+          The
           textbox role names what it is - a keyboard-capture surface in the
           spirit of HotkeyRecorder's input; aria-readonly because every key
           is intercepted rather than typed. */}

@@ -34,8 +34,11 @@ import { useEffect, useRef } from "react";
  * The predicate and the dismissal ride refs, so a caller may pass fresh
  * closures on every render without re-subscribing the document listener.
  *
- * `pressInFlight` is written by "click" mode only: true from an outside press
- * until that press is spent (its click arrived, or the surface was disabled).
+ * `pressInFlight` is written by "click" mode only: true from an outside
+ * PRIMARY-button press until that press is spent - its click arrived, it ended
+ * without a click (reported a task later by `onPressSpentUnclicked`), or the
+ * surface was disabled. A right or middle press never sets it, because those
+ * never deliver a click to spend it.
  * A caller whose own blur handler would collapse the surface needs it: the
  * browser moves focus as mousedown's DEFAULT action, after every mousedown
  * listener, so a press on a focusable control below the surface blurs the
