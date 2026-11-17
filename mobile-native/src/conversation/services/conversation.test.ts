@@ -34,6 +34,7 @@ import type {
 	TurnQueueResponse,
 	TurnStartResponse,
 } from "@evener/appwire-client";
+import { PAST_CAPABILITIES as SHARED_PAST_CAPABILITIES } from "../../modelControlTestUtils";
 import * as projectModule from "../../projectedRows";
 import { createConversationService, type LiveConversationService } from "./conversation";
 
@@ -1170,6 +1171,116 @@ describe("ConversationService", () => {
 					params: { ref: "ref-1", threadId: "thread-1", modelControl: accepted },
 				},
 			]);
+		});
+
+		// cmd/evener-hub/app_threadread.go's pastThreadCapabilities: what the
+		// hub can carry out for a session with no daemon behind it. It
+		// advertises the resume-and-retry mutations, and carries neither
+		// modelControlVersion nor a modelControl snapshot, because there is no
+		// live session whose model-control authority it could report.
+		const PAST_CAPABILITIES: ThreadCapabilities = SHARED_PAST_CAPABILITIES;
+
+		function coldThread(): Thread {
+			return makeThread({
+				status: { type: "notLoaded" },
+				modelProvider: "anthropic/claude-sonnet-5",
+				evener: {
+					ref: "ref-1",
+					instanceId: "thread-1",
+					capabilities: PAST_CAPABILITIES,
+					queue: { revision: 0 },
+				},
+			});
+		}
+
+		it("a cold pick resumes the session, reads its authority, and sends the change once", async () => {
+			const { client, service } = setup({ thread: coldThread() });
+			const reads: string[] = [];
+			client.on("thread/read", () => {
+				// Only a read issued after the resume can report the authority the
+				// resumed daemon will accept.
+				if (client.resumeThreadCalls.length === 0) {
+					reads.push("cold");
+					return makeReadResponse(coldThread());
+				}
+				reads.push("resumed");
+				return makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B })));
+			});
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
+			}));
+			await service.open("ref-1");
+			expect(reads).toEqual(["cold"]);
+
+			await service.changeModel("openai", "gpt-5.5");
+
+			expect(client.resumeThreadCalls).toEqual(["ref-1"]);
+			expect(reads).toEqual(["cold", "resumed"]);
+			const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+			expect(setCalls).toHaveLength(1);
+			expect(setCalls[0]?.params).toMatchObject({
+				ref: "ref-1",
+				modelProvider: "openai",
+				model: "gpt-5.5",
+				expectedInstanceId: MODEL_AUTHORITY_B.instanceId,
+				expectedBootGeneration: MODEL_AUTHORITY_B.bootGeneration,
+			});
+		});
+
+		it("a pick after the session goes cold resumes and re-reads instead of sending the retired authority", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			service.subscribeNotifications(() => {});
+			// The hub stamps the close frame with pastThreadCapabilities and a
+			// cold status. The shared reducer leaves the held model-control state
+			// (and its retired authority) untouched, which is exactly why the
+			// service cannot trust it for the next set.
+			client.emitNotification({
+				method: "thread/status/changed",
+				params: {
+					ref: "ref-1",
+					threadId: "thread-1",
+					status: { type: "closed" },
+					capabilities: PAST_CAPABILITIES,
+				},
+			});
+			client.on("thread/read", () =>
+				makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B }))),
+			);
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { authority: MODEL_AUTHORITY_B, desired: "gpt-5.5" }),
+			}));
+
+			await service.changeModel("openai", "gpt-5.5");
+
+			expect(client.resumeThreadCalls).toEqual(["ref-1"]);
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+			const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+			expect(setCalls).toHaveLength(1);
+			expect(setCalls[0]?.params).toMatchObject({
+				ref: "ref-1",
+				expectedInstanceId: MODEL_AUTHORITY_B.instanceId,
+				expectedBootGeneration: MODEL_AUTHORITY_B.bootGeneration,
+			});
+		});
+
+		it("a resumed session whose read establishes no authority refuses without dispatch", async () => {
+			const { client, service } = setup({ thread: coldThread() });
+			await service.open("ref-1");
+			// The resumed daemon speaks no model control: the read is live
+			// (idle) and still carries no modelControlVersion.
+			client.on("thread/read", () =>
+				makeReadResponse(makeThread({ status: { type: "idle" }, modelProvider: "anthropic/claude-sonnet-5" })),
+			);
+
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toThrow();
+
+			expect(client.resumeThreadCalls).toEqual(["ref-1"]);
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
 
 		it("quarantines model-control pushes until a capable read establishes authority, then replays them", async () => {

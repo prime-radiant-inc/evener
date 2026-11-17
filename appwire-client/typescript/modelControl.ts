@@ -1,6 +1,7 @@
 import { isModelControlAuthorityStale, mutationErrorData, WireError } from "./errors";
 import type { ThreadModel } from "./model";
 import { sameJsonValue } from "./plainObject";
+import { SHUT_DOWN_STATUSES } from "./submitRouting";
 import type { ModelControlAuthority, ModelControlSnapshot, ThreadModelSetResponse } from "./types.gen";
 
 export interface ModelControlDisplay {
@@ -84,6 +85,33 @@ export function modelControlDisplay(model: ThreadModel): ModelControlDisplay {
     };
   }
   return state.kind === "recovering" ? state.lastSafeDisplay : state.canonicalDisplay;
+}
+
+// Whether a model pick can reach the wire on `model`. One predicate for every
+// client, so the browser picker and the phone sheet cannot disagree about
+// which sessions may offer a model change.
+//
+// The status gate is the shut-down set, which is exactly the set of sessions
+// a resume can wake: the hub answers their read from pastThreadCapabilities
+// with changeModel true and no model-control authority, and resumes the
+// session behind the mutation. restartRequired is deliberately NOT here. It
+// names a LIVE daemon on an incompatible protocol
+// (appwire.ThreadStatusRestartRequired) whose read carries
+// readablePastCapabilities - no changeModel - and whose thread/resume the hub
+// refuses outright, so a pick on it has no resume path and must not be offered
+// as one.
+export function modelPickCanSend(model: Pick<ThreadModel, "capabilities" | "modelControlState" | "status">): boolean {
+  if (model.capabilities?.changeModel !== true) return false;
+  const kind = model.modelControlState.kind;
+  if (kind === "ready") return true;
+  // `ready` holds the authority; a cold session's `unsupported` is the one
+  // state a pick resolves by resuming first. Everything else is held rather
+  // than offered: `recovering`, whose replacement read the store owns and a
+  // pick must not race; `uninitialized`, what a connection retire leaves until
+  // a read lands; and a LIVE `unsupported`, a daemon whose envelope carries no
+  // complete snapshot, which nothing resumes and which would fail after the
+  // user chose.
+  return kind === "unsupported" && SHUT_DOWN_STATUSES.has(model.status.type);
 }
 
 export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {

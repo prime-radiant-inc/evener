@@ -49,8 +49,10 @@ import {
 	isStaleCursorError,
 	modelControlAuthority,
 	modelControlRecoveryInput,
+	modelPickCanSend as sharedModelPickCanSend,
 	reduceModelControl,
 	sameModelControlAuthority,
+	SHUT_DOWN_STATUSES,
 	validateThreadModelSetResponse,
 } from "@evener/appwire-client";
 import type { MobileConversation } from "../../projectedRows";
@@ -61,6 +63,21 @@ import { projectConversation } from "../../projectedRows";
 // (the row module's RETAINED_ITEM_CAP, mobile-native/src/projectedRows.ts); nothing here needs its own
 // copy.
 export const READ_ITEM_LIMIT = 40;
+
+/** Whether a model pick on `session` can reach the wire. The rule is the
+ * shared client's (modelPickCanSend in @evener/appwire-client), so the sheet
+ * and the browser picker cannot disagree about which sessions offer one. */
+export function modelPickCanSend(session: MobileConversation): boolean {
+	return sharedModelPickCanSend(session);
+}
+
+// The statuses a resume can wake, so a model pick on them has a path to
+// authority (resumeThenAuthorize). The shared shut-down set only:
+// restartRequired names a live daemon whose read carries no changeModel and
+// whose thread/resume the hub refuses.
+function isColdSessionStatus(statusType: string): boolean {
+	return SHUT_DOWN_STATUSES.has(statusType);
+}
 
 // FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID fills the turn-id component of the item
 // key forkFromTurn builds from transcriptEntryIndex. Mobile does not yet carry
@@ -783,6 +800,39 @@ export function createConversationService<ReadLease = unknown>(
 
 	let startReplacementRead: ((threadRef: string) => void) | null = null;
 
+	// A cold session cannot carry a model change on the authority a previous
+	// read reported: there is no daemon behind it, the hub advertises
+	// changeModel so it can resume behind the mutation, and the first read
+	// that can report the resumed daemon's authority is the one after the
+	// resume. A held ready state over a cold status is the same case: a status
+	// frame that turns a session cold leaves modelControlState untouched, so
+	// its snapshot names a boot generation the resumed daemon replaced.
+	function coldSession(): boolean {
+		return acceptedModel !== null && isColdSessionStatus(acceptedModel.status.type);
+	}
+
+	// Resume, then take exactly one authoritative read: the same subscribed
+	// read open() takes, so the resumed session's identity, capabilities and
+	// model control install together and settle the read waitForModelControl
+	// awaits. A read that establishes no supported authority leaves
+	// changeModel to fail there, before any dispatch.
+	//
+	// The resume can hand back a different identity, and the read must address
+	// the one it returned: open() on the ref the daemon just retired would
+	// fence the mutation on the departed process's authority. The resumed
+	// thread's ref is authoritative; only an empty one falls back to the ref
+	// this service already holds.
+	async function resumeThenAuthorize(): Promise<void> {
+		requireCap("changeModel", "changeModel");
+		const threadRef = requireRef();
+		if (typeof client.resumeThread !== "function") {
+			throw new Error("ConversationService: resume is unavailable");
+		}
+		const resumed = await client.resumeThread(threadRef);
+		const resumedRef = resumed.thread.evener.ref;
+		await service.open(resumedRef === "" ? threadRef : resumedRef);
+	}
+
 	function requestModelControlRecovery(
 		threadRef: string,
 		expectedThreadId: string,
@@ -1013,6 +1063,13 @@ export function createConversationService<ReadLease = unknown>(
 			notificationHandler = handler;
 			modelControlRecoveryHandler = recoveryHandler ?? null;
 			const unsubscribe = client.onNotification((notification) => {
+				// Fold a committed notification into the model the mutation gates
+				// read. Both branches below fold through this one path.
+				const foldCommitted = (candidate: { ref: string; threadId: string }): void => {
+					if (acceptedModel === null || ref === null) return;
+					if (candidate.ref !== ref || candidate.threadId !== threadId) return;
+					acceptedModel = applyNotification(acceptedModel, notification, now());
+				};
 				if (notification.method === "thread/model/controlChanged") {
 					const params = notification.params;
 					const committed = ref !== null && params.ref === ref && params.threadId === threadId;
@@ -1024,9 +1081,7 @@ export function createConversationService<ReadLease = unknown>(
 						opening.modelControl.push({ notification, receivedAt: now() });
 						return;
 					}
-					if (committed && acceptedModel !== null) {
-						acceptedModel = applyNotification(acceptedModel, notification, now());
-					}
+					if (committed) foldCommitted(params);
 				}
 				if (notification.method === "thread/status/changed") {
 					const params = notification.params;
@@ -1049,6 +1104,13 @@ export function createConversationService<ReadLease = unknown>(
 							return;
 						}
 					}
+					// Fold the frame into the model the mutation gates read, so a
+					// session that goes cold is visible to changeModel without a
+					// read. The shared reducer deliberately leaves
+					// modelControlState alone on a status transition (the snapshot
+					// names the authority the departing daemon reported), which is
+					// why coldSession() checks the status rather than the state.
+					if (committed) foldCommitted(params);
 				}
 				handler(notification);
 			});
@@ -1218,6 +1280,11 @@ export function createConversationService<ReadLease = unknown>(
 		},
 
 		async changeModel(modelProvider, model) {
+			// A pick on a cold session resumes behind the change, exactly as the
+			// hub's pastThreadCapabilities advertise. The one read after the
+			// resume establishes the authority the resumed daemon will accept;
+			// without it the pick would carry a retired boot generation.
+			if (coldSession()) await resumeThenAuthorize();
 			const { threadRef, expectedThreadId, authority, epoch } = await waitForModelControl();
 			const fence: ModelControlRequestFence = {
 				authority,

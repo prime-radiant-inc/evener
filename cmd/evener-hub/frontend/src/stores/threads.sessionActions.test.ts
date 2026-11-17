@@ -1,7 +1,7 @@
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
 import { connectFakeClient } from "../testing/connectionTestUtils";
-import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../threadTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES, PAST_THREAD_CAPABILITIES, testThread } from "../threadTestUtils";
 import "fake-indexeddb/auto";
 import {
   type AnyNotification,
@@ -19,6 +19,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { clearDraft, readComposerDraft, writeDraft } from "../panes/session/composer/draft";
+
 import { resetPendingTurnsStoreForTests } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { resetSubagentModuleStoreForTests } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -112,6 +113,14 @@ function capableModelRead(ref: string, snapshot: ModelControlSnapshot): ThreadRe
       queue: { revision: 0 },
     },
   });
+}
+
+// The read a RESUMED daemon answers with. readResponse's own generation is
+// "1" (the daemon the pane read before), so a fixture that means "a new boot"
+// names the snapshot's generation as the response's too - exactly the pair the
+// reducer compares when it accepts a read's authority.
+function resumedModelRead(ref: string, snapshot: ModelControlSnapshot): ThreadReadResponse {
+  return { ...capableModelRead(ref, snapshot), bootGeneration: snapshot.authority.bootGeneration };
 }
 
 function acceptedModelResponse(snapshot: ModelControlSnapshot) {
@@ -751,6 +760,126 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     );
 
     expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+  });
+
+  test.each([
+    {
+      shape: "a cold read that never carried authority",
+      coldRead: (ref: string) =>
+        readResponse(ref, {
+          status: { type: "notLoaded" },
+          evener: { ref, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+        }),
+      retireAuthority: (_fake: FakeClient) => {},
+      staleBootGeneration: undefined,
+    },
+    {
+      shape: "a cold status whose pane still holds the exited daemon's ready snapshot",
+      // The pane was hydrated LIVE: this is the daemon that has since exited,
+      // and its ready authority is the one the pick must NOT dispatch with.
+      coldRead: (ref: string) => capableModelRead(ref, modelControlSnapshot(1, { bootGeneration: "1" })),
+      // The exit itself. A status frame never touches modelControlState, so the
+      // model keeps `ready` with the retired boot generation.
+      retireAuthority: (fake: FakeClient) => {
+        act(() => {
+          fake.emitNotification({
+            method: "thread/status/changed",
+            params: {
+              threadId: "thr_ref_a",
+              ref: "ref_a",
+              status: { type: "notLoaded" },
+              capabilities: PAST_THREAD_CAPABILITIES,
+            },
+          });
+        });
+      },
+      staleBootGeneration: "1",
+    },
+  ])(
+    "a pick on $shape resumes once and sets the model once on the resumed authority",
+    async ({ coldRead, retireAuthority, staleBootGeneration }) => {
+      const fake = connectFakeClient();
+      const ref = "ref_a";
+      fake.on("thread/read", () => coldRead(ref));
+      await threadsStore.getState().ensureThread(ref);
+      retireAuthority(fake);
+      expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      expect(threadsStore.getState().threads.get(ref)?.modelControlState.kind).toBe(
+        staleBootGeneration === undefined ? "unsupported" : "ready",
+      );
+
+      // The resumed daemon is a NEW boot generation, and the read that follows
+      // the resume is the only thing that establishes its authority.
+      const resumedSnapshot = modelControlSnapshot(1, { bootGeneration: "2" });
+      fake.on("thread/resume", () => ({ thread: capableModelRead(ref, resumedSnapshot).thread }));
+      fake.on("thread/read", () => resumedModelRead(ref, resumedSnapshot));
+      const accepted = modelControlSnapshot(2, {
+        bootGeneration: "2",
+        desiredProvider: "openai",
+        desiredModel: "gpt-5.5",
+        clientMutationId: "11111111-1111-4111-8111-111111111111",
+      });
+      vi.spyOn(crypto, "randomUUID").mockReturnValue("11111111-1111-4111-8111-111111111111");
+      // The resumed daemon, like the real one (server/appwire_thread_settings.go's
+      // expectedInstanceID/expectedBootGeneration fence), refuses a request bound
+      // to the exited daemon's generation.
+      let setAttempts = 0;
+      fake.on("thread/model/set", (params) => {
+        setAttempts += 1;
+        if (params.expectedBootGeneration !== resumedSnapshot.authority.bootGeneration) {
+          throw new WireError("authority changed", -32602, {
+            evenerErrorInfo: "authorityStale",
+            mutationOutcome: "notAccepted",
+            retryDisposition: "none",
+          });
+        }
+        return acceptedModelResponse(accepted);
+      });
+
+      await threadsStore.getState().setModel(ref, "openai", "gpt-5.5");
+
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+      expect(setAttempts).toBe(1);
+      expect(fake.calls.filter((call) => call.method === "thread/model/set")).toEqual([
+        {
+          method: "thread/model/set",
+          params: {
+            ref,
+            modelProvider: "openai",
+            model: "gpt-5.5",
+            clientMutationId: "11111111-1111-4111-8111-111111111111",
+            expectedInstanceId: "thr_ref_a",
+            expectedBootGeneration: "2",
+          },
+        },
+      ]);
+      expect(threadsStore.getState().threads.get(ref)?.modelControlState).toEqual({
+        kind: "ready",
+        snapshot: accepted,
+      });
+      expect(modelControlDisplay(threadsStore.getState().threads.get(ref)!)).toEqual({
+        modelProvider: "openai",
+        model: "gpt-5.5",
+      });
+    },
+  );
+
+  test("a cold pick whose resume read establishes no authority rejects without a model request", async () => {
+    const fake = connectFakeClient();
+    const ref = "ref_a";
+    const cold = (target: string) =>
+      readResponse(target, {
+        status: { type: "notLoaded" },
+        evener: { ref: target, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+      });
+    fake.on("thread/read", (params) => cold(params.ref ?? ref));
+    await threadsStore.getState().ensureThread(ref);
+    fake.on("thread/resume", () => ({ thread: cold(ref).thread }));
+
+    await expect(threadsStore.getState().setModel(ref, "openai", "gpt-5.5")).rejects.toBeInstanceOf(Error);
+
+    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+    expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   });
 
   test("a capable setModel sends captured authority and shows only the accepted response", async () => {

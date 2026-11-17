@@ -8,10 +8,16 @@ import {
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,
+  modelPickCanSend,
   reduceModelControl,
   validateThreadModelSetResponse,
 } from "./modelControl";
-import type { ModelControlAuthority, ModelControlSnapshot, ThreadModelSetResponse } from "./types.gen";
+import type {
+  ModelControlAuthority,
+  ModelControlSnapshot,
+  ThreadCapabilities,
+  ThreadModelSetResponse,
+} from "./types.gen";
 
 const AUTHORITY: ModelControlAuthority = { instanceId: "instance-1", bootGeneration: "boot-1" };
 const REPLACEMENT_AUTHORITY: ModelControlAuthority = { instanceId: "instance-2", bootGeneration: "boot-2" };
@@ -598,5 +604,57 @@ describe("model-set response validation", () => {
         retryDisposition: "blocked",
       },
     });
+  });
+});
+
+describe("modelPickCanSend", () => {
+  // Only changeModel matters to the predicate; the rest are the wire's
+  // remaining capability bits at their zero value.
+  const NO_CAPABILITIES: ThreadCapabilities = {
+    send: false,
+    steer: false,
+    interrupt: false,
+    compact: false,
+    clear: false,
+    forkFromTurn: false,
+    shutdown: false,
+    changeModel: false,
+    changeVisionModel: false,
+    queue: false,
+    goal: false,
+    sharedNotes: false,
+    rename: false,
+  };
+  const READY: ModelControlClientState = { kind: "ready", snapshot: snapshot(1) };
+  const UNSUPPORTED: ModelControlClientState = {
+    kind: "unsupported",
+    canonicalDisplay: CANONICAL,
+  };
+  const withPick = (state: ModelControlClientState, statusType: string, changeModel: boolean): ThreadModel =>
+    model(state, {
+      status: { type: statusType } as ThreadModel["status"],
+      capabilities: { ...NO_CAPABILITIES, changeModel },
+    });
+
+  test.each([
+    ["an idle session holding authority", READY, "idle", true, true],
+    ["a cold session whose read carries no snapshot", UNSUPPORTED, "closed", true, true],
+    ["an exited session", UNSUPPORTED, "ended", true, true],
+    ["a session not yet loaded", UNSUPPORTED, "notLoaded", true, true],
+  ] as const)("offers the pick on %s", (_case, state, statusType, changeModel, expected) => {
+    expect(modelPickCanSend(withPick(state, statusType, changeModel))).toBe(expected);
+  });
+
+  // restartRequired is a LIVE daemon on an incompatible protocol: its read
+  // carries readablePastCapabilities (no changeModel) and the hub refuses
+  // thread/resume on it, so a pick there has no resume path to authority.
+  test.each([
+    ["a daemon that needs a restart", UNSUPPORTED, "restartRequired", true],
+    ["a live session with no model-control protocol", UNSUPPORTED, "idle", true],
+    ["a session whose recovery read is in flight", { kind: "recovering", lastSafeDisplay: CANONICAL }, "idle", true],
+    ["a session whose connection was retired", { kind: "uninitialized", canonicalDisplay: CANONICAL }, "idle", true],
+    ["a session the wire does not let change models", READY, "idle", false],
+  ] as const)("holds the pick on %s", (_case, state, statusType, changeModel) => {
+    expect(modelPickCanSend(withPick(state, statusType, changeModel))).toBe(false);
   });
 });

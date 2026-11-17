@@ -1,15 +1,17 @@
-import type { ModelControlSnapshot, ModelListResponse, ThreadModel } from "@evener/appwire-client";
+import type { ModelControlSnapshot, ModelListResponse, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
+import { holdForeground } from "../../../stores/threadOwners";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { readModuleCss } from "../../../styles/cssBlock";
 import { connectReadyFakeClient as connectReadyFakeClientBase } from "../../../testing/connectionTestUtils";
-import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { ALL_CAPABILITIES as CAPABILITIES, testThread } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { PAST_THREAD_CAPABILITIES } from "../composer/composerTestUtils";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
 
@@ -34,6 +36,10 @@ test("the trigger exposes the full model label when its visible value truncates"
   expect(trigger.textContent).toContain("anthropic/claude-opus-5");
 });
 
+// A thread as the hub's LIVE read builds one: a ready model-control snapshot
+// carrying this daemon's authority. A COLD session is a different shape - use
+// coldModel below, never this default with only the status swapped, or the
+// fixture would carry authority the hub never sends for an exited session.
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, modelControlState, ...rest } = overrides;
   const model = {
@@ -87,6 +93,25 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   };
 }
 
+// A cold session as the hub really reports one: status notLoaded and
+// PAST_THREAD_CAPABILITIES (changeModel true) with NO model-control version or
+// snapshot, which hydrates as `unsupported` (transcriptHistory's hydrate ->
+// reduceModelControl's readAccepted for any version but 1). A pane that was
+// open when the session exited keeps its old ready snapshot instead; the store
+// resolves that variant in stores/threads.sessionActions.test.ts. The state is
+// the same one a live daemon with no complete snapshot produces, so the STATUS
+// is what separates them - which is exactly what these tests vary.
+function coldModel(): ThreadModel {
+  return testModel({
+    status: { type: "notLoaded" },
+    capabilities: PAST_THREAD_CAPABILITIES,
+    modelControlState: {
+      kind: "unsupported",
+      canonicalDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+    },
+  });
+}
+
 function modelControlSnapshot(lifecycle: "pending" | "applied" | "rejected"): ModelControlSnapshot {
   return {
     authority: { instanceId: "thr_a", bootGeneration: "1" },
@@ -107,18 +132,59 @@ function modelControlSnapshot(lifecycle: "pending" | "applied" | "rejected"): Mo
   };
 }
 
+// The snapshot a RESUMED daemon answers its read with: authority for the boot
+// the resume started, and nothing desired yet. The instanceId is the resumed
+// thread's own instance identity (testThread derives `thr_<ref>`) and the
+// generation is the NEW one the resume booted - the reducer accepts a read's
+// authority only when both match the response's own, and the whole point of
+// re-reading is that this authority is not the retired one.
+const RESUMED_BOOT_GENERATION = "2";
+const RESUMED_SNAPSHOT: ModelControlSnapshot = {
+  authority: { instanceId: "thr_ref_a", bootGeneration: RESUMED_BOOT_GENERATION },
+  revision: 1,
+  active: {
+    modelProvider: "anthropic",
+    model: "claude-sonnet-4-5",
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+  },
+};
+
+// The read after a resume: a live daemon's capabilities (it carries the model
+// control version the cold read does not) and authority. requestGeneration is
+// echoed back so the store can tell this read from a superseded one.
+function resumedRead(requestGeneration?: number): ThreadReadResponse {
+  return {
+    thread: testThread("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+        modelControl: RESUMED_SNAPSHOT,
+        queue: { revision: 0 },
+      },
+    }),
+    bootGeneration: RESUMED_BOOT_GENERATION,
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+    requestGeneration,
+  };
+}
+
 function connectReadyFakeClient() {
   const fake = connectReadyFakeClientBase();
   threadsStore.setState({ threads: new Map([["ref_a", testModel()]]) });
   return fake;
 }
 
-function acceptedModelResponse(params: { clientMutationId: string; modelProvider: string; model: string }) {
+function acceptedModelResponse(
+  params: { clientMutationId: string; modelProvider: string; model: string },
+  authority: ModelControlSnapshot["authority"] = { instanceId: "thr_a", bootGeneration: "1" },
+) {
   return {
     modelControlVersion: 1 as const,
     disposition: "accepted" as const,
     modelControl: {
-      authority: { instanceId: "thr_a", bootGeneration: "1" },
+      authority,
       revision: 2,
       active: {
         modelProvider: "anthropic",
@@ -216,6 +282,88 @@ test("the trigger is disabled when the thread's changeModel capability is unavai
   expect(trigger().disabled).toBe(true);
 });
 
+// A LIVE session whose daemon reports no model-control protocol hydrates as
+// unsupported (transcriptHistory's hydrate -> reduceModelControl's readAccepted
+// with no version), while the daemon still advertises changeModel
+// (server/appwire_thread_projection.go sets ModelControlVersion only for a
+// complete snapshot). No cold session is involved, so no resume can produce the
+// authority, and the store refuses the pick: offering the control would promise
+// a switch that can only fail.
+test("the trigger is disabled for a live session with no model-control protocol, which no resume can authorize", () => {
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "idle" },
+        modelControlState: {
+          kind: "unsupported",
+          canonicalDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+        },
+      })}
+    />,
+  );
+  expect(trigger().disabled).toBe(true);
+});
+
+// restartRequired is a LIVE daemon on an incompatible protocol (appwire's
+// ThreadStatusRestartRequired comment), not a cold session a resume can wake:
+// its read carries readablePastCapabilities - no changeModel - and the hub
+// refuses thread/resume on it outright (app_threadlifecycle.go's
+// daemonRestartRequiredError). A pick there has no path to authority, so it is
+// held with the live-unsupported case rather than offered behind a resume that
+// would be refused.
+test("the trigger is disabled for a session whose daemon needs a restart", () => {
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "restartRequired" },
+        capabilities: { ...CAPABILITIES, changeModel: true },
+        modelControlState: {
+          kind: "unsupported",
+          canonicalDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+        },
+      })}
+    />,
+  );
+  expect(trigger().disabled).toBe(true);
+});
+
+test("the trigger is disabled while a model-control recovery read is in flight", () => {
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "idle" },
+        modelControlState: {
+          kind: "recovering",
+          lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+        },
+      })}
+    />,
+  );
+  expect(trigger().disabled).toBe(true);
+});
+
+// A connection retire clears the snapshot (`reduceModelControl`'s
+// connectionRetired branch) and leaves `uninitialized` until a read lands. There
+// is no authority to send on and nothing to resume, so the pick is held.
+test("the trigger is disabled while a retired connection has cleared the snapshot", () => {
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "idle" },
+        modelControlState: {
+          kind: "uninitialized",
+          canonicalDisplay: { modelProvider: "anthropic", model: "claude-sonnet-4-5" },
+        },
+      })}
+    />,
+  );
+  expect(trigger().disabled).toBe(true);
+});
+
 test("a failed turn's idle capabilities re-enable model switching without reload", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
@@ -264,11 +412,11 @@ test("a failed turn's idle capabilities re-enable model switching without reload
 // question itself, for a running session and a cold exited one alike, and a
 // user should not have to know or care which state theirs is in.
 test.each([
-  ["a live turn is in flight", { status: { type: "active" }, activeTurnId: "turn_1" }],
-  ["the session already exited", { status: { type: "notLoaded" } }],
-  ["the session is idle", {}],
-] as const)("the trigger is enabled while changeModel is capable, even when %s", (_case, overrides) => {
-  render(<ModelSwitch sessionRef="ref_a" model={testModel(overrides)} />);
+  ["a live turn is in flight", () => testModel({ status: { type: "active" }, activeTurnId: "turn_1" })],
+  ["the session already exited", () => coldModel()],
+  ["the session is idle", () => testModel()],
+] as const)("the trigger is enabled while changeModel is capable, even when %s", (_case, model) => {
+  render(<ModelSwitch sessionRef="ref_a" model={model()} />);
   expect(trigger().disabled).toBe(false);
 });
 
@@ -304,21 +452,36 @@ test("a mid-turn pick sends thread/model/set rather than being refused client-si
   await screen.findByText(/nope\/m-404/i);
 });
 
-// A cold exited session takes the SAME wire call as a live one: the hub resumes
-// the session behind thread/model/set and retries (cmd/evener-hub/app_model.go's
-// setThreadModelWithResume), so the choice is recorded server-side and there is
-// no client-side pending-model state to hold.
-test("a cold exited session sends the same thread/model/set - the hub owns the resume", async () => {
+// A cold exited session is pickable: the hub advertises changeModel for it
+// (cmd/evener-hub/app_threadread.go's pastThreadCapabilities) and the store
+// resumes it, re-reads, and then sends one authority-bound thread/model/set.
+// The picker must be enabled with NO model-control authority in hand - that is
+// exactly the state a cold read produces.
+test("a cold exited session is pickable and the store resumes before it sets the model", async () => {
   const user = userEvent.setup();
   const fake = connectReadyFakeClient();
+  threadsStore.setState({ threads: new Map([["ref_a", coldModel()]]) });
+  // A mounted pane holds its ref's canonical ownership, and the store's
+  // resumed read publishes only for an owned ref (refreshTrackedThread's
+  // canonicalThreadOwnerActive gate). Without this the resume would return
+  // having read nothing and setModel would refuse - a fixture artifact, not
+  // the behavior under test.
+  holdForeground("ref_a");
   fake.on("model/list", () => modelListResponse());
+  // The resumed daemon answers with authority; only that read may authorise
+  // the set, which is why the cold fixture above carries none. The cold read
+  // carries no modelControlVersion, so the store's own authority gate is what
+  // turns this resume into a permitted dispatch.
+  fake.on("thread/resume", () => ({ thread: resumedRead().thread }));
+  fake.on("thread/read", (params) => resumedRead(params.requestGeneration));
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return acceptedModelResponse(params);
+    return acceptedModelResponse(params, RESUMED_SNAPSHOT.authority);
   });
 
-  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "notLoaded" } })} />);
+  render(<ModelSwitch sessionRef="ref_a" model={coldModel()} />);
+  expect(trigger().disabled).toBe(false);
   await user.click(trigger());
   const combobox = await screen.findByRole("combobox");
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
@@ -328,6 +491,10 @@ test("a cold exited session sends the same thread/model/set - the hub owns the r
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
   await waitFor(() => expect(called).toMatchObject({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  // One user action: the store resumed the cold session itself, and the set
+  // carries the authority the post-resume read established.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1);
 });
 
 test("opening the picker fetches the catalog via listModels and shows a loading state until it resolves", async () => {

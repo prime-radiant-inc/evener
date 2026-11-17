@@ -12,6 +12,7 @@ import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
+import { modelPickCanSend } from "../conversation/services/conversation";
 import { type SessionControls, useControlsState } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
 import { Segmented } from "../sheet/Grouped";
@@ -74,7 +75,9 @@ function ModelSheetBody({
 		if (!catalog && !loadingModels) void controls.loadModels();
 	}, [controls]);
 	const busy = !controls || !ready || state?.pending != null;
-	const modelBusy = busy || (!vision && session.modelControlState.kind !== "ready");
+	// Whether this session can take a pick is the shared predicate's question
+	// (modelPickCanSend), so the sheet and the browser picker cannot disagree.
+	const modelBusy = busy || (!vision && !modelPickCanSend(session));
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const modelTarget = modelControlDisplay(session);
 	const current = vision
@@ -99,7 +102,7 @@ function ModelSheetBody({
 			then?.();
 		});
 	const choose = (model: ModelDescriptor) => {
-		if (!vision && session.modelControlState.kind !== "ready") return;
+		if (!vision && !modelPickCanSend(session)) return;
 		if (`${model.provider}/${model.model}` === current) {
 			finish();
 			return;

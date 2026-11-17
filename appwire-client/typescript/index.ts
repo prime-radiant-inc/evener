@@ -554,6 +554,7 @@ export {
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,
+  modelPickCanSend,
   reduceModelControl,
   restoreHeldModelControl,
   sameModelControlAuthority,

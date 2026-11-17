@@ -2,12 +2,19 @@
 // way ConversationScreen provides one. The host's controls are a
 // SessionControls-shaped fake whose calls are recorded; only native edges are
 // mocked.
-import { type ModelListResponse, type Thread, type ThreadCapabilities, WireError } from "@evener/appwire-client";
+import {
+	type ModelControlSnapshot,
+	type ModelListResponse,
+	type Thread,
+	type ThreadCapabilities,
+	WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createConversationService } from "../conversation/services/conversation";
+import { PAST_CAPABILITIES as SHARED_PAST_CAPABILITIES } from "../modelControlTestUtils";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
 import {
@@ -343,6 +350,324 @@ describe("choosing a model (spec 8.5)", () => {
 	it("shows why a change failed", () => {
 		provide(conversation(), { lastAction: "changeModel", error: "Could not confirm the action: refused" });
 		expect(renderedText(sheet())).toContain("Could not confirm the action: refused");
+	});
+});
+
+const PAST_CAPABILITIES = SHARED_PAST_CAPABILITIES;
+
+const THIS_AUTHORITY = { instanceId: "instance-a", bootGeneration: "7" } as const;
+const RESUMED_AUTHORITY = { instanceId: "instance-b", bootGeneration: "8" } as const;
+
+function snapshotFor(
+	revision: number,
+	authority: { instanceId: string; bootGeneration: string },
+	desired?: string,
+): ModelControlSnapshot {
+	return {
+		authority,
+		revision,
+		active: {
+			modelProvider: "anthropic",
+			model: "claude-sonnet-5",
+			reasoningEffortLevels: ["low", "high"],
+			supportsReasoning: true,
+		},
+		...(desired === undefined
+			? {}
+			: {
+					desired: {
+						requestSequence: revision,
+						clientMutationId: `request-${revision}`,
+						modelProvider: "anthropic",
+						model: desired,
+						lifecycle: "pending" as const,
+					},
+				}),
+	};
+}
+
+/** A thread with no daemon behind it: the hub's cold read. */
+const COLD_THREAD: Thread = {
+	id: "thread-1",
+	sessionId: "session-1",
+	preview: "",
+	ephemeral: false,
+	modelProvider: "anthropic/claude-sonnet-5",
+	createdAt: 1,
+	updatedAt: 1,
+	status: { type: "notLoaded" },
+	cwd: "/test",
+	cliVersion: "test",
+	source: "local",
+	turns: [],
+	evener: {
+		ref: REF,
+		instanceId: "thread-1",
+		capabilities: PAST_CAPABILITIES,
+		queue: { revision: 0 },
+	},
+};
+
+/** The same thread with a daemon behind it, reporting `authority`. */
+function liveThread(authority: { instanceId: string; bootGeneration: string }, status: string = "ready"): Thread {
+	return {
+		...COLD_THREAD,
+		status: { type: status },
+		evener: {
+			ref: REF,
+			instanceId: authority.instanceId,
+			capabilities: { ...PAST_CAPABILITIES, modelControlVersion: 1 },
+			queue: { revision: 0 },
+			modelControl: snapshotFor(1, authority),
+		},
+	};
+}
+
+describe("a pick on a cold session (the hub resumes behind it)", () => {
+	it("resumes once, sends the resumed daemon's authority, and shows the accepted model", async () => {
+		// The resumed daemon's state: what every read after thread/resume reports.
+		let live = liveThread(RESUMED_AUTHORITY);
+		let resumed = false;
+		let refreshed: MobileConversation | null = null;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			return { thread: live };
+		});
+		client.on("thread/read", () =>
+			resumed ? { thread: live, bootGeneration: RESUMED_AUTHORITY.bootGeneration } : { thread: COLD_THREAD },
+		);
+		client.on("thread/model/set", (params) => {
+			const accepted = snapshotFor(2, RESUMED_AUTHORITY, params.model);
+			// The daemon keeps the change, so the screen's refresh read sees it.
+			live = { ...live, evener: { ...live.evener, modelControl: accepted } };
+			return { modelControlVersion: 1, disposition: "accepted" as const, modelControl: accepted };
+		});
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		// The production cold read: advertised changeModel, no model control.
+		expect(cold.modelControlState.kind).toBe("unsupported");
+		const controls = new SessionControls(
+			service,
+			async () => {
+				refreshed = await service.open(REF);
+			},
+			() => {},
+			() => true,
+			() => cold,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		provide(cold, {}, { controls });
+		const tree = sheet();
+		const choice = pressable(tree, "Claude Haiku 5");
+		expect(choice?.props.disabled).toBe(false);
+		act(() => choice?.props.onPress?.());
+		await settle();
+
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({
+			ref: REF,
+			modelProvider: "anthropic",
+			model: "claude-haiku-5",
+			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
+			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
+		});
+		// The change went through, so the sheet closed on it.
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+
+		// The screen's refresh read, which is how the store learns the resumed
+		// session and the accepted snapshot, then the sheet it draws.
+		if (!refreshed) throw new Error("the sheet's change did not refresh the session");
+		provide(refreshed, {}, { controls });
+		const after = sheet();
+		expect(pressable(after, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(after, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("resumes when the session went cold holding a ready snapshot from the daemon that left", async () => {
+		// The hub's close frame: a cold status with the past-thread capabilities,
+		// and no model control. reducer.ts's "thread/status/changed" branch
+		// rewrites status and capabilities and leaves modelControlState alone, so
+		// the held ready snapshot still names the departed daemon's boot
+		// generation.
+		let resumed = false;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			return { thread: liveThread(RESUMED_AUTHORITY) };
+		});
+		client.on("thread/read", () =>
+			resumed
+				? { thread: liveThread(RESUMED_AUTHORITY), bootGeneration: RESUMED_AUTHORITY.bootGeneration }
+				: { thread: liveThread(THIS_AUTHORITY), bootGeneration: THIS_AUTHORITY.bootGeneration },
+		);
+		client.on("thread/model/set", () => ({
+			modelControlVersion: 1,
+			disposition: "accepted" as const,
+			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-haiku-5"),
+		}));
+		const service = createConversationService(client);
+		const live = await service.open(REF);
+		service.subscribeNotifications(() => {});
+		const closed = {
+			method: "thread/status/changed" as const,
+			params: {
+				ref: REF,
+				threadId: "thread-1",
+				status: { type: "closed" },
+				capabilities: PAST_CAPABILITIES,
+			},
+		};
+		// The screen's store folds the same frame for the sheet it draws.
+		client.emitNotification(closed);
+		const stale = {
+			...live,
+			status: { type: "closed" },
+			capabilities: PAST_CAPABILITIES,
+		} as MobileConversation;
+		expect(stale.modelControlState).toMatchObject({ kind: "ready" });
+		const controls = new SessionControls(
+			service,
+			async () => {},
+			() => {},
+			() => true,
+			() => stale,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		provide(stale, {}, { controls });
+		const tree = sheet();
+		const choice = pressable(tree, "Claude Haiku 5");
+		expect(choice?.props.disabled).toBe(false);
+		act(() => choice?.props.onPress?.());
+		await settle();
+
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		// The retired authority (instance-a / boot 7) is never sent.
+		expect(setCalls[0]?.params).toMatchObject({
+			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
+			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
+		});
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+	});
+
+	it("holds the pick on a LIVE session whose daemon reports no model-control snapshot", async () => {
+		// server/appwire_thread_projection.go: ChangeModel does not require a
+		// model-control version, but ModelControlVersion is set only for a
+		// complete envelope snapshot. A live daemon can therefore advertise
+		// changeModel and still read as unsupported. Nothing resumes it, so the
+		// pick has no path to authority and the sheet must not offer it.
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/model/set", () => {
+			throw new Error("thread/model/set must not be dispatched");
+		});
+		// The live read: an idle thread whose envelope carries no snapshot.
+		const thread = { ...liveThread(RESUMED_AUTHORITY, "idle") };
+		delete (thread.evener as { modelControl?: unknown }).modelControl;
+		(thread.evener.capabilities as { modelControlVersion?: number }).modelControlVersion = undefined;
+		client.on("thread/read", () => ({ thread }));
+		const service = createConversationService(client);
+		const live = await service.open(REF);
+		expect(live.modelControlState.kind).toBe("unsupported");
+		expect(live.status.type).toBe("idle");
+		const controls = new SessionControls(
+			service,
+			async () => {},
+			() => {},
+			() => true,
+			() => live,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		provide(live, {}, { controls });
+		const tree = sheet();
+		const choice = pressable(tree, "Claude Haiku 5");
+		expect(choice?.props.disabled).toBe(true);
+		act(() => choice?.props.onPress?.());
+		await settle();
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+		expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+	});
+
+	it("sends the model change to the ref the resume resolved, not the retired one", async () => {
+		// A resume can hand back a different identity than the one it was given
+		// (client.ts's ThreadResumeResponse.thread.evener.ref). Reading the
+		// ORIGINAL ref after the resume re-subscribes to a session the daemon
+		// just retired, so the mutation would fence on the departed process's
+		// authority and fail after the user picked.
+		const RESUMED_REF = "local:resumed";
+		let resumed = false;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return { thread: { ...thread, evener: { ...thread.evener, ref: RESUMED_REF } } };
+		});
+		client.on("thread/read", (params) => {
+			// Only the resumed ref carries the resumed daemon; the retired ref
+			// still answers as the cold session it was.
+			if (!resumed || params.ref !== RESUMED_REF) return { thread: COLD_THREAD };
+			const thread = liveThread(RESUMED_AUTHORITY);
+			return {
+				thread: { ...thread, evener: { ...thread.evener, ref: RESUMED_REF } },
+				bootGeneration: RESUMED_AUTHORITY.bootGeneration,
+			};
+		});
+		client.on("thread/model/set", () => ({
+			modelControlVersion: 1,
+			disposition: "accepted" as const,
+			modelControl: snapshotFor(2, RESUMED_AUTHORITY, "claude-haiku-5"),
+		}));
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		expect(cold.modelControlState.kind).toBe("unsupported");
+		const controls = new SessionControls(
+			service,
+			async () => {},
+			() => {},
+			() => true,
+			() => cold,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		provide(cold, {}, { controls });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress?.());
+		await settle();
+
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({
+			ref: RESUMED_REF,
+			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
+			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
+		});
 	});
 });
 

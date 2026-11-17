@@ -20,7 +20,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { modelControlDisplay, sessionActionError } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { onConnectionNotification } from "../../../stores/connection";
-import { threadsStore } from "../../../stores/threads";
+import { modelPickCanSend, threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
@@ -34,21 +34,22 @@ export interface ModelSwitchProps {
 export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const toasts = useToasts();
 
-  // changeModel and a ready model-control snapshot are the wire's answers: the hub
-  // advertises it for a cold exited thread as well as a live one (cmd/evener-hub/
-  // app_threadread.go's pastEntryThread) and resumes the session behind
-  // thread/model/set when it has to (app_model.go's setThreadModelWithResume),
-  // so a user never has to know whether their session is "running" to pick its
-  // next model. A pick made while a turn runs is accepted and queued by the
-  // session for the turn boundary (agent/session.go's SetModel queue path), so
-  // the next turn - typically the message being typed - runs on it. The shared
-  // model-control snapshot makes an accepted desired model visible immediately
-  // and later replaces it with the active model if the daemon rejects it. A
-  // genuinely refused pick (unknown model, unresolvable
-  // ref) still surfaces as a toast from handlePick. Gating on a client-side
-  // turn predicate here made the client guess at an answer only the daemon has,
-  // and it took the switch away from every cold session too.
-  const disabled = !model.capabilities.changeModel || model.modelControlState.kind !== "ready";
+  // changeModel is the wire's answer to "may this session's model be changed",
+  // and it is the FIRST thing this control asks: the hub advertises it for a
+  // cold exited thread as well as a live one (cmd/evener-hub/app_threadread.go's
+  // pastThreadCapabilities), and a user never has to know whether their session
+  // is "running" to pick its next model. A pick made while a turn runs is
+  // accepted and queued by the session for the turn boundary
+  // (agent/session.go's SetModel queue path), so the next turn - typically the
+  // message being typed - runs on it. A genuinely refused pick (unknown model,
+  // unresolvable ref) still surfaces as a toast from handlePick. Gating on a
+  // client-side turn predicate here made the client guess at an answer only the
+  // daemon has, and it took the switch away from every cold session too.
+  //
+  // Whether a pick can reach authority is not this control's question: it is
+  // the shared predicate's (modelPickCanSend), which the store and the phone
+  // sheet also ask, so this control cannot offer a switch they will refuse.
+  const disabled = !modelPickCanSend(model);
   const displayed = modelControlDisplay(model);
   const currentModelLabel = modelLabel(displayed.modelProvider, displayed.model);
 

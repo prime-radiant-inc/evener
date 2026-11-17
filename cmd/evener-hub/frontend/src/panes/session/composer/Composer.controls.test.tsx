@@ -1,3 +1,4 @@
+import type { ThreadReadResponse } from "@evener/appwire-client";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -107,36 +108,6 @@ afterEach(() => {
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
 });
 
-function establishReadyModelControl(ref: string): void {
-  const current = threadsStore.getState().threads.get(ref);
-  if (!current) throw new Error(`missing thread fixture for ${ref}`);
-  act(() => {
-    threadsStore.setState({
-      threads: new Map([
-        [
-          ref,
-          {
-            ...current,
-            modelControlState: {
-              kind: "ready",
-              snapshot: {
-                authority: { instanceId: current.threadId, bootGeneration: "1" },
-                revision: 1,
-                active: {
-                  modelProvider: current.modelProvider,
-                  model: current.model,
-                  reasoningEffortLevels: current.reasoningEffortLevels,
-                  supportsReasoning: current.supportsReasoning,
-                },
-              },
-            },
-          },
-        ],
-      ]),
-    });
-  });
-}
-
 function acceptModelSet(params: {
   modelProvider: string;
   model: string;
@@ -167,6 +138,44 @@ function acceptModelSet(params: {
         lifecycle: "pending",
       },
     },
+  };
+}
+
+// The read a RESUMED daemon answers with. A cold session's own read carries
+// changeModel (PAST_THREAD_CAPABILITIES) but no model-control version or
+// snapshot, so nothing in it can authorise a set; the resume boots a new daemon
+// and this read is where its authority comes from. bootGeneration names that
+// NEW boot - the reducer accepts a read's authority only when it matches the
+// response's own generation, and a set fenced on the retired one is refused.
+const RESUMED_BOOT_GENERATION = "2";
+
+function resumedRead(ref: string): ThreadReadResponse {
+  const snapshot = {
+    authority: { instanceId: `thr_${ref}`, bootGeneration: RESUMED_BOOT_GENERATION },
+    revision: 1,
+    active: {
+      modelProvider: "anthropic",
+      model: "claude-sonnet-4-5",
+      reasoningEffortLevels: [],
+      supportsReasoning: false,
+    },
+  };
+  return {
+    ...readResponse(ref, {
+      status: { type: "idle" },
+      evener: {
+        ref,
+        // The read's own identity: the reducer accepts a snapshot's authority
+        // only when its instanceId matches the response's.
+        instanceId: `thr_${ref}`,
+        capabilities: { ...FULL_CAPABILITIES, modelControlVersion: 1 },
+        modelControl: snapshot,
+        queue: { revision: 0 },
+      },
+    }),
+    bootGeneration: RESUMED_BOOT_GENERATION,
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
   };
 }
 
@@ -499,7 +508,11 @@ test("an empty exited follow-up can pick its next model before entering the edit
     status: { type: "notLoaded" },
     evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
   });
-  establishReadyModelControl("ref_a");
+  // The mounted pane owns ref_a, so the store's resume runs its own read;
+  // swap the read to the resumed daemon's answer from here on. The cold read
+  // above is what the pane really holds: changeModel true, no authority.
+  fake.on("thread/resume", () => ({ thread: resumedRead("ref_a").thread }));
+  fake.on("thread/read", () => resumedRead("ref_a"));
   fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
   fake.on("thread/model/set", acceptModelSet);
   expect(textarea().style.minHeight).toBe("1lh");
@@ -514,10 +527,15 @@ test("an empty exited follow-up can pick its next model before entering the edit
       modelProvider: "openai",
       model: "gpt-5.5",
       expectedInstanceId: "thr_ref_a",
-      expectedBootGeneration: "1",
+      // The resumed daemon's generation, not the retired one the pane's cold
+      // read belonged to: this is the fence a stale-authority retry fails.
+      expectedBootGeneration: RESUMED_BOOT_GENERATION,
       clientMutationId: expect.any(String),
     }),
   );
+  // One user action, and the store did the resume itself.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1);
   render(<button type="button">Outside composer</button>);
   await user.click(screen.getByRole("button", { name: "Outside composer" }));
   await waitFor(() => expect(textarea().style.minHeight).toBe("1lh"));
@@ -532,7 +550,10 @@ test("an empty exited follow-up keeps its phone menus usable", async () => {
       status: { type: "notLoaded" },
       evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
     });
-    establishReadyModelControl("ref_a");
+    // The pick resumes the cold session, so the store re-reads it; answer
+    // that read with the resumed daemon's authority.
+    fake.on("thread/resume", () => ({ thread: resumedRead("ref_a").thread }));
+    fake.on("thread/read", () => resumedRead("ref_a"));
     fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
     fake.on("thread/model/set", acceptModelSet);
     expect(textarea().style.minHeight).toBe("1lh");
@@ -560,7 +581,6 @@ test("an empty exited follow-up supports keyboard focus through its controls and
     status: { type: "notLoaded" },
     evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
   });
-  establishReadyModelControl("ref_a");
   fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
   await user.click(textarea());
   await user.tab();

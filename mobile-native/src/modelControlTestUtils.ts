@@ -1,10 +1,34 @@
 import type {
 	ModelControlSnapshot,
+	ThreadCapabilities,
 	Thread,
 	ThreadModelSetParams,
 	ThreadModelSetResponse,
 	ThreadReadResponse,
 } from "@evener/appwire-client";
+
+/**
+ * PAST_CAPABILITIES is what the hub stamps for a session with no daemon behind
+ * it (cmd/evener-hub/app_threadread.go's pastThreadCapabilities): changeModel
+ * stays true because the hub resumes the session behind a model change, and it
+ * carries neither modelControlVersion nor a modelControl snapshot.
+ */
+export const PAST_CAPABILITIES: ThreadCapabilities = {
+	send: true,
+	steer: false,
+	interrupt: false,
+	compact: true,
+	clear: true,
+	forkFromTurn: true,
+	shutdown: true,
+	changeModel: true,
+	changeVisionModel: true,
+	sharedNotes: true,
+	queue: true,
+	goal: true,
+	rename: true,
+	pageBefore: true,
+};
 
 const BOOT_GENERATION = "test-boot";
 

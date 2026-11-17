@@ -72,6 +72,7 @@ import {
   restoreHeldModelControl,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
+  modelPickCanSend as sharedModelPickCanSend,
   sameModelControlAuthority as sharedSameModelControlAuthority,
   type ThreadSubscriptionLease,
   validateThreadModelSetResponse,
@@ -4859,6 +4860,73 @@ async function waitForCurrentModelControl(ref: string): Promise<ThreadModel> {
   return established;
 }
 
+// A pick needs the store's resume first when the session is cold and the wire
+// advertises a model change: the hub answers the cold read from
+// pastThreadCapabilities (cmd/evener-hub/app_threadread.go) with changeModel
+// true and NO model-control authority, and a pane that was open when the
+// session exited keeps the `ready` snapshot of the retired daemon (a status
+// frame does not touch modelControlState). Only a live daemon can bind a model
+// mutation, so the pick resumes the session and lets the resume's own
+// hydration establish the authority it needs.
+//
+//The statuses here are the shared shut-down set only: restartRequired names
+// a LIVE daemon on an incompatible protocol, which thread/resume refuses and
+// whose read advertises no changeModel, so a pick there has no resume path.
+function needsResumeForModelSet(model: ThreadModel): boolean {
+  return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
+}
+
+// Whether a pick can still become a model mutation, so a control can decide to
+// offer it. The rule is the shared client's, so the picker and the phone sheet
+// cannot drift (modelPickCanSend in @evener/appwire-client).
+export function modelPickCanSend(model: ThreadModel): boolean {
+  return sharedModelPickCanSend(model);
+}
+
+// Resumes a cold session so the model pick can be authorised, and returns the
+// ref whose model now holds that authority. resumeFencedForSend already runs
+// client.resumeThread, then refreshThread behind the identity fence, so its
+// hydration of the resumed ref IS the one fresh authoritative read this needs
+// - nothing here issues another. resumedIdentities names the ref that read
+// published when the resume changed it.
+//
+// The hydrations snapshot is what makes "fresh" mean it: a pane that was open
+// when the session exited still holds a `ready` snapshot of the RETIRED daemon
+// (a status frame never touches modelControlState), and a resume that failed
+// publishes nothing, so only a hydration published after this call counts as
+// authority. Without it, shape (b) would dispatch with the dead boot
+// generation and the hub would answer authorityStale after resuming. A read
+// that does not land - a failed drive, an old daemon, a superseded read -
+// rejects before any model request is built, so a mutation is never replayed
+// on unproven authority. Post-dispatch refusals stay with the existing
+// recovery path.
+async function resumeColdSessionForModelSet(ref: string): Promise<string> {
+  const current = trackedThreadModel(ref);
+  if (!current || !needsResumeForModelSet(current)) return ref;
+  // Held by reference: every writer replaces this map rather than mutating it.
+  const hydrationsBefore = threadsStore.getState().hydrations;
+  // Observed through a subscription, not read afterwards: the swap is
+  // published synchronously by the drive, and a pane's identity-follow effect
+  // (useConversationIdentity) clears the entry on its next render - which a
+  // pick made from that pane can lose the race with. subscribe sees the
+  // publication itself.
+  let swappedTo: string | undefined;
+  const stopObservingSwap = threadsStore.subscribe((state) => {
+    swappedTo = state.resumedIdentities.get(ref) ?? swappedTo;
+  });
+  try {
+    await threadsStore.getState().resumeSession(ref);
+  } finally {
+    stopObservingSwap();
+  }
+  const targetRef = swappedTo ?? ref;
+  const freshRead = (threadsStore.getState().hydrations.get(targetRef) ?? 0) > (hydrationsBefore.get(targetRef) ?? 0);
+  if (!freshRead || trackedThreadModel(targetRef)?.modelControlState.kind !== "ready") {
+    throw new Error("Resuming this session did not establish model-control authority");
+  }
+  return targetRef;
+}
+
 function startModelControlRecovery(
   ref: string,
   input: Extract<ModelControlInput, { kind: "authorityStale" | "postDispatchFailure" }>,
@@ -9452,21 +9520,28 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
-    await waitForCurrentModelControl(ref);
+    // A cold session advertises changeModel (pastThreadCapabilities) but holds
+    // no model-control authority - either never established, or the `ready`
+    // snapshot of the daemon that has since exited. The resume is what creates
+    // a daemon able to bind the mutation, so it runs first and its own
+    // hydration supplies the one authoritative read the request is fenced on.
+    // A warm session never enters here and keeps its ordinary path.
+    const targetRef = await resumeColdSessionForModelSet(ref);
+    await waitForCurrentModelControl(targetRef);
     const client = requireClient();
-    const current = trackedThreadModel(ref);
+    const current = trackedThreadModel(targetRef);
     const authority = current ? modelControlAuthority(current) : undefined;
     if (client.state !== "ready" || !authority) throw new Error("Session has no current model-control authority");
     const fence: ModelControlRequestFence = {
       authority,
       clientGeneration: getReadyEpoch(),
-      readGeneration: modelControlReadSequences.get(ref) ?? 0,
+      readGeneration: modelControlReadSequences.get(targetRef) ?? 0,
     };
     const clientMutationId = createSecureUUID();
     let rawResponse: unknown;
     try {
       rawResponse = await client.request("thread/model/set", {
-        ref,
+        ref: targetRef,
         modelProvider,
         model,
         clientMutationId,
@@ -9475,30 +9550,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       });
     } catch (err) {
       const recovery = modelControlRecoveryInput(err);
-      if (recovery) startModelControlRecovery(ref, recovery, client, fence);
+      if (recovery) startModelControlRecovery(targetRef, recovery, client, fence);
       throw mapConflict(err);
     }
     let response: MethodTypes["thread/model/set"]["result"];
     try {
       response = validateThreadModelSetResponse(rawResponse, clientMutationId);
     } catch (error) {
-      startModelControlRecovery(ref, { kind: "postDispatchFailure" }, client, fence);
+      startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
       throw error;
     }
-    if (!modelControlFenceCurrent(ref, client, fence)) return;
+    if (!modelControlFenceCurrent(targetRef, client, fence)) return;
     const snapshot = response.modelControl;
     if (!snapshot || !sameModelControlAuthority(snapshot.authority, fence.authority)) {
-      startModelControlRecovery(ref, { kind: "postDispatchFailure" }, client, fence);
+      startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
       validateThreadModelSetResponse(undefined, clientMutationId);
       return;
     }
     const reduced = applyModelControlTransition(
-      ref,
+      targetRef,
       { kind: "snapshot", source: "response", snapshot },
       fence.authority,
     );
     if (reduced.replacementReadRequired) {
-      startModelControlReplacementRead(ref, client, fence);
+      startModelControlReplacementRead(targetRef, client, fence);
     }
   },
 

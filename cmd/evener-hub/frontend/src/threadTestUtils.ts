@@ -25,6 +25,33 @@ export const ALL_CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
+/**
+ * PAST_THREAD_CAPABILITIES is what the HUB stamps for a thread with no daemon
+ * behind it (cmd/evener-hub/app_threadread.go's pastThreadCapabilities):
+ * changeModel stays true because the hub resumes the session behind a model
+ * change, while the permissions the hub cannot carry out for a thread with no
+ * daemon are false. Nothing mutates it; spread it to reduce a field.
+ *
+ * The false queue bit is the HUB's stub, not a daemon's answer: the submit
+ * router reads it as authoritative only for a live snapshot status
+ * (sendQueueAvailability.ts's pending-send tier).
+ */
+export const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: false,
+  interrupt: false,
+  compact: true,
+  clear: false,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  changeVisionModel: true,
+  queue: false,
+  goal: true,
+  sharedNotes: true,
+  rename: true,
+};
+
 export type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
   evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
 };

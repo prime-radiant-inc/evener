@@ -8,7 +8,10 @@ import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { threadsStore } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
-import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
+import {
+  ALL_CAPABILITIES as FULL_CAPABILITIES,
+  PAST_THREAD_CAPABILITIES as SHARED_PAST_THREAD_CAPABILITIES,
+} from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
@@ -27,33 +30,8 @@ export function Composer(props: React.ComponentProps<typeof ComposerView>) {
   );
 }
 
-// What the HUB stamps for a thread with no daemon behind it
-// (cmd/evener-hub/app_threadread.go's pastThreadCapabilities): send stays true
-// because turn/start alone carries the auto-resume retry loop that wakes the
-// session (app_rpc.go's resumeTurnStartThread), while steer, interrupt and
-// queue are false because the hub cannot carry them out for a thread with no
-// daemon - it resumes on send alone. This is what the client holds for a
-// "notLoaded" status.
-//
-// The false queue bit here is the HUB's stub, not a daemon's answer: the
-// submit router reads it as authoritative only for a live snapshot status
-// (sendQueueAvailability.ts's pending-send tier), so the auto-resume window
-// still queues the second message rather than disabling the composer.
-export const PAST_THREAD_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: false,
-  interrupt: false,
-  compact: true,
-  clear: false,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: false,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
+// The hub's cold read, shared with the store suite (threadTestUtils).
+export const PAST_THREAD_CAPABILITIES: ThreadCapabilities = SHARED_PAST_THREAD_CAPABILITIES;
 
 export function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
   return {
