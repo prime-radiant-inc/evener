@@ -41,7 +41,8 @@ type runCLIFlags struct {
 func main() {
 	// Before any work: the collector's target for the whole process, both the
 	// one-shot run below and the long-lived `serve` and `hub` subcommands.
-	tuneGCTarget(debug.SetGCPercent)
+	_, operatorSet := os.LookupEnv("GOGC")
+	tuneGCTarget(operatorSet, debug.SetGCPercent)
 	mainWithDeps(defaultMainDeps())
 }
 

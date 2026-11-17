@@ -45,6 +45,10 @@ func TestTuneGCTargetRaisesTheCollectorOnlyWhenUntuned(t *testing.T) {
 		current int
 		want    int
 		calls   []int
+		// gogcSet says the operator exported GOGC. Its value is then theirs
+		// even when it names Go's own default, because that is how an operator
+		// opts out of this tuning on a memory-tight host.
+		gogcSet bool
 	}{
 		{
 			name:    "Go's default target is raised",
@@ -56,13 +60,22 @@ func TestTuneGCTargetRaisesTheCollectorOnlyWhenUntuned(t *testing.T) {
 			name:    "an operator's GOGC is kept",
 			current: 50,
 			want:    50,
-			calls:   []int{gcTargetPercent, 50},
+			calls:   nil,
+			gogcSet: true,
 		},
 		{
 			name:    "GOGC=off stays off",
 			current: -1,
 			want:    -1,
-			calls:   []int{gcTargetPercent, -1},
+			calls:   nil,
+			gogcSet: true,
+		},
+		{
+			name:    "an operator's explicit GOGC=100 is kept",
+			current: gcDefaultPercent,
+			want:    gcDefaultPercent,
+			calls:   nil,
+			gogcSet: true,
 		},
 	}
 	for _, tc := range cases {
@@ -70,7 +83,7 @@ func TestTuneGCTargetRaisesTheCollectorOnlyWhenUntuned(t *testing.T) {
 			t.Parallel()
 			current := tc.current
 			var calls []int
-			tuneGCTarget(func(percent int) int {
+			tuneGCTarget(tc.gogcSet, func(percent int) int {
 				calls = append(calls, percent)
 				previous := current
 				current = percent
@@ -98,14 +111,14 @@ func TestTuneGCTargetMovesTheRealCollectorTarget(t *testing.T) {
 	if got := goGCTargetPercent(t); got != gcDefaultPercent {
 		t.Fatalf("collector target = %d before tuning, want %d", got, gcDefaultPercent)
 	}
-	tuneGCTarget(debug.SetGCPercent)
+	tuneGCTarget(false, debug.SetGCPercent)
 	if got := goGCTargetPercent(t); got != gcTargetPercent {
 		t.Fatalf("collector target = %d after tuning, want %d", got, gcTargetPercent)
 	}
 
 	const operatorPercent = 50
 	debug.SetGCPercent(operatorPercent)
-	tuneGCTarget(debug.SetGCPercent)
+	tuneGCTarget(true, debug.SetGCPercent)
 	if got := goGCTargetPercent(t); got != operatorPercent {
 		t.Fatalf("collector target = %d after tuning over an operator's %d, want %d", got, operatorPercent, operatorPercent)
 	}
