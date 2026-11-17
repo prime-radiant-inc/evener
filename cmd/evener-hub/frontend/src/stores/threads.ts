@@ -24,6 +24,7 @@ import type {
   MethodName,
   MethodTypes,
   ModelControlAuthority,
+  ModelControlInput,
   ModelControlRequestFence,
   ModelListResponse,
   SnapshotIdentity,
@@ -53,12 +54,14 @@ import {
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
+  isModelControlAuthorityStale,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
   isTranscriptIndexRebuildingError,
   mergeOlderItemPage,
   modelControlAuthority,
+  modelControlDisplay,
   mutationErrorData,
   notificationRoutingKey,
   olderHistoryExhausted,
@@ -69,6 +72,7 @@ import {
   SHUT_DOWN_STATUSES,
   sameModelControlAuthority as sharedSameModelControlAuthority,
   type ThreadSubscriptionLease,
+  validateThreadModelSetResponse,
   WireError,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
@@ -1350,7 +1354,17 @@ type PendingThreadHydration = {
   // repair-clearing verdict: it does not touch the transcript index, so it
   // has no cross-kind repair verdict to order.
   readSequence: number;
+  modelControlRead?: ModelControlReadBinding;
   repairingRetired?: boolean;
+};
+type ModelControlReadOutcome = { kind: "ready" } | { kind: "failed"; error: unknown };
+type ModelControlReadBinding = {
+  client: AppwireClientLike;
+  epoch: number;
+  readSequence: number;
+  terminal: Promise<ModelControlReadOutcome>;
+  settle: (outcome: ModelControlReadOutcome) => void;
+  settled: boolean;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
@@ -1375,6 +1389,11 @@ const threadReadSequences = new Map<string, number>();
 const trackedHydrationAttempts = new Map<string, number>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
+// One terminal promise binds a model mutation to the authoritative read that
+// establishes its connection-generation authority. Retried reads converge the
+// display independently; they never re-arm or replay a mutation whose binding
+// already settled.
+const modelControlReadBindings = new Map<string, ModelControlReadBinding>();
 // Clear retires response ownership, not the mounted owner's need for a read.
 const clearHydrationDemands = new Map<HydrationOwnerKind, Map<string, number>>();
 
@@ -2156,10 +2175,11 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   // thread/clear does not carry the boot generation needed to establish a new
   // model-control authority. Keep its canonical metadata, but retire capability
   // and snapshot until a replacement thread/read proves both.
-  const model = reduceModelControl(hydrateThread({ thread: response.thread }, targetRef, now), {
-    kind: "read",
-    version: 0,
-  }).model;
+  const cleared = hydrateThread({ thread: response.thread }, targetRef, now);
+  const model: ThreadModel = {
+    ...cleared,
+    modelControlState: { kind: "recovering", lastSafeDisplay: modelControlDisplay(cleared) },
+  };
   // The session-content clear's cache hook: the cleared model is a bare
   // hydrate with no history, so it would never match the write gates;
   // deleting the record in the same step is what keeps a cleared session's
@@ -2202,6 +2222,15 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
         : state.hydrations,
     };
   });
+  const client = getWiredClient();
+  const epoch = getReadyEpoch();
+  if (client?.state === "ready" && canonicalThreadOwnerActive(targetRef)) {
+    void refreshTrackedThread(client, epoch, targetRef, true, { intent: hydrationIntentFor(targetRef) }).catch(
+      () => {},
+    );
+  } else if (client?.state === "ready" && (watchRefCounts.get(targetRef) ?? 0) > 0) {
+    void refreshWatchedThread(client, epoch, targetRef, true).catch(() => {});
+  }
 }
 
 // currentDispatchClient is the dispatch admission: the wired client and its
@@ -4392,6 +4421,7 @@ async function readThreadHydration(
     }
   } catch (err) {
     if (signal?.aborted) throw err;
+    settleModelControlRead(pending.modelControlRead, { kind: "failed", error: err });
     // thread/read is answered from the daemon's in-memory snapshot, so a
     // rejection here is a transport failure, not a slow file read and not a
     // lost claim. Ask this ref's owner generation to read again.
@@ -4469,11 +4499,6 @@ async function readThreadHydration(
           )
         : applyReadResponse(pending.baseModel, response, now, frontier)
       : hydrateThread(response, ref, now, frontier);
-  const model = reduceModelControl(hydrated, {
-    kind: "read",
-    version: response.thread.evener.capabilities?.modelControlVersion ?? 0,
-    snapshot: response.thread.evener.modelControl,
-  }).model;
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -4482,7 +4507,10 @@ async function readThreadHydration(
   // can be enriched under recorded coverage, never replacing response-owned
   // overlay slots or replaying their already-represented deltas.
   const fixtureNotifications = pending.notifications.slice();
-  const cutModel = replayQuarantinedModelControl(withoutResolvedEscalations(ref, pending, model), fixtureNotifications);
+  const cutModel = replayQuarantinedModelControl(
+    withoutResolvedEscalations(ref, pending, hydrated),
+    fixtureNotifications,
+  );
   applyHydrationResponseCut(pending, ref, cutModel);
   return {
     model: cutModel,
@@ -4624,6 +4652,177 @@ function sameModelControlAuthority(
   right: ModelControlAuthority | undefined,
 ): boolean {
   return sharedSameModelControlAuthority(left, right);
+}
+
+function settleModelControlRead(binding: ModelControlReadBinding | undefined, outcome: ModelControlReadOutcome): void {
+  if (!binding || binding.settled) return;
+  binding.settled = true;
+  binding.settle(outcome);
+}
+
+function installModelControlReadBinding(
+  ref: string,
+  pending: PendingThreadHydration,
+  model: ThreadModel | undefined,
+): void {
+  if (!model || (model.modelControlState.kind !== "uninitialized" && model.modelControlState.kind !== "recovering")) {
+    return;
+  }
+  const previous = modelControlReadBindings.get(ref);
+  if (previous)
+    settleModelControlRead(previous, { kind: "failed", error: new Error("Model-control read was replaced") });
+  let settle: (outcome: ModelControlReadOutcome) => void = () => {};
+  const terminal = new Promise<ModelControlReadOutcome>((resolve) => {
+    settle = resolve;
+  });
+  const binding: ModelControlReadBinding = {
+    client: pending.client,
+    epoch: pending.epoch,
+    readSequence: pending.readSequence,
+    terminal,
+    settle,
+    settled: false,
+  };
+  modelControlReadBindings.set(ref, binding);
+  pending.modelControlRead = binding;
+}
+
+function retireModelControlReadBinding(ref: string, error: unknown): void {
+  const binding = modelControlReadBindings.get(ref);
+  if (!binding) return;
+  settleModelControlRead(binding, { kind: "failed", error });
+  modelControlReadBindings.delete(ref);
+}
+
+function modelControlFenceCurrent(ref: string, client: AppwireClientLike, fence: ModelControlRequestFence): boolean {
+  const current = trackedThreadModel(ref);
+  return (
+    getWiredClient() === client &&
+    getReadyEpoch() === fence.clientGeneration &&
+    (threadReadSequences.get(ref) ?? 0) === fence.readGeneration &&
+    current !== undefined &&
+    sameModelControlAuthority(modelControlAuthority(current), fence.authority)
+  );
+}
+
+function applyModelControlTransition(
+  ref: string,
+  input: ModelControlInput,
+  expectedAuthority?: ModelControlAuthority,
+): { accepted: boolean; replacementReadRequired: boolean } {
+  const route = existingEntryRoute(ref);
+  const repository = route?.repository;
+  const repositoryModel = repository?.getSnapshot();
+  const repositoryMatches =
+    repositoryModel !== undefined &&
+    (expectedAuthority === undefined ||
+      sameModelControlAuthority(modelControlAuthority(repositoryModel), expectedAuthority));
+  const repositoryResult =
+    repository && route && repositoryMatches
+      ? repository.acceptModelControlTransition(input, { lifetime: route.lifetime })
+      : { accepted: false, replacementReadRequired: false };
+
+  const state = threadsStore.getState();
+  const threadModel = state.threads.get(ref);
+  const watchedModel = state.watchedThreads.get(ref);
+  const reduce = (held: ThreadModel | undefined): ReturnType<typeof reduceModelControl> | undefined => {
+    if (!held) return undefined;
+    if (expectedAuthority !== undefined && !sameModelControlAuthority(modelControlAuthority(held), expectedAuthority)) {
+      return undefined;
+    }
+    return reduceModelControl(held, input);
+  };
+  const threadResult = repositoryResult.accepted ? undefined : reduce(threadModel);
+  const watchedResult = reduce(watchedModel);
+  putThreadModels(ref, threadResult?.model, watchedResult?.model);
+  return {
+    accepted: repositoryResult.accepted || threadResult !== undefined || watchedResult !== undefined,
+    replacementReadRequired:
+      repositoryResult.replacementReadRequired ||
+      threadResult?.replacementReadRequired === true ||
+      watchedResult?.replacementReadRequired === true,
+  };
+}
+
+function retireModelControlConnection(): void {
+  const refs = new Set<string>([
+    ...threadsStore.getState().threads.keys(),
+    ...threadsStore.getState().watchedThreads.keys(),
+    ...modelControlReadBindings.keys(),
+  ]);
+  for (const route of entryTranscriptRoutes()) refs.add(route.ref);
+  for (const ref of refs) {
+    retireModelControlReadBinding(ref, new ClientNotReadyError("Model-control authority was retired"));
+    applyModelControlTransition(ref, { kind: "connectionRetired" });
+  }
+}
+
+async function waitForCurrentModelControl(ref: string): Promise<ThreadModel> {
+  const current = trackedThreadModel(ref);
+  if (current?.modelControlState.kind === "ready") return current;
+  if (!current || current.modelControlState.kind === "unsupported") {
+    throw new Error("Session has no model-control authority");
+  }
+  const binding = modelControlReadBindings.get(ref);
+  const client = getWiredClient();
+  if (
+    !binding ||
+    !client ||
+    binding.client !== client ||
+    binding.epoch !== getReadyEpoch() ||
+    binding.readSequence !== (threadReadSequences.get(ref) ?? 0)
+  ) {
+    throw new Error("Session model-control authority is not established by a current read");
+  }
+  const outcome = await binding.terminal;
+  if (
+    modelControlReadBindings.get(ref) !== binding ||
+    binding.client !== getWiredClient() ||
+    binding.epoch !== getReadyEpoch() ||
+    binding.readSequence !== (threadReadSequences.get(ref) ?? 0)
+  ) {
+    throw new Error("Session model-control read was superseded");
+  }
+  if (outcome.kind === "failed") throw outcome.error;
+  const established = trackedThreadModel(ref);
+  if (established?.modelControlState.kind !== "ready") {
+    throw new Error("Session model-control read did not establish authority");
+  }
+  return established;
+}
+
+function startModelControlRecovery(
+  ref: string,
+  input: Extract<ModelControlInput, { kind: "authorityStale" | "postDispatchFailure" }>,
+  client: AppwireClientLike,
+  fence: ModelControlRequestFence,
+): void {
+  if (!modelControlFenceCurrent(ref, client, fence)) return;
+  const reduced = applyModelControlTransition(ref, input, fence.authority);
+  if (!reduced.replacementReadRequired) return;
+  startModelControlReplacementRead(ref, client, fence);
+}
+
+function startModelControlReplacementRead(
+  ref: string,
+  client: AppwireClientLike,
+  fence: ModelControlRequestFence,
+): void {
+  if (
+    getWiredClient() !== client ||
+    getReadyEpoch() !== fence.clientGeneration ||
+    (threadReadSequences.get(ref) ?? 0) !== fence.readGeneration ||
+    trackedThreadModel(ref)?.modelControlState.kind !== "recovering"
+  ) {
+    return;
+  }
+  if (canonicalThreadOwnerActive(ref)) {
+    void refreshTrackedThread(client, fence.clientGeneration, ref, true, {
+      intent: hydrationIntentFor(ref),
+    }).catch(() => {});
+  } else if ((watchRefCounts.get(ref) ?? 0) > 0) {
+    void refreshWatchedThread(client, fence.clientGeneration, ref, true).catch(() => {});
+  }
 }
 
 async function sendMutationIntent(intent: MutationIntent): Promise<void> {
@@ -5662,6 +5861,10 @@ function retirePendingHydration(
   pending: PendingThreadHydration,
   pendingHydrations: Map<string, PendingThreadHydration>,
 ): void {
+  settleModelControlRead(pending.modelControlRead, {
+    kind: "failed",
+    error: new Error("Model-control read retired without establishing authority"),
+  });
   const isCurrent = pendingHydrations.get(ref) === pending;
   if (!isCurrent && pending.backgroundBytes <= 0 && pending.notifications.length === 0 && !pending.baseModel) return;
   const retainedNotificationCount = pending.notifications.length;
@@ -5920,6 +6123,7 @@ function beginThreadHydration(
     readSequence,
   };
   pendingThreadHydrations.set(ref, pending);
+  installModelControlReadBinding(ref, pending, baseModel ?? model);
   return pending;
 }
 
@@ -5963,6 +6167,7 @@ function beginWatchedHydration(
     readSequence,
   };
   pendingWatchedHydrations.set(ref, pending);
+  if (!canonicalThreadOwnerActive(ref)) installModelControlReadBinding(ref, pending, baseModel ?? model);
   return pending;
 }
 
@@ -6083,6 +6288,12 @@ function publishThreadHydration(
     entry?.repository &&
     hydrated.history?.invalidatedAtGeneration !== undefined &&
     pending.notifications.some((update) => update.notification.method === "history/updated");
+  settleModelControlRead(pending.modelControlRead, {
+    kind: hydrated.modelControlState.kind === "ready" ? "ready" : "failed",
+    ...(hydrated.modelControlState.kind === "ready"
+      ? {}
+      : { error: new Error("Thread read did not establish model-control authority") }),
+  } as ModelControlReadOutcome);
   retirePendingHydration(ref, pending, pendingThreadHydrations);
   if (replayInvalidated) {
     // Live recovery was gated by this pending read. Retire it before handing
@@ -6500,6 +6711,12 @@ function publishWatchedHydration(
 
   const live = threadsStore.getState().watchedThreads.get(ref);
   const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
+  settleModelControlRead(pending.modelControlRead, {
+    kind: replayed.model.modelControlState.kind === "ready" ? "ready" : "failed",
+    ...(replayed.model.modelControlState.kind === "ready"
+      ? {}
+      : { error: new Error("Thread read did not establish model-control authority") }),
+  } as ModelControlReadOutcome);
   retirePendingHydration(ref, pending, pendingWatchedHydrations);
   storeWatchedModel(ref, replayed.model, includeTurns, generation);
   settleOwnedHydration("watched", ref, replayed.model);
@@ -7656,6 +7873,7 @@ async function handleReady(
 // the outgoing client's identity (never a half-swapped one).
 function teardownWiring(): void {
   const outgoingClient = getWiredClient();
+  retireModelControlConnection();
   const epoch = advanceReadyEpoch();
   residencyIfCreated?.connection(epoch, false);
   threadsStore.setState({ mutationAuthorityRefs: new Set(), mutationSnapshotRefs: new Set() });
@@ -7691,6 +7909,7 @@ function rewireClient(client: AppwireClientLike): void {
   unwireNotification = client.onNotification(handleNotification);
   unwireReady = client.onReady(
     readyGenerationCallback(client, getWiredClient, () => {
+      retireModelControlConnection();
       const epoch = advanceReadyEpoch();
       const replayAcceptedCopies = replayAcceptedCopiesOnReady;
       replayAcceptedCopiesOnReady = false;
@@ -7955,6 +8174,7 @@ function settleConsumedFromModel(runtime: MutationRuntime, ref: string, model: T
 
 connectionStore.subscribe((state) => {
   if (state.client?.state !== "ready") replayAcceptedCopiesOnReady = true;
+  if (state.client?.state !== "ready") retireModelControlConnection();
   const current = threadsStore.getState();
   if (
     state.client?.state !== "ready" &&
@@ -9030,69 +9250,64 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async setModel(ref, modelProvider, model) {
+    await waitForCurrentModelControl(ref);
+    const client = requireClient();
     const current = trackedThreadModel(ref);
     const authority = current ? modelControlAuthority(current) : undefined;
-    if (!authority) {
-      await requestMappingConflict("thread/model/set", { ref, modelProvider, model });
-      return;
-    }
-
-    const client = requireClient();
+    if (client.state !== "ready" || !authority) throw new Error("Session has no current model-control authority");
     const fence: ModelControlRequestFence = {
       authority,
       clientGeneration: getReadyEpoch(),
       readGeneration: threadReadSequences.get(ref) ?? 0,
     };
-    let response: MethodTypes["thread/model/set"]["result"];
+    const clientMutationId = createSecureUUID();
+    let rawResponse: unknown;
     try {
-      response = await client.request("thread/model/set", {
+      rawResponse = await client.request("thread/model/set", {
         ref,
         modelProvider,
         model,
-        clientMutationId: crypto.randomUUID(),
+        clientMutationId,
         expectedInstanceId: authority.instanceId,
         expectedBootGeneration: authority.bootGeneration,
       });
     } catch (err) {
+      if (isModelControlAuthorityStale(err)) {
+        startModelControlRecovery(ref, { kind: "authorityStale" }, client, fence);
+      } else {
+        const failure = mutationErrorData(err);
+        if (
+          !(err instanceof WireError) ||
+          failure?.mutationOutcome === "unknown" ||
+          failure?.retryDisposition === "blocked"
+        ) {
+          startModelControlRecovery(ref, { kind: "postDispatchFailure" }, client, fence);
+        }
+      }
       throw mapConflict(err);
     }
+    let response: MethodTypes["thread/model/set"]["result"];
+    try {
+      response = validateThreadModelSetResponse(rawResponse, clientMutationId);
+    } catch (error) {
+      startModelControlRecovery(ref, { kind: "postDispatchFailure" }, client, fence);
+      throw error;
+    }
+    if (!modelControlFenceCurrent(ref, client, fence)) return;
     const snapshot = response.modelControl;
-    if (response.modelControlVersion !== 1 || !snapshot) return;
-
-    if (
-      getWiredClient() !== client ||
-      getReadyEpoch() !== fence.clientGeneration ||
-      (threadReadSequences.get(ref) ?? 0) !== fence.readGeneration ||
-      !sameModelControlAuthority(snapshot.authority, fence.authority)
-    )
+    if (!snapshot || !sameModelControlAuthority(snapshot.authority, fence.authority)) {
+      startModelControlRecovery(ref, { kind: "postDispatchFailure" }, client, fence);
+      validateThreadModelSetResponse(undefined, clientMutationId);
       return;
-    const route = entryTranscriptRoute(ref);
-    const repository = route?.repository;
-    const repositoryModel = repository?.getSnapshot();
-    const repositoryOwnsResponse =
-      route !== undefined &&
-      repository !== undefined &&
-      repositoryModel !== undefined &&
-      sameModelControlAuthority(modelControlAuthority(repositoryModel), fence.authority) &&
-      repository.acceptModelControlResponse(snapshot, { lifetime: route.lifetime });
-    const state = threadsStore.getState();
-    const threadModel = state.threads.get(ref);
-    const watchedModel = state.watchedThreads.get(ref);
-    const applyResponse = (held: ThreadModel): ThreadModel => {
-      const reduced = reduceModelControl(held, { kind: "response", snapshot });
-      return reduced.decision === "invalidate" ? invalidateHistory(reduced.model) : reduced.model;
-    };
-    const admittedThread =
-      !repositoryOwnsResponse &&
-      threadModel &&
-      sameModelControlAuthority(modelControlAuthority(threadModel), fence.authority)
-        ? applyResponse(threadModel)
-        : undefined;
-    const admittedWatched =
-      watchedModel && sameModelControlAuthority(modelControlAuthority(watchedModel), fence.authority)
-        ? applyResponse(watchedModel)
-        : undefined;
-    putThreadModels(ref, admittedThread, admittedWatched);
+    }
+    const reduced = applyModelControlTransition(
+      ref,
+      { kind: "snapshot", source: "response", snapshot },
+      fence.authority,
+    );
+    if (reduced.replacementReadRequired) {
+      startModelControlReplacementRead(ref, client, fence);
+    }
   },
 
   async setReasoningEffort(ref, level) {

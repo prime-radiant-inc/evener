@@ -118,7 +118,7 @@ function readOnlyEntityThread(ref: string, text: string): ThreadReadResponse {
   });
 }
 
-function modelControlRead(ref: string, lifecycle: string): ThreadReadResponse {
+function modelControlRead(ref: string, lifecycle: "pending" | "rejected"): ThreadReadResponse {
   const snapshot: ModelControlSnapshot = {
     authority: { instanceId: `thr_${ref}`, bootGeneration: "1" },
     revision: lifecycle === "pending" ? 1 : 2,
@@ -141,6 +141,7 @@ function modelControlRead(ref: string, lifecycle: string): ThreadReadResponse {
       modelProvider: "anthropic/claude-sonnet-4-5",
       evener: {
         ref,
+        instanceId: `thr_${ref}`,
         capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
         modelControl: snapshot,
         queue: { revision: 0 },
@@ -248,7 +249,7 @@ test("a reconnect read replaces an accepted desired model with the active model 
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   const fake = connectReadyFakeClient();
   const ref = "local:model-control-recovery";
-  let lifecycle = "pending";
+  let lifecycle: "pending" | "rejected" = "pending";
   fake.on("thread/read", ({ requestGeneration }) => ({
     ...modelControlRead(ref, lifecycle),
     requestGeneration,
@@ -1065,7 +1066,8 @@ test.each(["model", "compact"])(
     });
     void pendingAction.catch(() => {});
     fake.on("thread/read", () => {
-      const saved = readResponse(ref, { status: { type: "notLoaded" } });
+      const saved = action === "model" ? modelControlRead(ref, "pending") : readResponse(ref);
+      saved.thread.status = { type: "notLoaded" };
       saved.thread.evener.resumeRequired = stopped;
       return saved;
     });

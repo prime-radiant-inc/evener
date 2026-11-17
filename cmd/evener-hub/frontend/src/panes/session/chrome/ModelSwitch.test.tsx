@@ -4,9 +4,9 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { readModuleCss } from "../../../styles/cssBlock";
-import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
+import { connectReadyFakeClient as connectReadyFakeClientBase } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -35,8 +35,8 @@ test("the trigger exposes the full model label when its visible value truncates"
 });
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
-  return {
+  const { jobsTreeRevision = null, modelControlState, ...rest } = overrides;
+  const model = {
     ref: "ref_a",
     threadId: "thr_a",
     name: "",
@@ -69,9 +69,25 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     ...rest,
     jobsTreeRevision,
   };
+  return {
+    ...model,
+    modelControlState: modelControlState ?? {
+      kind: "ready",
+      snapshot: {
+        authority: { instanceId: model.threadId, bootGeneration: "1" },
+        revision: 1,
+        active: {
+          modelProvider: model.modelProvider,
+          model: model.model,
+          reasoningEffortLevels: model.reasoningEffortLevels,
+          supportsReasoning: model.supportsReasoning,
+        },
+      },
+    },
+  };
 }
 
-function modelControlSnapshot(lifecycle: string): ModelControlSnapshot {
+function modelControlSnapshot(lifecycle: "pending" | "applied" | "rejected"): ModelControlSnapshot {
   return {
     authority: { instanceId: "thr_a", bootGeneration: "1" },
     revision: 2,
@@ -87,6 +103,36 @@ function modelControlSnapshot(lifecycle: string): ModelControlSnapshot {
       modelProvider: "openai",
       model: "gpt-5.5",
       lifecycle,
+    },
+  };
+}
+
+function connectReadyFakeClient() {
+  const fake = connectReadyFakeClientBase();
+  threadsStore.setState({ threads: new Map([["ref_a", testModel()]]) });
+  return fake;
+}
+
+function acceptedModelResponse(params: { clientMutationId: string; modelProvider: string; model: string }) {
+  return {
+    modelControlVersion: 1 as const,
+    disposition: "accepted" as const,
+    modelControl: {
+      authority: { instanceId: "thr_a", bootGeneration: "1" },
+      revision: 2,
+      active: {
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+      desired: {
+        requestSequence: 2,
+        clientMutationId: params.clientMutationId,
+        modelProvider: params.modelProvider,
+        model: params.model,
+        lifecycle: "pending" as const,
+      },
     },
   };
 }
@@ -130,7 +176,7 @@ test("shows the accepted desired model from the authoritative snapshot while leg
   render(
     <ModelSwitch
       sessionRef="ref_a"
-      model={testModel({ modelControlVersion: 1, modelControl: modelControlSnapshot("pending") })}
+      model={testModel({ modelControlState: { kind: "ready", snapshot: modelControlSnapshot("pending") } })}
     />,
   );
 
@@ -141,7 +187,7 @@ test("shows the active model after the authoritative snapshot rejects its desire
   render(
     <ModelSwitch
       sessionRef="ref_a"
-      model={testModel({ modelControlVersion: 1, modelControl: modelControlSnapshot("rejected") })}
+      model={testModel({ modelControlState: { kind: "ready", snapshot: modelControlSnapshot("rejected") } })}
     />,
   );
 
@@ -177,7 +223,7 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return acceptedModelResponse(params);
   });
 
   const view = render(
@@ -210,7 +256,7 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   await user.clear(combobox);
   await user.keyboard("gpt-5.5");
   await user.click(await screen.findByRole("option", { name: /gpt-5\.5/i }));
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() => expect(called).toMatchObject({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
 });
 
 // The capability is the ONLY gate. Whether a turn is in flight is not a fact
@@ -254,7 +300,7 @@ test("a mid-turn pick sends thread/model/set rather than being refused client-si
   await user.keyboard("gpt");
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() => expect(called).toMatchObject({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
   await screen.findByText(/nope\/m-404/i);
 });
 
@@ -269,7 +315,7 @@ test("a cold exited session sends the same thread/model/set - the hub owns the r
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return acceptedModelResponse(params);
   });
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "notLoaded" } })} />);
@@ -281,7 +327,7 @@ test("a cold exited session sends the same thread/model/set - the hub owns the r
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() => expect(called).toMatchObject({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
 });
 
 test("opening the picker fetches the catalog via listModels and shows a loading state until it resolves", async () => {
@@ -333,7 +379,7 @@ test("picking an option calls setModel with that option's provider/model and clo
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return acceptedModelResponse(params);
   });
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
@@ -345,7 +391,7 @@ test("picking an option calls setModel with that option's provider/model and clo
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() => expect(called).toMatchObject({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
   expect(screen.queryByRole("combobox")).toBeNull();
 });
 
@@ -584,14 +630,14 @@ test("session picker retry refreshes a cached empty catalogue through the RPC", 
       ? modelListResponse()
       : { data: [], diagnostics: [{ provider: "openai", message: "fixture failure" }] },
   );
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", (params) => acceptedModelResponse(params));
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
   await user.click(trigger());
   await user.click(await screen.findByRole("button", { name: "Retry models" }));
   const recovered = await screen.findByRole("option", { name: /gpt-5\.5/i });
   await user.click(recovered);
   await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "thread/model/set").at(-1)?.params).toEqual({
+    expect(fake.calls.filter((call) => call.method === "thread/model/set").at(-1)?.params).toMatchObject({
       ref: "ref_a",
       modelProvider: "openai",
       model: "gpt-5.5",

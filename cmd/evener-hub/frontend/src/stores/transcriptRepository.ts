@@ -15,6 +15,7 @@ import {
   type ItemModel,
   invalidateHistory,
   itemTextPresence,
+  type ModelControlInput,
   type ModelControlSnapshot,
   mergeOlderItemPage,
   mergeSavedViewPage,
@@ -847,7 +848,7 @@ export class TranscriptRepository {
   ): boolean {
     if (this.#sealed || !this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
     const before = this.#model;
-    const hydratedCandidate = before
+    let hydratedCandidate = before
       ? applyReadResponse(before, response, this.#now())
       : (() => {
           const hydrated = hydrateThread(response, this.#binding.ref, this.#now());
@@ -870,17 +871,29 @@ export class TranscriptRepository {
               )
             : hydrated;
         })();
+    const heldControl = before?.modelControlState.kind === "ready" ? before.modelControlState.snapshot : undefined;
+    const hydratedControl =
+      hydratedCandidate.modelControlState.kind === "ready" ? hydratedCandidate.modelControlState.snapshot : undefined;
+    if (heldControl && sameModelControlAuthority(heldControl.authority, hydratedControl?.authority)) {
+      hydratedCandidate = reduceModelControl(hydratedCandidate, {
+        kind: "snapshot",
+        source: "response",
+        snapshot: heldControl,
+      }).model;
+    }
     if (hydratedCandidate === before) {
-      const heldControl = before?.modelControl;
       const incomingControl = response.thread.evener.modelControl;
       if (
-        before?.modelControlVersion === 1 &&
         heldControl &&
         response.thread.evener.capabilities?.modelControlVersion === 1 &&
         incomingControl &&
         sameModelControlAuthority(heldControl.authority, incomingControl.authority)
       ) {
-        const advanced = reduceModelControl(before, { kind: "notification", snapshot: incomingControl }).model;
+        const advanced = reduceModelControl(before, {
+          kind: "snapshot",
+          source: "notification",
+          snapshot: incomingControl,
+        }).model;
         if (advanced !== before) {
           this.#model = advanced;
           this.#publish();
@@ -1134,7 +1147,8 @@ export class TranscriptRepository {
       if (notification.method === "history/updated") {
         this.accept(notification, context);
       } else if (notification.method === "thread/model/controlChanged") {
-        const held = this.#model?.modelControl;
+        const held =
+          this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
         const incoming = notification.params.modelControl;
         if (held && sameModelControlAuthority(held.authority, incoming.authority)) {
           this.accept(notification, context);
@@ -1169,22 +1183,28 @@ export class TranscriptRepository {
     this.#publish();
   }
 
-  /** Admit a model-control response through the repository that owns this transcript. */
-  acceptModelControlResponse(snapshot: ModelControlSnapshot, context: { lifetime: number }): boolean {
-    if (this.#sealed || !this.#acceptsLifetime(context.lifetime) || !this.#model) return false;
+  /** Apply a model-control transition without changing transcript-history authority. */
+  acceptModelControlTransition(
+    input: ModelControlInput,
+    context?: { lifetime: number },
+  ): { accepted: boolean; replacementReadRequired: boolean } {
+    if (this.#sealed || !this.#model || (context !== undefined && !this.#acceptsLifetime(context.lifetime))) {
+      return { accepted: false, replacementReadRequired: false };
+    }
     const before = this.#model;
-    const reduced = reduceModelControl(before, { kind: "response", snapshot });
-    const next = reduced.decision === "invalidate" ? invalidateHistory(reduced.model) : reduced.model;
+    const reduced = reduceModelControl(before, input);
+    const next = reduced.model;
     if (next !== before) {
       this.#model = next;
-      if (reduced.decision === "invalidate") {
-        this.#advanceSourceRevision();
-        this.#recoveryNeeded = true;
-      }
       this.#publish();
       this.#reclaimBackgroundModel();
     }
-    return true;
+    return { accepted: true, replacementReadRequired: reduced.replacementReadRequired };
+  }
+
+  /** Admit a model-control response through the repository that owns this transcript. */
+  acceptModelControlResponse(snapshot: ModelControlSnapshot, context: { lifetime: number }): boolean {
+    return this.acceptModelControlTransition({ kind: "snapshot", source: "response", snapshot }, context).accepted;
   }
 
   /** Accept a notification only when the captured authority still matches this repository. */

@@ -34,7 +34,7 @@ export interface ModelSwitchProps {
 export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const toasts = useToasts();
 
-  // changeModel is the ONLY gate, and it is the wire's own answer: the hub
+  // changeModel and a ready model-control snapshot are the wire's answers: the hub
   // advertises it for a cold exited thread as well as a live one (cmd/evener-hub/
   // app_threadread.go's pastEntryThread) and resumes the session behind
   // thread/model/set when it has to (app_model.go's setThreadModelWithResume),
@@ -48,7 +48,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   // ref) still surfaces as a toast from handlePick. Gating on a client-side
   // turn predicate here made the client guess at an answer only the daemon has,
   // and it took the switch away from every cold session too.
-  const disabled = !model.capabilities.changeModel;
+  const disabled = !model.capabilities.changeModel || model.modelControlState.kind !== "ready";
   const displayed = modelControlDisplay(model);
   const currentModelLabel = modelLabel(displayed.modelProvider, displayed.model);
 

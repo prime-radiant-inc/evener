@@ -3165,17 +3165,22 @@ it("advances held model control without admitting a stale history read", async (
   });
   const baseline = read("baseline", 2);
   baseline.requestGeneration = 2;
+  baseline.thread.evener.instanceId = threadId;
   baseline.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
   baseline.thread.evener.modelControl = control(1, "pending");
   expect(owner.acceptRead(baseline, { lifetime: 1, readId: "baseline", boundary: "baseline" })).toBe(true);
 
   const stale = read("stale", 1);
   stale.requestGeneration = 1;
+  stale.thread.evener.instanceId = threadId;
   stale.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
   stale.thread.evener.modelControl = control(2, "rejected");
   expect(owner.acceptRead(stale, { lifetime: 1, readId: "stale", boundary: "stale" })).toBe(false);
   expect(owner.getSnapshot()?.history?.length).toBe(2);
-  expect(owner.getSnapshot()?.modelControl).toEqual(stale.thread.evener.modelControl);
+  expect(owner.getSnapshot()?.modelControlState).toEqual({
+    kind: "ready",
+    snapshot: stale.thread.evener.modelControl,
+  });
   owner.dispose();
 });
 
@@ -3184,6 +3189,8 @@ it("does not replay quarantined model control from the read's retired authority"
   fixtures.push(fixture);
   const owner = repository(fixture.cache);
   const current = read("current", 1);
+  current.bootGeneration = "2";
+  current.thread.evener.instanceId = threadId;
   current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
   current.thread.evener.modelControl = {
     authority: { instanceId: threadId, bootGeneration: "2" },
@@ -3214,7 +3221,10 @@ it("does not replay quarantined model control from the read's retired authority"
     { lifetime: 1 },
   );
 
-  expect(owner.getSnapshot()?.modelControl).toEqual(current.thread.evener.modelControl);
+  expect(owner.getSnapshot()?.modelControlState).toEqual({
+    kind: "ready",
+    snapshot: current.thread.evener.modelControl,
+  });
   expect(owner.getSnapshot()?.history?.invalidatedAtGeneration).toBeUndefined();
   owner.dispose();
 });
