@@ -371,10 +371,23 @@ it.each(["response", "notification", "intent"] as const)(
     if (authority === "intent") await threadsStore.getState().setHumanNote("local:a", "newer note");
     reply.resolve();
     const outbox = new MutationOutboxIndexedDB({ indexedDB: factory });
-    await vi.waitFor(async () => expect(await outbox.listOutbox("local:a")).toEqual([]));
+    // The dispatched row's removal is real IndexedDB work with no completion
+    // promise on the dispatcher, so spend real round trips on it instead of a
+    // wall-clock ceiling (#5630).
+    expect(
+      await pumpIndexedDBUntil({
+        turns: 400,
+        until: async () => (await outbox.listOutbox("local:a")).length === 0,
+      }),
+      "the confirmed note's outbox row did not settle",
+    ).toBe(true);
     await settleProjectionWorkForTests();
     const expected = authority === "response" ? "confirmed note" : "newer note";
-    await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe(expected));
+    await pumpIndexedDBUntil({
+      turns: 400,
+      until: () => threadsStore.getState().threads.get("local:a")?.humanNote === expected,
+    });
+    expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe(expected);
     unrelatedOverlay(client);
     expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe(expected);
   },
@@ -416,10 +429,11 @@ it.each(
   const published: string[] = [];
   const unsubscribe = threadsStore.subscribe(() => published.push(JSON.stringify(model()) ?? ""));
   const replacement = deferred<ThreadReadResponse>();
-  client.on("thread/read", async (params) => ({
-    ...(await replacement.promise),
-    requestGeneration: params.requestGeneration,
-  }));
+  const replacementReadEntered = deferred<void>();
+  client.on("thread/read", async (params) => {
+    replacementReadEntered.resolve();
+    return { ...(await replacement.promise), requestGeneration: params.requestGeneration };
+  });
   if (owner !== "held") {
     if (kind === "thread") threadsStore.getState().releaseThread("local:a");
     else threadsStore.getState().releaseWatchedThread("local:a");
@@ -435,13 +449,28 @@ it.each(
   clearReply.resolve();
   expect(await clearing).toEqual({ committed });
   obsolete.resolve({ ...response("local:a", [turn("obsolete", 2)]), authoritative: true });
-  if (owner === "held")
-    await vi.waitFor(() =>
-      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1),
-    );
+  if (owner === "held") {
+    // The pending Clear's demand issues the replacement read; await that read
+    // entering rather than polling the recorded call count (#5630).
+    await replacementReadEntered.promise;
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+  }
   expect(JSON.stringify(model()) ?? "").not.toContain("obsolete");
   replacement.resolve({ ...response("local:a", [turn("replacement", 2)]), authoritative: true });
-  if (owner === "held") await vi.waitFor(() => expect(JSON.stringify(model())).toContain("replacement"));
+  if (owner === "held") {
+    // The replacement read publishes from its own continuation. A tracked
+    // refresh registers that hydration, so its settle covers publication; the
+    // watched mirror (refreshWatchedThread) registers nothing, so awaiting the
+    // settle there would wait on unrelated work and pass only if the read
+    // happened to finish first. Await the model itself in that case.
+    if (kind === "thread") {
+      await settleEntryTranscriptForTests("local:a");
+      await drainSettleSteps();
+    } else {
+      await pumpIndexedDBUntil({ turns: 400, until: () => (JSON.stringify(model()) ?? "").includes("replacement") });
+    }
+    expect(JSON.stringify(model())).toContain("replacement");
+  }
   await settleBackgroundTranscriptsForTests();
   expect(published.join("\n")).not.toContain("obsolete");
   unsubscribe();
@@ -490,8 +519,12 @@ it.each(
   await entered.promise;
   client.on("thread/read", (params) => ({ ...initial, requestGeneration: params.requestGeneration }));
   client.emitNotification({ method: "evener/thread/resync", params: { ref: "local:a", threadId: "thread-a" } });
-  await vi.waitFor(() => expect(productionEntryTranscriptForTests("local:a").reader).toBeDefined());
+  // The resync's tracked hydration is the completion the poll waited for, and
+  // the reader it installs outlives it: await the hydration, then observe the
+  // reader it published (#5630).
   await settleEntryTranscriptForTests("local:a");
+  await drainSettleSteps();
+  expect(productionEntryTranscriptForTests("local:a").reader).toBeDefined();
   const repository = productionEntryTranscriptForTests("local:a").repository;
   expect(
     repository
@@ -515,7 +548,16 @@ it.each(
   await historyRequest;
   if (holder === "mutation") {
     const outbox = new MutationOutboxIndexedDB({ indexedDB: factory });
-    await vi.waitFor(async () => expect(await outbox.listOutbox("local:a")).toEqual([]));
+    // The dispatched row's removal is real IndexedDB work with no completion
+    // promise on the dispatcher, so spend real round trips on it instead of a
+    // wall-clock ceiling (#5630).
+    expect(
+      await pumpIndexedDBUntil({
+        turns: 400,
+        until: async () => (await outbox.listOutbox("local:a")).length === 0,
+      }),
+      "the pinned note's outbox row did not settle",
+    ).toBe(true);
     await settleProjectionWorkForTests();
   }
   await settleBackgroundTranscriptsForTests();
@@ -833,11 +875,13 @@ it("ordinary disk-only opening displays the window and both cached pages before 
   const client = connect();
   let releaseRead: (() => void) | undefined;
   let sourcePending = false;
+  const sourceReadEntered = deferred<void>();
   client.on(
     "thread/read",
     (params) =>
       new Promise((resolve) => {
         sourcePending = true;
+        sourceReadEntered.resolve();
         releaseRead = () => {
           sourcePending = false;
           const read = response("local:a", [turn("settled", 50)]);
@@ -860,25 +904,27 @@ it("ordinary disk-only opening displays the window and both cached pages before 
   });
   const opening = threadsStore.getState().ensureThread("local:a");
   try {
-    await vi.waitFor(() => {
-      expect(sourcePending).toBe(true);
-      expect(
-        threadsStore
-          .getState()
-          .threads.get("local:a")
-          ?.history?.turns.map((turn) => turn.id),
-      ).toEqual([
-        "oldest-1",
-        "oldest-2",
-        "oldest-3",
-        "older-1",
-        "older-2",
-        "older-3",
-        "window-1",
-        "window-2",
-        "window-3",
-      ]);
-    });
+    // The source read entering is the event this wait observed; the cached
+    // pages it displays were awaited before that read was issued (#5630).
+    await sourceReadEntered.promise;
+    await drainSettleSteps();
+    expect(sourcePending).toBe(true);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.history?.turns.map((turn) => turn.id),
+    ).toEqual([
+      "oldest-1",
+      "oldest-2",
+      "oldest-3",
+      "older-1",
+      "older-2",
+      "older-3",
+      "window-1",
+      "window-2",
+      "window-3",
+    ]);
     expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBe("cur-page-3");
     expect(
       threadsStore
@@ -1182,6 +1228,13 @@ it.each(["body", "empty", "omitted"] as const)(
       else expect(displayed?.text).toBe(kind === "empty" ? "" : "retained exact body");
       writes.mockRestore();
       const key = entryHistoryKey({ ...identity, clientId: location.origin });
+      // LEFT AS A POLL (#5630): the restored row is reached only through the
+      // repository's paced retry timer. Awaiting the settle throws "transcript
+      // recovery is outstanding" (the arming is genuinely outstanding until the
+      // timer fires), and a fake-clock advance plus real storage round trips
+      // still missed the restored version intermittently - the retry's arming
+      // and its durable write straddle both. So the ceiling stays, and
+      // converting this honestly needs the whole test on fake timers.
       await vi.waitFor(async () => expect((await storage.getLatest(key, 10))[0]?.version).toBe(2));
       await settleEntryTranscriptForTests("local:a");
       expect(repository.retainedInventoryForTesting().retryBodies).toEqual([]);
@@ -1801,7 +1854,9 @@ it("existing background opening deadline releases paging hold and fences a late 
   try {
     await entered.promise;
     expect(threadsStore.getState().localOpenings.has("local:a")).toBe(true);
-    await vi.waitFor(() => expect(settled).toBe(true));
+    // The opening's own promise is the completion the poll waited for.
+    await opening;
+    expect(settled).toBe(true);
     expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
     expect(
       threadsStore
@@ -1937,13 +1992,18 @@ it("a stalled local restore settles its opening without discarding the loaded ra
   // the remount's restore runs with its required bodies still resident.
   const finishOlder = deferred<void>();
   let olderListed = false;
+  const olderListing = deferred<void>();
   client.on("thread/turns/list", async () => {
     olderListed = true;
+    olderListing.resolve();
     await finishOlder.promise;
     return { data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-a", length: 3 } };
   });
   const historyRequest = threadsStore.getState().loadOlderTurns("local:a");
-  await vi.waitFor(() => expect(olderListed).toBe(true));
+  // The older page's list read entering is the event this wait observed, so
+  // the wait asserts nothing the deferred does not already prove.
+  await olderListing.promise;
+  expect(olderListed).toBe(true);
   threadsStore.getState().releaseThread("local:a");
   const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
   const released = deferred<void>();
@@ -1962,7 +2022,12 @@ it("a stalled local restore settles its opening without discarding the loaded ra
     expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(readsBefore);
     expect(productionEntryTranscriptForTests("local:a").lastLocalOpenUsable).toBe(true);
     released.resolve();
-    await vi.waitFor(() => expect(loaded()).toEqual(["older-item", "recorded"]));
+    // Await the held read itself and the route's own settlement, the work the
+    // display converges from; the poll only re-read the result of that work.
+    await Promise.all(lookup.mock.results.map((result) => result.value));
+    await settleEntryTranscriptForTests("local:a");
+    await drainSettleSteps();
+    expect(loaded()).toEqual(["older-item", "recorded"]);
   } finally {
     released.resolve();
     await Promise.all(lookup.mock.results.map((result) => result.value));
@@ -2103,13 +2168,18 @@ it("a stalled restore's late partial window cannot demote a resident range", asy
   // so the stalled restore is accepted with its required bodies resident.
   const finishOlder = deferred<void>();
   let olderListed = false;
+  const olderListing = deferred<void>();
   client.on("thread/turns/list", async () => {
     olderListed = true;
+    olderListing.resolve();
     await finishOlder.promise;
     return { data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-a", length: 3 } };
   });
   const historyRequest = threadsStore.getState().loadOlderTurns("local:a");
-  await vi.waitFor(() => expect(olderListed).toBe(true));
+  // The older page's list read entering is the event this wait observed, so
+  // the wait asserts nothing the deferred does not already prove.
+  await olderListing.promise;
+  expect(olderListed).toBe(true);
   threadsStore.getState().releaseThread("local:a");
   const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
   // The stalled restore answers late with a durable window that no longer
@@ -2171,13 +2241,18 @@ it("a stalled restore's unusable late result re-arms recovery when its re-open m
   // so the stalled restore takes the resident-range branch.
   const finishOlder = deferred<void>();
   let olderListed = false;
+  const olderListing = deferred<void>();
   client.on("thread/turns/list", async () => {
     olderListed = true;
+    olderListing.resolve();
     await finishOlder.promise;
     return { data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-a", length: 3 } };
   });
   const historyRequest = threadsStore.getState().loadOlderTurns("local:a");
-  await vi.waitFor(() => expect(olderListed).toBe(true));
+  // The older page's list read entering is the event this wait observed, so
+  // the wait asserts nothing the deferred does not already prove.
+  await olderListing.promise;
+  expect(olderListed).toBe(true);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   threadsStore.getState().releaseThread("local:a");
   setSessionCacheStalledOpenForTests(100);
@@ -2287,13 +2362,18 @@ it("a late restore result cannot act after its pane releases", async () => {
   await background.ready;
   const finishOlder = deferred<void>();
   let olderListed = false;
+  const olderListing = deferred<void>();
   client.on("thread/turns/list", async () => {
     olderListed = true;
+    olderListing.resolve();
     await finishOlder.promise;
     return { data: [], bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-a", length: 3 } };
   });
   const historyRequest = threadsStore.getState().loadOlderTurns("local:a");
-  await vi.waitFor(() => expect(olderListed).toBe(true));
+  // The older page's list read entering is the event this wait observed, so
+  // the wait asserts nothing the deferred does not already prove.
+  await olderListing.promise;
+  expect(olderListed).toBe(true);
   threadsStore.getState().releaseThread("local:a");
   const readsBefore = client.calls.filter((call) => call.method === "thread/read").length;
   // The stalled restore's storage read never answers until the test releases
@@ -2625,6 +2705,7 @@ it("ordinary disk-only restore refuses a captured body after a silent durable hi
   });
   const client = connect();
   let finishRead: (() => void) | undefined;
+  const sourceReadIssued = deferred<void>();
   client.on(
     "thread/read",
     (params) =>
@@ -2634,6 +2715,7 @@ it("ordinary disk-only restore refuses a captured body after a silent durable hi
             ...response("local:a", [turn("post-delete-source", 50)]),
             requestGeneration: params.requestGeneration,
           });
+        sourceReadIssued.resolve();
       }),
   );
   const opening = threadsStore.getState().ensureThread("local:a");
@@ -2643,7 +2725,9 @@ it("ordinary disk-only restore refuses a captured body after a silent durable hi
     await storage.deleteHistory(key); // No channel message or store-side retirement.
     expect(await storage.getHistoryGeneration(key)).toBe(1);
     releaseTurns?.();
-    await vi.waitFor(() => expect(finishRead).toBeDefined());
+    // The source read's issuance is the event the poll waited for.
+    await sourceReadIssued.promise;
+    expect(finishRead).toBeDefined();
     expect(threadsStore.getState().threads.has("local:a")).toBe(false);
   } finally {
     releaseTurns?.();
@@ -3159,6 +3243,7 @@ it("a stale-cursor hydration that replaces the repository keeps the missed open'
   let foregroundReads = 0;
   let heldReadArrived = false;
   let rejectHeld: ((error: unknown) => void) | undefined;
+  const heldReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     foregroundReads += 1;
     if (foregroundReads === 1) return read;
@@ -3166,6 +3251,7 @@ it("a stale-cursor hydration that replaces the repository keeps the missed open'
       heldReadArrived = true;
       return new Promise<ThreadReadResponse>((_resolve, reject) => {
         rejectHeld = reject;
+        heldReadEntered.resolve();
       });
     }
     return { ...latestWindowRead(ref, 224 + foregroundReads), requestGeneration: params.requestGeneration };
@@ -3202,9 +3288,11 @@ it("a stale-cursor hydration that replaces the repository keeps the missed open'
   setSessionCacheOpenBackstopForTests(40);
   try {
     const opened = threadsStore.getState().ensureThread(ref);
-    await vi.waitFor(() => {
-      expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(true);
-    });
+    // The held-snapshot read is only issued once the open has missed its
+    // pinned backstop and handed to the source, so awaiting its arrival is
+    // the miss itself, not a re-check of it against a ceiling (#5630).
+    await heldReadEntered.promise;
+    expect(productionEntryTranscriptForTests(ref).unresolvedOpenMiss).toBe(true);
     expect(heldReadArrived).toBe(true);
     if (!rejectHeld) throw new Error("the stale-cursor read never arrived");
     rejectHeld(new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" }));
@@ -3249,6 +3337,7 @@ it("a stale-cursor refresh that replaces the repository resumes the pending reco
   let foregroundReads = 0;
   let refreshStarted = false;
   let rejectHeld: ((error: unknown) => void) | undefined;
+  const heldRefreshReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     foregroundReads += 1;
     if (foregroundReads === 1) return read;
@@ -3258,6 +3347,7 @@ it("a stale-cursor refresh that replaces the repository resumes the pending reco
     if (refreshStarted && (params as { heldSnapshot?: unknown }).heldSnapshot !== undefined) {
       return new Promise<ThreadReadResponse>((_resolve, reject) => {
         rejectHeld = reject;
+        heldRefreshReadEntered.resolve();
       });
     }
     return { ...latestWindowRead(ref, 226), requestGeneration: params.requestGeneration };
@@ -3329,7 +3419,11 @@ it("a stale-cursor refresh that replaces the repository resumes the pending reco
     // daemon's 40-item window.
     refreshStarted = true;
     const refreshed = threadsStore.getState().refreshThread(ref);
-    await vi.waitFor(() => expect(rejectHeld).toBeDefined());
+    // The competing refresh's held-snapshot read is the event the poll
+    // waited for; awaiting its arrival then rejecting it is the same
+    // interleaving without a ceiling (#5630).
+    await heldRefreshReadEntered.promise;
+    expect(rejectHeld).toBeDefined();
     rejectHeld?.(new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" }));
     await refreshed;
     await settleEntryTranscriptForTests(ref);
@@ -3366,12 +3460,14 @@ it("a stale-cursor refresh that replaces the repository resumes the reconciliati
   let foregroundReads = 0;
   let refreshStarted = false;
   let rejectHeld: ((error: unknown) => void) | undefined;
+  const heldRefreshReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     foregroundReads += 1;
     if (foregroundReads === 1) return read;
     if (refreshStarted && (params as { heldSnapshot?: unknown }).heldSnapshot !== undefined) {
       return new Promise<ThreadReadResponse>((_resolve, reject) => {
         rejectHeld = reject;
+        heldRefreshReadEntered.resolve();
       });
     }
     return { ...latestWindowRead(ref, 226), requestGeneration: params.requestGeneration };
@@ -3450,7 +3546,11 @@ it("a stale-cursor refresh that replaces the repository resumes the reconciliati
     // restores the range the replacing window dropped.
     refreshStarted = true;
     const refreshed = threadsStore.getState().refreshThread(ref);
-    await vi.waitFor(() => expect(rejectHeld).toBeDefined());
+    // The competing refresh's held-snapshot read is the event the poll
+    // waited for; awaiting its arrival then rejecting it is the same
+    // interleaving without a ceiling (#5630).
+    await heldRefreshReadEntered.promise;
+    expect(rejectHeld).toBeDefined();
     rejectHeld?.(new WireError("stale", -32000, { evenerErrorInfo: "transcriptItemCursorStale" }));
     await refreshed;
     await settleEntryTranscriptForTests(ref);
@@ -3571,10 +3671,10 @@ it("a converged pane automatically reconciles its restored older rows against th
     // The converged display: every recorded row restored, and row 160 healed
     // to the source's edited version once the bounded pages reconciled the
     // restored range.
-    await vi.waitFor(() =>
-      expect(bodies()).toEqual(
-        Array.from({ length: 200 }, (_, index) => (index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`)),
-      ),
+    await settleEntryTranscriptForTests(ref);
+    await drainSettleSteps();
+    expect(bodies()).toEqual(
+      Array.from({ length: 200 }, (_, index) => (index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`)),
     );
     expect(listReads.length).toBeGreaterThanOrEqual(1);
     expect(bodies()).toContain("row-226");
@@ -3690,7 +3790,10 @@ it("a reconciliation page discarded by a competing read is retried after the com
     // showing its pre-gap cached version, and the chain's first page is now
     // in the air.
     expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
-    await vi.waitFor(() => expect(listReads).toHaveLength(1));
+    // The chain's first page issues from the settled span's own wakeups —
+    // drain the microtask queue instead of racing a ceiling (#5630).
+    await drainSettleSteps();
+    expect(listReads).toHaveLength(1);
     // The competing read is pending; release the chain's page under it, so
     // the page is discarded — then let the competing read settle with the
     // daemon's windowed answer, which replaces the baseline (the display
@@ -3703,11 +3806,11 @@ it("a reconciliation page discarded by a competing read is retried after the com
     // discarded page is retried within the same bounded budget, the bounded
     // pages re-merge the range below the settled window, and row 160's edited
     // version heals into the display.
-    await vi.waitFor(() => expect(listReads.length).toBeGreaterThanOrEqual(2));
-    await vi.waitFor(() =>
-      expect(bodies()).toEqual(
-        Array.from({ length: 201 }, (_, index) => (index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`)),
-      ),
+    await settleEntryTranscriptForTests(ref);
+    await drainSettleSteps();
+    expect(listReads.length).toBeGreaterThanOrEqual(2);
+    expect(bodies()).toEqual(
+      Array.from({ length: 201 }, (_, index) => (index + 27 === 160 ? "row-160-edited" : `row-${index + 27}`)),
     );
     expect(listReads.length).toBeGreaterThanOrEqual(2);
   } finally {
@@ -3795,7 +3898,10 @@ it("a late reconciliation page does not un-prune a background-only pane's model"
     // The converged display restored the recorded range, and the automatic
     // reconciliation's first page is now in the air.
     expect(bodies()).toEqual(Array.from({ length: 200 }, (_, index) => `row-${index + 27}`));
-    await vi.waitFor(() => expect(listReads).toHaveLength(1));
+    // The chain's first page issues from the settled span's own wakeups —
+    // drain the microtask queue instead of racing a ceiling (#5630).
+    await drainSettleSteps();
+    expect(listReads).toHaveLength(1);
     // The foreground pane closes while the reconciliation page is in flight;
     // the background lease retains the route, so the page's ownership checks
     // still pass and its acceptance will publish. The release prunes the
@@ -3804,13 +3910,14 @@ it("a late reconciliation page does not un-prune a background-only pane's model"
     threadsStore.getState().releaseThread(ref);
     const storeModel = () => threadsStore.getState().threads.get(ref);
     const historyIdentities = () => storeModel()?.history?.turns.flatMap((turn) => turn.items) ?? [];
-    await vi.waitFor(() => {
-      expect(storeModel()).toBeDefined();
-      expect(bodies()).toEqual([]);
-      const identities = historyIdentities();
-      expect(identities.length).toBeGreaterThan(0);
-      for (const identity of identities) expect(encodeTranscriptItem(identity).identityOnly).toBe(true);
-    });
+    // The release prunes the model synchronously; drain its continuations and
+    // assert the same pruned state the poll observed (#5630).
+    await drainSettleSteps();
+    expect(storeModel()).toBeDefined();
+    expect(bodies()).toEqual([]);
+    const prunedIdentities = historyIdentities();
+    expect(prunedIdentities.length).toBeGreaterThan(0);
+    for (const identity of prunedIdentities) expect(encodeTranscriptItem(identity).identityOnly).toBe(true);
     const unreconciledBefore = productionEntryTranscriptForTests(ref).repository?.unreconciledRecorded().size ?? 0;
     // The late page settles: it is accepted (its range reconciles against the
     // source), and its publication must keep the background-only pane's model
@@ -3958,6 +4065,12 @@ it("a close and reopen around the committed windowed hydration still restores th
     // The reopened pane must converge to the recorded range below the window:
     // 200 rows ending at the window's newest row, not the 40-row cut the
     // certification could shortcut as complete.
+    // LEFT AS A POLL (#5630): the convergence below is a chain of timer-bounded
+    // reopening cycles, not one awaitable span. The pinned 40ms lookup bound
+    // makes a loaded open miss and re-arm, and the settle returns before the
+    // re-armed attempt has issued the read that heals the range, so awaiting it
+    // asserts mid-cycle. The ceiling stays the tripwire; converting it needs the
+    // whole read of this test on fake timers, which is beyond this poll.
     await act(async () => {
       await vi.waitFor(
         () => {
@@ -4648,10 +4761,13 @@ it("waiters begun while a recovery's parked read is held still wait through a co
     // Let the resync's own refresh run to completion — its hydration published
     // and its shorter completion settled. The chain is still parked on the
     // held read, so its recovery remains pending behind whatever registration
-    // the resync left.
-    await vi.waitFor(() => {
-      expect((bodies() ?? []).length).toBeGreaterThan(0);
-    });
+    // the resync left; that pending span is the test's premise, so this cannot
+    // join settleEntryTranscriptForTests, which awaits it. Spend real storage
+    // round trips on the publication instead of a wall-clock ceiling (#5630).
+    expect(
+      await pumpIndexedDBUntil({ turns: 2000, until: () => (bodies() ?? []).length > 0 }),
+      "the resync's refresh never published the displayed bodies",
+    ).toBe(true);
     await drainSettleSteps();
     const settle = settleEntryTranscriptForTests(ref);
     let settled = false;
@@ -4742,9 +4858,10 @@ it("a source hydration settling mid-lookup supersedes the open without arming th
     method: "evener/thread/resync",
     params: { ref, threadId: "thread-a" },
   });
-  await vi.waitFor(() => {
-    expect((bodies() ?? []).length).toBeGreaterThan(0);
-  });
+  // The resync's tracked hydration publishes the display; its settlement is
+  // the event, not a wall-clock ceiling (#5630).
+  await settleEntryTranscriptForTests(ref);
+  expect((bodies() ?? []).length).toBeGreaterThan(0);
   const wireReadsAfterHeal = wireReads;
   const storageReadsAfterHeal = storageReads;
   // The 400ms hold spans the retired lookup deadline, so a ride-it-out open
@@ -4941,6 +5058,10 @@ it("a replacement registered before the claim's reconciliation finishes still su
   const claimWireReadEntered = deferred<void>();
   const claimWireReadReleased = deferred<void>();
   const replacementWireReadReleased = deferred<void>();
+  // The replacement's own read entering is the event the assertions below
+  // wait for, so the handler signals it instead of the test polling the count
+  // against a wall-clock ceiling (#5630).
+  const replacementWireReadEntered = deferred<void>();
   client.on("thread/read", (params) => {
     wireReads += 1;
     if (wireReads === 1) {
@@ -4950,6 +5071,7 @@ it("a replacement registered before the claim's reconciliation finishes still su
       // the certification open still has a window to promote.
       return claimWireReadReleased.promise.then(() => read);
     }
+    replacementWireReadEntered.resolve();
     return replacementWireReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
   });
   try {
@@ -4967,9 +5089,8 @@ it("a replacement registered before the claim's reconciliation finishes still su
       method: "evener/thread/resync",
       params: { ref, threadId: "thread-a" },
     });
-    await vi.waitFor(() => {
-      expect(wireReads).toBe(2);
-    });
+    await replacementWireReadEntered.promise;
+    expect(wireReads).toBe(2);
     await drainSettleSteps();
     // The claim finishes and its certification open parks on the wedged
     // lookup under the real backstop.
@@ -5478,14 +5599,12 @@ it("a wedged storage read abandons the open at the backstop and hands the pane t
   setSessionCacheStalledOpenForTests(250);
   try {
     const opened = threadsStore.getState().ensureThread(ref);
-    await vi.waitFor(() => {
-      expect(threadsStore.getState().localOpenings.has(ref)).toBe(false);
-    });
-    expect(wireReads).toBeGreaterThan(0);
-    await vi.waitFor(() => {
-      expect((bodies() ?? []).length).toBeGreaterThan(0);
-    });
     await opened;
+    // The acquisition's own promise is the event: it settles after the open
+    // abandons at the backstop and the source hydration publishes (#5630).
+    expect(threadsStore.getState().localOpenings.has(ref)).toBe(false);
+    expect(wireReads).toBeGreaterThan(0);
+    expect((bodies() ?? []).length).toBeGreaterThan(0);
     expect(bodies()).toContain("row-26");
   } finally {
     setSessionCacheOpenBackstopForTests(10000);
@@ -5955,8 +6074,13 @@ it("a foreign hydration settling during a held recovery supersedes the reopened 
   try {
     await threadsStore.getState().ensureThread(ref);
     // The chain's recovery attempt is the pending opening now; wait for its
-    // published token before releasing.
-    await vi.waitFor(() => expect(threadsStore.getState().localOpenings.has(ref)).toBe(true));
+    // published token before releasing. The token is published by work parked
+    // on real storage round trips, so spend those rather than a wall-clock
+    // ceiling (#5630).
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: () => threadsStore.getState().localOpenings.has(ref) }),
+      "the chain's recovery attempt never published a pending opening",
+    ).toBe(true);
     const chainToken = threadsStore.getState().localOpenings.get(ref);
     // The pane that armed the chain releases; a pane reopens over the shell
     // the background lease preserves. Its plain open parks on the held
@@ -5964,7 +6088,13 @@ it("a foreign hydration settling during a held recovery supersedes the reopened 
     threadsStore.getState().releaseThread(ref);
     setSessionCacheOpenBackstopForTests(10000);
     const reopened = threadsStore.getState().ensureThread(ref);
-    await vi.waitFor(() => expect(threadsStore.getState().localOpenings.get(ref)).not.toBe(chainToken));
+    expect(
+      await pumpIndexedDBUntil({
+        turns: 400,
+        until: () => threadsStore.getState().localOpenings.get(ref) !== chainToken,
+      }),
+      "the reopened pane never published its own pending opening",
+    ).toBe(true);
     await drainSettleSteps();
     // A successful foreign hydration settles while the recovery's read is
     // still held. Its own settlement must supersede the reopened pane's open
@@ -6018,10 +6148,14 @@ it("a quiet certification that establishes the display releases the superseded p
   // read belongs to the displacing refresh and stays parked.
   const claimReadReleased = deferred<void>();
   const refreshReadReleased = deferred<void>();
+  // The claim's read entering is the event the test waits for; the handler
+  // signals it instead of the test polling the call count (#5630).
+  const claimReadEntered = deferred<void>();
   let wireReads = 0;
   client.on("thread/read", (params) => {
     wireReads += 1;
     if (wireReads === 1) {
+      claimReadEntered.resolve();
       return claimReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
     }
     return refreshReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
@@ -6074,14 +6208,18 @@ it("a quiet certification that establishes the display releases the superseded p
     const firstEnsure = threadsStore.getState().ensureThread(ref);
     // The pane's first open missed the pinned backstop and its claim's read
     // is the pending opening now.
-    await vi.waitFor(() => expect(wireReads).toBe(1));
+    await claimReadEntered.promise;
+    expect(wireReads).toBe(1);
     // The pane releases while its claim's read is still pending; a pane
     // reopens over the shell the background lease preserves. Its plain open
     // parks on the withheld storage read and the next tracked settlement.
     threadsStore.getState().releaseThread(ref);
     setSessionCacheOpenBackstopForTests(10000);
     const reopened = threadsStore.getState().ensureThread(ref);
-    await vi.waitFor(() => expect(threadsStore.getState().localOpenings.has(ref)).toBe(true));
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: () => threadsStore.getState().localOpenings.has(ref) }),
+      "the reopened pane never published a pending opening",
+    ).toBe(true);
     // The claim's read answers: its publication lands complete with an
     // older frontier, the displacing refresh registers over its settlement,
     // and the claim's post-hydration certification runs quietly and
@@ -6174,14 +6312,23 @@ it("a pin-drain that retires a pending claim drops its settlement registration f
   // publication created it lazily - so the pin-establishing frame must
   // follow it.
   emitQueueChanged();
-  await vi.waitFor(() => expect(isMutationPinned(ref)).toBe(true));
+  // The pin refresh observes the held outbox row through real IndexedDB
+  // reads, so spend those round trips rather than a wall-clock ceiling (#5630).
+  expect(
+    await pumpIndexedDBUntil({ turns: 400, until: () => isMutationPinned(ref) }),
+    "the pin-establishing queue frame never pinned the ref",
+  ).toBe(true);
   // The pane's claim read parks until the test releases it; every later
   // wire read belongs to the reacquired lease and must answer.
   const claimReadReleased = deferred<void>();
+  // The pane's claim is the read this test waits to see issued; the handler's
+  // own signal replaces the call-count poll (#5630).
+  const claimReadEntered = deferred<void>();
   let wireReads = 0;
   client.on("thread/read", (params) => {
     wireReads += 1;
     if (wireReads === 1) {
+      claimReadEntered.resolve();
       return claimReadReleased.promise.then(() => ({ ...read, requestGeneration: params.requestGeneration }));
     }
     return read;
@@ -6202,7 +6349,8 @@ it("a pin-drain that retires a pending claim drops its settlement registration f
   setSessionCacheOpenBackstopForTests(40);
   const openedByPane = threadsStore.getState().ensureThread(ref);
   try {
-    await vi.waitFor(() => expect(wireReads).toBe(1));
+    await claimReadEntered.promise;
+    expect(wireReads).toBe(1);
     // The pane closes while its initial claim read is still pending. The
     // mutation pin keeps the canonical owner active, so the pane's release
     // skips its no-owner cleanup - the claim's pending and its settlement
@@ -6217,11 +6365,23 @@ it("a pin-drain that retires a pending claim drops its settlement registration f
     // read can no longer publish, so a later consumer that adopts it waits
     // on a completion that carries no publication.
     queueReceiptReleased.resolve();
-    await vi.waitFor(() => {
-      expect(threadsStore.getState().threads.has(ref)).toBe(false);
-      expect(isMutationPinned(ref)).toBe(false);
-      expect(pendingThreadHydrationUpdatesForTests().length).toBe(0);
-    });
+    // The pin drain is the held row's receipt settling, the dispatch tail's
+    // pin refresh reading an empty outbox, and the unpinned drop - all real
+    // IndexedDB round trips, so spend those rather than a wall-clock ceiling
+    // (#5630).
+    expect(
+      await pumpIndexedDBUntil({
+        turns: 400,
+        until: () =>
+          !threadsStore.getState().threads.has(ref) &&
+          !isMutationPinned(ref) &&
+          pendingThreadHydrationUpdatesForTests().length === 0,
+      }),
+      "the pin drain never retired the unpinned model and its pending hydration",
+    ).toBe(true);
+    expect(threadsStore.getState().threads.has(ref)).toBe(false);
+    expect(isMutationPinned(ref)).toBe(false);
+    expect(pendingThreadHydrationUpdatesForTests().length).toBe(0);
     // A fresh background lease must issue its own read, not adopt the dead
     // claim's registration.
     const reacquired = acquireBackgroundThread(ref);
@@ -6233,7 +6393,13 @@ it("a pin-drain that retires a pending claim drops its settlement registration f
     // The lease issued its own fresh read rather than adopting the dead
     // claim's registration; a lifecycle resync may add one more.
     expect(wireReads).toBeGreaterThanOrEqual(2);
-    await vi.waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(true));
+    // The reacquired lease answers through its own read, whose publication
+    // rides real storage round trips (#5630).
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: () => threadsStore.getState().threads.has(ref) }),
+      "the reacquired lease never published its model",
+    ).toBe(true);
+    expect(threadsStore.getState().threads.has(ref)).toBe(true);
     await reacquired.release();
   } finally {
     setSessionCacheOpenBackstopForTests(10000);
@@ -6452,8 +6618,10 @@ it("a structured history failure after a missed open records its diagnostic with
   // for a later event - the chain's automatic source handoff is the retry
   // loop that contract forbids, so the count must stay at one.
   let wireReads = 0;
+  const problemReadEntered = deferred<void>();
   client.on("thread/read", () => {
     wireReads += 1;
+    problemReadEntered.resolve();
     throw new WireError("thread history failed at entry 7", -32603, {
       evenerErrorInfo: ErrorTranscriptHistoryFailed,
     });
@@ -6470,9 +6638,18 @@ it("a structured history failure after a missed open records its diagnostic with
     const openedByPane = threadsStore.getState().ensureThread(ref);
     // The pane's first open misses the pinned backstop; its claim's read
     // answers the structured history failure, whose deliberate handling
-    // records the one visible diagnostic.
-    await vi.waitFor(() => expect(wireReads).toBe(1));
-    await vi.waitFor(() => expect(threadsStore.getState().threads.get(ref)?.history?.failed).toBeDefined());
+    // records the one visible diagnostic. The handler signals the read it
+    // issues, and the diagnostic's own delivery rides real storage round
+    // trips, so neither waits on a wall-clock ceiling (#5630).
+    await problemReadEntered.promise;
+    expect(wireReads).toBe(1);
+    expect(
+      await pumpIndexedDBUntil({
+        turns: 400,
+        until: () => threadsStore.getState().threads.get(ref)?.history?.failed !== undefined,
+      }),
+      "the structured history failure's diagnostic did not reach the store",
+    ).toBe(true);
     setSessionCacheOpenBackstopForTests(10000);
     // The chain may still try local restoration against storage that never
     // answers; the source handoff is what the deliberate handling forbids.
@@ -6542,9 +6719,9 @@ it("an unverified empty cache shell cannot certify a pending open when the hydra
     // its claim parks on the failing source read.
     const openedByFirstPane = threadsStore.getState().ensureThread(ref);
     await claimEntered.promise;
-    await vi.waitFor(() => {
-      expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(0);
-    });
+    // The seeding lookup published the shell before its claim reached the
+    // wire, so the empty turn list is already the model's state (#5630).
+    expect(threadsStore.getState().threads.get(ref)?.turns).toHaveLength(0);
     const route = productionEntryTranscriptForTests(ref);
     // The shell is an unverified seed: no source read has adopted it.
     expect(route?.repository?.getRecoveryStateForTesting().seedAuthorityInvalid).toBe(true);
@@ -6712,13 +6889,19 @@ it("a composed registration's recovery span settling first still wakes the reope
   // composed registration's hydration side never settles inside this test.
   let wireReads = 0;
   const claimRead = deferred<void>();
+  // Both reads this test waits to see issued are scripted here, so the handler
+  // signals them instead of the test polling the call count (#5630).
+  const claimReadEntered = deferred<void>();
+  const foreignRefreshReadEntered = deferred<void>();
   client.on("thread/read", () => {
     wireReads += 1;
     if (wireReads === 1) {
+      claimReadEntered.resolve();
       return claimRead.promise.then((): ThreadReadResponse => {
         throw new Error("connection reset by peer");
       });
     }
+    foreignRefreshReadEntered.resolve();
     return new Promise(() => {}) as Promise<ThreadReadResponse>;
   });
   // Local window reads, scripted in call order: the pane's first open
@@ -6761,13 +6944,15 @@ it("a composed registration's recovery span settling first still wakes the reope
     // The claim's read parks. Releasing it fails the claim in transport and
     // arms the opening recovery chain, whose whole-span registration stays
     // pending while its first attempt stalls.
-    await vi.waitFor(() => expect(wireReads).toBe(1));
+    await claimReadEntered.promise;
+    expect(wireReads).toBe(1);
     claimRead.resolve();
     await new Promise((resolve) => setTimeout(resolve, 10));
     // A foreign resync refresh starts while the chain's span is pending, so
     // its registration composes with that span; its read stays held.
     client.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: "thread-a" } });
-    await vi.waitFor(() => expect(wireReads).toBe(2));
+    await foreignRefreshReadEntered.promise;
+    expect(wireReads).toBe(2);
     // The pane closes - the lease keeps the route - and the reopened pane's
     // open parks on its own held local read, waiting on the composed
     // settlement under the real backstop.
@@ -7146,7 +7331,15 @@ it.each(["goal", "note"] as const)(
         },
       }));
       await threadsStore.getState().setHumanNote("local:a", "new");
-      await vi.waitFor(() => expect(threadsStore.getState().threads.get("local:a")?.humanNote).toBe("new"));
+      // The confirmation lands through the outbox's real IndexedDB round trips,
+      // so spend those instead of a wall-clock ceiling (#5630).
+      expect(
+        await pumpIndexedDBUntil({
+          turns: 400,
+          until: () => threadsStore.getState().threads.get("local:a")?.humanNote === "new",
+        }),
+        "the human note's confirmation never reached the store",
+      ).toBe(true);
     }
     const value = () => {
       const model = threadsStore.getState().threads.get("local:a");
@@ -7212,15 +7405,30 @@ it.each([true, false])("input suppressed during Clear is reconciled after commit
   const reads = client.calls.filter((call) => call.method === "thread/read").length;
   held.resolve();
   expect(await clearing).toEqual({ committed });
-  await vi.waitFor(() => {
-    expect(
-      threadsStore
-        .getState()
-        .threads.get("local:a")
-        ?.turns.flatMap((turn) => turn.items)
-        .map((item) => item.text),
-    ).toEqual(["recorded", "new recorded body", "active output plus delta"]);
-  });
+  // The replay's replacement read and its durable write are real IndexedDB
+  // work, so spend real round trips on them rather than a wall-clock ceiling
+  // (#5630).
+  expect(
+    await pumpIndexedDBUntil({
+      turns: 400,
+      until: () =>
+        JSON.stringify(
+          threadsStore
+            .getState()
+            .threads.get("local:a")
+            ?.turns.flatMap((turn) => turn.items)
+            .map((item) => item.text),
+        ) === JSON.stringify(["recorded", "new recorded body", "active output plus delta"]),
+    }),
+    "the Clear replay never reconciled the suppressed input",
+  ).toBe(true);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["recorded", "new recorded body", "active output plus delta"]);
   expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
   await settleEntryTranscriptForTests("local:a");
   if (committed) {
@@ -7263,7 +7471,11 @@ it.each(["before", "after", "failed-after"])(
         items: turn(id, entry).items,
       });
     send("predecessor", 3);
-    await vi.waitFor(() => expect(writes).toHaveBeenCalledTimes(1));
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: () => writes.mock.calls.length > 0 }),
+      "the predecessor batch never reached a durable write",
+    ).toBe(true);
+    expect(writes).toHaveBeenCalledTimes(1);
     const issuedBytes = admission.retainedBytes;
     expect(issuedBytes).toBeGreaterThan(0);
     send("successor", 4);
@@ -7281,7 +7493,14 @@ it.each(["before", "after", "failed-after"])(
     try {
       if (settlesFirst) {
         heldWrite.resolve();
-        await vi.waitFor(() => expect(repository.retainedInventoryForTesting().inFlightBodies).toEqual([]));
+        expect(
+          await pumpIndexedDBUntil({
+            turns: 400,
+            until: () => repository.retainedInventoryForTesting().inFlightBodies.length === 0,
+          }),
+          "the released predecessor write never left the repository's in-flight set",
+        ).toBe(true);
+        expect(repository.retainedInventoryForTesting().inFlightBodies).toEqual([]);
       }
       heldClear.resolve();
       expect(await clearing).toEqual({ committed: true });
@@ -7365,7 +7584,9 @@ it("an aborted ordinary Clear replays recorded input delivered while Clear was p
     return realClear();
   });
   const clearing = clearCachedSessions();
-  await vi.waitFor(() => expect(threadsStore.getState().clearInFlight).toBeDefined());
+  // clearCachedSessions arms the in-flight marker before its first await, so
+  // the marker is set by the time the call returns - no ceiling needed (#5630).
+  expect(threadsStore.getState().clearInFlight).toBeDefined();
   emitHistoryUpdated(client, {
     snapshot: { incarnation: "inc-a", length: 4 },
     items: turn("during-clear", 2, "DURING_CLEAR_BODY").items,
@@ -7409,7 +7630,13 @@ it.each(["reject", "stall"])("captured deletion is independent of metadata disco
   try {
     await deleteSession(client, "local:a");
     expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
-    await vi.waitFor(async () => expect(await storage.getHistoryGeneration(key)).toBe(1));
+    // The generation bump is real IndexedDB work with no completion promise on
+    // the delete path, so spend real round trips on it rather than a wall-clock
+    // ceiling (#5630).
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: async () => (await storage.getHistoryGeneration(key)) === 1 }),
+      "the deletion fence's history generation did not commit",
+    ).toBe(true);
     expect(await storage.getLatest(key, 10)).toEqual([]);
   } finally {
     discovery.resolve([]);
@@ -7611,7 +7838,9 @@ it("a page issued before deletion does not publish after the deletion fence reti
 
   const paging = threadsStore.getState().loadOlderTurns("local:a");
   markCacheSessionsDeleted(["local:a"]);
-  await vi.waitFor(() => expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true));
+  // markCacheSessionsDeleted records the fence in the store before it returns,
+  // so there is nothing to wait for (#5630).
+  expect(threadsStore.getState().deletedRefs.has("local:a")).toBe(true);
   // Return the page that was already in flight when the deletion fence landed.
   pageGate.resolve();
   await paging;
@@ -7703,10 +7932,10 @@ it("automatic outbox discovery after Clear stays suppressed until explicit foreg
     client.emitStateChange("reconnecting");
     client.emitStateChange("ready");
     await settleProjectionWorkForTests();
-    await vi.waitFor(() =>
-      expect(client.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads),
-    );
+    // The reconnect's own tracked refresh is the read this waits to see
+    // issued, so join its settlement and then assert the count grew (#5630).
     await settleEntryTranscriptForTests("local:a");
+    expect(client.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads);
     expect(threadsStore.getState().cacheLifetimes.get("local:a")?.suppressed).toBe(true);
     expect(threadsStore.getState().cacheLifetimes.get("local:a")?.freshForegroundLifetime).toBeUndefined();
     const key = entryHistoryKey({ ...identity, clientId: location.origin });
@@ -7783,11 +8012,15 @@ it("ordinary disk-only read-proven deletion keeps cached content visible while h
   const client = connect();
   let rejectRead: (() => void) | undefined;
   let sourcePending = false;
+  // The deletion read entering is the event this test waits for; the handler
+  // signals it instead of the test polling a flag (#5630).
+  const deletionReadIssued = deferred<void>();
   client.on(
     "thread/read",
     () =>
       new Promise((_, reject) => {
         sourcePending = true;
+        deletionReadIssued.resolve();
         rejectRead = () => {
           sourcePending = false;
           reject(
@@ -7807,10 +8040,17 @@ it("ordinary disk-only read-proven deletion keeps cached content visible while h
       .threads.get("local:a")
       ?.history?.turns.map((turn) => turn.id);
   try {
-    await vi.waitFor(() => {
-      expect(sourcePending).toBe(true);
-      expect(visible()).toEqual(["window-1", "window-2", "window-3"]);
-    });
+    await deletionReadIssued.promise;
+    expect(sourcePending).toBe(true);
+    // The cached window's publication rides real storage round trips (#5630).
+    expect(
+      await pumpIndexedDBUntil({
+        turns: 400,
+        until: () => JSON.stringify(visible()) === JSON.stringify(["window-1", "window-2", "window-3"]),
+      }),
+      "the cached window never reached the display",
+    ).toBe(true);
+    expect(visible()).toEqual(["window-1", "window-2", "window-3"]);
     expect(threadsStore.getState().threads.get("local:a")?.turns[0]?.items[0]?.text).toBe("window-1");
     expect(await storage.getLatest(key, 200)).toHaveLength(3);
     if (!rejectRead) throw new Error("deletion read was not issued");
@@ -7972,12 +8212,17 @@ it("ordinary invalidating history input automatically reads a fresh baseline bef
   await threadsStore.getState().ensureThread("local:a");
   await settleEntryTranscriptForTests("local:a");
   let recoveryStarted = false;
+  // The recovery read entering is the event this test waits for; the handler
+  // signals it instead of the test polling a flag against a 500ms ceiling
+  // (#5630).
+  const recoveryStartedSignal = deferred<void>();
   let finish: (() => void) | undefined;
   client.on(
     "thread/read",
     (params) =>
       new Promise((resolve) => {
         recoveryStarted = true;
+        recoveryStartedSignal.resolve();
         finish = () => {
           const fresh = response("local:a", [turn("fresh-baseline", 2), turn("pending-new-identity", 3)]);
           fresh.epoch = 2;
@@ -7999,7 +8244,8 @@ it("ordinary invalidating history input automatically reads a fresh baseline bef
       },
     });
     // Observe the real wake before any settlement helper can drive parked work.
-    await vi.waitFor(() => expect(recoveryStarted).toBe(true), { timeout: 500 });
+    await recoveryStartedSignal.promise;
+    expect(recoveryStarted).toBe(true);
     expect(threadsStore.getState().threads.get("local:a")?.history?.invalidatedAtGeneration).toBeDefined();
     const oldKey = entryHistoryKey({ ...identity, clientId: location.origin });
     expect((await storage.getLatest(oldKey, 10)).map((row) => row.transcriptKey)).toEqual(["recorded"]);
@@ -8185,21 +8431,28 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
   const outgoingModel = threadsStore.getState().threads.get("local:a");
   expect(JSON.stringify(outgoingModel)).toContain("outgoing memory only");
   let finishOld: (() => void) | undefined;
+  // Each client's read handler is the only place its finisher is assigned, so
+  // the handler's own signal replaces polling for the assignment (#5630).
+  const oldReadAssigned = deferred<void>();
   oldClient.on(
     "thread/read",
     (params) =>
       new Promise((resolve) => {
-        finishOld = () =>
+        finishOld = () => {
           resolve({
             ...response("local:a", [turn("obsolete-client-final", 2)]),
             requestGeneration: params.requestGeneration,
           });
+        };
+        oldReadAssigned.resolve();
       }),
   );
   const releasing = threadsStore.getState().releaseThreadAndWait("local:a");
-  await vi.waitFor(() => expect(finishOld).toBeDefined());
+  await oldReadAssigned.promise;
+  expect(finishOld).toBeDefined();
   const replacement = new FakeClient("ready");
   let finishNew: (() => void) | undefined;
+  const newReadAssigned = deferred<void>();
   replacement.on("thread/unsubscribe", () => ({}));
   replacement.on(
     "thread/read",
@@ -8210,12 +8463,14 @@ it("ordinary reacquisition on a replacement client cannot reuse the outgoing ret
           fresh.snapshot = { incarnation: "replacement-incarnation", length: 4 };
           resolve({ ...fresh, requestGeneration: params.requestGeneration });
         };
+        newReadAssigned.resolve();
       }),
   );
   connectionStore.getState().connect(replacement);
   const opening = threadsStore.getState().ensureThread("local:a");
   try {
-    await vi.waitFor(() => expect(finishNew).toBeDefined(), { timeout: 500 });
+    await newReadAssigned.promise;
+    expect(finishNew).toBeDefined();
     // Ruling 34 preserves disk display, not the outgoing repository's memory.
     const cached = threadsStore.getState().threads.get("local:a");
     expect(cached).not.toBe(outgoingModel);
@@ -8364,8 +8619,12 @@ it.each([false, true])(
     setProductionEntryCacheForTests(storage);
     const client = connect(readOf());
     let reads = 0;
+    // The post-Clear replacement read is issued from this handler, so the
+    // handler's own signal is the event both branches await (#5630).
+    const replacementReadIssued = deferred<void>();
     client.on("thread/read", (params) => {
       reads += 1;
+      if (reads === 2) replacementReadIssued.resolve();
       return {
         ...(reads === 1 ? readOf() : readOf([recorded("recovered-after-clear")], 60)),
         requestGeneration: params.requestGeneration,
@@ -8403,7 +8662,7 @@ it.each([false, true])(
       gate.resolve();
       expect(await clear).toEqual({ committed });
       if (!committed) {
-        await vi.waitFor(() => expect(reads).toBe(2));
+        await replacementReadIssued.promise;
         await settleEntryTranscriptForTests(ref);
         const key = entryHistoryKey({
           clientId: location.origin,
@@ -8419,7 +8678,7 @@ it.each([false, true])(
         // Background-only publication prunes history bodies, so visibility is
         // asserted by the foreground "input suppressed during Clear" test,
         // not by adding a foreground owner to this budget/disk-suppression case.
-        await vi.waitFor(() => expect(reads).toBe(2));
+        await replacementReadIssued.promise;
         await settleEntryTranscriptForTests(ref);
         expect(await storage.count()).toBe(0);
       }
@@ -8429,7 +8688,14 @@ it.each([false, true])(
       // its pending write drains after this point rather than before it. The
       // predicate is unchanged: a retained byte is still a failure, it just
       // gets to finish first.
-      await vi.waitFor(() => expect(admission.snapshotForTesting().retainedBytes).toBe(0));
+      expect(
+        await pumpIndexedDBUntil({
+          turns: 2000,
+          until: () => admission.snapshotForTesting().retainedBytes === 0,
+        }),
+        "the replayed Clear's retained bytes never drained",
+      ).toBe(true);
+      expect(admission.snapshotForTesting().retainedBytes).toBe(0);
     } finally {
       gate.resolve();
       await clear;
@@ -8444,9 +8710,19 @@ it("aborted Clear restarts a pending end read from the current owner", async () 
   setProductionEntryCacheForTests(storage);
   const client = new FakeClient("ready");
   const pendingEnd = deferred<ThreadReadResponse>();
+  // The end-reconciliation read the assertions below park is issued from the
+  // FakeClient handler, so the handler's own signal is the event to await
+  // rather than a wall-clock ceiling on the call count (#5630).
+  const endReadIssued = deferred<void>();
+  // After the aborted Clear the owner restarts the end read; the handler's
+  // third read is that restart, so its own signal replaces the count poll
+  // (#5630).
+  const restartedEndReadIssued = deferred<void>();
   let reads = 0;
   client.on("thread/read", (params) => {
     reads += 1;
+    if (reads === 2) endReadIssued.resolve();
+    if (reads === 3) restartedEndReadIssued.resolve();
     return reads === 2
       ? pendingEnd.promise
       : {
@@ -8461,15 +8737,22 @@ it("aborted Clear restarts a pending end read from the current owner", async () 
   await settleEntryTranscriptForTests(ref);
   client.emitNotification(tool);
   client.emitNotification(end);
-  await vi.waitFor(() => expect(reads).toBe(2));
+  await endReadIssued.promise;
+  expect(reads).toBe(2);
   const clearing = deferred<{ committed: false; epoch: number }>();
   vi.spyOn(storage, "clear").mockReturnValueOnce(clearing.promise);
   const clear = clearCachedSessions();
   pendingEnd.resolve({ ...readOf([recorded("obsolete-end")], 41), overlay: [], requestGeneration: 2 });
+  // LEFT AS A POLL (#5630): the residency releases its hydration slot in the
+  // continuation the answered read wakes, and the residency exposes no promise
+  // for that release - its own settled() is a no-op that must not await a
+  // network hydration. Replacing this expect with the answered read's promise
+  // failed (networkHydrations was still 1), so the ceiling stays.
   await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(0));
   clearing.resolve({ committed: false, epoch: 0 });
   expect(await clear).toEqual({ committed: false });
-  await vi.waitFor(() => expect(reads).toBe(3));
+  await restartedEndReadIssued.promise;
+  expect(reads).toBe(3);
   await settleEntryTranscriptForTests(ref);
   const key = entryHistoryKey({
     clientId: location.origin,
@@ -8485,8 +8768,19 @@ it("background disk settlement does not await a pending end read", async () => {
   cache();
   const client = new FakeClient("ready");
   const pendingEnd = deferred<ThreadReadResponse>();
+  // The end-reconciliation read the assertions below park is issued from the
+  // FakeClient handler, so the handler's own signal is the event to await
+  // rather than a wall-clock ceiling on the call count (#5630).
+  const endReadIssued = deferred<void>();
   let reads = 0;
-  client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 2) {
+      endReadIssued.resolve();
+      return pendingEnd.promise;
+    }
+    return readOf();
+  });
   client.on("thread/unsubscribe", () => ({}));
   connectionStore.getState().connect(client);
   const owner = acquireBackgroundThread(ref);
@@ -8494,13 +8788,23 @@ it("background disk settlement does not await a pending end read", async () => {
   await settleEntryTranscriptForTests(ref);
   client.emitNotification(tool);
   client.emitNotification(end);
-  await vi.waitFor(() => expect(reads).toBe(2));
+  await endReadIssued.promise;
+  expect(reads).toBe(2);
   let settled = false;
   const settling = settleBackgroundTranscriptsForTests().then(() => {
     settled = true;
   });
   try {
-    await vi.waitFor(() => expect(settled).toBe(true));
+    // The settle must return while the end read is still parked. Awaiting
+    // `settling` directly cannot assert that: it either returns or the test
+    // times out, and a regression that awaited the parked read would hang
+    // here instead of failing on a named check. The pump spends real storage
+    // round trips, so a regressed settle fails the assertion and the finally
+    // below still releases the owner (#5630).
+    expect(
+      await pumpIndexedDBUntil({ turns: 400, until: () => settled }),
+      "background settle waited on the parked end read",
+    ).toBe(true);
     expect(reads).toBe(2);
   } finally {
     pendingEnd.resolve({ ...readOf([recorded("end")], 41), overlay: [], requestGeneration: 2 });
@@ -8519,8 +8823,19 @@ it("ordinary default reconnect handles the retired end-read rejection without an
   });
   const client = new FakeClient("ready");
   const pendingEnd = deferred<ThreadReadResponse>();
+  // The end-reconciliation read the assertions below park is issued from the
+  // FakeClient handler, so the handler's own signal is the event to await
+  // rather than a wall-clock ceiling on the call count (#5630).
+  const endReadIssued = deferred<void>();
   let reads = 0;
-  client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 2) {
+      endReadIssued.resolve();
+      return pendingEnd.promise;
+    }
+    return readOf();
+  });
   client.on("thread/unsubscribe", () => ({}));
   connectionStore.getState().connect(client);
   const owner = acquireBackgroundThread(ref);
@@ -8528,7 +8843,8 @@ it("ordinary default reconnect handles the retired end-read rejection without an
   await settleEntryTranscriptForTests(ref);
   client.emitNotification(tool);
   client.emitNotification(end);
-  await vi.waitFor(() => expect(reads).toBe(2));
+  await endReadIssued.promise;
+  expect(reads).toBe(2);
   const releasing = owner.release();
   client.emitStateChange("reconnecting");
   client.emitReady();
@@ -8545,8 +8861,19 @@ it("ordinary default reconnect handles the retired end-read rejection without an
 it("an aborted Clear resumes a parked background end read without an unhandled rejection", async () => {
   const client = new FakeClient("ready");
   const pendingEnd = deferred<ThreadReadResponse>();
+  // The end-reconciliation read the assertions below park is issued from the
+  // FakeClient handler, so the handler's own signal is the event to await
+  // rather than a wall-clock ceiling on the call count (#5630).
+  const endReadIssued = deferred<void>();
   let reads = 0;
-  client.on("thread/read", () => (++reads === 2 ? pendingEnd.promise : readOf()));
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 2) {
+      endReadIssued.resolve();
+      return pendingEnd.promise;
+    }
+    return readOf();
+  });
   client.on("thread/unsubscribe", () => ({}));
   connectionStore.getState().connect(client);
   const owner = acquireBackgroundThread(ref);
@@ -8555,7 +8882,8 @@ it("an aborted Clear resumes a parked background end read without an unhandled r
   // The overlay/end starts the repository's background end-reconciliation read.
   client.emitNotification(tool);
   client.emitNotification(end);
-  await vi.waitFor(() => expect(reads).toBe(2));
+  await endReadIssued.promise;
+  expect(reads).toBe(2);
 
   // Abort a Clear while that read is parked. The resumed task must run after
   // its route is re-enabled, not reject through threads.ts:1006.
@@ -8568,7 +8896,9 @@ it("an aborted Clear resumes a parked background end read without an unhandled r
     return realClear.call(this);
   });
   const clearing = clearCachedSessions();
-  await vi.waitFor(() => expect(threadsStore.getState().clearInFlight).toBeDefined());
+  // clearCachedSessions arms the in-flight marker before its first await, so
+  // the marker is set by the time the call returns - no ceiling needed (#5630).
+  expect(threadsStore.getState().clearInFlight).toBeDefined();
   const originalClear = IDBObjectStore.prototype.clear;
   const fault = vi.spyOn(IDBObjectStore.prototype, "clear").mockImplementationOnce(function (this: IDBObjectStore) {
     this.transaction.abort();
