@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"slices"
 	"strings"
 	"sync"
 )
@@ -145,7 +146,12 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 				a.dirty = true
 			}
 			if len(ev.ToolCall.Arguments) > 0 {
-				tc.Arguments = append(tc.Arguments[:0], ev.ToolCall.Arguments...)
+				// Clone rather than reuse the accumulated buffer: buildResponse copies a
+				// ToolCallData by value, so a partial projected before this event still
+				// aliases that array. Rewriting it in place would change bytes a caller
+				// already holds. The delta arm stays append-only, which never writes
+				// below the length a reader can see.
+				tc.Arguments = slices.Clone(ev.ToolCall.Arguments)
 				a.dirty = true
 			}
 		}

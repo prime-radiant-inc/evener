@@ -261,6 +261,11 @@ func TestStreamGenerate_PartialSurvivesToolStepBoundary(t *testing.T) {
 	}
 	step2 := Response{Provider: "openai", Model: "m", Message: Assistant("step-two"), Finish: FinishReason{Reason: "stop"}}
 
+	// The second step's events are held behind this channel until the test has
+	// read the partial at the first STEP_FINISH, so the assertion holds on any
+	// schedule instead of relying on producer timing.
+	releaseStep2 := make(chan struct{})
+
 	c, _ := newScriptedStreamClient(
 		replayEvents(
 			StreamEvent{Type: StreamEventStreamStart},
@@ -268,12 +273,27 @@ func TestStreamGenerate_PartialSurvivesToolStepBoundary(t *testing.T) {
 			StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-one"},
 			finishEvent(step1),
 		),
-		replayEvents(
-			StreamEvent{Type: StreamEventStreamStart},
-			StreamEvent{Type: StreamEventTextStart, TextID: "t"},
-			StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-two"},
-			finishEvent(step2),
-		),
+		func(ctx context.Context, _ Request) (Stream, error) {
+			sctx, cancel := context.WithCancel(ctx)
+			st := NewChanStream(cancel)
+			go func() {
+				defer st.CloseSend()
+				// Abandon the hold when the stream is closed, so a failing
+				// assertion turns res.Close() into a return instead of a
+				// deadlock against a producer parked on releaseStep2.
+				select {
+				case <-releaseStep2:
+				case <-sctx.Done():
+					return
+				}
+				st.Send(StreamEvent{Type: StreamEventStreamStart})
+				st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "t"})
+				st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "t", Delta: "step-two"})
+				st.Send(finishEvent(step2))
+				cancel()
+			}()
+			return st, nil
+		},
 	)
 	prompt := "hi"
 	rounds := 1
@@ -297,8 +317,10 @@ func TestStreamGenerate_PartialSurvivesToolStepBoundary(t *testing.T) {
 	defer res.Close() //nolint:errcheck
 
 	// Read the partial at each step boundary: the value must never blank once
-	// text has been delivered.
+	// text has been delivered. The first boundary arrives before the second
+	// step streams anything, so this read is deterministic.
 	var seen []string
+	released := false
 	for ev := range res.Events() {
 		if ev.Type != StreamEventStepFinish {
 			continue
@@ -310,6 +332,12 @@ func TestStreamGenerate_PartialSurvivesToolStepBoundary(t *testing.T) {
 		seen = append(seen, partial.Text())
 		if partial.Finish.Reason != "" {
 			t.Fatalf("partial at a step boundary carries finish reason %q, want none: the old snapshot was taken before the FINISH event was folded in", partial.Finish.Reason)
+		}
+		// The first STEP_FINISH is the boundary under test: release the second
+		// step only after asserting here.
+		if !released {
+			released = true
+			close(releaseStep2)
 		}
 	}
 	if len(seen) == 0 {
