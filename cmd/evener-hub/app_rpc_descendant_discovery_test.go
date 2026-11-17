@@ -338,7 +338,13 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 			daemon.WireTranscriptHistory(replacement)
 			daemon.ReplaceAppIdentity(next.WithRecordedLength(replacement.TranscriptRecordedLength()).WithBootGeneration("2"), nil)
 		case "transport-lost":
-			return daemon.AppServer().Shutdown(context.Background())
+			// A lost transport refuses the handshake. Shutdown stops the app
+			// server admitting upgrades, but the listener belongs to this test
+			// and keeps accepting and answering 503, so only closing it makes
+			// the dial fail the way a gone daemon's does.
+			shutdownErr := daemon.AppServer().Shutdown(context.Background())
+			daemonHTTP.Close()
+			return shutdownErr
 		}
 		return nil
 	}
