@@ -125,6 +125,16 @@ func BenchmarkRebuild(b *testing.B) {
 				}
 			}
 			b.StopTimer()
+			// An index that covered nothing would still report a cost, so pin
+			// the coverage: entries counts the header line, which the index
+			// does not.
+			if want := uint64(entries - 1); x.meta.Entries != want {
+				b.Fatalf("rebuild covered %d entries, want %d", x.meta.Entries, want)
+			}
+			// The digest makes each run's output comparable with another
+			// tree's: a change to the rebuild that also moved a byte of index
+			// content shows up in the log beside the cost it moved.
+			b.Logf("sidecar digests:\n%s", sidecarDigests(b, x))
 			b.ReportMetric(float64(size)*float64(b.N)/b.Elapsed().Seconds()/(1<<20), "MB/s")
 			b.ReportMetric(float64(entries)*float64(b.N)/b.Elapsed().Seconds(), "entries/s")
 			b.ReportMetric(b.Elapsed().Seconds()/(float64(b.N)*float64(entries))*1000, "ms/entry")
