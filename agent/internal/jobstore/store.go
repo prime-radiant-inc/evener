@@ -413,10 +413,15 @@ func (s *Store) readAll() ([]Event, error) {
 // would produce.
 //
 // The view may alias the cursor's decoded events and any unterminated tail, so
-// it is usable only while s.mu is held. Fold is the one production consumer: it
-// copies the slice before sorting and builds records whose every reference
-// field is cloned, so nothing reached through the view can escape to a caller.
-// Every reader that hands events out uses readAllLocked instead.
+// it is usable only while s.mu is held, and neither the slice nor the events in
+// it may be mutated. Fold is the one production consumer. It copies the slice
+// before sorting and so keeps no reference to it, but the records it returns
+// still share the events' reference fields: applyEvent copies ExitCode,
+// EndedAt, StructuredResult and StructuredResultValid out of a job_finished
+// event by reference and clones none of them. A caller of Fold may therefore
+// read those values but not write through them, and Fold's result may not reach
+// a caller until noteFoldedJobsLocked deep-copies it. Every reader that hands
+// events out uses readAllLocked instead.
 func (s *Store) readEventsLocked() ([]Event, error) {
 	tail, err := s.refreshCursorLocked()
 	if err != nil {

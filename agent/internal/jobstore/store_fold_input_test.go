@@ -11,15 +11,19 @@ package jobstore
 // on that path.
 //
 // These tests pin the boundary from both sides. The allocation guard fails if
-// the full-history clone comes back. The ownership cases fail if the fix
-// starts letting store-owned events escape, or lets a fold mutate the events
-// the cursor keeps for the next load.
+// the full-history clone comes back. The ownership cases fail if the fix starts
+// letting store-owned events escape, or lets a fold mutate the events the
+// cursor keeps for the next load. The fixture ends with a job_finished event on
+// purpose: applyEvent fills the record's ExitCode, EndedAt, StructuredResult
+// and StructuredResultValid from that event's own pointers and map, so a Load
+// that skipped noteFoldedJobsLocked's copy would hand a caller the store's
+// payload and the next read of either side would report the caller's writes.
 
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -27,9 +31,9 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// foldInputHistory is the fixture history: one job's start, its terminal
-// event, and enough message events that the per-event cost of a whole-history
-// clone is a large, unambiguous share of a cache-miss Load.
+// foldInputHistory is the number of message events in the fixture history:
+// enough that the per-event cost of a whole-history clone is a large,
+// unambiguous share of a cache-miss Load.
 const foldInputHistory = 4096
 
 // foldInputMessageEvent is a job_message_sent, which IsJobRecordEvent counts
@@ -52,11 +56,42 @@ func foldInputMessageEvent(i int) Event {
 	}
 }
 
-// foldInputFixture builds a history of one started job followed by message
-// events carrying every reference-typed payload an event can hold.
+// foldInputResult is the structured result the fixture's job_finished carries.
+// It holds a nested object and a nested array so a copy that rebuilt only the
+// top-level map is distinguishable from a deep one.
+func foldInputResult() map[string]any {
+	return map[string]any{
+		"summary": "probe finished",
+		"nested": map[string]any{
+			"count": float64(3),
+			"items": []any{"alpha", "beta"},
+		},
+	}
+}
+
+// foldInputTerminal is the job_finished event that ends the fixture's job. Its
+// reference-typed payload is what Fold installs into the record by reference.
+func foldInputTerminal(started time.Time) Event {
+	exitCode := 0
+	ended := started.Add(time.Minute)
+	valid := true
+	return Event{
+		Kind:                  EventJobFinished,
+		TS:                    ended,
+		JobID:                 "job_probe",
+		Status:                StatusCompleted,
+		ExitCode:              &exitCode,
+		EndedAt:               &ended,
+		StructuredResult:      foldInputResult(),
+		StructuredResultValid: &valid,
+	}
+}
+
+// foldInputFixture builds a history of one started job, its terminal event, and
+// message events carrying every reference-typed payload an event can hold.
 func foldInputFixture() []Event {
 	started := time.Unix(1700000000, 0).UTC()
-	events := make([]Event, 0, foldInputHistory+1)
+	events := make([]Event, 0, foldInputHistory+2)
 	events = append(events, Event{
 		Kind:             EventJobStarted,
 		TS:               started,
@@ -76,6 +111,7 @@ func foldInputFixture() []Event {
 	for i := range foldInputHistory {
 		events = append(events, foldInputMessageEvent(i))
 	}
+	events = append(events, foldInputTerminal(started))
 	return events
 }
 
@@ -98,7 +134,8 @@ func newFoldInputStore(tb testing.TB) *Store {
 
 // requireFoldInputRecord checks the fixture's own folded state - authored by
 // the test, never read back from the store - so a change that makes Load cheap
-// by folding nothing fails here rather than passing the budget.
+// by folding nothing fails here rather than passing the budget. The terminal
+// fields are checked because they are the ones Fold shares with its input.
 func requireFoldInputRecord(t *testing.T, recs map[string]*JobRecord, when string) {
 	t.Helper()
 	if len(recs) != 1 {
@@ -111,8 +148,59 @@ func requireFoldInputRecord(t *testing.T, recs map[string]*JobRecord, when strin
 	if rec.Command != "true" || rec.Task != "probe the fold input boundary" {
 		t.Fatalf("%s: folded start payload = (%q, %q), want the fixture's", when, rec.Command, rec.Task)
 	}
-	if rec.Status != StatusRunning {
-		t.Fatalf("%s: folded status = %q, want running", when, rec.Status)
+	if rec.Status != StatusCompleted {
+		t.Fatalf("%s: folded status = %q, want the fixture's terminal status", when, rec.Status)
+	}
+	if !reflect.DeepEqual(rec.StructuredResult, foldInputResult()) {
+		t.Fatalf("%s: folded structured result = %+v, want the fixture's %+v", when, rec.StructuredResult, foldInputResult())
+	}
+	if rec.ExitCode == nil || *rec.ExitCode != 0 {
+		t.Fatalf("%s: folded exit code = %v, want the fixture's 0", when, rec.ExitCode)
+	}
+	if rec.EndedAt == nil || !rec.EndedAt.Equal(time.Unix(1700000000, 0).UTC().Add(time.Minute)) {
+		t.Fatalf("%s: folded ended-at = %v, want the fixture's", when, rec.EndedAt)
+	}
+	if rec.StructuredResultValid == nil || !*rec.StructuredResultValid {
+		t.Fatalf("%s: folded structured-result-valid = %v, want the fixture's true", when, rec.StructuredResultValid)
+	}
+}
+
+// mutateJobRecordDeeply writes through every field Fold installs into a record
+// by reference. A caller may do this to what Load returned; none of it may
+// reach the events the store keeps.
+func mutateJobRecordDeeply(r *JobRecord) {
+	if r.ExitCode != nil {
+		*r.ExitCode = 99
+	}
+	if r.EndedAt != nil {
+		*r.EndedAt = time.Unix(0, 0)
+	}
+	if r.StructuredResultValid != nil {
+		*r.StructuredResultValid = false
+	}
+	if m, ok := r.StructuredResult.(map[string]any); ok {
+		m["mutated"] = true
+		if nested, ok := m["nested"].(map[string]any); ok {
+			nested["count"] = float64(-1)
+			if items, ok := nested["items"].([]any); ok && len(items) > 0 {
+				items[0] = "mutated"
+			}
+		}
+	}
+}
+
+// requireEventsMatchFile compares a store read against a fresh read of the same
+// bytes, so the assertion never derives its expectation from the code under
+// test.
+func requireEventsMatchFile(t *testing.T, got, want []Event, when string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: store reports %d events, a fresh read of the same bytes has %d", when, len(got), len(want))
+	}
+	for i := range want {
+		if !reflect.DeepEqual(got[i], want[i]) {
+			t.Fatalf("%s: event %d differs from a fresh read of the same bytes:\n got %+v\nwant %+v", when, i, got[i], want[i])
+		}
 	}
 }
 
@@ -130,7 +218,7 @@ func requireFoldInputRecord(t *testing.T, recs map[string]*JobRecord, when strin
 //
 // The budget is a literal between a path that deep-copies the history and one
 // that folds a borrowed view, not a value derived from the implementation under
-// test. On this fixture the two shapes measured 7,002,608 and 2,242,192 bytes;
+// test. On this fixture the two shapes measured 7,004,976 and 2,243,792 bytes;
 // the ceiling sits roughly midway so either side keeps real margin.
 //
 // Serial: it measures process-global TotalAlloc, so allocations from tests
@@ -218,24 +306,59 @@ func TestLoadCacheMissLeavesCursorEventsIntact(t *testing.T) {
 }
 
 // TestLoadBorrowedViewIsIndependentAcrossReaders pins that removing Load's
-// clone did not loosen any other reader's snapshot. LoadEvents and Load run
-// interleaved on one store: each LoadEvents result stays a private copy that a
-// caller may mutate (mutateEventDeeply writes through every reference field)
-// without changing what a later Load or LoadEvents reports.
+// clone did not loosen any reader's snapshot. A cache miss hands Fold the
+// store's own events, and Fold installs the job_finished payload into the
+// record by reference, so only noteFoldedJobsLocked's copy stands between a
+// caller and the cursor. The test writes through every shared field of a
+// Load result and then reads both sides again: Load (cache hit or refold) and
+// LoadEvents must still report the fixture's values, not the caller's. The
+// concurrent pass repeats that across interleaved readers.
 func TestLoadBorrowedViewIsIndependentAcrossReaders(t *testing.T) {
 	s := newFoldInputStore(t)
+
+	// An own append clears the fold cache while the cursor still accounts for
+	// the whole prefix, so the Load below folds the store's own events.
+	if err := s.Append(foldInputMessageEvent(10_000)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
 	before := freshFullRead(t, s.path)
 
+	recs, err := s.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	requireFoldInputRecord(t, recs, "cache-miss load")
+	probe := recs["job_probe"]
+	if probe == nil {
+		t.Fatalf("Load dropped the fixture's job")
+	}
+	mutateJobRecordDeeply(probe)
+
+	again, err := s.Load()
+	if err != nil {
+		t.Fatalf("load after caller mutation: %v", err)
+	}
+	requireFoldInputRecord(t, again, "load after a caller wrote through the previous result")
+
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	requireEventsMatchFile(t, events, before, "after a caller wrote through a Load result")
+
+	// Interleaved readers: each goroutine writes through its own results, and
+	// nothing may cross back into the store.
 	var wg sync.WaitGroup
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range 4 {
-				// Interleaved readers must not see each other's work.
-				if _, err := s.Load(); err != nil {
+		wg.Go(func() {
+			for range 2 {
+				got, err := s.Load()
+				if err != nil {
 					t.Errorf("load: %v", err)
 					return
+				}
+				if rec := got["job_probe"]; rec != nil {
+					mutateJobRecordDeeply(rec)
 				}
 				events, err := s.LoadEvents()
 				if err != nil {
@@ -246,28 +369,19 @@ func TestLoadBorrowedViewIsIndependentAcrossReaders(t *testing.T) {
 					mutateEventDeeply(&events[i])
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
-	after, err := s.LoadEvents()
+	finalEvents, err := s.LoadEvents()
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
-	if len(after) != len(before) {
-		t.Fatalf("store reports %d events after concurrent readers, want %d", len(after), len(before))
-	}
-	for i := range after {
-		if after[i].Kind != before[i].Kind || after[i].Seq != before[i].Seq {
-			t.Fatalf("event %d changed under concurrent readers: %+v vs %+v", i, after[i], before[i])
-		}
-		if strings.Contains(fmt.Sprintf("%+v", after[i].StructuredResult), "mutated") {
-			t.Fatalf("a reader's mutation of its snapshot reached the store's event %d", i)
-		}
-	}
-	recs, err := s.Load()
+	requireEventsMatchFile(t, finalEvents, before, "after concurrent readers wrote through their own results")
+
+	finalRecs, err := s.Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	requireFoldInputRecord(t, recs, "load after concurrent readers")
+	requireFoldInputRecord(t, finalRecs, "load after concurrent readers")
 }
