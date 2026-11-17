@@ -73,8 +73,20 @@ func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire
 	for i := range typ.NumField() {
 		name := typ.Field(i).Name
 		fieldValue := daemonV.Field(i)
+		if fieldValue.Kind() == reflect.Uint {
+			if _, listed := differ[name]; listed {
+				t.Fatalf("%s: numeric ThreadCapabilities.%s cannot use the boolean differ ledger", projection, name)
+			}
+			if _, listed := agreeOnFalse[name]; listed {
+				t.Fatalf("%s: numeric ThreadCapabilities.%s cannot use the boolean agree-on-false ledger", projection, name)
+			}
+			if d, g := fieldValue.Uint(), gotV.Field(i).Uint(); d != g {
+				t.Errorf("%s: %s = %v, but the daemon answers %v", projection, name, g, d)
+			}
+			continue
+		}
 		if fieldValue.Kind() != reflect.Bool {
-			t.Fatalf("%s: ThreadCapabilities.%s is not a bool (%v) — the parity oracle walks bool bits only; teach it the field's real shape", projection, name, fieldValue.Kind())
+			t.Fatalf("%s: ThreadCapabilities.%s has unsupported parity shape %v", projection, name, fieldValue.Kind())
 		}
 		d, g := fieldValue.Bool(), gotV.Field(i).Bool()
 		if reason, listed := differ[name]; listed {
@@ -219,6 +231,9 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	typ := daemonV.Type()
 	for i := range typ.NumField() {
 		name := typ.Field(i).Name
+		if daemonV.Field(i).Kind() != reflect.Bool {
+			continue
+		}
 		if daemonV.Field(i).Bool() {
 			continue
 		}

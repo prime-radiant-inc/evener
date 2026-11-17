@@ -158,6 +158,11 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	var currentEffort atomic.Value
 	currentEffort.Store("")
+	modelControl := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "cold-effort-boot"},
+		Revision:  1,
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+	}
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        sessionID,
@@ -165,13 +170,20 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 			Source:    "local",
 			Evener: appwire.EvenerThread{
 				Ref:             params.Ref,
-				Capabilities:    appwire.ThreadCapabilities{ChangeModel: true},
+				InstanceID:      sessionID,
+				Capabilities:    appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+				ModelControl:    &modelControl,
 				ReasoningEffort: currentEffort.Load().(string),
 			},
-		}}, nil
+		}, BootGeneration: modelControl.Authority.BootGeneration}, nil
 	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, nil
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		if params.ExpectedInstanceID != modelControl.Authority.InstanceID || params.ExpectedBootGeneration != modelControl.Authority.BootGeneration {
+			return appwire.ThreadModelSetResponse{}, appwire.ModelControlAuthorityStale(params.ClientMutationID, "replacement has new authority")
+		}
+		modelControl.Revision++
+		modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadReasoningEffortSet, func(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
 		currentEffort.Store(params.ReasoningEffort)
@@ -218,12 +230,34 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 		}
 	}()
 
-	// The model pick resumes the session. Its own frame is not what this test
-	// follows; the point is that it leaves a live daemon without a relay.
+	// The stale model pick resumes the session. A fresh read establishes the
+	// replacement authority for the distinct pick that follows. Its own frame is
+	// not what this test follows; the point is that it leaves a live daemon
+	// without a relay.
+	staleMutationID := newMutationID(t)
+	_, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref:                    "local:" + sessionID,
+		ModelProvider:          "openai",
+		Model:                  "gpt-5.6-sol",
+		ClientMutationID:       staleMutationID,
+		ExpectedInstanceID:     sessionID,
+		ExpectedBootGeneration: "retired-boot",
+	})
+	assertModelAuthorityStale(t, err, staleMutationID)
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("thread/read after stale authority: %v", err)
+	}
+	if read.Thread.Evener.ModelControl == nil {
+		t.Fatalf("resumed thread/read returned no model authority: %+v", read.Thread.Evener)
+	}
 	if _, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
-		Ref:           "local:" + sessionID,
-		ModelProvider: "openai",
-		Model:         "gpt-5.6-sol",
+		Ref:                    "local:" + sessionID,
+		ModelProvider:          "openai",
+		Model:                  "gpt-5.6-sol",
+		ClientMutationID:       newMutationID(t),
+		ExpectedInstanceID:     read.Thread.Evener.ModelControl.Authority.InstanceID,
+		ExpectedBootGeneration: read.Thread.Evener.ModelControl.Authority.BootGeneration,
 	}); err != nil {
 		t.Fatalf("ThreadModelSet on the cold session: %v", err)
 	}
