@@ -134,6 +134,7 @@ const ITEM_MODEL_KEYS = new Set([
   "clientMutationId",
   "conversationInputIds",
   "answerToTurnIds",
+  "resolvedAskCalls",
   "actor",
   "type",
   "text",
@@ -211,6 +212,18 @@ export function validItem(value: unknown): value is CachedSessionItem {
   if (
     value.answerToTurnIds !== undefined &&
     (!Array.isArray(value.answerToTurnIds) || value.answerToTurnIds.some((id) => typeof id !== "string"))
+  )
+    return false;
+  if (
+    value.resolvedAskCalls !== undefined &&
+    (!Array.isArray(value.resolvedAskCalls) ||
+      !value.resolvedAskCalls.every(
+        (call) =>
+          isRecord(call) &&
+          hasOnlyKeys(call, ["turnId", "callId"]) &&
+          typeof call.turnId === "string" &&
+          typeof call.callId === "string",
+      ))
   )
     return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;

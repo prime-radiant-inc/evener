@@ -13,6 +13,7 @@ import type {
   EvenerUsage,
   GoalState,
   OverlayItem,
+  PendingAskCall,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
@@ -79,6 +80,17 @@ export interface ItemModel {
   // consumer must fall back to the composed "[answers]" text shape there.
   // Names the QUESTION's turn, not the reply's own turn.
   answerToTurnIds?: string[];
+  // Wire ThreadItem.observation.resolvedAskCalls: admission's per-call
+  // evidence behind answerToTurnIds — the exact ask_user calls (execution
+  // turn AND call id) this accepted input consumed (issue #6323). The link
+  // above collapses a whole execution to one turn, so several calls in one
+  // execution share it; this list says WHICH of them the reply answered, and
+  // a consumer matches an ask row's own (turnId, callId) against it instead
+  // of guessing by header. Undefined for ordinary messages, for unfenced
+  // whole-set answers (which record no call list), and for any answer from a
+  // daemon that predates the field — a consumer must fall back to the link
+  // and then to the composed "[answers]" text shape there.
+  resolvedAskCalls?: PendingAskCall[];
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text

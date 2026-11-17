@@ -302,9 +302,9 @@ function isAckedAskCall(candidate: ItemModel): boolean {
 // call asks and no sibling also asks (a shared header could belong to
 // either); a composed reply answering only the sibling's headers says
 // nothing about this call. (The wire's link names an execution turn, not a
-// call - the whole heuristic exists because of that granularity, and
-// exposing admission's call-level AskResolution on the wire would replace
-// it with an exact match; see the follow-up issue filed from #5836.)
+// call - the whole heuristic exists because of that granularity. Admission's
+// call-level evidence, resolvedAskCalls, replaces it with an exact match
+// wherever the daemon stamped one; see resolvesThisCall.)
 function linkedReplyAnswersThisCall(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
   const siblings = items.filter((i) => i.id !== item.id && i.turnId === item.turnId && isAckedAskCall(i));
   if (siblings.length === 0) return true;
@@ -320,6 +320,21 @@ function linkedReplyAnswersThisCall(items: readonly ItemModel[], item: ItemModel
     answersOwn = true;
   }
   return answersOwn;
+}
+
+// resolvesThisCall answers whether admission's own per-call evidence names
+// this ask row: the reply consumed the call (turnId, callId) this item IS.
+// Identity is the pair, not the call id alone, because a call id can repeat
+// in different executions. Undefined evidence (an unfenced whole-set answer,
+// or a daemon predating the field) says nothing, so the caller keeps the
+// turn-granular heuristic. A row with no callId is not one of the named calls
+// either: admission only ever names calls it can identify, and guessing here
+// is the mis-ordering this field exists to remove.
+function resolvesThisCall(item: ItemModel, reply: ItemModel): boolean | undefined {
+  const calls = reply.resolvedAskCalls;
+  if (calls === undefined) return undefined;
+  if (item.callId === undefined) return false;
+  return calls.some((call) => call.turnId === item.turnId && call.callId === item.callId);
 }
 
 // isUserAuthoredSteer answers one wire-level question: is this steering item
@@ -383,6 +398,12 @@ function findAnswerReply(
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
       if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
+      // Admission's call list is exact evidence and outranks the heuristic:
+      // a reply naming this call answers it even beside acked siblings that
+      // ask the same header, and one naming only the siblings does not.
+      const resolved = resolvesThisCall(item, candidate);
+      if (resolved === true) return candidate;
+      if (resolved === false) continue;
       if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
       continue;
     }

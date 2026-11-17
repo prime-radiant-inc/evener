@@ -414,6 +414,12 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
   // The answer link rides the wire's observation metadata, set only when the
   // wire carried one (see model.ts's answerToTurnIds note).
   if (item.observation?.answerToTurnIds?.length) model.answerToTurnIds = [...item.observation.answerToTurnIds];
+  // Admission's per-call resolution evidence rides the same observation and
+  // is set only when the wire carried one (see model.ts's resolvedAskCalls
+  // note): the link above names a whole execution, this names the calls.
+  if (item.observation?.resolvedAskCalls?.length) {
+    model.resolvedAskCalls = item.observation.resolvedAskCalls.map((call) => ({ ...call }));
+  }
   if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.

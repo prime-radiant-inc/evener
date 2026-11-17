@@ -669,3 +669,79 @@ test("a free-prose recap carries only the reply's first line, with an ellipsis f
     " — answered: Option B — but see my notes below: …",
   );
 });
+
+// Admission's per-call evidence (ThreadItem.observation.resolvedAskCalls, onto
+// the model as resolvedAskCalls) names the exact calls an answer consumed.
+// Where it is present the recap matches the ask row's own (turnId, callId),
+// so it no longer guesses by header among acked sibling calls (#6323).
+test("a call-stamped answer recaps a free-prose reply beside same-header acked siblings", () => {
+  // Two calls in one execution ask the SAME header. The reply's turn link
+  // cannot say which call it answered, so the header heuristic recaps
+  // nothing for either; admission's call list says it answered the first.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: "do the first thing",
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBe(" — answered: do the first thing");
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
+test("two call-stamped answers each recap the call they name, in call order", () => {
+  // The mirror corner: sibling calls asking distinct headers, answered by
+  // separate replies. Header matching already separates these; the stamp
+  // must keep separating them rather than let the first reply claim both.
+  const alpha = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_alpha",
+    callId: "call_alpha",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const beta = item({
+    argumentsJSON: askUserArgs([
+      { header: "Beta", question: "Which database?", options: [{ label: "Postgres", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_beta",
+    callId: "call_beta",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const alphaReply = userMessage({
+    id: "reply_alpha",
+    text: "yes, ship it",
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_alpha" }],
+  });
+  const betaReply = userMessage({
+    id: "reply_beta",
+    text: "Postgres please",
+    turnId: "turn_3",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_beta" }],
+  });
+  const model = turnsModel([alpha, beta], [alphaReply], [betaReply]);
+  expect(answeredAskUserSuffix(model, alpha)).toBe(" — answered: yes, ship it");
+  expect(answeredAskUserSuffix(model, beta)).toBe(" — answered: Postgres please");
+});

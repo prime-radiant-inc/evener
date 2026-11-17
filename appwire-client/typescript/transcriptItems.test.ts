@@ -77,6 +77,34 @@ test("the entry item codec round-trips the answer link", () => {
   ).toBeUndefined();
 });
 
+// The same hazard for admission's per-call resolution evidence (#6323): the
+// encoder spreads every key, so an unlisted one rejects the whole write batch
+// and strands cached history for every session with a recorded answer.
+test("the entry item codec round-trips the resolved ask calls", () => {
+  const answered: ItemModel = {
+    id: "item-1",
+    turnId: "turn-1",
+    type: "userMessage",
+    text: "sure, go with Yes",
+    answerToTurnIds: ["turn-turn"],
+    resolvedAskCalls: [
+      { turnId: "turn-question", callId: "call-1" },
+      { turnId: "turn-question", callId: "call-2" },
+    ],
+  };
+  const decoded = decodeTranscriptItem(encodeTranscriptItem(answered));
+  expect(decoded?.resolvedAskCalls).toEqual([
+    { turnId: "turn-question", callId: "call-1" },
+    { turnId: "turn-question", callId: "call-2" },
+  ]);
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(answered),
+      resolvedAskCalls: [{ turnId: "turn-question" }] as unknown as ItemModel["resolvedAskCalls"],
+    }),
+  ).toBeUndefined();
+});
+
 // szw1: reducer.ts's turn/started and turn/completed have no defense against
 // a duplicate turn id in model.turns. Both known causes of a live collision
 // (eptj, bz2z) are fixed server-side, so this is hardening against a defect
