@@ -62,6 +62,17 @@ func TestTranscriptAuthorshipLiveReplay(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { _, _, err := sess.ProcessClientMutationStart(ctx, nil); done <- err }()
+	// Release the scripted provider and join the turn on every exit path. An
+	// assertion below that calls t.Fatal skips the body's own receive, and an
+	// unjoined turn would keep driving this test's session after the test
+	// returned. sync.OnceValue keeps the one receive shared by the body and the
+	// cleanup, so the join still happens exactly once.
+	releaseStream := sync.OnceFunc(func() { close(adapter.release) })
+	joined := sync.OnceValue(func() error {
+		releaseStream()
+		return <-done
+	})
+	t.Cleanup(func() { _ = joined() })
 	ps.await(t, events.EventCommunicatePreviewDelta, nil)
 	assert := func(item appwire.ThreadItem, kind string) {
 		t.Helper()
@@ -106,8 +117,7 @@ func TestTranscriptAuthorshipLiveReplay(t *testing.T) {
 			assert(item.Item, "agent")
 		}
 	}
-	close(adapter.release)
-	if err := <-done; err != nil {
+	if err := joined(); err != nil {
 		t.Fatal(err)
 	}
 	live := ps.liveTurns(t)
@@ -399,7 +409,7 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	}
 	sess := newMutationReplaySessionWithAdapter(t, p)
 	ps := bridgeParitySession(t, sess, sess.StateDir())
-	defer ps.close(t)
+	t.Cleanup(func() { ps.close(t) })
 	defer cancel()
 	path := func(id string) string { return filepath.Join(sess.StateDir(), "sessions", id+".transcript.jsonl") }
 	ps.srv.SetDescendantTranscriptPathFunc(path)
@@ -412,6 +422,16 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() { _, err := sess.ProcessInput(ctx, "root-task", nil); done <- err }()
+	// Join the turn on every exit path. On the failure path the deferred cancel
+	// below does unblock the provider gates, but nothing waits for the turn to
+	// leave, so its exit is incidental rather than proven. The cleanup cancels
+	// first and then joins; sync.OnceValue keeps the single receive shared with
+	// the real path above, so the join still happens exactly once.
+	joined := sync.OnceValue(func() error { return <-done })
+	t.Cleanup(func() {
+		cancel()
+		_ = joined()
+	})
 	created := func(call string) events.DelegateUpdatedData {
 		ev := ps.await(t, events.EventDelegateUpdated, func(ev events.SessionEvent) bool {
 			d, ok := ev.Data.(events.DelegateUpdatedData)
@@ -526,7 +546,7 @@ func TestTranscriptAuthorshipNamedParentPublication(t *testing.T) {
 	awaitIdle(middle.DelegateID, 1)
 	awaitIdle(middle.DelegateID, 2)
 	close(p.finishRoot)
-	if err := <-done; err != nil {
+	if err := joined(); err != nil {
 		t.Fatal(err)
 	}
 	inputs := []string{"leaf-create", "leaf-active-steer", "leaf-completed-send"}
