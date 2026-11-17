@@ -7,7 +7,33 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/envvars"
 )
+
+// fixturePathEnv is the inherited environment the route tests run with: the
+// given directories on PATH, in order, and nothing the test shell happened to
+// export. The suite's result must not depend on who runs it — an inherited
+// BASH_ENV=/dev/null alone sends every command to the shell route, and the
+// fixture PATH entries mean a program name resolves to the fixture rather than
+// to whatever this host has installed.
+func fixturePathEnv(dirs ...string) []string {
+	return []string{
+		envvars.Path.Name + "=" + strings.Join(dirs, string(os.PathListSeparator)),
+		"HOME=/nonexistent-test-home",
+	}
+}
+
+// fixtureBin makes a directory to hold fixture programs and returns it with the
+// tail every fixture PATH keeps for the platform's own tools.
+func fixtureBin(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "fixtures")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
 // TestSplitShellWords pins the word splitter's whole contract: the exact words
 // it produces for a bare word list, and its refusal for every construct a POSIX
@@ -217,6 +243,10 @@ func TestArgvFromCommandStringRefusesWindows(t *testing.T) {
 func TestExecCommandChoosesTheRuntimeByCommandString(t *testing.T) {
 	t.Parallel()
 
+	bin := fixtureBin(t)
+	writeExecFixture(t, filepath.Join(bin, "git"), "#!/bin/sh\nexit 0\n")
+	writeExecFixture(t, filepath.Join(bin, "grep"), "#!/bin/sh\nexit 0\n")
+
 	cases := []struct {
 		name string
 		// command is what the shell tool passes to ExecCommand.
@@ -240,7 +270,7 @@ func TestExecCommandChoosesTheRuntimeByCommandString(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			env, factory := recordingCommandEnv(t)
+			env, factory := recordingCommandEnv(t, fixturePathEnv(bin)...)
 			if _, err := env.ExecCommand(context.Background(), tc.command, 5000, "", nil); err != nil {
 				t.Fatalf("ExecCommand(%q): %v", tc.command, err)
 			}
@@ -288,23 +318,19 @@ func TestExecCommandFastPathMatchesTheShell(t *testing.T) {
 	}
 	tool := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done\n"
 	argPath := filepath.Join(bin, "argvdump")
-	if err := os.WriteFile(argPath, []byte(tool), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	nonExecutable := filepath.Join(root, "noexec")
-	if err := os.WriteFile(nonExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	plainText := filepath.Join(root, "plain")
-	if err := os.WriteFile(plainText, []byte("exit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	strayNUL := filepath.Join(root, "nultext")
-	if err := os.WriteFile(strayNUL, []byte("exit 3\x00junk\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	emptyFile := filepath.Join(root, "empty")
-	if err := os.WriteFile(emptyFile, nil, 0o755); err != nil {
+
+	// Executable fixtures go through writeExecFixture, which holds
+	// syscall.ForkLock, so a sibling test forking concurrently cannot inherit an
+	// open write descriptor to a fixture and make a later launch fail ETXTBSY.
+	writeExecFixture(t, argPath, tool)
+	writeExecFixture(t, plainText, "exit 0\n")
+	writeExecFixture(t, strayNUL, "exit 3\x00junk\n")
+	writeExecFixture(t, emptyFile, "")
+	if err := os.WriteFile(nonExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// fastPath marks the commands that must run as argv; the rest are the
@@ -344,6 +370,10 @@ func TestExecCommandFastPathMatchesTheShell(t *testing.T) {
 			t.Parallel()
 			env := NewLocalExecutionEnvironment(root)
 			t.Cleanup(env.Cleanup)
+			// A controlled inherited environment: the fixture bin (which the
+			// venv injection also finds) plus the platform's own tools, and no
+			// BASH_ENV or exported function inherited from the test shell.
+			env.inheritedEnv = func() []string { return fixturePathEnv(bin, "/usr/local/bin", "/usr/bin", "/bin") }
 			recorder := &recordingCommandFactory{delegate: systemCommandRuntimeFactory{}}
 			env.commandFactory = recorder
 
@@ -376,9 +406,13 @@ func TestExecCommandKeepsTheShellWhenBashEnvIsSet(t *testing.T) {
 	if runtimeGOOS == "windows" {
 		t.Skip("POSIX shell contract does not apply on windows")
 	}
-	if _, err := execLookPath("git"); err != nil {
+	gitPath, err := execLookPath("git")
+	if err != nil {
 		t.Skip("git not available")
 	}
+	// Set explicitly rather than inherited: this test is the one that is about
+	// BASH_ENV, so no test shell may supply it.
+	childEnv := fixturePathEnv(filepath.Dir(gitPath), "/usr/local/bin", "/usr/bin", "/bin")
 
 	root := t.TempDir()
 	bashEnv := filepath.Join(root, "bashenv")
@@ -389,6 +423,7 @@ func TestExecCommandKeepsTheShellWhenBashEnvIsSet(t *testing.T) {
 	// Through the shell, the sourced function wins over the git binary.
 	shellEnv := NewLocalExecutionEnvironment(root)
 	t.Cleanup(shellEnv.Cleanup)
+	shellEnv.inheritedEnv = func() []string { return childEnv }
 	res, err := shellEnv.ExecCommand(context.Background(), "git status --porcelain", 5000, "", map[string]string{"BASH_ENV": bashEnv})
 	if err != nil {
 		t.Fatalf("ExecCommand: %v", err)
@@ -398,7 +433,7 @@ func TestExecCommandKeepsTheShellWhenBashEnvIsSet(t *testing.T) {
 	}
 
 	// The route itself: with BASH_ENV set the command must reach the shell.
-	env, factory := recordingCommandEnv(t)
+	env, factory := recordingCommandEnv(t, childEnv...)
 	if _, err := env.ExecCommand(context.Background(), "git status --porcelain", 5000, "", map[string]string{"BASH_ENV": bashEnv}); err != nil {
 		t.Fatalf("ExecCommand: %v", err)
 	}
@@ -417,14 +452,15 @@ func TestExecCommandKeepsTheShellWhenBashEnvIsSet(t *testing.T) {
 }
 
 // recordingCommandEnv returns an environment whose factory records the runtime
-// choice, and an inert runtime that neither forks nor writes. The inherited
-// environment's PATH is kept, because the fast path is taken only for a program
-// the child environment resolves.
-func recordingCommandEnv(t *testing.T) (*LocalExecutionEnvironment, *recordingCommandFactory) {
+// choice, and an inert runtime that neither forks nor writes. inherited is the
+// whole inherited environment, so a route assertion cannot depend on the
+// environment this test process happens to run in.
+func recordingCommandEnv(t *testing.T, inherited ...string) (*LocalExecutionEnvironment, *recordingCommandFactory) {
 	t.Helper()
 	env := NewLocalExecutionEnvironment(t.TempDir())
 	factory := &recordingCommandFactory{}
 	env.commandFactory = factory
+	env.inheritedEnv = func() []string { return inherited }
 	t.Cleanup(env.Cleanup)
 	return env, factory
 }
@@ -442,10 +478,10 @@ func TestExecCommandKeepsTheShellForAProgramTheChildPathCannotResolve(t *testing
 		t.Skip("git not available")
 	}
 
-	env, factory := recordingCommandEnv(t)
 	// The child PATH names nothing, so the shell would not find `git` — even
 	// though this process's own PATH does.
-	env.inheritedEnv = func() []string { return []string{"PATH=" + filepath.Join(env.RootDir, "no-such-bin")} }
+	emptyBin := filepath.Join(t.TempDir(), "no-such-bin")
+	env, factory := recordingCommandEnv(t, envvars.Path.Name+"="+emptyBin)
 
 	if _, err := env.ExecCommand(context.Background(), "git status --porcelain", 5000, "", nil); err != nil {
 		t.Fatalf("ExecCommand: %v", err)
@@ -479,22 +515,23 @@ func TestExecCommandKeepsTheShellForAPathThatIsNotExecutable(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	write := func(name, contents string, mode os.FileMode) string {
+	writeExec := func(name, contents string) string {
 		t.Helper()
 		path := filepath.Join(root, name)
-		if err := os.WriteFile(path, []byte(contents), mode); err != nil {
-			t.Fatal(err)
-		}
+		writeExecFixture(t, path, contents)
 		return path
 	}
-	shebang := write("shebang", "#!/bin/sh\nexit 0\n", 0o755)
-	noShebang := write("plain", "exit 0\n", 0o755)
+	shebang := writeExec("shebang", "#!/bin/sh\nexit 0\n")
+	noShebang := writeExec("plain", "exit 0\n")
 	// A stray NUL does not make a text file a program: execve still returns
 	// ENOEXEC (bash: 126 "cannot execute binary file"), so a NUL is not a
 	// usable "this is a binary" test and the format whitelist must refuse it.
-	strayNUL := write("nultext", "exit 3\x00junk\n", 0o755)
-	emptyFile := write("empty", "", 0o755)
-	notExecutable := write("noexec", "#!/bin/sh\nexit 0\n", 0o644)
+	strayNUL := writeExec("nultext", "exit 3\x00junk\n")
+	emptyFile := writeExec("empty", "")
+	notExecutable := filepath.Join(root, "noexec")
+	if err := os.WriteFile(notExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(root, "adir")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -520,6 +557,125 @@ func TestExecCommandKeepsTheShellForAPathThatIsNotExecutable(t *testing.T) {
 		if len(factory.argv) != 0 {
 			t.Fatalf("ExecCommand(%q) = argv %q, want the shell", path, factory.argv)
 		}
+	}
+}
+
+// TestStreamCommandChoosesTheSameRuntimeAsExecCommand pins finding 1: the shell
+// tool does not call ExecCommand, it calls StreamCommand (registerShellTools →
+// runShell), so a selection made only in ExecCommand left ordinary shell tool
+// calls paying the `bash -o pipefail -c` wrapper this change removes. Both
+// entry points must hand the same command to the same runtime.
+func TestStreamCommandChoosesTheSameRuntimeAsExecCommand(t *testing.T) {
+	t.Parallel()
+
+	bin := fixtureBin(t)
+	writeExecFixture(t, filepath.Join(bin, "git"), "#!/bin/sh\nexit 0\n")
+
+	cases := []struct {
+		name     string
+		command  string
+		wantArgv []string
+	}{
+		{name: "git status", command: "git status --porcelain", wantArgv: []string{"git", "status", "--porcelain"}},
+		{name: "quoted argument", command: `git log --format="a b"`, wantArgv: []string{"git", "log", "--format=a b"}},
+		{name: "pipe", command: "git log | head -1"},
+		{name: "redirection", command: "git status 2>&1"},
+		{name: "glob", command: "git status *.go"},
+		{name: "variable", command: "git log $REV"},
+		{name: "builtin", command: "echo hello"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, factory := recordingCommandEnv(t, fixturePathEnv(bin)...)
+			handle, err := env.StreamCommand(context.Background(), tc.command, "", nil, nil)
+			if err != nil {
+				t.Fatalf("StreamCommand(%q): %v", tc.command, err)
+			}
+			if _, err := handle.Wait(); err != nil {
+				t.Fatalf("StreamCommand(%q) wait: %v", tc.command, err)
+			}
+			if tc.wantArgv != nil {
+				if len(factory.shell) != 0 {
+					t.Fatalf("StreamCommand(%q) ran through the shell: %q", tc.command, factory.shell)
+				}
+				if len(factory.argv) != 1 || !slices.Equal(factory.argv[0], tc.wantArgv) {
+					t.Fatalf("StreamCommand(%q) argv = %q, want %q", tc.command, factory.argv, tc.wantArgv)
+				}
+				return
+			}
+			if len(factory.argv) != 0 {
+				t.Fatalf("StreamCommand(%q) ran as argv %q, want the shell", tc.command, factory.argv)
+			}
+			if !slices.Equal(factory.shell, []string{tc.command}) {
+				t.Fatalf("StreamCommand(%q) shell = %q, want the command unchanged", tc.command, factory.shell)
+			}
+		})
+	}
+}
+
+// TestStreamCommandMatchesTheShell pins that the shell tool's route change did
+// not change what the caller sees: for each command string, the streamed output
+// and exit status are the ones the forced shell run produces. bash is the oracle,
+// and the commands exercise the shell constructs StreamCommand must still route
+// to the shell as well as the bare word lists it now runs as argv.
+func TestStreamCommandMatchesTheShell(t *testing.T) {
+	t.Parallel()
+	if runtimeGOOS == "windows" {
+		t.Skip("POSIX shell contract does not apply on windows")
+	}
+
+	root := t.TempDir()
+	bin := fixtureBin(t)
+	writeExecFixture(t, filepath.Join(bin, "say"),
+		"#!/bin/sh\nprintf 'out:%s\\n' \"$1\"\nprintf 'err:%s\\n' \"$2\" >&2\nexit 3\n")
+
+	cases := []struct{ command string }{
+		{`say 'a b' c d`},
+		{`say "it's here" 'x y'`},
+		{`say e\ f g`},
+		{"say '' \"\""},
+		{`say one two | cat`},
+		{`say one two; say three four`},
+		{`say a b 2>&1`},
+		{`SAY_VAR=x say "$SAY_VAR" b`},
+		{`say $(printf sub) b`},
+	}
+
+	for _, tc := range cases {
+		command := tc.command
+		t.Run(command, func(t *testing.T) {
+			t.Parallel()
+			stream := func(forceShell bool) (string, int, error) {
+				env := NewLocalExecutionEnvironment(root)
+				t.Cleanup(env.Cleanup)
+				env.inheritedEnv = func() []string { return fixturePathEnv(bin, "/usr/local/bin", "/usr/bin", "/bin") }
+				dir, childEnv, err := env.prepareStreamCommand(context.Background(), "", nil)
+				if err != nil {
+					t.Fatalf("%q: prepareStreamCommand: %v", command, err)
+				}
+				cmd := env.commands().Shell(command)
+				if !forceShell {
+					cmd, childEnv = env.commandRuntimeForCommand(command, dir, childEnv)
+				}
+				var buf strings.Builder
+				handle, err := env.startStreamCommand(context.Background(), cmd, dir, childEnv, &buf)
+				if err != nil {
+					return buf.String(), 0, err
+				}
+				code, err := handle.Wait()
+				return buf.String(), code, err
+			}
+			wantOut, wantCode, wantErr := stream(true)
+			gotOut, gotCode, gotErr := stream(false)
+			if (gotErr == nil) != (wantErr == nil) {
+				t.Fatalf("%q: error %v, the shell error %v", command, gotErr, wantErr)
+			}
+			if gotOut != wantOut || gotCode != wantCode {
+				t.Fatalf("%q: gave %q exit %d, the shell gave %q exit %d", command, gotOut, gotCode, wantOut, wantCode)
+			}
+		})
 	}
 }
 
