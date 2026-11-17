@@ -289,19 +289,6 @@ function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null 
   return verdict;
 }
 
-// The tail's first non-blank line, when indented, could still belong to a
-// list item open in the head (indented continuation joins it across the
-// blank line), so it declines the windowed path. Non-indented content can
-// never rejoin a head block across a blank line.
-function tailStartsIndented(tail: string): boolean {
-  const lines = tail.split("\n");
-  for (const line of lines) {
-    if (line.trim() === "") continue;
-    return line.charAt(0) === " " || line.charAt(0) === "\t";
-  }
-  return false;
-}
-
 // True when the tail's first block would EXTEND a list still open at the end
 // of the head. A blank line does not close a list - the next item repeats the
 // marker and joins it - so parsing head and tail separately would render one
@@ -313,16 +300,17 @@ function tailStartsIndented(tail: string): boolean {
 // The head side comes from the cached verdict: it is read from the token
 // stream, not a line scan, because only the token stream knows whether the
 // head's last block really is a list (a `-` line inside a fence or a table
-// cell is not one) - and it must not be re-lexed per render. The tail side is
-// a line scan: the tail is window-bounded, so it costs the same per render as
-// the regex gates beside it.
-function listContinuesAcrossSplit(verdict: HeadGateVerdict, tail: string): boolean {
+// cell is not one) - and it must not be re-lexed per render. The tail side
+// reads the first non-blank line the caller already scanned for the indent
+// gate: one scan of the tail feeds both, so the shared cost is the same per
+// render as the regex gates beside it.
+function listContinuesAcrossSplit(verdict: HeadGateVerdict, tailFirstLine: string): boolean {
   if (verdict.listFamily === null) return false;
   // The sentinel equals no real family, so it would fall through to `false`
   // and ALLOW an unverified split. Decline instead, as the comments above
   // promise, so an unreadable head never takes the windowed path.
   if (verdict.listFamily === LIST_FAMILY_UNKNOWN) return true;
-  return verdict.listFamily === listMarkerFamily(firstNonBlankLine(tail));
+  return verdict.listFamily === listMarkerFamily(tailFirstLine);
 }
 
 // A sound head/tail window split: the settled prefix and its streaming window,
@@ -340,20 +328,32 @@ export function splitLiveWindow(source: string, gateCache: { current: HeadGateVe
   const split = splitLiveSource(source);
   if (split === null) return null;
   const verdict = headGateVerdict(split.head, gateCache);
-  const closedTail = closeOpenMarkdown(split.tail);
   if (
     !verdict.balanced ||
     verdict.hazard ||
     verdict.hasDef ||
     containsLinkDefinition(split.tail) ||
     verdict.htmlStart ||
-    HTML_BLOCK_END.test(split.tail) ||
-    tailStartsIndented(split.tail) ||
-    listContinuesAcrossSplit(verdict, split.tail)
+    HTML_BLOCK_END.test(split.tail)
   ) {
     return null;
   }
-  return { head: split.head, tail: split.tail, closedTail };
+  // ONE line scan of the tail feeds both remaining gates. The tail's first
+  // non-blank line, when indented, could still belong to a list item open in
+  // the head (indented continuation joins it across the blank line), so it
+  // declines the windowed path; non-indented content can never rejoin a head
+  // block across a blank line. That same line is what the list-family
+  // comparison reads. An all-blank tail scans to "", which has no first
+  // character to call a space or tab, so it still reads as not indented.
+  const tailFirstLine = firstNonBlankLine(split.tail);
+  const tailStartsIndented = tailFirstLine.charAt(0) === " " || tailFirstLine.charAt(0) === "\t";
+  if (tailStartsIndented || listContinuesAcrossSplit(verdict, tailFirstLine)) {
+    return null;
+  }
+  // Closed last: it is a whole-tail line walk whose result a declined frame
+  // used to pay for and throw away, and a steady list-headed stream declines
+  // every frame.
+  return { head: split.head, tail: split.tail, closedTail: closeOpenMarkdown(split.tail) };
 }
 
 export function splitMarkdownSegments(closedSource: string, realSource: string | null): MarkdownSegment[] {
