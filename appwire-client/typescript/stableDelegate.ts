@@ -17,12 +17,33 @@ export function delegateStatedIntent(delegate: StableDelegateState & { latestInt
   return !delegate.terminal && delegate.latestIntent ? delegate.latestIntent : "";
 }
 
+/** A working row's live wait on its own running job, or "": the delegate's
+ * finalization drain holds its run open while its child session still runs a
+ * shell, and during that hold the intent and the activity clock both stop
+ * moving, so the row would otherwise read as a delegate that simply keeps
+ * running. A row that carries no count (a retained read, an older daemon, or a
+ * delegate owning no job) says nothing, which is not the same claim as
+ * "known idle". */
+export function delegateWaitText(delegate: StableDelegateState & { runningJobCount?: number }): string {
+  const count = delegate.runningJobCount ?? 0;
+  if (delegate.terminal || count <= 0) return "";
+  return count === 1 ? "Waiting on 1 running job" : `Waiting on ${count} running jobs`;
+}
+
 // A working row's newest tool intent stands in for the status word; every
 // other row state keeps the word the surface passed in. Each client owns its
 // own status vocabulary, and this one helper owns the substitution rule, so
 // the surfaces cannot drift. The intent is display-only: the status still
 // drives sorting, aggregation, and accessibility.
-export function delegateWorkText(delegate: StableDelegateState & { latestIntent?: string }, status: string): string {
+export function delegateWorkText(
+  delegate: StableDelegateState & { latestIntent?: string; runningJobCount?: number },
+  status: string,
+): string {
+  // The wait outranks both the intent and the status word: it is the one fact
+  // that explains a run the reader would otherwise read as an unexplained
+  // hold.
+  const wait = delegateWaitText(delegate);
+  if (wait !== "") return wait;
   const intent = delegateStatedIntent(delegate);
   return intent !== "" ? intent : status;
 }

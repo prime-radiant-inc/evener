@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -110,10 +111,19 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		}
 		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
 		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
+		// The same live wait the delegate's read row reports, joined from the
+		// delegate's own job manager under the lock already held: a frame that
+		// omitted it would erase the wait from a row the capture had filled,
+		// because a winning frame replaces every mutating field.
+		runningJobs, oldestRunningJob := s.delegateController.runningJobsForDelegateLocked(row.id)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
+		data.RunningJobCount = runningJobs
+		if runningJobs > 0 && !oldestRunningJob.IsZero() {
+			data.OldestRunningJobStartedAt = oldestRunningJob.UTC().Format(time.RFC3339Nano)
+		}
 		// A subagent's own thread lists its subtree, so each live ancestor
 		// subagent's stream carries the update too. A released ancestor gets
 		// none: forwarding for it would reopen its closed thread's history, and

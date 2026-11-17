@@ -371,6 +371,20 @@ and an absent, over-long or malformed value applies as omitted rather than
 dropping the row. Older daemons never send the field, and their rows keep
 today's status word everywhere.
 
+A delegate whose run is held open while it waits on its own background shell
+says so on its row. The run genuinely continues — that hold is the documented
+contract, not a stall — but during it `latestIntent` and `latestActivityAt`
+both stop moving, so the row used to be indistinguishable from a delegate
+still working on a model turn. The row now carries `runningJobCount` and
+`oldestRunningJobStartedAt`, folded from the delegate's own child session's job
+manager with the drain's own ownership predicate: an owned managed shell still
+in the running map. The pushed `evener/delegate/updated` frame carries the same
+pair, so a frame cannot erase what a read reports. A delegate owning no running
+job omits both fields, and a client must read that omission as "no such fact"
+rather than "known idle" — retained reads and older daemons never send them.
+The phone does not render them yet; its delegate row keeps showing the stale
+`latestActivityAt` and thereby nothing new about the wait.
+
 A subagent row's leading mark is the session status dot on every surface, with
 one state the session vocabulary does not have: quiet. An open run shows the
 alive dot while fresh, dims it to quiet ink once its latest activity passes

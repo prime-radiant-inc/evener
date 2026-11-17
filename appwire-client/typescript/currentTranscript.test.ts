@@ -1346,6 +1346,8 @@ describe("current transcript checkpoints", () => {
       runStartedAt: "2026-10-25T10:00:00Z",
       runEndedAt: "2026-10-25T10:01:00Z",
       latestActivityAt: "2026-10-25T10:00:59Z",
+      runningJobCount: 2,
+      oldestRunningJobStartedAt: "2026-10-25T10:00:30Z",
       latestIntent: "Reading the board.",
       runningForMs: 1,
       quietForMs: 2,

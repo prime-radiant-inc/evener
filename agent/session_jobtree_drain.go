@@ -204,6 +204,36 @@ func (jm *jobManager) hasRunningDrainJob() bool {
 	return false
 }
 
+// runningOwnedShellJobs reports how many of this session's own managed shell
+// jobs are still in the running map, and when the oldest of them started. It is
+// the same set hasRunningDrainJob tests, counted instead of tested, so a row
+// that says a delegate waits names exactly the jobs holding it open.
+//
+// One jm.mu hold covers both answers: a finalizing job leaves the map under the
+// same lock, so a caller can never pair a count taken before that delete with a
+// start taken after it. An unstated start is skipped rather than reported as
+// the zero time — a job with no start cannot claim to be the oldest wait.
+func (jm *jobManager) runningOwnedShellJobs() (int, time.Time) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	count := 0
+	var oldest time.Time
+	for _, run := range jm.running {
+		if !isOwnedDrainJob(run.rec, jm.sessionID) {
+			continue
+		}
+		count++
+		started := run.rec.StartedAt
+		if started.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || started.Before(oldest) {
+			oldest = started
+		}
+	}
+	return count, oldest
+}
+
 // ManagedJobsFinalizedForTest reports whether none of this session's own
 // managed jobs is still inside finalization: the running map is clear of them,
 // which — because armFinalizedJob (jobs.go) appends the durable

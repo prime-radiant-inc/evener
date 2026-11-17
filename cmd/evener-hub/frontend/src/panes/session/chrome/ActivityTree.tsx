@@ -13,6 +13,7 @@ import {
   compactDuration,
   delegateStatedIntent,
   delegateTiming,
+  delegateWaitText,
   delegateWorkText,
   jobIsFailed,
   parseTimestampMs,
@@ -202,7 +203,15 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   // the state, so the status stays reachable and the hue stays true.
   const work = delegateWorkText(delegate, rowStatusText(row));
   if (row.live)
-    return liveMetaSegments(tokens ?? undefined, work, timing.quietForMs, delegateStatedIntent(delegate) || undefined);
+    return liveMetaSegments(
+      tokens ?? undefined,
+      work,
+      timing.quietForMs,
+      // A delegate held open by its own running job leads with that wait: its
+      // stated intent stopped moving for the whole hold, so the intent would
+      // name work the row is no longer waiting on.
+      delegateWaitText(delegate) || delegateStatedIntent(delegate) || undefined,
+    );
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
   segments.push(terminalSegment(timing.durationMs, work));

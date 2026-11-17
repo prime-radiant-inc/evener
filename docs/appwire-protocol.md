@@ -1118,6 +1118,8 @@ Underlying Go kind: `string` (no struct fields).
 | `runStartedAt` | string | yes |  |
 | `runEndedAt` | string | yes |  |
 | `latestActivityAt` | string | yes |  |
+| `runningJobCount` | int | yes |  |
+| `oldestRunningJobStartedAt` | string | yes |  |
 | `latestIntent` | string | yes |  |
 | `runningForMs` | \*int64 | yes |  |
 | `quietForMs` | \*int64 | yes |  |
@@ -3948,6 +3950,8 @@ Underlying Go kind: `string` (no struct fields).
 | `runEndedAt` | string | yes |  |
 | `latestActivityAt` | string | yes |  |
 | `latestIntent` | string | yes |  |
+| `runningJobCount` | int | yes |  |
+| `oldestRunningJobStartedAt` | string | yes |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
 | `worktree` | \*[appwire.JobActivityWorktree](#jobactivityworktree) | yes |  |
 

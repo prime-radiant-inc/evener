@@ -157,9 +157,20 @@ type SessionDelegate struct {
 	// the controller's live value when non-empty, else the folded journal
 	// value — the same join the pushed frame applies, so the read and the
 	// frame agree for every row state. Absent from older daemons.
-	LatestIntent string               `json:"latestIntent,omitempty"`
-	Usage        *EvenerUsage         `json:"usage,omitempty"`
-	Worktree     *JobActivityWorktree `json:"worktree,omitempty"`
+	LatestIntent string `json:"latestIntent,omitempty"`
+	// RunningJobCount is how many managed shell jobs the delegate's own child
+	// session is running right now — the live hold the drain waits on, so a
+	// reader can tell a delegate parked on its own command from one mid-turn.
+	// Only the live read produces it: it is absent when the delegate owns no
+	// running job, and absent from a retained read or an older daemon, so a
+	// client never reads an omission as "known free".
+	RunningJobCount int `json:"runningJobCount,omitempty"`
+	// OldestRunningJobStartedAt is the RFC3339Nano start of the oldest of those
+	// jobs, so a row can say how long the wait has lasted. Empty whenever
+	// RunningJobCount is absent.
+	OldestRunningJobStartedAt string               `json:"oldestRunningJobStartedAt,omitempty"`
+	Usage                     *EvenerUsage         `json:"usage,omitempty"`
+	Worktree                  *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type SessionWatchState string

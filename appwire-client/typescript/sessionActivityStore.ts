@@ -1546,6 +1546,10 @@ function delegateRowFromFrame(row: SessionDelegate, frame: EvenerDelegateInfo): 
         ? frame.latestActivityAt
         : undefined,
     latestIntent: boundedIntent(frame.latestIntent),
+    // The frame carries the same live wait the read row does, so a frame that
+    // wins the merge replaces it with the truth rather than erasing it.
+    runningJobCount: frame.runningJobCount,
+    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
     usage: frame.usage,
     worktree: frame.worktree,
   };
@@ -1617,6 +1621,8 @@ const delegateRowFields: Record<keyof SessionDelegate, true> = {
   runEndedAt: true,
   latestActivityAt: true,
   latestIntent: true,
+  runningJobCount: true,
+  oldestRunningJobStartedAt: true,
   usage: true,
   worktree: true,
 };

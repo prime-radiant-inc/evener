@@ -862,6 +862,35 @@ func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) 
 	return ""
 }
 
+// runningJobsForDelegateLocked reports how many managed shell jobs the
+// delegate's own child session is running and when the oldest of them started.
+// It answers the one question a delegate's row could not: a delegate whose run
+// is held open by its finalization drain while its own command runs is doing
+// work the durable aggregate never records, and a reader with only phase and
+// LatestActivityAt cannot tell that wait from a model still thinking.
+//
+// The caller holds c.mu. Ownership is the drain's own predicate
+// (isOwnedDrainJob), so a row names exactly the jobs that hold the delegate
+// open and no others; the count and the oldest start come from one jm.mu
+// snapshot, so a completion between them cannot pair a stale count with a fresh
+// start. A delegate with no live runtime — a retained read, or a released
+// delegate — has no running jobs to report, which reads as "no fact", not
+// "known free": both callers then leave the row's fields at their zero value
+// and the wire omits them.
+//
+// An unstated start time counts as neither the oldest nor zero: a job whose
+// record has no start cannot claim to be the oldest wait.
+func (c *delegateTreeController) runningJobsForDelegateLocked(delegateID string) (int, time.Time) {
+	if c == nil || delegateID == "" {
+		return 0, time.Time{}
+	}
+	live := c.live[delegateID]
+	if live == nil || live.runtime == nil || live.runtime.jobManager == nil {
+		return 0, time.Time{}
+	}
+	return live.runtime.jobManager.runningOwnedShellJobs()
+}
+
 // watchClearAuthority reports whether the calling session may clear a
 // receiver-keyed watch. Clear authority follows receiver direction — a source
 // delegate may NOT clear its ancestor's watch on it, and a sibling may not
