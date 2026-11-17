@@ -802,7 +802,8 @@ the section that keeps regressing
 
 // --- teardown/budget titles ---
 // watchEndedUnfiredMessage / watchLostAtRestartMessage start with
-// "watch ended:"; watchBudgetClearedMessage starts with "watch cleared:".
+// "watch ended:"; the budget auto-clear notice older runs recorded starts with
+// "watch cleared:".
 // Those reasons must title as an ending, never as a firing.
 
 test("a watch-ended notice titles Watch ended, not a firing", () => {
@@ -815,7 +816,7 @@ watch ended: job_x is terminal (status=completed reason=done output_bytes=10); c
 });
 
 test("a budget auto-clear notice titles Watch auto-cleared, not a trigger", () => {
-  // Backend truth: autoClearWatchOverBudgetNotification passes "" as the
+  // Backend truth (older runs): the budget auto-clear notice passed "" as the
   // job id — the cleared target rides the reason, never
   // a job_id attr. (An earlier revision of this fixture used job_id="self";
   // no producer emits that — the NotificationCard "self" guard test pins the

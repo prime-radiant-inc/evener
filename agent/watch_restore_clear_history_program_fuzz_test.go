@@ -466,21 +466,6 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 		jm.mu.Unlock()
 		t.Fatal("missing config was found in live watches")
 	}
-	if cfg.deliveries != 0 || jm.recordWatchDeliveryLocked(cfg) {
-		jm.mu.Unlock()
-		t.Fatal("first watch delivery incorrectly crossed its budget")
-	}
-	if jm.recordWatchDeliveryLocked(nil) {
-		jm.mu.Unlock()
-		t.Fatal("nil watch config crossed the delivery budget")
-	}
-	cfg.conditionFires = watchDeliveryBudget
-	crossed := jm.recordWatchDeliveryLocked(cfg)
-	cfg.conditionFires++
-	if !crossed || jm.recordWatchDeliveryLocked(cfg) {
-		jm.mu.Unlock()
-		t.Fatal("watch delivery budget crossing is not latched to one condition fire")
-	}
 	pruned := jm.pruneWatchedTargetWatchesLocked(key.Target, "finished", frozenTestTime)
 	jm.mu.Unlock()
 	if len(pruned) != 1 || !cfg.rejectingDelivery {
@@ -532,29 +517,10 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 		t.Fatalf("owner receiver clear = %+v, %v", result, err)
 	}
 
-	// The budget cleaner must detach exactly one live config, issue its final
-	// message once, and become a no-op after that config is gone.
-	budgetKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_budget", SendTo: "dlg_budget"}
-	budgetCfg := wrcConfig("watch-budget", "self", budgetKey.Target, budgetKey.SendTo, "", "")
-	var notifications []jobNotification
-	jm.enqueue = func(n jobNotification) { notifications = append(notifications, n) }
-	wrcInstall(jm, budgetKey, budgetCfg)
-	jm.autoClearWatchOverBudget(budgetCfg)
-	jm.autoClearWatchOverBudget(budgetCfg)
-	if jm.hasWatchClearState(budgetKey) || len(notifications) != 1 || !strings.Contains(notifications[0].Reason, "watch cleared") {
-		t.Fatalf("budget auto-clear state=%t notifications=%+v", jm.hasWatchClearState(budgetKey), notifications)
-	}
-	jm.autoClearOverBudgetWatches([]*watchConfig{nil, budgetCfg})
-	failingBudgetKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_budget_failed", SendTo: "dlg_budget_failed"}
-	failingBudget := wrcConfig("watch-budget-failed", "self", failingBudgetKey.Target, failingBudgetKey.SendTo, "", "")
-	wrcInstall(jm, failingBudgetKey, failingBudget)
+	batchKey := watchKey{VisibleSessionID: jm.sessionID, Target: "job_batch", SendTo: "dlg_batch"}
+	batchCfg := wrcConfig("watch-batch", "self", batchKey.Target, batchKey.SendTo, "", "")
+	wrcInstall(jm, batchKey, batchCfg)
 	originalAppendEvents := jm.appendEvents
-	jm.appendEvents = func([]jobstore.Event) error { return errors.New("budget append failed") }
-	jm.autoClearWatchOverBudget(failingBudget)
-	jm.appendEvents = originalAppendEvents
-	if !jm.hasWatchClearState(failingBudgetKey) || failingBudget.rejectingDelivery {
-		t.Fatalf("failed budget clear lost retryable config: clearable=%t rejecting=%t", jm.hasWatchClearState(failingBudgetKey), failingBudget.rejectingDelivery)
-	}
 
 	// Projection helpers must preserve value ownership and receiver privacy.
 	progressCfg := wrcConfig("watch-progress", "self", "caller", "dlg_progress", "", "")
@@ -603,7 +569,6 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	if err := jm.appendWatchRegistryEvents(nil); err != nil {
 		t.Fatalf("append empty registry events: %v", err)
 	}
-	originalAppendEvents = jm.appendEvents
 	jm.appendEvents = nil
 	if err := jm.appendWatchRegistryEvents([]jobstore.Event{registered, cleared}); err != nil {
 		t.Fatalf("append registry fallback: %v", err)
@@ -619,7 +584,7 @@ func wrcExerciseClearHelpers(t *testing.T, r *wrcReader) {
 	jm.appendEvents = originalAppendEvents
 	terminal := watchSendTerminalSnapshot{cfg: progressCfg, events: []jobstore.Event{cleared}}
 	targets := []watchConfigTerminalSnapshot{
-		{key: budgetKey, cfg: budgetCfg, terminal: terminal, endReason: "cleared"},
+		{key: batchKey, cfg: batchCfg, terminal: terminal, endReason: "cleared"},
 		{key: watchKey{Target: "skip-nil"}, terminal: terminal},
 	}
 	if err := jm.appendWatchReplacementBatch(progressCfg, targets, []watchSendTerminalSnapshot{terminal}); err != nil {

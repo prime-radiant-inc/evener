@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -305,7 +306,7 @@ func TestAcceptedDelegateAttentionTriggerFoldsAwayOncePresented(t *testing.T) {
 	t.Parallel()
 	sess := acceptedTriggerSession(t)
 	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_target", generation: 1})
-	sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess))
+	sess.stagePresentedAttentionCoverage(ctx, currentHistory(t, sess), nil)
 	sess.promoteStagedAttentionCoverage(llm.Request{})
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -344,13 +345,59 @@ func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 	// The delta provably carried no steering turn, so the model saw no
 	// report, and the reopen must fire.
 	sess := acceptedTriggerSession(t)
-	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess))
+	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess), nil)
 	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
 	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
 	}
 	if reopened := pendingReopen(sess); reopened == "" {
 		t.Fatal("the reopen skipped a latched trigger a settled delta provably did not carry (no pending row holds a reopened identity)")
+	}
+}
+
+// A trigger whose generation fails before presenting reopens under a fresh
+// identity. Resolving the original dropped the controller's copy of its cause,
+// so the latch is the only place that lineage survives; the reopen must carry
+// it across. A recovered turn that loses it drops the watch ancestry it
+// descended from and restarts the runaway count.
+func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
+	t.Parallel()
+	sess := acceptedTriggerSession(t)
+	controller := sess.delegateController
+	// The fixture already reserved and accepted this trigger; it is the
+	// attention the latch holds.
+	trigger := "delegate:dlg_worker/delivery/1"
+	// The trigger's cause carries a watch fire, and the accept's resolution
+	// drops the controller's copy, leaving the latch as the only witness.
+	watch := provenance.WithWatch(nil, "watch_loop", "wg_loop", "wd_reopen", "child-session", "")
+	controller.attentionCauses.remember(trigger, watch)
+	sess.holdAcceptedTrigger(trigger)
+	controller.attentionCauses.forget(trigger)
+
+	reopened, err := sess.reopenLatchedDelegateAttention()
+	if err != nil {
+		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+	if reopened == "" || reopened == trigger {
+		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
+	}
+
+	// The latch is a single slot: any other accepted row replaces both its id
+	// and its cause. The reopened row must therefore carry its cause in the
+	// controller's registry too, or a competing accept between the reopen and
+	// the presenting request strands the recovered lineage.
+	other := "delegate:dlg_worker/delivery/2"
+	controller.attentionCauses.remember(other, provenance.WithWatch(nil, "watch_other", "wg_other", "wd_other", "child-session", ""))
+	sess.holdAcceptedTrigger(other)
+
+	// The recovered turn presents the reopened identity; its lineage must still
+	// descend from the watch the failed generation came from.
+	sess.attentionMu.Lock()
+	sess.attentionStagedIDs = map[string]struct{}{reopened: {}}
+	sess.attentionMu.Unlock()
+	sess.promoteStagedAttentionCoverage(llm.Request{})
+	if depth := provenance.SelfInfluenceDepth(sess.activeCausalProvenance(), "watch_loop", "", func(string) bool { return true }); depth == 0 {
+		t.Fatal("the recovered turn's lineage lost the watch its failed generation descended from")
 	}
 }
 

@@ -422,6 +422,7 @@ export interface Capabilities {
 export interface Causal {
   watch_keys?: WatchKey[];
   chain?: Entry[];
+  fire_keys?: FireKey[];
   chain_truncated?: boolean;
 }
 
@@ -1320,6 +1321,12 @@ export interface FeatureSet {
 export interface FencingEpoch {
   bootId: string;
   opSeq: number;
+}
+
+export interface FireKey {
+  watch_id?: string;
+  watch_generation?: string;
+  delivery_id?: string;
 }
 
 export interface GitHeadParams {

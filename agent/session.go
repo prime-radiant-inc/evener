@@ -1301,11 +1301,35 @@ type Session struct {
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
 	attentionStagedIDs map[string]struct{}
+	// attentionStagedInlineDeliveries is one round's candidate coverage for
+	// delegate results its request presented inline: the delivery ids named by
+	// the presented tool-results turns' DelegateDeliveryCommits. A reply that
+	// carried a held result as earlier_results consumes it with no attention
+	// turn, so its id is the only trace of what the round presented. Promoted
+	// and reset with attentionStagedIDs. Guarded by attentionMu.
+	attentionStagedInlineDeliveries map[string]struct{}
+	// attentionStagedDeltaInlineDeliveries is the subset of
+	// attentionStagedInlineDeliveries whose tool-results turn the planned
+	// responses-continuation delta carries. A delta presents only turns after
+	// its anchor, so an inline delivery staged from an earlier turn was not
+	// presented by this call and must not be adopted as if it were. Promoted
+	// and reset with the other staged sets. Guarded by attentionMu.
+	attentionStagedDeltaInlineDeliveries map[string]struct{}
+	// attentionCausesMergedIDs names the attention items whose causes have
+	// already joined the running turn's lineage: promoteStagedAttentionCoverage
+	// merges an item's cause at the first settled request that presents it, so
+	// a later request of the same turn re-presenting the item merges nothing.
+	// Reset at each turn start. Guarded by attentionMu.
+	attentionCausesMergedIDs map[string]struct{}
 	// attentionAcceptedID is the trigger of an accepted attention generation
 	// that no settled request has presented yet. The accept resolves the
 	// trigger as consumed first, so only this latch tells a fold to keep its
 	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
 	attentionAcceptedID string
+	// attentionAcceptedCause is the cause of attentionAcceptedID, kept for the
+	// request that presents it (promoteStagedAttentionCoverage). Guarded by
+	// attentionMu.
+	attentionAcceptedCause *provenance.Causal
 	// attentionAutomaticDriveHolds names pending rows a user's stop quieted
 	// from automatic drives: the stopped generation's commit left the
 	// delegate armed for every other pending row, and that stale armed wake

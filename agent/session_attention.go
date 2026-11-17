@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/foldcache"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -917,17 +918,6 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 	}
 	_, err = s.appendDelegateAttentionMessageDurably(reopenID, message)
 	if err == nil {
-		s.attentionMu.Lock()
-		if s.attentionAcceptedID == attentionID {
-			// The reopened row supersedes the latched trigger — same content,
-			// fresh identity — and the fold keeps the latched trigger's turn
-			// alongside every pending row, so an unleased turn in this window
-			// would render the identical report twice in one request. The
-			// latch is consumed-and-superseded; the next accept re-latches on
-			// the row it presents.
-			s.attentionAcceptedID = ""
-		}
-		s.attentionMu.Unlock()
 		// The teardown guards ran before the append, but a stop or close can
 		// admit while it was in flight, and the fresh id is invisible to that
 		// stop's plan-time enumeration (no wake notes it), so the row would
@@ -944,6 +934,42 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 			// its transcript still held, and there is nothing to resolve.
 			return "", nil
 		}
+		refused := s.delegateController.attentionReopenRefused(s.owningDelegateID)
+		// The reopened row supersedes the latched trigger — same content,
+		// fresh identity — and the fold keeps the latched trigger's turn
+		// alongside every pending row, so an unleased turn in this window
+		// would render the identical report twice in one request. The latch
+		// and its cause both move to the fresh identity; the next presenting
+		// request clears them.
+		//
+		// The original identity resolved before this reopen, which dropped the
+		// controller's copy, so the latch is the only place its lineage
+		// survived. The cause moves to the fresh identity two ways: latched,
+		// for the presenting request, and in the controller's registry, so it
+		// still survives an accept that replaces the single latch slot first.
+		// It moves unchanged — the reopened row is the same message re-keyed,
+		// not a new one, so it earns no additional message hop.
+		//
+		// A refused reopen leaves no latch behind. The row it would name is the
+		// one this teardown discards, and pendingTurns keeps the row it is told
+		// to keep even when resolved, so a latch left on either identity would
+		// re-present a stopped delegate's report and survive a compaction that
+		// should drop it.
+		if refused {
+			s.attentionMu.Lock()
+			s.attentionAcceptedID = ""
+			s.attentionAcceptedCause = nil
+			s.attentionMu.Unlock()
+		} else {
+			s.attentionMu.Lock()
+			if s.attentionAcceptedID == attentionID {
+				s.attentionAcceptedID = reopenID
+				if s.attentionAcceptedCause != nil {
+					s.delegateController.attentionCauses.remember(reopenID, s.attentionAcceptedCause)
+				}
+			}
+			s.attentionMu.Unlock()
+		}
 		// The superseded source's resident copy never reached a request —
 		// every reopen fires only after a start that failed before presenting
 		// — and the reopened row that just landed carries the same content to
@@ -954,7 +980,7 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 		s.attentionMu.Lock()
 		s.dropResidentDelegateAttentionTurnLocked(attentionID)
 		s.attentionMu.Unlock()
-		if s.delegateController.attentionReopenRefused(s.owningDelegateID) {
+		if refused {
 			if resolveErr := s.resolveAttentionDurably([]string{reopenID}, delegateAttentionDiscarded); resolveErr != nil {
 				return "", resolveErr
 			}
@@ -1353,8 +1379,22 @@ func insertAttentionTurn(history []schema.Turn, turn schema.Turn, later []schema
 // its turn until a settled request presents it. The accept path and the
 // restart of an owed generation both set it.
 func (s *Session) holdAcceptedTrigger(attentionID string) {
+	// The accept resolves the trigger before its generation runs, and the
+	// resolution drops the controller's copy of its cause; the latch keeps the
+	// cause for the request that presents the trigger. A re-hold of the same
+	// trigger (a commit whose journal append failed and retried) finds the
+	// controller's copy already dropped, so it keeps the cause the first hold
+	// latched instead of overwriting it with none.
+	var cause *provenance.Causal
+	if s.delegateController != nil {
+		cause = s.delegateController.attentionCauses.union([]string{attentionID})
+	}
 	s.attentionMu.Lock()
+	if cause == nil && s.attentionAcceptedID == attentionID {
+		cause = s.attentionAcceptedCause
+	}
 	s.attentionAcceptedID = attentionID
+	s.attentionAcceptedCause = cause
 	s.attentionMu.Unlock()
 }
 
@@ -1717,23 +1757,74 @@ func (s *Session) coversPresentedAttention(ctx context.Context) bool {
 // attempt, a content-filter retry whose compaction then folds the steering
 // turn away) presented nothing the design may consume. Only a turn that
 // coversPresentedAttention stages.
-func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn) {
+//
+// deltaTurns is the exact turn set the planned request carries when it is a
+// responses-continuation delta, nil for a full-history request. An inline
+// delivery staged from a turn the delta does not carry was not presented by
+// this call: a later round's delta settles, and crediting that delivery would
+// adopt the cause of something the model never saw while retiring it for good.
+func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presentedTurns []schema.Turn, deltaTurns []schema.Turn) {
 	if !s.coversPresentedAttention(ctx) {
 		return
 	}
+	deltaInline := deltaInlineDeliveryIDs(deltaTurns)
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	var staged map[string]struct{}
+	var inline map[string]struct{}
+	var inlineInDelta map[string]struct{}
 	for _, turn := range presentedTurns {
-		if turn.AttentionID == "" {
-			continue
+		if turn.AttentionID != "" {
+			if staged == nil {
+				staged = make(map[string]struct{})
+			}
+			staged[turn.AttentionID] = struct{}{}
 		}
-		if staged == nil {
-			staged = make(map[string]struct{})
+		// A delegate result a reply carried inline spends its delivery here
+		// rather than in an attention turn: its commit on this turn is the
+		// only record that the round presented it.
+		for _, commit := range turn.DelegateDeliveryCommits {
+			if commit.DeliveryID == "" {
+				continue
+			}
+			if inline == nil {
+				inline = make(map[string]struct{})
+			}
+			attentionID := delegateAttentionID(commit.DeliveryID)
+			inline[attentionID] = struct{}{}
+			if _, carried := deltaInline[commit.DeliveryID]; carried {
+				if inlineInDelta == nil {
+					inlineInDelta = make(map[string]struct{})
+				}
+				inlineInDelta[attentionID] = struct{}{}
+			}
 		}
-		staged[turn.AttentionID] = struct{}{}
 	}
 	s.attentionStagedIDs = staged
+	s.attentionStagedInlineDeliveries = inline
+	s.attentionStagedDeltaInlineDeliveries = inlineInDelta
+}
+
+// deltaInlineDeliveryIDs returns the delivery ids of the tool-results turns in
+// deltaTurns, the turns a responses-continuation delta carries. nil deltaTurns
+// reports no delta at all, so nothing is scoped in.
+func deltaInlineDeliveryIDs(deltaTurns []schema.Turn) map[string]struct{} {
+	if len(deltaTurns) == 0 {
+		return nil
+	}
+	var ids map[string]struct{}
+	for _, turn := range deltaTurns {
+		for _, commit := range turn.DelegateDeliveryCommits {
+			if commit.DeliveryID == "" {
+				continue
+			}
+			if ids == nil {
+				ids = make(map[string]struct{})
+			}
+			ids[commit.DeliveryID] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // promoteStagedAttentionCoverage credits the staged set of a round whose
@@ -1741,29 +1832,119 @@ func (s *Session) stagePresentedAttentionCoverage(ctx context.Context, presented
 // round loop on the success path only.
 //
 // A responses-continuation delta never carries an attention delivery: every
-// one is a steering turn, and the eligibility rules reject any delta whose
-// suffix holds a steering turn. A round that settled as a delta therefore
-// presented no attention at all — it credits no coverage and clears no latch,
-// so a latched trigger's reopen stays owed. A delta whose call fell back to a
-// full-history request settled as that request, which carried every staged
-// turn.
+// steering one is a steering turn, and the eligibility rules reject any delta
+// whose suffix holds a steering turn. A round that settled as a delta therefore
+// credits no steering coverage and clears no latch, so a latched trigger's
+// reopen stays owed. Inline deliveries are the exception: a tool-results turn
+// is delta-eligible, so a reply that spent a held report inline can ride a
+// delta and must still adopt that report's cause and retire it. A delta whose
+// call fell back to a full-history request settled as that request, which
+// carried every staged turn.
 func (s *Session) promoteStagedAttentionCoverage(settled llm.Request) {
 	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
 	staged := s.attentionStagedIDs
+	inline := s.attentionStagedInlineDeliveries
+	inlineInDelta := s.attentionStagedDeltaInlineDeliveries
 	s.attentionStagedIDs = nil
-	if len(staged) == 0 || settled.HistoryMode == llm.HistoryModeResponsesDelta {
+	s.attentionStagedInlineDeliveries = nil
+	s.attentionStagedDeltaInlineDeliveries = nil
+	if settled.HistoryMode == llm.HistoryModeResponsesDelta {
+		// What a delta presents that a steering turn cannot carry: the inline
+		// deliveries whose tool-results turn rode it. Only the ones the delta
+		// actually carried count: a delivery staged from a turn before the
+		// continuation anchor was not presented by this call, so adopting its
+		// cause would credit something the model never saw and forget the cause
+		// for good.
+		s.attentionMu.Unlock()
+		if len(inlineInDelta) != 0 {
+			s.adoptInlineAttentionCauses(inlineInDelta)
+		}
 		return
 	}
+	if len(staged) == 0 && len(inline) == 0 {
+		s.attentionMu.Unlock()
+		return
+	}
+	var acceptedCause *provenance.Causal
 	if _, presented := staged[s.attentionAcceptedID]; presented && s.attentionAcceptedID != "" {
 		s.attentionAcceptedID = ""
+		acceptedCause, s.attentionAcceptedCause = s.attentionAcceptedCause, nil
 	}
 	covered := s.attentionCoveredIDs
 	if covered == nil {
 		covered = make(map[string]struct{}, len(staged))
 	}
+	merged := s.attentionCausesMergedIDs
+	if merged == nil {
+		merged = make(map[string]struct{}, len(staged))
+	}
+	// Each item's cause joins the turn at the first settled request that
+	// presents it; a later request of the same turn re-presenting the item
+	// merges nothing.
+	var fresh []string
+	for id := range staged {
+		if _, done := merged[id]; done {
+			continue
+		}
+		merged[id] = struct{}{}
+		fresh = append(fresh, id)
+	}
+	// An inline result is consumed by the turn that presented it, so its cause
+	// joins the turn and then leaves the registry: nothing else will resolve it,
+	// and a cause no attention can still arrive for would outlive its item.
+	inlineFresh, spent := joinInlineDeliveries(merged, inline)
+	fresh = append(fresh, inlineFresh...)
 	maps.Copy(covered, staged)
 	s.attentionCoveredIDs = covered
+	s.attentionCausesMergedIDs = merged
+	s.attentionMu.Unlock()
+	// The model has now seen these items, so what the turn does next descends
+	// from what caused them. This is where every attention item's cause joins
+	// a turn once: a trigger the accept already resolved, an item presented
+	// at turn start, and one that arrived mid-turn or inline alike.
+	s.unionActiveProvenance(acceptedCause)
+	if s.delegateController != nil && len(fresh) > 0 {
+		s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
+		s.delegateController.attentionCauses.forget(spent...)
+	}
+}
+
+// joinInlineDeliveries marks each inline delivery in merged as joining this
+// turn, skipping any an earlier settled request of the turn already merged, and
+// returns the ones that joined plus the same ids as spent: an inline result is
+// consumed by the turn that presented it, so nothing else will resolve it. The
+// caller holds attentionMu.
+func joinInlineDeliveries(merged, inline map[string]struct{}) (fresh, spent []string) {
+	for id := range inline {
+		if _, done := merged[id]; done {
+			continue
+		}
+		merged[id] = struct{}{}
+		fresh = append(fresh, id)
+		spent = append(spent, id)
+	}
+	return fresh, spent
+}
+
+// adoptInlineAttentionCauses joins the causes of inline deliveries a settled
+// delta presented, and forgets each: the reply that carried the result spent
+// it, so no attention turn will ever resolve it. Steering items are untouched —
+// the delta did not carry them, so their coverage stays owed. The caller holds
+// no lock.
+func (s *Session) adoptInlineAttentionCauses(inline map[string]struct{}) {
+	s.attentionMu.Lock()
+	merged := s.attentionCausesMergedIDs
+	if merged == nil {
+		merged = make(map[string]struct{}, len(inline))
+	}
+	fresh, spent := joinInlineDeliveries(merged, inline)
+	s.attentionCausesMergedIDs = merged
+	s.attentionMu.Unlock()
+	if s.delegateController == nil || len(fresh) == 0 {
+		return
+	}
+	s.unionActiveProvenance(s.delegateController.attentionCauses.union(fresh))
+	s.delegateController.attentionCauses.forget(spent...)
 }
 
 type foldedCoveredAttentionTurn struct {
@@ -1791,6 +1972,9 @@ func (s *Session) resetAttentionCoverage() {
 	s.attentionMu.Lock()
 	s.attentionCoveredIDs = nil
 	s.attentionStagedIDs = nil
+	s.attentionStagedInlineDeliveries = nil
+	s.attentionStagedDeltaInlineDeliveries = nil
+	s.attentionCausesMergedIDs = nil
 	s.attentionFoldedCovered = nil
 	s.attentionMu.Unlock()
 }
@@ -2506,6 +2690,9 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		if verified.resolutions[attentionID] != disposition || verified.resumeGenerations[attentionID] != resumeGeneration {
 			return fmt.Errorf("attention %q resolution was not durably appended", attentionID)
 		}
+	}
+	if s.delegateController != nil {
+		s.delegateController.attentionCauses.forget(ids...)
 	}
 	return nil
 }

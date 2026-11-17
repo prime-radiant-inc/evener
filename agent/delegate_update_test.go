@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/testwait"
@@ -33,7 +34,7 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	actor := delegateActor{lease: &delegateLease{delegateID: "dlg_target", generation: 1}}
 
-	first, firstPlans, err := c.PostUpdate(actor, "first question")
+	first, firstPlans, err := c.PostUpdate(actor, "first question", delegateCause{})
 	if err != nil {
 		t.Fatalf("PostUpdate first: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 		firstPlans.deliveries[0].deliveryID != first || firstPlans.deliveries[0].packet.Kind != delegatestore.PacketUpdate {
 		t.Fatalf("first update %q planned %#v, want its own head plan", first, firstPlans.deliveries)
 	}
-	second, secondPlans, err := c.PostUpdate(actor, "second question")
+	second, secondPlans, err := c.PostUpdate(actor, "second question", delegateCause{})
 	if err != nil {
 		t.Fatalf("PostUpdate second: %v", err)
 	}
@@ -51,6 +52,48 @@ func TestDelegateControllerPostUpdateQueuesInDeliveryOrder(t *testing.T) {
 	pending := delegateAggregateSnapshot(t, c, "dlg_target").PendingDeliveries
 	if len(pending) != 2 || pending[0].DeliveryID != first || pending[1].DeliveryID != second {
 		t.Fatalf("pending deliveries = %#v, want both updates in the order posted", pending)
+	}
+}
+
+// An update's cause is registered by the controller while it queues the
+// delivery, not by its caller afterwards. Registration follows the queue
+// rather than the delivery plan, so an update queued behind an undelivered
+// head is covered too, and an update the controller refused leaves no cause
+// behind. Anything else leaves a window in which the delivery is pending and
+// acknowledgeable while its cause does not exist yet.
+func TestDelegateControllerPostUpdateRegistersTheCauseItQueues(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	actor := delegateActor{lease: &delegateLease{delegateID: "dlg_target", generation: 1}}
+	causes := &c.attentionCauses
+	lineage := provenance.WithWatch(nil, "watch_1", "gen_1", "watch/delivery/1", "parent-session", "")
+	cause := delegateCause{sessionID: "child-session", lineage: lineage}
+
+	first, _, err := c.PostUpdate(actor, "first question", cause)
+	if err != nil {
+		t.Fatalf("PostUpdate first: %v", err)
+	}
+	firstCause := causes.union([]string{delegateAttentionID(first)})
+	if firstCause == nil {
+		t.Fatalf("the head update %q returned without its cause registered", first)
+	}
+	if got := provenance.MessagesFrom(firstCause, "child-session"); got != 1 {
+		t.Fatalf("the head update's cause holds %d of the child's messages, want its own", got)
+	}
+	if got := provenance.SelfInfluenceDepth(firstCause, "watch_1", "gen_1", func(string) bool { return true }); got != 1 {
+		t.Fatalf("the head update's cause holds depth %d for the watch that produced it, want 1", got)
+	}
+
+	second, secondPlans, err := c.PostUpdate(actor, "second question", cause)
+	if err != nil {
+		t.Fatalf("PostUpdate second: %v", err)
+	}
+	if len(secondPlans.deliveries) != 0 {
+		t.Fatalf("second update planned behind the first: %#v", secondPlans.deliveries)
+	}
+	if causes.union([]string{delegateAttentionID(second)}) == nil {
+		t.Fatalf("second update %q queued with no plan and no cause, want its cause registered by the queue", second)
 	}
 }
 
@@ -68,7 +111,7 @@ func TestDelegateControllerPostedUpdateHeadLeavesTheInlineWaiter(t *testing.T) {
 	if _, err := c.AdmitStartInput(lease, func() error { return nil }); err != nil {
 		t.Fatalf("AdmitStartInput: %v", err)
 	}
-	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, "which table?")
+	_, plans, err := c.PostUpdate(delegateActor{lease: &lease}, "which table?", delegateCause{})
 	if err != nil {
 		t.Fatalf("PostUpdate: %v", err)
 	}
@@ -122,7 +165,7 @@ func TestDelegateControllerPostUpdateRefusals(t *testing.T) {
 			t.Parallel()
 			c, _ := newDelegateControllerTestHarness(t, 1, 1)
 			seedDelegateControllerRunning(t, c, "dlg_target", "")
-			_, plans, err := c.PostUpdate(tc.actor(t, c), tc.message)
+			_, plans, err := c.PostUpdate(tc.actor(t, c), tc.message, delegateCause{})
 			if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || len(plans.deliveries) != 0 {
 				t.Fatalf("PostUpdate = plans %#v err %v, want %v", plans.deliveries, err, tc.want)
 			}
@@ -237,7 +280,7 @@ func TestDelegateUpdateNotDeliveredStillSucceeds(t *testing.T) {
 			ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
 			// The refusal the controller gives this lease, which the result's
 			// reason must explain.
-			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, "need the schema")
+			_, _, refusal := c.PostUpdate(delegateActor{lease: &lease}, "need the schema", delegateCause{})
 			if refusal == nil {
 				t.Fatal("the controller accepted an update it should refuse")
 			}

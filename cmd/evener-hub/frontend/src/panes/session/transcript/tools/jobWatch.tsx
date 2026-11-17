@@ -34,7 +34,6 @@ import {
   sourceLabel,
   strField,
   timerSpec,
-  WATCH_DELIVERY_BUDGET,
   type WatchRow,
   watchDisplayState,
   watchEventLabel,
@@ -127,15 +126,6 @@ function ConditionSentence({ source, spec, meta }: { source: string; spec: Condi
   // every) are one clause: they join with spaces inside a single node
   // (combined RoboRev review).
   const head: ReactNode[] = [];
-  // A budgeted trigger is what the 50-match auto-clear bounds: a pattern, an
-  // event list, or an event filter. A heartbeat alone never consumes the
-  // budget (periodic ticks count deliveries but never trip it), so a
-  // heartbeat-only watch claims no auto-clear (combined RoboRev review).
-  const budgeted =
-    spec.outputMatch !== undefined ||
-    spec.events.length > 0 ||
-    spec.filterStatus !== undefined ||
-    spec.filterToolName !== undefined;
   if (spec.outputMatch) {
     head.push(
       <span key="pattern">
@@ -206,13 +196,7 @@ function ConditionSentence({ source, spec, meta }: { source: string; spec: Condi
   return (
     <span>
       Wakes you when <span className={CLASS.mono}>{source}</span> {joinNodes(head, ", ")}
-      {budgeted ? (
-        <>
-          , auto-clears after {WATCH_DELIVERY_BUDGET} matches{tail}.
-        </>
-      ) : (
-        <>{tail}.</>
-      )}
+      {tail}.
     </span>
   );
 }

@@ -2264,6 +2264,10 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 	var announcements delegateMutationPlans
 	if f.stableRun && a.sess.delegateController != nil {
 		f.finish.endedAt = finalizeTime
+		// The report this finish queues carries this run's lineage, whatever
+		// delivery plan it gets: a report queued behind an undelivered head
+		// has no plan to register it from.
+		f.finish.cause = delegateCause{sessionID: a.sess.id, lineage: a.runProvenance}
 		var plans delegateMutationPlans
 		var finishErr error
 		if f.noActionClaim != nil {

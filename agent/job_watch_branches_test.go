@@ -125,21 +125,6 @@ func TestWatchLostAtRestartDelegateMessage(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// watchBudgetClearedMessage
-// ---------------------------------------------------------------------------
-
-func TestWatchBudgetClearedMessage(t *testing.T) {
-	t.Parallel()
-	msg := watchBudgetClearedMessage("job_789")
-	if !strings.Contains(msg, "job_789") {
-		t.Fatalf("expected target in message: %q", msg)
-	}
-	if !strings.Contains(msg, "watch cleared") {
-		t.Fatalf("expected 'watch cleared' in message: %q", msg)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // normalizeWatchSource
 // ---------------------------------------------------------------------------
 

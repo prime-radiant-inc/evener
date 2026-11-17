@@ -367,6 +367,7 @@ func (c *delegateTreeController) FinishGeneration(lease delegateLease, finish de
 	plans, cancel, err := c.finishGenerationLocked(finishIntent{
 		lease:       lease,
 		finish:      finish,
+		cause:       finish.cause,
 		stalePolicy: finishStaleSuppress,
 	})
 	c.mu.Unlock()

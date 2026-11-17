@@ -127,6 +127,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // delivery record failed, and settles the caller-targeted watch sends among
 // them.
 func (s *Session) settleDeliveredJobNotifications(ctx context.Context, jobNotifs []deliverableJobNotification) {
+	for _, d := range jobNotifs {
+		if d.watchJM != nil {
+			d.watchJM.noteWatchSendTranscribed(d.watchState.DeliveryID)
+		}
+	}
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)
 	if len(deliveredFailures) == 0 {
@@ -337,7 +342,17 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 				continue
 			}
 			seenTok[n.WatchSend.Key] = true
+			// The model already has this frame; only its settle is owed.
+			if jm.watchSendTranscribed(state.DeliveryID) {
+				if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
+					s.emit(events.WarningData{Message: "watch send settle failed: " + err.Error()})
+				}
+				continue
+			}
 			n.watchSendFrame = state.Frame
+			if n.backstopFires = jm.watchSendBackstopFires(cfg, state); n.backstopFires > 0 && n.OriginWatchID == "" {
+				n.OriginWatchID = cfg.watchID
+			}
 			n.Provenance = provenance.Union(n.Provenance, state.Provenance)
 			survivors = append(survivors, deliverableJobNotification{notification: n, watchJM: jm, watchCfg: cfg, watchState: state})
 			continue
