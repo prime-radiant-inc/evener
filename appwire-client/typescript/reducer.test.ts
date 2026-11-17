@@ -2609,6 +2609,41 @@ test("thread/status/changed to a non-active status clears the live work-clock an
   expect(model.activeTurnStartedAt).toBeUndefined();
 });
 
+// A usage-limit wait belongs to ONE running turn. The daemon's end-of-wait
+// signal (a no-delay quota_exceeded retry) does not cover every way a wait
+// ends: a Stop ends it through ctx.Done() and returns before that emit
+// (agent/session_quota_wait.go), so a model hydrated during a six-hour wait
+// would otherwise hold a future instant into the NEXT turn — where the quota
+// level wins over every other level and skips the quiet gate, reporting
+// "Waiting for quota · resumes in 6h" for a turn that is streaming output.
+// The status fold drops it on the same non-active transition as the anchor.
+test("thread/status/changed to a non-active status clears the usage-limit resume instant", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" } },
+    },
+    2000,
+  );
+
+  expect(model.status.type).toBe("awaiting");
+  expect(model.quotaResumesAt).toBeUndefined();
+});
+
 test("thread/status/changed staying active preserves the live work-clock anchor", () => {
   // The clear fires only on the rest transition; an active→active status frame
   // (e.g. an activeFlags change) must not drop a legitimately running anchor.
@@ -3109,6 +3144,82 @@ test("modelRetry clears once the model's own output item (agentMessage) complete
     1004,
   );
   expect(model.modelRetry).toBeUndefined();
+});
+
+// A usage limit the session waits out can end hours before its reset: a steer
+// or a model switch retries at once, and the daemon announces that retry with
+// no delay. The resume instant a read gave the model must go with it, or the
+// pane keeps counting down a wait that is already over.
+test("a quota wait's no-delay retry drops the resume instant a read set", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const waiting = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  expect(waiting.quotaResumesAt).toBeDefined();
+
+  const ended = applyNotification(
+    waiting,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    2000,
+  );
+
+  expect(ended.quotaResumesAt).toBeUndefined();
+});
+
+// The wait's own announcement carries a DELAY, not the reset instant, and the
+// instant came from the read. Deriving one here ("receivedAt + delay") would
+// be wrong by whatever the delivery took and by hours after a reconnect, so
+// the announcement leaves a held instant exactly as the read set it.
+test("a quota wait's announcement leaves the read's resume instant as it was", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const waiting = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const announced = applyNotification(
+    waiting,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    2000,
+  );
+
+  expect(announced.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
 });
 
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry
