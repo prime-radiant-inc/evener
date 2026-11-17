@@ -8,7 +8,6 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/execsupport/componentlog"
-	"primeradiant.com/evener/internal/apphistory"
 )
 
 type Server struct {
@@ -65,6 +64,16 @@ type Server struct {
 	// package tests use it to pin the response-visible activation boundary.
 	beforeHydrationCommit          func()
 	afterBroadcastConnectionLookup func(*Connection)
+	// afterFanoutEncoded runs once per delivered record with the number of
+	// payload encodes that record cost, after every delivery of it is enqueued
+	// and before the delivery gate is released. Production leaves it nil; the
+	// fanout benchmark reads it to report encodes per record rather than
+	// inferring them from elapsed time.
+	afterFanoutEncoded func(encodes int)
+	// deliveryGateHeld runs after the delivery gate is released with how long
+	// it was held. Production leaves it nil; the fanout benchmark reads it to
+	// report gate hold time rather than measuring the whole call.
+	deliveryGateHeld func(time.Duration)
 	// lifetime is canceled by Shutdown so a background consumer a server owns
 	// can end with it; lifetimeCancel is never nil after NewServer. Both are
 	// inert unless something reads Lifetime — see there.
@@ -173,13 +182,13 @@ func (s *Server) Router() *Router {
 func (s *Server) CommitProjection(commit func() []SequencedNotification) {
 	s.projectionMu.Lock()
 	records := commit()
-	deliveries := make([]notificationDelivery, 0, len(records))
+	fanouts := make([]recordFanout, 0, len(records))
 	for _, record := range records {
-		deliveries = append(deliveries, s.routeSequencedLocked(record)...)
+		fanouts = append(fanouts, recordFanout{record: record, deliveries: s.routeSequencedLocked(record)})
 	}
 	s.deliveryMu.Lock()
 	s.projectionMu.Unlock()
-	disconnected := s.deliverNotifications(deliveries)
+	disconnected := s.deliverFanout(fanouts)
 	s.deliveryMu.Unlock()
 	for _, conn := range disconnected {
 		s.evictSlowConsumer(conn, "a projection commit")
@@ -296,17 +305,11 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 	deliveries := s.routeSequencedLocked(record)
 	s.deliveryMu.Lock()
 	s.projectionMu.Unlock()
-	disconnected := s.deliverNotifications(deliveries)
+	disconnected := s.deliverFanout([]recordFanout{{record: record, deliveries: deliveries}})
 	s.deliveryMu.Unlock()
 	for _, conn := range disconnected {
 		s.evictSlowConsumer(conn, "a sequenced broadcast")
 	}
-}
-
-type notificationDelivery struct {
-	connection *Connection
-	record     SequencedNotification
-	content    *apphistory.Filter
 }
 
 // routeSequencedLocked runs under projectionMu, the same gate a capture holds
@@ -326,24 +329,10 @@ func (s *Server) routeSequencedLocked(record SequencedNotification) []notificati
 		}
 		deliveries = append(deliveries, notificationDelivery{
 			connection: conn,
-			record:     record,
 			content:    s.subs.content(connID, record.ThreadID),
 		})
 	}
 	return deliveries
-}
-
-func (s *Server) deliverNotifications(deliveries []notificationDelivery) []*Connection {
-	var disconnected []*Connection
-	for _, delivery := range deliveries {
-		if s.afterBroadcastConnectionLookup != nil {
-			s.afterBroadcastConnectionLookup(delivery.connection)
-		}
-		if !delivery.connection.enqueueHistory(delivery.record, delivery.content) {
-			disconnected = append(disconnected, delivery.connection)
-		}
-	}
-	return disconnected
 }
 
 // BroadcastAll sends a notification to every currently-connected client,
