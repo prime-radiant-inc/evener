@@ -264,19 +264,27 @@ func (s *LocalDaemonSource) ItemCandidatesFromRead(
 	observed := candidates
 	complete := response.OlderCursor == ""
 	// A bounded window alone cannot authenticate a formerly complete prefix,
-	// even when it overlaps the retained tail. Follow its actual continuation.
-	if exists && previous.SourceIdentity == daemonIdentity && previous.Prefix && !complete {
-		observed, err = s.localDaemonHiddenHistory(ctx, resolved, params.ItemsView, response.OlderCursor, candidates, previous.ItemCount)
+	// even when it overlaps the retained tail. Follow its actual continuation,
+	// but only across the short prefix a session that just grew past one page
+	// has: the walk costs one daemon round trip per page, so an unbounded one
+	// made every later read of a long session pay for the entire transcript
+	// again (#4689). Past the cap the retained span is dropped and identity
+	// rotates, which turns a cursor naming it into a typed stale error instead
+	// of a silently reused incarnation.
+	hiddenPrefix := exists && previous.SourceIdentity == daemonIdentity && previous.Prefix && !complete
+	hiddenPrefixUnverified := false
+	if hiddenPrefix {
+		observed, complete, err = s.localDaemonHiddenPrefix(ctx, resolved, params.ItemsView, response.OlderCursor, candidates, previous.ItemCount)
 		if err != nil {
 			return ItemCandidateResult{}, err
 		}
-		complete = true
+		hiddenPrefixUnverified = !complete
 	}
 	next, extends, err := s.advanceLocalDaemonItemSnapshot(ctx, resolved, params.ItemsView, previous, observed, complete)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	rotated := !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends
+	rotated := hiddenPrefixUnverified || !exists || incarnation == "" || previous.ThreadRef != resolved.pagingRef || previous.SourceIdentity != daemonIdentity || !extends
 	if !rotated {
 		if response.OlderCursor == "" {
 			// The shared advance proved both the retained span and native history
@@ -584,62 +592,92 @@ func (s *LocalDaemonSource) localDaemonNativeWindow(ctx context.Context, resolve
 	}, nil
 }
 
+// localDaemonHiddenPrefixMaxPages bounds the hidden-prefix walk a live read
+// performs. The walk authenticates a formerly complete span that a bounded page
+// hid, at one daemon round trip per page. A session that grew past a page or two
+// is the case worth authenticating, because its retained cursors still name
+// history a client may hold; a longer span costs more than the reconstruction is
+// worth, and the caller rotates identity so those cursors go stale instead.
+const localDaemonHiddenPrefixMaxPages = 4
+
+// localDaemonHiddenPrefix walks at most localDaemonHiddenPrefixMaxPages pages of
+// hidden history. It reports complete=false, with no error, when the prefix is
+// longer than that: the caller then rotates the snapshot identity rather than
+// paying for the rest of the transcript on every read.
+func (s *LocalDaemonSource) localDaemonHiddenPrefix(ctx context.Context, resolved localDaemonItemThread, itemsView, nativeCursor string, current []appitempaging.TranscriptItemCandidate, remaining int) ([]appitempaging.TranscriptItemCandidate, bool, error) {
+	if nativeCursor == "" {
+		return current, true, nil
+	}
+	history, complete, err := s.localDaemonHiddenHistory(ctx, resolved, itemsView, nativeCursor, current, remaining, localDaemonHiddenPrefixMaxPages)
+	if err != nil {
+		return nil, false, err
+	}
+	return history, complete, nil
+}
+
 // localDaemonHiddenHistory reconstructs chronological history to the native
 // beginning. Counts alone cannot identify an anchored prefix across an append gap.
-func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolved localDaemonItemThread, itemsView, nativeCursor string, current []appitempaging.TranscriptItemCandidate, remaining int) ([]appitempaging.TranscriptItemCandidate, error) {
+// maxPages bounds the walk; zero means no bound. It reports complete=false when
+// the walk stopped at that bound with pages still to read.
+func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolved localDaemonItemThread, itemsView, nativeCursor string, current []appitempaging.TranscriptItemCandidate, remaining, maxPages int) ([]appitempaging.TranscriptItemCandidate, bool, error) {
 	pages := [][]appitempaging.TranscriptItemCandidate{current}
 	count := len(current)
 	seen := make(map[string]bool)
+	read := 0
 	for nativeCursor != "" {
+		if maxPages > 0 && read >= maxPages {
+			return nil, false, nil
+		}
+		read++
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if seen[nativeCursor] {
-			return nil, errors.New("local daemon hidden item prefix cursor cycle detected")
+			return nil, false, errors.New("local daemon hidden item prefix cursor cycle detected")
 		}
 		seen[nativeCursor] = true
 		response, err := s.ListTurns(ctx, appwire.ThreadTurnsListParams{Ref: resolved.routeRef, ThreadID: resolved.threadID, Cursor: nativeCursor, ItemsView: itemsView, ItemLimit: min(max(remaining, 1), appwire.TranscriptItemPageLimit)})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := appwire.ValidateThreadTurnsListItemResponse(response); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		candidates, err := localDaemonItemCandidates(response.Data)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := appitempaging.ValidateCandidates(candidates); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(candidates) == 0 {
-			return nil, errors.New("local daemon hidden item prefix continuation made no progress")
+			return nil, false, errors.New("local daemon hidden item prefix continuation made no progress")
 		}
 		// Require strict backward progress, including across the current window.
 		newer := pages[len(pages)-1]
 		if len(newer) > 0 {
 			last, first := candidates[len(candidates)-1].Position, newer[0].Position
 			if appitempaging.ComparePosition(last, first) >= 0 {
-				return nil, appwire.TranscriptItemCursorStale()
+				return nil, false, appwire.TranscriptItemCursorStale()
 			}
 		}
 		if response.NextCursor != "" {
 			boundary := candidates[0].Position
 			requestCanonical, err := appitempaging.RebaseCursor(nativeCursor, boundary)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			nextCanonical, err := appitempaging.RebaseCursor(response.NextCursor, boundary)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			// The request boundary may differ from the returned page boundary;
 			// the latter must canonically name the returned page's first item.
 			if requestCanonical != nextCanonical || nextCanonical != response.NextCursor {
-				return nil, appwire.TranscriptItemCursorStale()
+				return nil, false, appwire.TranscriptItemCursorStale()
 			}
 		}
 		remaining -= len(candidates)
@@ -658,9 +696,9 @@ func (s *LocalDaemonSource) localDaemonHiddenHistory(ctx context.Context, resolv
 		history = append(history, pages[i]...)
 	}
 	if err := appitempaging.ValidateCandidates(history); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return history, ctx.Err()
+	return history, true, ctx.Err()
 }
 
 func localDaemonItemSnapshotIdentity(snapshot localDaemonItemSnapshot) appitempaging.CursorIdentity {
@@ -690,7 +728,7 @@ func (s *LocalDaemonSource) advanceLocalDaemonItemSnapshot(ctx context.Context, 
 	if err != nil {
 		return next, false, err
 	}
-	history, err := s.localDaemonHiddenHistory(ctx, resolved, itemsView, cursor, candidates[boundary:], previous.ItemCount)
+	history, complete, err := s.localDaemonHiddenHistory(ctx, resolved, itemsView, cursor, candidates[boundary:], previous.ItemCount, localDaemonHiddenPrefixMaxPages)
 	if ctx.Err() != nil {
 		return next, false, ctx.Err()
 	}
@@ -699,6 +737,11 @@ func (s *LocalDaemonSource) advanceLocalDaemonItemSnapshot(ctx context.Context, 
 			return next, false, nil
 		}
 		return next, false, err
+	}
+	if !complete {
+		// The retained span sits behind more history than the walk will read.
+		// Rotate rather than pay for it on every read.
+		return next, false, nil
 	}
 	return next, itemSnapshotStateMatchesCompleteCandidates(next, history), nil
 }
@@ -774,16 +817,19 @@ func (s *LocalDaemonSource) refreshLocalDaemonItemSnapshot(
 	previous, exists := s.itemSnapshots.peek(resolved.pagingRef)
 	incarnation := previous.Incarnation
 	complete := response.OlderCursor == ""
-	// A complete cached snapshot has authenticated its whole prefix, but a
-	// later bounded refresh hides that prefix. Reconstruct it before treating
-	// the suffix as an append; otherwise a rewrite in the hidden prefix could
-	// preserve the old outward cursor incarnation.
-	if exists && previous.SourceIdentity == daemonIdentity && previous.Prefix && !complete {
-		candidates, err = s.localDaemonHiddenHistory(ctx, resolved, itemsView, response.OlderCursor, candidates, previous.ItemCount)
+	// A complete cached snapshot has authenticated its whole prefix, but a later
+	// bounded refresh hides that prefix. Reconstruct it across a bounded number
+	// of pages; a longer span rotates the snapshot, as a read must not pay one
+	// daemon round trip per page of transcript.
+	hiddenPrefix := exists && previous.SourceIdentity == daemonIdentity && previous.Prefix && !complete
+	if hiddenPrefix {
+		candidates, complete, err = s.localDaemonHiddenPrefix(ctx, resolved, itemsView, response.OlderCursor, candidates, previous.ItemCount)
 		if err != nil {
 			return localDaemonItemSnapshot{}, err
 		}
-		complete = true
+		if !complete {
+			previous, exists = itemSnapshotState{}, false
+		}
 	}
 	next, extends, err := s.advanceLocalDaemonItemSnapshot(ctx, resolved, itemsView, previous, candidates, complete)
 	if err != nil {
