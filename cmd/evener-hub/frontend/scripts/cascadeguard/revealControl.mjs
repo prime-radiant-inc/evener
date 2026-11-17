@@ -12,12 +12,17 @@ export function revealControl(container, refusedSelector) {
   if (!container) return null;
   const controls = [...container.querySelectorAll("summary, button")];
   const usable = (control) => !control.matches(refusedSelector);
-  const fold = controls.find((control) => usable(control) && /^\d+ inactive subagents?$/.test(control.textContent.trim()));
+  const fold = controls.find(
+    (control) => usable(control) && /^(?:\d+ inactive subagents?|Inactive subagents)$/.test(control.textContent.trim()),
+  );
   // 4 is Node.DOCUMENT_POSITION_FOLLOWING. The numeric constant keeps the
   // serialized function independent of globals and of a browsing context.
   const DOCUMENT_POSITION_FOLLOWING = 4;
-  const inactiveVisible = fold !== undefined && [...container.querySelectorAll("[data-activity-anchor]")]
-    .some((node) => !!(fold.compareDocumentPosition(node) & DOCUMENT_POSITION_FOLLOWING));
+  const inactiveVisible =
+    fold !== undefined &&
+    [...container.querySelectorAll("[data-activity-anchor]")].some(
+      (node) => !!(fold.compareDocumentPosition(node) & DOCUMENT_POSITION_FOLLOWING),
+    );
   if (fold && !inactiveVisible) return fold;
   return controls.find((control) => usable(control) && control.textContent.trim().startsWith("Show ")) ?? null;
 }

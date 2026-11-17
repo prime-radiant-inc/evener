@@ -10,8 +10,8 @@
 // document) so the helper never depends on a browsing context.
 import { beforeEach, expect, test } from "vitest";
 import { REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
-import { revealControl, revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
+import { revealControl, revealControlStep, revealReadyExpr } from "./revealControl.mjs";
 
 const CONTAINER = '[data-testid="activity-sidebar"]';
 const MISSING_TARGET = `${CONTAINER} [data-activity-anchor="delegate:missing"]`;
@@ -30,9 +30,11 @@ function sidebar(markup, doc = document) {
 
 const current = (id) => `<button id="current-${id}" data-activity-anchor="delegate:${id}">running delegate</button>`;
 const inactive = (id) => `<button id="inactive-${id}" data-activity-anchor="delegate:${id}">finished delegate</button>`;
-const fold = ({ id = "inactive-fold", attrs = "" } = {}) => `<details><summary id="${id}" ${attrs}>51 inactive subagents</summary></details>`;
+const fold = ({ id = "inactive-fold", attrs = "" } = {}) =>
+  `<details><summary id="${id}" ${attrs}>51 inactive subagents</summary></details>`;
 const show = (id = "show-more") => `<button id="${id}">Show 20 more · 31 remaining</button>`;
-const loadMore = (id = "load-more") => `<div id="${id}" role="status" aria-label="Loading"><div data-testid="skeleton-line"></div></div>`;
+const loadMore = (id = "load-more") =>
+  `<div id="${id}" role="status" aria-label="Loading"><div data-testid="skeleton-line"></div></div>`;
 
 const pick = (root, refused = REFUSED_BUTTON_SELECTOR) => revealControl(root, refused)?.id ?? null;
 
@@ -47,7 +49,9 @@ function evaluateStep(root, selector, topmost) {
 function clickRecorder(root) {
   const clicked = { id: null };
   for (const button of root.querySelectorAll("button, summary"))
-    button.addEventListener("click", (event) => { clicked.id = event.currentTarget.id; });
+    button.addEventListener("click", (event) => {
+      clicked.id = event.currentTarget.id;
+    });
   return clicked;
 }
 
@@ -61,6 +65,12 @@ test("a closed inactive disclosure beside a current row is the control", () => {
 
 test("a closed inactive disclosure without current rows stays the control", () => {
   expect(pick(sidebar(fold()))).toBe("inactive-fold");
+});
+
+test("an unknown inactive total still exposes the native disclosure", () => {
+  const root = sidebar(`${current("a")}<details><summary id="inactive-fold">Inactive subagents</summary></details>`);
+  expect(pick(root)).toBe("inactive-fold");
+  expect(gate(MISSING_TARGET)).toBe(true);
 });
 
 test("an open fold (an anchor follows it) presses Show more", () => {
@@ -103,7 +113,13 @@ test("the helper keeps working on a document with no browsing context", () => {
 
 test("the serialized function source needs neither the document nor the Node global", () => {
   const root = sidebar(`${current("a")}${fold()}`);
-  const evaluate = new Function("container", "refused", "Node", "document", `return (${revealControl})(container, refused);`);
+  const evaluate = new Function(
+    "container",
+    "refused",
+    "Node",
+    "document",
+    `return (${revealControl})(container, refused);`,
+  );
   expect(evaluate(root, REFUSED_BUTTON_SELECTOR, undefined, undefined)?.id).toBe("inactive-fold");
 });
 
