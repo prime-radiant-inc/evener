@@ -318,7 +318,7 @@ test("a second message composed before the first turn's status frame arrives que
 // behind it (app_threadread.go's pastEntryThread) and "closed" is a session
 // that shut down in front of us; the hub hands the same resumable capability
 // set to both (app_threadread.go's pastThreadCapabilities, pushed at close by
-// stampClosedThreadCapabilities), so the fixture only varies the status.
+// stampStatusCapabilities), so the fixture only varies the status.
 //
 // The daemon exists by the time the queue goes out: MutationDispatcher
 // serializes per targetRef, so the second mutation is not dispatched until the
