@@ -132,7 +132,9 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
-		if read.Thread.Evener.ResumeRequired {
+		// A normal saved snapshot is a successful notLoaded read; ResumeRequired
+		// marks only the separate recovery fence. Neither carries live authority.
+		if read.Thread.Status.Type == appwire.ThreadStatusNotLoaded || read.Thread.Evener.ResumeRequired {
 			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("model control authority requires session resume")
 		}
 		return read, nil

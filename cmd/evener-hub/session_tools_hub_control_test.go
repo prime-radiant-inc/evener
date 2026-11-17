@@ -492,7 +492,8 @@ func TestManagerSessionControlModelResumesRemoteSavedThread(t *testing.T) {
 			readCalls++
 			if !resumed {
 				return hostAdminReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
-					ID: "worker", Evener: appwire.EvenerThread{Ref: remoteRef, ResumeRequired: true},
+					ID: "worker", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
+					Evener: appwire.EvenerThread{Ref: remoteRef},
 				}}}
 			}
 			return hostAdminReply{result: appwire.ThreadReadResponse{
