@@ -1,11 +1,13 @@
 package transcript
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -88,21 +90,6 @@ func corpusCases(t *testing.T) []corpusCase {
 		corpusLine(t, 1, corpusTurn(schema.TurnCheckpoint, "ck1")) +
 		corpusLine(t, 2, corpusTurn(schema.TurnUserInput, "u2")) +
 		corpusLine(t, 3, corpusTurn(schema.TurnAssistant, "a3"))
-
-	// A steering attention row and its resolution straddling the anchor, a
-	// client-mutation input, and a typed compaction receipt before it: the
-	// four prefix facts resume's callers fold across the whole transcript.
-	attention := corpusTurn(schema.TurnSteering, "attention-report")
-	attention.AttentionID = "att-1"
-	resolution := corpusTurn(schema.TurnAttentionResolution, "")
-	resolution.AttentionID = ""
-	resolution.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "att-1", Disposition: "consumed"}
-	mutation := corpusTurn(schema.TurnUserInput, "retry-safe")
-	mutation.ClientMutationID = "cm-1"
-	receipt := corpusTurn(schema.TurnAssistant, "skill")
-	receipt.SkillState = &schema.SkillTurnState{
-		Compaction: &schema.SkillCompactionReceipt{Revision: 7, SessionID: "CORPUS", Phase: "published"},
-	}
 
 	return []corpusCase{
 		{
@@ -253,16 +240,19 @@ func TestResumeCorpus(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
 				t.Fatalf("write corpus transcript: %v", err)
 			}
-			before, err := os.Stat(path)
-			if err != nil {
-				t.Fatalf("stat corpus transcript: %v", err)
-			}
 
 			w, entries, resumeErr := OpenWriterForSession(path, "CORPUS")
 
-			after, err := os.Stat(path)
+			// Compare the bytes, not the length: a resume that rewrote bytes in
+			// place, or cut at the wrong boundary while reporting a consistent
+			// RecordedLength, would pass a size-only check.
+			resumedBytes, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("stat corpus transcript after resume: %v", err)
+				t.Fatalf("read corpus transcript after resume: %v", err)
+			}
+			truncated := len(resumedBytes) != len(tc.body)
+			if truncated != tc.wantTruncated {
+				t.Fatalf("tail truncated = %v, want %v (%d bytes before, %d after)", truncated, tc.wantTruncated, len(tc.body), len(resumedBytes))
 			}
 
 			if !tc.wantFailure {
@@ -287,13 +277,19 @@ func TestResumeCorpus(t *testing.T) {
 				}
 				// Fail closed includes leaving the file alone: a resume that
 				// cannot validate the file must not truncate it.
-				if after.Size() != before.Size() {
-					t.Fatalf("failed resume changed the file: %d bytes before, %d after", before.Size(), after.Size())
+				if !bytes.Equal(resumedBytes, []byte(tc.body)) {
+					t.Fatalf("failed resume changed the file: got %d bytes %q, want the original %d bytes",
+						len(resumedBytes), resumedBytes, len(tc.body))
 				}
 				return
 			}
 
 			defer func() { _ = w.Close() }()
+
+			if want := corpusResumedBody(tc.body); !bytes.Equal(resumedBytes, []byte(want)) {
+				t.Fatalf("resumed file = %d bytes %q, want the body through its last newline: %d bytes %q",
+					len(resumedBytes), resumedBytes, len(want), want)
+			}
 
 			got := make([]string, 0, len(entries))
 			for _, e := range entries {
@@ -311,14 +307,10 @@ func TestResumeCorpus(t *testing.T) {
 				t.Fatal("resumed entries are nil; a header-only transcript must resume with an empty, non-nil slice")
 			}
 
-			truncated := after.Size() != before.Size()
-			if truncated != tc.wantTruncated {
-				t.Fatalf("tail truncated = %v, want %v (%d bytes before, %d after)", truncated, tc.wantTruncated, before.Size(), after.Size())
-			}
 			// The recorded length is the file's length once any crash tail is
 			// cut: the next append lands there and nowhere else.
-			if int64(after.Size()) != w.RecordedLength() {
-				t.Fatalf("RecordedLength = %d, want the resumed file's %d bytes", w.RecordedLength(), after.Size())
+			if int64(len(resumedBytes)) != w.RecordedLength() {
+				t.Fatalf("RecordedLength = %d, want the resumed file's %d bytes", w.RecordedLength(), len(resumedBytes))
 			}
 			if got := w.Header().SessionID; got != "CORPUS" {
 				t.Fatalf("resumed header session = %q, want %q", got, "CORPUS")
@@ -336,11 +328,22 @@ func TestResumeCorpus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("stat after post-resume append: %v", err)
 			}
-			if grown.Size() <= after.Size() {
-				t.Fatalf("post-resume append did not grow the file: %d then %d", after.Size(), grown.Size())
+			if grown.Size() <= int64(len(resumedBytes)) {
+				t.Fatalf("post-resume append did not grow the file: %d then %d", len(resumedBytes), grown.Size())
 			}
 		})
 	}
+}
+
+// corpusResumedBody is the body a successful resume leaves: every
+// newline-terminated record and nothing of a torn tail. A body that already
+// ends in a newline has no tail to cut.
+func corpusResumedBody(body string) string {
+	if strings.HasSuffix(body, "\n") {
+		return body
+	}
+	cut := strings.LastIndexByte(body, '\n')
+	return body[:cut+1]
 }
 
 func corpusEntryName(e Entry) string {
