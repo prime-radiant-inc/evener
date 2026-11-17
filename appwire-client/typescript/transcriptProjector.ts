@@ -686,28 +686,35 @@ function assembleProjection(
   };
 }
 
-export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
-  const normalized = normalizeConfig(config);
-  const vector = contentVectorForConfig(normalized);
-  const sourceIndexRank = sourceIndexRanks(model.turns);
+// Projects every turn in order, threading the round display keys and the
+// running projected index from one turn into the next. Both whole-thread
+// derivations - projectThread and the incremental projector's fallback - come
+// through here, so the two cannot drift apart.
+function projectTurns(
+  turns: readonly TurnModel[],
+  normalized: TranscriptDisplayConfigV1,
+  vector: ContentVector,
+  sourceIndexOf: (item: ItemModel) => number,
+): TurnProjection[] {
   // Rounds whose first reply already took the round key (see displayKeyFor).
   const keyedRounds = new Set<string>();
   const parts: TurnProjection[] = [];
   let projectedIndex = 0;
-  for (const turn of model.turns) {
-    // Always present: sourceIndexRanks just built this map from these same
-    // turns. The fallback is never taken; it only avoids a non-null assertion.
-    const part = projectTurn(
-      turn,
-      normalized,
-      vector,
-      (item) => sourceIndexRank.get(item) ?? 0,
-      keyedRounds,
-      projectedIndex,
-    );
+  for (const turn of turns) {
+    const part = projectTurn(turn, normalized, vector, sourceIndexOf, keyedRounds, projectedIndex);
     parts.push(part);
     projectedIndex += part.entryCount;
   }
+  return parts;
+}
+
+export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
+  const normalized = normalizeConfig(config);
+  const vector = contentVectorForConfig(normalized);
+  const sourceIndexRank = sourceIndexRanks(model.turns);
+  // Always present: sourceIndexRanks just built this map from these same
+  // turns. The fallback is never taken; it only avoids a non-null assertion.
+  const parts = projectTurns(model.turns, normalized, vector, (item) => sourceIndexRank.get(item) ?? 0);
   return assembleProjection(parts, normalized);
 }
 
@@ -839,30 +846,17 @@ class IncrementalTranscriptProjector implements TranscriptProjector {
     const configKey = configFingerprint(config);
     const normalized = normalizeConfig(config);
     const vector = contentVectorForConfig(normalized);
-    const ordered = positionOrderedItems(model.turns.flatMap((turn) => turn.items));
-    const byObject = new Map<ItemModel, number>();
+    // The same position-sorted document and the same rank assignment
+    // projectThread uses, so the fallback and the reference derivation cannot
+    // disagree about a source index.
+    const byObject = sourceIndexRanks(model.turns);
     const byIdentity = new Map<string, number>();
     let itemCount = 0;
     for (const turn of model.turns) itemCount += turn.items.length;
-    for (const [index, item] of ordered.entries()) {
-      byObject.set(item, index);
+    for (const [item, index] of byObject) {
       byIdentity.set(itemRankIdentity(item), index);
     }
-    const keyedRounds = new Set<string>();
-    const parts: TurnProjection[] = [];
-    let projectedIndex = 0;
-    for (const turn of model.turns) {
-      const part = projectTurn(
-        turn,
-        normalized,
-        vector,
-        (item) => byObject.get(item) ?? 0,
-        keyedRounds,
-        projectedIndex,
-      );
-      parts.push(part);
-      projectedIndex += part.entryCount;
-    }
+    const parts = projectTurns(model.turns, normalized, vector, (item) => byObject.get(item) ?? 0);
     const projection = assembleProjection(parts, normalized);
     this.held = {
       configKey,
