@@ -1075,6 +1075,37 @@ def tail_share(res: RunResult) -> float | None:
     return res.runaway_share
 
 
+def run_verdict(res: RunResult) -> str:
+    """What one run counts as: "passed" | "slow-but-correct" | "failed" | "unverified".
+
+    The one place a pass is decided, so the columns cannot disagree (#6605).
+
+    A timed-out run is not a pass. `final_compiles_clean` alone is the wrong test:
+    `verify_final_state` runs after the process ends, so a run killed at the time
+    cap with an already-clean workspace records `True`. The pass column counted
+    those while the legend said timeouts count as a fail, and the share list
+    excluded them, so one row held both readings at once. Six of the 93 runs in
+    the overfull-hbox matrix were in that state, on six arms sitting at the n=3
+    boundary. A slow-but-correct run is its own category rather than either
+    column: it separates "too slow" from "wrong". It is not a pass, because the
+    benchmark the numbers are compared against scores a timeout as a failure.
+
+    `None` was never verified (a task with no oracle), which is not a fail.
+    """
+    if res.final_compiles_clean is None:
+        return "unverified"
+    if not res.final_compiles_clean:
+        return "failed"
+    if res.timed_out:
+        return "slow-but-correct"
+    return "passed"
+
+
+def is_pass(res: RunResult) -> bool:
+    """Whether a run counts toward the pass column. See run_verdict()."""
+    return run_verdict(res) == "passed"
+
+
 def summarise(rows: list[RunResult]) -> list[dict]:
     by_arm: dict[str, list[RunResult]] = {}
     for r in rows:
@@ -1082,7 +1113,8 @@ def summarise(rows: list[RunResult]) -> list[dict]:
     out = []
     for arm, rs in by_arm.items():
         graded = [r for r in rs if not r.timed_out]
-        passes = sum(1 for r in rs if r.final_compiles_clean)
+        verdicts = [run_verdict(r) for r in rs]
+        passes = sum(1 for r in rs if is_pass(r))
         # A measured share only. An unmeasurable tail is counted in
         # `unmeasured_tails`, never folded in as 0.0 (#6598).
         shares = sorted(s for s in (tail_share(r) for r in graded) if s is not None)
@@ -1099,6 +1131,8 @@ def summarise(rows: list[RunResult]) -> list[dict]:
             "runs": len(rs),
             "pass": passes,
             "timeouts": sum(1 for r in rs if r.timed_out),
+            "slow_but_correct": verdicts.count("slow-but-correct"),
+            "unverified": verdicts.count("unverified"),
             "shares": shares,
             "median_total_calls": calls[len(calls) // 2] if calls else None,
             "median_tail_work": tails[len(tails) // 2] if tails else None,
@@ -1146,7 +1180,7 @@ def baseline_summary(rows: list[RunResult]) -> dict:
     graded = [r for r in base if not r.timed_out]
     return {
         "runs": len(base),
-        "pass": sum(1 for r in base if r.final_compiles_clean),
+        "pass": sum(1 for r in base if is_pass(r)),
         "shares": sorted(s for s in (tail_share(r) for r in graded) if s is not None),
         "unmeasured": sum(1 for r in graded if tail_share(r) is None),
     }
@@ -1168,22 +1202,26 @@ def write_report(root: Path) -> None:
     print(f"baseline pass: {base['pass']}/{base['runs']}\n")
 
     print(f"{'arm':<28}{'src':<8}{'kind':<22}{'deliv':<18}"
-          f"{'pass':>6}{'t/o':>5}{'unmeas':>7}{'share':>16}{'calls':>7}{'tail':>6}")
-    print("-" * 123)
+          f"{'pass':>6}{'slow':>5}{'t/o':>5}{'unmeas':>7}{'share':>16}"
+          f"{'calls':>7}{'tail':>6}")
+    print("-" * 128)
     for s in sorted(summarise(rows), key=arm_order_key):
         shares = " ".join(render_share(x) for x in s["shares"])
         shares = shares or UNMEASURED_SHARE
         # A measured zero is data and prints as 0; only an absent value is "-".
         unmeas = s["unmeasured_tails"]
+        slow = s["slow_but_correct"]
         calls = "-" if s["median_total_calls"] is None else s["median_total_calls"]
         tail = "-" if s["median_tail_work"] is None else s["median_tail_work"]
         print(f"{s['arm']:<28}{s['source']:<8}{s['kind']:<22}{s['delivery']:<18}"
-              f"{s['pass']:>4}/{s['runs']:<1}{s['timeouts']:>5}{unmeas:>7}{shares:>16}"
-              f"{calls:>7}{tail:>6}")
+              f"{s['pass']:>4}/{s['runs']:<1}{slow:>5}{s['timeouts']:>5}"
+              f"{unmeas:>7}{shares:>16}{calls:>7}{tail:>6}")
     print("\nkind      = prohibition | redirection | subtraction | "
           "rationalization-table | mixed | control")
     print("deliv     = append | doctrine:<anchor> | task | subtract | unexecutable")
-    print("pass      = final workspace passed the task's own check; timeouts count as fail")
+    print("pass      = the task's own check passed and the run finished inside the cap")
+    print("slow      = the check passed but the run was killed at the cap, so it counts "
+          "as a fail")
     print("tail      = calls after acceptance excluding communicate/notes bookkeeping")
     print(f"unmeas    = graded runs whose tail is unmeasurable: acceptance was never "
           f"detected, so the share is unknown and prints as {UNMEASURED_SHARE}")
@@ -1191,7 +1229,7 @@ def write_report(root: Path) -> None:
     # Why runs failed, so a low pass count can be read without the workdirs.
     reasons: dict[str, int] = {}
     for r in rows:
-        if r.final_compiles_clean is False and r.verify_reason:
+        if run_verdict(r) == "failed" and r.verify_reason:
             reasons[r.verify_reason] = reasons.get(r.verify_reason, 0) + 1
     if reasons:
         print("\nfailure reasons:")
@@ -1285,7 +1323,7 @@ def main() -> None:
             print(f"    calls={res.total_calls} acc={res.acceptance_call_index} "
                   f"tail={res.calls_after_acceptance} work={res.tail_work_calls} "
                   f"share={render_share(tail_share(res))} "
-                  f"pass={res.final_compiles_clean} "
+                  f"verdict={run_verdict(res)} "
                   f"to={res.timed_out} wall={res.wall_s}s "
                   f"vanilla={res.prompt_is_vanilla}", flush=True)
             with runs_path.open("a") as f:

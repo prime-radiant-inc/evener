@@ -463,4 +463,71 @@ def test_baseline_header_and_table_agree_on_the_shares(rae):
     assert base["shares"] == row["shares"]
     assert base["unmeasured"] == row["unmeasured_tails"]
     assert base["runs"] == 3
-    assert base["pass"] == 3
+    # Every rep is in the denominator, but the rep killed at the cap is not a
+    # pass: it passed the workspace check, which is a different thing (#6605).
+    assert base["pass"] == 2
+    assert row["slow_but_correct"] == 1
+
+
+def test_a_timed_out_run_is_not_a_pass(rae):
+    """A run killed at the cap is not a pass, whatever the workspace check says (#6605).
+
+    `verify_final_state` runs after the process ends, so a run killed at the
+    timeout with an already-clean workspace records `final_compiles_clean=True`.
+    The pass column counted it while the legend said timeouts count as a fail,
+    and the share list excluded it, so one row carried both readings at once.
+    Six of the 93 runs in the overfull-hbox matrix were in that state.
+
+    The classification, not the printed word, is the assertion: the run is a
+    timeout, and a timeout is not a pass.
+    """
+    finished_clean = rae.RunResult(arm="arm", task="overfull-hbox", rep=0,
+                                   final_compiles_clean=True, timed_out=False,
+                                   acceptance_call_index=20, runaway_share=0.2,
+                                   total_calls=25)
+    killed_clean = rae.RunResult(arm="arm", task="overfull-hbox", rep=1,
+                                 final_compiles_clean=True, timed_out=True,
+                                 acceptance_call_index=20, runaway_share=0.2,
+                                 total_calls=25)
+    killed_dirty = rae.RunResult(arm="arm", task="overfull-hbox", rep=2,
+                                 final_compiles_clean=False, timed_out=True,
+                                 acceptance_call_index=None, total_calls=25)
+
+    assert rae.run_verdict(finished_clean) == "passed"
+    assert rae.run_verdict(killed_clean) == "slow-but-correct"
+    assert rae.run_verdict(killed_dirty) == "failed"
+    assert rae.is_pass(finished_clean) is True
+    assert rae.is_pass(killed_clean) is False
+    assert rae.is_pass(killed_dirty) is False
+
+    # The row must account for all three without the timeout hiding in either
+    # the pass or the fail column.
+    (summary,) = rae.summarise([finished_clean, killed_clean, killed_dirty])
+    assert summary["runs"] == 3
+    assert summary["pass"] == 1
+    assert summary["slow_but_correct"] == 1
+    assert summary["timeouts"] == 2
+
+
+def test_the_pass_column_and_the_share_denominator_agree(rae):
+    """A timed-out pass must not be in the pass column while absent from shares (#6605).
+
+    The two readings differed by a whole rep on every arm sitting at the n=3
+    boundary, because the pass column counted timed-out clean runs and the share
+    list drew from `graded`, which excludes them.
+    """
+    finished = rae.RunResult(arm="arm", task="overfull-hbox", rep=0,
+                              final_compiles_clean=True, timed_out=False,
+                              acceptance_call_index=10, runaway_share=0.25,
+                              total_calls=40)
+    killed = rae.RunResult(arm="arm", task="overfull-hbox", rep=1,
+                           final_compiles_clean=True, timed_out=True,
+                           acceptance_call_index=10, runaway_share=0.25,
+                           total_calls=40)
+
+    (summary,) = rae.summarise([finished, killed])
+    assert summary["pass"] == 1
+    # One graded run, so exactly one share: the column and the denominator
+    # describe the same set.
+    assert summary["shares"] == [0.25]
+    assert summary["unmeasured_tails"] == 0
