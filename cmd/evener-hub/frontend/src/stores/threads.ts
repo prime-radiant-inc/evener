@@ -7018,6 +7018,11 @@ function handleNotification(n: AnyNotification): void {
   const now = Date.now();
   const wiredClient = getWiredClient();
   const route = notificationRoutingKey(n);
+  const routedRefs = route
+    ? "ref" in route
+      ? [route.ref]
+      : [...(currentRefsByThreadId.get(route.threadId) ?? [])]
+    : [];
   const entryAcceptedRefs = new Set<string>();
   const clearReplayRoutes: Array<{ fixture: EntryTranscriptRoute; repository: TranscriptRepository }> = [];
   // Synchronous repository publication can replace the store model before its
@@ -7025,8 +7030,7 @@ function handleNotification(n: AnyNotification): void {
   // settlement, while folding content from the repository's current model.
   const previousThreads = threadsStore.getState().threads;
   if (route) {
-    const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
-    for (const ref of refs) {
+    for (const ref of routedRefs) {
       const fixture = entryTranscriptRoute(ref);
       if (fixture && threadsStore.getState().clearInFlight !== undefined && canonicalThreadOwnerActive(ref)) {
         fixture.clearRefreshGeneration = hydrationOwnerGeneration("thread", ref);
@@ -7062,8 +7066,7 @@ function handleNotification(n: AnyNotification): void {
   }
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
   if (route) {
-    const refs = "ref" in route ? [route.ref] : [...(currentRefsByThreadId.get(route.threadId) ?? [])];
-    for (const ref of refs) {
+    for (const ref of routedRefs) {
       const pending = pendingThreadHydrations.get(ref);
       if (pending && targetsPendingHydration(n, pending)) continue;
       const sequence = (currentAppliedSequences.get(ref) ?? 0) + 1;
@@ -7315,6 +7318,17 @@ function handleNotification(n: AnyNotification): void {
   // reacts to it, so a re-read is never missed nor duplicated per method.
   const invalidatedThreadRefs = newlyInvalidatedHistoryRefs(threads, publishableThreads, publishableChangedThreads);
   const invalidatedWatchedRefs = newlyInvalidatedHistoryRefs(watchedThreads, nextWatchedThreads, changedWatchedThreads);
+  const recoveringThreadRefs = [
+    ...new Set([
+      ...newlyRecoveringModelControlRefs(threads, publishableThreads, publishableChangedThreads),
+      ...newlyRecoveringModelControlRefs(previousThreads, publishableThreads ?? threads, routedRefs),
+    ]),
+  ];
+  const recoveringWatchedRefs = newlyRecoveringModelControlRefs(
+    watchedThreads,
+    nextWatchedThreads,
+    changedWatchedThreads,
+  );
 
   const patch: Partial<ThreadsStoreState> = {};
   if (publishableThreads) {
@@ -7348,7 +7362,12 @@ function handleNotification(n: AnyNotification): void {
     });
   }
 
-  if (invalidatedThreadRefs.length > 0 || invalidatedWatchedRefs.length > 0) {
+  if (
+    invalidatedThreadRefs.length > 0 ||
+    invalidatedWatchedRefs.length > 0 ||
+    recoveringThreadRefs.length > 0 ||
+    recoveringWatchedRefs.length > 0
+  ) {
     const client = getWiredClient();
     const epoch = getReadyEpoch();
     if (client) {
@@ -7356,9 +7375,10 @@ function handleNotification(n: AnyNotification): void {
       // refreshTrackedThread/refreshWatchedThread own their own currency
       // checks (client/epoch/refCount), so a race with a release or a
       // reconnect that lands before this read resolves is already handled.
-      for (const ref of invalidatedThreadRefs)
+      for (const ref of new Set([...invalidatedThreadRefs, ...recoveringThreadRefs]))
         void refreshTrackedThread(client, epoch, ref, true, { intent: hydrationIntentFor(ref) });
-      for (const ref of invalidatedWatchedRefs) void refreshWatchedThread(client, epoch, ref, true);
+      for (const ref of new Set([...invalidatedWatchedRefs, ...recoveringWatchedRefs]))
+        void refreshWatchedThread(client, epoch, ref, true);
     }
   }
 }
@@ -7379,6 +7399,21 @@ function newlyInvalidatedHistoryRefs(
     const before = prev.get(ref)?.history?.invalidatedAtGeneration;
     const after = next.get(ref)?.history?.invalidatedAtGeneration;
     if (after !== undefined && after !== before) refs.push(ref);
+  }
+  return refs;
+}
+
+function newlyRecoveringModelControlRefs(
+  prev: Map<string, ThreadModel>,
+  next: Map<string, ThreadModel> | null,
+  candidates: readonly string[],
+): string[] {
+  if (!next) return [];
+  const refs: string[] = [];
+  for (const ref of candidates) {
+    if (prev.get(ref)?.modelControlState.kind === "ready" && next.get(ref)?.modelControlState.kind === "recovering") {
+      refs.push(ref);
+    }
   }
   return refs;
 }

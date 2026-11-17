@@ -1,6 +1,12 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, it } from "vitest";
-import type { ModelListResponse, Thread, ThreadClearResponse, ThreadModelSetParams } from "@evener/appwire-client";
+import type {
+	ModelListResponse,
+	Thread,
+	ThreadClearResponse,
+	ThreadModelSetParams,
+	ThreadReadResponse,
+} from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
 import { createConversationStore } from "./conversation/state/conversation";
 import { CommandNotSentError, submitComposerCommand } from "./composerCommand";
@@ -1051,16 +1057,21 @@ it("installs a clear replacement without allowing an older read to restore its t
 			});
 		const clear = service.clear();
 		await clearing;
-		io.read = () =>
-			new Promise((resolve) => {
-				releaseRead = () => resolve({ thread: structuredClone(thread) });
+		let reads = 0;
+		io.read = () => {
+			reads++;
+			if (reads > 1) return Promise.resolve(modelControlRead(replacement));
+			return new Promise((resolve) => {
+				releaseRead = () => resolve(modelControlRead(structuredClone(thread)));
 				readEntered();
 			});
+		};
 		const oldRead = store.getState().rehydrate(service);
 		await reading;
 		releaseClear();
 		const response = await clear;
 		await store.getState().openProjected(service, "local:test", service.adoptClear(response));
+		expect(reads).toBe(2);
 		releaseRead();
 		await oldRead;
 		expect(store.getState().conversation).toMatchObject({
@@ -1084,6 +1095,95 @@ it("installs a clear replacement without allowing an older read to restore its t
 		service.close();
 	}
 });
+
+it.each(["resync before response", "response before resync"])(
+	"establishes the clear replacement model authority with %s",
+	async (ordering) => {
+		const { io, thread, service } = boundary();
+		thread.evener.capabilities.clear = true;
+		const store = createConversationStore();
+		let releaseClear!: () => void;
+		let releaseResync!: () => void;
+		let clearEntered!: () => void;
+		let resyncEntered!: () => void;
+		const clearing = new Promise<void>((resolve) => {
+			clearEntered = resolve;
+		});
+		const resyncing = new Promise<void>((resolve) => {
+			resyncEntered = resolve;
+		});
+		try {
+			let reads = 1;
+			await store.getState().openProjected(service, "local:test");
+			const replacement = structuredClone(thread);
+			replacement.id = "replacement-thread";
+			replacement.evener.instanceId = "replacement-instance";
+			const replacementRead = modelControlRead(replacement);
+			io.lifecycle = (method, raw) =>
+				new Promise((resolve) => {
+					const params = raw as { clientMutationId: string };
+					expect(method).toBe("thread/clear");
+					releaseClear = () =>
+						resolve({
+							ref: "local:test",
+							thread: replacement,
+							receipt: {
+								clientMutationId: params.clientMutationId,
+								disposition: "applied",
+								threadId: replacement.id,
+								instanceId: replacement.evener.instanceId,
+								projectionState: "reflected",
+							},
+						});
+					clearEntered();
+				});
+			const clear = service.clear();
+			await clearing;
+			io.read = () => {
+				reads++;
+				if (reads === 2)
+					return new Promise<ThreadReadResponse>((resolve) => {
+						releaseResync = () => resolve(replacementRead);
+						resyncEntered();
+					});
+				return Promise.resolve(replacementRead);
+			};
+			const resync = store.getState().rehydrate(service);
+			await resyncing;
+
+			if (ordering === "resync before response") {
+				releaseResync();
+				await resync;
+				releaseClear();
+			} else {
+				releaseClear();
+			}
+			const response = await clear;
+			await store.getState().openProjected(service, "local:test", service.adoptClear(response));
+			if (ordering === "response before resync") {
+				releaseResync();
+				await resync;
+			}
+
+			expect(reads).toBe(3);
+			expect(store.getState().conversation?.modelControlState).toMatchObject({
+				kind: "ready",
+				snapshot: { authority: { instanceId: "replacement-instance" } },
+			});
+			let modelSets = 0;
+			io.lifecycle = async (method, raw) => {
+				expect(method).toBe("thread/model/set");
+				modelSets++;
+				return acceptedModelControl(raw as ThreadModelSetParams);
+			};
+			await service.changeModel("scripted", "alternate");
+			expect(modelSets).toBe(1);
+		} finally {
+			store.getState().close();
+			service.close();
+		}
+	},
+);
 
 it.each(["accepted", "uncertain", "wrong receipt", "wrong ref"])(
 	"checkpoints clear and validates its replacement: %s",

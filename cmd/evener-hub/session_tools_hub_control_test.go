@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -258,7 +259,7 @@ func managerModelReadyRead(ref string) appwire.ThreadReadResponse {
 	snapshot := appwire.ModelControlSnapshot{
 		Authority: appwire.ModelControlAuthority{InstanceID: "sess_1", BootGeneration: "boot-2"},
 		Revision:  22,
-		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{}},
 	}
 	return appwire.ThreadReadResponse{
 		Thread: appwire.Thread{ID: "model-response", Evener: appwire.EvenerThread{
@@ -331,6 +332,9 @@ func TestManagerSessionControlModelAuthorityAdapter(t *testing.T) {
 		{name: "absent version", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.Capabilities.ModelControlVersion = 0 }},
 		{name: "unknown version", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.Capabilities.ModelControlVersion = 2 }},
 		{name: "missing snapshot", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.ModelControl = nil }},
+		{name: "missing reasoning levels", mutate: func(read *appwire.ThreadReadResponse) {
+			read.Thread.Evener.ModelControl.Active.ReasoningEffortLevels = nil
+		}},
 		{name: "mismatched instance", mutate: func(read *appwire.ThreadReadResponse) { read.Thread.Evener.ModelControl.Authority.InstanceID = "other" }},
 		{name: "mismatched boot", mutate: func(read *appwire.ThreadReadResponse) {
 			read.Thread.Evener.ModelControl.Authority.BootGeneration = "other"
@@ -409,7 +413,7 @@ func TestManagerSessionControlModelResumesPastThread(t *testing.T) {
 			snapshot := appwire.ModelControlSnapshot{
 				Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "boot-manager"},
 				Revision:  1,
-				Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+				Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{}},
 			}
 			return appwire.ThreadReadResponse{
 				Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{
@@ -428,7 +432,7 @@ func TestManagerSessionControlModelResumesPastThread(t *testing.T) {
 			snapshot := appwire.ModelControlSnapshot{
 				Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "boot-manager"},
 				Revision:  2,
-				Active:    appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model},
+				Active:    appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}},
 				Desired: &appwire.ModelControlDesired{
 					RequestSequence: 1, ClientMutationID: params.ClientMutationID,
 					ModelProvider: params.ModelProvider, Model: params.Model,
@@ -463,6 +467,86 @@ func TestManagerSessionControlModelResumesPastThread(t *testing.T) {
 	}
 	if response.Model == nil || response.Model.ModelControl == nil || response.Model.ModelControl.Active.Model != "gpt-5.6-sol" {
 		t.Fatalf("cold Manager response = %+v", response.Model)
+	}
+}
+
+func TestManagerSessionControlModelResumesRemoteSavedThread(t *testing.T) {
+	const (
+		ref       = "remote:worker"
+		remoteRef = "local:worker"
+	)
+	resumed := false
+	readCalls := 0
+	resumeCalls := 0
+	modelCalls := 0
+	readySnapshot := appwire.ModelControlSnapshot{
+		Authority: appwire.ModelControlAuthority{InstanceID: "worker-instance", BootGeneration: "worker-boot"},
+		Revision:  3,
+		Active: appwire.ModelControlActive{
+			ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{},
+		},
+	}
+	client, _, _ := newScriptedAdminClient(t, func(method string, raw json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodThreadRead:
+			readCalls++
+			if !resumed {
+				return hostAdminReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "worker", Evener: appwire.EvenerThread{Ref: remoteRef, ResumeRequired: true},
+				}}}
+			}
+			return hostAdminReply{result: appwire.ThreadReadResponse{
+				Thread: appwire.Thread{ID: "worker", Evener: appwire.EvenerThread{
+					Ref: remoteRef, InstanceID: "worker-instance",
+					Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+					ModelControl: &readySnapshot,
+				}},
+				BootGeneration: "worker-boot",
+			}}
+		case appwire.MethodThreadResume:
+			resumeCalls++
+			resumed = true
+			return hostAdminReply{result: appwire.ThreadResumeResponse{Thread: appwire.Thread{ID: "worker", Evener: appwire.EvenerThread{Ref: remoteRef}}}}
+		case appwire.MethodThreadModelSet:
+			modelCalls++
+			var params appwire.ThreadModelSetParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				t.Fatalf("decode remote model mutation: %v", err)
+			}
+			if params.ExpectedInstanceID != readySnapshot.Authority.InstanceID || params.ExpectedBootGeneration != readySnapshot.Authority.BootGeneration {
+				t.Fatalf("remote Manager mutation authority = %+v", params)
+			}
+			accepted := readySnapshot
+			accepted.Revision++
+			accepted.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
+			return hostAdminReply{result: appwire.ThreadModelSetResponse{
+				ModelControlVersion: appwire.ModelControlVersion1,
+				Disposition:         appwire.ModelControlDispositionAccepted,
+				ModelControl:        &accepted,
+			}}
+		default:
+			t.Fatalf("unexpected remote Manager method %q", method)
+			return hostAdminReply{}
+		}
+	})
+
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewRemoteHubSource("remote", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	}))
+	owner := &sessionOperations{cfg: hubcore.WebConfig{ResumeLocks: hubcore.NewResumeLocks()}, sources: sources}
+	response, err := owner.Control(t.Context(), appwire.SessionControlRequest{
+		Action: "model",
+		Model:  &appwire.SessionControlModelParams{Ref: ref, ModelProvider: "openai", Model: "gpt-5.6-sol"},
+	})
+	if err != nil {
+		t.Fatalf("remote saved Manager model control: %v", err)
+	}
+	if readCalls != 2 || resumeCalls != 1 || modelCalls != 1 {
+		t.Fatalf("remote reads=%d resumes=%d model sends=%d, want 2/1/1", readCalls, resumeCalls, modelCalls)
+	}
+	if response.Model == nil || response.Model.ModelControl == nil || response.Model.ModelControl.Active.Model != "gpt-5.6-sol" {
+		t.Fatalf("remote Manager response = %+v", response.Model)
 	}
 }
 

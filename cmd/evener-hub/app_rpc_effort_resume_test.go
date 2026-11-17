@@ -161,7 +161,11 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 	modelControl := appwire.ModelControlSnapshot{
 		Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "cold-effort-boot"},
 		Revision:  1,
-		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+		Active: appwire.ModelControlActive{
+			ModelProvider:         "openai",
+			Model:                 "gpt-5.5",
+			ReasoningEffortLevels: []string{},
+		},
 	}
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -182,7 +186,11 @@ func TestHubRPCThreadReasoningEffortSetReachesSubscriberAfterColdModelSet(t *tes
 			return appwire.ThreadModelSetResponse{}, appwire.ModelControlAuthorityStale(params.ClientMutationID, "replacement has new authority")
 		}
 		modelControl.Revision++
-		modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+		modelControl.Active = appwire.ModelControlActive{
+			ModelProvider:         params.ModelProvider,
+			Model:                 params.Model,
+			ReasoningEffortLevels: []string{},
+		}
 		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadReasoningEffortSet, func(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
@@ -311,7 +319,7 @@ func TestHubRPCThreadModelSetCarriesReasoningProfileToColdSubscriber(t *testing.
 	modelControl := appwire.ModelControlSnapshot{
 		Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "cold-profile-boot"},
 		Revision:  1,
-		Active:    appwire.ModelControlActive{ModelProvider: "openai-codex", Model: "gpt-5.2"},
+		Active:    appwire.ModelControlActive{ModelProvider: "openai-codex", Model: "gpt-5.2", ReasoningEffortLevels: []string{}},
 	}
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{

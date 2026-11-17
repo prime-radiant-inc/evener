@@ -528,8 +528,8 @@ func parkThreadLists(t *testing.T, server *Server) (started, releases chan struc
 		<-releases
 		return appwire.ThreadListResponse{}, nil
 	})
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, nil
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		return strictModelSetResponse(params), nil
 	})
 	return started, releases
 }
@@ -647,10 +647,10 @@ func TestServeWebSocketRequestsTheHookRefusesStayInOrder(t *testing.T) {
 	// One token lets one handler finish; closing it lets the rest.
 	release := make(chan struct{}, 2)
 	t.Cleanup(func() { close(release) })
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 		entered <- struct{}{}
 		<-release
-		return appwire.EmptyResponse{}, nil
+		return strictModelSetResponse(params), nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)

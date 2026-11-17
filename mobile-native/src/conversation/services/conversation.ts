@@ -97,6 +97,17 @@ export interface ConversationClientLike extends Pick<AppwireClientLike, "state" 
 // when available, falling back to a counter; tests inject a deterministic one.
 export type IdFactory = () => string;
 
+export type ConversationModelControlRecoveryInput = Extract<
+	ModelControlInput,
+	{ kind: "authorityStale" | "postDispatchFailure" | "snapshot" }
+>;
+
+export type ConversationModelControlRecoveryHandler = (
+	threadRef: string,
+	expectedThreadId: string,
+	input: ConversationModelControlRecoveryInput,
+) => void;
+
 // The conversation's instanceId is the service's own fence value, not
 // hydrateThread's pass-through of the wire field: a daemon-backed read always
 // carries evener.instanceId (appsource/local_daemon.go stamps it with a
@@ -163,7 +174,10 @@ export interface ConversationService {
 		hasEarlierItems?: boolean;
 		hasLaterItems?: boolean;
 	}>;
-	subscribeNotifications(handler: (n: AnyNotification) => void): () => void;
+	subscribeNotifications(
+		handler: (n: AnyNotification) => void,
+		modelControlRecoveryHandler?: ConversationModelControlRecoveryHandler,
+	): () => void;
 	send(input: InputItem[]): Promise<MutationReceipt>;
 	queue(input: InputItem[]): Promise<MutationReceipt>;
 	interrupt(): Promise<MutationReceipt>;
@@ -555,6 +569,7 @@ export function createConversationService<ReadLease = unknown>(
 	let capabilities: ThreadCapabilities | null = null;
 	let acceptedModel: ThreadModel | null = null;
 	let notificationHandler: ((notification: AnyNotification) => void) | null = null;
+	let modelControlRecoveryHandler: ConversationModelControlRecoveryHandler | null = null;
 	let notificationUnsub: (() => void) | null = null;
 	type PendingProjection = {
 		ref: string;
@@ -759,6 +774,18 @@ export function createConversationService<ReadLease = unknown>(
 
 	let startReplacementRead: ((threadRef: string) => void) | null = null;
 
+	function requestModelControlRecovery(
+		threadRef: string,
+		expectedThreadId: string,
+		input: ConversationModelControlRecoveryInput,
+	): void {
+		if (modelControlRecoveryHandler !== null) {
+			modelControlRecoveryHandler(threadRef, expectedThreadId, input);
+			return;
+		}
+		startReplacementRead?.(threadRef);
+	}
+
 	function recoverModelControl(
 		threadRef: string,
 		expectedThreadId: string,
@@ -768,7 +795,7 @@ export function createConversationService<ReadLease = unknown>(
 		if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence) || acceptedModel === null) return;
 		const reduced = reduceModelControl(acceptedModel, input);
 		acceptedModel = reduced.model;
-		if (reduced.replacementReadRequired) startReplacementRead?.(threadRef);
+		if (reduced.replacementReadRequired) requestModelControlRecovery(threadRef, expectedThreadId, input);
 	}
 
 	const service: LiveConversationService &
@@ -967,11 +994,12 @@ export function createConversationService<ReadLease = unknown>(
 			};
 		},
 
-		subscribeNotifications(handler) {
+		subscribeNotifications(handler, recoveryHandler) {
 			if (notificationUnsub !== null) {
 				notificationUnsub();
 			}
 			notificationHandler = handler;
+			modelControlRecoveryHandler = recoveryHandler ?? null;
 			const unsubscribe = client.onNotification((notification) => {
 				if (notification.method === "thread/model/controlChanged") {
 					const params = notification.params;
@@ -1018,6 +1046,7 @@ export function createConversationService<ReadLease = unknown>(
 					unsubscribe();
 					notificationUnsub = null;
 					notificationHandler = null;
+					modelControlRecoveryHandler = null;
 				}
 			};
 		},
@@ -1183,6 +1212,9 @@ export function createConversationService<ReadLease = unknown>(
 				clientGeneration: epoch,
 				readGeneration: epoch,
 			};
+			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) {
+				throw new Error("ConversationService: model-control authority was superseded before dispatch");
+			}
 			const clientMutationId = idFactory();
 			let rawResponse: unknown;
 			try {
@@ -1220,7 +1252,12 @@ export function createConversationService<ReadLease = unknown>(
 				snapshot,
 			});
 			acceptedModel = reduced.model;
-			if (reduced.replacementReadRequired) startReplacementRead?.(threadRef);
+			if (reduced.replacementReadRequired)
+				requestModelControlRecovery(threadRef, expectedThreadId, {
+					kind: "snapshot",
+					source: "response",
+					snapshot,
+				});
 			notificationHandler?.({
 				method: "thread/model/controlChanged",
 				params: {
@@ -1299,6 +1336,7 @@ export function createConversationService<ReadLease = unknown>(
 			capabilities = null;
 			acceptedModel = null;
 			notificationHandler = null;
+			modelControlRecoveryHandler = null;
 		},
 	};
 	startReplacementRead = (threadRef) => {

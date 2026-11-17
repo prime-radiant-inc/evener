@@ -1111,6 +1111,42 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(model?.history?.invalidatedAtGeneration).toBeUndefined();
   });
 
+  test.each([
+    ["an equal-revision conflict", { activeProvider: "google", activeModel: "gemini-3-pro" }],
+    ["an authority change", { instanceId: "replacement-instance", bootGeneration: "2" }],
+  ])("%s in a live notification starts one replacement read", async (_case, overrides) => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    const recoveryAuthority = "instanceId" in overrides ? overrides : {};
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const recovery = deferred<ThreadReadResponse>();
+    let recoveryReads = 0;
+    fake.on("thread/read", () => {
+      recoveryReads += 1;
+      return recovery.promise;
+    });
+    const conflicting = modelControlSnapshot(2, overrides);
+
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: conflicting },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState.kind).toBe("recovering");
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.invalidatedAtGeneration).toBeUndefined();
+    await flushUntil(() => recoveryReads === 1);
+
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: conflicting },
+    });
+    expect(recoveryReads).toBe(1);
+
+    recovery.resolve(capableModelRead("ref_a", modelControlSnapshot(3, recoveryAuthority)));
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+  });
+
   test("a direct setModel refusal preserves the accepted shared snapshot", async () => {
     const fake = connectFakeClient();
     const accepted = modelControlSnapshot(2, {

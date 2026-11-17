@@ -204,45 +204,174 @@ func TestModelControlWireErrorsCarryMachineReadableOutcome(t *testing.T) {
 }
 
 func TestClientThreadModelSetRejectsMalformedSuccessAsBlockedUnknown(t *testing.T) {
+	tests := []struct {
+		name   string
+		result func(t *testing.T) any
+	}{
+		{name: "empty", result: func(*testing.T) any { return map[string]any{} }},
+		{name: "missing reasoning levels", result: func(t *testing.T) any {
+			result := completeModelControlResponseMap(t)
+			delete(result["modelControl"].(map[string]any)["active"].(map[string]any), "reasoningEffortLevels")
+			return result
+		}},
+		{name: "missing supports reasoning", result: func(t *testing.T) any {
+			result := completeModelControlResponseMap(t)
+			delete(result["modelControl"].(map[string]any)["active"].(map[string]any), "supportsReasoning")
+			return result
+		}},
+		{name: "wrong revision type", result: func(t *testing.T) any {
+			result := completeModelControlResponseMap(t)
+			result["modelControl"].(map[string]any)["revision"] = "nine"
+			return result
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			transport := newMemoryTransport()
+			client := NewClient(transport)
+			ctx := t.Context()
+			client.Start(ctx)
+
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := client.ThreadModelSet(ctx, ThreadModelSetParams{
+					Ref:                    "local:th_1",
+					ModelProvider:          "work",
+					Model:                  "gpt-5.5",
+					ClientMutationID:       "cm_1",
+					ExpectedInstanceID:     "instance_1",
+					ExpectedBootGeneration: "7",
+				})
+				errCh <- err
+			}()
+
+			var request Message
+			select {
+			case request = <-transport.writes:
+			case <-time.After(time.Second):
+				t.Fatal("model-set request was not written")
+			}
+			transport.reads <- ResponseMessage(request.Request.ID, test.result(t))
+
+			select {
+			case err := <-errCh:
+				var wire WireError
+				if !errors.As(err, &wire) || wire.Code != CodeInternalError {
+					t.Fatalf("malformed success error = %T %+v, want internal WireError", err, err)
+				}
+				data, ok := ErrorDataOf(wire.Data)
+				if !ok || data.EvenerErrorInfo != ErrorMutationOutcomeUnknown || data.ClientMutationID != "cm_1" || data.MutationOutcome != MutationOutcomeUnknown || data.RetryDisposition != RetryDispositionBlocked {
+					t.Fatalf("malformed success data = %+v, ok = %t", data, ok)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("malformed success did not settle the request")
+			}
+		})
+	}
+}
+
+func TestClientThreadReadRequiresCompleteVersionOneModelControl(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "missing reasoning levels", mutate: func(result map[string]any) {
+			delete(readModelControlActive(result), "reasoningEffortLevels")
+		}},
+		{name: "missing supports reasoning", mutate: func(result map[string]any) {
+			delete(readModelControlActive(result), "supportsReasoning")
+		}},
+		{name: "wrong supports reasoning type", mutate: func(result map[string]any) {
+			readModelControlActive(result)["supportsReasoning"] = "false"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := completeModelControlReadMap(t)
+			test.mutate(result)
+			if _, err := clientThreadReadResult(t, result); err == nil {
+				t.Fatal("incomplete version-one model-control read accepted")
+			}
+		})
+	}
+}
+
+func TestClientThreadReadKeepsUnknownModelControlVersionReadable(t *testing.T) {
+	result := completeModelControlReadMap(t)
+	capabilities := result["thread"].(map[string]any)["evener"].(map[string]any)["capabilities"].(map[string]any)
+	capabilities["modelControlVersion"] = float64(2)
+	delete(readModelControlActive(result), "reasoningEffortLevels")
+	delete(readModelControlActive(result), "supportsReasoning")
+
+	read, err := clientThreadReadResult(t, result)
+	if err != nil {
+		t.Fatalf("unknown-version read rejected: %v", err)
+	}
+	if read.Thread.Evener.Capabilities.ModelControlVersion != 2 {
+		t.Fatalf("model-control version = %d, want 2", read.Thread.Evener.Capabilities.ModelControlVersion)
+	}
+}
+
+func clientThreadReadResult(t *testing.T, result any) (ThreadReadResponse, error) {
+	t.Helper()
 	transport := newMemoryTransport()
 	client := NewClient(transport)
-	ctx := t.Context()
-	client.Start(ctx)
-
-	errCh := make(chan error, 1)
+	client.Start(t.Context())
+	type readResult struct {
+		response ThreadReadResponse
+		err      error
+	}
+	done := make(chan readResult, 1)
 	go func() {
-		_, err := client.ThreadModelSet(ctx, ThreadModelSetParams{
-			Ref:                    "local:th_1",
-			ModelProvider:          "work",
-			Model:                  "gpt-5.5",
-			ClientMutationID:       "cm_1",
-			ExpectedInstanceID:     "instance_1",
-			ExpectedBootGeneration: "7",
-		})
-		errCh <- err
+		response, err := client.ThreadRead(t.Context(), ThreadReadParams{Ref: "local:th_1"})
+		done <- readResult{response: response, err: err}
 	}()
-
-	var request Message
+	request := <-transport.writes
+	transport.reads <- ResponseMessage(request.Request.ID, result)
 	select {
-	case request = <-transport.writes:
+	case got := <-done:
+		return got.response, got.err
 	case <-time.After(time.Second):
-		t.Fatal("model-set request was not written")
+		t.Fatal("thread read did not settle")
+		return ThreadReadResponse{}, nil
 	}
-	transport.reads <- ResponseMessage(request.Request.ID, map[string]any{})
+}
 
-	select {
-	case err := <-errCh:
-		var wire WireError
-		if !errors.As(err, &wire) || wire.Code != CodeInternalError {
-			t.Fatalf("malformed success error = %T %+v, want internal WireError", err, err)
-		}
-		data, ok := ErrorDataOf(wire.Data)
-		if !ok || data.EvenerErrorInfo != ErrorMutationOutcomeUnknown || data.ClientMutationID != "cm_1" || data.MutationOutcome != MutationOutcomeUnknown || data.RetryDisposition != RetryDispositionBlocked {
-			t.Fatalf("malformed success data = %+v, ok = %t", data, ok)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("malformed success did not settle the request")
+func completeModelControlReadMap(t *testing.T) map[string]any {
+	t.Helper()
+	response := completeModelControlResponse()
+	read := ThreadReadResponse{Thread: Thread{ID: "th_1", Evener: EvenerThread{
+		Ref:          "local:th_1",
+		InstanceID:   response.ModelControl.Authority.InstanceID,
+		Capabilities: ThreadCapabilities{ModelControlVersion: ModelControlVersion1},
+		ModelControl: response.ModelControl,
+	}}}
+	raw, err := json.Marshal(read)
+	if err != nil {
+		t.Fatal(err)
 	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func readModelControlActive(result map[string]any) map[string]any {
+	return result["thread"].(map[string]any)["evener"].(map[string]any)["modelControl"].(map[string]any)["active"].(map[string]any)
+}
+
+func completeModelControlResponseMap(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(completeModelControlResponse())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestModelControlEnumValues(t *testing.T) {

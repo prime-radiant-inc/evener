@@ -76,6 +76,26 @@ type pendingResult struct {
 	cause error
 }
 
+type responseDecodeError struct {
+	method string
+	err    error
+}
+
+func (e responseDecodeError) Error() string {
+	return fmt.Sprintf("appwire %s: invalid response: %v", e.method, e.err)
+}
+func (e responseDecodeError) Unwrap() error { return e.err }
+
+func decodeResponseResult(method string, raw json.RawMessage, out any) error {
+	if err := validateRawModelControlResponse(method, raw); err != nil {
+		return responseDecodeError{method: method, err: err}
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return responseDecodeError{method: method, err: err}
+	}
+	return nil
+}
+
 // localFailure is the error frame the client synthesizes for request id when
 // its read loop ended with err.
 func localFailure(id ID, err error) pendingResult {
@@ -420,13 +440,13 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 		return nil
 	}
 	if raw, ok := msg.Response.Result.(json.RawMessage); ok {
-		return json.Unmarshal(raw, out)
+		return decodeResponseResult(method, raw, out)
 	}
 	data, err := json.Marshal(msg.Response.Result)
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, out)
+	return decodeResponseResult(method, data, out)
 }
 
 func (c *Client) Request(ctx context.Context, method string, params any, out any) error {
@@ -637,6 +657,9 @@ func (c *Client) ThreadClear(ctx context.Context, params ThreadClearParams) (Thr
 func (c *Client) ThreadModelSet(ctx context.Context, params ThreadModelSetParams) (ThreadModelSetResponse, error) {
 	var out ThreadModelSetResponse
 	if err := c.request(ctx, MethodThreadModelSet, params, &out); err != nil {
+		if decodeErr, ok := errors.AsType[responseDecodeError](err); ok {
+			return ThreadModelSetResponse{}, MutationOutcomeUnknownBlocked(params.ClientMutationID, decodeErr.Error())
+		}
 		return out, err
 	}
 	if err := ValidateThreadModelSetResponse(out); err != nil {

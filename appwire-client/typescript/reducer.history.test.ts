@@ -158,6 +158,39 @@ test("accepted reads install, replace, and remove model-control authority atomic
   });
 });
 
+test("accepted reads do not replace newer held model control with an older revision", () => {
+  const heldThread = thread([]);
+  heldThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
+  heldThread.evener.modelControl = modelControlSnapshot(3);
+  heldThread.evener.instanceId = "instance-1";
+  const held = hydrateThread(
+    {
+      thread: heldThread,
+      bootGeneration: "boot-1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+    },
+    REF,
+    NOW,
+  );
+  const olderThread = thread([]);
+  olderThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };
+  olderThread.evener.modelControl = modelControlSnapshot(2);
+  olderThread.evener.instanceId = "instance-1";
+  const olderResponse: ThreadReadResponse = {
+    thread: olderThread,
+    bootGeneration: "boot-1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
+
+  const fromResponse = applyReadResponse(held, olderResponse, NOW + 1);
+  const fromModel = applyReadModel(held, hydrateThread(olderResponse, REF, NOW + 1));
+
+  expect(fromResponse.modelControlState).toEqual({ kind: "ready", snapshot: heldThread.evener.modelControl });
+  expect(fromModel.modelControlState).toEqual({ kind: "ready", snapshot: heldThread.evener.modelControl });
+});
+
 test("a fallback read updates context without replacing model-control identity", () => {
   const liveThread = thread([]);
   liveThread.evener.capabilities = { ...CAPABILITIES, modelControlVersion: 1 };

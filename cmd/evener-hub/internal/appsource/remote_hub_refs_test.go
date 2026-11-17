@@ -159,6 +159,19 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	}
 }
 
+func TestRemoteHubPreservesUnknownModelControlVersionAsUnsupported(t *testing.T) {
+	remote := allRemoteThreadCapabilities()
+	remote.ModelControlVersion = appwire.ModelControlVersion1 + 1
+
+	got := maskRemoteThreadCapabilities(remote, forwardedThreadCapabilitiesForTests())
+	if got.ModelControlVersion != remote.ModelControlVersion {
+		t.Fatalf("model-control version = %d, want unknown remote version %d", got.ModelControlVersion, remote.ModelControlVersion)
+	}
+	if got.ChangeModel {
+		t.Fatal("unknown remote model-control version remained mutable")
+	}
+}
+
 // Every capability a remote thread is allowed to advertise must have a working
 // method behind it. Enumerating the promise here means a field cannot be
 // advertised by the effective policy while its method still fails closed, and a

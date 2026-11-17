@@ -1027,7 +1027,9 @@ export function applyReadResponse<M extends ThreadModel>(
     }
   }
   if (historyFallback(resp)) return publicModel<M>(restoreHeldModelControl(next, model));
-  return publicModel<M>(reduceModelControl(next, modelControlReadInput(resp)).model);
+  const input = modelControlReadInput(resp);
+  const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
+  return publicModel<M>(reduceModelControl(controlBase, input).model);
 }
 
 // Splits turns already merged into TurnModel[] back into a HistoryFragment
@@ -1203,7 +1205,9 @@ export function applyReadModel<M extends ThreadModel>(
     }
   }
   if (fallback) return publicModel<M>(restoreHeldModelControl(next, model));
-  return publicModel<M>(reduceModelControl(next, hydratedModelControlReadInput(fresh)).model);
+  const input = hydratedModelControlReadInput(fresh);
+  const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
+  return publicModel<M>(reduceModelControl(controlBase, input).model);
 }
 
 function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadModel {
@@ -1217,7 +1221,9 @@ function restoreHeldModelControl(next: ThreadModel, held: ThreadModel): ThreadMo
   };
 }
 
-function modelControlReadInput(resp: ThreadReadResponse): Parameters<typeof reduceModelControl>[1] {
+function modelControlReadInput(
+  resp: ThreadReadResponse,
+): Extract<Parameters<typeof reduceModelControl>[1], { kind: "readAccepted" }> {
   return {
     kind: "readAccepted",
     version: resp.thread.evener.capabilities?.modelControlVersion,
@@ -1229,7 +1235,9 @@ function modelControlReadInput(resp: ThreadReadResponse): Parameters<typeof redu
   };
 }
 
-function hydratedModelControlReadInput(fresh: ThreadModel): Parameters<typeof reduceModelControl>[1] {
+function hydratedModelControlReadInput(
+  fresh: ThreadModel,
+): Extract<Parameters<typeof reduceModelControl>[1], { kind: "readAccepted" }> {
   const state = fresh.modelControlState;
   if (state.kind === "ready") {
     return {

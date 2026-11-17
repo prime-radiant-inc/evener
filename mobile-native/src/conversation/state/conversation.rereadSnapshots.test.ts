@@ -8,10 +8,14 @@ import type {
 	MutationReceipt,
 	Thread,
 	ThreadItem,
+	ThreadReadResponse,
 } from "@evener/appwire-client";
+import { modelControlDisplay, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileConversation, MobileTimelineItem } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
+import { createConversationService } from "../services/conversation";
 import { createConversationStore } from "./conversation";
 import {
 	ALL_TRUE_CAPS,
@@ -168,6 +172,48 @@ describe("ConversationStore", () => {
 			await yieldMicrotask();
 
 			expect(store.getState().conversation?.modelControlState).toEqual({ kind: "ready", snapshot: replacement });
+		});
+
+		it("publishes one recovery read after a model mutation outcome becomes unknown", async () => {
+			const client = new FakeClient("ready");
+			const initial = modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			const recovered = modelControl(3, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			const readResponse = (snapshot: ModelControlSnapshot): ThreadReadResponse => ({
+				bootGeneration: snapshot.authority.bootGeneration,
+				thread: makeThread({
+					modelProvider: snapshot.active.modelProvider,
+					evener: {
+						ref: "ref-1",
+						instanceId: snapshot.authority.instanceId,
+						capabilities: { ...ALL_TRUE_CAPS, modelControlVersion: 1 },
+						queue: { revision: 0 },
+						modelControl: snapshot,
+					},
+				}),
+			});
+			client.on("thread/unsubscribe", () => ({}));
+			client.on("thread/read", () => readResponse(initial));
+			const service = createConversationService(client, { idFactory: () => "mutation-1" });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			client.on("thread/read", () => readResponse(recovered));
+			client.on("thread/model/set", () => {
+				throw new WireError("lost", -32603, {
+					evenerErrorInfo: "mutationOutcomeUnknown",
+					mutationOutcome: "unknown",
+					retryDisposition: "blocked",
+				});
+			});
+
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toThrow();
+			expect(store.getState().conversation?.modelControlState.kind).toBe("recovering");
+			await vi.waitFor(() => {
+				expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+				expect(store.getState().conversation?.modelControlState).toEqual({ kind: "ready", snapshot: recovered });
+			});
+			const conversation = store.getState().conversation;
+			if (!conversation) throw new Error("expected recovered conversation");
+			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
 		});
 	});
 

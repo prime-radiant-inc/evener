@@ -46,7 +46,7 @@ func withSessionResume[R any](
 	if !isSessionUnavailableError(err) {
 		return resp, err
 	}
-	if ref != "" && !hubKnowsRef(cfg, ref) {
+	if ref != "" && !hubCanResumeRef(cfg, sources, ref) {
 		return resp, err
 	}
 	resumed, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref})
@@ -87,6 +87,21 @@ func withSessionResume[R any](
 		return zero, wrapped
 	}
 	return resp, retryErr
+}
+
+func hubCanResumeRef(cfg hubcore.WebConfig, sources *appsource.Registry, ref string) bool {
+	if hubKnowsRef(cfg, ref) {
+		return true
+	}
+	// A remote source owns its saved-session index and resume admission. The
+	// local past index cannot know those refs, so source registration is the
+	// strongest pre-dispatch proof available without starting the session.
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID == appwire.LocalSourceID {
+		return false
+	}
+	_, ok := sources.Source(parsed.SourceID)
+	return ok
 }
 
 // shutdownThreadTolerateExited runs thread/shutdown and treats an

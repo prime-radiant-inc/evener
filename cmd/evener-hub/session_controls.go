@@ -128,7 +128,14 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
-		return source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})
+		read, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		if read.Thread.Evener.ResumeRequired {
+			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("model control authority requires session resume")
+		}
+		return read, nil
 	})
 	if err != nil {
 		return appwire.ThreadModelSetResponse{}, err

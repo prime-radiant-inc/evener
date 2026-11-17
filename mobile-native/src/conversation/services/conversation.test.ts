@@ -1278,6 +1278,42 @@ describe("ConversationService", () => {
 			});
 		});
 
+		it("does not dispatch a ready model mutation after close retires its binding", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { desired: "gpt-5.5" }),
+			}));
+			await service.open("ref-1");
+
+			const changing = service.changeModel("openai", "gpt-5.5");
+			service.close();
+
+			await expect(changing).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+		});
+
+		it("does not dispatch a ready model mutation after a same-ref replacement read starts", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			let resolveRead!: (response: ThreadReadResponse) => void;
+			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(2, { desired: "gpt-5.5" }),
+			}));
+
+			const changing = service.changeModel("openai", "gpt-5.5");
+			const replacing = service.readProjection("ref-1");
+
+			await expect(changing).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+			resolveRead(makeReadResponse(controlledThread(modelControl(1, { authority: MODEL_AUTHORITY_B }))));
+			await replacing;
+		});
+
 		it("an unsupported replacement read atomically downgrades model control and discards quarantined pushes", async () => {
 			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
 			await service.open("ref-1");

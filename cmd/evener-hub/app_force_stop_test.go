@@ -865,7 +865,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 			modelControl := appwire.ModelControlSnapshot{
 				Authority: appwire.ModelControlAuthority{BootGeneration: "force-stop-boot"},
 				Revision:  1,
-				Active:    appwire.ModelControlActive{ModelProvider: "test", Model: "test"},
+				Active:    appwire.ModelControlActive{ModelProvider: "test", Model: "test", ReasoningEffortLevels: []string{}},
 			}
 			cfg, sid, resumes := parityResumeFixture(t, func(daemon *appserver.Server) {
 				appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -876,7 +876,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 				})
 				if method == appwire.MethodThreadModelSet {
 					appserver.HandleTyped(daemon.Router(), method, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
-						modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+						modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
 						modelControl.Revision++
 						return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 					})

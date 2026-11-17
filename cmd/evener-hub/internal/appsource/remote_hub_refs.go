@@ -186,8 +186,15 @@ func (s *RemoteHubSource) forwardedThreadCapabilitiesFor(client *appwire.Client)
 // to appwire.ThreadCapabilities later starts masked until a component names the
 // method that answers for it.
 func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) appwire.ThreadCapabilities {
+	modelControlVersion := uint(0)
+	if forwarded.ModelControlVersion != 0 {
+		modelControlVersion = remote.ModelControlVersion
+	}
+	changeModel := remote.ChangeModel && forwarded.ChangeModel &&
+		remote.ModelControlVersion == appwire.ModelControlVersion1 &&
+		forwarded.ModelControlVersion == appwire.ModelControlVersion1
 	return appwire.ThreadCapabilities{
-		ModelControlVersion: min(remote.ModelControlVersion, forwarded.ModelControlVersion),
+		ModelControlVersion: modelControlVersion,
 		Send:                remote.Send && forwarded.Send,
 		Steer:               remote.Steer && forwarded.Steer,
 		Interrupt:           remote.Interrupt && forwarded.Interrupt,
@@ -195,7 +202,7 @@ func maskRemoteThreadCapabilities(remote, forwarded appwire.ThreadCapabilities) 
 		Clear:               remote.Clear && forwarded.Clear,
 		ForkFromTurn:        remote.ForkFromTurn && forwarded.ForkFromTurn,
 		Shutdown:            remote.Shutdown && forwarded.Shutdown,
-		ChangeModel:         remote.ChangeModel && forwarded.ChangeModel,
+		ChangeModel:         changeModel,
 		ChangeVisionModel:   remote.ChangeVisionModel && forwarded.ChangeVisionModel,
 		Queue:               remote.Queue && forwarded.Queue,
 		Goal:                remote.Goal && forwarded.Goal,

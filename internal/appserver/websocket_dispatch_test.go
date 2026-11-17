@@ -169,11 +169,27 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 // requireSlowMethodDoesNotHoldOrderedRequests parks a handler for method,
 // then requires an ordered request issued behind it on the same connection to
 // answer before the parked one is released.
+func strictModelSetResponse(params appwire.ThreadModelSetParams) appwire.ThreadModelSetResponse {
+	return appwire.ThreadModelSetResponse{
+		ModelControlVersion: appwire.ModelControlVersion1,
+		Disposition:         appwire.ModelControlDispositionAccepted,
+		ModelControl: &appwire.ModelControlSnapshot{
+			Authority: appwire.ModelControlAuthority{InstanceID: "instance-1", BootGeneration: "boot-1"},
+			Revision:  1,
+			Active: appwire.ModelControlActive{
+				ModelProvider:         params.ModelProvider,
+				Model:                 params.Model,
+				ReasoningEffortLevels: []string{},
+			},
+		},
+	}
+}
+
 func requireSlowMethodDoesNotHoldOrderedRequests[P, R any](t *testing.T, method string, params P, reply R) {
 	t.Helper()
 	server, httpServer, started, release := parkedMethodServer[P](t, method, reply)
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
-		return appwire.ThreadModelSetResponse{}, nil
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		return strictModelSetResponse(params), nil
 	})
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
@@ -431,10 +447,10 @@ func TestServeWebSocketMutationsDispatchSeriallyPerConnection(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 		close(firstStarted)
 		<-releaseFirst
-		return appwire.EmptyResponse{}, nil
+		return strictModelSetResponse(params), nil
 	})
 	secondStarted := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
@@ -526,7 +542,7 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 	// handler itself — the same path hub handlers use — so the commit runs
 	// while the hydration read is still parked in flight. Each mutation names
 	// itself through the Model field so its record is identifiable on arrival.
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 		server.CommitProjection(func() []SequencedNotification {
 			record := notifier.Record(threadID, appwire.NotifyThreadStatusChanged, hydrationMarkerParams{
 				ThreadID: threadID,
@@ -534,7 +550,7 @@ func TestServeWebSocketHydrationThenMutationDeliversEveryNotificationExactlyOnce
 			})
 			return []SequencedNotification{record}
 		})
-		return appwire.EmptyResponse{}, nil
+		return strictModelSetResponse(params), nil
 	})
 
 	httpServer := serveWebSocketHTTP(t, server)
@@ -837,8 +853,8 @@ func TestServeWebSocketPanickingHandlerAnswersInternalErrorAndConnectionSurvives
 	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		panic("slow-read handler blew up")
 	})
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
-		return appwire.EmptyResponse{}, nil
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		return strictModelSetResponse(params), nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)

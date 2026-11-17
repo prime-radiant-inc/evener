@@ -547,7 +547,7 @@ func TestRemoteHubLostModelResponseCannotReplaceNewerPick(t *testing.T) {
 	canonical := appwire.ModelControlSnapshot{
 		Authority: appwire.ModelControlAuthority{InstanceID: "instance-7", BootGeneration: "boot-11"},
 		Revision:  1,
-		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5"},
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{}},
 	}
 	apply := func(raw json.RawMessage) appwire.ThreadModelSetResponse {
 		var params appwire.ThreadModelSetParams
@@ -555,7 +555,7 @@ func TestRemoteHubLostModelResponseCannotReplaceNewerPick(t *testing.T) {
 			t.Fatalf("decode model pick: %v", err)
 		}
 		canonical.Revision++
-		canonical.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+		canonical.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
 		return appwire.ThreadModelSetResponse{
 			ModelControlVersion: appwire.ModelControlVersion1,
 			Disposition:         appwire.ModelControlDispositionAccepted,

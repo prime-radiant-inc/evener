@@ -139,10 +139,10 @@ func TestServeWebSocketSlowReadWaitsForEarlierSerialRequest(t *testing.T) {
 	releaseSerial := make(chan struct{})
 	release := sync.OnceFunc(func() { close(releaseSerial) })
 	t.Cleanup(release)
-	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
 		close(serialStarted)
 		<-releaseSerial
-		return appwire.EmptyResponse{}, nil
+		return strictModelSetResponse(params), nil
 	})
 	readStarted := make(chan struct{})
 	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

@@ -22,6 +22,7 @@
 import type {
 	AnyNotification,
 	InputItem,
+	ModelControlInput,
 	MutationReceipt,
 	ThreadItemPosition,
 	ThreadModel,
@@ -40,6 +41,7 @@ import {
 	mergeSavedViewPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
+	reduceModelControl,
 	sessionControls,
 	WireError,
 } from "@evener/appwire-client";
@@ -72,6 +74,7 @@ export {
 import type {
 	ConversationReadProjection,
 	ConversationService,
+	ConversationModelControlRecoveryInput,
 	LiveConversationService,
 } from "../services/conversation";
 import {
@@ -1154,6 +1157,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			}
 			rawSet(partial);
 		};
+		const publishModelControlRecovery = (
+			ref: string,
+			expectedThreadId: string,
+			input: ConversationModelControlRecoveryInput,
+		): void => {
+			const state = get();
+			if (state.ref !== ref || state.conversation?.threadId !== expectedThreadId) return;
+			const reduced = reduceModelControl(state.conversation, input as ModelControlInput);
+			if (!reduced.replacementReadRequired) return;
+			set({ conversation: { ...reduced.model, items: state.conversation.items } });
+			requestRehydrate(ref);
+		};
 		// Record the durable row's identity on the attempt's click-to-commit
 		// marker once the submitter admits it. Only the attempt that still owns
 		// the marker writes: a newer mutation may have pressed while the
@@ -1593,10 +1608,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// Subscribe before the read so no frame after its response is missed;
 					// a frame before the response is already in the snapshot (the
 					// response-cut note by applyThreadNotification), so no handler yet.
-					unsubscribe = service.subscribeNotifications((notification) => {
-						if (!active || gen !== conversationGen) return;
-						liveHandler?.(notification);
-					});
+					unsubscribe = service.subscribeNotifications(
+						(notification) => {
+							if (!active || gen !== conversationGen) return;
+							liveHandler?.(notification);
+						},
+						(threadRef, expectedThreadId, input) => {
+							if (!active || gen !== conversationGen) return;
+							publishModelControlRecovery(threadRef, expectedThreadId, input);
+						},
+					);
 					const { conversation, olderCursor, hasEarlierItems, hasLaterItems } =
 						replacement ?? (await service.readProjection(ref));
 					if (gen !== conversationGen) return;
@@ -1616,6 +1637,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (gen !== conversationGen) return;
 						routeLiveFrame(n, ref);
 					};
+					if (
+						replacement &&
+						(conversation.modelControlState.kind === "uninitialized" ||
+							conversation.modelControlState.kind === "recovering")
+					) {
+						await get().rehydrate(service);
+					}
 				} catch (err) {
 					if (gen !== conversationGen) return;
 					set({
@@ -1692,10 +1720,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// on screen, so a frame during the read folds into it and rehydrate
 				// merges the read against the result.
 				const liveHandler = (notification: AnyNotification) => routeLiveFrame(notification, ref);
-				const unsubscribe = service.subscribeNotifications((notification) => {
-					if (!active || gen !== conversationGen) return;
-					liveHandler(notification);
-				});
+				const unsubscribe = service.subscribeNotifications(
+					(notification) => {
+						if (!active || gen !== conversationGen) return;
+						liveHandler(notification);
+					},
+					(threadRef, expectedThreadId, input) => {
+						if (!active || gen !== conversationGen) return;
+						publishModelControlRecovery(threadRef, expectedThreadId, input);
+					},
+				);
 				try {
 					await get().rehydrate(service);
 					if (!active || gen !== conversationGen) return;

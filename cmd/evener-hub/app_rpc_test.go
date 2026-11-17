@@ -616,7 +616,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	modelControl := appwire.ModelControlSnapshot{
 		Authority: appwire.ModelControlAuthority{InstanceID: sessionID, BootGeneration: "past-thread-boot"},
 		Revision:  1,
-		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.2"},
+		Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.2", ReasoningEffortLevels: []string{}},
 	}
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -640,7 +640,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 		}
 		modelCalled = params.ModelProvider + "/" + params.Model
 		modelControl.Revision++
-		modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model}
+		modelControl.Active = appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}}
 		return appwire.ThreadModelSetResponse{ModelControlVersion: appwire.ModelControlVersion1, Disposition: appwire.ModelControlDispositionAccepted, ModelControl: &modelControl}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))

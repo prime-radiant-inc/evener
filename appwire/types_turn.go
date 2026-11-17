@@ -1228,6 +1228,61 @@ type ThreadModelSetResponse struct {
 	ModelControl        *ModelControlSnapshot   `json:"modelControl"`
 }
 
+type requiredModelControlSnapshotJSON struct {
+	Active *struct {
+		ReasoningEffortLevels *[]string `json:"reasoningEffortLevels"`
+		SupportsReasoning     *bool     `json:"supportsReasoning"`
+	} `json:"active"`
+}
+
+func validateRequiredModelControlSnapshotJSON(snapshot *requiredModelControlSnapshotJSON) error {
+	if snapshot == nil || snapshot.Active == nil {
+		return errors.New("model-control active metadata is required")
+	}
+	if snapshot.Active.ReasoningEffortLevels == nil || snapshot.Active.SupportsReasoning == nil {
+		return errors.New("model-control reasoning metadata is incomplete")
+	}
+	return nil
+}
+
+// validateRawModelControlResponse preserves required-field presence before Go's
+// zero values erase the distinction between an omitted boolean/list and an
+// explicitly supplied false/empty value.
+func validateRawModelControlResponse(method string, raw json.RawMessage) error {
+	switch method {
+	case MethodThreadModelSet:
+		var response struct {
+			ModelControlVersion *uint                             `json:"modelControlVersion"`
+			ModelControl        *requiredModelControlSnapshotJSON `json:"modelControl"`
+		}
+		if err := json.Unmarshal(raw, &response); err != nil {
+			return err
+		}
+		if response.ModelControlVersion != nil && *response.ModelControlVersion == ModelControlVersion1 {
+			return validateRequiredModelControlSnapshotJSON(response.ModelControl)
+		}
+	case MethodThreadRead:
+		var response struct {
+			Thread struct {
+				Evener struct {
+					Capabilities struct {
+						ModelControlVersion *uint `json:"modelControlVersion"`
+					} `json:"capabilities"`
+					ModelControl *requiredModelControlSnapshotJSON `json:"modelControl"`
+				} `json:"evener"`
+			} `json:"thread"`
+		}
+		if err := json.Unmarshal(raw, &response); err != nil {
+			return err
+		}
+		if response.Thread.Evener.Capabilities.ModelControlVersion != nil &&
+			*response.Thread.Evener.Capabilities.ModelControlVersion == ModelControlVersion1 {
+			return validateRequiredModelControlSnapshotJSON(response.Thread.Evener.ModelControl)
+		}
+	}
+	return nil
+}
+
 // ValidateThreadModelSetResponse verifies a successful model mutation carries
 // one complete version-1 snapshot instead of a partial or legacy success.
 func ValidateThreadModelSetResponse(response ThreadModelSetResponse) error {
@@ -1251,6 +1306,9 @@ func ValidateThreadModelSetResponse(response ThreadModelSetResponse) error {
 	}
 	if snapshot.Active.ModelProvider == "" || snapshot.Active.Model == "" {
 		return errors.New("model-control active target is incomplete")
+	}
+	if snapshot.Active.ReasoningEffortLevels == nil {
+		return errors.New("model-control reasoning levels are required")
 	}
 	if snapshot.Desired == nil {
 		return nil

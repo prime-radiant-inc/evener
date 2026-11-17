@@ -60,6 +60,9 @@ func (s *RemoteHubSource) remoteHubMutationCallErrorWithDisposition(clientMutati
 	if _, delivered := errors.AsType[appwire.WireError](err); delivered && !appwire.IsTransportFailure(err) {
 		return err
 	}
+	if disposition == appwire.RetryDispositionBlocked && !appwire.IsTransportFailure(err) {
+		return mutationOutcomeUnknown("mutation outcome is unknown after invalid remote hub response", clientMutationID, disposition)
+	}
 	mapped := s.mapCallError(err)
 	wire, ok := errors.AsType[appwire.WireError](mapped)
 	if !ok || wire.Code != appwire.CodeUnavailable {

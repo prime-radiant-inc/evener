@@ -38,6 +38,7 @@ func allRemoteDaemonCapabilities() appwire.ThreadCapabilities {
 		ForkFromTurn:               true,
 		Shutdown:                   true,
 		ChangeModel:                true,
+		ModelControlVersion:        appwire.ModelControlVersion1,
 		ChangeVisionModel:          true,
 		Queue:                      true,
 		Goal:                       true,
@@ -110,22 +111,23 @@ func TestRemoteHostEffectiveThreadCapabilitiesFollowThePeerHandshake(t *testing.
 	registry := remoteCapabilityFixture(t, appwire.ThreadStatusIdle, features)
 
 	want := appwire.ThreadCapabilities{
-		Send:              true,
-		Steer:             true,
-		Interrupt:         true,
-		Compact:           true,
-		Clear:             true,
-		ForkFromTurn:      true,
-		Shutdown:          true,
-		ChangeModel:       true,
-		ChangeVisionModel: true,
-		Queue:             true,
-		Goal:              true,
-		SharedNotes:       true,
-		Rename:            true,
-		SkillInput:        true,
-		CommandInput:      true,
-		StopSubagent:      true,
+		Send:                true,
+		Steer:               true,
+		Interrupt:           true,
+		Compact:             true,
+		Clear:               true,
+		ForkFromTurn:        true,
+		Shutdown:            true,
+		ChangeModel:         true,
+		ModelControlVersion: appwire.ModelControlVersion1,
+		ChangeVisionModel:   true,
+		Queue:               true,
+		Goal:                true,
+		SharedNotes:         true,
+		Rename:              true,
+		SkillInput:          true,
+		CommandInput:        true,
+		StopSubagent:        true,
 	}
 	if got := listRemoteThreadCapabilities(t, registry); got != want {
 		t.Fatalf("remote thread capabilities = %+v, want %+v", got, want)
@@ -143,17 +145,18 @@ func TestRemoteHostCapabilitiesMaskDisclaimedHubFeatures(t *testing.T) {
 		t.Fatalf("disclaimed hub features survived the mask: %+v", got)
 	}
 	want := appwire.ThreadCapabilities{
-		Interrupt:         true,
-		Compact:           true,
-		ChangeModel:       true,
-		ChangeVisionModel: true,
-		Queue:             true,
-		Goal:              true,
-		SharedNotes:       true,
-		Rename:            true,
-		SkillInput:        true,
-		CommandInput:      true,
-		StopSubagent:      true,
+		Interrupt:           true,
+		Compact:             true,
+		ChangeModel:         true,
+		ModelControlVersion: appwire.ModelControlVersion1,
+		ChangeVisionModel:   true,
+		Queue:               true,
+		Goal:                true,
+		SharedNotes:         true,
+		Rename:              true,
+		SkillInput:          true,
+		CommandInput:        true,
+		StopSubagent:        true,
 	}
 	if got != want {
 		t.Fatalf("effective capabilities = %+v, want %+v", got, want)
