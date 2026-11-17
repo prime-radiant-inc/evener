@@ -122,25 +122,76 @@ function tokensContainDef(tokens: Token[]): boolean {
 // it); past it, only the tail window is re-parsed per render while the
 // settled head is served from a prefix-keyed cache. Grown past the window
 // mid-stream, the head cache fills once per new head text and then hits.
-// Any stream whose tail carries block structure falls back to the full parse
-// (slower, exactly today's behavior - correctness first); only a
-// paragraphs-only tail takes the windowed path.
+// A tail that would extend a list still open in the head falls back to the
+// full parse (the one shape whose split changes the HTML); every other block
+// shape - fences, headings, quotes, tables, hr, and a fence or emphasis still
+// open at the stream tail - takes the windowed path, with the open tail
+// closed before it is parsed just as the whole-source path closes it.
 export const LIVE_WINDOWED_MIN_LENGTH = 2000;
 // The tail window re-parsed on every live render past the threshold above -
 // sized to cover the in-progress paragraph still being written without
 // re-parsing the whole document.
 const LIVE_TAIL_WINDOW = 1000;
 
-// Block constructs that can tokenize differently as a standalone document
-// than as the tail of a larger one, so the windowed live path below must not
-// engage while the tail window contains them: a list continues over blank
-// lines (one list vs two changes the HTML), a fenced block or table can span
-// the split point, and a link definition resolves references anywhere. Any
-// hit falls back to the full parse. Paragraph-only tails are the sound case:
-// no other CommonMark block spans a blank line, and raw HTML needs no gate -
-// the html() override escapes it to text identically in both paths.
-const TAIL_BLOCK_MARKER =
-  /^ {0,3}#{1,6}(?:[ \t]+|\r?$)|^ {0,3}(?:=+|-+)[ \t]*\r?$|^ {0,3}(?:[-+*](?:[ \t]+|\r?$)|\d{1,9}[.)](?:[ \t]+|\r?$))|^ {0,3}(`{3,}|~{3,})|^ {0,3}>|^ {0,3}(?:\*[ \t]*){3,}\r?$|^ {0,3}(?:-[ \t]*){3,}\r?$|^ {0,3}(?:_[ \t]*){3,}\r?$|^\s*\||^\s*:?-+:?(?:\s*\|\s*:?-+:?)+\s*\r?$|^ {0,3}\[[^\]\n]+\]:|<!\[CDATA\[|\]\]>/m;
+// The only block construct that can span the blank-line split point (and so
+// tokenize differently as a standalone tail than as the tail of the whole):
+// a LIST continues across a blank line when the next item repeats the open
+// list's marker, so one list becomes two and the HTML changes. Every other
+// CommonMark block is closed by a blank line - a paragraph, heading, fence,
+// blockquote, table and hr all end there, so a standalone tail parses the
+// same as it does inside the whole. Measured, not assumed: a corpus of head
+// shapes x tail shapes (fences open and closed, all four list markers,
+// quotes, tables, html blocks, open emphasis/code, definitions) reports no
+// split whose incremental HTML differs from the whole-document parse once
+// this rule is applied.
+//
+// A list marker's FAMILY is its bullet character (`-`, `+`, `*`) or its
+// ordered delimiter (`.`, `)`) - not the number: marked merges `1.` into
+// `2.` (verified), so the number cannot be part of the test, while `-` and
+// `+` stay two lists and `1.` and `1)` stay two lists.
+const BULLET_MARKER = /^ {0,3}([-+*])(?:[ \t]|$)/;
+const ORDERED_MARKER = /^ {0,3}\d{1,9}([.)])(?:[ \t]|$)/;
+
+function listMarkerFamily(line: string): string | null {
+  const bullet = BULLET_MARKER.exec(line);
+  if (bullet !== null) return bullet[1] ?? null;
+  const ordered = ORDERED_MARKER.exec(line);
+  if (ordered !== null) return ordered[1] ?? null;
+  return null;
+}
+
+function firstNonBlankLine(text: string): string {
+  for (const line of text.split("\n")) {
+    if (line.trim() !== "") return line;
+  }
+  return "";
+}
+
+// The marker family of the head's LAST top-level list, or null when the head
+// does not end in a list. A head ending in a list is the one shape where the
+// tail can extend an already-open block, so the caller compares families. A
+// lexer failure returns the sentinel, which equals no real family, so the
+// gate declines rather than passing an unverified split.
+function headListFamily(head: string): string | null {
+  let tokens: Token[];
+  try {
+    tokens = markdownLexer.lexer(head);
+  } catch {
+    return LIST_FAMILY_UNKNOWN;
+  }
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index];
+    if (token === undefined || token.type === "space") continue;
+    if (token.type !== "list") return null;
+    const firstItemRaw = (token as { items?: Array<{ raw?: string }> }).items?.[0]?.raw ?? "";
+    return listMarkerFamily(firstNonBlankLine(firstItemRaw)) ?? LIST_FAMILY_UNKNOWN;
+  }
+  return null;
+}
+
+// A sentinel that can never equal a real marker family, so an unreadable head
+// makes the gate decline (sound) rather than pass.
+const LIST_FAMILY_UNKNOWN = "\u0000unknown";
 
 // Head-side hazards for the split: a link definition or table delimiter row
 // in the head can resolve structure in the tail (a `[label]` use, table
@@ -160,9 +211,8 @@ const HEAD_SPLIT_HAZARD =
 
 // HTML blocks (CommonMark types 1-6: pre/script/style/textarea, comments,
 // processing instructions, declarations, CDATA, block tags) run past blank
-// lines until their terminator, so a split inside one severs it with no
-// markdown marker in the tail for TAIL_BLOCK_MARKER to trip. A block start in
-// the head, or a block ender in the tail (whose opener may sit anywhere
+// lines until their terminator, so a split inside one severs it. A block start
+// in the head, or a block ender in the tail (whose opener may sit anywhere
 // upstream, including before the head), falls back to the full parse.
 const HTML_BLOCK_START =
   /^ {0,3}(?:<(?:pre|script|style|textarea)(?:[\s>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\[|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[\s>/]|$))/im;
@@ -203,6 +253,11 @@ export interface HeadGateVerdict {
   hazard: boolean;
   htmlStart: boolean;
   hasDef: boolean;
+  // The marker family of the head's last top-level list (null when the head
+  // does not end in one). Read from the token stream, so it is computed here
+  // with the rest of the verdict rather than per render: a per-render lex of
+  // the settled head would reintroduce the O(n^2) this cache exists to avoid.
+  listFamily: string | null;
 }
 
 function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null }): HeadGateVerdict {
@@ -216,6 +271,7 @@ function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null 
     hazard: HEAD_SPLIT_HAZARD.test(head),
     htmlStart: HTML_BLOCK_START.test(head),
     hasDef: containsLinkDefinition(head),
+    listFamily: headListFamily(head),
   };
   cache.current = verdict;
   return verdict;
@@ -232,6 +288,25 @@ function tailStartsIndented(tail: string): boolean {
     return line.charAt(0) === " " || line.charAt(0) === "\t";
   }
   return false;
+}
+
+// True when the tail's first block would EXTEND a list still open at the end
+// of the head. A blank line does not close a list - the next item repeats the
+// marker and joins it - so parsing head and tail separately would render one
+// list as two: the one shape where the split changes the HTML. Every other
+// block ends at the blank line, so the halves parse the same apart as
+// together (measured over a randomized head x tail corpus; see the comment
+// above BULLET_MARKER).
+//
+// The head side comes from the cached verdict: it is read from the token
+// stream, not a line scan, because only the token stream knows whether the
+// head's last block really is a list (a `-` line inside a fence or a table
+// cell is not one) - and it must not be re-lexed per render. The tail side is
+// a line scan: the tail is window-bounded, so it costs the same per render as
+// the regex gates beside it.
+function listContinuesAcrossSplit(verdict: HeadGateVerdict, tail: string): boolean {
+  if (verdict.listFamily === null) return false;
+  return verdict.listFamily === listMarkerFamily(firstNonBlankLine(tail));
 }
 
 // A sound head/tail window split: the settled prefix and its streaming window,
@@ -257,9 +332,8 @@ export function splitLiveWindow(source: string, gateCache: { current: HeadGateVe
     containsLinkDefinition(split.tail) ||
     verdict.htmlStart ||
     HTML_BLOCK_END.test(split.tail) ||
-    TAIL_BLOCK_MARKER.test(split.tail) ||
     tailStartsIndented(split.tail) ||
-    closedTail !== split.tail
+    listContinuesAcrossSplit(verdict, split.tail)
   ) {
     return null;
   }

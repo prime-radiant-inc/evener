@@ -8,6 +8,7 @@ import { readModuleCss } from "../../styles/cssBlock";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
+import { closeOpenMarkdown } from "./streaming";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -300,6 +301,136 @@ test("live matches settled when the definition sits in the tail", () => {
   const source = `${"z".repeat(1150)}\n\nsee [t\\]d] here\n\n[t\\]d]: /url\n${"w".repeat(1050)}`;
   expectLiveMatchesSettled(source, "/url");
 });
+
+// --- the streaming contract, frame by frame ---------------------------------
+// A live render's job is to show the CLOSED version of the source it has: the
+// settled render of closeOpenMarkdown(prefix). That holds on every frame,
+// including frames that truncate a fence or an emphasis marker, and it holds
+// whether the frame took the windowed split or the whole-document fallback.
+// This is the contract any incremental parse must preserve exactly: the
+// windowed path serves a settled head from cache and parses only the tail, so
+// a split that changes the HTML shows up here as a frame that disagrees.
+//
+// The stream is built to cross the live-window threshold and to carry all four
+// constructs a naive split breaks on - a fence, a list, a blockquote and a
+// table - and it ENDS inside a fence, so the truncating frames are covered.
+function streamingContractDoc(): string {
+  const para = "The quick brown fox jumps over the lazy dog while the stream grows. ";
+  return [
+    para.repeat(6).trim(),
+    "",
+    "```ts",
+    "export function add(a: number, b: number): number {",
+    "  return a + b;",
+    "}",
+    "```",
+    "",
+    para.repeat(6).trim(),
+    "",
+    "- first item",
+    "- second item",
+    "- third item",
+    "",
+    para.repeat(6).trim(),
+    "",
+    "> quoted line one",
+    "> quoted line two",
+    "",
+    para.repeat(6).trim(),
+    "",
+    "| left | center | right |",
+    "| :--- | :---: | ---: |",
+    "| a | b | c |",
+    "| d | e | f |",
+    "",
+    para.repeat(6).trim(),
+    "",
+    "```python",
+    "def streamed():",
+    "    return 'tail'",
+    "```",
+    "",
+  ].join("\n");
+}
+
+test("live matches the settled render of the closed source on every frame of a block-carrying stream", () => {
+  const source = streamingContractDoc();
+  expect(source.length).toBeGreaterThan(2000);
+  const { container } = render(<Markdown source={source.slice(0, 50)} live />);
+  const mismatched: Array<{ at: number; live: string; settled: string }> = [];
+  // Coverage of the four constructs and of a TRUNCATED one, so this test
+  // cannot pass by never rendering them: each flag is set by a frame's own
+  // live HTML, and the last by a frame whose source needed a synthesized
+  // closer.
+  const seen = { fence: false, list: false, quote: false, table: false, truncated: false };
+  let frames = 0;
+  for (let end = 50; end <= source.length; end += 50) {
+    const prefix = source.slice(0, end);
+    frames += 1;
+    // The live render of this frame...
+    const live = render(<Markdown source={prefix} live />);
+    const liveHtml = live.container.innerHTML;
+    live.unmount();
+    if (liveHtml.includes("<pre")) seen.fence = true;
+    if (liveHtml.includes("<li>")) seen.list = true;
+    if (liveHtml.includes("<blockquote>")) seen.quote = true;
+    if (liveHtml.includes("<table>")) seen.table = true;
+    if (closeOpenMarkdown(prefix) !== prefix) seen.truncated = true;
+    // ...must equal a settled render of the same text CLOSED the same way.
+    const expected = render(<Markdown source={closeOpenMarkdown(prefix)} />);
+    const expectedHtml = expected.container.innerHTML;
+    expected.unmount();
+    if (liveHtml !== expectedHtml) mismatched.push({ at: end, live: liveHtml, settled: expectedHtml });
+  }
+  expect(frames).toBeGreaterThan(30);
+  expect(seen).toEqual({ fence: true, list: true, quote: true, table: true, truncated: true });
+  expect(mismatched).toEqual([]);
+  // The mount above is only a container placeholder for the loop's renders.
+  expect(container).toBeTruthy();
+}, 120_000);
+
+// --- per-delta work ------------------------------------------------
+// The cost this bounds is the one the issue names: a growing document that is
+// RE-PARSED ENTIRELY on every delta. Past the live-window threshold the
+// windowed split serves the settled head from cache and re-parses only the
+// tail, so the characters sanitized per frame stay near the tail window
+// instead of tracking the document length. Frames that cross a new
+// blank-line boundary re-parse the grown head too, so the assertion counts
+// how MANY frames did more than a bounded amount of work rather than
+// forbidding any frame from doing it.
+const WORK_BOUND_CHARS = 2400;
+
+function framesOverWorkBound(source: string, delta: number): { frames: number; over: number; total: number } {
+  const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
+  const { rerender, unmount } = render(<Markdown source={source.slice(0, delta)} live />);
+  let frames = 0;
+  let over = 0;
+  let total = 0;
+  for (let end = delta; end <= source.length; end += delta) {
+    sanitizeSpy.mockClear();
+    rerender(<Markdown source={source.slice(0, end)} live />);
+    frames += 1;
+    let chars = 0;
+    for (const call of sanitizeSpy.mock.calls) chars += String(call[0]).length;
+    total += chars;
+    if (chars > WORK_BOUND_CHARS) over += 1;
+  }
+  unmount();
+  return { frames, over, total };
+}
+
+test("a block-carrying live stream re-parses a bounded tail per delta, not the whole document", () => {
+  const source = streamingContractDoc();
+  const { frames, over, total } = framesOverWorkBound(source, 40);
+  expect(frames).toBeGreaterThan(30);
+  // The whole-document fallback re-parses (and re-sanitizes) everything on
+  // nearly every frame, so `over` approaches `frames`. The windowed split
+  // keeps all but the handful of head-growth frames under the bound.
+  expect(over).toBeLessThanOrEqual(Math.ceil(frames / 8));
+  // Average characters sanitized per frame stays near the tail window
+  // (LIVE_TAIL_WINDOW, 1000) rather than tracking the document length.
+  expect(total / frames).toBeLessThan(source.length);
+}, 120_000);
 
 // Companion to the link-definition fallback cases above: this source is
 // paragraphs-only, balanced, and definition-free past the live-window
