@@ -179,14 +179,16 @@ check-podfile-lock: native-preflight
 # symlinked shared install whose lockfile differs is refused rather than deleted.
 ## Ensure the appwire-client/typescript dependency install is present and
 ## healthy before the qualification runner starts.
-## proves: node_modules carries the pinned tsc and the ws the qualification
-##   runner imports, or is repaired with npm ci.
+## proves: node_modules carries every dependency package-lock.json declares
+##   (optional entries aside), including the pinned tsc and the ws the
+##   qualification runner imports, or is repaired with npm ci.
 ## trigger: Setup prerequisite for test-api-package.
 ## requires: Node 22+; never runs npm ci through a symlinked node_modules.
 ## fails-when: node_modules is missing and npm ci fails, is a mismatched
-##   symlink, or lacks a working tsc / ws; on a real install the message names
-##   `cd appwire-client/typescript && npm ci`, and on a symlinked one it names
-##   the shared install instead.
+##   symlink, or is newer than the lockfile yet incomplete — lacking a working
+##   tsc, the ws, or any other declared dependency; on a real install the
+##   message names `cd appwire-client/typescript && npm ci`, and on a
+##   symlinked one it names the shared install instead.
 api-package-preflight:
 	@scripts/sdk/api-package-preflight.sh
 
