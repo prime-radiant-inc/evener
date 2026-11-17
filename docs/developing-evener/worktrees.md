@@ -31,11 +31,25 @@ One tool, selected by `operation`:
 | `create` | Creates a new worktree on a new branch and enters it — subsequent shell/file/grep calls operate inside it. | `name` (required — doubles as the branch name and the worktree's directory name), `base_ref` (optional; defaults to the current branch tip) |
 | `switch` | Enters an existing worktree without creating one. | `name` (a worktree this tool manages) or `path` (any worktree git already knows about, including hand-made ones) |
 | `exit` | Leaves the current worktree and returns to where the session was before, without touching the worktree itself. | none |
-| `list` | Reports every managed worktree: path, branch, lock/occupant state, and how stale it is (age, dirty, commits ahead, merged). | none |
+| `list` | Reports the worktrees under the managed root: the managed lanes (path, branch, lock/occupant state, and how stale it is — age, dirty, commits ahead, merged), plus any unmanaged worktree found there, in a separate id-less section. Returns one page at a time. | `limit` (page size; default 15, larger values are clamped to 15, a value below 1 is refused), `offset` (0-based start index, default 0; negative is refused) |
 | `remove` | Deletes a worktree (and, optionally, its branch). | `name` (required), `force` (retire this session's own retained-idle children under the lane and allow unverified branch deletion), `force_dirty` (skip the dirty-tree safety check), `delete_branch` (also delete the branch, if it's safe to) |
 | `prune` | Sweeps every managed worktree in one call and removes the ones that are safe to remove. | `orphaned_delegate_days` (optional; also release delegate-lane locks whose parent session provably cannot act — default 0 keeps the locked-lane rule absolute) |
 | `unlock` | Releases a direct worktree-isolated delegate's lane lock without retiring it, so the parent can switch in and recover its work when the delegate can no longer be reached or revived. The delegate stays resumable and its worktree, branch and uncommitted work stay in place; a later send re-locks the lane. | `id` (required — the `dlg_…` delegate id) |
 | `dispose` | Retires one finished delegate isolation lane by its delegate id — unlocks it, removes the worktree, deletes its branch, and marks the delegate disposed. | `id` (required — the `dlg_…` delegate id), `force` (discard unmerged commits), `force_dirty` (discard uncommitted changes) |
+
+`list` pages over both sections as one list, not each separately: `limit` and
+`offset` window the managed and unmanaged worktrees under the managed root
+together, in git's path order, and the page is split into the two sections
+afterwards. A page can therefore hold managed lanes, unmanaged strays, or both,
+and the managed count on a page can be smaller than `limit`. When the result is
+paged — the listing was truncated, or the call passed `limit` or `offset` — it
+carries `total_entries` (managed lanes anywhere in the listing, not just this
+page) and `total_unmanaged` (likewise for the strays), and `truncated`. When
+more worktrees remain, `truncated` is true and the result also carries
+`next_offset`; pass that value as `offset` to read the next page. An `offset`
+past the end returns an empty page with the totals still filled in. A listing
+that fits in one page and is requested with neither argument carries no paging
+fields at all.
 
 Because entering or leaving a worktree changes where every later tool call runs,
 `create`/`switch`/`exit`/`remove` are ordered against other tool calls in the same

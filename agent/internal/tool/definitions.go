@@ -1144,7 +1144,7 @@ func DefDoctorEvener() llm.ToolDefinition {
 // schema; which args apply to which operation is documented in the
 // description and enforced by the handler, not the schema (see spec's args
 // table: create takes name+base_ref, switch takes name-or-path, remove takes
-// name+force+delete_branch, list/exit/prune take none).
+// name+force+delete_branch, list takes limit+offset, exit/prune take none).
 func DefManageWorktree() llm.ToolDefinition {
 	desc := "Manage git worktrees for isolated, parallel, or risky work — a scratch lane to try something that might not pan out, " +
 		"parallel exploration of alternative approaches, or isolating a delegate's changes from the parent checkout. " +

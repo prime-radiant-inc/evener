@@ -150,10 +150,6 @@ func worktreeListSummary(entries, unmanaged []WorktreeListEntry) string {
 	return worktreeListSummaryPagedWithTotals(entries, unmanaged, false, 0, len(entries), len(unmanaged))
 }
 
-func worktreeListSummaryPaged(entries, unmanaged []WorktreeListEntry, truncated bool, nextOffset int) string {
-	return worktreeListSummaryPagedWithTotals(entries, unmanaged, truncated, nextOffset, len(entries), len(unmanaged))
-}
-
 func worktreeListSummaryPagedWithTotals(entries, unmanaged []WorktreeListEntry, truncated bool, nextOffset, totalEntries, totalUnmanaged int) string {
 	paged := truncated || nextOffset > 0 || totalEntries != len(entries) || totalUnmanaged != len(unmanaged)
 	msg := ""
