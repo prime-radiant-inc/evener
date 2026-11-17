@@ -910,14 +910,29 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 
 // answerObservation exposes only admission's recorded relationship. Older
 // inputs have no link, even if their surrounding history looks like an answer.
+//
+// ResolvedAskCalls is admission's per-call evidence behind the turn-granular
+// AnswerToTurnIDs link (schema.Turn.AskResolution): which ask_user calls, by
+// execution turn AND call id, this input consumed. Several calls in one
+// execution share one link, so this is the only evidence that says which call
+// a reply answered (#6323). It rides the observation only where a link is
+// already recorded: a removal of the observation is how consumers recognize
+// "not an answer input", so a turn that records no link (an unfenced whole-set
+// answer, one admitted before the evidence existed, or a steer answering its
+// own active execution) keeps none, and the client's composed-reply shape
+// fallback covers it as before.
 func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservationMetadata {
 	if len(turn.AnswerToTurnIDs) == 0 {
 		return nil
 	}
-	return &appwire.SessionObservationMetadata{
+	observation := &appwire.SessionObservationMetadata{
 		TurnID: turnID, AnswerToTurnIDs: append([]string(nil), turn.AnswerToTurnIDs...),
 		CausalKnown: turn.CausalKnown, Causal: turn.Causal,
 	}
+	if turn.AskResolution != nil {
+		observation.ResolvedAskCalls = append([]appwire.PendingAskCall(nil), turn.AskResolution.Calls...)
+	}
+	return observation
 }
 
 // projectIdentityAssistant projects a new-format ASSISTANT entry the way live

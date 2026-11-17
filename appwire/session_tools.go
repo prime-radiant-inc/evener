@@ -477,11 +477,20 @@ type SessionWatchRequest struct {
 }
 
 type SessionObservationMetadata struct {
-	Ref              string             `json:"ref"`
-	InstanceID       string             `json:"instanceId,omitempty"`
-	GenerationID     string             `json:"generationId,omitempty"`
-	TurnID           string             `json:"turnId,omitempty"`
-	AnswerToTurnIDs  []string           `json:"answerToTurnIds,omitempty"`
+	Ref             string   `json:"ref"`
+	InstanceID      string   `json:"instanceId,omitempty"`
+	GenerationID    string   `json:"generationId,omitempty"`
+	TurnID          string   `json:"turnId,omitempty"`
+	AnswerToTurnIDs []string `json:"answerToTurnIds,omitempty"`
+	// ResolvedAskCalls carries admission's own per-call resolution evidence:
+	// the exact ask_user calls (execution turn AND call id) this accepted
+	// input consumed, from schema.Turn.AskResolution. AnswerToTurnIDs is the
+	// turn-granular collapse of the same evidence, so several calls in one
+	// execution share one link; a client that must say WHICH call a reply
+	// answered matches these calls instead of guessing. Absent on turns
+	// admitted before the evidence existed and on unfenced whole-set
+	// answers, which carry no call list at all.
+	ResolvedAskCalls []PendingAskCall   `json:"resolvedAskCalls,omitempty"`
 	EntryID          string             `json:"entryId,omitempty"`
 	EndTurn          bool               `json:"endTurn,omitempty"`
 	EndReason        string             `json:"endReason,omitempty"`

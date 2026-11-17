@@ -4084,6 +4084,17 @@ export interface SessionObservationMetadata {
   generationId?: string;
   turnId?: string;
   answerToTurnIds?: string[];
+  /**
+   * ResolvedAskCalls carries admission's own per-call resolution evidence:
+   * the exact ask_user calls (execution turn AND call id) this accepted
+   * input consumed, from schema.Turn.AskResolution. AnswerToTurnIDs is the
+   * turn-granular collapse of the same evidence, so several calls in one
+   * execution share one link; a client that must say WHICH call a reply
+   * answered matches these calls instead of guessing. Absent on turns
+   * admitted before the evidence existed and on unfenced whole-set
+   * answers, which carry no call list at all.
+   */
+  resolvedAskCalls?: PendingAskCall[];
   entryId?: string;
   endTurn?: boolean;
   endReason?: string;
