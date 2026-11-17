@@ -94,7 +94,7 @@ type finishIntent struct {
 	runtime *Session
 	// cause rides every decision this intent reduces to, so the report's
 	// queue registers it whatever delivery plan the report gets.
-	cause reportCause
+	cause delegateCause
 	// runErrorKnown/runErr bind the sampled run error to a settlement claim
 	// (BeginRunFinalization).
 	runErrorKnown bool
@@ -153,7 +153,7 @@ type finishDecision struct {
 	// attention deliveryID queues. A report queued behind an undelivered
 	// head gets no delivery plan, so registering beside a plan loses the
 	// lineage on exactly that path; it is registered here, at the queue.
-	cause reportCause
+	cause delegateCause
 	// bumpEvidence increments the evidence version.
 	bumpEvidence bool
 	// captureSnapshot appends the lease's delegate update plan.
@@ -235,7 +235,7 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 		if decision.closure {
 			plans.updates[0] = closurePlan
 		}
-		c.registerReportCauseLocked(decision.lease, decision.deliveryID, decision.cause)
+		c.registerDeliveryCauseLocked(decision.lease, decision.deliveryID, decision.cause)
 	}
 	if decision.bumpEvidence {
 		c.evidenceVersion++
@@ -246,23 +246,25 @@ func (c *delegateTreeController) finishEffectsLocked(decision finishDecision, cl
 	return plans, cancel
 }
 
-// reportCause is the lineage a finished generation's report carries onward:
-// the producing session and the run's cumulative cause. The zero value means
-// the finish has no producing run (a start failure or a runtime-lost
-// recovery), and registers nothing.
-type reportCause struct {
+// delegateCause is the lineage a delivery carries onward: the producing
+// session and the cause it hands to the turn that consumes the delivery. A
+// report carries its finished generation's cumulative cause; an update carries
+// the lineage of the turn that posted it. The zero value carries nothing and
+// registers nothing.
+type delegateCause struct {
 	sessionID string
 	lineage   *provenance.Causal
 }
 
-// registerReportCauseLocked records cause as the cause of the attention a
-// queued report delivery resolves to. Registration follows the queue, not a
-// delivery plan: a report queued behind an undelivered head gets no plan, and
-// its attention still needs the lineage. A finish that queues no delivery — a
-// stop covering the owner's subtree, a no-action completion, a path with no
-// producing run — registers nothing, so no cause outlives the attention it
-// was meant for. The caller holds c.mu.
-func (c *delegateTreeController) registerReportCauseLocked(lease delegateLease, deliveryID string, cause reportCause) {
+// registerDeliveryCauseLocked records cause as the cause of the attention a
+// queued delivery resolves to. Registration follows the queue, not a delivery
+// plan: a delivery queued behind an undelivered head gets no plan, and its
+// attention still needs the lineage. It runs inside the queueing operation, so
+// a delivery that becomes pending is never visible without its cause. A
+// delivery that queues nothing — a stop covering the owner's subtree, a
+// no-action completion, a path with no producing run — registers nothing, so
+// no cause outlives the attention it was meant for. The caller holds c.mu.
+func (c *delegateTreeController) registerDeliveryCauseLocked(lease delegateLease, deliveryID string, cause delegateCause) {
 	if deliveryID == "" || cause.lineage == nil {
 		return
 	}
@@ -272,6 +274,15 @@ func (c *delegateTreeController) registerReportCauseLocked(lease delegateLease, 
 	}) {
 		return
 	}
+	c.rememberDeliveryCauseLocked(deliveryID, cause)
+}
+
+// rememberDeliveryCauseLocked records cause as the cause of the attention
+// deliveryID resolves to. The caller holds c.mu and has already decided the
+// delivery needs one. A turn with no incoming lineage still contributes its
+// own message hop, so an update from it is known to descend from the message
+// the parent consumes.
+func (c *delegateTreeController) rememberDeliveryCauseLocked(deliveryID string, cause delegateCause) {
 	attentionID := delegateAttentionID(deliveryID)
 	c.attentionCauses.remember(attentionID, provenance.WithMessage(cause.lineage, cause.sessionID, attentionID))
 }

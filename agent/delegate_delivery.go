@@ -466,7 +466,7 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 // settlement claim is taken, and the fold refuses an update from then on. It
 // refuses a run that is no longer current, a delegate that is stopping or
 // settling, and a blank message; the update is then not queued anywhere.
-func (c *delegateTreeController) PostUpdate(actor delegateActor, message string) (string, delegateMutationPlans, error) {
+func (c *delegateTreeController) PostUpdate(actor delegateActor, message string, cause delegateCause) (string, delegateMutationPlans, error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return "", delegateMutationPlans{}, err
@@ -496,6 +496,10 @@ func (c *delegateTreeController) PostUpdate(actor delegateActor, message string)
 		return "", delegateMutationPlans{}, err
 	}
 	deliveryID := delegatestore.UpdateDeliveryID(lease.delegateID, appended[0].Seq)
+	// The update's cause rides the queue, like a report's: registered here,
+	// under c.mu, so the delivery is never pending without it. The delivery
+	// appended above is pending by construction.
+	c.rememberDeliveryCauseLocked(deliveryID, cause)
 	c.evidenceVersion++
 	var plans delegateMutationPlans
 	// Only the head is planned; an update behind an earlier delivery waits for

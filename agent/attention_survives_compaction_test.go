@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -351,6 +352,52 @@ func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 	}
 	if reopened := pendingReopen(sess); reopened == "" {
 		t.Fatal("the reopen skipped a latched trigger a settled delta provably did not carry (no pending row holds a reopened identity)")
+	}
+}
+
+// A trigger whose generation fails before presenting reopens under a fresh
+// identity. Resolving the original dropped the controller's copy of its cause,
+// so the latch is the only place that lineage survives; the reopen must carry
+// it across. A recovered turn that loses it drops the watch ancestry it
+// descended from and restarts the runaway count.
+func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
+	t.Parallel()
+	sess := acceptedTriggerSession(t)
+	controller := sess.delegateController
+	if _, err := controller.ReserveAttention(sess, "delegate:dlg_worker/delivery/1"); err != nil {
+		t.Fatalf("ReserveAttention: %v", err)
+	}
+	sess.attentionMu.Lock()
+	trigger := sess.attentionAcceptedID
+	sess.attentionMu.Unlock()
+	if trigger == "" {
+		t.Fatal("setup: the accept latched no trigger")
+	}
+	// The trigger's cause carries a watch fire, and the accept's resolution
+	// drops the controller's copy, leaving the latch as the only witness.
+	watch := provenance.WithWatch(nil, "watch_loop", "wg_loop", "wd_reopen", "child-session", "")
+	controller.attentionCauses.remember(trigger, watch)
+	sess.holdAcceptedTrigger(trigger)
+	controller.attentionCauses.forget(trigger)
+
+	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
+	}
+
+	// The recovered turn presents the reopened identity; its lineage must still
+	// descend from the watch the failed generation came from.
+	sess.attentionMu.Lock()
+	reopened := sess.attentionAcceptedID
+	sess.attentionMu.Unlock()
+	if reopened == "" || reopened == trigger {
+		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
+	}
+	sess.attentionMu.Lock()
+	sess.attentionStagedIDs = map[string]struct{}{reopened: {}}
+	sess.attentionMu.Unlock()
+	sess.promoteStagedAttentionCoverage(llm.Request{})
+	if depth := provenance.SelfInfluenceDepth(sess.activeCausalProvenance(), "watch_loop", "", func(string) bool { return true }); depth == 0 {
+		t.Fatal("the recovered turn's lineage lost the watch its failed generation descended from")
 	}
 }
 

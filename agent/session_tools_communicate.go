@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/tool/repair"
-	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/llm"
 )
 
@@ -327,15 +326,17 @@ func (s *Session) postDelegateUpdate(ctx context.Context, message string) *deleg
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
-	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message)
+	// The parent's turn that consumes the update adopts this turn's lineage
+	// plus the update itself, so what the parent does in reply is known to
+	// descend from this session's message. The controller registers it while
+	// queueing the delivery, so the cause exists before the update is visible.
+	deliveryID, plans, err := s.delegateController.PostUpdate(actor, message, delegateCause{
+		sessionID: s.id,
+		lineage:   s.activeCausalProvenance(),
+	})
 	if err != nil {
 		return notDeliveredUpdate(err)
 	}
-	// The parent's turn that consumes the update adopts this turn's lineage
-	// plus the update itself, so what the parent does in reply is known to
-	// descend from this session's message.
-	attentionID := delegateAttentionID(deliveryID)
-	s.delegateController.attentionCauses.remember(attentionID, provenance.WithMessage(s.activeCausalProvenance(), s.id, attentionID))
 	if err := s.executeDelegateMutationPlans(plans); err != nil {
 		// The update is durable in the journal. A delivery that failed stays
 		// pending there, and executeDelegateMutationPlans has queued the

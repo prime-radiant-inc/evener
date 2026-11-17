@@ -75,7 +75,7 @@ type delegateFinish struct {
 	// cause is the producing run's lineage, registered as the cause of the
 	// report this finish queues. It rides the finish rather than the delivery
 	// plan because a report queued behind an undelivered head gets no plan.
-	cause reportCause
+	cause delegateCause
 }
 
 type delegateCommittedStartFailureDisposition uint8

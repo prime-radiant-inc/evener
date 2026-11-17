@@ -2267,7 +2267,7 @@ func (a *subagent) finalizeRun(f subagentFinalize) {
 		// The report this finish queues carries this run's lineage, whatever
 		// delivery plan it gets: a report queued behind an undelivered head
 		// has no plan to register it from.
-		f.finish.cause = reportCause{sessionID: a.sess.id, lineage: a.runProvenance}
+		f.finish.cause = delegateCause{sessionID: a.sess.id, lineage: a.runProvenance}
 		var plans delegateMutationPlans
 		var finishErr error
 		if f.noActionClaim != nil {
