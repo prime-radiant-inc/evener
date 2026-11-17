@@ -130,8 +130,9 @@ function tokensContainDef(tokens: Token[]): boolean {
 export const LIVE_WINDOWED_MIN_LENGTH = 2000;
 // The tail window re-parsed on every live render past the threshold above -
 // sized to cover the in-progress paragraph still being written without
-// re-parsing the whole document.
-const LIVE_TAIL_WINDOW = 1000;
+// re-parsing the whole document. Exported so a test can place a frame range at
+// the boundary this value defines instead of restating the number.
+export const LIVE_TAIL_WINDOW = 1000;
 
 // The only block construct that can span the blank-line split point (and so
 // tokenize differently as a standalone tail than as the tail of the whole):
@@ -149,8 +150,14 @@ const LIVE_TAIL_WINDOW = 1000;
 // ordered delimiter (`.`, `)`) - not the number: marked merges `1.` into
 // `2.` (verified), so the number cannot be part of the test, while `-` and
 // `+` stay two lists and `1.` and `1)` stay two lists.
-const BULLET_MARKER = /^ {0,3}([-+*])(?:[ \t]|$)/;
-const ORDERED_MARKER = /^ {0,3}\d{1,9}([.)])(?:[ \t]|$)/;
+//
+// The marker may be followed by a space, a tab, or end of line. End of line
+// allows an optional \r: firstNonBlankLine splits the raw tail on \n, so a
+// CRLF source hands these readers a line ending in \r, and `-` with no content
+// (`-\r\n`, `2.\r\n`) is still an empty same-family item that marked joins to
+// the head's list.
+const BULLET_MARKER = /^ {0,3}([-+*])(?:[ \t]|\r?$)/;
+const ORDERED_MARKER = /^ {0,3}\d{1,9}([.)])(?:[ \t]|\r?$)/;
 
 function listMarkerFamily(line: string): string | null {
   const bullet = BULLET_MARKER.exec(line);
@@ -167,18 +174,18 @@ function firstNonBlankLine(text: string): string {
   return "";
 }
 
+// A sentinel that can never equal a real marker family: an unreadable head
+// (a lexer throw, or a first list item whose marker line does not parse) has
+// a family nobody can compare, and listContinuesAcrossSplit declines on it.
+export const LIST_FAMILY_UNKNOWN = "\u0000unknown";
+
 // The marker family of the head's LAST top-level list, or null when the head
 // does not end in a list. A head ending in a list is the one shape where the
-// tail can extend an already-open block, so the caller compares families. A
-// lexer failure returns the sentinel, which equals no real family, so the
-// gate declines rather than passing an unverified split.
-function headListFamily(head: string): string | null {
-  let tokens: Token[];
-  try {
-    tokens = markdownLexer.lexer(head);
-  } catch {
-    return LIST_FAMILY_UNKNOWN;
-  }
+// tail can extend an already-open block, so the caller compares families.
+// Reads the token array the caller already lexed for the definition check - a
+// head-change frame is exactly the O(n) frame the verdict cache exists for,
+// and a second lex of the same settled text would pay that cost twice.
+function lastListFamily(tokens: Token[]): string | null {
   for (let index = tokens.length - 1; index >= 0; index -= 1) {
     const token = tokens[index];
     if (token === undefined || token.type === "space") continue;
@@ -188,10 +195,6 @@ function headListFamily(head: string): string | null {
   }
   return null;
 }
-
-// A sentinel that can never equal a real marker family, so an unreadable head
-// makes the gate decline (sound) rather than pass.
-const LIST_FAMILY_UNKNOWN = "\u0000unknown";
 
 // Head-side hazards for the split: a link definition or table delimiter row
 // in the head can resolve structure in the tail (a `[label]` use, table
@@ -265,13 +268,22 @@ function headGateVerdict(head: string, cache: { current: HeadGateVerdict | null 
   if (hit !== null && hit.headSource === head) return hit;
   // The regex gates below carry no /g flag, so .test is stateless and the
   // cached verdict cannot depend on lastIndex carryover.
+  // ONE lex of the head feeds both the definition check and the list-family
+  // read. A lexer throw fails closed on both arms: `hasDef` declines the
+  // windowed path, and the family sentinel declines it a second time.
+  let tokens: Token[] | null = null;
+  try {
+    tokens = markdownLexer.lexer(head);
+  } catch {
+    tokens = null;
+  }
   const verdict: HeadGateVerdict = {
     headSource: head,
     balanced: closeOpenMarkdown(head) === head,
     hazard: HEAD_SPLIT_HAZARD.test(head),
     htmlStart: HTML_BLOCK_START.test(head),
-    hasDef: containsLinkDefinition(head),
-    listFamily: headListFamily(head),
+    hasDef: tokens === null ? true : tokensContainDef(tokens),
+    listFamily: tokens === null ? LIST_FAMILY_UNKNOWN : lastListFamily(tokens),
   };
   cache.current = verdict;
   return verdict;
@@ -306,6 +318,10 @@ function tailStartsIndented(tail: string): boolean {
 // the regex gates beside it.
 function listContinuesAcrossSplit(verdict: HeadGateVerdict, tail: string): boolean {
   if (verdict.listFamily === null) return false;
+  // The sentinel equals no real family, so it would fall through to `false`
+  // and ALLOW an unverified split. Decline instead, as the comments above
+  // promise, so an unreadable head never takes the windowed path.
+  if (verdict.listFamily === LIST_FAMILY_UNKNOWN) return true;
   return verdict.listFamily === listMarkerFamily(firstNonBlankLine(tail));
 }
 
@@ -470,11 +486,14 @@ function lastClosedMermaidFenceEnd(source: string): number {
 // The tail itself is windowed once it is long enough (issue #3208): a settled
 // prose prefix after the frozen head is lexed once and served by identity, and
 // only the bounded LIVE_TAIL_WINDOW after it re-lexes per render - the same
-// splitLiveWindow the single-root path uses. That window split is sound only
-// when nothing spans it; a def or a block construct in the window (an open
-// mermaid fence included) declines to the whole-source lex, today's behavior.
-// A tail too short to window, or one whose split is unsound, keeps one slice
-// exactly as before.
+// splitLiveWindow the single-root path uses. That split declines when a link
+// definition sits in the head or the window, or when the tail's first line
+// would extend a list still open at the end of the head. A mermaid fence in
+// the window also takes the whole-source lex: only the frozen head is checked
+// for non-markdown segments, so a diagram sitting in the window would be
+// parsed as markdown and flip to a code block until it settled. A tail too
+// short to window, or one whose split is declined, keeps one slice exactly as
+// before.
 export function splitLiveMarkdownSegments(
   realSource: string,
   cache: { current: LiveSegmentsCache | null },
@@ -514,9 +533,11 @@ export function splitLiveMarkdownSegments(
   }
   if (tailSource.length > LIVE_WINDOWED_MIN_LENGTH) {
     const split = splitLiveWindow(tailSource, entry.tailGate);
-    if (split === null) {
-      // Unsound split (a definition, a block construct, or an open fence in the
-      // window): whole-source, exactly the pre-throttle fallback.
+    if (split === null || messageMayContainMermaid(split.tail)) {
+      // A declined split (a definition, an HTML block, or a list continuing
+      // across the boundary), or a mermaid fence inside the window, which
+      // would render as a code block while live: whole-source, exactly the
+      // pre-throttle fallback.
       return splitMarkdownSegments(closeOpenMarkdown(realSource), realSource);
     }
     if (entry.tailKey !== split.head) {
