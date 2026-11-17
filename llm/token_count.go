@@ -132,37 +132,16 @@ func EstimateMessagesInputTokensForResolved(res registry.Resolved, messages []Me
 	return estimateMessageList(targetFromResolved(res, "", ""), messages)
 }
 
-// EstimateMessageInputTokenPartsForResolved returns the two additive components
-// estimateMessagesInputTokens sums: the whole list's char count and its count of
-// parts billed at a fixed token price. The caller combines them with
-// TokenParts.Total.
-//
-// It exists so a caller that already holds one prefix's parts can estimate only
-// the messages appended since and get the SAME answer the whole-list estimate
-// would give. That is only sound because the estimator divides the summed chars
-// by four once, over the whole list (see estimateMessagesInputTokens): summing
-// chars first and dividing once at the end cannot round differently, whereas
-// adding per-prefix token counts would.
-func EstimateMessageInputTokenPartsForResolved(res registry.Resolved, messages []Message) TokenParts {
-	t := targetFromResolved(res, "", "")
-	var parts TokenParts
-	for _, m := range messages {
-		c, counted := estimateMessageInputParts(t, m)
-		parts.Chars += c
-		parts.Counted += counted
-	}
-	return parts
-}
-
 // TokenPartEstimator prices messages one at a time for ONE resolved target, so a
-// caller that walks its own list — a session's turn history, say — does not have
-// to project it into a []Message first and pay for that list on every reading
-// (#6439). See TestTokenPartEstimatorMatchesMessageList, which pins that it
-// prices exactly what EstimateMessageInputTokenPartsForResolved prices.
+// caller that walks its own list — a session's turn history, say — prices the
+// turns it already holds without projecting them into a []Message.
 //
-// Summing Parts over a list and calling Total once gives that function's answer
-// for the list, for the same reason EstimateMessageInputTokenPartsForResolved
-// can be added to a prefix: the chars are summed first and divided by four once.
+// Summing Parts over a list and calling Total once is that list's estimate: the
+// chars are summed first and divided by four once (see
+// estimateMessagesInputTokens), so no prefix of the list can round differently
+// from the whole. See TestTokenPartEstimatorMatchesMessageList, which pins that
+// the per-message walk prices what EstimateMessagesInputTokensForResolved
+// prices.
 type TokenPartEstimator struct {
 	target targetInfo
 }

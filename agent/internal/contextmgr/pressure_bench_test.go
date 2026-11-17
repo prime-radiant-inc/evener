@@ -1,21 +1,17 @@
 package contextmgr
 
-// Benchmark and equivalence pins for the context-pressure history estimator's
-// per-request cost (#6439).
+// Benchmark and equivalence pins for the context-pressure history estimator.
 //
 // The estimator is the "fallback" branch of estimateUsedTokensFor and the
 // incremental walk behind the memo: both reach estimateTokenPartsFor, which
 // walks the turns and prices each one in place. The request path takes several
 // readings per request (the fold's note elicitation, the full-history estimate
 // carried into admission, and the status sample), so the walk is on a hot path
-// and must not allocate. It once did: it projected the turns into a fresh
-// []llm.Message and priced that list, a full copy of the conversation per
-// reading.
+// and must not allocate per reading.
 //
-// BenchmarkEstimateTokenPartsFor guards that: it measures the walk against
-// histories of 50, 200 and 800 turns, and it must report zero allocations per
-// reading at every size. The before-and-after figures belong in the commit that
-// made the change, not here.
+// TestEstimateTokenPartsForDoesNotAllocate is that invariant's guard and runs in
+// the default suite. The benchmarks beside it measure the walk at 50, 200 and
+// 800 turns; their numbers are a record, not a check.
 
 import (
 	"fmt"
@@ -119,13 +115,35 @@ func BenchmarkEstimateUsageFallback(b *testing.B) {
 	}
 }
 
-// referenceEstimateTokenParts is the estimator as it stood when #6439 was
-// filed: it projects every turn into a fresh llm.Message list and prices that
-// list. It is the frozen oracle for TestEstimateTokenPartsMatchesFrozenMessageList
-// — do not change it to match a change in production. A change that makes the
-// production estimator differ from this function here is a defect in that
-// change, not a stale expectation.
-func referenceEstimateTokenParts(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
+// TestEstimateTokenPartsForDoesNotAllocate pins the walk's cost: one reading of
+// a history allocates nothing, at every size the request path meets.
+//
+// The property is what makes the walk safe on a hot path — the request path
+// reads the estimate several times per round over the session's whole history —
+// so a regression is a failing test, not a worse benchmark line. It must stay
+// serial (no t.Parallel): AllocsPerRun reads the process-wide allocator
+// counters, so a concurrent test in this package would perturb the count.
+func TestEstimateTokenPartsForDoesNotAllocate(t *testing.T) {
+	for _, turns := range pressureBenchmarkTurns {
+		t.Run(strconv.Itoa(turns), func(t *testing.T) {
+			cm := pressureBenchmarkManager()
+			history := pressureBenchmarkHistory(turns)
+			res := cm.currentProfile().Resolved()
+			if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(res, history) }); allocs != 0 {
+				t.Fatalf("estimateTokenPartsFor over %d turns allocates %.0f times per reading, want 0", turns, allocs)
+			}
+		})
+	}
+}
+
+// referenceEstimateTokens is the message-list estimator written out in full: it
+// projects every turn into an llm.Message list and prices that list with the
+// public whole-list estimate, which walks the list rather than the turns. It is
+// the oracle for TestEstimateTokenPartsMatchesFrozenMessageList — do not change
+// it to match a change in production. A change that makes the production
+// estimator differ from this function is a defect in that change, not a stale
+// expectation.
+func referenceEstimateTokens(res registry.Resolved, turns []schema.Turn) int {
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
@@ -134,26 +152,32 @@ func referenceEstimateTokenParts(res registry.Resolved, turns []schema.Turn) llm
 		}
 		messages = append(messages, llm.TrimThinkingForReplayMessage(t.Message, dropPlainThinking))
 	}
-	return llm.EstimateMessageInputTokenPartsForResolved(res, messages)
+	return llm.EstimateMessagesInputTokensForResolved(res, messages).Tokens
 }
 
 // referenceEstimateUsedTokens is the used-token accounting the request path
-// reads, expressed over referenceEstimateTokenParts. It freezes the verdict a
+// reads, expressed over referenceEstimateTokens. It freezes the verdict a
 // history produces — the token total, and so the pressure fraction and the
 // compaction layers that fire — independently of the estimator's
 // implementation.
 func referenceEstimateUsedTokens(res registry.Resolved, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
 	if lastTokens > 0 && measuredLen <= len(history) {
-		return lastTokens + referenceEstimateTokenParts(res, history[measuredLen:]).Total()
+		return lastTokens + referenceEstimateTokens(res, history[measuredLen:])
 	}
-	return referenceEstimateTokenParts(res, history).Total() + sysPromptChars/4
+	return referenceEstimateTokens(res, history) + sysPromptChars/4
 }
 
 // TestEstimateTokenPartsMatchesFrozenMessageList pins that the production
-// history estimate returns exactly the numbers the message-list implementation
+// history estimate returns the token total the message-list implementation
 // returns, across the shapes a session's history actually holds. The estimator
 // decides when context pressure fires, so a history that prices differently here
 // moves the round at which a session compacts.
+//
+// The pin is on the total because that is the only part of the decomposition
+// production reads: llm.TokenParts is added across slices and Total is called
+// once. The split between its two fields is not observable outside package llm,
+// and TestTokenPartEstimatorMatchesMessageList in that package pins the
+// per-message walk against the whole-list estimate.
 //
 // Every case asserts the same three facts: the token total, the pressure
 // fraction it produces against a fixed window, and the manager's own reading of
@@ -260,10 +284,10 @@ func TestEstimateTokenPartsMatchesFrozenMessageList(t *testing.T) {
 				cm := NewManager(target.profile, nil, cheapmodel.New(nil))
 				res := target.profile.Resolved()
 
-				want := referenceEstimateTokenParts(res, tc.history)
+				want := referenceEstimateTokens(res, tc.history)
 				got := estimateTokenPartsFor(res, tc.history)
-				if got != want {
-					t.Fatalf("estimateTokenPartsFor = %+v, want %+v: the estimator no longer prices this history the way the frozen message-list implementation does", got, want)
+				if got.Total() != want {
+					t.Fatalf("estimateTokenPartsFor.Total = %d, want %d: the estimator no longer prices this history the way the message-list implementation does", got.Total(), want)
 				}
 
 				// The verdict: the numbers the compaction thresholds are compared
