@@ -39,6 +39,9 @@ node_modules/
 # Personal Comic Sans webfonts: local verification only, never distribute.
 /cmd/evener-hub/frontend/public/webassets/comic-local/
 results/
+# The prompt-eval harness is Python; running its tests leaves bytecode caches.
+__pycache__/
+*.pyc
 docs/experiments/runs/
 docs/experiments/dashboard.html
 docs/experiments/dashboard-session24.html
