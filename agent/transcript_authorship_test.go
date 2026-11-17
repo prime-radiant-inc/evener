@@ -131,11 +131,16 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	call.Authorship = answer.Authorship.Clone()
 	middle.recordTurn(call, call)
 	middle.appendTurn(schema.TurnToolResults, llm.ToolResult("nested-copy-comm", `{"delivery":"delivered"}`, false))
+	// The session's config is guarded by mu: the prompt namer this session
+	// started reaches metaWithNotes' whole-config snapshot on its own
+	// goroutine, so an unlocked write here races that read.
+	middle.mu.Lock()
 	middle.cfg.testOnly.childClientFactory = func() *llm.Client {
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-second-answer") }}})
 		return c
 	}
+	middle.mu.Unlock()
 	c := root.delegateController
 	c.mu.Lock()
 	lease := c.live[middleResult.DelegateID].binding.lease
