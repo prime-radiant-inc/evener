@@ -15,6 +15,7 @@ import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
+  taskList: requireClass(styles.taskList, "activitybar.module.css", "taskList"),
 };
 
 export function TasksTab({ scope, now }: ActivityTabBodyProps) {
@@ -29,7 +30,7 @@ export function TasksTab({ scope, now }: ActivityTabBodyProps) {
     return <Skeleton lines={scope.counts.tasksTotal || undefined} />;
   }
   return (
-    <div className={CLASS.stack}>
+    <div className={`${CLASS.stack} ${CLASS.taskList}`}>
       <TasksPanelBody
         sessionRef={ref}
         model={model}

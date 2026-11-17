@@ -83,7 +83,7 @@
   gap: var(--space-1);
 }
 
-.stack > div > ul {
+.taskList ul {
   gap: var(--space-1);
 }
 
