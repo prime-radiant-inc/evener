@@ -109,17 +109,31 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // the call waits from `receivedAt`, both on this client's clock, so the
   // distance to `now` needs no daemon clock and is off only by delivery
   // latency. The read-sourced instant wins while it is still ahead: it is
-  // absolute, where this is a countdown from a message that a reconnect could
-  // have delivered hours late. A read instant already past says that wait is
-  // over, which leaves a later retry free to speak for itself. `inProgress`
-  // rules this out once a frame has landed or the delay is spent: the call is
-  // moving again, and the retry text says so.
+  // absolute, where this is a countdown from a message a reconnect could have
+  // delivered hours late. A read instant already past says that wait is over,
+  // which leaves a later retry free to speak for itself.
+  //
+  // The wait ends on the retry's OWN facts: its own countdown running out, or
+  // the reducer replacing it with the daemon's no-delay retry. It must NOT end
+  // on `lastFrameAt`, which is RetryWait's rule for a short backoff but wrong
+  // here: a six-hour wait sees frames that have nothing to do with the waiting
+  // call, and every thread-scalar frame restamps lastFrameAt (a finished
+  // background job, a delegate row update, a queue change - reducer.ts's
+  // THREAD_SCALAR_ONLY_METHODS). Keying on it would drop the chip the moment
+  // any of those landed and fall back to the retry text and then to silence,
+  // which is the reading this issue forbids.
+  //
+  // A retry outlives its turn (modelRetry is not cleared on Stop), so the
+  // guard against showing a dead turn's wait is the retry's own turn identity
+  // rather than any frame clock: only a retry naming THIS pane's running turn
+  // speaks for it.
   const liveRemaining =
     retry !== undefined &&
-    retryWait !== undefined &&
-    !retryWait.inProgress &&
     retry.errorClass === "quota_exceeded" &&
-    retry.delayMs > 0
+    retry.delayMs > 0 &&
+    retry.turnId !== undefined &&
+    retry.turnId === turnId &&
+    now - retry.receivedAt < retry.delayMs
       ? retry.delayMs - (now - retry.receivedAt)
       : undefined;
   const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);

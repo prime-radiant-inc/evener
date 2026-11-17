@@ -366,6 +366,7 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
       params: {
         threadId: "thr_1",
         ref: "s1",
+        turnId: "turn_0",
         attempt: 1,
         maxAttempts: 0,
         delayMs: sixHours,
@@ -393,6 +394,111 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
   expect(el.textContent).toBe(waitingForQuotaText(sixHours - 5_000));
+});
+
+// The regression this guards: over a six-hour wait plenty of frames land that
+// have nothing to do with the waiting call, and every thread-scalar one
+// restamps lastFrameAt - here a background job finishing. RetryWait's usual
+// rule ("any later frame means the call moved") is right for a short backoff
+// and wrong for a wait this long: keying on it dropped the chip and fell back
+// to "in progress" and then to unexplained silence, which is exactly the
+// reading issue #6657 forbids.
+test("a background job finishing during a usage-limit wait does not end the wait", () => {
+  const now = 1_000_000;
+  const receivedAt = now - 5_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", receivedAt);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    receivedAt,
+  );
+  // A job ending mid-wait: scalar-only, so it restamps lastFrameAt and never
+  // touches modelRetry.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/job/finished",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        job: { jobId: "job_1", jobType: "shell", status: "finished", outputBytes: 0 },
+      },
+    },
+    now - 1_000,
+  );
+  expect(model.lastFrameAt).toBeGreaterThan(model.modelRetry?.receivedAt ?? 0);
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+
+  expect(screen.getByTestId("liveness-line").getAttribute("data-level")).toBe("quota");
+});
+
+// modelRetry is not cleared on Stop, so a new turn can still carry the dead
+// wait's six-hour retry. The guard is the retry's own turn identity: it
+// speaks only for the turn it named, so nothing needs a frame clock to tell.
+test("a usage-limit retry left over from an earlier turn does not explain a new turn", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 5_000);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_stopped",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    now - 5_000,
+  );
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  // The pane is now running a different turn.
+  render(
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_new"
+      retry={model.modelRetry}
+    />,
+  );
+
+  const el = screen.queryByTestId("liveness-line");
+  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
 });
 
 // A six-hour reset is not 21,600 seconds of a wedged session, and the chip's
