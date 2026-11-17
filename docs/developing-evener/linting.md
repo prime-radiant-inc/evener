@@ -1,8 +1,10 @@
 # Linting
 
-Static checks that gate merges without running tests: formatting, generated-
-output freshness, compile floors, repository source audits, the frontend Biome
-scopes, and the repo secret scan. `make lint` is `LINT_TARGETS`: `lint-naming`,
+Checks that gate merges without running the product's tests: formatting,
+generated-output freshness, compile floors, repository source audits, the
+frontend Biome scopes, and the repo secret scan. (`lint-prompt-eval` below is
+the one exception — it runs the prompt-eval harness's own test suite, which no
+test gate reaches.) `make lint` is `LINT_TARGETS`: `lint-naming`,
 `lint-gofmt`, `lint-evenerfuzz`, `lint-eval`, `lint-internal`, `lint-golangci`,
 `lint-generated`, `lint-fuzz-registry`, `lint-prompt-eval`,
 `lint-package-imports`, `lint-go-module-consumer`, `lint-js-toolchain-pins`,
