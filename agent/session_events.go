@@ -254,8 +254,15 @@ func (s *Session) emit(data events.EventData) {
 
 // emitWithProvenance is emit with an explicit causal provenance stamp. emit
 // passes the session's active provenance; callers with a more specific origin
-// (a watch delivery) pass it directly. The Notification-hook decision and the
-// jobManager fan-out are identical to emit.
+// (a watch delivery) pass that origin's stamp. The Notification-hook decision
+// and the jobManager fan-out are identical to emit.
+//
+// The envelope ADOPTS p rather than copying it, so the caller must own it: a
+// caller holding a record something else can still read or mutate — a
+// descriptor, a jobstore event, a recorded transcript turn — passes
+// provenance.Clone of that record's stamp, never the record's own. See
+// sendEventContext for why adoption is the contract and what it costs to
+// copy the stamp a second time.
 func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal) {
 	if s == nil || s.events == nil {
 		return
