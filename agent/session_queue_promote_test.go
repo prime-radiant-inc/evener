@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/appwire"
 )
 
 func newPromoteTestSession(t *testing.T) *Session {
@@ -122,8 +123,8 @@ func TestSession_PromoteQueuedAsSteer_IndexOutOfRange(t *testing.T) {
 	markProcessing(sess)
 	for _, idx := range []int{-1, 1, 42} {
 		err := sess.PromoteQueuedAsSteer(context.Background(), idx, "")
-		if err == nil || !strings.Contains(err.Error(), "out of range") {
-			t.Fatalf("PromoteQueuedAsSteer(%d) err=%v, want out of range", idx, err)
+		if code := wireCode(t, err); code != appwire.CodeConflict {
+			t.Fatalf("PromoteQueuedAsSteer(%d) code = %d, want %d", idx, code, appwire.CodeConflict)
 		}
 	}
 	if preview := sess.QueuePreview(); len(preview) != 1 || preview[0] != "alpha" {
