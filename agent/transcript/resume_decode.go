@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // A resume scan decodes every recorded entry before the daemon that owns the
@@ -30,6 +31,15 @@ const resumeDecodeInFlightBytes = 64 << 20
 // is what pins that the scan's decode really is concurrent, and that the scan
 // joins its workers before it returns.
 var resumeDecodeSeam func(entering bool)
+
+// resumeDecoderGoroutines counts the decode-pool goroutines running now: one
+// per worker plus the collector. startResumeDecoderGoroutine and its deferred
+// counterpart bracket each one, so a non-zero count after finish returns means
+// a pool nobody joined. Tests read it; nothing else does.
+var resumeDecoderGoroutines atomic.Int64
+
+func startResumeDecoderGoroutine() { resumeDecoderGoroutines.Add(1) }
+func stopResumeDecoderGoroutine()  { resumeDecoderGoroutines.Add(-1) }
 
 // resumeDecodeWorkerCount is how many decode workers a scan runs on a process
 // with gomaxprocs usable cores.
@@ -151,6 +161,8 @@ func (d *resumeDecoder) finish() ([]Entry, error) {
 }
 
 func (d *resumeDecoder) work() {
+	startResumeDecoderGoroutine()
+	defer stopResumeDecoderGoroutine()
 	defer d.workers.Done()
 	for job := range d.jobs {
 		if resumeDecodeSeam != nil {
@@ -170,6 +182,8 @@ func (d *resumeDecoder) work() {
 // arrived before their predecessor; it holds entries the scan's own slice
 // would hold anyway, and only as many as were submitted.
 func (d *resumeDecoder) collect() {
+	startResumeDecoderGoroutine()
+	defer stopResumeDecoderGoroutine()
 	defer close(d.collected)
 	pending := make(map[int]resumeDecodeResult)
 	next := 0

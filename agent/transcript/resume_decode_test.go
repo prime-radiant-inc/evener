@@ -5,14 +5,83 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// resumeDecodeOverlapTimeout bounds how long the concurrency test's first
+// decode waits for a second one to enter. It is generous enough that a loaded
+// host cannot trip it and short enough that a sequential scan fails the test
+// quickly instead of hanging it.
+const resumeDecodeOverlapTimeout = 30 * time.Second
+
+// seamEntries counts every decode the seam has seen enter, across tests.
+var seamEntries atomic.Int64
+
+// waitForResumeDecoderGoroutines waits up to d for every pool goroutine to
+// exit and returns how many remained. Workers and the collector exit promptly
+// once finish runs; a skipped finish leaves them blocked forever, so any
+// remaining after d is a leak rather than slowness.
+func waitForResumeDecoderGoroutines(d time.Duration) int64 {
+	deadline := time.Now().Add(d)
+	for {
+		if n := resumeDecoderGoroutines.Load(); n == 0 || time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// failingReadFS fails the read of path once fewer than remaining bytes are
+// left, so a scan over a longer transcript submits entries and then hits a read
+// error. It exists to put the scan on its read-error path after submits, which
+// a header or open failure cannot do.
+type failingReadFS struct {
+	afero.Fs
+	path      string
+	remaining int
+}
+
+// OpenFile is the seam the resume path uses, so the wrapper has to be here
+// rather than only on Open.
+func (f *failingReadFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := f.Fs.OpenFile(name, flag, perm)
+	if err != nil || name != f.path {
+		return file, err
+	}
+	return &failingReadFile{File: file, remaining: f.remaining}, nil
+}
+
+func (f *failingReadFS) Open(name string) (afero.File, error) {
+	return f.OpenFile(name, os.O_RDONLY, 0o644)
+}
+
+type failingReadFile struct {
+	afero.File
+	remaining int
+}
+
+func (f *failingReadFile) Read(p []byte) (int, error) {
+	if f.remaining <= 0 {
+		return 0, errors.New("injected read failure")
+	}
+	if len(p) > f.remaining {
+		p = p[:f.remaining]
+	}
+	n, err := f.File.Read(p)
+	f.remaining -= n
+	return n, err
+}
 
 // A resume scan decodes every recorded entry before a resumed daemon can
 // announce itself. That decode is pure CPU over lines with no ordering
@@ -61,13 +130,30 @@ func writeResumeScanTranscript(t *testing.T, body string) string {
 // overlap. A sequential scan reports a peak of one no matter how large the
 // transcript, so the assertion fails on the code this test was written
 // against.
+//
+// The overlap is forced, not hoped for: the seam holds the first decode that
+// enters until a second one enters, and waiting on a channel yields the
+// processor, so this holds even on a single P and under GOMAXPROCS=1. A
+// sequential scan never lets the second decode enter, and the bounded wait
+// then fails the test instead of hanging it.
 func TestResumeScanDecodesEntriesConcurrently(t *testing.T) {
 	// Not parallel: it installs the package-level resumeDecodeSeam.
+	// The scan sizes its pool from GOMAXPROCS, so pin two here: the claim is
+	// that the scan runs decodes in parallel at all, and a one-P host would
+	// otherwise measure the pool's width rather than the scan's behavior.
+	previousProcs := runtime.GOMAXPROCS(2)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
+
 	const entries = 200
 	path := writeResumeScanTranscript(t, resumeScanBody(entries))
 
 	var inFlight, peak atomic.Int32
 	var decodes atomic.Int64
+	// overlap receives while the first decode waits for a second one; it is
+	// buffered so the second decode never blocks on a test that has moved on.
+	overlap := make(chan struct{}, 1)
+	var first sync.Once
+	var second atomic.Bool
 	resumeDecodeSeam = func(entering bool) {
 		if entering {
 			decodes.Add(1)
@@ -78,6 +164,23 @@ func TestResumeScanDecodesEntriesConcurrently(t *testing.T) {
 					break
 				}
 			}
+			if n > 1 && second.CompareAndSwap(false, true) {
+				select {
+				case overlap <- struct{}{}:
+				default:
+				}
+			}
+			// The first decode holds until a second one has entered, so the
+			// peak cannot depend on whether this host happens to schedule a
+			// second worker inside a sub-millisecond window.
+			first.Do(func() {
+				select {
+				case <-overlap:
+				case <-time.After(resumeDecodeOverlapTimeout):
+					// A sequential scan can never reach here; the assertion
+					// below reports it rather than this wait.
+				}
+			})
 			return
 		}
 		inFlight.Add(-1)
@@ -178,15 +281,63 @@ func TestResumeScanReportsTheFirstFileOrderFailure(t *testing.T) {
 	}
 }
 
+// TestResumeScanReportsAnEntryErrorBeforeALaterReadFailure pins that a corrupt
+// entry keeps its error when a read fails further along the file. The corrupt
+// line is earlier in file order, so it is the first file-order error, and the
+// read failure that stopped the scan is second. Reporting the read error would
+// hide the line the user has to fix.
+func TestResumeScanReportsAnEntryErrorBeforeALaterReadFailure(t *testing.T) {
+	t.Parallel()
+
+	body := corpusHeader +
+		corpusLine(t, 0, schema.NewTurn(schema.TurnUserInput, llm.User("u0"))) +
+		"{not json}\n" +
+		corpusLine(t, 2, schema.NewTurn(schema.TurnUserInput, llm.User("u2"))) +
+		corpusLine(t, 3, schema.NewTurn(schema.TurnUserInput, llm.User("u3")))
+	base := afero.NewMemMapFs()
+	if err := base.MkdirAll(filepath.Dir(faultTranscriptPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := afero.WriteFile(base, faultTranscriptPath, []byte(body), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	// Let the first read through -- it carries the whole file, including the
+	// corrupt line -- and fail the second, so the corrupt entry is submitted
+	// before the read error lands.
+	fs := &failingReadFS{Fs: base, path: faultTranscriptPath, remaining: len(body)}
+
+	w, got, err := OpenWriterForSessionWithFS(fs, faultTranscriptPath, "CORPUS")
+	if w != nil {
+		_ = w.Close()
+		t.Fatal("a failed resume returned a writer")
+	}
+	if got != nil {
+		t.Fatalf("failed resume returned %d entries, want none", len(got))
+	}
+	if !errors.Is(err, ErrInvalidRecordBoundary) {
+		t.Fatalf("resume error = %v, want the earlier corrupt line's ErrInvalidRecordBoundary", err)
+	}
+	if strings.Contains(err.Error(), "read transcript for resume") {
+		t.Fatalf("resume error = %v, want the corrupt line's error rather than the later read failure", err)
+	}
+}
+
 // TestResumeScanJoinsItsDecodeWorkers pins that no decode is still running
-// once the scan returns, on the success path and after a mid-file read
-// failure. A pool that abandoned its workers would leak one per failed resume,
-// and a resumed daemon's failure path is exactly where that repeats.
+// once the scan returns, on the success path and after a mid-file read failure.
+// A pool that abandoned its workers would leak one per failed resume, and a
+// resumed daemon's failure path is exactly where that repeats.
+//
+// The failure case fails the READ, after entry lines have been submitted, and
+// opens the file through the fault filesystem so the failing operation is the
+// scan's own read rather than the open or the stat before it. A case that was
+// refused earlier -- at the header, say -- would leave nothing submitted and so
+// could not tell a joined pool from an abandoned one.
 func TestResumeScanJoinsItsDecodeWorkers(t *testing.T) {
 	// Not parallel: it installs the package-level resumeDecodeSeam.
 	var inFlight atomic.Int32
 	resumeDecodeSeam = func(entering bool) {
 		if entering {
+			seamEntries.Add(1)
 			inFlight.Add(1)
 			return
 		}
@@ -206,6 +357,56 @@ func TestResumeScanJoinsItsDecodeWorkers(t *testing.T) {
 		}
 		if n := inFlight.Load(); n != 0 {
 			t.Fatalf("%d decodes still in flight after the resume returned", n)
+		}
+	})
+
+	t.Run("read fails after entries were submitted", func(t *testing.T) {
+		// 512 entries is far more than one 64 KiB read of the buffer, so
+		// failing the read after 32 KiB lets a few hundred entries be
+		// submitted first and still leaves the scan unfinished.
+		body := resumeScanBody(512)
+		base := afero.NewMemMapFs()
+		if err := base.MkdirAll(filepath.Dir(faultTranscriptPath), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := afero.WriteFile(base, faultTranscriptPath, []byte(body), 0o644); err != nil {
+			t.Fatalf("write transcript: %v", err)
+		}
+
+		fs := &failingReadFS{Fs: base, path: faultTranscriptPath, remaining: 32 * 1024}
+		before := inFlight.Load()
+		if before != 0 {
+			t.Fatalf("%d decodes in flight before the failed resume", before)
+		}
+		enteredBefore := seamEntries.Load()
+		w, got, err := OpenWriterForSessionWithFS(fs, faultTranscriptPath, "CORPUS")
+		if w != nil {
+			_ = w.Close()
+			t.Fatal("a failed resume returned a writer")
+		}
+		if got != nil {
+			t.Fatalf("failed resume returned %d entries, want none", len(got))
+		}
+		if err == nil {
+			t.Fatal("resume succeeded through a read fault")
+		}
+		if !strings.Contains(err.Error(), "read transcript for resume") {
+			t.Fatalf("resume error = %v, want the scan's read error", err)
+		}
+		// The point of this case: entry lines really were submitted before the
+		// read failed, so a pool left running would be caught below.
+		if entered := seamEntries.Load() - enteredBefore; entered == 0 {
+			t.Fatal("no decode was submitted before the read failed: this case cannot see an abandoned pool")
+		}
+		if n := inFlight.Load(); n != 0 {
+			t.Fatalf("%d decodes still in flight after a failed resume returned", n)
+		}
+		// The scan's own read-error path is the one under test, so the pool must
+		// be gone once it returns. A pool whose finish was skipped leaves its
+		// workers blocked on the jobs channel and its collector on results,
+		// forever; those goroutines are what this looks for.
+		if leaked := waitForResumeDecoderGoroutines(time.Second); leaked > 0 {
+			t.Fatalf("%d resume decode goroutines outlived a failed resume", leaked)
 		}
 	})
 

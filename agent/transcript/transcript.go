@@ -1216,7 +1216,14 @@ func scanForResume(f afero.File, expectedSessionID string) (Header, []Entry, int
 	for {
 		line, complete, bytesRead, readErr := ReadLine(reader, DefaultMaxLineBytes)
 		if readErr != nil {
-			_, _ = decode.finish() // no worker outlives the scan, error or not
+			// Every submitted line precedes this read in file order, so a
+			// failed decode among them is the first file-order error and
+			// outranks the read failure that stopped the scan. finish still
+			// runs on both arms: no worker outlives the scan.
+			_, entryErr := decode.finish()
+			if entryErr != nil {
+				return Header{}, nil, 0, 0, fmt.Errorf("parse transcript entry: %w", entryErr)
+			}
 			return Header{}, nil, 0, 0, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
