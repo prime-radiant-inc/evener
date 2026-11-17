@@ -40,13 +40,14 @@ func TestColdRebuildAllocationBudget(t *testing.T) {
 	}
 	assertAllWindows(t, x, path)
 
+	ceiling := coldRebuildMaxRatio()
 	allocated := after.TotalAlloc - before.TotalAlloc
 	ratio := float64(allocated) / float64(size)
-	t.Logf("rebuild of %d bytes (%d entries) allocated %d bytes (%.2fx, %d per entry)",
-		size, x.meta.Entries, allocated, ratio, allocated/x.meta.Entries)
-	if ratio >= coldRebuildMaxRatio {
+	t.Logf("rebuild of %d bytes (%d entries) allocated %d bytes (%.2fx, %d per entry, ceiling %.1fx, race %v)",
+		size, x.meta.Entries, allocated, ratio, allocated/x.meta.Entries, ceiling, raceDetectorEnabled)
+	if ratio >= ceiling {
 		t.Fatalf("cold rebuild allocated %.2fx the transcript (%d bytes for %d), want under %.1fx",
-			ratio, allocated, size, coldRebuildMaxRatio)
+			ratio, allocated, size, ceiling)
 	}
 }
 
@@ -55,11 +56,30 @@ const (
 	// entries for the per-entry costs to dominate the fixed ones, small enough
 	// that a default test run pays a fraction of a second.
 	coldRebuildTurns = 400
-	// coldRebuildMaxRatio bounds the rebuild's allocation relative to the
-	// transcript it reads. Before the fix the per-line strict decode alone grew
-	// a fresh streaming decoder buffer for every entry, spending about 8x.
-	coldRebuildMaxRatio = 5.0
+
+	// The two bounds below are deliberate literals, not values derived from the
+	// implementation under test. Both lanes measured the same rebuild: the race
+	// detector's own bookkeeping inflates every allocation, so one number cannot
+	// serve both without either passing the regression or failing a healthy run.
+	//
+	// Plain: a healthy rebuild of this fixture spends about 4.0x, and the
+	// pre-fix per-line strict decode — which grew a fresh streaming decoder
+	// buffer for every entry — spent about 8.1x. 5.0 sits between them.
+	coldRebuildMaxRatioPlain = 5.0
+
+	// Race: the same rebuild spends about 8.2x under -race, and spent about
+	// 12.7x before the fix. 10.0 sits between them.
+	coldRebuildMaxRatioRace = 10.0
 )
+
+// coldRebuildMaxRatio is this lane's ceiling, split by build tag so a -race run
+// is held to a bound that is still tight enough to catch the regression.
+func coldRebuildMaxRatio() float64 {
+	if raceDetectorEnabled {
+		return coldRebuildMaxRatioRace
+	}
+	return coldRebuildMaxRatioPlain
+}
 
 // TestColdRebuildSidecarsUnchanged pins that the rebuild still writes exactly
 // the records it wrote before the allocation work: the scan reuses one line
