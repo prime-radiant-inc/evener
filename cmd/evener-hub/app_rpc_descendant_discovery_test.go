@@ -188,22 +188,28 @@ func readChildRetryingIndexContention(ctx context.Context, t *testing.T, client 
 	}, refreshes, reads)
 }
 
-// childDiscoveryIndexLockedOnce answers the first read that reaches a daemon
-// with the transcript index's transient locked answer, so the helper reissues
-// the request. betweenAttempts runs once before that second request, which is
-// where a scenario arranges the daemon state the retry must meet.
-func childDiscoveryIndexLockedOnce(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, betweenAttempts func()) func() (appwire.ThreadReadResponse, error) {
-	injected := false
+// childDiscoveryReadForcingIndexAnswer issues the child read and answers the
+// first attempt that reaches the hub with the transcript index's transient
+// locked answer, so the helper reissues the request the way a live writer's
+// contention makes it. beforeRetry runs before every attempt after the first:
+// the helper reissues with no refresh of its own, and the daemon the first
+// attempt reached can be gone by then, so only a real roster refresh publishes
+// that departure to the reissued read.
+//
+// The answer is forced on a successful first read as well as a real transient
+// one, because the first attempt's own failure is not what this seam is about:
+// the daemon state the retry must meet is.
+func childDiscoveryReadForcingIndexAnswer(ctx context.Context, client *appwire.Client, params appwire.ThreadReadParams, beforeRetry func()) func() (appwire.ThreadReadResponse, error) {
+	attempts := 0
 	return func() (appwire.ThreadReadResponse, error) {
-		if injected && betweenAttempts != nil {
-			betweenAttempts()
-			betweenAttempts = nil
+		if attempts > 0 && beforeRetry != nil {
+			beforeRetry()
 		}
+		attempts++
 		response, err := client.ThreadRead(ctx, params)
-		if err != nil || injected {
+		if err != nil || attempts > 1 {
 			return response, err
 		}
-		injected = true
 		return appwire.ThreadReadResponse{}, appwire.TranscriptIndexLocked()
 	}
 }
@@ -381,17 +387,21 @@ func testHubChildDiscovery(t *testing.T, scenario string) {
 		if scenario == "remote" {
 			params.Ref = "unattached:" + childID
 		}
-		if scenario == "transport-lost-retried" {
-			// The daemon is gone by the time the helper reissues the read, and a
-			// real refresh is what publishes that departure. It runs between the
-			// attempts, outside the scenario's hook, so the first attempt still
+		if scenario == "transport-lost" || scenario == "transport-lost-retried" {
+			// A transport loss answers the first attempt from the saved history,
+			// which the transcript index can refuse with a transient answer. The
+			// helper reissues that request, and by then the daemon is gone: a real
+			// refresh publishes the departure so the retry resolves to no source
+			// and folds to the saved history instead of dialing a dead listener.
+			// Forcing the transient answer puts both scenarios on that path; the
+			// refresh runs outside the scenario's hook, so the first attempt still
 			// makes its own live read and the counters stay the scenario's own.
-			betweenAttempts := func() {
+			refreshBeforeRetry := func() {
 				if refreshErr := previousRefresh(readCtx, roster); refreshErr != nil {
 					t.Errorf("refresh before the retried read: %v", refreshErr)
 				}
 			}
-			read, err = retryChildDiscoveryReads(readCtx, t, childDiscoveryIndexLockedOnce(readCtx, client, params, betweenAttempts), &refreshes, &reads)
+			read, err = retryChildDiscoveryReads(readCtx, t, childDiscoveryReadForcingIndexAnswer(readCtx, client, params, refreshBeforeRetry), &refreshes, &reads)
 		} else {
 			read, err = readChildRetryingIndexContention(readCtx, t, client, params, &refreshes, &reads)
 		}
