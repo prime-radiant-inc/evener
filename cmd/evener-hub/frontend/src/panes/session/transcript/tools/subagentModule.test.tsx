@@ -51,8 +51,8 @@ afterAll(
 );
 
 beforeEach(() => {
-  resetConnectionStoreForTests();
   resetThreadsStoreForTests();
+  resetConnectionStoreForTests();
 });
 
 afterEach(() => {

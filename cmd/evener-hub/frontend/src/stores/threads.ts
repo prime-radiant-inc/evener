@@ -2174,12 +2174,17 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   const now = Date.now();
   // thread/clear does not carry the boot generation needed to establish a new
   // model-control authority. Keep its canonical metadata, but retire capability
-  // and snapshot until a replacement thread/read proves both.
+  // and snapshot until a replacement thread/read proves both. A thread that
+  // does not advertise the protocol is already safely unsupported and needs no
+  // replacement read.
   const cleared = hydrateThread({ thread: response.thread }, targetRef, now);
-  const model: ThreadModel = {
-    ...cleared,
-    modelControlState: { kind: "recovering", lastSafeDisplay: modelControlDisplay(cleared) },
-  };
+  const model: ThreadModel =
+    cleared.modelControlState.kind === "unsupported"
+      ? cleared
+      : {
+          ...cleared,
+          modelControlState: { kind: "recovering", lastSafeDisplay: modelControlDisplay(cleared) },
+        };
   // The session-content clear's cache hook: the cleared model is a bare
   // hydrate with no history, so it would never match the write gates;
   // deleting the record in the same step is what keeps a cleared session's
@@ -2224,11 +2229,19 @@ async function applyClearResponse(targetRef: string, response: ThreadClearRespon
   });
   const client = getWiredClient();
   const epoch = getReadyEpoch();
-  if (client?.state === "ready" && canonicalThreadOwnerActive(targetRef)) {
+  if (
+    model.modelControlState.kind === "recovering" &&
+    client?.state === "ready" &&
+    canonicalThreadOwnerActive(targetRef)
+  ) {
     void refreshTrackedThread(client, epoch, targetRef, true, { intent: hydrationIntentFor(targetRef) }).catch(
       () => {},
     );
-  } else if (client?.state === "ready" && (watchRefCounts.get(targetRef) ?? 0) > 0) {
+  } else if (
+    model.modelControlState.kind === "recovering" &&
+    client?.state === "ready" &&
+    (watchRefCounts.get(targetRef) ?? 0) > 0
+  ) {
     void refreshWatchedThread(client, epoch, targetRef, true).catch(() => {});
   }
 }
