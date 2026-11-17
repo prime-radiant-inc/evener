@@ -31,12 +31,12 @@ import (
 // It holds one entry per rules path rather than one per version, so its size
 // grows with the number of .gitignore files a session has searched through and
 // never with how often they were edited. That number is not bounded either — a
-// long-lived session greps many trees and keeps every one's matchers — so stored
-// charges against the same per-file accounting a call's rules budget uses, and
-// the whole map is dropped once the retained total passes
-// maxGlobIgnoreTotalBytes. That is a ceiling on what a session may pin, not a
-// policy: everything cached after the clear is recompiled, so a tree whose rules
-// fit the bound keeps hitting.
+// long-lived session greps many trees and keeps every one's matcher — so each
+// entry records the charge a call's rules budget pays for that file, and the map
+// is cleared when a store would take the summed charge past
+// maxGlobIgnoreTotalBytes. A dropped entry is recompiled on its next search, so
+// a tree whose rules fit the bound recompiles once after a clear and hits again
+// from then on. That is a ceiling on what a session may pin, not a policy.
 //
 // Entries are keyed by the rules file's ABSOLUTE path, not by its path relative
 // to whichever base the call searched, because one cache serves an environment
