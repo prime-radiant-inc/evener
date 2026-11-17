@@ -156,6 +156,7 @@ Dev tooling and test rigs declare these themselves.
 | `EVENER_SHARD_RUN_FILE` | [developing-evener/testing.md](../developing-evener/testing.md) | `internal/devtool/shardrun` |
 | `EVENER_WEB_VITEST_JSON` | none | `cmd/evener-dev` |
 | `GITHUB_STEP_SUMMARY` | none | `cmd/evener-go-deps` |
+| `GOGC` | none | `cmd/evener` |
 | `SHARDRUN_PROBE_CHILD` | none | `internal/devtool/shardrun` |
 
 ## hub.toml keys
