@@ -30,7 +30,14 @@ import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/f
 import { NotesPanelBody } from "./NotesPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "local:033uaztQj6XPP6eF7pS0OW",
     threadId: "033uaztQj6XPP6eF7pS0OW",
@@ -63,6 +70,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     cwd: "/tmp/project",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 

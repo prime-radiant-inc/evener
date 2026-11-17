@@ -36,7 +36,14 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 };
 
 function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -69,6 +76,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     cwd: "/tmp/project",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 

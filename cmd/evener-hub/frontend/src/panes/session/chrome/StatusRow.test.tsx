@@ -7,7 +7,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
 import { Toast } from "../../../widgets";
@@ -36,14 +36,20 @@ test("phone status CSS reserves a visible model label without dropping fixed fac
 });
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelProvider = "anthropic/claude-sonnet-4-5",
+    model = "anthropic/claude-sonnet-4-5",
+    modelControlState = { kind: "uninitialized", canonicalDisplay: { modelProvider, model } },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
     name: "",
     status: { type: "idle" },
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    model: "anthropic/claude-sonnet-4-5",
+    modelProvider,
+    model,
     visionModel: "",
     askPending: false,
     pendingEscalations: [],
@@ -69,6 +75,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     cwd: "/tmp/project",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 
@@ -214,10 +221,49 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   let called: unknown;
   fake.on("thread/model/set", (params) => {
     called = params;
-    return {};
+    return {
+      modelControlVersion: 1,
+      disposition: "accepted" as const,
+      modelControl: {
+        authority: {
+          instanceId: params.expectedInstanceId,
+          bootGeneration: params.expectedBootGeneration,
+        },
+        revision: 2,
+        active: {
+          modelProvider: "anthropic",
+          model: "claude-sonnet-4-5",
+          reasoningEffortLevels: [],
+          supportsReasoning: false,
+        },
+        desired: {
+          requestSequence: 1,
+          clientMutationId: params.clientMutationId,
+          modelProvider: params.modelProvider,
+          model: params.model,
+          lifecycle: "pending",
+        },
+      },
+    };
   });
 
-  render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
+  const model = testModel({
+    modelControlState: {
+      kind: "ready",
+      snapshot: {
+        authority: { instanceId: "thr_a", bootGeneration: "1" },
+        revision: 1,
+        active: {
+          modelProvider: "anthropic",
+          model: "claude-sonnet-4-5",
+          reasoningEffortLevels: [],
+          supportsReasoning: false,
+        },
+      },
+    },
+  });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  render(<StatusRow sessionRef="ref_a" model={model} now={1000} />);
   await user.click(screen.getByTestId("model-switch-trigger"));
   // Named "Model" (widgets/modelCatalog's own aria-label); the effort control's
   // own combobox is named "Reasoning effort", so this is unambiguous even
@@ -229,7 +275,16 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
-  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+  await waitFor(() =>
+    expect(called).toMatchObject({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      expectedInstanceId: "thr_a",
+      expectedBootGeneration: "1",
+      clientMutationId: expect.any(String),
+    }),
+  );
 });
 
 // --- reasoning effort switcher ----------------------------------------------

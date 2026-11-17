@@ -107,6 +107,69 @@ afterEach(() => {
   delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
 });
 
+function establishReadyModelControl(ref: string): void {
+  const current = threadsStore.getState().threads.get(ref);
+  if (!current) throw new Error(`missing thread fixture for ${ref}`);
+  act(() => {
+    threadsStore.setState({
+      threads: new Map([
+        [
+          ref,
+          {
+            ...current,
+            modelControlState: {
+              kind: "ready",
+              snapshot: {
+                authority: { instanceId: current.threadId, bootGeneration: "1" },
+                revision: 1,
+                active: {
+                  modelProvider: current.modelProvider,
+                  model: current.model,
+                  reasoningEffortLevels: current.reasoningEffortLevels,
+                  supportsReasoning: current.supportsReasoning,
+                },
+              },
+            },
+          },
+        ],
+      ]),
+    });
+  });
+}
+
+function acceptModelSet(params: {
+  modelProvider: string;
+  model: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
+  expectedBootGeneration: string;
+}) {
+  return {
+    modelControlVersion: 1,
+    disposition: "accepted" as const,
+    modelControl: {
+      authority: {
+        instanceId: params.expectedInstanceId,
+        bootGeneration: params.expectedBootGeneration,
+      },
+      revision: 2,
+      active: {
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-5",
+        reasoningEffortLevels: [],
+        supportsReasoning: false,
+      },
+      desired: {
+        requestSequence: 1,
+        clientMutationId: params.clientMutationId,
+        modelProvider: params.modelProvider,
+        model: params.model,
+        lifecycle: "pending",
+      },
+    },
+  };
+}
+
 test.each([399, 400])("Stop replaces Send only for an empty draft at width %s", async (width) => {
   installNarrowComposer(width);
   const fake = await mountComposer("ref_a", { status: { type: "active" } });
@@ -436,8 +499,9 @@ test("an empty exited follow-up can pick its next model before entering the edit
     status: { type: "notLoaded" },
     evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
   });
+  establishReadyModelControl("ref_a");
   fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", acceptModelSet);
   expect(textarea().style.minHeight).toBe("1lh");
   await user.click(screen.getByTestId("model-switch-trigger"));
 
@@ -445,9 +509,14 @@ test("an empty exited follow-up can pick its next model before entering the edit
   await user.clear(screen.getByRole("combobox"));
   await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
   await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "thread/model/set").map((call) => call.params)).toEqual([
-      { ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" },
-    ]),
+    expect(fake.calls.find((call) => call.method === "thread/model/set")?.params).toMatchObject({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      expectedInstanceId: "thr_ref_a",
+      expectedBootGeneration: "1",
+      clientMutationId: expect.any(String),
+    }),
   );
   render(<button type="button">Outside composer</button>);
   await user.click(screen.getByRole("button", { name: "Outside composer" }));
@@ -463,8 +532,9 @@ test("an empty exited follow-up keeps its phone menus usable", async () => {
       status: { type: "notLoaded" },
       evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
     });
+    establishReadyModelControl("ref_a");
     fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-    fake.on("thread/model/set", () => ({}));
+    fake.on("thread/model/set", acceptModelSet);
     expect(textarea().style.minHeight).toBe("1lh");
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menu")).not.toBeNull();
@@ -490,6 +560,7 @@ test("an empty exited follow-up supports keyboard focus through its controls and
     status: { type: "notLoaded" },
     evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
   });
+  establishReadyModelControl("ref_a");
   fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
   await user.click(textarea());
   await user.tab();

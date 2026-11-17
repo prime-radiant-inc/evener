@@ -90,6 +90,7 @@ const REQUIRED_THREAD_MODEL_KEYS: Record<RequiredKeysOf<ThreadModel>, true> = {
   status: true,
   modelProvider: true,
   model: true,
+  modelControlState: true,
   visionModel: true,
   askPending: true,
   pendingEscalations: true,

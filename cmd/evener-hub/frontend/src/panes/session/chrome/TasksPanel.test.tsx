@@ -19,7 +19,14 @@ import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
 import { TasksPanel, TasksPanelBody } from "./TasksPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -52,6 +59,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     cwd: "/tmp/project",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 

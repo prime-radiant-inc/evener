@@ -10,7 +10,14 @@ import { ALL_CAPABILITIES } from "../../../threadTestUtils";
 import { TopNotesPanel } from "./TopNotesPanel";
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "local:sess_test",
     threadId: "sess_test",
@@ -42,6 +49,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     supportsReasoning: false,
     cwd: "/repo",
     jobsTreeRevision,
+    modelControlState,
     ...rest,
   };
 }

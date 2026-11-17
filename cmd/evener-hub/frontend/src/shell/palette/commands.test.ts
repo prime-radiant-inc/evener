@@ -76,7 +76,14 @@ const NO_CAPS: ThreadCapabilities = {
 };
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -109,6 +116,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     cwd: "/tmp/project",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 
@@ -144,6 +152,45 @@ function focusSession(ref: string): void {
 
 function seedModel(ref: string, overrides: Partial<ThreadModel> = {}): void {
   threadsStore.setState({ threads: new Map([[ref, testModel({ ref, ...overrides })]]) });
+}
+
+function readyModelControlState() {
+  return {
+    kind: "ready" as const,
+    snapshot: {
+      authority: { instanceId: "thr_a", bootGeneration: "1" },
+      revision: 1,
+      active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [], supportsReasoning: false },
+    },
+  };
+}
+
+function acceptModelSet(params: {
+  modelProvider: string;
+  model: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
+  expectedBootGeneration: string;
+}) {
+  return {
+    modelControlVersion: 1,
+    disposition: "accepted" as const,
+    modelControl: {
+      authority: {
+        instanceId: params.expectedInstanceId,
+        bootGeneration: params.expectedBootGeneration,
+      },
+      revision: 2,
+      active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [], supportsReasoning: false },
+      desired: {
+        requestSequence: 1,
+        clientMutationId: params.clientMutationId,
+        modelProvider: params.modelProvider,
+        model: params.model,
+        lifecycle: "pending",
+      },
+    },
+  };
 }
 
 const pushes: Array<{ kind: string; text: string }> = [];
@@ -622,9 +669,13 @@ test("/interrupt sends turn/interrupt for a working session whose turn has no na
 // session for everyone else (app_model.go's setThreadModelWithResume).
 test("/model sends thread/model/set even while a turn is in progress, letting the daemon rule", async () => {
   const fake = connectFake();
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", acceptModelSet);
   focusSession("ref_a");
-  seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
+  seedModel("ref_a", {
+    status: { type: "active" },
+    activeTurnId: "t1",
+    modelControlState: readyModelControlState(),
+  });
   const c = cmd("model");
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
   const result = c.args.run(runContext(), { id: "openai/gpt-5.5", label: "gpt-5.5" });
@@ -636,9 +687,9 @@ test("/model sends thread/model/set even while a turn is in progress, letting th
 test("/model source lists models and run sets the split provider/model with a success toast", async () => {
   const fake = connectFake();
   fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", acceptModelSet);
   focusSession("ref_a");
-  seedModel("ref_a", { status: { type: "idle" } });
+  seedModel("ref_a", { status: { type: "idle" }, modelControlState: readyModelControlState() });
   const c = cmd("model");
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
   expect(await c.args.source(runContext())).toEqual([{ id: "openai/gpt-5.5", label: "gpt-5.5", hint: "openai" }]);

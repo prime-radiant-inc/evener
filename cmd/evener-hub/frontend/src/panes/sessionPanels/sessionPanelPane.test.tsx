@@ -39,6 +39,13 @@ afterEach(() => {
 });
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const {
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "anthropic", model: "claude" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thread_a",
@@ -46,6 +53,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic",
     model: "claude",
+    modelControlState,
     visionModel: "",
     askPending: false,
     pendingEscalations: [],
@@ -70,7 +78,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
-    ...overrides,
+    ...rest,
   };
 }
 

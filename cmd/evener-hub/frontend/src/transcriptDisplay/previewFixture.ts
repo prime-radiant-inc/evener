@@ -91,6 +91,10 @@ export function makeTranscriptPreviewModel(): ThreadModel {
     status: { type: "idle" },
     modelProvider: "preview",
     model: "preview-model",
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "preview", model: "preview-model" },
+    },
     reasoningEffort: "medium",
     visionModel: "",
     askPending: false,

@@ -18,7 +18,14 @@ beforeEach(() => {
 });
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_1",
     threadId: "sess_test",
@@ -50,6 +57,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     supportsReasoning: false,
     cwd: "/repo",
     jobsTreeRevision,
+    modelControlState,
     ...rest,
   };
 }

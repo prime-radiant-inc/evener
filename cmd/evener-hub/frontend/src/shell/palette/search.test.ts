@@ -58,6 +58,10 @@ function modelWithTurns(turns: TurnModel[]): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic/claude",
     model: "anthropic/claude",
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "anthropic/claude", model: "anthropic/claude" },
+    },
     visionModel: "",
     askPending: false,
     pendingEscalations: [],

@@ -1061,7 +1061,14 @@ function sessionBodyEmptyState(): Promise<Element> {
 }
 
 function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref,
     threadId: `thr_${ref}`,
@@ -1094,6 +1101,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     cwd: "/tmp/project",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 

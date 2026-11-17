@@ -14,9 +14,38 @@ function connectFake(): FakeClient {
   return fake;
 }
 
+function acceptModelSet(params: {
+  modelProvider: string;
+  model: string;
+  clientMutationId: string;
+  expectedInstanceId: string;
+  expectedBootGeneration: string;
+}) {
+  return {
+    modelControlVersion: 1,
+    disposition: "accepted" as const,
+    modelControl: {
+      authority: {
+        instanceId: params.expectedInstanceId,
+        bootGeneration: params.expectedBootGeneration,
+      },
+      revision: 2,
+      active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [], supportsReasoning: false },
+      desired: {
+        requestSequence: 1,
+        clientMutationId: params.clientMutationId,
+        modelProvider: params.modelProvider,
+        model: params.model,
+        lifecycle: "pending",
+      },
+    },
+  };
+}
+
 async function seedThread(ref: string, overrides: Record<string, unknown> = {}): Promise<FakeClient> {
   const fake = connectFake();
   fake.on("thread/read", () => ({
+    bootGeneration: "1",
     thread: {
       id: `thr_${ref}`,
       sessionId: `sess_${ref}`,
@@ -29,7 +58,17 @@ async function seedThread(ref: string, overrides: Record<string, unknown> = {}):
       cwd: "/tmp/p",
       cliVersion: "1.0.0",
       source: "evener",
-      evener: { ref, capabilities: CAPS, queue: { revision: 0 } },
+      evener: {
+        ref,
+        instanceId: `thr_${ref}`,
+        capabilities: { ...CAPS, modelControlVersion: 1 },
+        modelControl: {
+          authority: { instanceId: `thr_${ref}`, bootGeneration: "1" },
+          revision: 1,
+          active: { modelProvider: "anthropic", model: "claude", reasoningEffortLevels: [], supportsReasoning: false },
+        },
+        queue: { revision: 0 },
+      },
       ...overrides,
     },
   }));
@@ -182,7 +221,7 @@ test("an unavailableReason command is refused WITHOUT attempting the RPC", async
 test("an enum command (/model) resolves its value from the SAME merged catalog its args.source uses", async () => {
   const fake = await seedThread("ref_a");
   fake.on("model/list", () => ({ data: [{ provider: "anthropic", model: "claude-x" }] }));
-  fake.on("thread/model/set", () => ({}));
+  fake.on("thread/model/set", acceptModelSet);
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({

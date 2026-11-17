@@ -710,6 +710,10 @@ function hydrateThreadForTest(at: string): ThreadModel {
     status: wire.status,
     modelProvider: wire.modelProvider,
     model: wire.modelProvider,
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: wire.modelProvider, model: wire.modelProvider },
+    },
     visionModel: "",
     askPending: false,
     pendingEscalations: [],

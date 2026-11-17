@@ -25,6 +25,10 @@ function model(turns: ThreadModel["turns"]): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic",
     model: "claude",
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "anthropic", model: "claude" },
+    },
     visionModel: "",
     askPending: false,
     pendingEscalations: [],

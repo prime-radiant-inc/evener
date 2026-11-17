@@ -32,6 +32,10 @@ const thread: ThreadModel = {
   status: { type: "idle" },
   modelProvider: "",
   model: "",
+  modelControlState: {
+    kind: "uninitialized",
+    canonicalDisplay: { modelProvider: "", model: "" },
+  },
   visionModel: "",
   askPending: false,
   pendingEscalations: [],

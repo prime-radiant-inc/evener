@@ -53,6 +53,13 @@ const NO_CAPABILITIES: ThreadCapabilities = {
 // coverage from the thread snapshot in reducer.test.ts ("askPending is
 // wire-authoritative from the thread snapshot").
 function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const {
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "anthropic/claude", model: "anthropic/claude" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -60,6 +67,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     status: { type: "idle" },
     modelProvider: "anthropic/claude",
     model: "anthropic/claude",
+    modelControlState,
     visionModel: "",
     askPending: true,
     turns,
@@ -84,7 +92,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
-    ...overrides,
+    ...rest,
   };
 }
 

@@ -10,7 +10,14 @@ import { createPendingTurnsStore, type PendingTurnsStore, type PendingTurnsStore
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
 export function threadModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
+  const {
+    jobsTreeRevision = null,
+    modelControlState = {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "", model: "" },
+    },
+    ...rest
+  } = overrides;
   return {
     ref: "ref_a",
     threadId: "thread_a",
@@ -45,6 +52,7 @@ export function threadModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     updatedAt: "",
     ...rest,
     jobsTreeRevision,
+    modelControlState,
   };
 }
 

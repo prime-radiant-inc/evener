@@ -90,19 +90,21 @@ function reduceSequence(initial: ThreadModel, inputs: ModelControlInput[]) {
   return result;
 }
 
+function completeDesired(): NonNullable<ModelControlSnapshot["desired"]> {
+  return {
+    requestSequence: 2,
+    clientMutationId: "mutation-2",
+    modelProvider: "openai",
+    model: "gpt-5.5",
+    lifecycle: "pending",
+  };
+}
+
 function completeResponse(): ThreadModelSetResponse {
   return {
     modelControlVersion: 1,
     disposition: "accepted",
-    modelControl: snapshot(2, {
-      desired: {
-        requestSequence: 2,
-        clientMutationId: "mutation-2",
-        modelProvider: "openai",
-        model: "gpt-5.5",
-        lifecycle: "pending",
-      },
-    }),
+    modelControl: snapshot(2, { desired: completeDesired() }),
   };
 }
 
@@ -506,7 +508,7 @@ describe("model-set response validation", () => {
         ...completeResponse(),
         modelControl: {
           ...snapshot(2),
-          desired: { ...completeResponse().modelControl.desired!, requestSequence: 0 },
+          desired: { ...completeDesired(), requestSequence: 0 },
         },
       },
     ],
@@ -516,7 +518,7 @@ describe("model-set response validation", () => {
         ...completeResponse(),
         modelControl: {
           ...snapshot(2),
-          desired: { ...completeResponse().modelControl.desired!, clientMutationId: "" },
+          desired: { ...completeDesired(), clientMutationId: "" },
         },
       },
     ],
@@ -526,7 +528,7 @@ describe("model-set response validation", () => {
         ...completeResponse(),
         modelControl: {
           ...snapshot(2),
-          desired: { ...completeResponse().modelControl.desired!, modelProvider: "" },
+          desired: { ...completeDesired(), modelProvider: "" },
         },
       },
     ],
@@ -536,7 +538,7 @@ describe("model-set response validation", () => {
         ...completeResponse(),
         modelControl: {
           ...snapshot(2),
-          desired: { ...completeResponse().modelControl.desired!, model: "" },
+          desired: { ...completeDesired(), model: "" },
         },
       },
     ],
@@ -546,7 +548,7 @@ describe("model-set response validation", () => {
         ...completeResponse(),
         modelControl: {
           ...snapshot(2),
-          desired: { ...completeResponse().modelControl.desired!, lifecycle: "invalid" },
+          desired: { ...completeDesired(), lifecycle: "invalid" },
         },
       },
     ],

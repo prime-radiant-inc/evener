@@ -34,6 +34,10 @@ function fixtureThread(ref: string, status: ThreadStatus): ThreadModel {
     status,
     modelProvider: "anthropic",
     model: "claude",
+    modelControlState: {
+      kind: "uninitialized",
+      canonicalDisplay: { modelProvider: "anthropic", model: "claude" },
+    },
     visionModel: "",
     askPending: false,
     pendingEscalations: [],
