@@ -12,10 +12,17 @@ import "slices"
 // only, never WatchKeys.
 const maxDiagnosticChain = 16
 
-// maxCausalFires bounds FireKeys, comfortably past the runaway depth the
-// guard trips at; the oldest fire drops only in a lineage that long since
-// crossed it.
-const maxCausalFires = 64
+// maxCausalFiresPerWatch bounds each watch's retained fires, comfortably past
+// the runaway depth the guard trips at; a watch's oldest fire drops only after
+// that watch alone long since crossed the depth.
+//
+// The bound is per watch because the fuse it feeds counts one watch's delivered
+// fires. A single global bound starves a chain that cycles through many
+// watches: the newest watches spend every slot and the older ones keep too few
+// fires to ever reach the depth, so the loop outlives the cap. The record's
+// total is therefore proportional to WatchKeys, which is already an unbounded
+// deduped set — one entry per watch the lineage has ever passed through.
+const maxCausalFiresPerWatch = 16
 
 type WatchKey struct {
 	WatchID         string `json:"watch_id"`
@@ -142,12 +149,34 @@ func WithWatch(base *Causal, watchID, watchGeneration, deliveryID, sessionID, jo
 	return Union(base, added)
 }
 
-// boundFires caps p's fire record at maxCausalFires, keeping the newest.
+// boundFires caps each watch's fire record at maxCausalFiresPerWatch, keeping
+// the newest fires of every watch and dropping only the surplus.
 func boundFires(p *Causal) {
-	if p == nil || len(p.FireKeys) <= maxCausalFires {
+	// A record no larger than one watch's bound holds no watch over it, so the
+	// common case stays a length check.
+	if p == nil || len(p.FireKeys) <= maxCausalFiresPerWatch {
 		return
 	}
-	p.FireKeys = append(p.FireKeys[:0], p.FireKeys[len(p.FireKeys)-maxCausalFires:]...)
+	keptCount := make(map[WatchKey]int, len(p.WatchKeys)+1)
+	kept := make([]FireKey, 0, len(p.FireKeys))
+	over := false
+	for i := len(p.FireKeys) - 1; i >= 0; i-- {
+		fire := p.FireKeys[i]
+		key := WatchKey{WatchID: fire.WatchID, WatchGeneration: fire.WatchGeneration}
+		// Walking newest-first, the first maxCausalFiresPerWatch fires of a watch
+		// are the ones retained; everything older than that is surplus.
+		if keptCount[key] >= maxCausalFiresPerWatch {
+			over = true
+			continue
+		}
+		keptCount[key]++
+		kept = append(kept, fire)
+	}
+	if !over {
+		return
+	}
+	slices.Reverse(kept)
+	p.FireKeys = kept
 }
 
 // DropSupersededDelivery removes deliveryID from p's lineage: its fire entry

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/appwire"
@@ -617,6 +618,56 @@ func managerWatchActive(jm *jobManager, id string) bool {
 	defer jm.mu.Unlock()
 	_, _, active := jm.watchConfigByIDLocked(id)
 	return active
+}
+
+// TestHubWatchEndPersistsClearWhenTheCompletionDescendsFromAStoppedChain proves
+// the stopped-chain guard suppresses ordinary fires only. A terminal
+// observation that descends from a chain the runaway guard already stopped
+// still has to retire its watch: endHubWatch treats an unpersisted end as a
+// persistence failure, and endHubWatchUntilPersisted retries that end forever,
+// so a suppressed completion leaves the watch registered with no consumer.
+func TestHubWatchEndPersistsClearWhenTheCompletionDescendsFromAStoppedChain(t *testing.T) {
+	t.Parallel()
+	root := newMessagingRoot(t, newMessagingAdapter(), func(c *SessionConfig) { c.Manager = true })
+	jm := root.jobManager
+	const ref, instance, generation = "local:worker", "worker-instance", "7@worker"
+	watch, err := jm.configureHubWatch(ref, instance, generation, "local:manager", []string{"communicate"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An earlier runaway in this watch stopped a chain. The terminal completion
+	// now arrives descending from one of the fires in that chain.
+	const stoppedFire = "wd_stopped_chain_fire"
+	jm.mu.Lock()
+	_, cfg, ok := jm.watchConfigByIDLocked(watch.WatchID)
+	if !ok {
+		jm.mu.Unlock()
+		t.Fatal("the watch is not registered")
+	}
+	cfg.rememberStoppedRunawayChain([]string{stoppedFire})
+	jm.mu.Unlock()
+
+	completion := jm.watchSendSnapshot(cfg, ref, "completed: accepted terminal done", events.SessionEvent{
+		SessionID:  jm.sessionID,
+		Kind:       events.EventCommunicate,
+		Provenance: provenance.WithWatch(nil, watch.WatchID, cfg.generation, stoppedFire, jm.sessionID, ref),
+	})
+	const endReason = "completed"
+	if err := jm.endHubWatch(watch.WatchID, endReason, &completion); err != nil {
+		t.Fatalf("ending a watch whose completion descends from a stopped chain failed: %v", err)
+	}
+	if managerWatchActive(jm, watch.WatchID) {
+		t.Fatal("the stopped chain suppressed the end: the watch stayed registered")
+	}
+	ends := 0
+	for _, event := range loadJobStoreEvents(t, jm) {
+		if event.Watch != nil && event.WatchID == watch.WatchID && event.Watch.EndReason == endReason {
+			ends++
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("end records=%d, want 1", ends)
+	}
 }
 
 func TestHubWatchCompletionRetriesTerminalSendUntilJournalRecovers(t *testing.T) {

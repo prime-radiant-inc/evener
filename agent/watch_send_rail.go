@@ -110,12 +110,18 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]j
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	// A fire descending from a chain the runaway guard already stopped records
-	// nothing and raises nothing: the stop's one diagnostic has been given.
+	// nothing and raises nothing: the stop's one diagnostic has been given. A
+	// teardown end is exempt: it is the last frame its config ever sends, the
+	// watch is deleted as soon as the end commits, so it cannot continue the
+	// chain, and suppressing it makes endHubWatch report a persistence failure
+	// that endHubWatchUntilPersisted then retries forever against a consumer
+	// that has already exited.
+	teardown := len(terminalEvents) != 0 && len(terminalEvents[0]) != 0
 	chainFires := ownWatchFires(d.triggerProvenance, d.cfg.watchID)
 	jm.mu.Lock()
 	stopped := slices.ContainsFunc(chainFires, d.cfg.inStoppedRunawayChain)
 	jm.mu.Unlock()
-	if stopped {
+	if stopped && !teardown {
 		return jobstore.WatchSendState{}, nil, false, nil
 	}
 	target, terr := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
@@ -154,6 +160,9 @@ func (jm *jobManager) recordWatchSend(d watchSendDelivery, terminalEvents ...[]j
 	if terr != nil {
 		return state, d.cfg, false, jm.dropWatchSend(state, d.cfg, terr.Error())
 	}
+	// The depth fuse still applies to a teardown: a frame that reaches it is
+	// the runaway itself, and dropping it while still detaching the watch is
+	// the documented end of this chain.
 	if state.SelfInfluenceDepth >= runawaySelfInfluenceDepth {
 		// The diagnostic carries the triggering lineage unchanged, so it is not
 		// a fire, and the stopped chain's fires are remembered, so a turn it

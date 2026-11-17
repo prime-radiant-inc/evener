@@ -69,17 +69,49 @@ func TestUnionMergesAndBoundsFireKeys(t *testing.T) {
 	}
 
 	var long *Causal
-	for i := range maxCausalFires + 5 {
+	for i := range maxCausalFiresPerWatch + 5 {
 		long = WithWatch(long, "watch_A", "wg_1", fmt.Sprintf("wd_%03d", i), "session", "")
 	}
-	if len(long.FireKeys) != maxCausalFires {
-		t.Fatalf("fire keys = %d, want bounded at %d", len(long.FireKeys), maxCausalFires)
+	if len(long.FireKeys) != maxCausalFiresPerWatch {
+		t.Fatalf("fire keys = %d, want bounded at %d", len(long.FireKeys), maxCausalFiresPerWatch)
 	}
 	if long.FireKeys[0].DeliveryID != "wd_005" {
 		t.Fatalf("oldest retained fire = %q, want the bound to keep the newest", long.FireKeys[0].DeliveryID)
 	}
-	if depth := SelfInfluenceDepth(long, "watch_A", "", func(string) bool { return true }); depth < maxCausalFires {
-		t.Fatalf("depth past the bound = %d, want at least the %d newest distinct fires to remain countable", depth, maxCausalFires)
+	if depth := SelfInfluenceDepth(long, "watch_A", "", func(string) bool { return true }); depth < maxCausalFiresPerWatch {
+		t.Fatalf("depth past the bound = %d, want at least the %d newest distinct fires to remain countable", depth, maxCausalFiresPerWatch)
+	}
+}
+
+// TestFireBoundKeepsEveryWatchsRunawayDepth proves the fire record stays
+// usable for the runaway fuse, which counts fires per watch. A chain that
+// cycles through many watches must still reach the fuse depth for each one it
+// passes through; a single global cap hands the newest watches every slot and
+// leaves the older ones with too few retained fires to ever trip.
+func TestFireBoundKeepsEveryWatchsRunawayDepth(t *testing.T) {
+	const (
+		watches    = 16
+		fuseDepth  = 8
+		cycleCount = fuseDepth + 4
+	)
+	var chain *Causal
+	for round := range cycleCount {
+		for w := range watches {
+			chain = WithWatch(chain, fmt.Sprintf("watch_%02d", w), "wg_1", fmt.Sprintf("wd_%02d_%02d", round, w), "session", "")
+		}
+	}
+	// The record may hold each watch's own bound; a global cap is what starved
+	// the older watches.
+	if maxTotal := watches * maxCausalFiresPerWatch; len(chain.FireKeys) > maxTotal {
+		t.Fatalf("fire keys = %d, want bounded at %d (%d watches x %d)", len(chain.FireKeys), maxTotal, watches, maxCausalFiresPerWatch)
+	}
+	delivered := func(string) bool { return true }
+	for w := range watches {
+		watchID := fmt.Sprintf("watch_%02d", w)
+		if depth := SelfInfluenceDepth(chain, watchID, "", delivered); depth < fuseDepth {
+			t.Fatalf("watch %s exposes %d of its own delivered fires, want at least the fuse depth %d after %d full cycles through %d watches",
+				watchID, depth, fuseDepth, cycleCount, watches)
+		}
 	}
 }
 
