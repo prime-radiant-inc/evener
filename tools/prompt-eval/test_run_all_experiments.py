@@ -277,3 +277,190 @@ def test_reanalyse_recomputes_the_verdict_when_the_workdir_survived(rae, tmp_pat
     out = rae.reanalyse_root(tmp_path)
     assert out[0].verdict_source == "recomputed"
     assert out[0].verify_reason != "stale"
+
+
+def test_unmeasurable_tail_is_unknown_not_zero(rae):
+    """A run with no detected acceptance point has no measured tail (#6598).
+
+    `runaway_share` defaults to 0.0, so reading the field alone cannot tell
+    "stopped instantly" from "never observed finishing". Five passing runs in
+    the overfull-hbox matrix were in the second state and sorted above runs with
+    a real measured tail.
+    """
+    unmeasured = rae.RunResult(arm="a04-tool-warrant", task="overfull-hbox", rep=0,
+                               final_compiles_clean=False, acceptance_call_index=None,
+                               runaway_share=0.0, total_calls=41)
+    measured_zero = rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                                  final_compiles_clean=True, acceptance_call_index=22,
+                                  runaway_share=0.0, total_calls=27)
+
+    assert rae.tail_share(unmeasured) is None
+    assert rae.tail_share(measured_zero) == 0.0
+    assert rae.tail_share(unmeasured) != rae.tail_share(measured_zero)
+
+
+def test_summary_keeps_unmeasured_runs_out_of_the_measured_shares(rae):
+    """An unmeasurable tail must not enter the share distribution as 0.0."""
+    measured = rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                             final_compiles_clean=True, acceptance_call_index=22,
+                             runaway_share=0.85, total_calls=40)
+    unmeasured = rae.RunResult(arm="baseline", task="overfull-hbox", rep=1,
+                               final_compiles_clean=True, acceptance_call_index=None,
+                               runaway_share=0.0, total_calls=34)
+
+    (summary,) = rae.summarise([measured, unmeasured])
+    assert summary["shares"] == [0.85]
+    assert summary["unmeasured_tails"] == 1
+    assert summary["never_accepted"] == 1
+
+
+def test_an_unmeasured_arm_sorts_after_a_measured_arm_that_passed_as_often(
+        rae):
+    """Unknown is missing data, so it cannot rank as the cleanest stop.
+
+    Ordering by the raw default put every unmeasured run at 0% and therefore at
+    the top of the table, which is how `a04-tool-warrant` -- the most
+    overworking arm in the matrix -- read as one that stopped instantly.
+    """
+    measured = rae.RunResult(arm="measured", task="overfull-hbox", rep=0,
+                             final_compiles_clean=True, acceptance_call_index=10,
+                             runaway_share=0.4, total_calls=20)
+    unmeasured = rae.RunResult(arm="unmeasured", task="overfull-hbox", rep=0,
+                               final_compiles_clean=True, acceptance_call_index=None,
+                               runaway_share=0.0, total_calls=20)
+
+    summaries = rae.summarise([unmeasured, measured])
+    order = [s["arm"] for s in sorted(summaries, key=rae.arm_order_key)]
+    assert order == ["measured", "unmeasured"]
+
+
+def test_tail_median_comes_from_the_measured_runs_only(rae):
+    """An unmeasured run must not enter the tail median as a zero (#6598).
+
+    This is the same defect as the share column, one column over. Graded tails
+    of [unmeasured 0, 5, 20] median to 5, while the measured runs alone median
+    to 20. The unmeasured run's zero is the dataclass default, not a
+    measurement, so it must be left out rather than counted as a clean stop.
+    """
+    def run(rep, acc, tail):
+        return rae.RunResult(arm="arm", task="overfull-hbox", rep=rep,
+                             final_compiles_clean=True,
+                             acceptance_call_index=acc, tail_work_calls=tail)
+
+    unmeasured = run(0, None, 0)
+    five = run(1, 10, 5)
+    twenty = run(2, 10, 20)
+
+    (summary,) = rae.summarise([unmeasured, five, twenty])
+    assert summary["median_tail_work"] == 20
+    assert summary["median_tail_work"] != 5
+
+
+def test_reanalyse_clears_a_tail_it_can_no_longer_measure(rae, tmp_path):
+    """A reanalysed row must not keep tail values the current detector cannot back.
+
+    `analyse()` used to write the tail fields only when it found an acceptance
+    point, so a row whose acceptance the fixed detector no longer matched kept
+    the previous detector's numbers and reported a measured tail nothing
+    measured.
+    """
+    import json
+
+    row = rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                        final_compiles_clean=True, acceptance_call_index=3,
+                        calls_after_acceptance=9, tail_work_calls=7,
+                        runaway_share=0.5, total_calls=12)
+    _write_rows(tmp_path, [row])
+    sessions = tmp_path / "state/baseline-overfull-hbox-0/sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "s.meta.json").write_text(
+        json.dumps({"session_id": "s", "parent_session_id": None})
+    )
+    # A transcript with one tool call that reports no acceptance at all.
+    (sessions / "s.transcript.jsonl").write_text(
+        json.dumps({"kind": "entry", "turn": {"message": {"content": [
+            {"kind": "tool_call", "tool_call": {"id": "c1", "name": "list_directory"}},
+        ]}}}) + "\n"
+    )
+
+    (out,) = rae.reanalyse_root(tmp_path)
+    assert out.acceptance_call_index is None
+    assert out.tail_work_calls == 0
+    assert out.calls_after_acceptance == 0
+    assert out.runaway_share == 0.0
+
+
+def test_baseline_summary_counts_every_rep(rae):
+    """The baseline header must describe all reps, not just the last (#6601).
+
+    A dict keyed by arm keeps one entry per arm name, and every baseline rep
+    shares that name, so the header described a single run and always printed
+    a denominator of 1.
+    """
+    rows = [
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                      final_compiles_clean=True, acceptance_call_index=4,
+                      runaway_share=0.15, total_calls=20),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=1,
+                      final_compiles_clean=True, acceptance_call_index=None,
+                      runaway_share=0.0, total_calls=34),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=2,
+                      final_compiles_clean=True, acceptance_call_index=5,
+                      runaway_share=0.85, total_calls=40),
+    ]
+
+    base = rae.baseline_summary(rows)
+    assert base["runs"] == 3
+    assert base["pass"] == 3
+    assert base["shares"] == [0.15, 0.85]
+    assert base["unmeasured"] == 1
+
+
+def test_measured_zero_is_data_and_absent_value_is_not(rae):
+    """A measured zero must stay distinguishable from an absent value.
+
+    The printed table reads every cell through one of these paths, and a
+    truthiness check would print a measured 0 as if nothing were measured --
+    the confusion this change set exists to remove, in the other direction.
+    """
+    measured_zero = rae.RunResult(arm="arm", task="overfull-hbox", rep=0,
+                                 final_compiles_clean=True,
+                                 acceptance_call_index=10, runaway_share=0.0,
+                                 tail_work_calls=0, total_calls=20)
+    unmeasured = rae.RunResult(arm="arm", task="overfull-hbox", rep=1,
+                               final_compiles_clean=False,
+                               acceptance_call_index=None, runaway_share=0.0,
+                               tail_work_calls=0, total_calls=41)
+
+    assert rae.tail_share(measured_zero) == 0.0
+    assert rae.tail_share(unmeasured) is None
+    assert rae.render_share(0.0) != rae.render_share(None)
+
+
+def test_baseline_header_and_table_agree_on_the_shares(rae):
+    """One report must not show two share sets for the baseline.
+
+    The header and the arm table print the baseline's shares side by side. The
+    arm table covers graded runs only, so if the header also counted a timed-out
+    rep it would list a share the table leaves out. `pass` stays over every rep
+    so the denominator remains the full count.
+    """
+    rows = [
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                      final_compiles_clean=True, acceptance_call_index=4,
+                      runaway_share=0.15, timed_out=False),
+        # Timed out, but acceptance was detected before the kill.
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=1,
+                      final_compiles_clean=True, acceptance_call_index=6,
+                      runaway_share=0.90, timed_out=True),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=2,
+                      final_compiles_clean=True, acceptance_call_index=5,
+                      runaway_share=0.85, timed_out=False),
+    ]
+
+    base = rae.baseline_summary(rows)
+    (row,) = rae.summarise(rows)
+    assert base["shares"] == row["shares"]
+    assert base["unmeasured"] == row["unmeasured_tails"]
+    assert base["runs"] == 3
+    assert base["pass"] == 3

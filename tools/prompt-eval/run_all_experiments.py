@@ -735,7 +735,11 @@ def run_once(arm: str, task: str, rep: int, out: Path, timeout: int,
         # rather than a silently unmodified run.
         plugin = out / "hookplugins" / arm
         if not (plugin / "hooks/hooks.json").exists():
-            fail(f"{arm}: missing hook plugin at {plugin}; run build_hook_plugins.py")
+            fail(
+                f"{arm}: missing hook plugin at {plugin}. The hook arms need "
+                "plugins built by build_hook_plugins.py, which is not in this "
+                f"repository. Run the other arms with --arms, or supply {plugin}."
+            )
         args += ["--plugin-dir", str(plugin)]
 
     doctrine = render_doctrine(out)
@@ -761,7 +765,12 @@ def run_once(arm: str, task: str, rep: int, out: Path, timeout: int,
         }[seam]
         env[var] = arm_spec["system"].strip()
         if env.get("EVENER_EXPERIMENT_BIN", "evener") == "evener":
-            fail(f"{arm}: a schema arm needs EVENER_EXPERIMENT_BIN pointing at the patched binary")
+            fail(
+                f"{arm}: a schema arm needs EVENER_EXPERIMENT_BIN pointing at a "
+                "binary patched to read EVENER_EXPERIMENT_*_APPEND, which is not "
+                "in this repository. Run the other arms with --arms, or set that "
+                "variable."
+            )
     log_path = out / f"logs/{arm}-{task}-{rep}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -892,6 +901,13 @@ def analyse(res: RunResult, state: Path, out: Path) -> None:
         res.tail_work_calls = sum(1 for _i, n, _t in tail if n not in BOOKKEEPING)
         if res.total_calls:
             res.runaway_share = round(res.calls_after_acceptance / res.total_calls, 4)
+    else:
+        # Nothing measured. A reanalyse of a row whose acceptance the current
+        # detector no longer finds must not keep the previous detector's tail:
+        # those values describe a measurement that is no longer there.
+        res.calls_after_acceptance = 0
+        res.tail_work_calls = 0
+        res.runaway_share = 0.0
 
 
 def verify_final_state(task: str, workdir: Path) -> tuple[bool | None, str]:
@@ -981,6 +997,21 @@ def substitutions_legal(input_tex: Path) -> bool:
     return True
 
 
+def load_runs(path: Path) -> list[RunResult]:
+    """Read a runs.jsonl, keeping the fields this version still knows.
+
+    A row outlives the dataclass that wrote it: an older run's record can carry
+    a field this version no longer has, or lack one it now requires. Read what
+    the row still offers rather than dying at report time.
+    """
+    known = {f.name for f in dataclasses.fields(RunResult)}
+    return [
+        RunResult(**{k: v for k, v in json.loads(line).items() if k in known})
+        for line in path.open()
+        if line.strip()
+    ]
+
+
 def reanalyse_root(root: Path) -> list[RunResult]:
     """Re-derive what a finished run root still holds, without destroying what it does not.
 
@@ -1000,13 +1031,8 @@ def reanalyse_root(root: Path) -> list[RunResult]:
     The rewrite is atomic: a crash mid-write must not cost the rows that were
     already there.
     """
-    known = {f.name for f in dataclasses.fields(RunResult)}
     runs_path = root / "runs.jsonl"
-    rows = [
-        RunResult(**{k: v for k, v in json.loads(line).items() if k in known})
-        for line in runs_path.open()
-        if line.strip()
-    ]
+    rows = load_runs(runs_path)
     for r in rows:
         state = root / f"state/{r.arm}-{r.task}-{r.rep}"
         workdir = root / f"work/{r.arm}-{r.task}-{r.rep}"
@@ -1032,6 +1058,23 @@ def reanalyse_root(root: Path) -> list[RunResult]:
     return rows
 
 
+def tail_share(res: RunResult) -> float | None:
+    """The share of a run's calls that came after the task's verifier first passed.
+
+    `None` means unmeasurable, not zero. Acceptance is detected from tool-result
+    text, so a run that reached a clean workspace without ever printing a
+    recognised count has no acceptance point to divide from; its `runaway_share`
+    is the dataclass default `0.0` and carries no measurement. Rendering that as
+    `0%` reported the most overworking arm in the matrix (#6598) as the one that
+    stopped cleanest, and sorted genuinely clean stops among runs nobody
+    measured. Callers must keep the two apart: a measured `0.0` is a real
+    perfect stop, and this returns it unchanged.
+    """
+    if res.acceptance_call_index is None:
+        return None
+    return res.runaway_share
+
+
 def summarise(rows: list[RunResult]) -> list[dict]:
     by_arm: dict[str, list[RunResult]] = {}
     for r in rows:
@@ -1040,9 +1083,14 @@ def summarise(rows: list[RunResult]) -> list[dict]:
     for arm, rs in by_arm.items():
         graded = [r for r in rs if not r.timed_out]
         passes = sum(1 for r in rs if r.final_compiles_clean)
-        shares = sorted(r.runaway_share for r in graded)
+        # A measured share only. An unmeasurable tail is counted in
+        # `unmeasured_tails`, never folded in as 0.0 (#6598).
+        shares = sorted(s for s in (tail_share(r) for r in graded) if s is not None)
         calls = sorted(r.total_calls for r in graded)
-        tails = sorted(r.tail_work_calls for r in graded)
+        # Measured runs only, the same filter `shares` uses. A run with no
+        # detected acceptance keeps the default 0 and would drag the median
+        # toward zero, which is #6598 again in the adjacent column.
+        tails = sorted(r.tail_work_calls for r in graded if tail_share(r) is not None)
         out.append({
             "arm": arm,
             "source": rs[0].source,
@@ -1055,47 +1103,90 @@ def summarise(rows: list[RunResult]) -> list[dict]:
             "median_total_calls": calls[len(calls) // 2] if calls else None,
             "median_tail_work": tails[len(tails) // 2] if tails else None,
             "never_accepted": sum(1 for r in rs if r.acceptance_call_index is None),
+            "unmeasured_tails": sum(1 for r in graded if tail_share(r) is None),
         })
     return out
 
 
-def write_report(root: Path) -> None:
-    # runs.jsonl rows outlive the dataclass that wrote them: an older run's
-    # record can carry a field this version no longer has, or lack one it now
-    # requires. Read what the row still offers rather than dying at report time.
-    import dataclasses
+UNMEASURED_SHARE = "-"
 
-    known = {f.name for f in dataclasses.fields(RunResult)}
+
+def render_share(share: float | None) -> str:
+    """One share cell. `None` is unknown, and must not look like a measured zero."""
+    return UNMEASURED_SHARE if share is None else f"{share:.0%}"
+
+
+def arm_order_key(summary: dict) -> tuple[int, int, float]:
+    """Sort key for the arm table: most passes first, then smallest median tail.
+
+    An arm with no measured share sorts after every measured one in its pass
+    group. Unknown is missing data, and treating it as the best possible value
+    is what made unmeasured runs look like perfect stops (#6598).
+    """
+    shares = summary["shares"]
+    if not shares:
+        return (summary["pass"] * -1, 1, 0.0)
+    return (summary["pass"] * -1, 0, shares[len(shares) // 2])
+
+
+def baseline_summary(rows: list[RunResult]) -> dict:
+    """The baseline's own numbers, over every rep.
+
+    A dict keyed by arm would keep one entry per arm name, and every baseline
+    rep shares the name "baseline", so that shape described a single run and
+    printed a denominator of 1 (#6601).
+
+    `runs` and `pass` cover every rep, so the pass denominator is the full
+    count. The shares and the unmeasured count use the same population
+    `summarise` uses for the baseline row -- graded runs only -- because the
+    header and the arm table sit in one report and must not disagree about
+    which shares the baseline has.
+    """
+    base = [r for r in rows if r.arm == "baseline"]
+    graded = [r for r in base if not r.timed_out]
+    return {
+        "runs": len(base),
+        "pass": sum(1 for r in base if r.final_compiles_clean),
+        "shares": sorted(s for s in (tail_share(r) for r in graded) if s is not None),
+        "unmeasured": sum(1 for r in graded if tail_share(r) is None),
+    }
+
+
+def write_report(root: Path) -> None:
     rows = []
     for f in sorted(root.glob("*/runs.jsonl")) + [root / "runs.jsonl"]:
         if f.exists():
-            for line in f.open():
-                rec = json.loads(line)
-                rows.append(RunResult(**{k: v for k, v in rec.items() if k in known}))
+            rows.extend(load_runs(f))
     if not rows:
         fail(f"no runs.jsonl under {root}")
 
-    base = {r.arm: r for r in rows if r.arm == "baseline"}
-    base_share = sorted(r.runaway_share for r in base.values())
-    print(f"baseline tail share: {' '.join(f'{s:.0%}' for s in base_share) or 'n/a'}")
-    print(f"baseline pass: {sum(1 for r in base.values() if r.final_compiles_clean)}"
-          f"/{len(base)}\n")
+    base = baseline_summary(rows)
+    rendered = " ".join(render_share(s) for s in base["shares"])
+    if base["unmeasured"]:
+        rendered = f"{rendered} {base['unmeasured']} unmeasured".strip()
+    print(f"baseline tail share: {rendered or 'n/a'}")
+    print(f"baseline pass: {base['pass']}/{base['runs']}\n")
 
     print(f"{'arm':<28}{'src':<8}{'kind':<22}{'deliv':<18}"
-          f"{'pass':>6}{'t/o':>5}{'share':>16}{'calls':>7}{'tail':>6}")
-    print("-" * 116)
-    for s in sorted(summarise(rows), key=lambda d: (d["pass"] * -1,
-                                                    d["shares"][len(d["shares"]) // 2]
-                                                    if d["shares"] else 9)):
-        shares = " ".join(f"{x:.0%}" for x in s["shares"]) or "-"
+          f"{'pass':>6}{'t/o':>5}{'unmeas':>7}{'share':>16}{'calls':>7}{'tail':>6}")
+    print("-" * 123)
+    for s in sorted(summarise(rows), key=arm_order_key):
+        shares = " ".join(render_share(x) for x in s["shares"])
+        shares = shares or UNMEASURED_SHARE
+        # A measured zero is data and prints as 0; only an absent value is "-".
+        unmeas = s["unmeasured_tails"]
+        calls = "-" if s["median_total_calls"] is None else s["median_total_calls"]
+        tail = "-" if s["median_tail_work"] is None else s["median_tail_work"]
         print(f"{s['arm']:<28}{s['source']:<8}{s['kind']:<22}{s['delivery']:<18}"
-              f"{s['pass']:>4}/{s['runs']:<1}{s['timeouts']:>5}{shares:>16}"
-              f"{s['median_total_calls'] or '-':>7}{s['median_tail_work'] or '-':>6}")
+              f"{s['pass']:>4}/{s['runs']:<1}{s['timeouts']:>5}{unmeas:>7}{shares:>16}"
+              f"{calls:>7}{tail:>6}")
     print("\nkind      = prohibition | redirection | subtraction | "
           "rationalization-table | mixed | control")
     print("deliv     = append | doctrine:<anchor> | task | subtract | unexecutable")
     print("pass      = final workspace passed the task's own check; timeouts count as fail")
     print("tail      = calls after acceptance excluding communicate/notes bookkeeping")
+    print(f"unmeas    = graded runs whose tail is unmeasurable: acceptance was never "
+          f"detected, so the share is unknown and prints as {UNMEASURED_SHARE}")
 
     # Why runs failed, so a low pass count can be read without the workdirs.
     reasons: dict[str, int] = {}
@@ -1193,7 +1284,8 @@ def main() -> None:
                            args.effort, args.model, args.keep)
             print(f"    calls={res.total_calls} acc={res.acceptance_call_index} "
                   f"tail={res.calls_after_acceptance} work={res.tail_work_calls} "
-                  f"share={res.runaway_share:.3f} pass={res.final_compiles_clean} "
+                  f"share={render_share(tail_share(res))} "
+                  f"pass={res.final_compiles_clean} "
                   f"to={res.timed_out} wall={res.wall_s}s "
                   f"vanilla={res.prompt_is_vanilla}", flush=True)
             with runs_path.open("a") as f:

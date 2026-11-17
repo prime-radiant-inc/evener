@@ -50,7 +50,7 @@ packages and test files do not count.
 | `EVENER_FUZZ_RECORD` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `envvars` |
 | `EVENER_FUZZ_CAPTURE_ENV` | tooling | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener-fuzz-harvest` |
 | `EVENER_RUN_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `cmd/evener` |
-| `EVENER_SCRATCH_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 5 more |
+| `EVENER_SCRATCH_DIR` | internal | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` and 6 more |
 | `EVENER_SESSION_ORIGIN` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent` |
 | `EVENER_STATE_DIR` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/doctor`, `cmd/evener`, `cmd/evener-doctor` and 1 more |
 | `LLM_MODEL` | public | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/llmcall` |
