@@ -899,8 +899,10 @@ test("a press on a non-focusable target outside the box still cancels on its com
   }
 });
 
-// A press that ends without a click (a drag, a cancelled press) is not a
-// dismissal: the capture keeps its proposal and no write happens.
+// A press that ends without a click (a drag, a cancelled press) is not itself
+// a dismissal: the capture keeps its proposal and no write happens. jsdom
+// performs no focus move, so the box still holds focus here; a real browser
+// moves it away and the next test covers that case.
 test("a press that never completes a click leaves the capture live", async () => {
   const client = await wireEditableClient();
   renderEditor();

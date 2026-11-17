@@ -194,7 +194,9 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
   // hook rather than a second listener: the press origin, the deferred
   // fallback for a control that stops its own click's propagation, and the
   // teardown stay in one place. A click only fires when press and release
-  // share a target, so a drag or a cancelled press leaves the capture live.
+  // share a target, so a drag or a cancelled press has no click to complete:
+  // the capture stays live only while focus is still in the box or on a
+  // shortcut-navigation control, and otherwise cancels on a later task.
   //
   // A press outside still cancels once its click completes, with
   // refocus:false: focus goes where the reader put it - or stays, for a
