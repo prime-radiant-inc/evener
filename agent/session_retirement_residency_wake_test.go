@@ -28,7 +28,12 @@ func newResidencyWakeRig(t *testing.T, adapter *fakeAdapter) *residencyWakeRig {
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(adapter)
-	root, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(testConfig{})})
+	// The session namer runs on its own goroutine and, with no cheap model
+	// configured, names with the session model -- which is the adapter this
+	// test scripts. It would take the one scripted turn and leave the real
+	// turn answering with bare text, intermittently and only under load. The
+	// namer gets its own provider so the script is the turn's alone.
+	root, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
