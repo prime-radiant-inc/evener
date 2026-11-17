@@ -1064,6 +1064,16 @@ func publicTranscriptEntry(entry transcript.Entry) (transcript.Entry, bool) {
 	if !entry.Turn.Kind.PublicTranscript() {
 		return transcript.Entry{}, false
 	}
+	if entry.Turn.OriginalOrdinal != nil {
+		// A compaction fold re-appends, after its markers, an entry the file
+		// already holds before them; the copy carries the ordinal of the line
+		// it copies (see publishFoldTransaction). The original is the one this
+		// view already showed, exactly as the ATIF projection and the doctor's
+		// transcript read treat it. Skipping it here keeps every public
+		// transcript surface consistent rather than leaving each walker to
+		// decide.
+		return transcript.Entry{}, false
+	}
 	entry.Turn.AttentionID = ""
 	entry.Turn.AttentionResolution = nil
 	entry.Turn.DelegateDeliveryCommits = nil
