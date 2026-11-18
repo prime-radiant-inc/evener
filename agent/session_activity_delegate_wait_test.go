@@ -375,6 +375,84 @@ func TestDelegateActivityRowLearnsTheDrainHoldWithoutARepeatRead(t *testing.T) {
 	})
 }
 
+// The hold is a per-row fact whose samples can overtake each other on the way
+// to a client, and the projection revision cannot order them: both edges arrive
+// at the revision the row already carries. The source assigns a sequence where
+// it samples the hold, and every carrier must report the same number for the
+// same sample — otherwise a client has no order to obey and a delayed sample
+// wins (#6693).
+func TestDelegateDrainHoldCarriesItsSourceSequence(t *testing.T) {
+	t.Parallel()
+	fixture := newDrainHoldFixture(t)
+
+	fixture.releaseProviderCall()
+	testwait.Until(t, "a pushed frame to carry the drain hold", func() bool {
+		for _, frame := range recordedHoldFrames(&fixture.recorder, fixture.delegateID) {
+			if frame.DrainHeldByJobs {
+				return true
+			}
+		}
+		return false
+	})
+
+	var held events.DelegateUpdatedData
+	for _, frame := range recordedHoldFrames(&fixture.recorder, fixture.delegateID) {
+		if frame.DrainHeldByJobs {
+			held = frame
+			break
+		}
+	}
+	if held.HoldSequence == 0 {
+		t.Fatal("the held frame carries no hold sequence; a client would have no order to apply")
+	}
+
+	// The read samples the same unchanged hold, so it must reuse the sequence
+	// rather than mint a new one: one fact, one order, whichever carrier.
+	during := requireDelegateActivityRow(t, delegateActivityRows(t, fixture.parent), fixture.delegateID)
+	if during.HoldSequence != held.HoldSequence {
+		t.Fatalf("read row holdSequence = %d while the frame said %d; the two carriers disagree about the same sample",
+			during.HoldSequence, held.HoldSequence)
+	}
+
+	// The release is a later sample of the same hold, so it must carry a later
+	// sequence: a client that saw the wait can then tell the clearing is newer.
+	fixture.env.releaseJob()
+	select {
+	case <-fixture.runDone:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("the delegate run did not finish after its shell completed")
+	}
+	testwait.Until(t, "a frame after the hold that no longer carries it", func() bool {
+		seenHeld := false
+		for _, frame := range recordedHoldFrames(&fixture.recorder, fixture.delegateID) {
+			if frame.DrainHeldByJobs {
+				seenHeld = true
+				continue
+			}
+			if seenHeld {
+				return true
+			}
+		}
+		return false
+	})
+	var cleared events.DelegateUpdatedData
+	seenHeld := false
+	for _, frame := range recordedHoldFrames(&fixture.recorder, fixture.delegateID) {
+		if frame.DrainHeldByJobs {
+			seenHeld = true
+			continue
+		}
+		if seenHeld {
+			cleared = frame
+			break
+		}
+	}
+	if cleared.HoldSequence <= held.HoldSequence {
+		t.Fatalf("the clearing frame's holdSequence = %d, want later than the held sample's %d; a client would treat the release as stale",
+			cleared.HoldSequence, held.HoldSequence)
+	}
+}
+
 // The drain parks the run on its owned jobs, but it also runs turns to handle a
 // completion or its own announcement. During such a turn the delegate is
 // working, so its row must stop claiming the shell wait and say what the turn

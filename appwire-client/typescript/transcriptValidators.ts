@@ -506,6 +506,7 @@ function validStableDelegate(value: unknown): boolean {
     booleanFields.every((key) => value[key] === undefined || typeof value[key] === "boolean") &&
     numberFields.every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
     (value.runningJobCount === undefined || isNonNegativeInteger(value.runningJobCount)) &&
+    (value.holdSequence === undefined || isNonNegativeInteger(value.holdSequence)) &&
     (value.oldestRunningJobStartedAt === undefined || typeof value.oldestRunningJobStartedAt === "string") &&
     (value.warnings === undefined || validStringArray(value.warnings)) &&
     (value.diagnostics === undefined || validStringArray(value.diagnostics)) &&

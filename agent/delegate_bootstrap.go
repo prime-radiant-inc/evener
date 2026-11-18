@@ -167,12 +167,13 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		// delegate's own job manager under the lock already held: a frame that
 		// omitted it would erase the wait from a row the capture had filled,
 		// because a winning frame replaces every mutating field.
-		heldByJobs, runningJobs, oldestRunningJob := s.delegateController.runningJobsForDelegateLocked(row.id)
+		heldByJobs, runningJobs, oldestRunningJob, holdSequence := s.delegateController.runningJobsForDelegateLocked(row.id)
 		s.delegateController.mu.Unlock()
 		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
 		data.DrainHeldByJobs = heldByJobs
+		data.HoldSequence = holdSequence
 		data.RunningJobCount = runningJobs
 		if heldByJobs && !oldestRunningJob.IsZero() {
 			data.OldestRunningJobStartedAt = oldestRunningJob.UTC().Format(time.RFC3339Nano)

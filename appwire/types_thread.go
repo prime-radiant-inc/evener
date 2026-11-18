@@ -935,6 +935,12 @@ type EvenerDelegateInfo struct {
 	DrainHeldByJobs           bool   `json:"drainHeldByJobs,omitempty"`
 	RunningJobCount           int    `json:"runningJobCount,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
+	// HoldSequence orders DrainHeldByJobs against every other sample of the same
+	// delegate's hold. The source bumps it under the controller lock when the
+	// sampled hold changes, so a consumer applies the highest sequence and
+	// rejects a sample a slower publisher delivered late. Absent when no sample
+	// ever differed.
+	HoldSequence uint64 `json:"holdSequence,omitempty"`
 	// LatestIntent is the open generation's newest stated tool-call intent
 	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
 	// the row's display line, the same Excerpt-bounded value the read

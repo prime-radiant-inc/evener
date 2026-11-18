@@ -190,7 +190,13 @@ func (read *sessionActivityRead) captureDelegateCandidates(ctx context.Context, 
 			// Only a real hold fills the fields; the count alone would also
 			// match a delegate still working with a background shell, which
 			// must keep reading as working.
-			if held, count, oldest := controller.runningJobsForDelegateLocked(key.ID); held {
+			held, count, oldest, sequence := controller.runningJobsForDelegateLocked(key.ID)
+			// The sequence rides even a cleared hold: a client that saw the wait
+			// must be able to tell this clearing is newer than it, not an older
+			// sample arriving late. A delegate whose hold never moved carries 0,
+			// which the wire omits.
+			candidate.row.HoldSequence = sequence
+			if held {
 				candidate.row.DrainHeldByJobs = true
 				candidate.row.RunningJobCount = count
 				if !oldest.IsZero() {

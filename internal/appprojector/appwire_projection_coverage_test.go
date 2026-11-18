@@ -141,3 +141,49 @@ func TestMergeAppwireDelegateInfoHoldAtUnchangedRevision(t *testing.T) {
 		t.Fatal("a repeated hold frame published an update")
 	}
 }
+
+// The hold is ordered by the source's own sequence, not by arrival. A publisher
+// that sampled the hold and then paused can deliver an older sample after a
+// newer one; the row must keep the newer sample.
+func TestMergeAppwireDelegateInfoOrdersTheHoldBySourceSequence(t *testing.T) {
+	base := appwire.EvenerDelegateInfo{
+		DelegateID:         "dlg_1",
+		ProjectionRevision: 4,
+		Status:             "running",
+		LatestActivityAt:   "2024-01-01T00:00:00Z",
+	}
+	held := base
+	held.DrainHeldByJobs = true
+	held.RunningJobCount = 2
+	held.OldestRunningJobStartedAt = "2024-01-01T00:00:00Z"
+	held.HoldSequence = 9
+
+	merged, changed := mergeAppwireDelegateInfo(base, held)
+	if !changed || !merged.DrainHeldByJobs || merged.HoldSequence != 9 {
+		t.Fatalf("the held sample did not land: changed = %v, held = %v, sequence = %d; want the source's 9",
+			changed, merged.DrainHeldByJobs, merged.HoldSequence)
+	}
+
+	// A sample captured before the hold, delivered after it: a read that sampled
+	// this delegate before its drain started cannot clear the wait.
+	delayed := base
+	delayed.HoldSequence = 3
+	kept, changed := mergeAppwireDelegateInfo(merged, delayed)
+	if changed {
+		t.Fatal("a sample older than the hold cleared it; the row would lose the wait for its whole duration")
+	}
+	if !kept.DrainHeldByJobs || kept.HoldSequence != 9 {
+		t.Fatalf("after the delayed sample: held = %v, sequence = %d; want the 9 the source assigned",
+			kept.DrainHeldByJobs, kept.HoldSequence)
+	}
+
+	// The release edge carries a later sequence than the hold it ends, so the
+	// same rule that rejected the stale sample still lets the release through.
+	released := base
+	released.HoldSequence = 11
+	done, changed := mergeAppwireDelegateInfo(merged, released)
+	if !changed || done.DrainHeldByJobs || done.HoldSequence != 11 {
+		t.Fatalf("the release did not land: changed = %v, held = %v, sequence = %d; want the source's 11",
+			changed, done.DrainHeldByJobs, done.HoldSequence)
+	}
+}

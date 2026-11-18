@@ -1,7 +1,9 @@
 // The buffered half of the same ordering. A row no loaded page can take yet
 // holds its frames; both hold edges arrive at the same revision, so the ladder
 // would settle the buffered pair on the earlier edge and the admitted row would
-// wear a wait that has already ended.
+// wear a wait that has already ended. The source sequence orders the pair: each
+// buffered frame keeps the sequence it was received with, so settling does not
+// re-stamp the older edge as newer.
 test("a buffered pre-hold frame cannot outlive the edge that clears it", async () => {
   const client = pushClient();
   const admit = deferred<void>();
@@ -27,10 +29,11 @@ test("a buffered pre-hold frame cannot outlive the edge that clears it", async (
   store.observe("delegates");
   await activityState(store, () => store.getSnapshot().delegates.complete);
 
-  // Both edges for a row the loaded set does not carry yet.
-  const held = frameInfo({ projectionRevision: 4, drainHeldByJobs: true, runningJobCount: 1 });
+  // Both edges for a row the loaded set does not carry yet, with the sequences
+  // the source assigns: the release is sampled after the hold it ends.
+  const held = frameInfo({ projectionRevision: 4, holdSequence: 5, drainHeldByJobs: true, runningJobCount: 1 });
   client.emitNotification(pushedFrame(held));
-  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4 })));
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
 
   // The read that admits the row arrives after both edges.
   activityChanged(client, ["delegates"]);
@@ -39,6 +42,57 @@ test("a buffered pre-hold frame cannot outlive the edge that clears it", async (
   await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence ?? 0).toBe(6);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
+// The inverse arrival order, buffered. A frame sampled before the hold and
+// delivered after the release must not reinstate the wait: the source sequence
+// is what orders the pair, so the older sample loses however late it arrives.
+test("a buffered hold older than the release does not reinstate the wait", async () => {
+  const client = pushClient();
+  const admit = deferred<void>();
+  const readStarted = deferred<void>();
+  const context = pushContext();
+  let served = 0;
+  client.on("evener/thread/delegates/list", async ({ scope }) => {
+    served += 1;
+    if (served > 1) {
+      readStarted.resolve();
+      await admit.promise;
+    }
+    return {
+      context,
+      scope: scope ?? "session",
+      page: { complete: true, issues: [] },
+      delegates: served > 1 ? [delegateRow({ projectionRevision: 4 })] : [],
+    };
+  });
+  const store = owner(client);
+  store.observe("delegates");
+  await activityState(store, () => store.getSnapshot().delegates.complete);
+
+  // The release is sampled after the hold, but the hold is delivered last.
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 4,
+        holdSequence: 5,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+
+  activityChanged(client, ["delegates"]);
+  await readStarted.promise;
+  admit.resolve();
+  await activityState(store, () => store.getSnapshot().delegates.rows.length === 1);
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence ?? 0).toBe(6);
   expect(row?.runningJobCount ?? 0).toBe(0);
 });
 
@@ -483,6 +537,7 @@ test("a hold at an unchanged revision still reaches a loaded row", async () => {
         projectionRevision: 4,
         status: "running",
         drainHeldByJobs: true,
+        holdSequence: 5,
         runningJobCount: 2,
         oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
       }),
@@ -490,6 +545,7 @@ test("a hold at an unchanged revision still reaches a loaded row", async () => {
   );
   expect(store.getSnapshot().delegates.rows[0]).toMatchObject({
     drainHeldByJobs: true,
+    holdSequence: 5,
     runningJobCount: 2,
     oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
   });
@@ -508,15 +564,17 @@ test("clearing the hold at an unchanged revision empties the wait", async () => 
       delegateRow({
         projectionRevision: 4,
         drainHeldByJobs: true,
+        holdSequence: 4,
         runningJobCount: 1,
         oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
       }),
     ],
   }));
   const { store } = await pushOwner(client);
-  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4 })));
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 4, holdSequence: 6 })));
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence ?? 0).toBe(6);
   expect(row?.runningJobCount ?? 0).toBe(0);
   expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
 });
@@ -547,6 +605,8 @@ test("a read that predates the hold cannot clear it", async () => {
       page: { complete: true, issues: [] },
       // The refresh's page carries a durable change, so the test can await the
       // landing it is judging: a read that never arrived would prove nothing.
+      // Its hold sample is the one the read took before the drain started, so
+      // the row must reject it even though it arrives last.
       delegates: [delegateRow({ projectionRevision: 4, latestIntent: served > 1 ? "Refreshed." : undefined })],
     };
   });
@@ -561,6 +621,7 @@ test("a read that predates the hold cannot clear it", async () => {
     pushedFrame(
       frameInfo({
         projectionRevision: 4,
+        holdSequence: 5,
         drainHeldByJobs: true,
         runningJobCount: 1,
         oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
@@ -576,6 +637,7 @@ test("a read that predates the hold cannot clear it", async () => {
   await activityState(store, () => store.getSnapshot().delegates.rows[0]?.latestIntent === "Refreshed.");
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.drainHeldByJobs).toBe(true);
+  expect(row?.holdSequence).toBe(5);
   expect(row?.runningJobCount).toBe(1);
 });
 

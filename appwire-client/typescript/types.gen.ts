@@ -743,6 +743,14 @@ export interface EvenerDelegateInfo {
   runningJobCount?: number;
   oldestRunningJobStartedAt?: string;
   /**
+   * HoldSequence orders DrainHeldByJobs against every other sample of the same
+   * delegate's hold. The source bumps it under the controller lock when the
+   * sampled hold changes, so a consumer applies the highest sequence and
+   * rejects a sample a slower publisher delivered late. Absent when no sample
+   * ever differed.
+   */
+  holdSequence?: number;
+  /**
    * LatestIntent is the open generation's newest stated tool-call intent
    * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
    * the row's display line, the same Excerpt-bounded value the read
@@ -4024,6 +4032,17 @@ export interface SessionDelegate {
    * RunningJobCount is absent.
    */
   oldestRunningJobStartedAt?: string;
+  /**
+   * HoldSequence orders DrainHeldByJobs against the other samples of the same
+   * delegate's hold. The hold is a per-row fact whose samples can reach a
+   * client out of order — a publisher that sampled before another can send
+   * after it — and the projection revision cannot order them, because both
+   * edges of the hold arrive at the revision the row already carries. This
+   * counter is bumped at the source, under the controller lock, whenever the
+   * sampled hold changes, so a receiver applies the highest sequence it has
+   * seen and rejects a delayed sample. Absent when no sample ever differed.
+   */
+  holdSequence?: number;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }
@@ -6571,7 +6590,7 @@ export const WIRE_FIELD_KEYS = {
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
-  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],

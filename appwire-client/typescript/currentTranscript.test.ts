@@ -1347,6 +1347,7 @@ describe("current transcript checkpoints", () => {
       runEndedAt: "2026-10-25T10:01:00Z",
       latestActivityAt: "2026-10-25T10:00:59Z",
       drainHeldByJobs: true,
+      holdSequence: 7,
       runningJobCount: 2,
       oldestRunningJobStartedAt: "2026-10-25T10:00:30Z",
       latestIntent: "Reading the board.",

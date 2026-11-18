@@ -496,6 +496,7 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: appwire.ClonePointer(data.RunningForMS),
 		LatestIntent:              appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes),
 		DrainHeldByJobs:           data.DrainHeldByJobs,
+		HoldSequence:              data.HoldSequence,
 		RunningJobCount:           data.RunningJobCount,
 		OldestRunningJobStartedAt: data.OldestRunningJobStartedAt,
 		QuietForMS:                appwire.ClonePointer(data.QuietForMS), DurationMS: appwire.ClonePointer(data.DurationMS), PacketKind: data.PacketKind,
@@ -549,10 +550,8 @@ func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (app
 		merged.LatestActivityAt = incoming.LatestActivityAt
 		// The hold moves at a revision the row already holds, so it rides
 		// every forward merge rather than being stranded at the revision it
-		// arrived with.
-		merged.DrainHeldByJobs = incoming.DrainHeldByJobs
-		merged.RunningJobCount = incoming.RunningJobCount
-		merged.OldestRunningJobStartedAt = incoming.OldestRunningJobStartedAt
+		// arrived with — but only when it is newer by the source's own order.
+		applyDelegateHold(&merged, incoming)
 		return merged, true
 	}
 	// The drain hold is its own facet, outside the revision ladder. Entering
@@ -561,17 +560,40 @@ func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (app
 	// span, so both edges arrive here at the revision already recorded with
 	// nothing above to carry them. Without this the projector would return
 	// nil and the edge would never reach a loaded row — the one thing the
-	// hold exists to make visible.
-	if current.DrainHeldByJobs != incoming.DrainHeldByJobs ||
-		current.RunningJobCount != incoming.RunningJobCount ||
-		current.OldestRunningJobStartedAt != incoming.OldestRunningJobStartedAt {
-		merged := appwire.CloneDelegateInfo(current)
-		merged.DrainHeldByJobs = incoming.DrainHeldByJobs
-		merged.RunningJobCount = incoming.RunningJobCount
-		merged.OldestRunningJobStartedAt = incoming.OldestRunningJobStartedAt
-		return merged, true
+	// hold exists to make visible. The order is the source sequence, not the
+	// arrival: a slower publisher can deliver an older sample last.
+	merged := appwire.CloneDelegateInfo(current)
+	if !applyDelegateHold(&merged, incoming) {
+		return current, false
 	}
-	return current, false
+	return merged, true
+}
+
+// applyDelegateHold copies the incoming hold onto dst when it is newer by the
+// source's own sequence, and reports whether anything moved.
+//
+// The sequence is the only order the hold obeys. A publisher that sampled the
+// hold and then paused can send after a later sample, so arrival order and the
+// projection revision both mislead; the highest sequence wins and a delayed
+// sample is dropped. A sample with no sequence predates the counter (or comes
+// from a producer that never had one), so it can fill an empty row but never
+// displace a sequenced sample.
+func applyDelegateHold(dst *appwire.EvenerDelegateInfo, incoming appwire.EvenerDelegateInfo) bool {
+	if incoming.HoldSequence < dst.HoldSequence {
+		return false
+	}
+	if dst.DrainHeldByJobs == incoming.DrainHeldByJobs &&
+		dst.RunningJobCount == incoming.RunningJobCount &&
+		dst.OldestRunningJobStartedAt == incoming.OldestRunningJobStartedAt {
+		// Same hold, newer sequence: record the order without a new frame.
+		dst.HoldSequence = incoming.HoldSequence
+		return false
+	}
+	dst.DrainHeldByJobs = incoming.DrainHeldByJobs
+	dst.RunningJobCount = incoming.RunningJobCount
+	dst.OldestRunningJobStartedAt = incoming.OldestRunningJobStartedAt
+	dst.HoldSequence = incoming.HoldSequence
+	return true
 }
 
 func delegateActivityAfter(candidate, current string) bool {

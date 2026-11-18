@@ -173,9 +173,18 @@ type SessionDelegate struct {
 	// OldestRunningJobStartedAt is the RFC3339Nano start of the oldest of those
 	// jobs, so a row can say how long the wait has lasted. Empty whenever
 	// RunningJobCount is absent.
-	OldestRunningJobStartedAt string               `json:"oldestRunningJobStartedAt,omitempty"`
-	Usage                     *EvenerUsage         `json:"usage,omitempty"`
-	Worktree                  *JobActivityWorktree `json:"worktree,omitempty"`
+	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
+	// HoldSequence orders DrainHeldByJobs against the other samples of the same
+	// delegate's hold. The hold is a per-row fact whose samples can reach a
+	// client out of order — a publisher that sampled before another can send
+	// after it — and the projection revision cannot order them, because both
+	// edges of the hold arrive at the revision the row already carries. This
+	// counter is bumped at the source, under the controller lock, whenever the
+	// sampled hold changes, so a receiver applies the highest sequence it has
+	// seen and rejects a delayed sample. Absent when no sample ever differed.
+	HoldSequence uint64               `json:"holdSequence,omitempty"`
+	Usage        *EvenerUsage         `json:"usage,omitempty"`
+	Worktree     *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type SessionWatchState string

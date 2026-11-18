@@ -917,6 +917,11 @@ type DelegateUpdatedData struct {
 	DrainHeldByJobs           bool   `json:"drain_held_by_jobs,omitempty"`
 	RunningJobCount           int    `json:"running_job_count,omitempty"`
 	OldestRunningJobStartedAt string `json:"oldest_running_job_started_at,omitempty"`
+	// HoldSequence is the source-side order of the hold three fields above.
+	// The source bumps it when the sampled hold changes; a consumer applies the
+	// highest sequence it has seen and ignores a delayed sample. Absent when no
+	// sample ever differed.
+	HoldSequence uint64 `json:"hold_sequence,omitempty"`
 }
 
 // DelegateUsageData reports cumulative model-token usage for a stable delegate
