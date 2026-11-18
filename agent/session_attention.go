@@ -2778,10 +2778,20 @@ func (s *Session) retireClearedStableWatchAttention() {
 	// under attentionMu and asked about after it is released: attentionMu is
 	// taken under jm.mu elsewhere (stableWatchOwner), and the reverse order here
 	// would close that cycle.
+	//
+	// What a liveness answer MEANS is narrow: a repeating timer that is gone was
+	// cleared by its owner, so its unread ticks must not reach the model. A
+	// notice whose own fire retired its timer is the opposite case -- the
+	// registration was removed to deliver it -- and is never in the snapshot.
 	s.attentionMu.Lock()
 	candidates := make(map[string]string, len(s.stableWatchPending))
 	for attentionID, held := range s.stableWatchPending {
-		if held.watchID != "" {
+		// Only an ARMED repeating timer can be CLEARED. A terminal row's timer
+		// already unregistered itself on the fire that produced it, so asking
+		// whether it is still installed answers "no" for a notice nobody
+		// cleared, and retiring on that answer threw away the one-shot's only
+		// firing (#2340 review High).
+		if held.watchID != "" && !held.terminal {
 			candidates[attentionID] = held.watchID
 		}
 	}

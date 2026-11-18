@@ -736,6 +736,43 @@ func TestDelegateResourceSupervision_StableWatchFoldSpansEnqueueBatches(t *testi
 		t.Fatalf("a cleared timer's persisted tick is still pending and would reach the model: watch %q survived the clear (fires=%d)", clearedAttentionID, held.fires)
 	}
 
+	// A one-shot timer unregisters itself BEFORE it enqueues the notice of its
+	// only fire, so "the timer is no longer installed" is that row's NORMAL
+	// state. The cleared-timer rule above must not read that as a clear and
+	// discard the firing: the delegate would never hear the reminder it set,
+	// and nothing would re-arm it.
+	oneShotID := "watch:life-01-one-shot-fired"
+	oneShotNotice := jobNotification{Kind: jobNotificationKindWatch, WatchID: oneShotID, Fires: 1, Reason: "after", Status: jobNotificationEventWatch, Terminal: true, Occurrence: "tick:" + oneShotID + ":1"}
+	if !jm.persistStableWatchPendings([]jobNotification{oneShotNotice}) {
+		t.Fatal("the production stable ingress declined the one-shot's terminal notice")
+	}
+	oneShotAttentionID := stableWatchDiagnosticAttentionID(oneShotNotice)
+	if _, ok := sub.sess.pendingStableWatchNotice(oneShotAttentionID); !ok {
+		t.Fatal("setup: the one-shot's terminal notice was not retained, so the fire arm proves nothing")
+	}
+	// The fire's own teardown, in the order fireProgressTick performs it: the
+	// registration goes before the notice is enqueued.
+	jm.mu.Lock()
+	delete(jm.watches, watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: oneShotID})
+	jm.mu.Unlock()
+	sub.sess.retireClearedStableWatchAttention()
+	if _, ok := sub.sess.pendingStableWatchNotice(oneShotAttentionID); !ok {
+		t.Fatalf("a one-shot timer's terminal notice was retired as a cleared timer's tick: watch %q fired once, unregistered itself to deliver that fire, and the reminder was discarded unread", oneShotAttentionID)
+	}
+	pendingRow, err := sub.sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("reading pending attention after the one-shot arm: %v", err)
+	}
+	found := false
+	for _, attentionID := range pendingRow {
+		if attentionID == oneShotAttentionID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the one-shot's firing %q is no longer durably pending, so the leased turn it woke will never read it", oneShotAttentionID)
+	}
+
 	// Everything above happened while the child held a leased turn, which is the
 	// only window this rule governs. Retire the rows the arms above created so
 	// the child is not still owed attention when the turn is released: a pending

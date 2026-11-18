@@ -623,6 +623,13 @@ type stableWatchPendingNotice struct {
 	provenance *provenance.Causal
 	// watchID is the timer the row belongs to, for the liveness recheck.
 	watchID string
+	// terminal marks a row whose registration is GONE BY CONSTRUCTION: a
+	// one-shot timer unregisters itself before it enqueues the notice of its
+	// only fire, so "the timer is no longer installed" is the normal state of a
+	// terminal row, not evidence that the delegate cleared it. The liveness
+	// recheck must skip these rows or it discards the firing it was written to
+	// protect (#2340 review).
+	terminal bool
 	// order is arrival sequence: a newer snapshot replaces an older one, and a
 	// moved record can be told from a still-current one.
 	order uint64
@@ -714,6 +721,7 @@ func (s *Session) notePendingStableWatchNotice(n jobNotification, attentionID st
 		fires:       n.Fires,
 		provenance:  n.Provenance,
 		watchID:     n.WatchID,
+		terminal:    n.Terminal,
 		order:       0,
 	}
 	s.attentionMu.Lock()
