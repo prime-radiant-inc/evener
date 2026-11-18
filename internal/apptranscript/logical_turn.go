@@ -324,6 +324,10 @@ type turnExecution struct {
 	// bare call-id match: a retry that reuses an id is a different
 	// announcement, and the index settles per announcing entry (#1166 review).
 	mergedEntry []int
+	// callIndex is, per announcing entry and call id, the merged item a result
+	// settled. Settlement and the completion fold both read THIS table: one
+	// statement of "which item a call owns" rather than a copy each.
+	callIndex map[awaitKey]int
 	// visible are the groups that still have items after settlement, in order.
 	// Completeness counts these, not the raw runs: settlement can empty a run.
 	visible []int
@@ -337,7 +341,7 @@ func (ex *turnExecution) settle() {
 		return
 	}
 	ex.settled = true
-	ex.merged, ex.mergedGrp, ex.mergedEntry = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.groupOfItem)
+	ex.merged, ex.mergedGrp, ex.mergedEntry, ex.callIndex = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.groupOfItem)
 	ex.interruptAwaitedCalls()
 	seen := make(map[int]bool, len(ex.runs))
 	for _, group := range ex.mergedGrp {
@@ -371,33 +375,16 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 	// EARLIER batch that a later assistant entry superseded is not part of
 	// what that completion ended, so it keeps its own status.
 	awaiting := map[string]bool{}
-	// byCall is keyed by the announcing entry AND the call id, so a retry that
-	// reuses an id is a different call: interrupting the first attempt's call
-	// must not touch the second attempt's. A bare call-id match did exactly
-	// that, marking the running retry interrupted (#1166 review).
-	type awaitKey struct {
-		entry int
-		call  string
-	}
-	byCall := map[awaitKey][]int{}
-	for at := range ex.merged {
-		item := &ex.merged[at]
-		if MergesByCallID(*item) && item.CallID != "" {
-			entry := 0
-			if at < len(ex.mergedEntry) {
-				entry = ex.mergedEntry[at]
-			}
-			// Keep only the FIRST recorded part per call id: that is the item
-			// the index reserves for the call (transcriptindex build.go keeps
-			// the first part carrying an id), and the item a result settles. A
-			// second announcement of the same id in one entry stays its own
-			// item and is not what a completion ends (#1166 review).
-			key := awaitKey{entry: entry, call: item.CallID}
-			if _, seen := byCall[key]; !seen {
-				byCall[key] = []int{at}
-			}
-		}
-	}
+	// byCall is the SAME table settle() used to decide what a result settles
+	// (mergeExecutionItems' callIndex). Keying it by the announcing entry AND
+	// the call id is what makes a retry that reuses an id a different call:
+	// interrupting the first attempt's call must not touch the second
+	// attempt's. A bare call-id match did exactly that, marking the running
+	// retry interrupted (#1166 review). Rebuilding that rule here instead of
+	// reading it is the duplicate implementation this now avoids: two copies
+	// of one rule can drift, and a completion that settled a different item
+	// than the result did is two readers disagreeing about one call.
+	byCall := ex.callIndex
 	// awaiting holds the announcing entry and its recorded part ids, so a
 	// completion resolves only the announcements that batch made.
 	var awaitingEntry int
@@ -433,11 +420,18 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 			case schema.TurnReopen:
 				// The batch stays awaiting: nothing has answered it yet.
 			case schema.TurnCompletion:
+				// The item a call owns is the one settlement recorded for it,
+				// so this reads the same table the result fold wrote. A call the
+				// entry announced but that a second part also recorded resolves
+				// to the RESERVED part — ReservedCalls keeps the first — and the
+				// duplicate keeps its own status (#1166 review).
 				for call := range awaiting {
-					for _, at := range byCall[awaitKey{entry: awaitingEntry, call: call}] {
-						if status := ex.merged[at].Status; status == "" || status == appwire.TurnStatusInProgress {
-							ex.merged[at].Status = appwire.TurnStatusInterrupted
-						}
+					at, recorded := byCall[awaitKey{entry: awaitingEntry, call: call}]
+					if !recorded {
+						continue
+					}
+					if status := ex.merged[at].Status; status == "" || status == appwire.TurnStatusInProgress {
+						ex.merged[at].Status = appwire.TurnStatusInterrupted
 					}
 				}
 			}
@@ -445,13 +439,15 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 			continue
 		}
 		entry := ex.entriesByIndex[entries[entryAt]]
-		if hasRecordedToolCall(&entry) {
-			awaiting = map[string]bool{}
+		// ReservedCalls is the one statement of which calls an entry recorded —
+		// the same call the index makes in applyResults. Reading it here rather
+		// than re-scanning the message is what keeps one entry from reserving a
+		// different batch in each reader.
+		if reserved := ReservedCalls(&entry); len(reserved) > 0 {
+			awaiting = make(map[string]bool, len(reserved))
 			awaitingEntry = entries[entryAt]
-			for _, part := range entry.Message.Content {
-				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-					awaiting[part.ToolCall.ID] = true
-				}
+			for callID := range reserved {
+				awaiting[callID] = true
 			}
 		}
 		entryAt++
@@ -830,25 +826,17 @@ func stampExecutionControls(turn *appwire.Turn, controls []indexedTurn) {
 			if info == nil {
 				continue
 			}
-			switch info.Status {
-			case schema.TurnFailed:
-				// A completion record carries no message of its own; the
-				// diagnostic comes from the TURN_FAILURE entry of the attempt
-				// that failed, which the caller re-derives AFTER this fold.
-				// StampGroupedTurn cannot supply it: a reopen clears the
-				// diagnostic it stamped, so a retry that failed again would
-				// report the status with the earlier attempt's message gone.
-				turn.Status = appwire.TurnStatusFailed
-			case schema.TurnInterrupted:
-				turn.Status = appwire.TurnStatusInterrupted
-				// Interrupted is not failed: the turn stopped, it did not
-				// report a diagnostic. The recorded TURN_FAILURE entry stays
-				// in the transcript as history, but a turn-level error beside
-				// an interrupted status makes the web transcript render a
-				// failure end cap the index does not (#1166 review).
-				turn.Error = nil
-			case schema.TurnCompleted:
-				turn.Status = appwire.TurnStatusCompleted
+			// The mapping is shared with the index (ExecutionStatusFromCompletion):
+			// one completion must not read completed in one reader and
+			// interrupted in the other.
+			turn.Status = ExecutionStatusFromCompletion(info.Status)
+			if info.Status != schema.TurnFailed {
+				// A completion record carries no message of its own. A FAILED
+				// one takes its diagnostic from the TURN_FAILURE entry of the
+				// attempt that failed, which the caller re-derives after this
+				// fold; every other terminal status reports none, so an
+				// interrupted turn does not render the failure end cap the
+				// index does not (#1166 review).
 				turn.Error = nil
 			}
 			if !info.CompletedAt.IsZero() {
@@ -899,17 +887,64 @@ func MergesByCallID(item appwire.ThreadItem) bool {
 	return item.Type == "commandExecution" && item.CallID != ""
 }
 
+// ReservedCalls returns the calls an announcing entry reserved, keyed by call
+// id to the first content part that recorded it.
+//
+// This is one settlement rule with two callers on purpose. The transcript index
+// builds its awaiting batch this way (transcriptindex applyResults keeps the
+// first part per id and settles a result only against that part); whole-file
+// replay must reserve the same target or the two readers complete different
+// items for one result. A later part recording an already-reserved id is its
+// own announcement: it is never the target of a result or a completion.
+// awaitKey names an announcement by the entry that recorded it and the call id
+// it recorded. Two entries recording one id are two calls, and one entry
+// recording an id twice reserves only the first part.
+type awaitKey struct {
+	entry int
+	call  string
+}
+
+func ReservedCalls(entry *schema.Turn) map[string]int {
+	if entry == nil {
+		return nil
+	}
+	reserved := make(map[string]int, len(entry.Message.Content))
+	for part, content := range entry.Message.Content {
+		if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
+			continue
+		}
+		if _, seen := reserved[content.ToolCall.ID]; !seen {
+			reserved[content.ToolCall.ID] = part
+		}
+	}
+	return reserved
+}
+
+// ExecutionStatusFromCompletion maps a recorded completion's status to the turn
+// status both readers report for a stamped execution.
+//
+// The index applies this mapping in stampFold (transcriptindex build.go) and
+// whole-file replay applies it in stampExecutionControls. Sharing it is what
+// keeps one completion from reading completed in one reader and interrupted in
+// the other: an absent or unrecognised status is completed, and only the two
+// explicit non-successful terminal statuses differ.
+func ExecutionStatusFromCompletion(status schema.TurnCompletionStatus) string {
+	switch status {
+	case schema.TurnFailed:
+		return appwire.TurnStatusFailed
+	case schema.TurnInterrupted:
+		return appwire.TurnStatusInterrupted
+	default:
+		return appwire.TurnStatusCompleted
+	}
+}
+
 // hasRecordedToolCall reports whether the entry's own content records a tool
 // call. Such an entry is what the index calls the turn's AWAITING entry: its
 // calls are the only ones a later result can settle, including calls that
 // project no item because the provider hid them.
 func hasRecordedToolCall(turn *schema.Turn) bool {
-	for _, part := range turn.Message.Content {
-		if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
-			return true
-		}
-	}
-	return false
+	return len(ReservedCalls(turn)) > 0
 }
 
 // mergeGroupedItems folds a group's items into one item per call id: a later
@@ -975,19 +1010,16 @@ func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnoun
 //     recorded, wherever in the execution that announcement sits, so a
 //     delivery that splits the turn cannot orphan the result;
 //   - a result whose call the execution never announced projects on its own.
-func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, groupOfItem []int) ([]appwire.ThreadItem, []int, []int) {
+func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, groupOfItem []int) ([]appwire.ThreadItem, []int, []int, map[awaitKey]int) {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	mergedGrp := make([]int, 0, len(items))
 	mergedEntry := make([]int, 0, len(items))
 	// callIndex keys an announcement by its awaiting entry and call id, which
 	// is how the index decides what a result settles. The FIRST announcement
 	// for a key owns it: a second part recording the same id is a distinct
-	// announcement, and the result goes to the first recorded part.
-	type callKey struct {
-		entry int
-		call  string
-	}
-	callIndex := map[callKey]int{}
+	// announcement, and the result goes to the first recorded part — the part
+	// ReservedCalls reserves for that entry.
+	callIndex := map[awaitKey]int{}
 	for at, item := range items {
 		group := 0
 		if at < len(groupOfItem) {
@@ -999,7 +1031,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 		}
 		if MergesByCallID(item) {
 			if at < len(itemAnnounce) && itemAnnounce[at] {
-				key := callKey{entry: entry, call: item.CallID}
+				key := awaitKey{entry: entry, call: item.CallID}
 				if _, claimed := callIndex[key]; !claimed {
 					callIndex[key] = len(merged)
 				}
@@ -1008,7 +1040,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 				mergedEntry = append(mergedEntry, entry)
 				continue
 			}
-			key := callKey{entry: entry, call: item.CallID}
+			key := awaitKey{entry: entry, call: item.CallID}
 			if prev, ok := callIndex[key]; ok {
 				// The item that was admitted keeps its identity: a settled call
 				// does not change name because its result arrived in another
@@ -1026,7 +1058,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 		mergedGrp = append(mergedGrp, group)
 		mergedEntry = append(mergedEntry, entry)
 	}
-	return merged, mergedGrp, mergedEntry
+	return merged, mergedGrp, mergedEntry, callIndex
 }
 
 // MergeThreadItems merges a later projected item into an earlier one of

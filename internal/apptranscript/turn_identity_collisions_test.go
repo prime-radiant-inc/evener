@@ -1055,13 +1055,15 @@ func TestReopenKeepsTheInterruptedCall(t *testing.T) {
 	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}, transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
-	// Recovery reclaimed the turn and runs it again: the first attempt's call
-	// is history, and the new attempt records its own.
-	reopen := schema.Turn{Kind: schema.TurnReopen}
-	reopen.Format = schema.TurnFormatIdentity
-	reopen.TurnID = "t_reopen"
-	reopen.TurnKind = schema.TurnSpanExecution
-	record(reopen, transcript.PlaceVerbatim)
+	// Recovery reclaimed the turn and runs it again. This is the writer's real
+	// reopen path: BeginExecution with reopen=true puts the turn back in
+	// placeSession's running slot and records the TURN_REOPEN marker itself.
+	// Writing the marker verbatim after PlaceCompletion cleared the running
+	// execution would leave the next PlaceSession write in a NEW GAP turn, so
+	// the test would pass even if replay ignored the marker entirely (#1166
+	// review).
+	w.BeginExecution("t_reopen", true)
+	record(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
 	record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("trying again")), transcript.PlaceSession)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -1094,6 +1096,32 @@ func TestReopenKeepsTheInterruptedCall(t *testing.T) {
 	if call.Status != appwire.TurnStatusInterrupted {
 		t.Errorf("historical call status = %q, want %q: the reopen belongs to the next attempt",
 			call.Status, appwire.TurnStatusInterrupted)
+	}
+	// The reopened turn is OPEN again, and its previous completion's timing is
+	// cleared: the retry has not ended.
+	var reopened *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_reopen" {
+			reopened = &turns[i]
+		}
+	}
+	if reopened == nil {
+		t.Fatalf("full read turns = %+v, want the reopened turn", shapesFromTurns(turns))
+	}
+	if reopened.Status != appwire.TurnStatusInProgress {
+		t.Errorf("reopened status = %q, want %q: the retry has not ended",
+			reopened.Status, appwire.TurnStatusInProgress)
+	}
+	// The retry's own item belongs to the reopened turn, not to a new gap turn.
+	var retry bool
+	for i := range reopened.Items {
+		if reopened.Items[i].Text == "trying again" {
+			retry = true
+		}
+	}
+	if !retry {
+		t.Errorf("reopened turn items = %+v, want the retry's item in it: PlaceSession must join the reopened turn",
+			reopened.Items)
 	}
 }
 

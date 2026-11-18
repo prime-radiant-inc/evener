@@ -617,13 +617,11 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		if err != nil {
 			return err
 		}
-		for part, content := range awaiting.Message.Content {
-			if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
-				continue
-			}
-			if _, seen := calls[content.ToolCall.ID]; !seen {
-				calls[content.ToolCall.ID] = awaitedCall{part: part, name: content.ToolCall.Name}
-			}
+		// The reservation rule is shared with whole-file replay
+		// (apptranscript.ReservedCalls): a result settles the FIRST recorded
+		// part carrying its call id, in both readers.
+		for id, part := range apptranscript.ReservedCalls(awaiting) {
+			calls[id] = awaitedCall{part: part, name: awaiting.Message.Content[part].ToolCall.Name}
 		}
 	}
 	// A result with no name of its own takes its call's.
@@ -1206,10 +1204,13 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 
 // completionStatus maps a completion entry's status to the summary's.
 func completionStatus(status schema.TurnCompletionStatus) uint32 {
-	switch status {
-	case schema.TurnFailed:
+	// One mapping, shared with whole-file replay
+	// (apptranscript.ExecutionStatusFromCompletion), so a completion cannot read
+	// one status here and another there.
+	switch apptranscript.ExecutionStatusFromCompletion(status) {
+	case appwire.TurnStatusFailed:
 		return statusFailed
-	case schema.TurnInterrupted:
+	case appwire.TurnStatusInterrupted:
 		return statusInterrupted
 	default:
 		return statusCompleted
