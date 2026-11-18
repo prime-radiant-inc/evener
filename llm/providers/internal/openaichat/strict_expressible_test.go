@@ -2223,3 +2223,155 @@ func TestPropertiesOnANonObjectNodeDeclinesStrict(t *testing.T) {
 		t.Fatal("an array whose items are typed must still be certifiable")
 	}
 }
+
+// A recursive schema graph is something a Go caller can build by linking a child
+// back to an ancestor through a typed properties map. Before the typed copy arms
+// existed that map reached encoding/json, which returned a cycle error. Copying
+// it recursively instead would recurse until the stack is gone, which takes the
+// process rather than the request.
+//
+// The cut is asserted three ways, because a guard that is too broad is as wrong
+// as none: the call must return, the looping edge must become the empty schema,
+// and the sibling subtree that shares a node with a different ancestor must keep
+// both of its copies. Only a node containing itself may be cut.
+func TestRecursiveSchemaIsCopiedWithoutUnboundedRecursion(t *testing.T) {
+	t.Parallel()
+	t.Run("self-referential properties", func(t *testing.T) {
+		t.Parallel()
+		child := map[string]any{"type": "string"}
+		props := map[string]any{}
+		schema := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           props,
+			"required":             []string{"self"},
+		}
+		props["self"] = schema
+		child["description"] = "unrelated"
+		done := make(chan map[string]any, 1)
+		go func() { done <- SupplyDerivedTypes(schema) }()
+		select {
+		case out := <-done:
+			self, ok := out["properties"].(map[string]any)["self"].(map[string]any)
+			if !ok {
+				t.Fatalf("properties.self = %#v, want a schema", out["properties"].(map[string]any)["self"])
+			}
+			if len(self) != 0 {
+				t.Fatalf("the looping edge = %#v, want the empty schema: the cut must not keep a partially copied cycle", self)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("copying a self-referential schema did not return: the recursion is unbounded")
+		}
+	})
+
+	t.Run("a shared acyclic subtree keeps both copies", func(t *testing.T) {
+		t.Parallel()
+		shared := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}, "required": []string{}}
+		schema := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"left":  shared,
+				"right": shared,
+			},
+			"required": []string{"left", "right"},
+		}
+		out := SupplyDerivedTypes(schema)
+		props := out["properties"].(map[string]any)
+		for _, name := range []string{"left", "right"} {
+			node, ok := props[name].(map[string]any)
+			if !ok || node["type"] != "object" {
+				t.Fatalf("properties.%s = %#v, want the shared schema: a node with two parents is not a cycle", name, props[name])
+			}
+		}
+	})
+}
+
+// A caller may write a property schema as raw JSON. The walk branches on
+// map[string]any, so a raw child used to be skipped entirely while the decoded
+// spelling of the same schema got the explicit type a provider requires. Which
+// Go type the caller chose then decided whether the tool's request survived,
+// which is the same "depends on how it was spelled" defect the encoder rule
+// removed one layer up.
+func TestRawJSONSubschemaIsReadLikeADecodedOne(t *testing.T) {
+	t.Parallel()
+	decoded := map[string]any{"enum": []any{"fast", "safe"}}
+	for name, child := range map[string]any{
+		"decoded":     decoded,
+		"raw message": json.RawMessage(`{"enum":["fast","safe"]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": child},
+				"required":             []string{"mode"},
+			})
+			mode, ok := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if !ok {
+				t.Fatalf("emitted argument = %#v, want a schema: a raw subschema must be read, not passed through", emitted["properties"].(map[string]any)["mode"])
+			}
+			if mode["type"] != "string" {
+				t.Fatalf("emitted type = %#v, want \"string\": the raw and decoded spellings describe the same schema", mode["type"])
+			}
+			if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+				t.Fatal("the emitted schema rejects a member the advertised enum lists")
+			}
+		})
+	}
+}
+
+// additionalProperties may hold a schema rather than a boolean, and it is legal
+// on a node of any type. The rewrite reads the keyword only to write false on an
+// object it closes, so a schema value reaches the provider as advertised: a
+// nested object with an optional property behind it is validated by strict
+// enforcement and can reject the whole request, while the gate never looked.
+//
+// This is the same shape as properties on a non-object node one level deeper, so
+// it is refused on the same rule: the walk does not skip a schema-bearing
+// keyword because the node's declared type suggests it will not be there.
+func TestSchemaValuedAdditionalPropertiesIsWalkedOnEveryNode(t *testing.T) {
+	t.Parallel()
+	// A scalar argument whose additionalProperties holds an object that leaves
+	// its own property optional. Nothing about the root is unusual, so only the
+	// nested keyword can decide the answer.
+	unchecked := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"payload": map[string]any{
+				"type": "string",
+				"additionalProperties": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"label": map[string]any{"type": "string"}},
+				},
+			},
+		},
+		"required": []string{"payload"},
+	}
+	if StrictExpressible(unchecked) {
+		t.Fatal("a schema-valued additionalProperties holding an object with an optional property must not be certified strict")
+	}
+
+	// The control: the same node with a boolean additionalProperties certifies,
+	// so the refusal is about the unchecked subschema and not about the keyword.
+	checked := deepCopyAny(unchecked).(map[string]any)
+	checked["properties"].(map[string]any)["payload"].(map[string]any)["additionalProperties"] = false
+	if !StrictExpressible(checked) {
+		t.Fatal("a boolean additionalProperties must still be certifiable")
+	}
+
+	// And a schema value that is fully specified certifies too, because the walk
+	// read it rather than refusing the keyword outright.
+	closed := deepCopyAny(unchecked).(map[string]any)
+	closed["properties"].(map[string]any)["payload"].(map[string]any)["additionalProperties"] = map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"label": map[string]any{"type": "string"}},
+		"required":             []string{"label"},
+	}
+	if !StrictExpressible(closed) {
+		t.Fatal("a schema-valued additionalProperties that is fully specified must be certifiable")
+	}
+}

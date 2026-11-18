@@ -262,13 +262,12 @@ func (gs *generationState) request(opts GenerateOptions, history []Message) Requ
 	// prepareTools, so a registered override should find the open empty schema
 	// present for a parameterless tool. A direct Complete or Stream call never
 	// reaches this function and keeps the nil its caller wrote.
-	return Request{
+	return MarkPreparedTools(Request{
 		Model:                opts.Model,
 		Provider:             opts.Provider,
 		Messages:             append([]Message{}, history...),
 		Tools:                gs.toolDefs,
 		ToolsJSONBytes:       gs.toolDefsJSONBytes,
-		preparedTools:        true,
 		ToolChoice:           opts.ToolChoice,
 		ResponseFormat:       opts.ResponseFormat,
 		Temperature:          opts.Temperature,
@@ -294,7 +293,7 @@ func (gs *generationState) request(opts GenerateOptions, history []Message) Requ
 		ProviderOptions:      opts.ProviderOptions,
 		WebSearch:            opts.WebSearch,
 		AdapterTimeout:       opts.AdapterTimeout,
-	}
+	})
 }
 
 // endsToolLoop reports whether a step's response is the last one: it carries no

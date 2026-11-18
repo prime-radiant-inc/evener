@@ -153,6 +153,9 @@ func TestChatNonStrictToolsKeepParameterlessToolsOpen(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
+	// A prepared request: this is the case the open schema exists for, because
+	// prepareTools compiled the definition against it locally.
+	req = llm.MarkPreparedTools(req)
 
 	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(false) }))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
@@ -174,6 +177,34 @@ func TestChatNonStrictToolsKeepParameterlessToolsOpen(t *testing.T) {
 	}
 }
 
+// A direct Complete or Stream call never went through preparation, so its nil
+// Parameters is the caller's own declaration that the tool takes no arguments.
+// The local validator that needs the open empty object is not in this path, and
+// synthesizing one would tell the provider the tool accepts arbitrary keys — a
+// change to the caller's request that nothing here needs to make. Omit the key,
+// as every adapter did before the fallback existed.
+func TestChatDirectCallKeepsParameterlessToolWithoutParameters(t *testing.T) {
+	t.Parallel()
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
+	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(false) }))
+	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
+	if params, has := fn["parameters"]; has {
+		t.Fatalf("parameters = %#v, want the key omitted: a direct call's nil is the caller's no-argument declaration", params)
+	}
+
+	// A strict route is different, and not a counterexample: the closed empty
+	// object admits exactly {}, which is the same argument set "no parameters"
+	// names, so stating it changes nothing the caller declared. The open object
+	// this test rejects would have admitted arbitrary keys instead.
+	strictBody := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
+	strictFn := strictBody["tools"].([]map[string]any)[0]["function"].(map[string]any)
+	params, ok := strictFn["parameters"].(map[string]any)
+	if !ok || params["additionalProperties"] != false {
+		t.Fatalf("parameters = %#v, want the closed empty object: it admits exactly the empty argument set", strictFn["parameters"])
+	}
+}
+
 // The chat adapter carries the same parameterless-tool rule as Responses. A
 // definition that declares no parameters keeps its nil through preparation, so
 // the adapter has to supply the closed empty object itself: omitting
@@ -183,6 +214,7 @@ func TestChatStrictToolsKeepParameterlessToolsClosed(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
+	req = llm.MarkPreparedTools(req)
 
 	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)

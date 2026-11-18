@@ -59,14 +59,20 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				continue
 			}
 			// A definition that declares no parameters keeps its nil through
-			// preparation, and ToChatTools omits the key for it. The local
-			// validator compiles such a tool against defaultToolParameters, an
-			// open empty object, so the wire has to carry that same schema:
-			// omitting it leaves the provider reading "no schema" where the
-			// validator reads "any object". Only a tool that is actually sent
-			// with strict enforcement gets the closed form, because that is the
-			// only shape strict mode accepts.
-			if req.Tools[i].Parameters == nil {
+			// preparation, and ToChatTools omits the key for it. On a prepared
+			// request the local validator compiles such a tool against
+			// defaultToolParameters, an open empty object, so the wire has to
+			// carry that same schema: omitting it leaves the provider reading
+			// "no schema" where the validator reads "any object". Only a tool
+			// that is actually sent with strict enforcement gets the closed
+			// form, because that is the only shape strict mode accepts.
+			//
+			// A direct Complete or Stream call never went through preparation,
+			// so its nil is the caller's own no-argument declaration and there
+			// is no validator to agree with. Omit the key there, as every
+			// adapter did before the fallback existed: synthesizing an open
+			// object would tell the provider the tool accepts arbitrary keys.
+			if req.Tools[i].Parameters == nil && req.PreparedTools() {
 				fn["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
 			}
 		}

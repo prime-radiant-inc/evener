@@ -495,6 +495,28 @@ type Request struct {
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 
+// MarkPreparedTools marks req as one that tool preparation built. It is the only
+// way to set the marker, so every request an adapter sees as prepared came
+// through this call rather than through a field a caller could set by accident.
+func MarkPreparedTools(req Request) Request {
+	req.preparedTools = true
+	return req
+}
+
+// PreparedTools reports whether Tools came from prepareTools, which supplies the
+// open empty schema for a parameterless tool so the local validator has
+// something to compile.
+//
+// A built-in adapter needs this to tell a request preparation built from a
+// direct Complete or Stream call. Preparation keeps a no-argument definition
+// distinct by leaving its Parameters nil, and the local validator compiles that
+// definition against the open empty object, so on a prepared request the wire
+// has to carry that same schema or the provider reads "no schema" where the
+// validator reads "any object". A direct call never went through preparation,
+// so its nil is the caller's own no-argument declaration and must reach the
+// adapter unchanged.
+func (r Request) PreparedTools() bool { return r.preparedTools }
+
 // FinishReason holds a canonical finish reason alongside the raw provider value.
 type FinishReason struct {
 	Reason string `json:"reason"`
