@@ -321,7 +321,15 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// tool-result payload so the fallback chain can apply each target's own
 	// replay and media policy; the primary request is projected for the
 	// primary's wire before it is built and budgeted (#4563, #4217).
+	// The escape covers each target's dispatch copy, never the shared source:
+	// a promoting target rewrites reasoning text, and the fallback source is
+	// written from untrimmedHistory and may be handed to a target that signed
+	// the original bytes (#6493 review). expandHistory's product is the shared
+	// source and carries the model's own bytes, so the escape runs here, on the
+	// copy this target sends, where its text boundaries are the ones the
+	// adapter will assemble.
 	untrimmedHistory := history
+	history = escapeModelAuthoredFramesForTarget(history, profile.Protocol(), promotesReasoningToText(profile))
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
@@ -387,8 +395,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// fallback source take them so a fallback sees the reloaded
 			// instructions too (#4563, #4217).
 			message := scope.projectTurnMessage(notification, true)
-			history = append(history, message)
 			untrimmedHistory = append(untrimmedHistory, message)
+			// The dispatched copy is escaped, the fallback source is not: these
+			// turns join the history the request was built from AFTER its own
+			// escaping pass, so they reach the wire in the model's bytes unless
+			// they are escaped here (#6493 review).
+			history = append(history, escapeModelAuthoredFramesForTarget([]llm.Message{message}, profile.Protocol(), promotesReasoningToText(profile))[0])
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
@@ -1704,6 +1716,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				break
 			}
 			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
+			// The frame escape is per-target, like thinking and media above: a
+			// fallback that joins a turn's text into one message reads fences
+			// the primary's phase-separating scan judged separately, so an
+			// opener the primary saw as quoted can reach this target outside a
+			// fence (#6493 review). Escaping again for this target's boundaries
+			// is safe when it agrees with the primary: escaping is idempotent
+			// and never touches text both scans leave alone.
+			fbReq.Messages = escapeModelAuthoredFramesForTarget(fbReq.Messages, fbProfile.Protocol(), promotesReasoningToText(fbProfile))
 			// A fallback reuses the primary's built messages, so it applies its
 			// own media decision here; the budget below then prices exactly what
 			// this target receives (#4217).
@@ -1838,6 +1858,40 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 	fallbackReq.Continuation = nil
 	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(res, fallbackReq)
 	return fallbackReq
+}
+
+// escapeModelAuthoredFramesForTarget escapes model-authored frame openers in a
+// built message slice for the target that will read it.
+//
+// The shared source is NOT escaped. expandHistory and projectTurnMessage both
+// preserve the assistant text as the model wrote it, so every dispatch copy must
+// be passed through here — the primary's as much as any fallback's — and a
+// caller that assumes expansion escaped it leaves a raw frame on the wire. Each
+// target's boundaries differ (phase joining, per-part blocks), which is why the
+// escape happens per target and not in the shared history. Escaping an
+// already-escaped message is a no-op, so a caller may apply it more than once.
+func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string, promotesReasoning bool) []llm.Message {
+	if protocol == "" {
+		return messages
+	}
+	out := messages
+	copied := false
+	for i, msg := range messages {
+		// The escaper says whether it changed the message; do not infer it from
+		// the two messages' Text(), which reads text parts only and cannot see a
+		// rewrite confined to the reasoning a promoting target prepends (#6493
+		// review).
+		escaped, changed := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning)
+		if !changed {
+			continue
+		}
+		if !copied {
+			out = append([]llm.Message(nil), messages...)
+			copied = true
+		}
+		out[i] = escaped
+	}
+	return out
 }
 
 // responsesContinuationModelFallbackRequest un-anchors a request for a
@@ -2080,6 +2134,19 @@ func dropsReplayedThinking(p *provider.Profile) bool {
 	return p != nil && !llm.ReplaysAssistantThinking(p.Resolved())
 }
 
+// promotesReasoningToText reports whether the target renders replayed
+// reasoning as ordinary assistant text. That is the thinking_as_text row on a
+// chat target: it keeps reasoning where dropsReplayedThinking would strip it,
+// and its adapter prepends it to the message body, so the frame escape must
+// cover it (#6493 review).
+func promotesReasoningToText(p *provider.Profile) bool {
+	if p == nil {
+		return false
+	}
+	res := p.Resolved()
+	return res.Protocol == registry.ProtocolOpenAIChat && registry.BoolValue(res.Caps.ThinkingAsText)
+}
+
 // projectThinkingForTarget returns messages with the target's thinking-replay
 // policy applied: a target that does not replay assistant thinking drops it,
 // while Anthropic, Google, OpenAI Responses and a thinking_as_text row keep
@@ -2193,7 +2260,14 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // policy. An inactive scope passes through unchanged (identical to legacy
 // expansion) unless the target policy drops thinking. In-flight turns keep the
 // N4 exemption but still lose thinking the target does not want.
-// tool_call/tool_result and text/image content is never touched.
+//
+// The projected copy keeps the assistant's text as the model wrote it; this
+// function does NOT escape frame openers. Escaping belongs to each dispatch
+// copy, because a target's boundaries differ (see
+// escapeModelAuthoredFramesForTarget), and a caller that reads this as "already
+// escaped" would leave a raw frame on the wire. Tool calls, tool results and
+// images are untouched, and user-role text is left byte-identical: the partner
+// is the authority.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
 	if !rs.active() && !rs.DropThinking {

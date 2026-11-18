@@ -7,9 +7,107 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// escapeWorkingNote returns the text a working note carries for msg: the
+// model's own text with line-start harness frames defused, escaped with its
+// text phases intact and only then flattened.
+//
+// Flattening first loses a boundary the model's own message had. A Responses
+// commentary part that ends with an open fence and a newline makes a bare frame
+// at the start of the final answer look like fenced content to a single scan,
+// so the frame survives into the working notes of a user-role checkpoint even
+// though direct replay escapes it (#6493 review). Escaping each phase segment
+// as its own block keeps that frame exposed, which is the safe direction: a
+// quoted example is still spared inside its own segment.
+func escapeWorkingNote(msg llm.Message) string {
+	// The note is read as the adapter would send it, so the parts it carries are
+	// the parts CarriesWireText keeps — the same call the replay projection
+	// makes, through one helper (#6493 review).
+	_, texts, phases := sysmsg.WireTextParts(msg)
+	if len(texts) == 0 {
+		return sysmsg.EscapeModelAuthoredFrames(msg.Text())
+	}
+	// One scan, shared with the replay projection: the note is read as the
+	// adapter would send it, then written out flat.
+	//
+	// The note has two readers and they disagree, so it is escaped for both.
+	// The replay projection reads the phases as separate messages, and the
+	// checkpoint's own reader reads one flat block. Fence state is what
+	// decides whether an opener is spared, and it differs between those two
+	// readings: a fence left open in commentary hides a frame at the start of
+	// the final answer from the flat reader, while a fence opened in one phase
+	// and closed at the start of the next hides one from the per-phase reader.
+	// Escaping per segment and then once more over the join covers both — an
+	// opener either reading leaves raw gets escaped, and an example both
+	// readings see as fenced keeps its bytes. Escaping is idempotent and never
+	// adds or removes a fence delimiter, so the second pass cannot re-open what
+	// the first closed.
+	//
+	// The escaped segments are put back onto the parts they came from and the
+	// result is the concatenation of every original text part. Both halves of
+	// that matter, and a note built from the wire-filtered parts alone would
+	// lose one of them:
+	//
+	//   - Concatenation, not a separator. The adapter groups same-phase parts
+	//     into one message, so the model read them as one run of characters and
+	//     Message.Text() concatenated them; a path split across two parts has
+	//     to stay one token (#6493 review).
+	//   - Every original part, including the ones the wire drops. A part that
+	//     is only a space or a newline never reaches the provider, so the scan
+	//     must not see it, but the note is read by a human-facing summarizer and
+	//     Text() did keep it. Dropping it merges two words the model wrote
+	//     apart (#6493 review).
+	//
+	// So the scan runs over the wire parts, its rewrites go back at the indexes
+	// they came from, and the note is the original parts concatenated. The
+	// second pass then reads the note as its own flat reader will.
+	wireIndexes, _, _ := sysmsg.WireTextParts(msg)
+	escaped := make([]string, len(texts))
+	copy(escaped, texts)
+	segments := sysmsg.TextSegments(phases, "openai-responses")
+	escapedSegments := sysmsg.EscapePhasedText(texts, phases, "openai-responses")
+	for s, span := range segments {
+		pieces, ok := sysmsg.SplitJoinedEscape(escapedSegments[s], texts[span[0]:span[1]])
+		if !ok {
+			// The scan changed the line structure; carry the parts as they are
+			// rather than invent boundaries the model did not write.
+			continue
+		}
+		copy(escaped[span[0]:span[1]], pieces)
+	}
+	// A part is also a block of its own on the reading that matters here: the
+	// wire form emits each part separately for Responses, Anthropic and Google,
+	// so a fence left open at the end of one part does not run into the next.
+	// The segment pass above reads same-phase parts as one run, which is the
+	// other reading, and the two disagree exactly where a fence crosses a part
+	// boundary. Applying both leaves no opener raw that either reading exposes,
+	// and the pass below over the flattened note is the third reader — the
+	// summarizer's — which sees the parts as one block again (#6493 review).
+	for k, defused := range sysmsg.EscapePartsIndividually(escaped) {
+		escaped[k] = defused
+	}
+	// Start from every original text part, then put the escaped wire parts back
+	// at their own indexes. A part the wire drops is still in the note, with
+	// the bytes the model wrote.
+	noteParts := make([]string, len(msg.Content))
+	for i, part := range msg.Content {
+		if part.Kind == llm.ContentText {
+			noteParts[i] = part.Text
+		}
+	}
+	for k, at := range wireIndexes {
+		noteParts[at] = escaped[k]
+	}
+	var note strings.Builder
+	for _, part := range noteParts {
+		note.WriteString(part)
+	}
+	return sysmsg.EscapeModelAuthoredFrames(note.String())
+}
 
 // maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
 // checkpoint either feeds into the LLM summarizer (which replaces it) or — if
@@ -173,9 +271,17 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
-					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
+					endTurn, msg := checkpointReplyText(history[:i+1], p.ToolResult.ToolCallID)
 					if endTurn && msg != "" && !p.ToolResult.IsError {
-						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
+						// The reply is the model's own words, and the checkpoint
+						// is a user-role message: a frame it invented survives
+						// the rollover as input it can cite (#6493). The
+						// partner's entries stay verbatim — they are the
+						// authority, the model is not.
+						data.conversation = append(data.conversation, checkpointConversationEntry{
+							Role: "agent",
+							Text: sysmsg.EscapeModelAuthoredFrames(msg),
+						})
 					}
 					continue
 				}
@@ -183,10 +289,22 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 
 		case schema.TurnAssistant:
 			// Capture assistant analytical text as working notes.
+			//
+			// The checkpoint is a user-role message, so model-authored text
+			// placed in it speaks in the user's channel. A frame the model
+			// invented on its own turn (<delegate-notification>,
+			// <system-notification>, [answers]) must not survive into the
+			// checkpoint with the spelling a harness-written frame opens with,
+			// or the rollover hands the model its own fabrication back as
+			// input it can cite as a decision (#6493).
 			if text := t.Message.Text(); len(text) > 50 {
-				note := text
+				note := escapeWorkingNote(t.Message)
 				if len(note) > 500 {
-					note = note[:500] + "..."
+					// Escaping replaces one character with several, so a byte
+					// cap that landed inside a rune before can land outside it
+					// now, or the reverse. Cut on a rune boundary so the note
+					// is always valid UTF-8.
+					note = runetrim.Cut(note, 500) + "..."
 				}
 				data.workingNotes = append(data.workingNotes, note)
 			}

@@ -42,10 +42,31 @@ func renderCheckpointConversation(entries []checkpointConversationEntry) string 
 	return b.String()
 }
 
+// trimBlockEdges drops a block's leading and trailing blank lines and reports
+// "" for a block that holds nothing else, keeping the first content line's
+// indentation. TrimSpace would strip that indentation, and indentation is
+// load-bearing for model-authored text: a line indented four or more columns is
+// Markdown code, which the frame escape deliberately spares as a quoted
+// example. Trimming it would turn a spared code line into a bare frame opener
+// in a user-role message (#6493).
+//
+// Partner messages do not use this: their normalization is TrimSpace, which the
+// summary-layout check depends on.
+func trimBlockEdges(text string) string {
+	lines := strings.Split(text, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func renderCheckpointWorkingNotes(notes []string) string {
 	clean := make([]string, 0, len(notes))
 	for _, note := range notes {
-		note = strings.TrimSpace(note)
+		note = trimBlockEdges(note)
 		if note != "" {
 			clean = append(clean, note)
 		}
@@ -309,7 +330,7 @@ func extractCheckpointWorkingNotes(text string) []string {
 		blocks := parseMarkdownBlocks(section)
 		notes := make([]string, 0, len(blocks))
 		for _, block := range blocks {
-			note := strings.TrimSpace(block.Text)
+			note := trimBlockEdges(block.Text)
 			if note != "" {
 				notes = append(notes, note)
 			}
@@ -398,7 +419,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 		if heading == "" {
 			return
 		}
-		text := strings.TrimSpace(strings.Join(lines, "\n"))
+		text := trimBlockEdges(strings.Join(lines, "\n"))
 		if text != "" {
 			blocks = append(blocks, checkpointMarkdownBlock{Heading: heading, Text: text})
 		}
@@ -448,7 +469,17 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		default:
 			continue
 		}
+		// A partner entry keeps its TrimSpace normalization: it is carried text,
+		// and that normalization is the discriminator carriesPartnerMessages
+		// compares against. An agent entry is the model's own reply, and its
+		// first line's indentation is what makes a quoted code example read as
+		// code rather than as a fence opener, so it keeps its edges (#6493
+		// review). Dropping it would also change the model's bytes in the
+		// checkpoint, which the escape is not licensed to do.
 		text := strings.TrimSpace(entry.Text)
+		if role == "agent" {
+			text = trimBlockEdges(entry.Text)
+		}
 		if text == "" {
 			continue
 		}

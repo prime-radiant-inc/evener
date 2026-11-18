@@ -26,6 +26,14 @@ func findToolCallArgs(history []schema.Turn, toolCallID string) json.RawMessage 
 }
 
 func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
+	return parseCommunicatePayload(args, strings.TrimSpace)
+}
+
+// parseCommunicatePayload decodes a communicate tool call. trim is the only
+// thing the two entry points disagree about: the parser contract normalizes
+// with TrimSpace, and the checkpoint capture passes trimBlockEdges so a reply
+// keeps the indentation that decides whether its first line is code.
+func parseCommunicatePayload(args json.RawMessage, trim func(string) string) (endTurn bool, message string) {
 	var payload struct {
 		Message string `json:"message"`
 		EndTurn *bool  `json:"end_turn"`
@@ -36,9 +44,9 @@ func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 	if len(args) == 0 || json.Unmarshal(args, &payload) != nil {
 		return false, ""
 	}
-	message = strings.TrimSpace(payload.Message)
+	message = trim(payload.Message)
 	if message == "" && payload.Output != nil {
-		message = strings.TrimSpace(payload.Output.Message)
+		message = trim(payload.Output.Message)
 	}
 	if payload.EndTurn == nil {
 		return false, ""
@@ -46,8 +54,22 @@ func parseCommunicateArgs(args json.RawMessage) (endTurn bool, message string) {
 	return *payload.EndTurn, message
 }
 
-func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (endTurn bool, message string) {
-	return parseCommunicateArgs(findToolCallArgs(history, toolCallID))
+// checkpointReplyText returns the reply a checkpoint carries for the given
+// tool call, keeping its first content line's indentation.
+//
+// This is a capture-site rule, not a parser contract. parseCommunicateArgs
+// normalizes its fields with TrimSpace, and FuzzGlobalContextmgrTails pins that
+// behavior, so it stays. But a reply opening with four-space-indented literal
+// backticks is a model quoting a code example, which the frame escape
+// deliberately spares: trimming the indent turns those backticks into a real
+// fence opener, and the escape then reads a frame below them as fenced and
+// leaves it unescaped in the user-role checkpoint (#6493 review).
+//
+// The end_turn decision and the field precedence are the parser's; only the
+// edge whitespace differs, because only this site places the text where
+// indentation decides whether a line is code.
+func checkpointReplyText(history []schema.Turn, toolCallID string) (endTurn bool, message string) {
+	return parseCommunicatePayload(findToolCallArgs(history, toolCallID), trimBlockEdges)
 }
 
 func parseExitCode(shellOutput string) string {
