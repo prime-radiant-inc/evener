@@ -191,8 +191,8 @@ func escapeParentSteeringBody(t schema.Turn, msg llm.Message) llm.Message {
 	rendered := msg.Text()
 	body, ok := strings.CutPrefix(rendered, parentMessageAttribution)
 	if !ok {
-		// Shape this rule does not recognize: leave it as stored rather than
-		// escape text whose ownership it cannot establish.
+		// A shape this rule does not recognize is left as stored rather than
+		// escaped: the rule only rewrites text whose author it can establish.
 		return msg
 	}
 	escaped := sysmsg.EscapeModelAuthoredFrames(body)
