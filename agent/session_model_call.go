@@ -384,6 +384,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if s.stableChildTurnNeedsLease(ctx) {
 			filtered, droppedAt := s.dropUnresolvedWatchAttentionTurns(historyTurns)
 			watchDropped = len(droppedAt) > 0
+			// Each drop shifts every later turn one position left, and
+			// scope.InFlightFrom is an INDEX into this projection. Left alone it
+			// points one turn too far on, so a round after the drop treats this
+			// turn's own assistant response as prior history and strips the
+			// replay-sensitive thinking blocks the in-flight exemption keeps. The
+			// held-attention drop above already moves it the same way.
+			scope.InFlightFrom = shiftReplayBoundaryForDrops(scope.InFlightFrom, droppedAt)
 			historyTurns = filtered
 			// Continuation planning reads presentedTurns, not historyTurns, so
 			// the filtered slice must reach BOTH or the plan is made from the
@@ -2179,6 +2186,22 @@ type replayScope struct {
 	// request assembly never hands an image-blind model bytes it would reject
 	// or ignore (#4217); the result's text still reaches it.
 	dropsToolResultMedia func(mediaType string) bool
+}
+
+// shiftReplayBoundaryForDrops moves an in-flight boundary left by one for every
+// dropped turn that sat strictly before it.
+//
+// The boundary is an INDEX into the projection, so removing items from that
+// projection invalidates it unless it moves with them. A boundary left too far
+// on makes the turn's own assistant response read as prior history, and prior
+// history loses the in-flight replay exemption that keeps its thinking blocks.
+func shiftReplayBoundaryForDrops(inFlightFrom int, droppedAt []int) int {
+	for _, at := range droppedAt {
+		if at < inFlightFrom {
+			inFlightFrom--
+		}
+	}
+	return inFlightFrom
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An

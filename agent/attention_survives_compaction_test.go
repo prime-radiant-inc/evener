@@ -883,6 +883,55 @@ func TestUnleasedStableChildKeepsAnUnresolvedWatchRowOutOfEveryBuilder(t *testin
 			t.Fatal("the request lost its conversation history while dropping the send-rail row")
 		}
 	})
+
+	// Dropping a watch row shifts every later turn one position left, and the
+	// in-flight boundary is an INDEX into that same projection. Left alone it
+	// points one turn too far on, so the turn's OWN assistant response reads as
+	// prior history — and prior history must pass the N4 provenance test, which
+	// an ineligible producer fails. The thinking blocks the in-flight exemption
+	// would have preserved are then stripped out of the request (#2340 review).
+	//
+	// The producing turn here is deliberately ineligible (a protocol the target
+	// cannot replay across), because an eligible turn keeps its thinking either
+	// way and this test would then pass with the adjustment removed.
+	t.Run("a dropped watch row does not demote the turn's own response to prior history", func(t *testing.T) {
+		t.Parallel()
+		sess := newContinuationSession(t)
+		const watchRowID = "watch:dlv_boundary:1"
+		const watchRowText = "watch row in front of the in-flight boundary"
+		// The row is already resident when the round snapshots history, and it
+		// sits BEFORE the in-flight boundary so its removal moves that boundary.
+		if _, err := sess.appendDelegateNotificationDurably(watchRowID, watchRowText); err != nil {
+			t.Fatalf("persist the watch row: %v", err)
+		}
+		// This round's own response: a foreign protocol, so replaying its
+		// thinking across protocols would be rejected. It is the turn the
+		// boundary is supposed to mark as in-flight.
+		ownResponse := assistantThinkingTurn("anthropic", "claude-x", "claude-x")
+		ownResponse.ResponseProtocol = "anthropic"
+		ownResponse.Message.Content[0].Thinking.Text = "in-flight reasoning that must survive"
+		sess.mu.Lock()
+		sess.history = append(sess.history, ownResponse)
+		// The boundary points AT that response, which is where an in-flight
+		// round puts it: this turn started it.
+		sess.turnHistoryBaseline = len(sess.history) - 1
+		baseline := sess.turnHistoryBaseline
+		rowIndex := indexOfTurnText(sess.history, watchRowText)
+		sess.mu.Unlock()
+		if rowIndex < 0 {
+			t.Fatal("setup: the watch row never reached the resident history")
+		}
+		if rowIndex >= baseline {
+			t.Fatalf("setup: the watch row sits at %d, at or past the in-flight boundary %d, so dropping it could not move the boundary", rowIndex, baseline)
+		}
+		req, _ := prepare(t, sess)
+		if requestMessagesContainText(req.Messages, watchRowText) {
+			t.Fatal("the unleased request carried the unresolved watch row")
+		}
+		if !requestThinkingCarries(req.Messages, "in-flight reasoning that must survive") {
+			t.Fatal("the turn's own response lost its thinking: the dropped watch row left the in-flight boundary one position too far on, so the response was projected as prior history and failed the cross-protocol replay rule")
+		}
+	})
 }
 
 // acceptedTriggerSession is a delegate runtime that has accepted an attention
@@ -1778,4 +1827,19 @@ func recordSubtreeStop(t *testing.T, controller *delegateTreeController, id stri
 	}); err != nil {
 		t.Fatalf("record the stop fence: %v", err)
 	}
+}
+
+// requestThinkingCarries reports whether any request message carries a thinking
+// part whose reasoning text is exactly want. A thinking part can survive with
+// its text trimmed, so the presence of the part alone does not prove the
+// in-flight exemption held.
+func requestThinkingCarries(msgs []llm.Message, want string) bool {
+	for _, m := range msgs {
+		for _, part := range m.Content {
+			if part.Thinking != nil && part.Thinking.Text == want {
+				return true
+			}
+		}
+	}
+	return false
 }
