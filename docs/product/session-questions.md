@@ -102,33 +102,26 @@ active execution from answer links without discarding the resolution evidence.
 Unfenced input and legacy records retain whole-set behavior. An accepted
 interrupt and session close also retain their explicit whole-set clear behavior.
 
-An answer's observation carries that capture to clients as
-`resolvedAskCalls:[{turnId,callId}]`, beside the turn-granular
-`answerToTurnIds`. The link alone cannot say which of several calls in one
-execution a reply answered, so a client matching a settled ask to its answer
-reads the calls and compares the ask row's own `(turnId, callId)`. The turn
-link and the composed `[answers]` text shape remain the fallback for unfenced
-whole-set answers and for records stamped before the call list existed.
-When admission also consumed questions it could not name — the restored
-call-less population — the observation carries `resolvedAskLegacyCount` too.
-Those questions' headers never reach the wire, so a client cannot tell whether
-one of them shares the header a composed answer line names: it keeps that reply
-visible in the transcript and shows no attributed recap while the count is
-positive. A reply whose named calls fully account for the resolved questions
-recaps as before.
-A composed recap must also attribute each answer line to exactly one question.
-The client counts headers from the questions each call's successful result
-records — what actually ran, since a pre-tool hook may have changed the
-questions after the model sent them — and keeps the raw reply whenever a header
-appears more than once across the calls a reply names. It also keeps the raw
-reply when a named call's questions cannot be enumerated: when the recorded
-state is present but unreadable, or when no state exists and the original
-arguments hold a question that does not parse. So does a named call outside the
-loaded transcript page, because a partial view cannot say which question a line
-belongs to; loading that call can enable the recap once attribution is
-unambiguous. The same rule covers free prose: a stamped recap is withheld
-whenever the question the row displays differs from the one the call ran, since
-the rows draw their question from the arguments the model sent.
+An answer's observation carries that capture to clients as two fields:
+`resolvedAskCalls:[{turnId,callId}]` and `resolvedAskLegacyCount`. The turn
+link alone cannot say which of several calls in one execution a reply answered,
+so `resolvedAskCalls` names them exactly, and a client matches a settled ask by
+the ask row's own `(turnId, callId)`. `resolvedAskLegacyCount` names the
+consumed questions admission could not attribute to a call at all: they are
+restored from records that predate call ids, so their headers never reach the
+wire and no client can tell whether one of them shares a header an answer line
+names. `answerToTurnIds` and the composed `[answers]` text shape remain the
+turn-granular fallback for unfenced whole-set answers and for records stamped
+before the call list existed.
+
+The projection emits both fields only when the answer has a recorded turn link.
+An inline steer answering only its own still-running execution and a fenced
+answer consuming only legacy questions keep their evidence in the transcript
+and project no stamp, so a client that finds none reads the reply the way it
+did before these fields existed.
+
+How a client renders a recap from this evidence is a separate decision, tracked
+in #6765. This guide states the contract only.
 
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
