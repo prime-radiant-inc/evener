@@ -285,8 +285,30 @@ func TestForegroundShellThatCompletesNeverArmsTheReminder(t *testing.T) {
 // merely take a value afterwards.
 func TestPendingAttentionAppendHoldsIdleRuntimeReleaseUntilItLands(t *testing.T) {
 	t.Parallel()
-	rig := newReminderRig(t)
-	sess := rig.sess
+	// A BOUND stable owner, so the retry below takes the production persist
+	// path. Without one, stableWatchOwner returns nil and the retry releases
+	// the obligation without ever appending, which made this test's green arm
+	// prove only that the counter decremented on the branch where nothing was
+	// owed an append (#2340 review).
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_reminder", "")
+	sess.mu.Lock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_reminder"
+	sess.mu.Unlock()
+	controller.mu.Lock()
+	controller.live["dlg_reminder"].binding.runtime = sess
+	controller.mu.Unlock()
+	sess.jobManager.bindDelegateParent(controller, delegateLease{delegateID: "dlg_reminder", generation: 1}, nil, sess)
+	clock := agenttest.NewFakeClock()
+	sess.clock = clock
+	rig := &reminderRig{sess: sess, clock: clock, woken: make(chan struct{}, 16)}
+
+	// The fixture must take the OWNABLE branch, or the whole test is vacuous.
+	if owner, _ := sess.jobManager.stableWatchOwner(); owner == nil || owner.owningDelegateID == "" {
+		t.Fatal("setup: the retry fixture has no bound stable owner, so the append could never run")
+	}
 
 	// Non-vacuity: with nothing owed the precheck is clear, so a false below is
 	// this obligation and not some other residue of the fixture.
@@ -326,5 +348,12 @@ func TestPendingAttentionAppendHoldsIdleRuntimeReleaseUntilItLands(t *testing.T)
 	}
 	if !sess.idleReleasePregatesClear() {
 		t.Fatal("the precheck still refuses after the owed append landed")
+	}
+	// And the append actually LANDED, through the production persist path: the
+	// row is durable in the transcript under the notice's own identity. Without
+	// this assertion the green arm would pass on the no-owner early-out that
+	// discharges the counter without writing anything.
+	if _, ok := sess.pendingStableWatchNotice(stableWatchDiagnosticAttentionID(notif)); !ok {
+		t.Fatal("the retry discharged the obligation without making the notice durable: the release was bought with nothing")
 	}
 }
