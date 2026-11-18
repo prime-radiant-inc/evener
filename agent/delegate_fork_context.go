@@ -47,6 +47,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 			ResponseProvider:     t.ResponseProvider,
 			ResponseModel:        t.ResponseModel,
 			ResponseRequestModel: t.ResponseRequestModel,
+			ResponseWireModel:    t.ResponseWireModel,
 			ResponseProtocol:     t.ResponseProtocol,
 		}
 		out = append(out, entry)

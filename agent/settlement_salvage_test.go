@@ -570,6 +570,9 @@ func TestSettlement_ContextLengthTerminalKeepsPrimarySalvage(t *testing.T) {
 	if got := hist[len(hist)-3].Message.Text(); got != draft {
 		t.Errorf("salvaged turn carried %d bytes, want the primary group's %d-byte draft", len(got), len(draft))
 	}
+	if got := hist[len(hist)-3].ResponseWireModel; got != "primary" {
+		t.Errorf("salvaged turn wire model = %q, want the primary that streamed the draft", got)
+	}
 }
 
 // TestSettlement_CapRoundPersistsDraftAndCapAdvice covers the incident's cap

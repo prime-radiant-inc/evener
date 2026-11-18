@@ -32,6 +32,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			root.appendTurn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("image-sentinel"), MediaType: "image/png"}}}})
 			completed := schema.NewTurn(schema.TurnAssistant, forkContextToolCall("completed", "read_file"))
 			completed.ResponseID = "parent-response-anchor"
+			completed.ResponseWireModel = "wire-parent-17"
 			completed.Usage = llm.Usage{TotalTokens: 999}
 			root.recordTurn(completed, completed)
 			root.appendTurn(schema.TurnTool, llm.ToolResult("completed", "parent-result-sentinel", true))
@@ -103,10 +104,17 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			inheritedWireModel := false
 			for _, entry := range data.Entries {
+				if entry.Turn.ResponseWireModel == completed.ResponseWireModel {
+					inheritedWireModel = true
+				}
 				if entry.Turn.ResponseID == "parent-response-anchor" {
 					t.Error("parent continuation anchor copied into child")
 				}
+			}
+			if inheritedWireModel != wantHistory {
+				t.Errorf("inherited the parent model's wire identity = %v, want %v", inheritedWireModel, wantHistory)
 			}
 		})
 	}

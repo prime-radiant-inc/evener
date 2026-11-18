@@ -506,9 +506,11 @@ A provider or model row with `replay_reasoning_text = true` accepts the
 assistant's prior reasoning in its request history. Evener returns all
 eligible reasoning still in context, including earlier tool calls in the
 current turn and earlier user turns. Raw text belongs to the instance,
-protocol and requested model that produced it. It counts toward context
-pressure when replayed. The transcript retains the reasoning independently
-of what the target accepts.
+protocol and model that produced it. Evener records both the configured
+model name and its wire model ID. Redirecting the same name to another
+wire model starts a separate reasoning history. For older turns without a
+wire model ID, Evener uses the model identity available in the transcript.
+Replayed reasoning counts toward context pressure.
 
 - On `openai-chat`, `reasoning_field` selects the assistant message field
   the gateway reads. A row can set it even when the gateway emits a different
@@ -516,8 +518,9 @@ of what the target accepts.
   field or defaults to `reasoning_content`. An ordinary chat session omits
   plain reasoning until its row opts in. The existing `thinking_as_text`
   setting takes precedence and merges reasoning into assistant-visible text
-  across model switches. Opaque `reasoning_details` retain their separate
-  continuation behavior.
+  across model switches. A scalar replay field can travel alongside opaque
+  `reasoning_details`. Signed text stays with the detail that carries its
+  signature.
 - On `openai-responses`, an encrypted reasoning item takes precedence. When
   the row opts in and an item has raw `content`, Evener returns its
   `reasoning_text` parts in order with the item's ID when supplied. Evener

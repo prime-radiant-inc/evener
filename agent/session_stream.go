@@ -158,6 +158,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 	}()
 	group.Model = req.Model
 	group.Provider = req.Provider
+	group.WireModel = profile.Resolved().WireID
 	// Announce every retry before its backoff sleep. Both paths below share this
 	// policy, so a rejection at stream open and a mid-stream truncation report
 	// alike. Without it the whole retry chain is silent on the event bus: a

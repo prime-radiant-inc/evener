@@ -736,10 +736,10 @@ func (s *Session) settleFailedRound(terminalErr error) {
 	// The group's model/provider are read out here, while BestSalvage's interior
 	// pointer is known live, so nothing downstream holds a pointer into the
 	// recorder's groups.
-	var salvaged, model, provider string
+	var salvaged, model, provider, wireModel string
 	if kind == settleSalvageAndSteering {
 		if partial, from := rec.BestSalvage(); from != nil {
-			salvaged, model, provider = salvageText(partial), from.Model, from.Provider
+			salvaged, model, provider, wireModel = salvageText(partial), from.Model, from.Provider, from.WireModel
 		}
 	}
 	// Composed before anything is persisted: a round with nothing a template can
@@ -749,7 +749,7 @@ func (s *Session) settleFailedRound(terminalErr error) {
 	if steering == "" {
 		return
 	}
-	if salvaged != "" && !s.persistAndEmitSalvage(salvaged, model, provider) {
+	if salvaged != "" && !s.persistAndEmitSalvage(salvaged, model, provider, wireModel) {
 		return
 	}
 	s.appendSteeringTurn(steering, events.SteeringKindProviderFailure)
@@ -760,8 +760,8 @@ func (s *Session) settleFailedRound(terminalErr error) {
 // their steering turn on it: a draft that did not reach the transcript is a
 // draft the steering's "the content above" would point at nothing, so the pair
 // settles together or not at all.
-func (s *Session) persistAndEmitSalvage(salvaged, model, provider string) bool {
-	if err := s.persistSalvagedTurn(salvaged, model, provider); err != nil {
+func (s *Session) persistAndEmitSalvage(salvaged, model, provider, wireModel string) bool {
+	if err := s.persistSalvagedTurn(salvaged, model, provider, wireModel); err != nil {
 		return false
 	}
 	s.emitSalvagedTurn(salvaged, model)
@@ -814,11 +814,11 @@ func (s *Session) settleInterruptedRound() {
 	if contentFilterKilledGroup(from) {
 		return
 	}
-	salvaged, model, provider := salvageText(partial), from.Model, from.Provider
+	salvaged, model, provider, wireModel := salvageText(partial), from.Model, from.Provider, from.WireModel
 	if salvaged == "" {
 		return
 	}
-	if !s.persistAndEmitSalvage(salvaged, model, provider) {
+	if !s.persistAndEmitSalvage(salvaged, model, provider, wireModel) {
 		return
 	}
 	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterruptedSalvage)
@@ -830,18 +830,17 @@ func (s *Session) settleInterruptedRound() {
 // It must never carry Responses-continuation metadata: continuation anchoring
 // scans backward to the most recent assistant turn, and IDs from a response the
 // provider never finalized would poison every subsequent round with
-// previous_response_not_found. The zero ModelAttemptMetadata is what keeps every
-// one of those fields empty.
+// previous_response_not_found. Only the model identity comes from the attempt.
 //
 // On success it latches markSalvagedTurnPersisted, the signal a delegating
 // parent reads (hasSalvageFromFinalRound) after this session fails as a child
 // to decide whether its result should point at resuming the draft.
-func (s *Session) persistSalvagedTurn(salvaged, model, provider string) error {
+func (s *Session) persistSalvagedTurn(salvaged, model, provider, wireModel string) error {
 	if err := s.appendAssistantTurn(llm.Response{
 		Message:  llm.Assistant(salvaged),
 		Model:    model,
 		Provider: provider,
-	}, ModelAttemptMetadata{}); err != nil {
+	}, ModelAttemptMetadata{WireModel: wireModel}); err != nil {
 		return err
 	}
 	s.markSalvagedTurnPersisted()

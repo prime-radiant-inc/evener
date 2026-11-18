@@ -33,6 +33,7 @@ type ModelAttemptMetadata struct {
 	Protocol                string
 	EndpointURL             string
 	RequestModel            string
+	WireModel               string
 	RequestFingerprint      string
 	StorageScopeFingerprint string
 	ContextMarker           string
@@ -1772,6 +1773,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
+	attempt.WireModel = usedProfile.Resolved().WireID
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {
 		if warning.Code == llm.WarningCodeImageColorUnmanaged {

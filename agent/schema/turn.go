@@ -511,6 +511,9 @@ type Turn struct {
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
+	// ResponseWireModel is the resolved model sent to the provider. The
+	// requested alias and the model name reported in the answer can differ.
+	ResponseWireModel string `json:"response_wire_model,omitempty"`
 	// RoundID names the model round an ASSISTANT entry (including a salvage
 	// entry) records: every request from the round's first attempt up to the
 	// first recorded ASSISTANT entry shares it.
@@ -567,7 +570,8 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved) llm.Message {
 // target, including any protocol or wire-model override on that model's row.
 func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved) bool {
 	if res.Instance == "" || t.ResponseProvider != res.Instance ||
-		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) {
+		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) ||
+		(t.ResponseWireModel != "" && t.ResponseWireModel != res.WireID) {
 		return false
 	}
 	if t.ResponseProtocol == "" {

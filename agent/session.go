@@ -3316,6 +3316,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseProvider:                resp.Provider,
 		ResponseModel:                   resp.Model,
 		ResponseRequestModel:            finalAttempt.RequestModel,
+		ResponseWireModel:               finalAttempt.WireModel,
 		AttemptGroupID:                  finalAttempt.AttemptGroupID,
 		ResponseEndpointFamily:          finalAttempt.EndpointFamily,
 		ResponseProtocol:                finalAttempt.Protocol,

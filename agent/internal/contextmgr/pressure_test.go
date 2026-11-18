@@ -172,7 +172,7 @@ func TestEstimateTokens_BillsUnsignedThinkingByResolvedProtocol(t *testing.T) {
 	} {
 		t.Run(tc.protocol, func(t *testing.T) {
 			row := registry.Resolved{
-				Instance: "gateway", ModelID: "model", Protocol: tc.protocol,
+				Instance: "gateway", ModelID: "model", WireID: "served-current", Protocol: tc.protocol,
 				Caps: registry.Caps{ReplayReasoningText: new(true)},
 			}
 			cm := NewManager(provider.FromResolved(row, nil), nil, cheapmodel.New(nil))
@@ -181,8 +181,12 @@ func TestEstimateTokens_BillsUnsignedThinkingByResolvedProtocol(t *testing.T) {
 			turn.Message.Content[0].Thinking.ID = "rs_1"
 			foreign := turn
 			foreign.ResponseProvider = "another-gateway"
-			if got := cm.estimateTokens([]schema.Turn{turn, foreign, turn}); got != tc.want {
-				t.Fatalf("history estimate = %d, want %d for both turns from the issuing gateway", got, tc.want)
+			redirected := turn
+			redirected.ResponseWireModel = "served-previous"
+			current := turn
+			current.ResponseWireModel = row.WireID
+			if got := cm.estimateTokens([]schema.Turn{turn, foreign, redirected, current}); got != tc.want {
+				t.Fatalf("history estimate = %d, want %d for the unstamped and current-wire turns", got, tc.want)
 			}
 		})
 	}
