@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
@@ -84,9 +85,7 @@ func TestARestoredRuntimeAdmitsAWatchFrameBeforeItsTurnIsVisible(t *testing.T) {
 	// presentable rather than held behind the frame that released it.
 	sess.attentionMu.Lock()
 	holds := map[string]uint64{}
-	for id, generation := range sess.attentionAutomaticDriveHolds {
-		holds[id] = generation
-	}
+	maps.Copy(holds, sess.attentionAutomaticDriveHolds)
 	sess.attentionMu.Unlock()
 	if _, held := holds[reopenedID]; held && sawReopened {
 		t.Fatalf("the stopped report %q is in history but still held (%v): the frame's own wake released it, so the hold must end with the admission that made the frame visible", reopenedID, holds)
