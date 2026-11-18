@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -250,21 +251,10 @@ func TestImportedMCPOptionalArgumentsStayOptionalInProjection(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range required {
-		if name == "tab_index" {
-			t.Fatalf("projected required = %v: tab_index is documented optional and must not be forced", required)
-		}
+	if slices.Contains(required, "tab_index") {
+		t.Fatalf("projected required = %v: tab_index is documented optional and must not be forced", required)
 	}
-	if !containsString(required, "action") {
+	if !slices.Contains(required, "action") {
 		t.Fatalf("projected required = %v, want the server-declared required argument action", required)
 	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
 }
