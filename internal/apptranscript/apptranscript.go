@@ -28,9 +28,29 @@ import (
 // independent — a communicate result with Name="" must still resolve to
 // "communicate", not to deferred raw bytes.
 type ToolCallRegistry struct {
-	Names             map[string]string
-	CommRawArgs       map[string]string
-	CommAuthorship    map[string]*schema.TranscriptAuthorship
+	Names          map[string]string
+	CommRawArgs    map[string]string
+	CommAuthorship map[string]*schema.TranscriptAuthorship
+	// CommAnnounced carries the sent bytes of EVERY communicate announcement
+	// the projection has seen, keyed by call id — the rejection branch's own
+	// source.
+	//
+	// It is deliberately not CommRawArgs. CommRawArgs is the DEFERRAL state: a
+	// call listed there is one the projection renders nothing for, so both the
+	// index (meta PendingCommunicate, window.go's pendingFlush) and the
+	// whole-file read (FlushUnpairedCommunicates) treat it as a delivery whose
+	// result never arrived and render a message from it. A fresh stamped
+	// communicate is not deferred — its own COMMUNICATE entry carries the
+	// delivery — so retaining its bytes there would fabricate a message for
+	// every in-flight call.
+	//
+	// What the announcement IS needed for is the rejection: a communicate
+	// refused at prevalidation never executed and produced no COMMUNICATE
+	// entry, so the announcement is the only record of what was refused and
+	// the row showing it must carry that. Recovering it from here keeps the
+	// row in the projection instead of dropping a call the client watched
+	// fail (#1166 review).
+	CommAnnounced     map[string]string
 	LastAssistantText string
 	// knownThisEntry is the set of call ids the CURRENT assistant entry
 	// announced, so first-part-wins stays inside one entry. Reset at the start
@@ -97,13 +117,26 @@ func (reg *ToolCallRegistry) setAwaitingBatch(turnID string, batch map[string]st
 	if reg.awaitingNames == nil {
 		reg.awaitingNames = map[string]map[string]string{}
 	}
+	// The replaced batch's ids stop meaning anything. Drop them from the
+	// cumulative table too, which is the last thing resolveUnnamedResult
+	// consults: an id this entry did not mention is no longer awaiting, and
+	// naming its result from the announcement it replaced is what made replay
+	// classify a replaced call as the tool that used to own the id (#1166
+	// review). An id the new batch DOES mention keeps its name, because the
+	// batch just recorded it.
+	for callID := range reg.awaitingNames[turnID] {
+		if _, kept := batch[callID]; kept {
+			continue
+		}
+		delete(reg.Names, callID)
+	}
 	reg.awaitingNames[turnID] = batch
 }
 
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
 func NewToolCallRegistry() *ToolCallRegistry {
-	return &ToolCallRegistry{Names: map[string]string{}, ResolvedNames: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
+	return &ToolCallRegistry{Names: map[string]string{}, ResolvedNames: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}, CommAnnounced: map[string]string{}}
 }
 
 // EntryProjector converts one already-decoded transcript turn into AppWire
@@ -474,20 +507,24 @@ func appendAwaiting(batch map[string]string, callID, name string) map[string]str
 	return batch
 }
 
-// resolveUnnamedResult names a tool result that carries no name of its own, in
-// the order the index uses (build.go's applyResults): the turn's CURRENT
-// awaiting batch, then a pending inherited communicate, then the recorded name.
+// resolveUnnamedResult names a STAMPED tool result that carries no name of its
+// own, in the order the index uses (build.go's applyResults): the turn's
+// CURRENT awaiting batch, then the caller's resolved name, then a pending
+// communicate, then the cumulative name table.
 //
-// Both findings behind this function are that ordering seen from two sides. A
-// result resolved from the wrong table renders as a command where the index
-// recorded a message; and a result whose resolved call is not the pending
-// communicate's own must not consume the delivery's state.
+// Each finding behind this function is that ordering seen from a side. A result
+// resolved from the wrong table renders as a command where the index recorded a
+// message; and a result whose resolved call is not the pending communicate's
+// own must not consume the delivery's state.
 //
 // "Awaiting batch" is not the whole name history: stampFold advances a turn's
 // awaiting entry on EVERY assistant entry that records a call, so a later
-// entry's silence about an id is decisive — the id is no longer awaiting, and a
-// result for it resolves through the pending communicate instead. awaitingNames
-// holds exactly the ids the latest such entry announced.
+// entry's silence about an id is decisive — the id is no longer awaiting. The
+// cumulative table below is what makes that decisive, so setAwaitingBatch DROPS
+// the ids a replacing batch did not mention. Without that prune the last line
+// named the result from an announcement the later batch had already replaced,
+// and a stale "communicate" then sent the result into the delivery branch with
+// no arguments to render and dropped it (#1166 review).
 func resolveUnnamedResult(reg *ToolCallRegistry, turnID, callID string) string {
 	if name, ok := reg.awaitingNames[turnID][callID]; ok {
 		return name
@@ -499,6 +536,25 @@ func resolveUnnamedResult(reg *ToolCallRegistry, turnID, callID string) string {
 		return "communicate"
 	}
 	return reg.Names[callID]
+}
+
+// rejectedCommunicateArguments returns the bytes a rejected communicate sent:
+// the deferral state's copy when the announcement deferred (the inherited
+// delivery shape, which keeps them there for a later result to consume), or
+// the plain announcement map's copy otherwise.
+//
+// A rejected communicate never executed, so nothing wrote a COMMUNICATE entry
+// to carry its message, and the result entry's own IsError/PrevalOnly is what
+// says the call failed. The announcement is therefore the only record of what
+// was refused. Reading it is what keeps a fresh stamped session's rejection
+// visible: its announcement does not defer, so CommRawArgs is empty for the id
+// and the row used to be dropped outright (#1166 review).
+func (reg *ToolCallRegistry) rejectedCommunicateArguments(callID string) (string, bool) {
+	if rawArgs, ok := reg.CommRawArgs[callID]; ok {
+		return rawArgs, true
+	}
+	rawArgs, ok := reg.CommAnnounced[callID]
+	return rawArgs, ok
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
@@ -655,6 +711,9 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 	}
 	if reg.CommAuthorship == nil {
 		reg.CommAuthorship = map[string]*schema.TranscriptAuthorship{}
+	}
+	if reg.CommAnnounced == nil {
+		reg.CommAnnounced = map[string]string{}
 	}
 	if invariant.Enabled {
 		// Every item ProjectTurn emits belongs to the turn it was asked to
@@ -916,6 +975,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 					// the same item at the result turn.
 					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
 					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
+					reg.CommAnnounced[part.ToolCall.ID] = part.ToolCall.SentArguments()
 					continue
 				}
 				items = append(items, toolCallItem(turnID, turnIndex, i, turn))
@@ -968,7 +1028,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				// error; its raw bytes are not the delivered message, so do not
 				// surface them.
 				if part.ToolResult.IsError && part.ToolResult.PrevalOnly {
-					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok {
+					if rawArgs, ok := reg.rejectedCommunicateArguments(part.ToolResult.ToolCallID); ok {
 						item := appwire.ThreadItem{
 							Type:          "commandExecution",
 							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
@@ -1208,6 +1268,14 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
 					reg.CommAuthorship[part.ToolCall.ID] = turn.Authorship.Clone()
 				}
+				// The announcement itself is recorded for every communicate,
+				// inherited or fresh: a prevalidation rejection renders a row
+				// from these bytes, and only the inherited shape defers. See
+				// CommAnnounced.
+				if reg.CommAnnounced == nil {
+					reg.CommAnnounced = map[string]string{}
+				}
+				reg.CommAnnounced[part.ToolCall.ID] = part.ToolCall.SentArguments()
 				continue
 			}
 			items = append(items, toolCallItem(turnID, turnIndex, i, turn))

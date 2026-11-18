@@ -275,7 +275,7 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 		}
 		var context strRef
 		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
-			if context, err = b.communicateContext(callID); err != nil {
+			if context, err = b.communicateContext(callID, contributor{}, ""); err != nil {
 				return err
 			}
 		}
@@ -340,12 +340,19 @@ func communicateResultCallID(entry *schema.Turn, part int, seed map[string]strin
 }
 
 // communicateContext builds the Context an item at communicateResultCallID
-// needs: the assistant entry that set CommRawArgs for the call (always, if
-// known) and, when it differs, the assistant entry that most recently set
-// LastAssistantText (needed only by the healed-communicate echo check, but
-// harmless to include for a rejected one too) — sorted in file order, so a
-// reader replays them in the order they actually happened.
-func (b *builder) communicateContext(callID string) (strRef, error) {
+// needs: the assistant entry that ANNOUNCED the call (always, if known), the
+// assistant entry that set CommRawArgs for it (when that is a different one),
+// and the assistant entry that most recently set LastAssistantText (needed only
+// by the healed-communicate echo check, but harmless to include for a rejected
+// one too) — sorted in file order, so a reader replays them in the order they
+// actually happened.
+//
+// The announcing entry is in the list even when the call never deferred: a
+// FRESH stamped communicate announces its bytes without entering the deferral
+// state, and a prevalidation rejection renders its row from those bytes. A
+// read-back that did not replay the announcement would project no item for the
+// record the builder wrote, which reads as a corrupt page (#1166 review).
+func (b *builder) communicateContext(callID string, awaiting contributor, awaitingTurnID string) (strRef, error) {
 	var list []contextEntry
 	seen := map[int64]bool{}
 	add := func(pos contributor, turnID string) error {
@@ -359,6 +366,9 @@ func (b *builder) communicateContext(callID string) (strRef, error) {
 		}
 		list = append(list, contextEntry{contributor: pos, TurnID: ref})
 		return nil
+	}
+	if err := add(awaiting, awaitingTurnID); err != nil {
+		return strRef{}, err
 	}
 	if state, ok := b.commCalls[callID]; ok {
 		if err := add(state.pos, state.turnID); err != nil {
@@ -492,14 +502,14 @@ func (b *builder) applyIdentity(ordinal uint64, offset int64, length uint32, ent
 			return err
 		}
 		if !echoes {
-			if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
+			if err := b.appendItems(slot, entry, c, nil, nil, nil); err != nil {
 				return err
 			}
 		} else if err := b.attachCommunicationEcho(summary, entry, c); err != nil {
 			return err
 		}
 	default:
-		if err := b.appendItems(slot, entry, c, nil, nil); err != nil {
+		if err := b.appendItems(slot, entry, c, nil, nil, nil); err != nil {
 			return err
 		}
 	}
@@ -623,6 +633,17 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 	// recorded names mean. Empty on a transcript that predates the field; the
 	// guard then falls back to the union of surfaces.
 	awaitingSurface := ""
+	// announced carries the sent bytes of every communicate the awaiting entry
+	// announced. A prevalidation rejection renders a row FROM those bytes, and
+	// a FRESH stamped communicate never reaches the deferral state
+	// (deferredCommCall accepts only a legacy or inherited announcement), so
+	// without this the row is dropped at build time and the client loses a
+	// call it watched fail. Read from the awaiting entry rather than the
+	// builder's deferred-communicate state on purpose: that state means "a
+	// delivery whose result has not arrived", and a fresh call's delivery is
+	// its own COMMUNICATE entry, so putting it there would fabricate a message
+	// for every in-flight call (#1166 review).
+	var announced map[string]string
 	if summary.AwaitingLength > 0 {
 		awaiting, err := b.awaitingEntry(summary)
 		if err != nil {
@@ -634,6 +655,15 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		// part carrying its call id, in both readers.
 		for id, part := range apptranscript.ReservedCalls(awaiting) {
 			calls[id] = awaitedCall{part: part, name: awaiting.Message.Content[part].ToolCall.Name}
+		}
+		for _, part := range awaiting.Message.Content {
+			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != "communicate" {
+				continue
+			}
+			if announced == nil {
+				announced = map[string]string{}
+			}
+			announced[part.ToolCall.ID] = part.ToolCall.SentArguments()
 		}
 	}
 	// A result with no name of its own takes its call's.
@@ -649,7 +679,7 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		}
 	}
 	version := c.Ordinal + 1
-	return b.appendItems(slot, entry, c, seed, func(item appwire.ThreadItem) (bool, error) {
+	return b.appendItems(slot, entry, c, seed, announced, func(item appwire.ThreadItem) (bool, error) {
 		call, ok := calls[item.CallID]
 		if !ok || !apptranscript.MergesByCallID(item) {
 			return false, nil
@@ -721,10 +751,11 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 
 // appendItems projects a new-format entry and appends an item record for each
 // item absorb (when set) does not take. seed names the entry's nameless tool
-// results.
-func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
+// results, and announced carries the sent bytes of the communicate calls the
+// entry's projection may need to show a prevalidation rejection with.
+func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed, announced map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
 	reg := &apptranscript.ToolCallRegistry{
-		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(), CommAnnounced: announced,
 		// The seed is this builder's own resolution of an unnamed result's call,
 		// so it outranks the pending-communicate fallback: an inherited entry
 		// can announce a command and a communicate under one id, and the
@@ -751,7 +782,13 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 		var context strRef
 		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
 			var err error
-			if context, err = b.communicateContext(callID); err != nil {
+			var awaiting contributor
+			var awaitingTurnID string
+			if summary.AwaitingLength > 0 {
+				awaiting = contributor{Offset: summary.AwaitingOffset, Ordinal: summary.AwaitingOrdinal, Length: summary.AwaitingLength}
+				awaitingTurnID = entry.TurnID
+			}
+			if context, err = b.communicateContext(callID, awaiting, awaitingTurnID); err != nil {
 				return err
 			}
 		}
