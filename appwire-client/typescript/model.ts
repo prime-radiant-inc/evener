@@ -105,18 +105,20 @@ export interface ItemModel {
   // the composed "[answers]" text shape in every one of those cases, EXCEPT
   // that an omitted list arriving with a positive resolvedAskLegacyCount is
   // not the same absence: the count still says unnamed questions were
-  // captured, so a composed line stays unattributable and the raw reply must
-  // be kept.
+  // captured, so a composed line cannot be proven to belong to a named call.
   resolvedAskCalls?: PendingAskCall[];
   // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
   // admission's capture ALSO held WITHOUT being able to name them, restored
   // from records that predate call ids (issue #6323). Their headers never reach
   // the wire, so a composed answer line cannot be attributed to a named call
   // while this is nonzero - one of these may share the header the line names.
-  // A consumer must then keep the raw reply and show no attributed recap. A
-  // bounded read KEEPS this count even when it omits the call list, because the
-  // count is what makes the omission safe to read. Undefined when every
-  // captured question is named.
+  // The count is evidence about attribution, not a display rule: deciding what
+  // a client shows from it is the recap follow-up, and the shipped clients
+  // still select recaps from the turn link and the reply text. A bounded read
+  // KEEPS this count even when it omits the call list, because the count is
+  // what makes the omission safe to read: an omitted list with a positive
+  // count is not the same absence as a reply that never carried one. Undefined
+  // when every captured question is named.
   resolvedAskLegacyCount?: number;
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
