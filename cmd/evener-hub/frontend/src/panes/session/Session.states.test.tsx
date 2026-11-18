@@ -9,7 +9,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
-import { resetConnectionStoreForTests } from "../../stores/connection";
+import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
@@ -305,10 +305,13 @@ test("a first read answered by the history diagnostic shows the failure and stil
     expect(label).toBeTruthy();
     expect(label, "a refused history must not be presented as an ordinary load").not.toBe("Loading transcript");
   });
-  // The hub repairs the history, and a later read is what converges the pane.
+  // The hub repairs the history and the connection re-publishes ready. That
+  // is the pane's own recovery path: the rejected claim left this mount with
+  // nothing to wait with, so the ready subscription is what asks again, and
+  // the read it issues is what replaces the loading face with the transcript.
   failing = false;
   await act(async () => {
-    await threadsStore.getState().refreshThread("ref_history_failed");
+    connectionStore.setState({ state: "ready" });
   });
   await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_history_failed")).toBe(false));
   expect(
