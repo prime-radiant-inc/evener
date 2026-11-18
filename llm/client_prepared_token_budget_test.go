@@ -431,3 +431,101 @@ func mustDispatchTarget(t *testing.T, c *Client, req Request) dispatchTarget {
 	}
 	return target
 }
+
+// TestARawToolCountIsRepricedToTheStrictForm covers the count that preparation
+// never measured.
+//
+// ToolsJSONBytes is documented as a count a caller may stamp from its own tool
+// list, so a direct Complete or Stream call can arrive with a count taken over
+// the definitions as written. parameters is omitempty, so a parameterless tool
+// contributes nothing to that count at all — unlike the prepared count, which
+// already carries the open empty schema. Adding only the open-to-closed
+// difference to a raw count therefore leaves the schema out of the price
+// entirely, and a cap between the two prices admits a request that dispatches
+// larger than it was billed.
+//
+// The discriminating case is a raw stamp: a prepared stamp describes the open
+// form, so the delta is all that is missing there and the existing test covers
+// it. Here the count excludes the schema altogether, so the whole strict price
+// has to replace it. The assertions check both numbers, because a rule that
+// merely added the difference would pass a cap chosen only against the closed
+// price.
+func TestARawToolCountIsRepricedToTheStrictForm(t *testing.T) {
+	t.Parallel()
+	const toolCount = 24
+	defs := make([]ToolDefinition, toolCount)
+	for i := range defs {
+		defs[i] = ToolDefinition{Name: fmt.Sprintf("probe_%02d", i)}
+	}
+	rawBytes := ToolsJSONBytes(defs)
+	openBytes := ToolsJSONBytes(asSentToolDefs(defs))
+	strictBytes := ToolsJSONBytes(strictSentToolDefs(defs))
+	if rawBytes >= openBytes {
+		t.Fatalf("fixture does not distinguish a raw count from an open one: raw=%d open=%d", rawBytes, openBytes)
+	}
+	if strictBytes <= openBytes {
+		t.Fatalf("fixture does not distinguish the open and closed forms: open=%d closed=%d", openBytes, strictBytes)
+	}
+
+	c, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
+	if !registry.BoolValue(res.Caps.StrictTools) {
+		t.Fatal("fixture route does not declare strict tools; the priced case needs a strict-capable row")
+	}
+	// A direct call: no preparation, so the count is the caller's own and the
+	// prepared stamp is unset.
+	req := Request{
+		Provider:       "prepared-budget",
+		Model:          "model",
+		Messages:       []Message{User("x")},
+		Tools:          defs,
+		ToolsJSONBytes: rawBytes,
+	}
+	priced := priceStrictParameterlessSchemas(req, mustDispatchTarget(t, c, req))
+	if priced.ToolsJSONBytes != strictBytes {
+		t.Fatalf("priced count = %d, want %d: a count taken over the definitions as written excludes the "+
+			"parameterless schema entirely, so the full strict price replaces it (raw %d, open %d)",
+			priced.ToolsJSONBytes, strictBytes, rawBytes, openBytes)
+	}
+
+	// The control: a prepared count describes the open form, so it keeps the
+	// delta rather than being re-measured.
+	prepared := req
+	prepared.ToolsJSONBytes = openBytes
+	prepared = MarkPreparedToolBytes(prepared)
+	if got := priceStrictParameterlessSchemas(prepared, mustDispatchTarget(t, c, prepared)); got.ToolsJSONBytes != strictBytes {
+		t.Fatalf("prepared count repriced to %d, want %d", got.ToolsJSONBytes, strictBytes)
+	}
+
+	// The price is only worth asserting because admission reads it. A cap
+	// between what the raw count prices and what the strict form prices
+	// dispatches the larger request if the count is left alone, so the
+	// admission below has to fail on the count this rule produces.
+	rawInput := EstimateInputTokensForResolved(res, req).Tokens
+	strictPriced := req
+	strictPriced.ToolsJSONBytes = strictBytes
+	strictInput := EstimateInputTokensForResolved(res, strictPriced).Tokens
+	if strictInput <= rawInput {
+		t.Fatalf("fixture does not straddle a cap: raw price %d, strict price %d", rawInput, strictInput)
+	}
+	limit := rawInput + minimumTokenSafetyReserve + (strictInput-rawInput)/2
+	for range 16 {
+		next := rawInput + SafetyReserveTokens(limit) + (strictInput-rawInput)/2
+		if next == limit {
+			break
+		}
+		limit = next
+	}
+	safety := SafetyReserveTokens(limit)
+	if rawInput+safety >= limit {
+		t.Fatalf("cap %d does not admit the raw price %d", limit, rawInput)
+	}
+	if strictInput+safety <= limit {
+		t.Fatalf("cap %d does not refuse the strict price %d", limit, strictInput)
+	}
+	capped, cappedRes := preparedBudgetClient(t, &preparedBudgetAdapter{}, limit)
+	admitted := priceStrictParameterlessSchemas(req, mustDispatchTarget(t, capped, req))
+	if _, err := shapeAndApplyTokenBudget(admitted, cappedRes); err == nil {
+		t.Fatalf("admission accepted a request priced at %d under a cap of %d: the strict form costs %d, "+
+			"and the raw count %d does not include it", admitted.ToolsJSONBytes, limit, strictInput+safety, rawInput+safety)
+	}
+}

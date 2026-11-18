@@ -185,16 +185,30 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 	return ctx
 }
 
-// priceStrictParameterlessSchemas adds the bytes a strict-capable built-in
-// route sends over the open empty schema for each parameterless tool it will
-// send closed, so budget admission prices what the adapter emits.
+// priceStrictParameterlessSchemas makes budget admission price what a
+// strict-capable built-in route emits for a parameterless tool, so the
+// admitted request is the one that dispatches.
 //
-// A prepared count is taken over the open empty schema, which is what a route
-// without strict enforcement sends. A strict-capable route substitutes the
-// larger closed object instead, because that is the one shape strict mode
-// accepts for a tool with no arguments. The difference is a property of the two
-// schemas rather than of the catalog, so it is added per affected tool and the
-// count is not re-measured. The override branch keeps the open price: it
+// A strict-capable route substitutes the closed empty object for a definition
+// that declares no parameters, because that is the one shape strict mode
+// accepts for a tool with no arguments. What a count already includes depends
+// on where it came from, and the two are not interchangeable:
+//
+//   - A prepared count was measured over the substituted form, with the open
+//     empty schema in place of a nil Parameters (asSentToolDefs), which is what
+//     a route without strict enforcement sends. Only the difference between the
+//     two schemas is missing there, so it is added per affected tool and the
+//     count is not re-measured.
+//   - Any other count is the caller's own. A raw ToolsJSONBytes prices the
+//     definitions as written, and parameters is omitempty: a parameterless tool
+//     contributes nothing at all to it. It then has to be replaced by the full
+//     price of the strict form rather than adjusted by a difference, or the
+//     request is admitted on a count that excludes the schema it will send.
+//
+// The prepared form is identified rather than assumed, the same way the
+// override boundary identifies it: a middleware that replaces the catalog and
+// refreshes the count leaves the stamp describing a different list, and that
+// refreshed count is a raw one. The override branch keeps the open price: it
 // restores the open schema for the definitions it marshals, so the count it
 // already carries is the one that describes its wire form.
 func priceStrictParameterlessSchemas(req Request, t dispatchTarget) Request {
@@ -205,10 +219,11 @@ func priceStrictParameterlessSchemas(req Request, t dispatchTarget) Request {
 	if delta == 0 {
 		return req
 	}
-	if req.ToolsJSONBytes <= 0 {
-		req.ToolsJSONBytes = ToolsJSONBytes(asSentToolDefs(req.Tools))
+	if req.ToolsJSONBytes > 0 && req.preparedToolList == identifyToolList(req.Tools) {
+		req.ToolsJSONBytes += delta
+		return req
 	}
-	req.ToolsJSONBytes += delta
+	req.ToolsJSONBytes = ToolsJSONBytes(strictSentToolDefs(req.Tools))
 	return req
 }
 

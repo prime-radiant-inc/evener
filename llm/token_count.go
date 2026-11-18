@@ -99,31 +99,57 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 	}
 }
 
+// strictSentParameters reports the schema a strict-capable built-in route
+// substitutes for def, and whether it substitutes one at all.
+//
+// The two builders that implement strict mode swap the closed empty object —
+// type object, additionalProperties false, an empty required list — for a
+// definition that declares no parameters, because that is the one shape strict
+// mode accepts for a tool with no arguments. A tool that opted out keeps the
+// open empty object instead, which is the shape every non-strict route sends.
+//
+// This is the one place that decision is written down: the per-tool delta and
+// the full price both read it, so they cannot disagree about which tools carry
+// the closed form.
+func strictSentParameters(def ToolDefinition) (map[string]any, bool) {
+	if def.Parameters != nil {
+		return nil, false
+	}
+	if def.Strict != nil && !*def.Strict {
+		return nil, false
+	}
+	return strictDefaultToolParameters(), true
+}
+
 // strictParameterlessByteDelta returns the bytes a strict-capable route adds
 // over the open empty schema for every parameterless tool it will send closed.
 //
-// The two builders that implement strict mode substitute the same closed empty
-// object — additionalProperties: false with an empty required list — for a
-// definition whose Parameters is nil, unless the definition opted out. A route
-// without strict enforcement substitutes the open empty object instead, which
-// is what a prepared count already prices; the caller decides which of the two
-// it is asking about.
+// The difference is a property of the two schemas rather than of the catalog,
+// so it is measured once and added per affected tool: a caller that already
+// holds the open price can adjust it without re-marshalling the list.
 func strictParameterlessByteDelta(defs []ToolDefinition) int {
-	open := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: defaultToolParameters()}})
-	closed := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: strictDefaultToolParameters()}})
+	perTool := ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: strictDefaultToolParameters()}}) -
+		ToolsJSONBytes([]ToolDefinition{{Name: "x", Parameters: defaultToolParameters()}})
 	delta := 0
 	for _, def := range defs {
-		if def.Parameters != nil {
-			continue
+		if _, closed := strictSentParameters(def); closed {
+			delta += perTool
 		}
-		// A tool that opts out is sent with the open schema, so it does not
-		// carry the closed form's extra bytes.
-		if def.Strict != nil && !*def.Strict {
-			continue
-		}
-		delta += closed - open
 	}
 	return delta
+}
+
+// strictSentToolDefs returns defs as a strict-capable built-in route emits them,
+// for a caller that has to price the list from scratch rather than adjust a
+// count that already describes the open form.
+func strictSentToolDefs(defs []ToolDefinition) []ToolDefinition {
+	sent := asSentToolDefs(defs)
+	for i, def := range defs {
+		if closed, ok := strictSentParameters(def); ok {
+			sent[i].Parameters = closed
+		}
+	}
+	return sent
 }
 
 // strictDefaultToolParameters returns the closed empty schema a strict-capable

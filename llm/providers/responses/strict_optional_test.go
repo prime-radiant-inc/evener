@@ -523,3 +523,65 @@ func TestTypeIsStatedOnARouteWithoutStrictTools(t *testing.T) {
 		t.Fatalf("required = %v, want the advertised set %v: stating a type must not force the optional argument", got, want)
 	}
 }
+
+// A Draft 7 tuple writes its positions as an array under items, and the
+// fallback walk used to visit items only when its value was a single schema.
+// The gate refuses such a schema — the tuple form is a representation the walk
+// does not read — so the tool is sent with the schema it advertised, and the
+// explicit-type supply is the only thing that can type the positions on a
+// route that checks explicit types even with strict enforcement off.
+//
+// The assertions pin what a refusal must keep: the tuple order, each position's
+// enum members, and the tool's non-strict setting.
+func TestRefusedDraft7TupleStillTypesItsPositions(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"pair": map[string]any{
+				"type": "array",
+				"items": []any{
+					map[string]any{"enum": []any{"left", "right"}},
+					map[string]any{"enum": []any{"up", "down"}},
+				},
+			},
+		},
+		"required": []string{"pair"},
+	}
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
+
+	body := build(t, req, resolved(strictCaps))
+	tool := body["tools"].([]map[string]any)[0]
+	if tool["strict"] != false {
+		t.Fatalf("strict = %#v, want false: the tuple form is not a shape the projection can read", tool["strict"])
+	}
+	params := tool["parameters"].(map[string]any)
+	pair := params["properties"].(map[string]any)["pair"].(map[string]any)
+	positions, ok := pair["items"].([]any)
+	if !ok {
+		t.Fatalf("items = %#v, want the advertised tuple list: a refusal keeps the schema it advertised", pair["items"])
+	}
+	if len(positions) != 2 {
+		t.Fatalf("tuple positions = %d, want 2: the advertised tuple length is part of the schema", len(positions))
+	}
+	for i, want := range [][]string{{"left", "right"}, {"up", "down"}} {
+		pos := positions[i].(map[string]any)
+		if pos["type"] != "string" {
+			t.Fatalf("position %d has type %#v, want \"string\": a provider enforcing the strict subset rejects a typeless node, and this route checks explicit types with strict enforcement off too", i, pos["type"])
+		}
+		members, ok := pos["enum"].([]any)
+		if !ok || len(members) != len(want) {
+			t.Fatalf("position %d enum = %#v, want the advertised %v", i, pos["enum"], want)
+		}
+		for j, member := range want {
+			if members[j] != member {
+				t.Fatalf("position %d enum = %#v, want the advertised %v: stating a type must not reorder or drop members", i, members, want)
+			}
+		}
+	}
+	if got, want := requiredNames(t, params), []string{"pair"}; !slices.Equal(got, want) {
+		t.Fatalf("required = %v, want the advertised set %v: stating a type must not force anything", got, want)
+	}
+}

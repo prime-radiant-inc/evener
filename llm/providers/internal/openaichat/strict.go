@@ -174,6 +174,13 @@ var (
 	// listSubschemaKeywords hold a list of subschemas.
 	listSubschemaKeywords = []string{
 		"allOf", "anyOf", "oneOf", "prefixItems",
+		// items holds a schema or, before draft 2020-12, the tuple form: a
+		// list of schemas applied by position. It is in both tables because
+		// it is both shapes, and each loop skips the value the other reads.
+		// Leaving the list form out left every position in a Draft 7 tuple
+		// unwalked, so a typeless enum inside one reached the provider and
+		// cost the whole request.
+		"items",
 	}
 	// mapSubschemaKeywords hold a map of names to subschemas.
 	mapSubschemaKeywords = []string{

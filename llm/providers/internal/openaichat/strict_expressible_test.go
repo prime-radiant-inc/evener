@@ -1574,6 +1574,13 @@ func TestSupplyDerivedTypesReachesEverySchemaPosition(t *testing.T) {
 			sub, _ := arr[0].(map[string]any)
 			return sub
 		}, nil, nil},
+		{"items as a Draft 7 tuple", func(s map[string]any) map[string]any {
+			return map[string]any{"type": "array", "items": []any{s}}
+		}, func(m map[string]any) map[string]any {
+			arr, _ := m["items"].([]any)
+			sub, _ := arr[0].(map[string]any)
+			return sub
+		}, nil, nil},
 		{"unevaluatedProperties", func(s map[string]any) map[string]any {
 			return map[string]any{"type": "object", "unevaluatedProperties": s}
 		}, func(m map[string]any) map[string]any { return typeless(t, m, "unevaluatedProperties") }, nil, nil},
