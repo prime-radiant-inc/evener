@@ -68,6 +68,14 @@ body {
    * user-agent default. */
   caret-color: var(--accent);
   accent-color: var(--accent);
+  /* Text autosizing off: iOS Safari grows text in a block whose measured
+   * width it judges too narrow, so a truncated caption grew while the title
+   * above it did not. That choice is the engine's, per block, at layout time,
+   * which is why this is document-wide rather than gated like the touch
+   * rules below. The type ramp owns every size the app renders, the reader's
+   * own scale included, so the engine's guess only ever departs from it. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 ::selection {

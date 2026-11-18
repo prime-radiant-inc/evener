@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
@@ -112,15 +114,57 @@ func TestTranscriptAuthorshipForkCopies(t *testing.T) {
 func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
-	middleAdapter := newTask6FrozenDescriptorAdapter()
-	client.Register(middleAdapter)
-	t.Cleanup(middleAdapter.releaseRun)
+
+	// The middle child's prompt namer is parked inside its provider call for the
+	// length of this test, so the close below meets a namer that cannot finish.
+	// The close cannot prove it ended: it joins sendersWG (which also counts
+	// delegate runs) and only within the close budget, which gives up on a
+	// straggler. The proof is a separate unbudgeted sendersWG wait once both
+	// delegate runs are settled, so the namer is the only emitter left.
+	namerGate := make(chan struct{})
+	releaseNamer := sync.OnceFunc(func() { close(namerGate) })
+	// Registered before the fixture's own Close: a failure anywhere below must
+	// not leave the parked namer for that Close to wait out.
+	t.Cleanup(releaseNamer)
+	namerEntered := make(chan struct{})
+	// Park exactly the FIRST naming call. The root never names (it accepts no
+	// prompt), so the first is the middle's, and the leaf's namer the test
+	// starts later answers at once.
+	var parkFirst sync.Once
+	// Replaces the fixture's own namer adapter on the root's client, which is
+	// also the middle's: the child config is otherwise untouched.
+	client.Register(&agenttest.ScriptedAdapter{Provider: testSessionNamerProvider, Responder: func(request llm.Request) llm.Response {
+		first := false
+		parkFirst.Do(func() { first = true })
+		if first {
+			close(namerEntered)
+			<-namerGate
+		}
+		return llm.Response{Provider: testSessionNamerProvider, Model: request.Model, Message: llm.Assistant(`{"name":"Parked Middle Name"}`)}
+	}})
+
+	// The middle's own turn is parked too. The close below needs a session with
+	// no run in flight: a close that begins mid-run may abandon the delegate stop
+	// and return while that run still owes its finalization. The reply is a
+	// terminal communicate result, so opening the gate settles the run instead of
+	// returning bare text the run would nudge and re-enter on. The call also
+	// honors cancellation, so a close that begins while it is parked ends the
+	// run through that cancellation rather than blocking on the adapter.
+	middleRun := &authorshipGatedAdapter{name: "openai", entered: make(chan struct{}), gate: make(chan struct{})}
+	t.Cleanup(middleRun.release)
+	client.Register(middleRun)
 	middleResult := root.createDelegate(context.Background(), delegateArgs{Task: "middle-input", Name: "Middle", DelegationAllowance: new(1)})
 	if middleResult.Err != nil {
 		t.Fatal(middleResult.Err)
 	}
-	<-middleAdapter.entered
-	middle := root.getSub(middleResult.ChildSessionID).sess
+	<-middleRun.entered
+	// The namer closes namerEntered when it reaches its provider call, so the
+	// receive is the completion this test waits for: it holds a blocking select
+	// rather than a loop that samples a state the close already reports. The
+	// helper's ceiling only fires on a genuine hang.
+	waitForTestSignal(t, namerEntered, "the middle child's prompt namer reaching its provider call")
+	middleSub := root.getSub(middleResult.ChildSessionID)
+	middle := middleSub.sess
 	human := schema.NewTurn(schema.TurnUserInput, llm.User("nested-original-human"))
 	human.Authorship = humanTranscriptAuthorship()
 	middle.recordTurn(human, human)
@@ -137,6 +181,11 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	middle.mu.Lock()
 	middle.cfg.testOnly.childClientFactory = func() *llm.Client {
 		c := llm.NewClient()
+		// The leaf inherits the test namer as its naming provider, so its own
+		// client must answer that provider: without this its naming request
+		// fails provider resolution, and the two scripted OpenAI replies below
+		// stay reserved for the leaf's turns.
+		registerTestSessionNamer(c)
 		c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-second-answer") }))
 		return c
 	}
@@ -151,6 +200,41 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 	sub := middle.getSub(result.ChildSessionID)
+	leaf := sub.sess
+	// Joining the namers is a cleanup, not just a tail statement. A failure at
+	// any assertion below exits the test goroutine before the explicit join
+	// runs, and the fixture's own Close cannot replace it: closeOnce is already
+	// spent by the expired close, so that Close is a no-op and the parked namer
+	// would still be running when the temporary directories are removed. This
+	// runs before the fixture's cleanups and releases the gates itself, so every
+	// exit path ends with both namers joined.
+	//
+	// The wait runs at most once. A join that times out fails the test from
+	// inside the tripwire, and the cleanup below would otherwise start a second
+	// full wait on the same undrained group: twice the teardown time, and a
+	// second waiter parked for the rest of the process, which is the very leak
+	// this test exists to catch.
+	var joinOnce sync.Once
+	joinNamers := func() {
+		joinOnce.Do(func() {
+			// TRIPWIRE: a wait group cannot report a namer that exits without calling
+			// Done, and there is no channel to select on, so this ceiling is the only
+			// way a missing Done fails this test by name instead of stalling the shard
+			// until the binary's timeout with the fixture never cleaned up. With the
+			// gates released both namers answer from a scripted adapter with no real
+			// I/O, so this normally returns in well under a second; 30s only fires on
+			// a missing Done.
+			awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
+				joinRetirementTreeEmitters(middle)
+				joinRetirementTreeEmitters(leaf)
+			})
+		})
+	}
+	t.Cleanup(func() {
+		releaseNamer()
+		middleRun.release()
+		joinNamers()
+	})
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
@@ -208,6 +292,88 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	c.mu.Unlock()
 	if physicalOwner != root.id || physicalOwner == middle.id {
 		t.Fatalf("physical owner = %q", physicalOwner)
+	}
+
+	// Settle the middle delegate's own run before the close below, so the close
+	// meets nothing but the parked namer. A close that begins with that run still
+	// in flight can abandon the delegate stop and finish with the run owing its
+	// finalization, which would then land while the fixture's directories are
+	// already being removed. The settle happens here, not after the close: the
+	// namer gate stays shut until the post-close assertion below, so the parked
+	// namer this test exists to join is still parked when the close begins.
+	middleRun.release()
+	// A finished generation closes its done channel and the next admitted run
+	// replaces it, and the middle is woken again when its leaf reports, so
+	// settling it means waiting out every generation that starts while this
+	// waits. Each wait is on a channel; nothing here polls or sleeps.
+	// TRIPWIRE: every generation runs against the released scripted adapter with
+	// no real I/O, so this normally returns in well under a second. 10s only
+	// fires on a wedged run.
+	awaitWithin(t, 10*time.Second, "the middle delegate's run to settle", func() {
+		for {
+			middleSub.mu.Lock()
+			generation := middleSub.done
+			middleSub.mu.Unlock()
+			<-generation
+			middleSub.mu.Lock()
+			replaced := middleSub.done != generation
+			middleSub.mu.Unlock()
+			if !replaced {
+				return
+			}
+		}
+	})
+
+	// The fixture's close must not outlive the namers this test started. The
+	// close budget is spent before the close begins, so closeEventStream's
+	// joinWithinCloseBudget gives up on the parked namer and returns with it
+	// still running, and closeOnce is spent by that pass. The proof that the
+	// namer died is therefore the cleanup's own unbudgeted wait on sendersWG:
+	// both delegate runs were settled above, so the only emitter these sessions
+	// still hold is the parked namer. The close is bounded here by the tripwire,
+	// not by that join: a close that stopped giving up would otherwise hold the
+	// test goroutine until the binary's timeout instead of failing here.
+	// The run's state is read here, next to the close and outside the settle
+	// above, so moving that settle after the close leaves this reading a run in
+	// flight and fails below instead of passing on a run the close stopped.
+	middleSub.mu.Lock()
+	settledBeforeClose := channelClosed(middleSub.done) && !middleSub.running
+	middleSub.mu.Unlock()
+	// The budget is spent before the close begins, with no clock involved: a
+	// context cancelled up front is already done, so every join in the cascade
+	// gives up on its first select.
+	expired, cancelExpired := context.WithCancel(context.Background())
+	cancelExpired()
+	// TRIPWIRE: with the budget already spent this close returns in milliseconds
+	// over in-memory state. 30s only fires if a join stopped honoring the budget.
+	awaitWithin(t, 30*time.Second, "the expired-budget close to return", func() {
+		root.close(expired, closeOptions{cleanupEnv: true})
+	})
+	middle.eventsMu.RLock()
+	middleStreamClosed := middle.eventsClosed
+	middle.eventsMu.RUnlock()
+	middle.mu.Lock()
+	pendingAfterClose := middle.naming.pending
+	middle.mu.Unlock()
+	if !settledBeforeClose {
+		t.Fatal("the middle delegate's run had not settled when the expired close began, so the close would have had to abandon it")
+	}
+	if !middleStreamClosed {
+		t.Fatal("the expired-budget close returned without closing the middle child's event stream, so it never reached the join this test exists to outlive")
+	}
+	if pendingAfterClose == 0 {
+		t.Fatal("the close reached the middle child's event stream with its namer already done, so this test never crossed the window it exists to prove")
+	}
+	releaseNamer()
+	// The join is the same one the cleanup registers, run here so a failure in
+	// the pending assertion below is reported against the join that caused it;
+	// the cleanup's second run is a no-op on an already-drained group.
+	joinNamers()
+	middle.mu.Lock()
+	stillNaming := middle.naming.pending
+	middle.mu.Unlock()
+	if stillNaming != 0 {
+		t.Fatalf("the namer join returned with %d naming attempt(s) still pending", stillNaming)
 	}
 }
 
@@ -461,4 +627,42 @@ func TestTranscriptAuthorshipQueuedExecution(t *testing.T) {
 	if !reflect.DeepEqual(seen, map[string]int{"first": 1, "second": 1}) {
 		t.Fatal(seen)
 	}
+}
+
+// authorshipGatedAdapter parks one provider call until release, and ends that
+// call on cancellation. Both halves matter to the caller: release settles a
+// parked run on its own terms, while cancellation lets a close that begins
+// while the call is parked end the run through its own stop instead of
+// blocking on the adapter.
+type authorshipGatedAdapter struct {
+	name    string
+	entered chan struct{}
+	gate    chan struct{}
+	// gateOnce guards the gate against a second release from a cleanup.
+	gateOnce sync.Once
+}
+
+func (a *authorshipGatedAdapter) Name() string { return a.name }
+
+func (a *authorshipGatedAdapter) release() { a.gateOnce.Do(func() { close(a.gate) }) }
+
+func (a *authorshipGatedAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	select {
+	case <-a.entered:
+	default:
+		close(a.entered)
+	}
+	select {
+	case <-a.gate:
+		resp := agenttest.FinalResponse("middle-answer")
+		resp.Provider = a.name
+		resp.Model = req.Model
+		return resp, nil
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
+func (a *authorshipGatedAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
 }
