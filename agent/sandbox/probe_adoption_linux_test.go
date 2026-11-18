@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -119,27 +120,38 @@ func (o probeOutcome) ok() bool { return o.Start == probeRan && o.Exit == 0 }
 //
 // The "no answer" verdict is production's own checkOutcome rather than a second
 // rule, so the diagnostic cannot disagree with production about the run it is
-// explaining: a probe the time bound killed, or one the host could not start for
-// want of a resource, is reported as cut short rather than as a silent exit, and
-// production calls the same outcome CheckInconclusive.
+// explaining: both a probe the time bound killed and one the host could not
+// start for want of a resource are CheckInconclusive in production.
+//
+// The two must still not read alike, so *exec.ExitError is asked first. os/exec
+// builds one only from a reaped ProcessState, so an ExitError is proof that a
+// process existed and its bound was what ended it. Everything else — a fork the
+// host starved of a process slot, a context that ended before the launch —
+// produced no process at all, and production's retry is the right response for a
+// launch that never happened.
 func outcomeFromRun(ctx context.Context, err error, stderr string) probeOutcome {
 	out := probeOutcome{Start: probeRan, Exit: -1, Stderr: stderr}
 	if err == nil {
 		out.Exit = 0
 		return out
 	}
-	if checkOutcome(ctx, err) == CheckInconclusive {
-		out.Start = probeNoVerdict
-		out.StartErr = err.Error()
-		return out
-	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		// The process existed, so the bound is the only remaining question:
+		// production calls a run whose context ended inconclusive, and the bound
+		// is what killed it.
+		if checkOutcome(ctx, err) == CheckInconclusive {
+			out.Start = probeNoVerdict
+			out.StartErr = err.Error()
+			return out
+		}
 		out.Exit = exitErr.ExitCode()
 		return out
 	}
 	// The command never started, so there is no exit status to report and no
 	// stderr to explain it: the cause is the launch error itself, and dropping
-	// it is what would make this failure look like a silent exit.
+	// it is what would make this failure look like a silent exit. A fork starved
+	// of a resource lands here and classifies as probeNoStart, which is the launch
+	// production retries.
 	out.Start = classifyProbeStart(err)
 	out.StartErr = err.Error()
 	return out
@@ -444,6 +456,7 @@ func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
 
 	const silentExit = "ran and was silent"
 	const killedExit = "ran and was killed"
+	const starvedLaunch = "launch starved of a process slot"
 	cases := []struct {
 		name  string
 		argv  []string
@@ -456,21 +469,34 @@ func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
 		{name: "program not executable", argv: []string{notExecutable}, start: probeRefused, exit: -1},
 		{name: silentExit, argv: []string{"/bin/sh", "-c", "exit 7"}, start: probeRan, exit: 7},
 		{name: killedExit, argv: []string{"/bin/sh", "-c", "kill -9 $$"}, start: probeRan, exit: -1},
-		// A run production would call inconclusive must not read as a silent
-		// exit, which is what checkOutcome's deadline branch is for. The context
-		// is cancelled rather than given a deadline: a wall-clock bound here would
-		// be the mechanism, and the point is only to reach the same verdict.
-		{name: "cut short by its bound", argv: []string{"/bin/sh", "-c", "sleep 5"}, start: probeNoVerdict, exit: -1},
+		// A run production would call inconclusive, reached the way production
+		// reaches it: a bound that ends on a process that did start. The context is
+		// cancelled only after Start returns, so a process exists and the kill
+		// produces an *exec.ExitError — the same shape a deadline kill produces.
+		// A pre-cancelled context would NOT do: it ends before the launch, so no
+		// process exists and — after the ExitError-first ordering — the outcome is
+		// probeNoStart. That would pin the cancellation path and leave probeNoVerdict
+		// unpinned, so this row would still pass with the class deleted.
+		{name: "cut short by its bound", argv: []string{"/bin/sleep", "86400"}, start: probeNoVerdict, exit: -1},
+		// The host declined to fork. Production reaches the same inconclusive
+		// verdict as a bound kill, and the outcome must still say the process never
+		// existed: that is the difference between a retry that can help and a bound
+		// that was too short. The error is the one os.StartProcess returns, fed
+		// through outcomeFromRun rather than supplied as a finished class, so this
+		// row pins the classification the production path actually produces.
+		{name: starvedLaunch, start: probeNoStart, exit: -1},
 	}
 	outcomes := map[string]probeOutcome{}
 	for _, tc := range cases {
-		ctx := t.Context()
-		if tc.start == probeNoVerdict {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithCancel(ctx)
-			cancel()
+		var out probeOutcome
+		switch {
+		case tc.start == probeNoVerdict:
+			out = runCutShortProbeArgv(t, tc.argv)
+		case tc.name == starvedLaunch:
+			out = roundTripOutcome(t, outcomeFromRun(t.Context(), starvedForkError(), ""))
+		default:
+			out = roundTripOutcome(t, runProbeArgvContext(t.Context(), tc.argv))
 		}
-		out := roundTripOutcome(t, runProbeArgvContext(ctx, tc.argv))
 		outcomes[tc.name] = out
 		t.Logf("%s: %s", tc.name, out.fate())
 		if out.Start != tc.start || out.Exit != tc.exit {
@@ -494,10 +520,30 @@ func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
 		if tc.start == probeRan {
 			continue
 		}
-		out := outcomes[tc.name]
-		if out.Start == killed.Start && out.Exit == killed.Exit {
+		if out := outcomes[tc.name]; sameShape(out, killed) {
 			t.Errorf("%s and %s both report start %q exit %d, so a launch that never happened is indistinguishable from a run that was cut short", tc.name, killedExit, out.Start, out.Exit)
 		}
+	}
+
+	// The two inconclusive causes are the point of the ExitError-first ordering,
+	// so they are compared with each other and not only against a signal kill: a
+	// host that starved the fork and a process the bound killed are both
+	// inconclusive to production and need different fixes. One class for both would
+	// send a reader to raise a bound that was never the problem, or to retry a run
+	// that will fail the same way.
+	//
+	// Classes, never messages: the classes are what a caller acts on, and the
+	// error text differs run to run.
+	starved := outcomes[starvedLaunch]
+	expired := outcomes["cut short by its bound"]
+	if starved.Start != probeNoStart {
+		t.Errorf("%s: classified %q, want %q: a starved fork has no process and so cannot have been cut short", starvedLaunch, starved.Start, probeNoStart)
+	}
+	if expired.Start != probeNoVerdict {
+		t.Errorf("cut short by its bound: classified %q, want %q: a process the deadline killed did exist", expired.Start, probeNoVerdict)
+	}
+	if starved.Start == expired.Start {
+		t.Errorf("%s and cut short by its bound both classify as %q, so a launch that never happened is indistinguishable from a process killed by its bound", starvedLaunch, starved.Start)
 	}
 }
 
@@ -647,6 +693,51 @@ func runProbeArgvContext(ctx context.Context, argv []string) probeOutcome {
 	// regression that pins the classification cannot pass while the report's own
 	// path drops it.
 	return outcomeFromRun(ctx, cmd.Run(), stderr.String())
+}
+
+// runCutShortProbeArgv runs argv to a bound that ends while it is running, so the
+// invocation is a process that existed and was killed rather than a launch that
+// never happened.
+//
+// The context is cancelled after Start returns, not before, and the bound is not
+// a short timeout. Both alternatives are races the test must not run: exec checks
+// ctx.Done inside Start, so an already-expired bound returns the context's own
+// error with no process behind it, and a merely short bound depends on a fork
+// finishing inside it. Cancelling a started command is the same event exec's
+// watcher handles for an expired deadline — Cancel kills the process and Wait
+// reaps a non-success status, which is an *exec.ExitError — so the outcome is the
+// one a real bound produces, with no wall clock spent and no timing window.
+func runCutShortProbeArgv(t *testing.T, argv []string) probeOutcome {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start %v, so there is no running process to cut short: %v", argv, err)
+	}
+	cancel()
+	return outcomeFromRun(ctx, cmd.Wait(), stderr.String())
+}
+
+// starvedForkError is the error os.StartProcess returns when the host is at its
+// process limit, shaped the way os/exec hands it back: a *fs.PathError opening
+// "fork/exec" whose cause is EAGAIN. It is a launch failure, so it carries no
+// exit status and no *exec.ExitError.
+func starvedForkError() error {
+	return &fs.PathError{Op: "fork/exec", Path: "/usr/bin/bwrap", Err: syscall.EAGAIN}
+}
+
+// sameShape reports whether two outcomes would read alike in a report: both
+// never started, or both ran and reached the same exit status. It compares
+// classes rather than messages, because the message text is not what a caller
+// acts on.
+func sameShape(a, b probeOutcome) bool {
+	if a.Start != b.Start {
+		return false
+	}
+	return a.Exit == b.Exit
 }
 
 // roundTripOutcome encodes and decodes an outcome the way the helper hands it
