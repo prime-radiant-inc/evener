@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -543,9 +544,16 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 		t.Fatalf("projectName(state-dir delegate worktree) = %q, want %q", got, "my-cool-project")
 	}
 
-	// 5. Unresolvable Evener state-dir worktree must return empty, not leak worktree branch leaf
+	// 5. Unresolvable Evener state-dir worktree must return empty, not leak worktree branch leaf.
+	// The fixture sits under this process's configured state root, which is what
+	// identifies a path as a state path: the same spelling under any other home is
+	// an ordinary directory (see TestProjectName_WorkspaceSpellingNeverOpensMeta).
+	stateRoot, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
 	mDeleted := schema.SessionMeta{}
-	mDeleted.EnvInfo.WorkingDir = "/home/jesse/.local/state/evener/projects/some-bucket/worktrees/some-bucket/revert-rail-slice"
+	mDeleted.EnvInfo.WorkingDir = filepath.Join(stateRoot, "projects", "some-bucket", "worktrees", "some-bucket", "revert-rail-slice")
 	if got := projectName(mDeleted, t.TempDir()); got != "" {
 		t.Fatalf("projectName(deleted worktree without bucket metadata) = %q, want empty", got)
 	}

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -801,6 +802,7 @@ type projectNameResolver struct {
 	env                *execenv.LocalExecutionEnvironment
 	mainRootCache      map[string]string
 	bucketProjectCache map[string]string
+	stateRootCache     []string
 }
 
 func newProjectNameResolver() *projectNameResolver {
@@ -869,8 +871,8 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 	// (b) Evener state-dir worktrees. The predicate is the layout itself, not a
 	// lookalike: a managed worktree is written at <stateDir>/worktrees/<lane> and
 	// a delegate's at <stateDir>/sessions/<sid>/worktrees/<lane>, where stateDir
-	// is this bucket or a recognized Evener project bucket.
-	stateDir, ownerSessionID, isStateWorktree := stateWorktreeOwner(clean, bucketDir)
+	// is this bucket or a bucket proven to live under this state root.
+	stateDir, ownerSessionID, isStateWorktree := r.stateWorktreeOwner(clean, bucketDir)
 	if !isStateWorktree {
 		return "", false
 	}
@@ -883,7 +885,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 	// state dir holds worktrees from more than one repository, so caching an
 	// owner's project would mislabel the next worktree resolved through it.
 	if ownerSessionID != "" {
-		if meta, err := schema.LoadSessionMeta(stateDir, ownerSessionID); err == nil {
+		if meta, ok := r.loadOwnedSessionMeta(stateDir, ownerSessionID); ok {
 			if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
 				return repoBasename(origin), true
 			}
@@ -907,7 +909,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 	// it is bucket-wide, so it is trustworthy only where the bucket holds one
 	// repository. stateHomeFor is that layout test: a flat --state-dir override
 	// has no state home and is skipped, whatever its basename looks like, while
-	// every recognized project bucket keeps the fallback.
+	// every recognized project bucket keeps the fallback, legacy names included.
 	if stateHomeFor(stateDir) == "" {
 		return "", true
 	}
@@ -963,7 +965,11 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 // state dir wd sits in and, for a delegate worktree, the session whose metadata
 // names the project. ok is false for every other path — including an ordinary
 // directory that merely spells a "worktrees" segment.
-func stateWorktreeOwner(wd, bucketDir string) (stateDir, ownerSessionID string, ok bool) {
+//
+// A path is only a state worktree when its directory is independently identified
+// as a state bucket (mayReadMeta). A workspace that merely spells the layout is
+// not one, so wd keeps its own basename instead of being read as a state tree.
+func (r *projectNameResolver) stateWorktreeOwner(wd, bucketDir string) (stateDir, ownerSessionID string, ok bool) {
 	sep := string(filepath.Separator)
 	clean := filepath.Clean(wd)
 	parts := strings.Split(clean, sep)
@@ -978,12 +984,77 @@ func stateWorktreeOwner(wd, bucketDir string) (stateDir, ownerSessionID string, 
 			stateParts, owner = parts[:i-2], parts[i-1]
 		}
 		candidate := strings.Join(stateParts, sep)
-		if candidate != cleanBucket && stateHomeFor(candidate) == "" {
+		if !r.mayReadMeta(candidate, cleanBucket) {
 			continue
 		}
 		return candidate, owner, true
 	}
 	return "", "", false
+}
+
+// mayReadMeta reports whether candidate is independently identified as a state
+// bucket, which is also the condition for reading metadata from it.
+//
+// Two identifications count: candidate is the bucket find was invoked with
+// (validated at discovery), or candidate's state home — the one stateHomeFor
+// reads off the <stateHome>/evener/projects/<name> layout — is the home this
+// process computes from its own configuration (stateRoots). A workspace that
+// merely spells "evener/projects/<name>" matches neither, because its state home
+// is whatever directory happens to sit above the workspace path. Such a path is
+// never opened: workspace files cannot name a project, and a FIFO there cannot
+// block a search.
+func (r *projectNameResolver) mayReadMeta(candidate, bucket string) bool {
+	if candidate == "" || !filepath.IsAbs(candidate) {
+		return false
+	}
+	if candidate == bucket {
+		return true
+	}
+	home := stateHomeFor(candidate)
+	if home == "" {
+		return false
+	}
+	for _, root := range r.stateRoots() {
+		if filepath.Dir(root) == home {
+			return true
+		}
+	}
+	return false
+}
+
+// stateRoots returns the Evener state roots this process is configured with:
+// $XDG_STATE_HOME/evener, else ~/.local/state/evener. They are computed here
+// rather than inferred from the path under test, which is what makes them an
+// independent identification of the state tree.
+func (r *projectNameResolver) stateRoots() []string {
+	if r.stateRootCache != nil {
+		return r.stateRootCache
+	}
+	r.stateRootCache = []string{}
+	if root, err := userdirs.DefaultStateRoot(); err == nil && root != "" {
+		r.stateRootCache = append(r.stateRootCache, filepath.Clean(root))
+	}
+	return r.stateRootCache
+}
+
+// loadOwnedSessionMeta reads a worktree owner's SessionMeta only when the meta
+// path is proven safe to open: a regular file, not a symlink, under a bucket in
+// the configured state root. A FIFO there must never be opened — LoadSessionMeta
+// deliberately blocks on one — so the check is a non-blocking Lstat performed
+// before the read, and a path that fails it is simply not consulted.
+func (r *projectNameResolver) loadOwnedSessionMeta(stateDir, sessionID string) (schema.SessionMeta, bool) {
+	if identifier.ValidateSessionID(sessionID) != nil {
+		return schema.SessionMeta{}, false
+	}
+	metaPath := schema.SessionMetaPath(stateDir, sessionID)
+	if !existsNonSymlink(metaPath, stateDir) {
+		return schema.SessionMeta{}, false
+	}
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		return schema.SessionMeta{}, false
+	}
+	return meta, true
 }
 
 func (r *projectNameResolver) resolveMainRoot(dir string) string {
