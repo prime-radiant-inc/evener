@@ -1078,15 +1078,144 @@ func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...
 		t.Fatalf("start %s: %v", mergeEnqueueLauncher, err)
 	}
 	launcherPID := cmd.Process.Pid
-	// Cleanups run last-registered-first, so the sweep is registered first and
-	// runs after the kills: it reports what the kills missed.
+	// Three cleanups, and their ORDER is the fix.
+	//
+	// Cleanups run last-registered-first, so the final sweep is registered first
+	// and runs last, after the two below it.
+	//
+	// The middle one is the one that was missing. Ownership in the sweep is a
+	// parent link: a process is the test's to signal only while it descends from
+	// this test process. A fixture build runs in a group of its own, so KILLing
+	// the launcher reparents the build's tree to init -- and by the time the final
+	// sweep reads the census, the link that proved ownership is gone. The sweep can
+	// then only REPORT a FIFO-blocked `go build` that survives for the rest of the
+	// session, which is exactly the leak class this suite exists to catch. So the
+	// descendants are discovered and signalled FIRST, while their ancestry still
+	// says whose they are, and only then is the launcher killed and reaped.
+	//
+	// A process that merely names the fixture path without descending from this
+	// test -- another agent's shell, a developer's `tail -f` on the fixture log --
+	// is left alone by both steps, and the final sweep still reports it. That is
+	// the ownership rule the sweep keeps.
 	t.Cleanup(func() { assertNoSurvivors(t, f.dir) })
 	t.Cleanup(func() {
-		pids := []int{launcherPID}
+		// The launcher is signalled and then reaped before the census, so its own
+		// exit cannot be mistaken for a survivor and so a build it started is still
+		// visible as its descendant while the discovery below runs.
+		killGroups(launcherPID)
+		reapLauncherQuietly(t, cmd)
+	})
+	t.Cleanup(func() {
+		// While the launcher is still running, every fixture process is a
+		// descendant of this test. Stop them here, by the group they lead and by
+		// their pids, and include the pids the case recorded.
+		pids := make([]int, 0, len(fixturePIDs)+1)
 		for _, p := range fixturePIDs {
-			pids = append(pids, *p)
+			if *p > 1 {
+				pids = append(pids, *p)
+			}
+		}
+		for _, proc := range fixtureDescendants(t, f.dir, os.Getpid()) {
+			pids = append(pids, proc.pid)
+			if proc.pgid > 1 && proc.pgid != proc.pid {
+				pids = append(pids, proc.pgid)
+			}
 		}
 		killGroups(pids...)
+	})
+}
+
+// reapLauncherQuietly waits for the launcher to be reaped and reports nothing.
+//
+// Cleanup runs whether the case passed, failed, or already asserted the launcher's
+// exit with mustExit, and mustExit called cmd.Wait itself. A second Wait on a
+// reaped process returns "no child processes", which waitExit treats as a real
+// error and would turn every ordinary passing case into a failure. ProcessState is
+// set exactly when Wait has returned, so it is the guard.
+func reapLauncherQuietly(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd.ProcessState != nil {
+		return
+	}
+	if cmd.Process == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	// The group was KILLed just before this, so the wait is short; the bound is
+	// only so a launcher that somehow survives cannot hold the test's cleanup open.
+	select {
+	case <-done:
+	case <-time.After(launcherExitDeadline):
+	}
+}
+
+// fixtureDescendants returns the live processes naming marker that descend from
+// self, which is the set cleanup may signal.
+//
+// It is the same ownership predicate the final sweep uses (survivorsOf), asked
+// earlier -- while the parent links still say what they said when the processes
+// started. Reading the census here and not in the sweep is the whole point:
+// between the two, KILLing the launcher cuts those links.
+func fixtureDescendants(t *testing.T, marker string, self int) []procLine {
+	t.Helper()
+	procs := scanProcs(t)
+	live := make([]procLine, 0, len(procs))
+	for _, proc := range procs {
+		if !proc.zombie() {
+			live = append(live, proc)
+		}
+	}
+	_, owned := survivorsOf(live, marker, self)
+	return owned
+}
+
+// TestMergeEnqueueLauncherCleanupStopsAFixtureBuildInItsOwnGroup pins the ORDER
+// of runLauncher's cleanup, which is what stops the leak a refusal case causes
+// when it regresses into starting its build.
+//
+// The tree here has the shape that matters and no more: a leader in a group of
+// its own, waiting on a build that `set -m` put in a group of its own. KILLing
+// the leader's group does not reach the build, and the build is reparented to
+// init the moment the leader dies -- so any sweep that runs after the kill can
+// only report it. A real FIFO-blocked `go build` is the same tree plus a
+// compiler, and the compiler would tell this case nothing it does not already
+// know.
+//
+// The body deliberately asserts nothing about the tree and leaves the stopping
+// to the cleanup. A cleanup that kills the launcher before it reads the census
+// leaves the build behind, the final sweep reports it, and this case fails with
+// the survivor's pid and command line.
+func TestMergeEnqueueLauncherCleanupStopsAFixtureBuildInItsOwnGroup(t *testing.T) {
+	f := newLauncherFixture(t, "#!/bin/sh\nexit 0\n")
+	// Not parallel: the case is about this process's cleanup order and the
+	// census it reads is the whole machine's.
+	//
+	// The build is a script by path, not `sleep 300` by name, because the sweep
+	// finds a process by the fixture path in its argv -- which is what a
+	// `go build -o <fixture>/evener-dev` gives it. A `bash -c 'sleep 300'` execs
+	// sleep, whose argv no longer names the fixture, and a fixture like that makes
+	// the mutant below pass by being invisible rather than by being clean.
+	build := filepath.Join(f.dir, "pending-build")
+	writeTestFile(t, build, []byte("#!/bin/sh\nsleep 300\n"), 0o755)
+	script := "set -m\n" +
+		"bash \"$1/pending-build\" </dev/null >/dev/null 2>&1 &\n" +
+		"wait\n"
+	cmd := exec.Command("bash", "-c", script, "stand-in-launcher", f.dir)
+	// Own group, like the real launcher, so cleanup's kill reaches exactly what a
+	// kill of the real launcher would reach -- and not the build beside it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	runLauncher(t, cmd, f)
+	testwait.Until(t, "the stand-in launcher's build to appear in a group of its own", func() bool {
+		for _, proc := range scanProcs(t) {
+			if strings.Contains(proc.cmd, build) && proc.pgid == proc.pid {
+				return true
+			}
+		}
+		return false
 	})
 }
 
@@ -2874,24 +3003,6 @@ func TestMergeEnqueueLauncherFixtureSkipsAnUntrustedScratchBase(t *testing.T) {
 		}
 	})
 
-	// A trusted but noexec base must be passed over. Selecting it moves the
-	// failure to the fixture helper's start, far from the cause.
-	t.Run("a trusted base that cannot execute is passed over", func(t *testing.T) {
-		noexec := filepath.Join(trusted, "noexec-candidate")
-		if err := os.MkdirAll(noexec, 0o700); err != nil {
-			t.Fatalf("create %s: %v", noexec, err)
-		}
-		t.Cleanup(func() { _ = os.RemoveAll(noexec) })
-		if launcherCanExecuteIn(t, noexec) {
-			t.Skipf("%s can execute a program, so this machine cannot manufacture the condition", noexec)
-		}
-		if !launcherTrustsPath(t, noexec) {
-			t.Fatalf("%s is not trusted, so this case cannot show that executability alone rejects it", noexec)
-		}
-		if reason := unusableScratchBase(t, noexec); reason == refusalNone {
-			t.Fatalf("%s cannot execute a program but the fixture predicate called it usable", noexec)
-		}
-	})
 }
 
 // TestMergeEnqueueLauncherDoesNotTouchACallerOwnedGroupFile pins the medium: an
@@ -4397,4 +4508,561 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 			}
 		}
 	}
+}
+
+// TestMergeEnqueueLauncherReadsANumericAclPrincipalByItsId pins that a named ACL
+// entry is judged by WHICH user it names, not by the fact that it is named.
+//
+// `getfacl -p -c` prints a name when one resolves and a bare number when none
+// does. On a root-owned directory whose ACL grants write to this user alone --
+// `user:1000:rwx` -- every named-user entry used to count as foreign, so the
+// launcher rejected a directory that grants nothing to anybody else: it moved
+// scratch to a fallback, or exited 2 where no fallback was usable. The entry
+// names this user, and root is already trusted by dir_is_owned_by_trusted, so
+// neither is a foreign grant.
+//
+// The listing is handed to the reader directly rather than manufactured with
+// setfacl. The condition is a numeric principal, and setfacl renders principals
+// as names wherever a name resolves, so a host with a name service could produce
+// `user:jesse:rwx` and the case would be about a different input. Feeding the
+// reader the exact bytes `getfacl -p -c` emits for the shape keeps the case
+// about the parse.
+//
+// The mask is present and wide in every listing, so the answer turns on the
+// principal exclusion alone, and a foreign numeric principal is asserted to
+// still be a grant -- otherwise a reader that ignored every numeric entry would
+// pass the first two assertions.
+func TestMergeEnqueueLauncherReadsANumericAclPrincipalByItsId(t *testing.T) {
+	t.Parallel()
+	uid := os.Geteuid()
+	listing := func(principal string) string {
+		return "user::rwx\nuser:" + principal + ":rwx\ngroup::r-x\nmask::rwx\nother::r-x\n"
+	}
+	for _, c := range []struct {
+		name      string
+		principal string
+		wantGrant bool
+	}{
+		{name: "root is not foreign", principal: "0", wantGrant: false},
+		{name: "this user is not foreign", principal: strconv.Itoa(uid), wantGrant: false},
+		// A uid this test or its fixture cannot be: the check must keep refusing it.
+		{name: "another numeric user is foreign", principal: "4242424", wantGrant: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := runLauncherFuncStdin(t, validatorFuncs, `acl_getfacl_grants_foreign_write`, listing(c.principal))
+			gotGrant := err == nil
+			if gotGrant != c.wantGrant {
+				t.Fatalf("a named-user entry for %q under a writable mask was read as foreign=%v, want %v: the principal decides whether the grant is foreign, and the mask still caps it", c.principal, gotGrant, c.wantGrant)
+			}
+		})
+	}
+	// And the exclusion does not widen the group check: a numeric named GROUP is
+	// still foreign, because a group can hold other members this user's id says
+	// nothing about.
+	groupListing := "user::rwx\ngroup:4242424:rwx\ngroup::r-x\nmask::rwx\nother::r-x\n"
+	if err := runLauncherFuncStdin(t, validatorFuncs, `acl_getfacl_grants_foreign_write`, groupListing); err != nil {
+		t.Fatalf("a named group granted write under a writable mask was not read as a foreign grant (%v): the user-principal exclusion must not narrow the group check", err)
+	}
+}
+
+// TestMergeEnqueueLauncherRefusalNamesExecutionWhenATrustedRootWasFound pins the
+// reason the launcher reports when selection DID reach the execution probe.
+//
+// Selection tries TMPDIR, then $XDG_RUNTIME_DIR, then the cache directory, and
+// records why each candidate was passed over. The reason used to be
+// no-executable-root only when nothing at all had been rejected for trust, so the
+// ordinary hostile combination -- a replaceable TMPDIR beside a trusted noexec
+// runtime directory -- reported no-trusted-root. That sends an operator on a noexec
+// host looking for a trust problem that is not there, and it is wrong on the facts:
+// a trusted root was found, and it could not run anything.
+//
+// The condition is manufactured rather than hoped for. TMPDIR is a 0777 directory
+// with no sticky bit, which the chain rule refuses for a reason it can state; the
+// runtime directory is a real noexec mount when the host has one, and the case
+// skips by name when it does not, rather than pretending. The reason is read as
+// the structured `[reason=...]` value, never as prose.
+func TestMergeEnqueueLauncherRefusalNamesExecutionWhenATrustedRootWasFound(t *testing.T) {
+	t.Parallel()
+	const noexecRoot = "/run/lock"
+	if info, err := os.Stat(noexecRoot); err != nil || !info.IsDir() {
+		t.Skipf("%s is not present on this host", noexecRoot)
+	}
+	noexec, why := noexecFixtureProbeDir(t, noexecRoot, "")
+	if noexec == "" {
+		t.Skip(why)
+	}
+	if !launcherTrustsPath(t, noexec) {
+		t.Skipf("%s does not pass the chain rule on this host, so the case would be about trust and not execution", noexec)
+	}
+	noexec = resolvePath(t, noexec)
+	shared := filepath.Join(resolvePath(t, fixtureScratchBase(t)), "shared-tmpdir")
+	if err := os.MkdirAll(shared, 0o700); err != nil {
+		t.Fatalf("create %s: %v", shared, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shared) })
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatalf("make %s replaceable: %v", shared, err)
+	}
+	if launcherTrustsPath(t, shared) {
+		t.Skipf("%s is not replaceable on this host, so the case cannot manufacture the condition", shared)
+	}
+	// The home cache is made UNSELECTABLE, not merely absent: the launcher creates
+	// `$HOME/.cache/evener-scratch` when it is missing, so a missing home is a
+	// candidate that succeeds. A regular file on the path is a `mkdir -p` that
+	// cannot succeed for any caller, root included. With the cache out, the runtime
+	// directory is the only trusted candidate left and it is the one that cannot
+	// execute -- while TMPDIR is refused for trust first, which is the mix the
+	// reason must see through.
+	deniedBase := resolvePath(t, fixtureScratchBase(t))
+	deniedFile := filepath.Join(deniedBase, "denied-home")
+	if err := os.WriteFile(deniedFile, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatalf("write %s as a file: %v", deniedFile, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(deniedFile) })
+	home := filepath.Join(deniedFile, "home")
+	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
+	c.requireIsolated(t)
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
+	// deniedFile is swept as well: if a regression ever lets the cache be created,
+	// its scratch path lives under that name and a build started there must be
+	// reported rather than left blocking.
+	for _, m := range []string{c.root, c.tmp, shared, deniedFile} {
+		t.Cleanup(func() { assertNoSurvivors(t, m) })
+	}
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env,
+		"TMPDIR="+shared,
+		"XDG_RUNTIME_DIR="+noexec,
+		"HOME="+home,
+	)
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
+	})
+	runLauncher(t, cmd, f)
+	// Exit 2: nothing was built and nothing was decided.
+	mustExit(t, cmd, f, 2)
+	// The trusted noexec root is what decides the reason. no-trusted-root would
+	// tell the operator to move TMPDIR somewhere private, which is advice for a
+	// problem that is not the one this host has.
+	if got := refusalReason(t, f); got != "no-executable-root" {
+		t.Fatalf("the refusal reason is %q, want %q: a trusted candidate reached the execution probe and could not run a program, so the reason must name execution and not trust", got, "no-executable-root")
+	}
+	// The individual rejection is still reported, so the replaceable TMPDIR is
+	// named in the message the operator reads.
+	stderr, err := os.ReadFile(f.stderr)
+	if err != nil {
+		t.Fatalf("read the launcher's stderr: %v", err)
+	}
+	if !strings.Contains(string(stderr), shared) {
+		t.Fatalf("the refusal does not name the replaceable TMPDIR %s, so the rejection detail was dropped: %s", shared, stderr)
+	}
+	for _, line := range f.lines(t) {
+		if strings.HasPrefix(line, "helper-ran") {
+			t.Fatalf("the launcher started its helper although no candidate could execute a program: %v", f.lines(t))
+		}
+	}
+}
+
+// TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild pins
+// the window the build opens.
+//
+// The scratch root's chain is validated before the build and the minted
+// directory's inode is compared before the exec. Neither of those covers the
+// case this test manufactures: an ancestor that becomes writable by other users
+// WHILE the build runs leaves the work directory exactly as it was -- same
+// directory, same inode -- so an identity comparison alone still passes, and the
+// launcher would exec through an ancestor another user can now swap an entry in.
+// The check has to be asked again on the far side of the build.
+//
+// The build is held open by the fixture's FIFO so the window can be opened
+// deliberately: the case finds the scratch directory from the blocked build's
+// argv, makes the fixture TMPDIR itself replaceable (the ancestor of every path
+// the launcher uses), then releases the build. A launcher that only compares the
+// inode builds its helper and runs it; one that re-asks the chain refuses.
+//
+// The release is what makes this deterministic. The alternative -- racing a
+// chmod against a build of unknown length -- passes or fails on load, and a case
+// that cannot fail for its reason is not evidence.
+func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t *testing.T) {
+	t.Parallel()
+	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
+	c.requireIsolated(t)
+	// A plain source in place of the blocking FIFO, so the build can be RELEASED:
+	// the case blocks it by putting a writer on hold, not by never having one.
+	hold := filepath.Join(c.root, "cmd", "evener-dev", "bin", "hold.go")
+	if err := os.Remove(hold); err != nil {
+		t.Fatalf("remove the blocking fifo: %v", err)
+	}
+	gate := filepath.Join(c.root, "cmd", "evener-dev", "bin", "gate.go")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Skipf("cannot create a FIFO here (%v): this machine cannot manufacture a stalled build", err)
+	}
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
+	for _, m := range []string{c.root, c.tmp} {
+		t.Cleanup(func() { assertNoSurvivors(t, m) })
+	}
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
+	})
+	var buildPID int
+	t.Cleanup(func() { killGroups(buildPID) })
+	runLauncher(t, cmd, f)
+	// The build names the scratch directory it will write to, which is how the case
+	// learns the path the launcher minted without guessing at mktemp's name.
+	testwait.UntilSeen(t, "the fixture build to block on the gate", func() (bool, string) {
+		buildPID, _ = buildIn(t, c.tmp)
+		if buildPID != 0 {
+			return true, ""
+		}
+		return false, "no build names the fixture scratch yet"
+	})
+	// Make the ancestor replaceable while the build is in flight. c.tmp is on
+	// every path the launcher uses, and it is the component the pre-build check
+	// passed.
+	if err := os.Chmod(c.tmp, 0o777); err != nil {
+		t.Fatalf("make the fixture TMPDIR replaceable during the build: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(c.tmp, 0o700) })
+	if launcherTrustsPath(t, c.tmp) {
+		t.Fatalf("%s is still trusted after chmod 0777, so this case cannot manufacture a replaceable ancestor", c.tmp)
+	}
+	// Release the build. A single writer open is not enough: the go command opens a
+	// source file more than once -- it reads it to build the package and reads it
+	// again while hashing -- and every open after the first blocks again with no
+	// writer left. So the gate is served until the build is gone, and the content
+	// is a valid empty package so the build SUCCEEDS: this case is about which
+	// scratch the launcher will run from, not about a build that failed for its own
+	// reason.
+	serveFIFO(t, gate, "package main\n", buildPID)
+	// Exit 2, not 0: the scratch became replaceable during the build, so the
+	// launcher refuses to run a helper from it. Exit 0 would be a helper executed
+	// through an ancestor another user can swap an entry in.
+	mustExit(t, cmd, f, 2)
+	if _, err := os.Stat(c.sentinel); err == nil {
+		t.Fatalf("the launcher built and ran a helper from scratch under a TMPDIR that became replaceable during the build: %s exists", c.sentinel)
+	}
+	for _, line := range f.lines(t) {
+		if strings.HasPrefix(line, "helper-ran") {
+			t.Fatalf("the launcher ran a helper from scratch under a replaceable ancestor: %v", f.lines(t))
+		}
+	}
+}
+
+// serveFIFO feeds content to every reader of the FIFO at path until the process
+// pid is gone, then returns. It exists for a build that has to be released after
+// a window has been opened: one writer is not enough because the go command opens
+// the same source more than once, and a reader with no writer blocks forever.
+func serveFIFO(t *testing.T, path, content string, pid int) {
+	t.Helper()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if pidGone(pid) {
+				return
+			}
+			writer, err := os.OpenFile(path, os.O_WRONLY, 0o600)
+			if err != nil {
+				return
+			}
+			_, _ = writer.WriteString(content)
+			_ = writer.Close()
+		}
+	}()
+	t.Cleanup(func() {
+		close(done)
+		// Unblock a writer still waiting for a reader, so the goroutine can see the
+		// closed channel rather than outliving the test.
+		if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0o600); err == nil {
+			_ = reader.Close()
+		}
+		select {
+		case <-stopped:
+		case <-time.After(time.Second):
+		}
+	})
+}
+
+// launcherStopFuncs loads the stop machinery the launcher uses on a build: the
+// group census, the group stopper, the tree walker and stop_command.
+//
+// It is the functions, from the launcher, not a reimplementation: a case that
+// copied them would agree with itself and not with the script. gate-bounded.sh
+// supplies process_descendants and stop_command, which is why its path is
+// sourced alongside the launcher's own text.
+const launcherStopFuncs = "/^process_descendants()/,/^}/p;" +
+	"/^stop_process_tree()/,/^}/p;" +
+	"/^stop_command()/,/^}/p;" +
+	"/^helper_group_leaves_survivors()/,/^}/p;" +
+	"/^stop_tree_group()/,/^}/p;" +
+	"/^reap_child()/,/^}/p;" +
+	"/^child_running()/,/^}/p;" +
+	"/^published_gh_group()/,/^}/p;" +
+	"/^helper_call_groups()/,/^}/p;" +
+	"/^stop_helper_tree()/,/^}/p;" +
+	"/^interrupted()/,/^}/p"
+
+// runLauncherStopFunc loads launcherStopFuncs plus gate-bounded.sh and runs expr.
+//
+// The extra library is sourced by path, the way the launcher sources it, so the
+// tree walker and stop_command are the real ones rather than stubs that could
+// disagree with gate-bounded.sh about a grace or a signal order.
+//
+// The library's path travels in GATE_BOUNDED_LIB, not in an argument: under
+// `bash -c script name a b`, $1 is `a` and $2 is `b`, so an argument spent on the
+// library would shift every expr's own operands by one and hand
+// stop_tree_group a filename where the group id belongs.
+func runLauncherStopFunc(t *testing.T, expr string, args ...string) error {
+	t.Helper()
+	script := `eval "$(sed -n '` + launcherStopFuncs + `' "$1")"; ` +
+		`. "${GATE_BOUNDED_LIB:?}"; ` + expr
+	argv := append([]string{"bash", "-c", script,
+		"bash", mergeEnqueueLauncher}, args...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	// The graces are the launcher's own knobs, set short so a case that has to let
+	// one expire spends a second rather than the default.
+	cmd.Env = envOverride(os.Environ(),
+		"GATE_BOUNDED_LIB="+filepath.Join("scripts", "lib", "gate-bounded.sh"),
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+		"EVENER_HELPER_TERM_GRACE_SECONDS=1",
+	)
+	return cmd.Run()
+}
+
+// startGroupLeaderThatLeavesAMember starts a process group led by p, has it fork a
+// child into that same group, and reaps p. The child survives with the leader's
+// group id and a parent link to init -- the exact shape a killed `go build`
+// leaves when a compiler it forked is still running.
+//
+// It returns the dead leader's pid (which is the group id) and the child's pid.
+func startGroupLeaderThatLeavesAMember(t *testing.T) (group, member int) {
+	t.Helper()
+	// The pids go to a file, and the member's stdio goes to /dev/null. Neither is
+	// cosmetic: a process that inherits this command's output pipes keeps them open
+	// after the leader exits, and exec.Cmd.Run would then block until the member
+	// died -- which is the whole 300 seconds this fixture is meant to survive. That
+	// is how the first version of this helper leaked two sleeps and hung the run.
+	//
+	// No `set -m`: the point is a member that stays in the LEADER's group after the
+	// leader exits. Monitor mode would put the job in a group of its own, and the
+	// case would then be about a member nobody recorded.
+	pidFile := filepath.Join(t.TempDir(), "pids")
+	script := `sleep 300 >/dev/null 2>&1 &
+printf '%s\n' "$!" >> "$1"
+printf '%s\n' "$$" >> "$1"
+`
+	cmd := exec.Command("bash", "-c", script, "bash", pidFile)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("start the group leader: %v", err)
+	}
+	group = cmd.Process.Pid
+	body, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("read the pid file: %v", err)
+	}
+	fields := strings.Fields(string(body))
+	if len(fields) != 2 {
+		t.Fatalf("the fixture wrote %q, want a member pid and the leader pid", string(body))
+	}
+	member, err = strconv.Atoi(fields[0])
+	if err != nil || member <= 1 {
+		t.Fatalf("the member's pid is %q, which is not a pid: %v", fields[0], err)
+	}
+	if leader, err := strconv.Atoi(fields[1]); err != nil || leader != group {
+		t.Fatalf("the leader recorded its pid as %q, want %d", fields[1], group)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(-group, syscall.SIGKILL)
+		_ = syscall.Kill(member, syscall.SIGKILL)
+	})
+	// The premise: the leader is gone and the member is still in its group. If
+	// either is false the case would be about something else.
+	if !pidGone(group) {
+		t.Fatalf("the group leader %d is still running, so this case has no dead leader", group)
+	}
+	if pgid := processGroupOf(t, member); pgid != group {
+		t.Fatalf("the member %d is in group %d, want the dead leader's group %d: this case needs a member reachable only by its group", member, pgid, group)
+	}
+	return group, member
+}
+
+// processGroupOf returns pid's process group, or 0 when it is gone.
+func processGroupOf(t *testing.T, pid int) int {
+	t.Helper()
+	for _, proc := range scanProcs(t) {
+		if proc.pid == pid {
+			return proc.pgid
+		}
+	}
+	return 0
+}
+
+// TestMergeEnqueueLauncherStopsARecordedBuildGroupAfterItsLeaderDied pins the
+// handle that has to survive the leader.
+//
+// A build runs in a group of its own, and `go build` forks compilers and linkers
+// into that group. If the leader is killed while one of them is still running,
+// the survivor is reparented to init: `stop_command` asks `ps` for the dead pid's
+// group, gets nothing, falls back to a pid walk from a pid that no longer exists,
+// and finds nothing. The launcher then exits while the compiler still holds the
+// caller's output pipes. The group id outlives the leader, so the recorded group is
+// the only handle that still reaches it.
+//
+// Two facts, both required: the stopper does stop the surviving member, and
+// `stop_command` alone -- the old path -- does not. The second is what makes this
+// evidence rather than a restatement: if a pid walk could still find the member,
+// the new handle would be unnecessary.
+func TestMergeEnqueueLauncherStopsARecordedBuildGroupAfterItsLeaderDied(t *testing.T) {
+	t.Parallel()
+	group, member := startGroupLeaderThatLeavesAMember(t)
+	// The old path first, on a member of its own, so the contrast is measured
+	// rather than asserted.
+	oldGroup, oldMember := startGroupLeaderThatLeavesAMember(t)
+	if err := runLauncherStopFunc(t, `stop_command "$2"`, strconv.Itoa(oldGroup)); err != nil {
+		t.Fatalf("stop_command on the dead leader %d failed: %v", oldGroup, err)
+	}
+	if pidGone(oldMember) {
+		t.Fatalf("stop_command stopped the surviving member %d of the dead leader %d, so the recorded group would not be the only handle that reaches it", oldMember, oldGroup)
+	}
+	// Now the recorded group.
+	if err := runLauncherStopFunc(t, `stop_tree_group "$2"`, strconv.Itoa(group)); err != nil {
+		t.Fatalf("stop_tree_group on the recorded group %d failed: %v", group, err)
+	}
+	testwait.Until(t, fmt.Sprintf("member %d of the dead leader's group to be stopped", member), func() bool {
+		return pidGone(member)
+	})
+}
+
+// TestMergeEnqueueLauncherReapStopsARecordedBuildGroupWhoseLeaderDied pins the
+// wiring, not only the mechanism: a cancellation that arrives after the build
+// leader disappeared must use the recorded group.
+//
+// reap_child is what a SIGTERM at the launcher's PID reaches. With a dead child
+// pid it used to call stop_command and stop nothing, so the launcher reported 130
+// over a compiler that was still running. The case calls reap_child itself with
+// the state a cancelled build leaves behind -- a dead child, no helper, and the
+// recorded group -- and asserts the member is gone.
+func TestMergeEnqueueLauncherReapStopsARecordedBuildGroupWhoseLeaderDied(t *testing.T) {
+	t.Parallel()
+	group, member := startGroupLeaderThatLeavesAMember(t)
+	expr := `child="$2"; child_is_helper=false; child_group="$2"; helper_started=false; gh_group_file=""; reap_child`
+	if err := runLauncherStopFunc(t, expr, strconv.Itoa(group)); err != nil {
+		t.Fatalf("reap_child on the dead build leader %d failed: %v", group, err)
+	}
+	testwait.Until(t, fmt.Sprintf("member %d of the cancelled build's group to be stopped", member), func() bool {
+		return pidGone(member)
+	})
+}
+
+// TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind pins the call
+// SITE in build_helper, which the stopper's own case cannot see.
+//
+// A go command that exits while one of its children is still running is the shape
+// a killed compile leaves: the leader is gone, `wait` returns, and the compiler is
+// in the group the job handle named with nothing in the launcher's tree pointing
+// at it. The stopper being correct proves nothing about whether it is called; only
+// build_helper's own body, run with a go that leaves a member, shows that.
+//
+// The go command is replaced rather than the build faked. build_helper is the
+// launcher's own text, sourced from the launcher, and the one seam is the program
+// it runs. The stand-in go forks a member into the group `set -m` gave it and
+// exits 1, so the group outlives the handle exactly as it does in the field.
+func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing.T) {
+	t.Parallel()
+	dir := resolvePath(t, fixtureScratchBase(t))
+	root := filepath.Join(dir, "root")
+	work := filepath.Join(dir, "work")
+	for _, d := range []string{root, work} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("create %s: %v", d, err)
+		}
+	}
+	// The member is a script by path under the fixture, so the census -- the
+	// launcher's and this case's -- finds it by its command line.
+	//
+	// A bare `sleep 300` would be exec'd over the script and the member's argv
+	// would stop naming that path, which would make the census blind to it and the
+	// case pass without anything being stopped. The loop keeps the interpreter,
+	// and the path in its argv, alive.
+	memberScript := filepath.Join(dir, "left-behind")
+	writeTestFile(t, memberScript, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755)
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatalf("create %s: %v", bin, err)
+	}
+	// The stand-in go starts the member by that same path and then exits the way a
+	// build does when it is killed mid-compile.
+	writeTestFile(t, filepath.Join(bin, "go"), []byte(
+		"#!/bin/sh\n'"+memberScript+"' </dev/null >/dev/null 2>&1 &\nexit 1\n"), 0o755)
+	// Nothing this case starts may outlive it: the testwait below is the
+	// assertion, this is only the net under a failing run.
+	t.Cleanup(func() {
+		for _, proc := range scanProcs(t) {
+			if strings.Contains(proc.cmd, memberScript) {
+				killGroups(proc.pid, proc.pgid)
+			}
+		}
+	})
+	out := filepath.Join(work, "evener-dev")
+	// build_helper calls the group census and the group stopper, so both are
+	// sourced from the launcher alongside it. A case that took build_helper alone
+	// would run with those two functions undefined: every call would fail, nothing
+	// would be stopped, and the case would prove nothing about the call site. The
+	// status is read back and asserted below for the same reason.
+	script := `. "${GATE_BOUNDED_LIB:?}"; ` +
+		`eval "$(sed -n '` + launcherStopFuncs + `' "$1")"; ` +
+		`eval "$(sed -n '/^build_helper()/,/^}/p' "$1")"; ` +
+		`command -v build_helper >/dev/null || { printf 'build_helper is not defined\\n' >&2; exit 9; }; ` +
+		`root="$2"; work="$3"; launching=false; cancel_requested=false; child=""; child_group=""; ` +
+		`build_helper "$4"`
+	cmd := exec.Command("bash", "-c", script, "bash", mergeEnqueueLauncher, root, work, out)
+	cmd.Env = envOverride(os.Environ(),
+		"GATE_BOUNDED_LIB="+filepath.Join("scripts", "lib", "gate-bounded.sh"),
+		"PATH="+bin+":"+os.Getenv("PATH"),
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+		"HOME="+filepath.Join(dir, "home"),
+		"GOENV=off",
+	)
+	// The build's output goes nowhere: a pipe held by a survivor would keep this
+	// command from returning, which is the very hang the launcher is fixing.
+	cmd.Stdout, cmd.Stderr = nil, nil
+	err := cmd.Run()
+	// build_helper returns the build's status, and the stand-in go exited 1. A
+	// different status means the body did not run -- a sourcing mistake, or a
+	// definition this case did not load -- and the survivor check below would then
+	// be about a build that never happened.
+	if code := exitCodeOf(t, err); code != 1 {
+		t.Fatalf("build_helper exited %d, want the stand-in go's 1: the launcher's own build body did not run", code)
+	}
+	testwait.Until(t, "the build's leftover member to be stopped once its leader exited", func() bool {
+		for _, proc := range scanProcs(t) {
+			if strings.Contains(proc.cmd, memberScript) {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// exitCodeOf reports the exit status of a finished command, and -1 when it did not
+// exit normally.
+func exitCodeOf(t *testing.T, err error) int {
+	t.Helper()
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("the command did not run: %v", err)
+	}
+	return exitErr.ExitCode()
 }

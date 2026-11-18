@@ -238,9 +238,33 @@ dir_is_owned_by_trusted() {
 # A named write with no mask line at all is a grant: the mask is what limits it,
 # and without one the permission cannot be shown to be limited. That keeps the
 # "answer unsafe when it cannot answer" convention.
+#
+# A NUMERIC principal is resolved before it counts. `getfacl -p -c` prints a name
+# when one resolves and a bare number when none does, so a root-owned directory
+# whose ACL grants write to this user alone prints `user:1000:rwx`, with the
+# invoking user's own uid as the principal. Every named-user entry used to count
+# as foreign, which rejected that directory and moved scratch somewhere else --
+# or exited 2 when there was nowhere else. The entry grants nothing another user
+# gains: it names this user. Root is excluded for the same reason, and it is
+# already trusted by dir_is_owned_by_trusted. A numeric principal that is neither
+# stays foreign, and the group check is not narrowed at all.
+#
+# The effective uid is read once here rather than in awk: `ENVIRON["EUID"]` is a
+# gawk extension, and this script runs under whatever awk the host provides. An
+# euid that cannot be read leaves `me` at -1, so no numeric principal matches and
+# the answer stays "foreign" -- unsafe when it cannot answer.
 acl_getfacl_grants_foreign_write() {
-  awk -F: '
-    $1 == "user"  && $2 != "" && index($3, "w") { named = 1 }
+  local me
+  me=$(id -u 2>/dev/null) || me=""
+  case "$me" in
+    '' | *[!0-9]*) me=-1 ;;
+  esac
+  awk -F: -v me="$me" '
+    $1 == "user"  && $2 != "" && index($3, "w") {
+      # A numeric principal naming root or this user is not a foreign grant.
+      if ($2 ~ /^[0-9]+$/ && ($2 + 0 == 0 || $2 + 0 == me)) next
+      named = 1
+    }
     $1 == "group" && $2 != "" && index($3, "w") { named = 1 }
     $1 == "mask"              { seenmask = 1; if (index($3, "w")) maskw = 1 }
     END { exit (named && (!seenmask || maskw)) ? 0 : 1 }
@@ -665,6 +689,17 @@ child_is_helper=false
 helper_started=false
 launching=false
 cancel_requested=false
+# The process group the tracked child leads, recorded while it is alive. Under
+# `set -m` bash makes each job its own group leader, so the job handle IS the
+# group id -- and the group id outlives the process that led it. That is what
+# makes this worth keeping for the build as well as for the helper: `go build`
+# forks compilers and linkers into its group, and if the leader is killed while
+# one of them is still running, the survivor is reparented out of the launcher's
+# tree. A stop that started from the dead leader's pid would find no group at all
+# (`ps` on a reaped pid names nothing), and the compiler would keep the caller's
+# output pipes open after this script exited. stop_command's pid walk has the
+# same blind spot for the same reason.
+child_group=""
 # The file the helper publishes its live `gh` process group in. Empty until a
 # helper is about to be started, and read only by the forced stop: it is the one
 # handle that outlives a `gh` wrapper which starts the real CLI and exits.
@@ -838,6 +873,38 @@ helper_group_leaves_survivors() {
 # grace whether or not the helper died. A group id survives its leader's death,
 # so a call reparented mid-stop is still reachable.
 #
+# stop_tree_group GROUP — stop every live member of a recorded group whose leader
+# may already be gone. This is the only handle that reaches a descendant of a
+# killed build: the leader was reaped, so `ps -o pgid= -p` on it names nothing and
+# a pid walk from it finds nothing, while the group id still selects the compiler
+# the leader forked. TERM then KILL, bounded, and never the launcher's own group.
+stop_tree_group() {
+  local group="$1" grace pid alive deadline own_group
+  case "$group" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$group" -gt 1 ] || return 1
+  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  [ "$group" != "$own_group" ] || return 1
+  grace=${EVENER_STOP_TREE_GRACE_SECONDS:-5}
+  kill -TERM -"$group" 2>/dev/null || :
+  deadline=$((SECONDS + grace))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    alive=0
+    for pid in $(ps -axo pid=,pgid= 2>/dev/null | awk -v group="$group" '$2 == group { print $1 }'); do
+      [ "$pid" = "$$" ] && continue
+      case "$(ps -o stat= -p "$pid" 2>/dev/null)" in
+        '' | Z*) continue ;;
+      esac
+      alive=1
+    done
+    [ "$alive" -eq 0 ] && return 0
+    sleep 0.1
+  done
+  kill -KILL -"$group" 2>/dev/null || :
+  return 0
+}
+#
 # `pid` may already be gone. A wrapper started through EVENER_DEV_BIN that runs
 # the Go helper and exits on TERM leaves the helper running in the group the
 # launcher recorded at launch; the child's exit is not evidence about that group,
@@ -935,8 +1002,21 @@ reap_child() {
     # caller's output pipes after this script has exited. stop_command sends one
     # TERM then one KILL to the group when the child leads its own, and walks the
     # tree when it does not; it never waits past its grace.
-    stop_command "$child"
+    #
+    # Its failure is not fatal here. It looks the group up from the pid, so on a
+    # leader that is already gone it finds nothing and returns 1 -- and this
+    # function runs from the TERM trap, where a failing command under `set -e`
+    # would end the script through `finish` with a build status instead of the
+    # 130 the cancellation owes. The group sweep below is what covers that case.
+    stop_command "$child" || :
     wait "$child" 2>/dev/null || true
+    # The leader's exit is not the tree's exit. A compiler `go build` forked is in
+    # the group the job handle named, and it is reparented to init the moment the
+    # leader dies -- outside every pid walk, and still holding the caller's pipes.
+    # The group id outlives its leader, so it is asked after the leader is gone.
+    if [ -n "${child_group:-}" ] && helper_group_leaves_survivors "$child_group"; then
+      stop_tree_group "$child_group"
+    fi
     return 0
   fi
   # The polite stop first: TERM at the helper's PID alone, so its own handler
@@ -1330,13 +1410,29 @@ build_helper() {
   set +m
   child=$!
   child_is_helper=false
+  # The job handle is the group id under `set -m`, recorded before anything can
+  # reap it. This is the handle that survives the leader: see child_group.
+  child_group="$child"
   launching=false
   if [ "$cancel_requested" = true ]; then
     interrupted
   fi
   local status=0
   wait "$child" || status=$?
+  # The leader's exit is not the tree's exit. If `go build` was killed while a
+  # compiler or linker was still running, that descendant is now reparented to
+  # init and outside every pid walk this script could do from the dead handle --
+  # but it is still in the group the job handle named, and a group id outlives
+  # its leader. The caller's output pipes stay open as long as any member holds
+  # them, so a build that returned this status with a live member is a build whose
+  # tree has to be stopped before the status can mean anything.
+  # A group id is reusable once it is empty, and this is asked immediately after
+  # the leader was reaped, while the id still means what it meant.
+  if helper_group_leaves_survivors "$child_group"; then
+    stop_tree_group "$child_group"
+  fi
   child=""
+  child_group=""
   return "$status"
 }
 
@@ -1507,8 +1603,16 @@ if [ -z "$scratch_root" ]; then
   # what a caller or a test branches on, so a diagnostic edit cannot break either
   # the advice or a check that cares which refusal happened. Same convention as
   # MERGEQ's own machine-readable lines: the words follow the code.
+  #
+  # A trusted candidate that could not execute decides the reason on its own. The
+  # old test required that nothing had been rejected for trust, so a replaceable
+  # TMPDIR beside a trusted noexec $XDG_RUNTIME_DIR reported no-trusted-root --
+  # sending the operator to look for a trust problem on a host whose only real
+  # problem was a mount option. Selection DID find a trusted root; it just could
+  # not run anything there. The individual rejections stay in the message, so the
+  # replaceable TMPDIR is still named.
   scratch_reason=no-trusted-root
-  if [ "$scratch_rejected_noexec" -gt 0 ] && [ "$scratch_rejected_untrusted" -eq 0 ]; then
+  if [ "$scratch_rejected_noexec" -gt 0 ]; then
     scratch_reason=no-executable-root
     scratch_advice="a trusted root was found but it cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory, or set EVENER_DEV_BIN to a helper you have built"
   fi
@@ -1535,12 +1639,27 @@ build_helper "$work/evener-dev" || launcher_failed "building the evener-dev help
 # the closest the launcher can get to "the directory I checked is the directory
 # I run from".
 #
+# The chain is checked again, too, and not only the leaf's inode. An ancestor
+# that becomes group- or other-writable while the build runs leaves the scratch
+# directory's own inode untouched -- same directory, same inode -- so an identity
+# comparison alone passes while another user can now replace the entry the exec
+# is about to resolve. The window is the build, and the build is long, so the
+# question has to be asked again on the other side of it. Where the chain still
+# passes, this costs one stat per component.
+#
+# The comparison is required to succeed, not merely to be inconclusive: an inode
+# that cannot be read at this point is a directory this script cannot show is the
+# one it built in, and "could not check" is a refusal under the same convention
+# the chain rule follows.
+#
 # What remains, honestly: a few shell builtins between this test and the exec in
 # start_helper, and only on a host where no root protects its entries. On every
 # ordinary host -- 1777 /tmp, a per-user TMPDIR, a private HOME -- the root
 # chosen above already makes the swap impossible and this check cannot fail.
+scratch_path_is_trusted "$work" ||
+  launcher_failed "the scratch root above $work became replaceable by another user during the build; refusing to run a helper from it"
 work_now=$(ls -di "$work" 2>/dev/null | awk '{print $1}') || work_now=""
-if [ -n "$work_inode" ] && [ "$work_now" != "$work_inode" ]; then
+if [ -z "$work_inode" ] || [ "$work_now" != "$work_inode" ]; then
   launcher_failed "scratch $work was replaced by another user after the build; refusing to run a helper from it"
 fi
 [ -x "$work/evener-dev" ] || launcher_failed "the built helper is not executable: $work/evener-dev"
