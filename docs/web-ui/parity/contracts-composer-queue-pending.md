@@ -164,6 +164,14 @@ except where a line says so itself.
 - images over 8MB are rejected before decode — no item or marker is added, and an inline banner reads "maximum 8 MB" (test-composer-image-markers.js)
 - a 9th attachment is rejected before decode (8-image cap) — no item or marker is added, and an inline banner reads "maximum 8 images" (test-composer-image-markers.js)
 
+### test-composer-image-markers.js — a marker never outlives its bytes
+- image bytes live only in the mounted composer's attachment store; the persisted draft record holds the text and, beside it, the marker numbers the writing composer held bytes for (Composer.attachments.test.tsx)
+- a composer that adopts a persisted draft whose record named an image marker, and holds no bytes for it, refuses Send, Queues and Steers for as long as that "[image N]" is still in the text, and says so in place above the form rather than in a transient notice (Composer.attachments.test.tsx)
+- the refusal survives an edit that rewrites the draft and a second reload: the record carries the adopted marker forward, and a reference the person deletes leaves the record for good, so retyping the same spelling afterwards is prose and sends (Composer.attachments.test.tsx)
+- a marker the person types, in a fresh composer or after a reload, is never refused — the decision reads the persisted record's provenance, never the text alone (Composer.attachments.test.tsx)
+- an image staged in this composer still sends normally, with its marker translated to an image item and the text carrying no literal "[image N]" (Composer.attachments.test.tsx)
+- a recovery row that takes ownership of a draft keeps its missing-image references, so reopening it restores the refusal rather than an untagged marker (Composer.attachments.test.tsx)
+
 ### test-input-area.js (input area: layout, auto-grow, capabilities, steer, slash — attachment-integration contracts are under Attachments below)
 - after init, the composer's model display and tasks trigger render outside the button row and outside the htmx-swap `#input-status` target, with no standalone task-status-row or model-chip element (test-input-area.js)
 - the textarea auto-grows to track its content's scrollHeight as the user types, starting from a fixed baseline height when empty (test-input-area.js)

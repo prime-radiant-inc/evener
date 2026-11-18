@@ -480,6 +480,16 @@ is dropped, silently, while the text typed beside it survives. Attachments
 already submitted with the send ride the durable outbox row and are
 unaffected; the loss is bounded to content staged after the press.
 
+The lost image is no longer silent. Image bytes still live only in the
+mounted composer, but the persisted draft record now names the markers the
+writing composer held bytes for, and a composer that adopts a draft naming an
+image it holds no bytes for refuses Send, Queue and Steer while that
+`[image N]` remains in the text. The reason sits in place above the form, the
+text is kept, and the refusal follows the draft through an edit and a further
+reload. The remedy is to remove the reference, or to select it and attach the
+image again to replace it: attaching at the cursor mints a new number and
+leaves the old reference, so it cannot clear the refusal on its own.
+
 **Evidence.** The attachment store is created per composer mount
 ([sourceState.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/sourceState.ts))
 and the carry moves only the persisted draft record
@@ -488,7 +498,10 @@ a queued entry's edit likewise keeps image attachments out of the composer
 ([Composer.tsx](../../cmd/evener-hub/frontend/src/panes/session/composer/Composer.tsx)),
 so ephemerality is the composer's existing boundary. The Send-resumes
 journey made the inconsistency user-visible by preserving the text half of
-the payload.
+the payload. The refusal and its provenance live in
+([sourceState.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/sourceState.ts))
+and the draft record that carries them in
+([draft.ts](../../cmd/evener-hub/frontend/src/panes/session/composer/draft.ts)).
 
 **Discuss.** Whether staged image attachments should persist per session (or
 per ref) like the text draft, surviving reloads and identity-following

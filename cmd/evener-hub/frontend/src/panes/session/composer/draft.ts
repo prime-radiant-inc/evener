@@ -26,6 +26,14 @@ import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";
 const COMPOSER_SEAT_PREFIX = "evener.composer.seat.v1.";
+// Missing-image provenance for a ref's draft, kept beside the draft record
+// rather than inside it. A recovery row takes ownership of the draft TEXT into
+// IndexedDB and the localStorage record is then cleared, so a fact that rode
+// only that record would be lost exactly when the person reopens the draft
+// (review 51880 finding 3). This side record outlives the draft record for the
+// same reason the recovery row does: it describes the ref's composition, not
+// one storage location's copy of it.
+const IMAGE_PROVENANCE_PREFIX = "evener.composer.imageProvenance.v1.";
 const draftRevisions = new Map<string, number>();
 
 // A composer draft: the textarea's text plus the canonical names of the
@@ -74,6 +82,10 @@ export function draftStorageKey(ref: string): string {
 
 export function composerDraftStorageKey(ref: string): string {
   return `${STRUCTURED_STORAGE_PREFIX}${ref}`;
+}
+
+function imageProvenanceStorageKey(ref: string): string {
+  return `${IMAGE_PROVENANCE_PREFIX}${ref}`;
 }
 
 // A conversation seat outlives the pane id a mobile reload reallocates - but
@@ -244,6 +256,11 @@ export function writeComposerDraft(
   imageMarkers?: readonly number[],
 ): string | undefined {
   markDraftEdited(ref);
+  // Provenance is written even when the record itself is not: an empty draft
+  // clears the text record, but the ref's composition still says which anchors
+  // its images are gone from. This is what lets a draft that moved into a
+  // recovery row come back tagged (review 51880 finding 3).
+  if (imageMarkers !== undefined) writeComposerImageMarkers(ref, imageMarkers);
   try {
     if (isBlankDraft(value)) {
       localStorage.removeItem(composerDraftStorageKey(ref));
@@ -291,6 +308,8 @@ export function readComposerDraftRevisionId(ref: string): string | undefined {
  * listed here is literal prose the person typed, which sends as text.
  */
 export function readComposerDraftImageMarkers(ref: string): number[] {
+  const side = readImageProvenance(ref);
+  if (side !== undefined) return side;
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
     if (structured === null) return [];
@@ -299,6 +318,48 @@ export function readComposerDraftImageMarkers(ref: string): number[] {
     return parsed.imageMarkers ?? [];
   } catch {
     return [];
+  }
+}
+
+// The ref's missing-image markers as recorded by the most recent write, or
+// undefined when nothing has recorded any. Undefined and [] differ: [] is a
+// record that says this composition has no images, which is what retires a
+// reference the person removed.
+function readImageProvenance(ref: string): number[] | undefined {
+  try {
+    const raw = localStorage.getItem(imageProvenanceStorageKey(ref));
+    if (raw === null) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every((marker) => Number.isSafeInteger(marker) && (marker as number) > 0))
+      return undefined;
+    return parsed as number[];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Records this ref's missing-image markers beside its draft.
+ *
+ * Every draft write calls this, including the ones that clear the draft
+ * record: a composition whose images are gone must keep saying so even when
+ * its text moves to a recovery row, or reopening it would restore the
+ * anchors untagged. An empty list is written, not omitted - it is how the
+ * removal of a reference becomes permanent. */
+export function writeComposerImageMarkers(ref: string, markers: readonly number[]): void {
+  try {
+    const next = [...new Set(markers)].sort((left, right) => left - right);
+    localStorage.setItem(imageProvenanceStorageKey(ref), JSON.stringify(next));
+  } catch {
+    // Best-effort, like every other composer persistence: losing this only
+    // costs the refusal, never the person's text.
+  }
+}
+
+export function clearComposerImageMarkers(ref: string): void {
+  try {
+    localStorage.removeItem(imageProvenanceStorageKey(ref));
+  } catch {
+    // See writeComposerImageMarkers.
   }
 }
 
@@ -328,6 +389,7 @@ export function writeDraft(ref: string, value: string): void {
 export function clearDraft(ref: string): void {
   markDraftEdited(ref);
   clearPersistedDraft(ref);
+  clearComposerImageMarkers(ref);
 }
 
 // A store-driven resume can return a different identity, and the pane follows

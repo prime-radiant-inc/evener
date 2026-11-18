@@ -8,6 +8,7 @@ import {
   composerDraftStorageKey,
   draftStorageKey,
   readComposerDraft,
+  readComposerDraftImageMarkers,
   readComposerDraftRevisionId,
   readDraft,
   readDraftRevision,
@@ -428,4 +429,36 @@ test("writeComposerDraft never throws when localStorage throws", () => {
     throw new Error("quota exceeded");
   });
   expect(() => writeComposerDraft("local:01AAA", { text: "some text", skillNames: ["pkg:probe"] })).not.toThrow();
+});
+
+// Review 51880, finding 3. A recovery row takes ownership of the draft TEXT and
+// the localStorage record is then cleared, so provenance that rode only that
+// record would be lost exactly when the person reopens the draft.
+test("image provenance outlives the draft record a recovery row takes over", () => {
+  const ref = "local:provenance";
+  const revision = writeComposerDraft(ref, { text: "keep[image 1]", skillNames: [] }, [1]);
+  expect(readComposerDraftImageMarkers(ref)).toEqual([1]);
+
+  // The recovery write's own cleanup: the record goes, the provenance stays.
+  expect(clearPersistedDraftIfRevisionMatches(ref, revision as string)).toBe(true);
+  expect(readComposerDraft(ref).text).toBe("");
+  expect(readComposerDraftImageMarkers(ref)).toEqual([1]);
+});
+
+test("a successful send clears image provenance with the draft", () => {
+  const ref = "local:sent";
+  writeComposerDraft(ref, { text: "keep[image 1]", skillNames: [] }, [1]);
+  expect(readComposerDraftImageMarkers(ref)).toEqual([1]);
+  clearDraft(ref);
+  expect(readComposerDraftImageMarkers(ref)).toEqual([]);
+});
+
+// The record is the authority; a side record written by a later draft write
+// wins over an older record's own list.
+test("removing every reference records an empty provenance rather than dropping it", () => {
+  const ref = "local:retired";
+  writeComposerDraft(ref, { text: "keep[image 1]", skillNames: [] }, [1]);
+  expect(readComposerDraftImageMarkers(ref)).toEqual([1]);
+  writeComposerDraft(ref, { text: "keep", skillNames: [] }, []);
+  expect(readComposerDraftImageMarkers(ref)).toEqual([]);
 });

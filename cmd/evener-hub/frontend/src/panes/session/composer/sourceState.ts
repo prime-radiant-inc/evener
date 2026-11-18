@@ -361,14 +361,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     reconcileRecoveryTarget(record?.targetRef ?? ref);
     state.setState({ activeRecoveryId });
   }
-  // The invariant of issue #4826 at its write site: the anchors whose bytes
-  // this source holds are recorded WITH the text that names them. localStorage
-  // never holds image bytes, so a record without this list cannot say whether
-  // a later reader's "[image N]" was an image anchor or literal prose, and the
-  // adopter would have to guess either way - send the anchor with no image, or
-  // refuse a legitimate send.
-  function stagedMarkerNumbers(): number[] {
-    return operations.items.map((item) => item.marker);
+  // The invariant of issue #4826 at its write site: every anchor the text
+  // names travels WITH the text, whether this source holds its bytes or
+  // adopted it without them. localStorage never holds image bytes, so a
+  // record without this list cannot say whether a later reader's "[image N]"
+  // was an image anchor or literal prose, and the adopter would have to guess
+  // either way - send the anchor with no image, or refuse a legitimate send.
+  //
+  // The union is what makes provenance survive a rewrite. Writing only the
+  // store's markers would drop an adopted marker on the first edit after a
+  // reload, and a second reload would then send it as literal text (review
+  // 51880 finding 1). The adopted half is already filtered to markers the
+  // text still spells, so a reference the person deleted leaves the record
+  // for good: an undo that restores the text does not restore the tag,
+  // because text alone cannot tell a restored anchor from retyped prose.
+  function recordedMarkerNumbers(): number[] {
+    const staged = operations.items.map((item) => item.marker);
+    return [...new Set([...staged, ...adoptedUnbackedMarkers])].sort((left, right) => left - right);
   }
   function persistDraft(text: string): void {
     if (disposed) return;
@@ -382,7 +391,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           : {}),
         ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
       },
-      stagedMarkerNumbers(),
+      recordedMarkerNumbers(),
     );
     ownedDraftRevisionRef.current = readDraftRevision(ref);
   }
@@ -427,33 +436,38 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // Markers an adoption brought in without bytes, as marker numbers. Seeded
   // only from a draft this source did not own (the mount read, or bindEditor
   // replacing a stale draft with a newer one), never from anything typed
-  // here. `refreshUnbackedImageMarkers` keeps the published list honest as the
-  // person edits the text or stages an image over a reused number.
+  // here. `refreshUnbackedImageMarkers` retires a tag whose reference the
+  // person removed, so retyping that spelling is prose and not an anchor.
   let adoptedUnbackedMarkers = new Set<number>();
 
   function markerNumbersIn(text: string): number[] {
     return Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
   }
 
+  // An anchor keeps its tag while its reference survives, and only while it
+  // survives: once the person deletes "[image N]" the adoption no longer
+  // covers anything, so a later typing of that same spelling is literal prose
+  // and must send (review 51880 finding 4 - retiring on absence is what
+  // separates "this anchor lost its bytes" from "this text mentions the
+  // format").
+  //
+  // A locally staged image never rescues an adopted marker, even when the
+  // numbers match. An adopted text belongs to another draft, so bytes staged
+  // beside it in this source are a different image; letting them satisfy the
+  // anchor would pair unrelated bytes with the adopted text (review 51880
+  // finding 2).
   function refreshUnbackedImageMarkers(): void {
-    if (adoptedUnbackedMarkers.size === 0) {
-      if (state.getState().unbackedImageMarkers.length > 0) state.setState({ unbackedImageMarkers: [] });
-      return;
-    }
-    const backed = new Set(operations.items.map((item) => item.marker));
     const present = new Set(markerNumbersIn(textRef.current));
-    const next = [...adoptedUnbackedMarkers]
-      .filter((marker) => present.has(marker) && !backed.has(marker))
-      .sort((left, right) => left - right);
+    adoptedUnbackedMarkers = new Set([...adoptedUnbackedMarkers].filter((marker) => present.has(marker)));
+    const next = [...adoptedUnbackedMarkers].sort((left, right) => left - right);
     const current = state.getState().unbackedImageMarkers;
     if (next.length === current.length && next.every((marker, index) => marker === current[index])) return;
     state.setState({ unbackedImageMarkers: next });
   }
 
-  /** Adopt the markers a persisted record says had bytes behind them. */
+  /** Adopt the markers a persisted record says stood for images. */
   function adoptUnbackedImageMarkers(recorded: readonly number[]): void {
-    const owned = new Set(operations.items.map((item) => item.marker));
-    adoptedUnbackedMarkers = new Set(recorded.filter((marker) => !owned.has(marker)));
+    adoptedUnbackedMarkers = new Set(recorded);
     refreshUnbackedImageMarkers();
   }
 
@@ -972,6 +986,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // having had bytes are unbacked - anything else spelled "[image N]" in
         // the text is prose the person typed, and it sends as text.
         adoptUnbackedImageMarkers(readComposerDraftImageMarkers(ref));
+        // A rebind can land on a PEER's newer draft while this source already
+        // holds staged work of its own. Marker numbers are not identity: the
+        // peer's "[image 1]" is a different image, and the local bytes staged
+        // under that number must not be read as backing for it (review 51880
+        // finding 2). The local work is preserved; it simply does not satisfy
+        // the adopted text.
       }
       markRestore();
       boundEditor = nextEditor;

@@ -870,3 +870,78 @@ test("a marker the person typed stays sendable after a reload", async () => {
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
 });
+
+// Review 51880, finding 1: the tag must live in the persisted record, not only
+// in the adopting source's memory. An adopted marker survives the edit that
+// rewrites the draft, so a SECOND reload still refuses. A write that recorded
+// only the live attachment store would drop the marker on that first edit and
+// let the second reload send it as literal text.
+test("an adopted missing image stays refused through an edit and a second reload", async () => {
+  installCanvasStubs();
+  const ref = "ref_a";
+  const user = userEvent.setup();
+
+  // Stage a real image, then reload: localStorage kept the anchor and lost the
+  // bytes, which is the state this fix is about.
+  const stagedSource = createTestComposerSource(ref);
+  const staged = await mountComposerWithHandle(ref, {}, { source: stagedSource });
+  pastePngInto(textarea(), "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(textarea().textContent).toBe("[image 1]");
+  staged.unmount();
+  stagedSource.dispose();
+
+  // First reload: the adopted anchor is refused and visible in place.
+  const firstSource = createTestComposerSource(ref);
+  const first = await mountComposerWithHandle(ref, {}, { source: firstSource });
+  expect(textarea().textContent).toBe("[image 1]");
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  // Edit the surrounding prose. The draft is rewritten, and the rewrite must
+  // carry the missing-image fact into the record.
+  await user.type(textarea(), "a caption ");
+  await waitFor(() => expect(readComposerDraft(ref).text).toBe("a caption [image 1]"));
+  first.unmount();
+  firstSource.dispose();
+
+  // Second reload: still refused, still visible, and nothing was sent.
+  const fake = await mountComposer(ref);
+  const delivered: unknown[] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  expect(textarea().textContent).toBe("a caption [image 1]");
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
+
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toEqual([]);
+}, 30_000);
+
+// Review 51880, finding 4: deleting the reference retires the tag. Retyping
+// the same spelling afterwards is prose the person wrote, and it sends.
+test("deleting an adopted reference retires its refusal for later prose", async () => {
+  installCanvasStubs();
+  const ref = "ref_a";
+  const source = createTestComposerSource(ref);
+  writeComposerDraft(ref, { text: "keep[image 1]", skillNames: [] }, [1]);
+  const { fake } = await mountComposerWithHandle(ref, {}, { source });
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  const editor = textarea();
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  // Remove the whole reference, then write the same spelling as prose.
+  replaceEditorText(editor, "keep");
+  await waitFor(() => expect(screen.queryByTestId("composer-unbacked-image")).toBeNull());
+  replaceEditorText(editor, "keep [image 1]");
+  await waitFor(() => expect(screen.queryByTestId("composer-unbacked-image")).toBeNull());
+  expect(submitButton().disabled).toBe(false);
+});

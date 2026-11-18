@@ -271,6 +271,12 @@ function ComposerWithSubmission({
     activeRecoveryId,
     unbackedImageMarkers: unbackedImageMarkersFromSource,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  // Anchors this composer adopted from a persisted draft but holds no image
+  // for. The send path refuses them (useComposerActions.submit) and the notice
+  // says why, in place, instead of a toast that has already gone by the time
+  // the person looks up. The send gate and every control that can reach it
+  // read this one value, so none of them can disagree with it.
+  const unbackedImageMarkers = unbackedMarkersIn(text, unbackedImageMarkersFromSource);
   const restoredRecoveryRef = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     if (restoredRecoveryRef.current === activeRecoveryId) return;
@@ -558,11 +564,15 @@ function ComposerWithSubmission({
     if (available.steer && narrow) {
       items.steer = {
         onSelect: () => steerClickRef.current(),
-        disabled: actionPending,
+        // Same missing-image gate as the Send button (review 51880 finding 7):
+        // Steer would otherwise look available and then do nothing, because
+        // the submit guard refuses the press. Stop stays available - it is
+        // how the person stops the running turn, missing image or not.
+        disabled: actionPending || unbackedImageMarkers.length > 0,
       };
     }
     return items;
-  }, [narrow, model, actionPending]);
+  }, [narrow, model, actionPending, unbackedImageMarkers]);
 
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
@@ -910,12 +920,6 @@ function ComposerWithSubmission({
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
-  // Anchors this composer adopted from a persisted draft but holds no image
-  // for. The send path refuses them (useComposerActions.submit) and the notice
-  // below says why, in place, instead of a toast that has already gone by the
-  // time the person looks up. Both read one tag, so the refusal and its
-  // explanation cannot disagree.
-  const unbackedImageMarkers = unbackedMarkersIn(text, unbackedImageMarkersFromSource);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
 
@@ -1375,7 +1379,7 @@ function ComposerWithSubmission({
                 .map((marker) => `[image ${marker}]`)
                 .join(
                   ", ",
-                )} is no longer available in this composer. Remove the reference, or attach the image again, before sending.`}
+                )} is no longer available in this composer. Remove that reference before sending, or select it and attach the image again to replace it.`}
             </InlineNotice>
           )}
           {/* Anchored above the control row inside the card below, opening
@@ -1505,7 +1509,10 @@ function ComposerWithSubmission({
                           // the button keeps focus and hover and that reason
                           // stays reachable.
                           aria-disabled={steerRecoveryFenced || undefined}
-                          disabled={actionPending}
+                          // Matches the Send button's missing-image gate (review
+                          // 51880 finding 7): a steer would reach the same
+                          // submit guard and silently do nothing.
+                          disabled={actionPending || unbackedImageMarkers.length > 0}
                         >
                           Steer
                         </Button>
