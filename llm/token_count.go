@@ -1038,7 +1038,7 @@ type estimatorTarget struct {
 	Model, WireModel, Protocol, Surface, Family, ImageDetail, RequestRoute string
 	ThinkingAsText, RawReplay, ChatScalar, ReasoningDisabled               bool
 	MultimodalToolResults, SeesImages, SeesDocuments                       bool
-	ChatScalarSelection                                                    string `json:",omitempty"`
+	ChatScalarSelection                                                    string `json:"chat_scalar_selection,omitempty"`
 }
 
 func estimatorTargetFor(r registry.Resolved) estimatorTarget {
