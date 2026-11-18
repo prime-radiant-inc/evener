@@ -174,9 +174,46 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 				}
 			}
 		}
-		response.Changes = &changes
+		// These correction rows ride the same response as the window but sit
+		// outside it, so fill never measured them. Their call lists are the
+		// same optional metadata: omit them when the completed response would
+		// otherwise exceed the page budget, keeping every row, its body, its
+		// turn links and its legacy count (#6323).
+		response.Changes = fitChanges(response, changes)
 	}
 	return response, nil
+}
+
+// fitChanges omits per-call resolution stamps from out-of-window correction
+// rows when the completed response carrying them would exceed the page budget,
+// and keeps them otherwise (#6323).
+//
+// The window's own fit already ran inside fill; these rows are appended after
+// it, which is the only reason they need a bound of their own.
+func fitChanges(response appwire.ThreadReadResponse, changes appwire.HistoryChanges) *appwire.HistoryChanges {
+	if len(changes.Items) == 0 {
+		return &changes
+	}
+	withRows := response
+	withRows.Changes = &changes
+	encoded, err := json.Marshal(withRows)
+	if err != nil || len(encoded) <= pageContentBytes {
+		return &changes
+	}
+	bounded := make([]appwire.ThreadItem, len(changes.Items))
+	copy(bounded, changes.Items)
+	changed := false
+	for i := range bounded {
+		if item, omitted := appitempaging.OmitResolvedAskCalls(bounded[i], 0); omitted {
+			bounded[i] = item
+			changed = true
+		}
+	}
+	if !changed {
+		return &changes
+	}
+	changes.Items = bounded
+	return &changes
 }
 
 func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFunc) (appwire.ThreadTurnsListResponse, error) {
@@ -292,15 +329,45 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 	// Item bytes alone are a lower bound on the encoded page. Measure each
 	// payload once so oversized windows do not repeatedly clone and encode
 	// large tool outputs while discarding their oldest items.
-	itemSizes := make([]int, len(selected))
-	itemBytes := 0
-	for i, candidate := range selected {
-		encoded, err := json.Marshal(candidate.Item)
-		if err != nil {
+	var itemSizes []int
+	var itemBytes int
+	measure := func() error {
+		sizes := make([]int, len(selected))
+		total := 0
+		for i := range selected {
+			encoded, err := json.Marshal(selected[i].Item)
+			if err != nil {
+				return err
+			}
+			sizes[i] = len(encoded)
+			total += len(encoded)
+		}
+		itemSizes, itemBytes = sizes, total
+		return nil
+	}
+	// A per-call resolution stamp is optional metadata, not a body. Omit the
+	// lists as a unit before any item is dropped, so a page that is over
+	// budget only because of them costs the reader no message (#6323).
+	// Bodies, turn links and legacy counts stay.
+	omitLists := func() bool {
+		omitted := false
+		for i := range selected {
+			item, changed := appitempaging.OmitResolvedAskCalls(selected[i].Item, 0)
+			if !changed {
+				continue
+			}
+			selected[i].Item = item
+			omitted = true
+		}
+		return omitted
+	}
+	if err := measure(); err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	if itemBytes > pageContentBytes && omitLists() {
+		if err := measure(); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		itemSizes[i] = len(encoded)
-		itemBytes += len(encoded)
 	}
 	for itemBytes > pageContentBytes && len(selected) > 1 {
 		itemBytes -= itemSizes[0]
@@ -317,7 +384,17 @@ func fill(ctx context.Context, params appwire.ThreadTurnsListParams, page appwir
 		if err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
-		if len(encoded) <= pageContentBytes || len(selected) <= 1 {
+		if len(encoded) <= pageContentBytes {
+			break
+		}
+		// The encoded page carries turn wrappers the per-item measure cannot
+		// see, so it can exceed the budget while item bytes did not. Try the
+		// same omission here before dropping a selected item, and before the
+		// nearest item is retained alone over the target.
+		if omitLists() {
+			continue
+		}
+		if len(selected) <= 1 {
 			break
 		}
 		selected = selected[1:]
