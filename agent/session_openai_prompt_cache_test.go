@@ -13,9 +13,7 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("gpt-5.5")), withDir(dir), withConfig(SessionConfig{}))
@@ -143,9 +141,7 @@ func TestPromptCacheDefaults_AnthropicRowDropsBothFields(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "anthropic", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-6")), withDir(dir), withConfig(SessionConfig{}))

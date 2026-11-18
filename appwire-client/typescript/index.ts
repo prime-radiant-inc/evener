@@ -672,7 +672,12 @@ export {
 export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
-export { delegateStatedIntent, delegateWorkText, stableDelegateDisplayStatus } from "./stableDelegate";
+export {
+  delegateStatedIntent,
+  delegateWaitText,
+  delegateWorkText,
+  stableDelegateDisplayStatus,
+} from "./stableDelegate";
 export {
   isParentSteer,
   isSuppressedSteeringKind,
@@ -933,6 +938,7 @@ export {
   imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
+  itemIsIdentityOnly,
   itemTextPresence,
   joinedReasoningParagraphs,
   markItemIdentityOnly,

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -16,7 +17,7 @@ import (
 // from the canonical state).
 func canonicalAskToolState(t *testing.T, args map[string]any) []byte {
 	t.Helper()
-	normalized, err := normalizeAskArgs(args)
+	normalized, err := tool.NormalizeAskUserArgs(args)
 	if err != nil {
 		t.Fatalf("normalize ask args: %v", err)
 	}

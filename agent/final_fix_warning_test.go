@@ -52,12 +52,7 @@ func warningEvents(capturedEvents []events.SessionEvent) []events.WarningData {
 // withTestSessionNamer does not spend the probe's single scripted step.
 func standingRequestTokens(t *testing.T, dir string, profile *provider.Profile, cfg SessionConfig, input string) int {
 	t.Helper()
-	adapter := &fakeAdapter{
-		name: profile.ID(),
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	adapter := newFakeAdapter(profile.ID(), func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	client := llm.NewClient()
 	client.Register(adapter)
 	registerTestSessionNamer(client)
@@ -98,9 +93,7 @@ func assertWarningPrecedesCompaction(t *testing.T, captured []events.SessionEven
 func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "budget-warning", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}})
+	client.Register(newFakeAdapter("budget-warning", func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	profile := testOpenAICompatProfile("budget-warning", "warning-model", 0)
 	resolved := profile.Resolved()
 	resolved.Caps.ContextWindow = new(524_288)
@@ -255,14 +248,12 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("warning-primary", 403, "primary rejected", nil, nil)
 		},
 	}))
-	fallbackAdapter := &fakeAdapter{name: "warning-fallback", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			if req.MaxTokens == nil || *req.MaxTokens != 976 {
-				return agenttest.FinalResponse("bad allocation")
-			}
-			return agenttest.FinalResponse("fallback")
-		},
-	}}
+	fallbackAdapter := newFakeAdapter("warning-fallback", func(req llm.Request) llm.Response {
+		if req.MaxTokens == nil || *req.MaxTokens != 976 {
+			return agenttest.FinalResponse("bad allocation")
+		}
+		return agenttest.FinalResponse("fallback")
+	})
 	client.Register(fallbackAdapter)
 	primary := testOpenAICompatProfile("warning-primary", "primary-model", 0)
 	fallback := testOpenAICompatProfile("warning-fallback", "fallback-model", 0)

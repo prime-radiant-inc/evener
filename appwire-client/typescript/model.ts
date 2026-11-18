@@ -14,6 +14,7 @@ import type {
   EvenerUsage,
   GoalState,
   OverlayItem,
+  PendingAskCall,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
@@ -80,6 +81,47 @@ export interface ItemModel {
   // consumer must fall back to the composed "[answers]" text shape there.
   // Names the QUESTION's turn, not the reply's own turn.
   answerToTurnIds?: string[];
+  // Wire ThreadItem.observation.resolvedAskCalls: admission's per-call
+  // evidence behind answerToTurnIds — the exact ask_user calls (execution
+  // turn AND call id) this input's admission CAPTURED (issue #6323). It is
+  // the captured set, not a record of which calls this reply cleared: two
+  // fenced replies admitted against the same pending revision can carry the
+  // same capture, and the first to settle clears those calls. The link above
+  // collapses a whole execution to one turn, so several calls in one
+  // execution share it; this list names WHICH calls were captured, and a
+  // ask row is identified by its own (turnId, callId). How a client uses that
+  // identity to choose a recap is a display decision this field does not make:
+  // the shipped clients still select recaps from the turn link and the reply
+  // text. Undefined for ordinary messages, for unfenced
+  // whole-set answers (which record no call list), for any answer from a
+  // daemon that predates the field, and on a BOUNDED read that omitted the
+  // list to fit its page. Undefined too for a fenced inline steer answering a
+  // question in its own still-running execution: the projection emits an
+  // observation only when the answer has a recorded turn link, and that steer
+  // records none, so the captured calls never reach the wire. The reverse is
+  // not a symmetric absence — the turn links EXCLUDE the active execution,
+  // while a published call list can still contain calls captured there — so
+  // this list is never merely the turn links at call granularity. Today's
+  // selector still chooses recaps from the turn link and the reply text, which
+  // is what an absent list leaves it with; choosing recaps from this list is
+  // the recap follow-up. An omitted list arriving with a positive
+  // resolvedAskLegacyCount is not the same absence as a reply that never had
+  // one: the count still says unnamed questions were captured, so a composed
+  // line cannot be proven to belong to a named call.
+  resolvedAskCalls?: PendingAskCall[];
+  // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
+  // admission's capture ALSO held WITHOUT being able to name them, restored
+  // from records that predate call ids (issue #6323). Their headers never reach
+  // the wire, so a composed answer line cannot be attributed to a named call
+  // while this is nonzero - one of these may share the header the line names.
+  // The count is evidence about attribution, not a display rule: deciding what
+  // a client shows from it is the recap follow-up, and the shipped clients
+  // still select recaps from the turn link and the reply text. A bounded read
+  // KEEPS this count even when it omits the call list, because the count is
+  // what makes the omission safe to read: an omitted list with a positive
+  // count is not the same absence as a reply that never carried one. Undefined
+  // when every captured question is named.
+  resolvedAskLegacyCount?: number;
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text
@@ -458,6 +500,18 @@ export interface ThreadModel {
   // the completion of the model's own output item (assistant message,
   // reasoning, tool call) - see reducer.ts's applyNotification.
   modelRetry?: ModelRetryState;
+  // The instant a model call waiting out a provider usage limit resumes by
+  // itself, as an ISO string (wire: EvenerThread.Failure.ResumesAt, an epoch-ms
+  // instant; absent for any failure that is not a wait, for a usage limit with
+  // no known reset, and once the wait ends). A read is its ONLY producer: the
+  // daemon samples its live quota wait into the same failure summary a failed
+  // turn uses (agent/session_state.go's RestingFailure), and the thread read
+  // carries it on a WORKING thread - so a session that reloads can still say
+  // when its call resumes, where the ephemeral modelRetry above cannot.
+  // Snapshot-only, like the evener.* fields below: hydrateThread sets it and
+  // nothing pushes it live; the next read refreshes it (and clears it with an
+  // explicit undefined when that read's failure names no resume time).
+  quotaResumesAt?: string;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

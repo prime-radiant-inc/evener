@@ -142,7 +142,7 @@ func newAskStateSession(t *testing.T, steps ...func(req llm.Request) llm.Respons
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: steps})
+	c.Register(newFakeAdapter("openai", steps...))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 	return sess, dir
 }
@@ -415,18 +415,12 @@ func TestAskUser_ClearAskPendingResetsCount(t *testing.T) {
 func TestAskUser_BoundaryEndsTurnAwaiting(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call after an ask-ending boundary")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call after an ask-ending boundary")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -461,18 +455,12 @@ func TestAskUser_BoundaryEndsTurnAwaiting(t *testing.T) {
 func TestAskUser_EarlyAskStillEndsTurn(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call: the model had a read_file call queued for round 2, but an early ask must still end the turn at its own round's boundary")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call: the model had a read_file call queued for round 2, but an early ask must still end the turn at its own round's boundary")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -495,18 +483,12 @@ func TestAskUser_MultipleAsksOneRound(t *testing.T) {
 	t.Parallel()
 	ask1 := askUserCall("ask1", askUserArgsValid())
 	ask2 := askUserCall("ask2", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask1, ask2)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call after an ask-ending boundary")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask1, ask2)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call after an ask-ending boundary")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -540,14 +522,9 @@ func TestAskUser_ComposesWithCommunicate(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
 	comm := communicateCall("c1", "Posting a question before I continue.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask, comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask, comm)
+	})
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -575,18 +552,12 @@ func TestAskUser_StopHookCannotBlockAskBoundary(t *testing.T) {
 	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "stop-hook-ran")
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call: a Blocked Stop hook must not force another round at an ask boundary")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call: a Blocked Stop hook must not force another round at an ask boundary")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookStop, plugin.RegisteredHook{
@@ -634,18 +605,12 @@ func TestAskUser_InterruptedTurnEndsIdle(t *testing.T) {
 
 	ask := askUserCall("ask1", askUserArgsValid())
 	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask, triggerCancel)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call: an interrupted turn must not continue")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask, triggerCancel)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call: an interrupted turn must not continue")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
@@ -674,17 +639,11 @@ func TestAskUser_DeniedOrInvalidOnlyAskDoesNotEndTurn(t *testing.T) {
 	t.Parallel()
 	badAsk := askUserCall("ask1", askUserArgsDuplicateLabels())
 	comm := communicateCall("c1", "Proceeding without the clarifying question.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(badAsk)
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(badAsk)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	})
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -717,17 +676,11 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
 	comm := communicateCall("c1", "Proceeding without the question.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	})
 	sess := newSession(t, withAdapter(f))
 	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
@@ -794,14 +747,7 @@ func TestAskUser_PreToolUseDenyPostsNothing(t *testing.T) {
 func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("notification ack") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("notification ack") })
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -854,17 +800,10 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 	t.Parallel()
 	stateDir := t.TempDir()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response {
-				t.Error("the reply turn already showed the model the attention; no notification turn should run (#4247)")
-				return agenttest.FinalResponse("delegate completion ack")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") }, func(req llm.Request) llm.Response {
+		t.Error("the reply turn already showed the model the attention; no notification turn should run (#4247)")
+		return agenttest.FinalResponse("delegate completion ack")
+	})
 	sess := newSession(t,
 		withDir(stateDir),
 		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
@@ -954,16 +893,10 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 func TestAskUser_EntryGateRefusesContinuationWake(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a model call: the entry gate must refuse EntryContinuation while awaiting")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a model call: the entry gate must refuse EntryContinuation while awaiting")
+		return llm.Response{}
+	})
 	sess := newSession(t, withAdapter(f))
 
 	ctx := tripwireCtx(t)
@@ -1000,14 +933,7 @@ func TestAskUser_BoundaryDrainHoldsNotifications(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
 	enqueueNotif := llm.ToolCallData{ID: "notif1", Name: "enqueue_test_notification", Arguments: json.RawMessage(`{}`), Type: "function"}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, enqueueNotif) },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("notification ack") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, enqueueNotif) }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, going with Postgres") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("notification ack") })
 	sess := newSession(t, withAdapter(f))
 	sess.registerTool("enqueue_test_notification",
 		"test-only: enqueues a job notification mid-round, simulating a job finishing while the model is asking a question",
@@ -1063,13 +989,7 @@ func TestAskUser_QueuedInputDrainsAsReply(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
 	enqueueFollowUpText := llm.ToolCallData{ID: "enqueue1", Name: "enqueue_test_queued_input", Arguments: json.RawMessage(`{}`), Type: "function"}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, enqueueFollowUpText) },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("sure, running the linter too") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, enqueueFollowUpText) }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("sure, running the linter too") })
 	sess := newSession(t, withAdapter(f))
 	ctx := tripwireCtx(t)
 	sess.registerTool("enqueue_test_queued_input",
@@ -1132,12 +1052,7 @@ const compactErrPending = "a question is pending; reply or clear first"
 func TestAskUser_CompactRefusedWhileAwaiting(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) })
 	sess := newSession(t, withAdapter(f))
 
 	runAskRound(t, sess)
@@ -1197,12 +1112,7 @@ func TestAskUser_CompactSucceedsWhenIdle(t *testing.T) {
 // but not this one.
 func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 	t.Parallel()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") })
 	sess := newSession(t, withAdapter(f), withImmediateRest())
 
 	ctx := tripwireCtx(t)
@@ -1236,12 +1146,7 @@ func TestAskUser_CompactProceedsOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 func TestAskUser_ClearReplacesAwaitingSessionWithFreshIdleOne(t *testing.T) {
 	t.Parallel()
 	ask := askUserCall("ask1", askUserArgsValid())
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) })
 	client := llm.NewClient()
 	client.Register(f)
 	profile := NewOpenAIProfile("gpt-5.2")
@@ -1747,16 +1652,10 @@ func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, triggerCancel) },
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call: an interrupted turn must not continue")
-				return llm.Response{}
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, triggerCancel) }, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call: an interrupted turn must not continue")
+		return llm.Response{}
+	}))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	sess.registerTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
 		map[string]any{"type": "object", "properties": map[string]any{}},
@@ -1801,19 +1700,13 @@ func TestAskUser_InterruptMarkerWriteFailurePreservesBoundary(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	c := llm.NewClient()
 	modelCalls := 0
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				modelCalls++
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach a second LLM call after an unrecorded interrupt marker")
-				return llm.Response{}
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		modelCalls++
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach a second LLM call after an unrecorded interrupt marker")
+		return llm.Response{}
+	}))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
 	if _, err := sess.ProcessInput(parentCtx, "which db should we use?", nil); err != nil {
@@ -1947,13 +1840,7 @@ func TestAskUser_FailedInterruptMarkerAfterAnsweredToolRoundMatchesRestore(t *te
 	// is awaiting: it differs from the idle the generic failure boundary would
 	// pick, which is what makes this test tell the two apart.
 	reply := communicateCallArgs("reply1", map[string]any{"message": "which region?", "end_reason": "needs_response"})
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop, reply, trigger) },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop, reply, trigger) })
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
@@ -2195,12 +2082,7 @@ func TestAskUser_InterruptMarkerRetainedWriteIsAdopted(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, triggerCancel) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask, triggerCancel) }))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 	sess.registerTool("trigger_cancel", "cancels after ask_user posts",
 		map[string]any{"type": "object", "properties": map[string]any{}},
@@ -2866,13 +2748,7 @@ func TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletio
 	ask := askUserCall("ask1", askUserArgsValid())
 	comm := communicateCall("c1", "noted")
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) }))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	ctx := tripwireCtx(t)
@@ -2937,13 +2813,7 @@ func TestAskUser_RestoreAccumulatesPendingQuestionsAcrossNonResolvingRounds(t *t
 	}
 	ask2 := askUserCall("ask2", ask2Args)
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask2) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask2) }))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
 	ctx := tripwireCtx(t)
@@ -3172,18 +3042,12 @@ func TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer(t 
 			t.Fatalf("AcceptClientMutationSteer: %v", err)
 		}
 	}
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				queueSteer()
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("using Postgres, thanks")
-			},
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		queueSteer()
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("using Postgres, thanks")
+	})
 	c := llm.NewClient()
 	c.Register(fa)
 	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -3237,18 +3101,12 @@ func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) 
 			t.Fatalf("AcceptClientMutationSteer: %v", err)
 		}
 	}
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				queueSteer()
-				return agenttest.ToolCallResponse(ask)
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("using Postgres, thanks")
-			},
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		queueSteer()
+		return agenttest.ToolCallResponse(ask)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("using Postgres, thanks")
+	})
 	c := llm.NewClient()
 	c.Register(fa)
 	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -3338,17 +3196,10 @@ func TestAskUser_NotificationHeldWhilePendingAskSurvivesAHumanNoteCarrierRound(t
 	comm := communicateCall("c1", "noted")
 	var notificationRan bool
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-			func(req llm.Request) llm.Response {
-				notificationRan = true
-				return agenttest.FinalResponse("ran the notification")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) }, func(req llm.Request) llm.Response {
+		notificationRan = true
+		return agenttest.FinalResponse("ran the notification")
+	}))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{StateDir: dir}))
 
 	ctx := tripwireCtx(t)
@@ -3677,12 +3528,7 @@ func TestAskUser_RestoreRebuildsPendingCountAndOrder(t *testing.T) {
 	}
 	ask2 := askUserCall("ask2", ask2Args)
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1, ask2) }))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	ctx := tripwireCtx(t)
@@ -3722,12 +3568,7 @@ func TestAskUser_RestoreNeedsResponseRestKeepsPendingEmptyAndGoalKicks(t *testin
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") }))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, testOnly: immediateRestConfig()})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -3792,12 +3633,7 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 	sess.Close()
 
 	restoreClient := llm.NewClient()
-	restoreClient.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, using Postgres") },
-		},
-	})
+	restoreClient.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("thanks, using Postgres") }))
 	restored, err := RestoreSessionFromMeta(restoreClient, withTestSessionNamer(restoreClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
@@ -4141,17 +3977,10 @@ func TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarl
 		}
 	}
 	c := llm.NewClient()
-	fa := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) },
-			func(req llm.Request) llm.Response {
-				queueSteer()
-				return agenttest.ToolCallResponse(ask2)
-			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("using Postgres, thanks") },
-		},
-	}
+	fa := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask1) }, func(req llm.Request) llm.Response {
+		queueSteer()
+		return agenttest.ToolCallResponse(ask2)
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("using Postgres, thanks") })
 	c.Register(fa)
 	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 	defer sess.Close()
@@ -4239,16 +4068,10 @@ func TestAskUser_LiveStateAfterPoisonedTranscriptRefusalMatchesRestore(t *testin
 	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	var fs *environmentSyncFailureFS
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response {
-				armEnvironmentPartialWriteAfter(fs, 1)
-				return agenttest.ToolCallResponse(loop)
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response {
+		armEnvironmentPartialWriteAfter(fs, 1)
+		return agenttest.ToolCallResponse(loop)
+	}))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -4338,7 +4161,7 @@ func TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore(t *testing.T
 		steps = append(steps, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text")} })
 	}
 	c := llm.NewClient()
-	adapter := &fakeAdapter{name: "openai", steps: steps}
+	adapter := newFakeAdapter("openai", steps...)
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
@@ -4376,13 +4199,7 @@ func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T
 	ask := askUserCall("ask1", askUserArgsValid())
 	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop) }))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir:              dir,
 		MaxToolRoundsPerInput: 1,
@@ -4435,13 +4252,7 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	taskList := llm.ToolCallData{ID: "task-list", Name: "task_list", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(taskList) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(taskList) }))
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
 	// TRIPWIRE: scripted adapter and queued notification are deterministic; this only trips on a genuine lifecycle deadlock.
@@ -4492,16 +4303,10 @@ func TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore(
 	ask := askUserCall("ask1", askUserArgsValid())
 	var sess *Session
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response {
-				sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
-				return agenttest.CommunicateResponse(true, "note recorded")
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response {
+		sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
+		return agenttest.CommunicateResponse(true, "note recorded")
+	})
 	c.Register(adapter)
 	sess = newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
 
@@ -4562,13 +4367,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	ask := askUserCall("ask1", askUserArgsValid())
 	loop := llm.ToolCallData{ID: "loop1", Name: "loop_tool", Arguments: json.RawMessage(`{}`), Type: "function"}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop) },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(ask) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(loop) }))
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -4731,21 +4530,15 @@ func TestCommunicateRestoreKeepsSettledNeedsResponseBehindRejectedRetry(t *testi
 	t.Parallel()
 	dir := t.TempDir()
 	blocked := filepath.Join(t.TempDir(), "stop-hook-blocked-once")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{
-					"message": "which db should we use?", "end_turn": true, "end_reason": "needs_response",
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{
-					"message": "settling on done regardless", "end_turn": true, "end_reason": "done",
-				}))
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCallArgs("comm-1", map[string]any{
+			"message": "which db should we use?", "end_turn": true, "end_reason": "needs_response",
+		}))
+	}, func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCallArgs("comm-2", map[string]any{
+			"message": "settling on done regardless", "end_turn": true, "end_reason": "done",
+		}))
+	})
 	// The Stop hook blocks the first turn end — sending the input on past its
 	// accepted terminal communicate — and allows the second.
 	runner := hooks.NewRunner(nil, "")

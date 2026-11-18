@@ -70,57 +70,49 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 
 	// Create a fakeAdapter that calls the ext__greet tool, then returns a final text response.
 	callID := "call_mcp_greet"
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Step 1: LLM decides to call the MCP tool.
-			func(req llm.Request) llm.Response {
-				// Verify MCP tool is in the tool list.
-				found := false
-				for _, td := range req.Tools {
-					if td.Name == "ext__greet" {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Errorf("ext__greet not found in request tools: %v", req.Tools)
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		// Verify MCP tool is in the tool list.
+		found := false
+		for _, td := range req.Tools {
+			if td.Name == "ext__greet" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ext__greet not found in request tools: %v", req.Tools)
+		}
 
-				// MCP tools appear in the API tools parameter, not the system prompt.
+		// MCP tools appear in the API tools parameter, not the system prompt.
 
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        callID,
-								Name:      "ext__greet",
-								Arguments: json.RawMessage(`{"name":"World"}`),
-							}},
-						},
-					},
-				}
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        callID,
+						Name:      "ext__greet",
+						Arguments: json.RawMessage(`{"name":"World"}`),
+					}},
+				},
 			},
-			// Step 2: After tool result, LLM returns final text.
-			func(req llm.Request) llm.Response {
-				// Find the tool result in the conversation.
-				for _, msg := range req.Messages {
-					if msg.Role == llm.RoleTool {
-						for _, p := range msg.Content {
-							if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-								text, ok := p.ToolResult.Content.(string)
-								if ok && strings.Contains(text, "Hello, World!") {
-									return agenttest.FinalResponse("The server said: Hello, World!")
-								}
-							}
+		}
+	}, func(req llm.Request) llm.Response {
+		// Find the tool result in the conversation.
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleTool {
+				for _, p := range msg.Content {
+					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+						text, ok := p.ToolResult.Content.(string)
+						if ok && strings.Contains(text, "Hello, World!") {
+							return agenttest.FinalResponse("The server said: Hello, World!")
 						}
 					}
 				}
-				return agenttest.FinalResponse("Tool result not found")
-			},
-		},
-	}
+			}
+		}
+		return agenttest.FinalResponse("Tool result not found")
+	})
 
 	c := llm.NewClient()
 	c.Register(f)

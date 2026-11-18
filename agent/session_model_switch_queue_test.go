@@ -55,10 +55,7 @@ func (a *gatedListingAdapter) LiveModels(context.Context) ([]registry.Model, err
 // sits in) queues again and must apply to the very next turn, not the one
 // after it.
 func TestModelPickBetweenTurnsAppliesToTheNextTurn(t *testing.T) {
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "first turn done") },
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "first turn done") }, func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") })
 	dir := t.TempDir()
 	s := newSession(t, withAdapter(adapter), withDir(dir), withConfig(SessionConfig{
 		StateDir:         dir,

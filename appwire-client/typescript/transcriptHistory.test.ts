@@ -1181,6 +1181,45 @@ test("an item whose wire carried no observation keeps the answer link absent", (
   expect(itemAt(turnAt(model, 0), 0).answerToTurnIds).toBeUndefined();
 });
 
+// A model call waiting out a usage limit is a WORKING session whose daemon
+// samples the wait into the same failure summary a failed turn carries, with
+// the instant it resumes by itself. A reload has only that read: the modelRetry
+// notification that explained the wait live is gone. Carrying the instant on
+// the model is what lets the pane still say when the call resumes instead of
+// reading the session as silent and possibly stalled.
+test("a reload rehydrates the instant a usage-limit wait resumes from the read's failure summary", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const thread = testThread({
+    status: { type: "active" },
+    evener: { failure: { title: "Usage limit reached", resumesAt } },
+  });
+
+  const reloaded = hydrateThread({ thread }, thread.evener.ref, 1000);
+
+  expect(reloaded.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  // The live retry state is ephemeral by design (the read carries none), which
+  // is exactly why the instant cannot live on it.
+  expect(reloaded.modelRetry).toBeUndefined();
+});
+
+// The wait ends at its reset OR early - a steer or a model switch retries at
+// once - so a later read whose failure names no resume time must clear the
+// instant rather than leave the pane counting down a wait that already ended.
+test("a later read whose failure names no resume time clears the held instant", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const waiting = testThread({
+    status: { type: "active" },
+    evener: { failure: { title: "Usage limit reached", resumesAt } },
+  });
+  const held = hydrateThread({ thread: waiting }, waiting.evener.ref, 1000);
+  expect(held.quotaResumesAt).toBeDefined();
+
+  const resumed = testThread({ status: { type: "active" } });
+  const after = applyReadResponse(held, { thread: resumed }, 2000);
+
+  expect(after.quotaResumesAt).toBeUndefined();
+});
+
 // The daemon's retired-input list is the only durable evidence that a canceled
 // message will never reach history. A read snapshot must carry it, or the
 // client can never retire the row that message left behind.

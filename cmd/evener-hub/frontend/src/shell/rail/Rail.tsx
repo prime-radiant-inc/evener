@@ -656,7 +656,14 @@ function NavigationRail({
       return;
     }
     if (page.section) {
-      await navigationStore.getState().loadSection(page.section, page.offset, page.limit);
+      // A section page's failure is recorded on the resource and returned,
+      // not thrown: the store resolves the request with the errored page so
+      // the rows already loaded stay. Re-throw it here so revealOverflow's
+      // one error path sees it, and the rail reports the failure instead of
+      // looking like the activation did nothing. The page keeps its place in
+      // the row, so the next activation retries it.
+      const loaded = await navigationStore.getState().loadSection(page.section, page.offset, page.limit);
+      if (loaded.error) throw loaded.error;
       return;
     }
     if (page.sectionId) {
@@ -1001,8 +1008,11 @@ function NavigationRail({
   const liveNodes = [
     // Live answers "who needs me" before "which machine": its rows sit in
     // attention bands in every grouping mode, and a row names its host only
-    // where it is not the one most of Live runs on (liveBandNodes).
-    ...liveBandNodes(liveBands, displaySources, isExpanded),
+    // where it is not the one most of Live runs on (liveBandNodes). The
+    // needs-you section's own overflow rides inside its band: the band shows
+    // the hub's tier, so the sessions its loaded pages have not reached are
+    // the band's business and no one else's.
+    ...liveBandNodes(liveBands, displaySources, isExpanded, resources.needsYouOverflow),
     ...sectionOverflowNode(
       "section:live",
       "live",

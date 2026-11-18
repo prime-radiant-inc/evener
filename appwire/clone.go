@@ -3,6 +3,8 @@ package appwire
 import (
 	"encoding/json"
 	"slices"
+
+	"primeradiant.com/evener/agent/provenance"
 )
 
 // CloneThread returns a copy of t in which every known nested mutable field
@@ -69,10 +71,25 @@ func CloneThreadItem(item ThreadItem) ThreadItem {
 	item.CompletedAt = ClonePointer(item.CompletedAt)
 	item.DurationMS = ClonePointer(item.DurationMS)
 	item.ExitCode = ClonePointer(item.ExitCode)
+	item.Observation = CloneSessionObservationMetadata(item.Observation)
 	if item.Raw != nil {
 		item.Raw = append(json.RawMessage{}, item.Raw...)
 	}
 	return item
+}
+
+// CloneSessionObservationMetadata returns a copy of value that shares no
+// mutable state with it, so a caller editing a cloned reply's call-level ask
+// evidence cannot change the reply it was cloned from.
+func CloneSessionObservationMetadata(value *SessionObservationMetadata) *SessionObservationMetadata {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	out.AnswerToTurnIDs = append([]string(nil), value.AnswerToTurnIDs...)
+	out.ResolvedAskCalls = append([]PendingAskCall(nil), value.ResolvedAskCalls...)
+	out.Causal = provenance.Clone(value.Causal)
+	return &out
 }
 
 // CloneOverlayItem returns a copy of item that shares no mutable state with

@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit lint-cache-clean lint-cache-sweep secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -259,6 +259,23 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
+# lint-prompt-eval runs the prompt-eval harness's own Python tests. The harness
+# is plain Python whose tests no other gate reaches: it computes every number in
+# the experiment table, so a wrong summary there is reported as a result rather
+# than caught as a failure. Its tests are pytest-style (module-level functions
+# over a `rae` fixture), which `unittest discover` does not collect at all -- it
+# imports the file, finds no TestCase, and reports zero tests run. pytest exits 5
+# when it collects nothing, so a renamed or deleted test file fails here instead
+# of passing green with nothing run.
+## Run the prompt-eval harness's own Python tests.
+## proves: The harness's measurement and reporting tests pass, and collection
+##   actually finds them (an empty collection is a failure, not a silent green).
+## trigger: Required CI (via make lint); local pre-merge. Under a second.
+## requires: python3 and pytest; no provider calls, no network, no Docker.
+## fails-when: Any harness test fails, or collection finds no test to run.
+lint-prompt-eval:
+	$(call run_quiet_lint,cd tools/prompt-eval && python3 -m pytest -q -p no:cacheprovider)
+
 # lint-package-imports keeps the AppWire TypeScript package addressed by its
 # package name. A relative path into appwire-client/typescript/ typechecks and
 # bundles exactly as well as @evener/appwire-client, so nothing else in the
@@ -372,7 +389,7 @@ lint-repo-audit: build-dev
 # ignores its arguments and exits 0 (issue #1406: every root-scoped "biome both
 # scopes" invocation reported green while checking nothing).
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-prompt-eval lint-package-imports lint-go-module-consumer lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
 ## Go lint, formatting, tagged floors, generated outputs, imports, repository
 ## source audits, and secrets. The frontend's Biome scopes run in `make
@@ -384,8 +401,10 @@ LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal l
 ##   path; that Biome, Vitest, TypeScript and React are pinned to one exact
 ##   version across the npm trees; that no tracked file is over 1 MiB beyond a
 ##   short allowlist; the repository source audits in
-##   internal/devtool/repoaudit; and the repo secret scan.
+##   internal/devtool/repoaudit; the prompt-eval harness's own tests; and the
+##   repo secret scan.
 ## trigger: Required CI; local pre-merge.
-## requires: golangci-lint, gitleaks, and the frontend node_modules install.
+## requires: golangci-lint, gitleaks, python3 with pytest, and the frontend
+##   node_modules install. `make tools` installs the first two and not pytest.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.
 lint: $(LINT_TARGETS)

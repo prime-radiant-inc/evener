@@ -90,13 +90,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	skill := useSkillCall("s1", "greet")
 	comm := communicateCall("c1", "done")
 
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
@@ -145,13 +139,7 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 	c := llm.NewClient()
 	skillCall := useSkillCall("s1", "greet")
 	comm := communicateCall("c1", "done")
-	adapter := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skillCall) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	}
+	adapter := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skillCall) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) })
 	c.Register(adapter)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
@@ -282,13 +270,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	skill := useSkillCall("s1", "deploy")
 	comm := communicateCall("c1", "done")
 
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) },
-		},
-	}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) }, func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(comm) })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))

@@ -17,7 +17,7 @@ agent/delegate_delivery_branches_test.go	2
 agent/delegate_effort_alias_test.go	1
 agent/delegate_lane_branch_disposal_test.go	2
 agent/delegate_resource_supervision_test.go	3
-agent/delegate_resource_worktree_test.go	6
+agent/delegate_resource_worktree_test.go	2
 agent/delegate_runtime_branches_test.go	3
 agent/delegate_runtime_covtest4_test.go	2
 agent/delegate_task_list_test.go	1
@@ -130,7 +130,7 @@ agent/session_notes_outer_journal_test.go	1
 agent/session_orphaned_tool_repair_test.go	1
 agent/session_poisoned_wake_gate_test.go	1
 agent/session_queue_cancel_test.go	1
-agent/session_queue_promote_test.go	2
+agent/session_queue_promote_test.go	1
 agent/session_resolve_profile_test.go	1
 agent/session_set_model_test.go	1
 agent/session_surface_behavior_test.go	1

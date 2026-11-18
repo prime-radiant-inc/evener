@@ -157,7 +157,32 @@ type SessionDelegate struct {
 	// the controller's live value when non-empty, else the folded journal
 	// value — the same join the pushed frame applies, so the read and the
 	// frame agree for every row state. Absent from older daemons.
-	LatestIntent string               `json:"latestIntent,omitempty"`
+	LatestIntent string `json:"latestIntent,omitempty"`
+	// DrainHeldByJobs is the fact the row could not state before: this
+	// delegate's run is held open by its own finalization drain, waiting on
+	// the managed shell counted below. It is what a reader needs to tell a
+	// held delegate from one still working — a delegate mid-turn with the same
+	// background shell is NOT held. Only the live read produces it, and it is
+	// absent from a retained read or an older daemon, so a client never reads
+	// an omission as "known free".
+	DrainHeldByJobs bool `json:"drainHeldByJobs,omitempty"`
+	// RunningJobCount is how many managed shell jobs the delegate's own child
+	// session is running while that hold is set. Absent whenever the hold is,
+	// so it phrases the wait and never reports a count on its own.
+	RunningJobCount int `json:"runningJobCount,omitempty"`
+	// OldestRunningJobStartedAt is the RFC3339Nano start of the oldest of those
+	// jobs, so a row can say how long the wait has lasted. Empty whenever
+	// RunningJobCount is absent.
+	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
+	// HoldSequence orders DrainHeldByJobs against the other samples of the same
+	// delegate's hold. The hold is a per-row fact whose samples can reach a
+	// client out of order — a publisher that sampled before another can send
+	// after it — and the projection revision cannot order them, because both
+	// edges of the hold arrive at the revision the row already carries. This
+	// counter is bumped at the source, under the controller lock, whenever the
+	// sampled hold changes, so a receiver applies the highest sequence it has
+	// seen and rejects a delayed sample. Absent when no sample ever differed.
+	HoldSequence uint64               `json:"holdSequence,omitempty"`
 	Usage        *EvenerUsage         `json:"usage,omitempty"`
 	Worktree     *JobActivityWorktree `json:"worktree,omitempty"`
 }

@@ -38,7 +38,29 @@ export function cloneStableDelegate(delegate: EvenerDelegateInfo): EvenerDelegat
 function mergeStableDelegate(current: EvenerDelegateInfo, incoming: EvenerDelegateInfo): EvenerDelegateInfo {
   const incomingWins = revisionOf(incoming.projectionRevision) > revisionOf(current.projectionRevision);
   const joined = joinDelegateState(incoming, current, incomingWins);
-  return incomingWins ? cloneStableDelegate(joined) : joined;
+  // Durable fields order by projection revision; the drain hold orders by hold
+  // sequence within the source epoch. See delegateFacetOrder in
+  // internal/appprojector/appwire_projection.go. The hold's edges publish at
+  // the revision the row already carries, so without this a same-revision
+  // clear leaves the checkpoint holding a wait that has ended.
+  // Compare the two original snapshots, never the merged winner against
+  // itself: the winner may be this very incoming row, which can never disagree
+  // with itself.
+  const newer = (incoming.holdSequence ?? 0) >= (current.holdSequence ?? 0) ? incoming : current;
+  const held =
+    (joined.holdSequence ?? 0) === (newer.holdSequence ?? 0) &&
+    (joined.drainHeldByJobs ?? false) === (newer.drainHeldByJobs ?? false) &&
+    joined.runningJobCount === newer.runningJobCount &&
+    joined.oldestRunningJobStartedAt === newer.oldestRunningJobStartedAt
+      ? joined
+      : {
+          ...joined,
+          drainHeldByJobs: newer.drainHeldByJobs,
+          runningJobCount: newer.runningJobCount,
+          oldestRunningJobStartedAt: newer.oldestRunningJobStartedAt,
+          holdSequence: newer.holdSequence,
+        };
+  return incomingWins ? cloneStableDelegate(held) : held;
 }
 
 export function upsertStableDelegate(
@@ -414,6 +436,17 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
   // The answer link rides the wire's observation metadata, set only when the
   // wire carried one (see model.ts's answerToTurnIds note).
   if (item.observation?.answerToTurnIds?.length) model.answerToTurnIds = [...item.observation.answerToTurnIds];
+  // Admission's per-call resolution evidence rides the same observation and
+  // is set only when the wire carried one (see model.ts's resolvedAskCalls
+  // note): the link above names a whole execution, this names the calls.
+  if (item.observation?.resolvedAskCalls?.length) {
+    model.resolvedAskCalls = item.observation.resolvedAskCalls.map((call) => ({ ...call }));
+  }
+  // The same observation also says how many resolved questions admission could
+  // NOT name; a nonzero count makes every composed answer line unattributable.
+  if (item.observation?.resolvedAskLegacyCount !== undefined) {
+    model.resolvedAskLegacyCount = item.observation.resolvedAskLegacyCount;
+  }
   if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.
@@ -585,6 +618,11 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // Passed straight through, undefined and all: absent is "nobody counted"
     // and must not become a 0 that reads as "nothing failed".
     failedToolCalls: thread.evener.failedToolCalls,
+    // The one failure field a snapshot carries that the pane needs to explain a
+    // WORKING session's silence: a call waiting out a usage limit names when it
+    // resumes (EvenerThread.Failure.ResumesAt). Every other failure field is
+    // read-only context the transcript's error row already holds.
+    quotaResumesAt: epochMsToISO(thread.evener.failure?.resumesAt),
     ...(thread.evener.access ? { access: { ...thread.evener.access } } : {}),
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),

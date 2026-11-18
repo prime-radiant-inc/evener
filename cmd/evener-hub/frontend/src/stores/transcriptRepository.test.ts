@@ -3,6 +3,7 @@ import {
   encodeTranscriptItem,
   hydrateThread,
   invalidateHistory,
+  markItemTextOmitted,
   type ModelControlSnapshot,
   type ThreadHistoryReadResponse,
   type ThreadHistoryTurnsListResponse,
@@ -30,7 +31,7 @@ import {
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { holdIndexedDBEvent, holdNextTransaction } from "./testing/stalledIndexedDB";
-import { TranscriptRepository } from "./transcriptRepository";
+import { mergeLocalItem, TranscriptRepository } from "./transcriptRepository";
 
 const fixtures: ReturnType<typeof createEntryCacheFixture>[] = [];
 const identity: TranscriptResolvedIdentity = {
@@ -5370,4 +5371,43 @@ it("disposing the repository releases the floor scan's displayed-range reference
   owner.dispose();
   expect(owner.getForegroundFloorForTesting().retainsScan).toBe(false);
   expect(owner.getForegroundFloorForTesting().start).toEqual(start);
+});
+
+// The state mergeLocalItem recovers cannot be reached through a repository
+// read: after idle pruning a held row's body is omitted AND marked
+// identity-only, so the version rule's upgrade path already restores it. The
+// defect lives one step over — a held row whose body is omitted but which is
+// NOT a placeholder, meeting a durable row that supplies ask evidence at the
+// same version. Enrichment returns a new object there, so reference equality
+// cannot tell "the held row won" from "the incoming row replaced it". This
+// calls the merge directly because no read produces that pair: a pruned row
+// carries the same evidence the durable row supplies, so enrichment never
+// fires on it.
+it("keeps the held body when a same-version merge supplies ask evidence", () => {
+  const held = markItemTextOmitted({
+    type: "agentMessage",
+    id: "item-6",
+    transcriptKey: "item-6",
+    turnId: "turn_1",
+    position: { entry: 6, item: 0 },
+    version: 6,
+    text: "",
+    roundId: "round_1",
+  });
+  const durable = {
+    type: "agentMessage",
+    id: "item-6",
+    transcriptKey: "item-6",
+    turnId: "turn_1",
+    position: { entry: 6, item: 0 },
+    version: 6,
+    text: "the durable body",
+    roundId: "round_1",
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call-6" }],
+  } as unknown as Parameters<typeof mergeLocalItem>[1];
+  const merged = mergeLocalItem(held, durable);
+  // The durable body is recovered, and the evidence the held row lacked is
+  // filled in — the fill must not be read as a replacement that discards it.
+  expect(merged.text).toBe(durable.text);
+  expect(merged.resolvedAskCalls).toEqual([{ turnId: "turn_1", callId: "call-6" }]);
 });

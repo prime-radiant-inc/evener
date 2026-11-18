@@ -426,9 +426,7 @@ func compactSession(t *testing.T) *Session {
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("forced summary") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("forced summary") }))
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -542,12 +540,7 @@ func TestProcessInputDelegatesAsUserInput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("all done") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("all done") }))
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: sharingHostProbe(testConfig{})})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

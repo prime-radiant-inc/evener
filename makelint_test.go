@@ -64,6 +64,7 @@ var lintGateCommands = map[string]string{
 	"lint-golangci":           "GOOS=darwin golangci-lint run",
 	"lint-generated":          "docs/appwire-protocol.md",
 	"lint-fuzz-registry":      "scripts/fuzz/fuzz-registry-check.sh",
+	"lint-prompt-eval":        "cd tools/prompt-eval && python3 -m pytest",
 	"lint-package-imports":    "scripts/sdk/package-import-paths-check.sh",
 	"lint-go-module-consumer": "scripts/gate/go-module-consumer-check.sh",
 	"lint-js-toolchain-pins":  "scripts/sdk/js-toolchain-pins-check.mjs",

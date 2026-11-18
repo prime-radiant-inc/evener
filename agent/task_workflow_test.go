@@ -292,12 +292,7 @@ func TestTaskWorkflow_ParentTasksNotClobberedByNewSession(t *testing.T) {
 	// Subagent task population happens in spawnAgent where parentTasks are available.
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} }))
 
 	// Simulate a subagent session (has ParentSessionID set).
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
@@ -330,12 +325,7 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 	// Root sessions (no parent) should still get tasks from NewSession.
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} }))
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "coordinator",
@@ -367,12 +357,7 @@ func TestTaskWorkflow_OneShotRunWithAskResponderPopulatesTasks(t *testing.T) {
 	// same run without a responder.
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} }))
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:            "coordinator",
@@ -399,12 +384,7 @@ func TestTaskWorkflow_DefaultRootSessionDoesNotPopulateTasks(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} }))
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		AgentName:      "default",
@@ -428,12 +408,7 @@ func TestTaskWorkflow_NewSessionPopulatesCorrectTasks(t *testing.T) {
 	// should get implementer tasks, not coordinator tasks.
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(r llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("ok")} }))
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "implementer",

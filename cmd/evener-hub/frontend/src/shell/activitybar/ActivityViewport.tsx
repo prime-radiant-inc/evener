@@ -3,7 +3,6 @@ import type { ActivityTab } from "../statusbar/statusScope";
 import { type ActivityScrollAnchor, activitySidebarStore } from "./activitySidebarStore";
 
 interface ActivityViewportState {
-  anchorID(): string | undefined;
   isCurrent(): boolean;
   contentChanged(ids: readonly string[], complete: boolean, hasMore: boolean): void;
 }
@@ -25,10 +24,6 @@ const SCROLL_KEYS = new Set([
 export function useActivityScrollProgress(ids: readonly string[], complete: boolean, hasMore = false): void {
   const view = useContext(ViewportContext);
   useLayoutEffect(() => view?.contentChanged(ids, complete, hasMore), [view, ids, complete, hasMore]);
-}
-
-export function useActivityScrollAnchor(): string | undefined {
-  return useContext(ViewportContext)?.anchorID();
 }
 
 /** Exiting animation children can still receive old observer callbacks. */
@@ -133,10 +128,7 @@ export function ActivityViewport({
     programmaticTop.current = null;
     capture();
   };
-  const view = useMemo(
-    () => ({ anchorID: () => pending.current?.id, isCurrent, contentChanged }),
-    [isCurrent, contentChanged],
-  );
+  const view = useMemo(() => ({ isCurrent, contentChanged }), [isCurrent, contentChanged]);
   return (
     <ViewportContext.Provider value={view}>
       <div

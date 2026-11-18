@@ -64,23 +64,34 @@ func UntilSeen(t testing.TB, what string, check func() (done bool, seen string))
 	}
 }
 
-// giveUpAt is when a wait starting at now stops polling: waitCeiling after
-// now, or sooner when the test's deadline is nearer, deadlineMargin before it
-// (halfway there when less than twice the margin is left).
-func giveUpAt(t testing.TB, now time.Time) time.Time {
-	giveUp := now.Add(waitCeiling)
+// Budget reports how long a hang guard may wait before it must fail: waitCeiling,
+// or less when the test binary's own deadline is nearer, deadlineMargin short of
+// it. A guard that waits exactly this long and then fails reports its own
+// condition, where a guard that waits past the deadline loses to the goroutine
+// dump the binary prints as it dies.
+//
+// Until and UntilSeen take their give-up point from here, and so does a helper
+// that selects on a channel instead of polling. Reading the rule from one place
+// is what stops the two kinds of wait from disagreeing about how much time a
+// hang guard may spend.
+func Budget(t testing.TB) time.Duration {
+	return budgetAt(t, time.Now())
+}
+
+// budgetAt is Budget as of now, so a caller that anchored its wait to an earlier
+// instant measures the remaining deadline from that instant.
+func budgetAt(t testing.TB, now time.Time) time.Duration {
+	budget := waitCeiling
 	if withDeadline, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
 		if deadline, ok := withDeadline.Deadline(); ok {
 			remaining := deadline.Sub(now)
-			giveUp = minTime(giveUp, now.Add(remaining-min(deadlineMargin, remaining/2)))
+			budget = min(budget, remaining-min(deadlineMargin, remaining/2))
 		}
 	}
-	return giveUp
+	return budget
 }
 
-func minTime(a, b time.Time) time.Time {
-	if b.Before(a) {
-		return b
-	}
-	return a
+// giveUpAt is when a wait starting at now stops polling: Budget after now.
+func giveUpAt(t testing.TB, now time.Time) time.Time {
+	return now.Add(budgetAt(t, now))
 }

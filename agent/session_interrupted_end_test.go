@@ -20,13 +20,11 @@ func TestInterruptedSessionEndCarriesTheWireState(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	started := make(chan struct{}, 1)
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-			}}}
-		},
-	}})
+	c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+		}}}
+	}))
 	sess := newSession(t, withClient(c), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	_ = sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "slow", Description: "Wait for cancellation."},

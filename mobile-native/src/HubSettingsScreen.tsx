@@ -4,13 +4,17 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
+import {
+	type ConnectionState,
+	createHubOverviewStore,
+	type SettingsOperationStoreQuarantine,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { allowFontScaling, Copy, ErrorMessage, styles, useColors, WarningMessage } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 
@@ -231,6 +235,7 @@ function HubSettings({
 				</View>
 				{data && (
 					<>
+						<OperationStoreQuarantineNotice quarantine={hub?.operationStoreQuarantine} />
 						<Section title="Runtime and storage">
 							<Detail label="Version" value={hub?.version} />
 							<Detail label="Commit" value={hub?.commit} />
@@ -293,5 +298,32 @@ function HubSettings({
 				)}
 			</GroupedPage>
 		</SafeAreaView>
+	);
+}
+
+/** OperationStoreQuarantineNotice reports the hub's operation-store quarantine
+ * signal: a corrupt store file was moved aside and the hub serves a replacement.
+ * The hub already recovered, so this is a standing fact rather than a failure,
+ * and it is never shown for a hub that reports none (an older hub sends no field
+ * at all). The paths are the screen's ordinary detail rows, so an operator can
+ * select and copy them the same way as every other path here. The set-aside row
+ * names the aside file — the one holding the quarantined bytes — never the store
+ * path the replacement now occupies, and it is absent (rather than blank) when
+ * that file is already gone and only its custody file remains. */
+function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOperationStoreQuarantine | undefined }) {
+	if (!quarantine) return null;
+	const gone = quarantine.asideFile ? "" : " The file holding the corrupt bytes is no longer on disk.";
+	return (
+		<View testID="operation-store-quarantine">
+			<WarningMessage
+				message={`The hub's operation store was quarantined: a corrupt store file was moved aside and the hub is serving a replacement.${gone}`}
+			/>
+			<Group>
+				{quarantine.asideFile ? <Detail label="Set aside" value={quarantine.asideFile} machineValue /> : null}
+				<Detail label="Store path" value={quarantine.quarantinedFile} machineValue />
+				<Detail label="Custody file" value={quarantine.custodyFile} machineValue />
+				<Detail label="Quarantine epoch" value={quarantine.quarantineEpoch} />
+			</Group>
+		</View>
 	);
 }

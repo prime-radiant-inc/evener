@@ -69,9 +69,7 @@ func seedWatchSendResidue(t *testing.T, sess *Session) {
 // no live work behind it must be abandoned so the process can exit.
 func TestTerminalDrainExitsDespiteWatchSendResidue(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("all done") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("all done") })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -133,15 +131,9 @@ func TestTerminalDrainKeepsFinalizingDelegateLive(t *testing.T) {
 // on the first empty response, with no retry provider call.
 func TestPostTerminalNotificationTurnEmptyResponseFinishesIdle(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("the answer") },
-		// The post-terminal notification turn: truly empty (no text, no tool
-		// calls, no phase metadata) — the model glitch shape the retry budget
-		// exists for, which after a terminal communicate must finish idle.
-		func(llm.Request) llm.Response {
-			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("the answer") }, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}
+	})
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -297,15 +289,12 @@ func TestOneShotDrainDeliversCompletionThatLandsDuringTheFinalAnswer(t *testing.
 	var sess *Session
 	var jobID string
 	var releaseShell func()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			// The final-answer request is built; finish the job before the reply
-			// so the completion lands inside the answer's generation window.
-			finalizeShell(t, sess.jobManager, jobID, releaseShell)
-			return agenttest.FinalResponse(firstAnswer)
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		// The final-answer request is built; finish the job before the reply
+		// so the completion lands inside the answer's generation window.
+		finalizeShell(t, sess.jobManager, jobID, releaseShell)
+		return agenttest.FinalResponse(firstAnswer)
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) })
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -361,32 +350,27 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 	var releaseShell func()
 	env := newHeldJobEnvironment(t.TempDir())
 	t.Cleanup(env.releaseJob)
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
-			return agenttest.FinalResponse(firstAnswer)
-		},
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(llm.ToolCallData{
-				ID: "second-job", Name: "shell", Type: "function",
-				Arguments: json.RawMessage(`{"command":"held follow-up job","mode":"background"}`),
-			})
-		},
-		func(llm.Request) llm.Response {
-			// The request carrying the tool result is built; finish the
-			// follow-up job before the reply so its completion lands inside
-			// this reply's generation window.
-			running := sess.jobManager.runningJobIDs()
-			if len(running) != 1 {
-				t.Errorf("running jobs at the tool-result request = %v, want only the follow-up job", running)
-				env.releaseJob()
-			} else {
-				finalizeShell(t, sess.jobManager, running[0], env.releaseJob)
-			}
-			return agenttest.FinalResponse("started a follow-up job; waiting")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		finalizeShell(t, sess.jobManager, firstJobID, releaseShell)
+		return agenttest.FinalResponse(firstAnswer)
+	}, func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID: "second-job", Name: "shell", Type: "function",
+			Arguments: json.RawMessage(`{"command":"held follow-up job","mode":"background"}`),
+		})
+	}, func(llm.Request) llm.Response {
+		// The request carrying the tool result is built; finish the
+		// follow-up job before the reply so its completion lands inside
+		// this reply's generation window.
+		running := sess.jobManager.runningJobIDs()
+		if len(running) != 1 {
+			t.Errorf("running jobs at the tool-result request = %v, want only the follow-up job", running)
+			env.releaseJob()
+		} else {
+			finalizeShell(t, sess.jobManager, running[0], env.releaseJob)
+		}
+		return agenttest.FinalResponse("started a follow-up job; waiting")
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) })
 	sess = newSession(t, withAdapter(adapter), withEnv(env), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -445,9 +429,7 @@ func TestOneShotDrainKeepsDrainingWhenTheDeliveredCompletionStartsMoreWork(t *te
 func TestOneShotDrainReturnsAfterAFinalAnswerThatSawEveryCompletion(t *testing.T) {
 	t.Parallel()
 	const answer = "FINAL-ANSWER: the build passed"
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -500,20 +482,17 @@ func TestOneShotDrainDiscardsWatchFramesQueuedBeforeTheFinalAnswer(t *testing.T)
 	var sess *Session
 	var jobID string
 	var releaseShell func()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			// The final-answer request is built. Fire the watch, then finish the
-			// job, so both a watch frame and the completion are queued before
-			// the reply.
-			feedJob(sess.jobManager, jobID, []byte("READY\n"))
-			finalizeShell(t, sess.jobManager, jobID, releaseShell)
-			if n := sess.peekNotifications(); n < 2 {
-				t.Errorf("queued notifications before the reply = %d, want the watch frame and the completion", n)
-			}
-			return agenttest.FinalResponse(firstAnswer)
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		// The final-answer request is built. Fire the watch, then finish the
+		// job, so both a watch frame and the completion are queued before
+		// the reply.
+		feedJob(sess.jobManager, jobID, []byte("READY\n"))
+		finalizeShell(t, sess.jobManager, jobID, releaseShell)
+		if n := sess.peekNotifications(); n < 2 {
+			t.Errorf("queued notifications before the reply = %d, want the watch frame and the completion", n)
+		}
+		return agenttest.FinalResponse(firstAnswer)
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse(finalAnswer) })
 	sess = newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))

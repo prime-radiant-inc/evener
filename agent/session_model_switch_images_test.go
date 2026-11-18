@@ -36,9 +36,9 @@ func imageToolResultMessage() llm.Message {
 // session dispatched.
 func runOneTurn(t *testing.T, sess *Session, adapter *fakeAdapter) llm.Request {
 	t.Helper()
-	adapter.steps = []func(req llm.Request) llm.Response{
+	adapter.setSteps([]func(req llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) },
-	}
+	})
 	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -53,12 +53,8 @@ func TestResolveVisionRoute(t *testing.T) {
 func TestDescribeImage_RoutesToConfiguredProvider(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	openai := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("session-vision")} },
-	}}
-	anthropic := &fakeAdapter{name: "anthropic", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("routed-vision")} },
-	}}
+	openai := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("session-vision")} })
+	anthropic := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("routed-vision")} })
 	c := llm.NewClient()
 	c.Register(openai)
 	c.Register(anthropic)
@@ -102,9 +98,7 @@ func TestSetVisionModelCanonicalizesOffAndSuppressesSemanticNoopEvent(t *testing
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} }))
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -145,9 +139,7 @@ func TestSetVisionModelCanonicalizesLegacyOffSpellingWithoutEvent(t *testing.T) 
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} }))
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir, VisionModel: "OFF"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -185,12 +177,8 @@ func TestSetVisionModelPreservesQualifiedOffRef(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-	}})
-	c.Register(&fakeAdapter{name: "off", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} }))
+	c.Register(newFakeAdapter("off", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} }))
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -210,9 +198,7 @@ func TestSetVisionModelStoresAndEmitsEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} }))
 	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

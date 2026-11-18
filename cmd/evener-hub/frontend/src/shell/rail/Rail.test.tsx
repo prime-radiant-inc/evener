@@ -39,6 +39,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
+import { toastKinds } from "../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
@@ -1108,7 +1109,14 @@ describe("resource-backed Rail", () => {
     expect(loadProjectPage).toHaveBeenCalledWith("p", "current", 1, 2);
   });
   test("loads one global overflow page and deduplicates repeated activation", async () => {
-    const loadSection = vi.fn().mockResolvedValue(undefined);
+    // The real loadSection resolves the page resource whether or not the read
+    // worked, with a failure recorded in `error`. A mock resolving nothing is
+    // a shape the rail never sees, and reading `error` off it throws.
+    const page = resource(
+      { kind: "section", section: "live", offset: 1, limit: 50 },
+      { generation_id: "g1", revision: 1, sessions: [], remaining: 0, truncated: false },
+    );
+    const loadSection = vi.fn().mockResolvedValue(page);
     installState([sectionResource("live", [summary({ title: "Live" })], 3)]);
     navigationStore.setState({ loadSection });
     render(<Rail />);
@@ -1118,6 +1126,8 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(loadSection).toHaveBeenCalledTimes(1);
     expect(loadSection).toHaveBeenCalledWith("live", 1, 50);
+    // A page carrying no error is a successful read: it reaches no toast.
+    expect(toastKinds()).not.toContain("error");
   });
   test("advances every bounded view by returned top-level rows", () => {
     const globalRows = [summary({ ref: "global:a" }), summary({ ref: "global:b" })];
@@ -1414,17 +1424,35 @@ describe("resource-backed Rail", () => {
     expect(adapted.projects[0]?.sessions.map((row) => row.title)).toEqual(["Recent", "Current"]);
   });
   test("toasts a global overflow failure and permits a deterministic retry", async () => {
-    const loadSection = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
+    const page = resource(
+      { kind: "section", section: "live", offset: 1, limit: 50 },
+      { generation_id: "g1", revision: 1, sessions: [], remaining: 0, truncated: false },
+    );
+    // A read can fail two ways: the promise rejects, or it resolves the page
+    // with the failure recorded on it. Both must reach the toast, and both
+    // leave the row in place so this same control retries.
+    const loadSection = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ ...page, error: new Error("offline") })
+      .mockResolvedValue(page);
     installState([sectionResource("live", [summary({ title: "Live" })], 3)]);
     navigationStore.setState({ loadSection });
     render(<Rail />);
     const older = screen.getByText("+3 older");
     fireEvent.click(older);
     await act(async () => undefined);
-    expect(getToasts().some((toast) => /Couldn't load older sessions/i.test(toast.text))).toBe(true);
+    expect(toastKinds()).toEqual(["error"]);
     fireEvent.click(older);
     await act(async () => undefined);
-    expect(loadSection).toHaveBeenCalledTimes(2);
+    // The page that resolved with its error recorded is the shape the store
+    // really uses, and it reports as loudly as a rejection.
+    expect(toastKinds()).toEqual(["error", "error"]);
+    fireEvent.click(older);
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(3);
+    // The third read was clean: it raised nothing.
+    expect(toastKinds()).toEqual(["error", "error"]);
   });
   test("toasts a project overflow failure and retries the same canonical page", async () => {
     const loadProjectPage = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);

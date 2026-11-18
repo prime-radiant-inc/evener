@@ -127,17 +127,15 @@ func closeAndCountSessionStartHooks(t *testing.T, sess *Session, eventsPtr *[]ev
 
 func TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			requireRequestContainsInOrder(t, req,
-				"prior user task",
-				"prior assistant answer",
-				"RESUME_HOOK_CONTEXT",
-				"current user task",
-			)
-			return agenttest.FinalResponse("done")
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		requireRequestContainsInOrder(t, req,
+			"prior user task",
+			"prior assistant answer",
+			"RESUME_HOOK_CONTEXT",
+			"current user task",
+		)
+		return agenttest.FinalResponse("done")
+	})
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
@@ -164,22 +162,19 @@ func TestRestoreSessionDefersResumeSessionStartHooksUntilUserInput(t *testing.T)
 
 func TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			text := requestText(req)
-			if strings.Contains(text, "RESUME_HOOK_CONTEXT") || strings.Contains(text, "RESUME_HOOK_USER_MESSAGE") {
-				t.Fatalf("notification request drained resume hooks; text:\n%s", text)
-			}
-			if !strings.Contains(text, "notification steering without resume hooks") {
-				t.Fatalf("notification request missing steering text; text:\n%s", text)
-			}
-			return agenttest.FinalResponse("notification done")
-		},
-		func(req llm.Request) llm.Response {
-			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first real user")
-			return agenttest.FinalResponse("user done")
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		text := requestText(req)
+		if strings.Contains(text, "RESUME_HOOK_CONTEXT") || strings.Contains(text, "RESUME_HOOK_USER_MESSAGE") {
+			t.Fatalf("notification request drained resume hooks; text:\n%s", text)
+		}
+		if !strings.Contains(text, "notification steering without resume hooks") {
+			t.Fatalf("notification request missing steering text; text:\n%s", text)
+		}
+		return agenttest.FinalResponse("notification done")
+	}, func(req llm.Request) llm.Response {
+		requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first real user")
+		return agenttest.FinalResponse("user done")
+	})
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 	sess.Steer("notification steering without resume hooks")
@@ -208,22 +203,19 @@ func TestRestoreSessionNotificationDoesNotDrainResumeSessionStartHooks(t *testin
 
 func TestRestoreSessionStartHooksDrainOnlyOnce(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first user")
-			return agenttest.FinalResponse("first done")
-		},
-		func(req llm.Request) llm.Response {
-			text := requestText(req)
-			if strings.Count(text, "RESUME_HOOK_CONTEXT") != 1 {
-				t.Fatalf("resume hook context count across second request = %d, want 1; text:\n%s", strings.Count(text, "RESUME_HOOK_CONTEXT"), text)
-			}
-			if !strings.Contains(text, "second user") {
-				t.Fatalf("second request missing second user prompt; text:\n%s", text)
-			}
-			return agenttest.FinalResponse("second done")
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "first user")
+		return agenttest.FinalResponse("first done")
+	}, func(req llm.Request) llm.Response {
+		text := requestText(req)
+		if strings.Count(text, "RESUME_HOOK_CONTEXT") != 1 {
+			t.Fatalf("resume hook context count across second request = %d, want 1; text:\n%s", strings.Count(text, "RESUME_HOOK_CONTEXT"), text)
+		}
+		if !strings.Contains(text, "second user") {
+			t.Fatalf("second request missing second user prompt; text:\n%s", text)
+		}
+		return agenttest.FinalResponse("second done")
+	})
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
@@ -245,21 +237,19 @@ func TestRestoreSessionStartHooksDrainOnlyOnce(t *testing.T) {
 
 func TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			text := requestText(req)
-			if strings.Contains(text, "rejected by max turns") {
-				t.Fatalf("MaxTurns-rejected prompt leaked into accepted request; text:\n%s", text)
-			}
-			requireRequestContainsInOrder(t, req,
-				"prior user task",
-				"prior assistant answer",
-				"RESUME_HOOK_CONTEXT",
-				"accepted after max turns",
-			)
-			return agenttest.FinalResponse("done")
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		text := requestText(req)
+		if strings.Contains(text, "rejected by max turns") {
+			t.Fatalf("MaxTurns-rejected prompt leaked into accepted request; text:\n%s", text)
+		}
+		requireRequestContainsInOrder(t, req,
+			"prior user task",
+			"prior assistant answer",
+			"RESUME_HOOK_CONTEXT",
+			"accepted after max turns",
+		)
+		return agenttest.FinalResponse("done")
+	})
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
@@ -300,12 +290,10 @@ func TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks(t *testi
 
 func TestRestoreSessionRejectedUserInputKeepsPendingResumeHooks(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "accepted user")
-			return agenttest.FinalResponse("done")
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		requireRequestContainsInOrder(t, req, "RESUME_HOOK_CONTEXT", "accepted user")
+		return agenttest.FinalResponse("done")
+	})
 	sess := restoredSessionWithResumeHook(t, adapter)
 	eventsPtr, mu, doneCh := collectEvents(sess)
 

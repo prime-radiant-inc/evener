@@ -14,6 +14,7 @@ import {
   hydrateThread,
   type ItemModel,
   invalidateHistory,
+  itemIsIdentityOnly,
   itemTextPresence,
   type ModelControlInput,
   type ModelControlSnapshot,
@@ -68,10 +69,31 @@ function offeredContentFingerprint(batch: Parameters<SessionEntryCache["commitBa
 // explicit values (including empty ones). Keep normal version/identity rules;
 // only when the held item wins at equal version, use it as the authoritative
 // incoming payload over the cached fallback.
-function mergeLocalItem(held: ItemModel | undefined, incoming: ItemModel): ItemModel {
+// Exported for the direct merge test: the state this recovers is a held row
+// whose body is omitted while its evidence arrives at the same version, and
+// that state cannot be constructed through a repository read (a pruned row
+// keeps its evidence, so the enrichment the defect needs never fires there).
+export function mergeLocalItem(held: ItemModel | undefined, incoming: ItemModel): ItemModel {
   const merged = mergeTranscriptItemVersioned(held, held?.version, incoming, incoming.version ?? 0);
-  if (held && merged === held && held.version === incoming.version) {
-    const enriched = mergeTranscriptItemVersioned(incoming, undefined, held, held.version ?? 0);
+  // Ask the version rules what they decided instead of inferring it from
+  // object identity. Enrichment returns a new object, so `merged === held`
+  // went false exactly when the held row won — and a replacement that falls
+  // back to a held omission-tolerant field returns a copy of `incoming`, so
+  // `merged !== incoming` is false for a row the held side did NOT keep.
+  // Neither reference comparison names the winner. At an equal version the
+  // held row is authoritative unless its identity-only placeholder is being
+  // upgraded by a row that carries content; that is the same condition the
+  // version rule itself applies.
+  const heldAuthoritative =
+    held !== undefined &&
+    held.version === incoming.version &&
+    !(itemIsIdentityOnly(held) && !itemIsIdentityOnly(incoming));
+  if (heldAuthoritative) {
+    // Put back the payload the rules just decided on, not the raw held row:
+    // when the decision was evidence enrichment, `merged` carries the filled
+    // fields and `held` does not, so merging the raw row would recover the
+    // body by throwing away the very evidence that took this branch.
+    const enriched = mergeTranscriptItemVersioned(incoming, undefined, merged, merged.version ?? 0);
     // An omission-tolerant merge keeps the source's omission marker even when
     // it carries fallback text. That body is still usable by a local reader.
     return itemTextPresence(held) === "omitted" && held.text === "" && incoming.text !== ""

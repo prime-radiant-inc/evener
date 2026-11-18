@@ -54,14 +54,9 @@ func TestW2Tail_nameSession_LLMErrorWrapped(t *testing.T) {
 func TestW2Tail_nameSession_EmptyNameAfterSanitize(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant(`{"name":"   "}`)}
-			},
-		},
-	})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant(`{"name":"   "}`)}
+	}))
 	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourceCompaction, "summary text", "", noNamerSleep)
 	if err == nil {
 		t.Fatalf("expected empty-name error after sanitize")

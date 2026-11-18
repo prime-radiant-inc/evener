@@ -80,19 +80,17 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
 	childPromptSeen := make(chan string, 1)
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			var childPrompt string
-			for _, msg := range req.Messages {
-				if msg.Role == llm.RoleSystem {
-					childPrompt = msg.Text()
-					break
-				}
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		var childPrompt string
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleSystem {
+				childPrompt = msg.Text()
+				break
 			}
-			childPromptSeen <- childPrompt
-			return agenttest.FinalResponse("done")
-		},
-	}})
+		}
+		childPromptSeen <- childPrompt
+		return agenttest.FinalResponse("done")
+	}))
 
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		MaxSubagentDepth: 3,

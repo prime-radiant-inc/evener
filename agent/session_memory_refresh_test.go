@@ -124,9 +124,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 			return agenttest.FinalResponse("observed")
 		}
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		wantFull("opaque-full-1"), wantFull("opaque-full-2"), wantFull("opaque-full-2"),
-	}})
+	s.client.Register(newFakeAdapter("openai", append([]func(llm.Request) llm.Response{wantFull("opaque-full-1")}, agenttest.RepeatSteps(wantFull("opaque-full-2"), 2)...)...))
 	turn := func(sess *Session, wantContexts int) {
 		t.Helper()
 		if _, err := sess.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -160,9 +158,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		wantFull("opaque-full-2"), wantFull("opaque-full-2"),
-	}})
+	r.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(wantFull("opaque-full-2"), 2)...))
 	restored := memoryContextCount(r)
 	turn(r, restored+1)
 	turn(r, restored+1)
@@ -324,9 +320,7 @@ func TestMemoryRefreshNoPagesAfterCompactionThenPageDeliversFullIndex(t *testing
 			return agenttest.FinalResponse("observed")
 		}
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		wantFull("current", "opaque-before-fold-1"), wantFull("missing", ""), wantFull("current", "opaque-after-fold-2"),
-	}})
+	s.client.Register(newFakeAdapter("openai", wantFull("current", "opaque-before-fold-1"), wantFull("missing", ""), wantFull("current", "opaque-after-fold-2")))
 	turn := func() {
 		t.Helper()
 		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -1030,17 +1024,12 @@ func TestMemoryRefreshPageRecordsSurviveCompaction(t *testing.T) {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-page-fold")}
 	}, withConfig(SessionConfig{StateDir: t.TempDir(), MemoryStateRoot: root}))
 	var notice string
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-kept-page.md"})
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("read") },
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("after fold") },
-		func(req llm.Request) llm.Response {
-			notice = latestMemoryContext(req, "personal")
-			return agenttest.FinalResponse("noticed")
-		},
-	}})
+	s.client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return memoryCallResponse("memory_read", map[string]any{"scope": "personal", "file_path": "opaque-kept-page.md"})
+	}, func(llm.Request) llm.Response { return agenttest.FinalResponse("read") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("after fold") }, func(req llm.Request) llm.Response {
+		notice = latestMemoryContext(req, "personal")
+		return agenttest.FinalResponse("noticed")
+	}))
 	turn := func() {
 		t.Helper()
 		if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -1090,15 +1079,13 @@ func TestMemoryRefreshPageRecordsDoNotSurviveResume(t *testing.T) {
 	defer r.Close()
 	writeMemoryPage(t, root, "opaque-forgotten-page.md", "opaque-forgotten-body-2\n")
 	var sections []apptranscript.MemoryContextSection
-	r.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			for _, msg := range req.Messages {
-				scoped, _ := memoryScopeSections(msg.Text(), "personal")
-				sections = append(sections, scoped...)
-			}
-			return agenttest.FinalResponse("resumed")
-		},
-	}})
+	r.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		for _, msg := range req.Messages {
+			scoped, _ := memoryScopeSections(msg.Text(), "personal")
+			sections = append(sections, scoped...)
+		}
+		return agenttest.FinalResponse("resumed")
+	}))
 	if _, err := r.ProcessInput(context.Background(), "go", nil); err != nil {
 		t.Fatal(err)
 	}

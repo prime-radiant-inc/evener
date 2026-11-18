@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>overscroll-touch-wide-fine layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* The real shell owns the whole viewport; only its own panes scroll. This
+     block adds no layout the product does not have: the filler stands in for a
+     long transcript and is simply taller than the pane body, so the body has
+     real vertical pressure to scroll. */
+  .fixtureParagraphs {
+    min-height: 1200px;
+  }
+
+  .fixtureParagraphs p {
+    margin: 0 0 var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-body);
+    color: var(--ink-mid);
+  }
+</style>
+</head>
+<body>
+<!-- The production desktop shell from AppShell.tsx: .shell (100dvh) >
+     .content (row) > .workspaceColumn > .workspaceHost > DockHost's .host >
+     PaneScaffold's .pane > header/body/footer, using the REAL
+     AppShell.module.css, DockHost.module.css and panescaffold.module.css class
+     names. At 1280px this is the desktop layout on any pointer; the case's
+     viewport decides whether a coarse pointer is present. -->
+<div class="shell" data-shell>
+  <div class="content">
+    <div class="workspaceColumn">
+      <div class="workspaceHost">
+        <div class="host">
+          <article class="pane" data-pane>
+            <header class="header">
+              <h1 class="title">local:session-overscroll</h1>
+            </header>
+            <div class="body" data-pane-body>
+              <div class="fixtureParagraphs">
+                <p>Turn 1 — the desktop pane body owns its own scrolling, not the document.</p>
+                <p>Turn 2 — this content is intentionally tall so the body has real vertical pressure.</p>
+                <p>Turn 3 — a wide touch screen must keep that scrolling while losing browser pull-to-refresh.</p>
+                <p>Turn 4 — the two document locks disagree today about what a touching surface is.</p>
+                <p>Turn 5 — the gesture lock reaches coarse pointers; the layout lock stays on the phone.</p>
+                <p>Turn 6 — this line keeps the body scrollable rather than exactly fitting.</p>
+                <p>Turn 7 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 8 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 9 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 10 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 11 — another line of transcript content for internal scrolling.</p>
+                <p>Turn 12 — another line of transcript content for internal scrolling.</p>
+              </div>
+            </div>
+            <footer class="footer">Composer</footer>
+          </article>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const html = getComputedStyle(document.documentElement);
+  const body = getComputedStyle(document.body);
+  const shell = document.querySelector("[data-shell]");
+  const shellBox = shell.getBoundingClientRect();
+  const paneBody = document.querySelector("[data-pane-body]");
+
+  // A document that is a non-scroller clamps this to 0; a live one moves.
+  window.scrollTo(0, 100);
+  if (document.scrollingElement) document.scrollingElement.scrollTop = 100;
+  const documentScrollTop = document.scrollingElement ? document.scrollingElement.scrollTop : null;
+
+  paneBody.scrollTop = 100;
+  const paneScrollTop = paneBody.scrollTop;
+
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    anyPointerCoarse: matchMedia("(any-pointer: coarse)").matches,
+    document: {
+      overscrollBehaviorX: html.overscrollBehaviorX,
+      overscrollBehaviorY: html.overscrollBehaviorY,
+      rootOverflowX: html.overflowX,
+      rootOverflowY: html.overflowY,
+      bodyOverflowX: body.overflowX,
+      bodyOverflowY: body.overflowY,
+      bodyTouchAction: body.touchAction,
+      scrollTopAfterAttempt: documentScrollTop,
+      scrollHeight: document.documentElement.scrollHeight,
+      clientHeight: document.documentElement.clientHeight,
+    },
+    shell: { top: shellBox.top, bottom: shellBox.bottom, width: shellBox.width, height: shellBox.height },
+    paneBody: {
+      clientHeight: paneBody.clientHeight,
+      scrollHeight: paneBody.scrollHeight,
+      scrollTopAfter: paneScrollTop,
+      overflowY: getComputedStyle(paneBody).overflowY,
+    },
+  };
+};
+</script>
+</body>
+</html>
