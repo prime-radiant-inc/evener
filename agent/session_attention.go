@@ -1336,10 +1336,13 @@ func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []sc
 // the notice pending for the drive that can present it under a lease, which is
 // the same trade the held-attention drop above makes for a stopped run.
 //
-// The classification is by attention id (stableWatchAttentionIDPrefix), never by
-// message text, and a turn whose attention has already resolved is kept: the
-// model has not seen it yet, and resolution can only happen through a turn that
-// presented it.
+// The classification is by attention id and covers BOTH watch families —
+// send-rail frames ("watch:<delivery>:<seq>") and send diagnostics
+// ("watchdiag:...") — through isStableWatchAttentionID, never by message text.
+// Filtering one prefix left the send-rail rows leaking into the unleased
+// request exactly as the diagnostics once did (#2340 review M1). A turn whose
+// attention has already resolved is kept: the model has not seen it yet, and
+// resolution can only happen through a turn that presented it.
 func (s *Session) dropUnresolvedWatchAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
 	if s == nil {
 		return turns, nil
@@ -1350,7 +1353,7 @@ func (s *Session) dropUnresolvedWatchAttentionTurns(turns []schema.Turn) (kept [
 	}
 	watch := make(map[string]struct{}, len(pending))
 	for _, id := range pending {
-		if strings.HasPrefix(id, stableWatchAttentionIDPrefix) {
+		if isStableWatchAttentionID(id) {
 			watch[id] = struct{}{}
 		}
 	}

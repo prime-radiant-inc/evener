@@ -660,6 +660,45 @@ func TestUnleasedStableChildKeepsAnUnresolvedWatchRowOutOfEveryBuilder(t *testin
 			t.Fatal("the planned delta did not carry the turn appended after the anchor")
 		}
 	})
+
+	// A watch notice has two durable families: the send rail's frame
+	// ("watch:<delivery>:<seq>") and the diagnostic ("watchdiag:..."). Filtering
+	// only the diagnostic family left the send-rail rows in the projection, so a
+	// sidecar frame that reached the child's transcript before this drive
+	// snapshotted history went to the provider on an unleased turn — and the
+	// drive cannot settle it, so the leased turn presented it again
+	// (#2340 review M1).
+	t.Run("send-rail frame waits for its leased turn too", func(t *testing.T) {
+		t.Parallel()
+		sess := newContinuationSession(t)
+		const watchFrameID = "watch:dlv_m1:3"
+		const frameText = "pending watch send frame marker"
+		// The row is already resident when the round snapshots history: only the
+		// projection filter can keep it out of the request.
+		if _, err := sess.appendDelegateNotificationDurably(watchFrameID, frameText); err != nil {
+			t.Fatalf("persist the watch send frame: %v", err)
+		}
+		req, fallback := prepare(t, sess)
+		pending, err := sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read pending attention: %v", err)
+		}
+		if !slices.Contains(pending, watchFrameID) {
+			t.Fatalf("setup: the send-rail row is not pending (pending=%v)", pending)
+		}
+		if indexOfTurnText(currentHistory(t, sess), frameText) < 0 {
+			t.Fatal("setup: the send-rail row never reached the resident history")
+		}
+		if requestMessagesContainText(req.Messages, frameText) {
+			t.Fatal("the unleased request carried an unresolved send-rail watch row: it must wait for the leased turn that presents and settles it")
+		}
+		if requestMessagesContainText(fallback, frameText) {
+			t.Fatal("the fallback source carried an unresolved send-rail watch row")
+		}
+		if !requestMessagesContainText(req.Messages, priorText) {
+			t.Fatal("the request lost its conversation history while dropping the send-rail row")
+		}
+	})
 }
 
 // acceptedTriggerSession is a delegate runtime that has accepted an attention
@@ -1299,9 +1338,8 @@ func fencedCompactionRig(t *testing.T) (*Session, *delegateTreeController, *atom
 		return agenttest.FinalResponse("a pinned note")
 	})
 	// The cheap route also serves the session namer, which is not a
-	// summarizer. Count only requests carrying the summarizer's own instruction
-	// block, so a namer call cannot be mistaken for the request this test
-	// fences (or vice versa: a refused summarizer must not be masked by one).
+	// summarizer, so the count must attribute a request structurally rather
+	// than by its prompt copy (see isSummarizerRequest).
 	cheap := &agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(req llm.Request) llm.Response {
 		if isSummarizerRequest(req) {
 			summarized.Add(1)
@@ -1325,15 +1363,25 @@ func fencedCompactionRig(t *testing.T) (*Session, *delegateTreeController, *atom
 	return sess, controller, &elicited, &summarized
 }
 
-// isSummarizerRequest reports whether req is the context manager's own summary
-// call, by the instruction block only the summarizer's prompt carries.
+// isSummarizerRequest reports whether req is one of the context manager's own
+// compaction calls: the summarizer, or the note elicitor that shares its
+// request shape.
+//
+// The discriminator is structural, not textual. completeSummarization builds a
+// bare llm.Request (summarize_route.go:161) and sends it through
+// client.Complete or the cheap caller, so it carries NO ResponseFormat. The
+// other cheap-route caller, the session namer, goes through llm.GenerateObject
+// (session_namer.go), which stamps a json_schema ResponseFormat
+// (generate_object.go's generateOptions). A namer call therefore cannot be
+// counted here, and a refused summarizer cannot be masked by one.
+//
+// Elicitation is indistinguishable from summarization by this test -- both are
+// bare completeSummarization requests. In the two fixtures below that ambiguity
+// is closed by construction: either note elicitation is muted
+// (muteNoteElicitation) or it is routed through the MAIN adapter, which is the
+// elicited counter, so the only bare cheap-route request is the summarizer's.
 func isSummarizerRequest(req llm.Request) bool {
-	for _, msg := range req.Messages {
-		if strings.Contains(msg.Text(), "CONTEXT CHECKPOINT COMPACTION") {
-			return true
-		}
-	}
-	return false
+	return req.ResponseFormat == nil
 }
 
 // fencedCompactionLeaseCtx is the run lease the child's own generation holds.
