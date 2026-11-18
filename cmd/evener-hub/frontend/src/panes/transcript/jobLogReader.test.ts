@@ -469,9 +469,11 @@ test("an unconfirmed nonterminal status schedules no further live reads", async 
   peer.reply(first, page());
   await observed((snapshot) => snapshot.windows.live !== null && snapshot.job !== null);
 
-  // Let the initial pair settle: whichever of the two replies lands second may
-  // pace one more read before the reader knows the row is unconfirmed.
-  await vi.advanceTimersByTimeAsync(2000);
+  // Both initial replies have settled and the row is known to be unconfirmed, so
+  // the count is read HERE rather than after the clock moves. A baseline taken
+  // later would hide an extra poll sent in the window between the two replies,
+  // because the fake peer holds a request open and the count would already
+  // include it.
   const before = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
   await vi.advanceTimersByTimeAsync(5000);
 
@@ -560,4 +562,41 @@ test("a confirmed running status keeps polling at the live rate", async () => {
   const before = peer.requests(META).length;
   await vi.advanceTimersByTimeAsync(1000);
   expect(peer.requests(META).length).toBeGreaterThan(before);
+});
+
+// A refresh issued while a tail read is still in flight, whose metadata arrives
+// BEFORE that old tail fails, must still send the tail it owes. The old failure
+// starts the slot's one-second backoff and parks the live deadline, so a wakeup
+// computed from the live deadline alone is never armed — the owed read waits
+// forever and the pane keeps stale output or the old error. This asserts the
+// schedule: after the backoff expires the requested tail is requested exactly
+// once, and the recurring poll stays stopped while the row is unconfirmed.
+test("a refresh tail owed when the previous tail fails is still sent", async () => {
+  await initial();
+
+  // A second live tail is in flight when Refresh is pressed.
+  await vi.advanceTimersByTimeAsync(1000);
+  const inFlight = await peer.request(OUTPUT, 1);
+  reader.refresh();
+
+  // The refresh's metadata lands first and still reports the row unconfirmed.
+  peer.reply(await peer.request(META, 1), { ...metadata(false), statusUnconfirmed: true });
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true);
+
+  // The old tail then fails: this parks the live deadline and sets the backoff.
+  peer.fail(inFlight, "output unavailable");
+  await observed((snapshot) => snapshot.outputError !== null);
+
+  // Once the backoff expires the owed tail is requested, without the recurring
+  // poll resuming.
+  await vi.advanceTimersByTimeAsync(1000);
+  const owed = await peer.request(OUTPUT, 2);
+  expect(owed.params.beforeBytes).toBeUndefined();
+  peer.reply(owed, page());
+  await reader.settleForTests();
+
+  const after = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(peer.requests(META)).toHaveLength(after.metadata);
+  expect(peer.requests(OUTPUT)).toHaveLength(after.output);
 });

@@ -367,14 +367,14 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		// a journal. Validate it before it reaches the deletion fence or a
 		// filesystem lookup, so a malformed claim cannot name a path or a session
 		// the fence is never consulted for.
-		if hintErr := schema.ValidateSessionID(hint); hintErr != nil {
-			// The discard is deliberate, not a swallowed failure: a malformed claim is
-			// not a failure of THIS read. The caller asked about the scoped session,
-			// whose record is intact, and a claim that is not a session id cannot
-			// corroborate anything, so there is no branch to consult and nothing to
-			// retry. Returning nil here is the ANSWER — the scoped copy stands, and the
-			// two flags below say why it is fallback evidence rather than the owner's.
-			_ = hintErr
+		//
+		// Asked as a PREDICATE, not as a failure: a malformed claim is not a failure
+		// of THIS read. The caller asked about the scoped session, whose record is
+		// intact, and a claim that is not a session id cannot corroborate anything,
+		// so there is no branch to consult and nothing to retry. The scoped copy
+		// stands, and the two flags below say why it is fallback evidence rather
+		// than the owner's.
+		if schema.ValidateSessionID(hint) != nil {
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
 			return local, nil
@@ -611,9 +611,21 @@ func stateEstablished(read sessionJobRecordRead) bool {
 // A terminal row is always confirmed: the first terminal write is a complete
 // observation, and damage after it can take nothing away. That is the same
 // premise stateEstablished rests on.
+//
+// A NONTERMINAL row with no status at all is the third case, and it is
+// unconfirmed. A journal holding only a notification for the job folds a row for
+// it because the job was NAMED, not because anyone said what it did: no status,
+// no end time, no exit code. Read as confirmed, a client polls it at the live
+// rate forever for a state the journal never stated. The rule is the invariant
+// this file keeps applying — a record whose status was never established is
+// unconfirmed, not confirmed by absence — and it says nothing about the row's
+// diagnostics or about any output recoverable beside it, which stay readable.
 func statusUnconfirmedOnWire(read sessionJobRecordRead) bool {
-	if read.record == nil || read.record.Status == "" || read.record.Status.IsTerminal() {
+	if read.record == nil || read.record.Status.IsTerminal() {
 		return false
+	}
+	if read.record.Status == "" {
+		return true
 	}
 	// A forwarded copy stands in for an owner nobody could consult, so nothing
 	// behind it can confirm the run is still going. The invariant: a record that

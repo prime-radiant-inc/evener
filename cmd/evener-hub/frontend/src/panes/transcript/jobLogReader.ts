@@ -269,11 +269,18 @@ export class JobLogReader {
       if (selection !== null || liveDue) this.readOutput(selection, selection !== null ? pending : null);
     }
     if (!this.readable()) return;
+    // A pending demand, a pending drain and an owed tail are all work the slot
+    // is going to do, so the next wakeup for them is the backoff alone. Folding
+    // liveDueAt into this maximum would make an unconfirmed row's infinite live
+    // deadline govern the wakeup as well, and an owed tail would then wait for a
+    // timer nobody armed — the refresh the person asked for would never be sent.
     const outputDue = this.outputInFlight
       ? Number.POSITIVE_INFINITY
       : Math.max(
           this.nextReadAt,
-          this.snapshot.pendingDemand !== null || this.snapshot.drainPending ? now : this.liveDueAt,
+          this.snapshot.pendingDemand !== null || this.snapshot.drainPending || this.explicitTailOwed
+            ? now
+            : this.liveDueAt,
         );
     const metadataDue = this.metadataInFlight ? Number.POSITIVE_INFINITY : this.metadataDueAt;
     const next = Math.min(outputDue, metadataDue);

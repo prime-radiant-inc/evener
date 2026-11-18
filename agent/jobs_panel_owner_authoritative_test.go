@@ -1783,3 +1783,39 @@ func TestLoadSessionJobGetMarksContradictoryOwnerClaimUnconfirmed(t *testing.T) 
 		t.Fatal("StatusUnconfirmed = false: the record names an owner its job ID contradicts, so its running status is not established")
 	}
 }
+
+// TestLoadSessionJobGetMarksStatuslessFragmentUnconfirmed pins the invariant on
+// the row the fold creates for a job a journal only NAMES. A journal holding
+// nothing but a notification for the requested job folds a nonterminal row with
+// no status, no end time and no exit code, plus an incomplete-lifecycle
+// diagnostic. Nothing in that journal ever stated what the job did, so a client
+// that reads the row as confirmed polls it at the live rate forever. A record
+// whose status was never established is unconfirmed, not confirmed by absence —
+// and the row's diagnostics and any readable output stay available either way.
+func TestLoadSessionJobGetMarksStatuslessFragmentUnconfirmed(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		`{"kind":"job_notification_pending","seq":1,"job_id":"`+jobID+`","terminal_generation":"gen_only"}`+"\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the named job's fragment")
+	}
+	if job.Status != "" {
+		t.Fatalf("status = %q, want the empty status the journal supplied", job.Status)
+	}
+	if !slices.Contains(job.Diagnostics, "incomplete_lifecycle") {
+		t.Fatalf("Diagnostics = %v, want incomplete_lifecycle preserved alongside the confidence signal", job.Diagnostics)
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatal("StatusUnconfirmed = false: the journal named the job without ever stating its status, so that status is not established")
+	}
+}
