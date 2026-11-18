@@ -342,6 +342,30 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
+		// An admitted UNLEASED turn of a stable child must not carry a watch
+		// notice (#2340 review M3). The notice can land after this turn's drive
+		// started but before this snapshot, and its own leased wake is deferred
+		// by the drive guard, so without this drop the request would hand the
+		// notice to the provider and the leased re-drive would present it a
+		// second time -- once outside a committed generation, which is exactly
+		// what the gate exists to prevent. The row stays pending for the drive
+		// that can present it under a lease.
+		//
+		// The filter is ONE decision: the slice it returns is what this request
+		// expands AND what continuation planning sees, so a later builder that
+		// consumes the same slice inherits it. presentedBoundary deliberately
+		// does NOT move: it is the window the skill rebuild measures "turns
+		// appended since the snapshot" against, and shrinking it would make the
+		// dropped rows read as appended and put them straight back.
+		if s.stableChildTurnNeedsLease(ctx) {
+			if filtered, droppedAt := s.dropUnresolvedWatchAttentionTurns(historyTurns); len(droppedAt) > 0 {
+				// Each drop shifts every later turn one position left, and
+				// scope.InFlightFrom is an INDEX into this projection.
+				scope.InFlightFrom = shiftReplayBoundaryForDrops(scope.InFlightFrom, droppedAt)
+				historyTurns = filtered
+				presentedTurns = filtered
+			}
+		}
 		history = expandHistory(historyTurns, scope)
 	}
 
@@ -532,6 +556,19 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			snapRevision := s.historyRevision
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
+
+			// A compaction input is a REQUEST input in disguise: whatever the
+			// fold keeps of a turn reaches the model through the summary it
+			// publishes. An unleased stable-child turn must not carry watch
+			// attention there either (#2340 review M3), so the same rows the
+			// request projection drops are dropped from the fold's copy. The
+			// fold's length contract is against the copy it was given, which is
+			// the one that gets managed and published, so the drop happens
+			// before that contract is taken, not after.
+			if s.stableChildTurnNeedsLease(ctx) {
+				historyTurns, _ = s.dropUnresolvedWatchAttentionTurns(historyTurns)
+				preManageLen = len(historyTurns)
+			}
 
 			// Variant B (forced note): if a compaction is imminent, elicit +
 			// pin a must-keep note from the model BEFORE the fold, so

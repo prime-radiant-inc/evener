@@ -1016,6 +1016,23 @@ type Session struct {
 	// completion rode that request, so the reply is an answer, not
 	// housekeeping. Guarded by pendingJobNotifsMu.
 	jobNotifsDelivered uint64
+	// stableWatchRetained holds watch notices whose durable append has NOT yet
+	// succeeded, keyed by attention identity. A watch notice must never go back
+	// on the ordinary queue (that is the unleased route the gate closes), so a
+	// failed append retains the notice here and the existing notification retry
+	// wake re-attempts it under the SAME identity. Rows are removed only once
+	// the append lands, so a failure at any point still owes exactly one
+	// attempt. Guarded by pendingJobNotifsMu.
+	stableWatchRetained map[string]retainedStableWatchNotice
+	// stableWatchTickWatch records, per durable attention identity, the timer
+	// watch that produced a non-terminal tick. A timer cleared after its tick
+	// was persisted but before it was presented must still suppress that tick:
+	// the queue makes this decision at DELIVERY time (timerWatchIsLive), and the
+	// durable row's frozen content cannot, so the timer identity is kept
+	// alongside the row and re-checked when the row is presented. A one-shot's
+	// terminal fire is deliberately absent: its fire is terminal even if the
+	// timer is cleared afterwards. Guarded by pendingJobNotifsMu.
+	stableWatchTickWatch map[string]string
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -1697,7 +1714,11 @@ func (s *Session) peekNotifications() int {
 // owedJobNotificationsLocked counts the notifications a notification wake still
 // has to bring to the model. The caller holds pendingJobNotifsMu.
 func (s *Session) owedJobNotificationsLocked() int {
-	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest)
+	// A retained watch notice is owed work: its durable append failed, so it is
+	// neither delivered nor dropped until a retry lands (LIFE-01, #2340 review
+	// M4). Counting it here keeps the retry chain armed and keeps a retirement
+	// from reading the session as settled while a failure report is still due.
+	return len(s.pendingJobNotifs) + len(s.jobNotifsAwaitingRequest) + len(s.stableWatchRetained)
 }
 
 // countJobNotificationsDelivered records n job notifications delivered to the
@@ -1827,6 +1848,10 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		pending := s.owedJobNotificationsLocked() > 0
 		s.jobNotifyRetry.settle(pending, delay, jobNotificationRetryMaxDelay)
 		s.pendingJobNotifsMu.Unlock()
+		// A retained watch notice is owed work too, so this wake re-attempts it
+		// rather than only delivering queued notifications (LIFE-01, #2340
+		// review M4).
+		s.retryRetainedStableWatchPending()
 		if pending {
 			s.notify()
 		}

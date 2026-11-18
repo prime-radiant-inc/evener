@@ -621,6 +621,14 @@ type jobNotification struct {
 	Note            string
 	IntervalSeconds int
 	Terminal        bool
+	// Occurrence identifies WHICH firing or snapshot this notice is, when the
+	// notice's own fields cannot: a repeating timer fires every interval with
+	// the same watch, job and reason, so only the fire instant tells one tick
+	// from the next. Empty for notices that are a single fact (a one-shot's
+	// terminal fire, a send-rail diagnostic), whose source identity already
+	// names them. Only the durable stable-delegate ingress reads it; the
+	// ordinary queue folds by WatchID as before (LIFE-01, #2340).
+	Occurrence string
 	// OriginWatchID is the watch that produced this notification, carried for
 	// display only (rendered as the watch_id frame attribute so a reader can
 	// identify which watch to inspect or clear). It is NEVER consulted by

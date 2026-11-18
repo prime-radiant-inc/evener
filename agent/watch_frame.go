@@ -9,7 +9,13 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 )
+
+// stableWatchAttentionIDPrefix names every durable watch attention row this
+// ingress writes. Classification by this prefix is what lets the unleased
+// projection tell a watch row apart from any other delegate attention.
+const stableWatchAttentionIDPrefix = "watchdiag:"
 
 // stableWatchOwner snapshots the stable delegate owner and its controller under
 // jm.mu. Every reader of stableOwner takes this snapshot: a new generation
@@ -47,13 +53,16 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 // stableWatchNoticeAttentionID is the durable attention identity of a watch
 // notice bound for a stable delegate child (LIFE-01, #2340).
 //
-// Stability is what makes the ingress replay-safe: appendDelegateNotification-
-// Durably treats the same identity and content as a no-op and a reused identity
-// with different content as corruption, so a replayed enqueue must derive the
-// SAME id and a genuinely different notice must derive a different one. A
-// watch-send diagnostic carries no delivery lineage of its own -- OriginWatchID
-// is display-only -- so its identity is the watch, the job and the reason: a
-// repeat of one failure is one item, and a distinct failure is a distinct item.
+// Two of these records are the same occurrence only when a RETRY reproduces
+// them. appendDelegateNotificationDurably treats one identity with the same
+// content as a no-op and one identity with different content as corruption, so
+// the id must be stable for a retry and distinct for every new fire: a
+// repeating timer's second tick is new news even though its watch, job and
+// reason are unchanged, and a later long-running-jobs reminder describes a
+// different set of jobs while its reason stays the same.
+//
+// Watch key, job and reason identify the SOURCE of a notice; the occurrence
+// identifies which statement of it this is.
 func stableWatchNoticeAttentionID(n jobNotification) string {
 	scope := n.WatchID
 	if scope == "" {
@@ -63,7 +72,32 @@ func stableWatchNoticeAttentionID(n jobNotification) string {
 		scope = n.JobID
 	}
 	sum := sha256.Sum256([]byte(n.Reason))
-	return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
+	return stableWatchAttentionIDPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8]) + ":" + stableWatchNoticeOccurrence(n)
+}
+
+// stableWatchNoticeOccurrence is what distinguishes one fire, tick or snapshot
+// from the next within one source. It is empty only when the notice carries no
+// per-occurrence marker at all: a one-shot terminal notice and a send-rail
+// diagnostic are single facts, so their source identity already names them and
+// a replay of the same failure stays the same item.
+//
+// A timer tick is identified by the clock instant the tick fired at, which
+// watchTimers stamps for exactly that fire and no other. A long-running-jobs
+// reminder is identified by its own rendered snapshot, so a later reminder
+// listing different jobs is a NEW occurrence rather than a conflicting replay
+// of the earlier one -- the queue's replacement rule for that reminder, moved
+// onto the durable rail where the rows are immutable.
+func stableWatchNoticeOccurrence(n jobNotification) string {
+	switch {
+	case n.Occurrence != "":
+		// A producer that knows its own occurrence owns it.
+		return n.Occurrence
+	case n.isLongRunningJobsReminder():
+		sum := sha256.Sum256([]byte(n.Note))
+		return "reminder:" + hex.EncodeToString(sum[:8])
+	default:
+		return ""
+	}
 }
 
 // persistStableWatchPending is enqueueNotifications' stable-delegate branch: a
@@ -83,10 +117,234 @@ func stableWatchNoticeAttentionID(n jobNotification) string {
 // a new generation rewrites both fields under that same mutex, so re-reading
 // them after the transcript I/O would race a concurrent timer or shell
 // callback.
+// dropClearedStableWatchTicks removes the durable rows whose repeating timer
+// has since been cleared, resolving each as discarded.
+//
+// The queue drops such a tick at delivery time (timerWatchIsLive). A durable
+// row cannot be re-decided that way -- its content is frozen and it is already
+// in the transcript -- so the timer identity is kept beside it and checked
+// here, at the one point the row is about to become a request. A one-shot's
+// fire carries no timer identity and is never dropped: it is terminal even if
+// the timer is cleared afterwards (LIFE-01, #2340 review Low).
+func (s *Session) dropClearedStableWatchTicks(ids []string) []string {
+	if s == nil || len(ids) == 0 {
+		return ids
+	}
+	s.pendingJobNotifsMu.Lock()
+	tickWatch := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if watchID, ok := s.stableWatchTickWatch[id]; ok {
+			tickWatch[id] = watchID
+		}
+	}
+	s.pendingJobNotifsMu.Unlock()
+	if len(tickWatch) == 0 {
+		return ids
+	}
+	kept := make([]string, 0, len(ids))
+	var cleared []string
+	for _, id := range ids {
+		watchID, isTick := tickWatch[id]
+		if isTick && !s.timerWatchIsLive(watchID) {
+			cleared = append(cleared, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	if len(cleared) > 0 {
+		if err := s.resolveAttentionDurably(cleared, delegateAttentionDiscarded); err != nil {
+			// The row stays pending if the discard cannot be written: a
+			// presented stale tick is better than a silently lost clear, and
+			// the next drive retries the same discard.
+			s.emit(warningDataFromError("discard cleared watch tick", err))
+			return ids
+		}
+		s.pendingJobNotifsMu.Lock()
+		for _, id := range cleared {
+			delete(s.stableWatchTickWatch, id)
+		}
+		s.pendingJobNotifsMu.Unlock()
+	}
+	return kept
+}
+
+// isStableWatchAttentionID reports whether attentionID names a watch notice
+// produced by this ingress. Classification is by identity, never by message
+// text: every id this file mints starts with stableWatchAttentionIDPrefix.
+func isStableWatchAttentionID(attentionID string) bool {
+	return strings.HasPrefix(attentionID, stableWatchAttentionIDPrefix)
+}
+
+// dropUnresolvedWatchAttentionTurns removes the turns whose watch attention is
+// still unresolved on the durable ledger.
+//
+// It exists for the ADMITTED unleased turn of a stable child (LIFE-01, #2340
+// review M3). A watch notice can land after such a turn's drive has started but
+// before it snapshots history: the ingress appends it as a steering turn, and
+// its own leased wake is deferred by the drive guard. The unleased request would
+// then carry the notice to the provider, and the leased re-drive would present
+// it again -- once outside a committed generation, which is the whole point of
+// the gate. Dropping the unresolved row leaves the notice pending for the drive
+// that can present it under a lease, the same trade the held-attention drop
+// makes for a stopped run.
+//
+// A turn whose attention has already resolved is kept: the model has not seen
+// it yet, and resolution can only happen through a turn that presented it.
+func (s *Session) dropUnresolvedWatchAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+	if s == nil {
+		return turns, nil
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil || len(pending) == 0 {
+		return turns, nil
+	}
+	watch := make(map[string]struct{}, len(pending))
+	for _, id := range pending {
+		if isStableWatchAttentionID(id) {
+			watch[id] = struct{}{}
+		}
+	}
+	if len(watch) == 0 {
+		return turns, nil
+	}
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
+		if turn.AttentionID != "" {
+			if _, held := watch[turn.AttentionID]; held {
+				droppedAt = append(droppedAt, i)
+				continue
+			}
+		}
+		kept = append(kept, turn)
+	}
+	return kept, droppedAt
+}
+
+// shiftReplayBoundaryForDrops moves the in-flight boundary one position left
+// per dropped row that sat before it.
+//
+// droppedAt holds ORIGINAL indices and the boundary being returned is the final
+// one, so the comparison is against the ORIGINAL boundary: decrementing as the
+// loop runs undercounts two adjacent rows before the boundary (the second row's
+// original index equals the already-shifted boundary) and leaves the boundary
+// one too far on, where it strips the replay-sensitive thinking blocks the
+// in-flight exemption keeps (LIFE-01, #2340 review M3).
+func shiftReplayBoundaryForDrops(inFlightFrom int, droppedAt []int) int {
+	shifted := inFlightFrom
+	for _, at := range droppedAt {
+		if at < inFlightFrom {
+			shifted--
+		}
+	}
+	return shifted
+}
+
+// retainedStableWatchNotice is a watch notice whose durable append has not yet
+// landed. It keeps the exact identity AND content so a retry is a replay of one
+// occurrence rather than a second item.
+type retainedStableWatchNotice struct {
+	notification jobNotification
+	attentionID  string
+	content      string
+}
+
+// retainStableWatchPending records a notice whose durable append failed and
+// schedules the session's existing notification retry wake. The notice is NOT
+// put back on the ordinary queue: that queue is the unleased route this ingress
+// exists to close (LIFE-01, #2340 review M4).
+func (s *Session) retainStableWatchPending(n jobNotification, attentionID, content string) {
+	if s == nil || attentionID == "" {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	if s.stableWatchRetained == nil {
+		s.stableWatchRetained = make(map[string]retainedStableWatchNotice)
+	}
+	// Last write wins for one identity: the same occurrence retried describes
+	// the same statement, and a newer statement carries its own identity.
+	s.stableWatchRetained[attentionID] = retainedStableWatchNotice{notification: n, attentionID: attentionID, content: content}
+	s.scheduleJobNotificationRetryLocked()
+	s.pendingJobNotifsMu.Unlock()
+}
+
+// retryRetainedStableWatchPending re-attempts every retained notice. It is
+// idempotent by construction: appendDelegateNotificationDurably treats the same
+// identity and content as a no-op, so a notice whose earlier attempt actually
+// landed despite reporting an error is not appended twice.
+func (s *Session) retryRetainedStableWatchPending() {
+	if s == nil {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	retained := make([]retainedStableWatchNotice, 0, len(s.stableWatchRetained))
+	for _, r := range s.stableWatchRetained {
+		retained = append(retained, r)
+	}
+	s.pendingJobNotifsMu.Unlock()
+	if len(retained) == 0 {
+		return
+	}
+	for _, r := range retained {
+		if _, err := s.appendDelegateNotificationDurably(r.attentionID, r.content); err != nil {
+			// Still not durable: keep it retained and leave the retry wake armed
+			// so the next firing tries again. This is the only place a retained
+			// notice is dropped from the map, and only on success.
+			continue
+		}
+		s.pendingJobNotifsMu.Lock()
+		delete(s.stableWatchRetained, r.attentionID)
+		s.pendingJobNotifsMu.Unlock()
+		if err := s.armDelegateAttention(r.attentionID); err != nil {
+			s.emit(warningDataFromError("arm stable watch attention", err))
+		}
+	}
+}
+
+// retireSupersededStableWatchPending retires the durable rows a newer
+// long-running-jobs reminder replaces.
+//
+// The queue keeps only the newest undelivered reminder, because a stale listing
+// names jobs that may already have finished. Durable rows are immutable, so the
+// same rule is expressed as: persist the newer snapshot, then resolve the older
+// identities as discarded. Persisting first means a failure leaves the older
+// row in place rather than retiring it into nothing.
+func (s *Session) retireSupersededStableWatchPending(n jobNotification, attentionID string) {
+	if s == nil || !n.isLongRunningJobsReminder() {
+		return
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		s.emit(warningDataFromError("inspect stable watch attention", err))
+		return
+	}
+	var superseded []string
+	for _, id := range pending {
+		if id != attentionID && isStableWatchAttentionID(id) {
+			superseded = append(superseded, id)
+		}
+	}
+	if len(superseded) == 0 {
+		return
+	}
+	if err := s.resolveAttentionDurably(superseded, delegateAttentionDiscarded); err != nil {
+		s.emit(warningDataFromError("retire superseded stable watch attention", err))
+	}
+}
+
 func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 	owner, controller := jm.stableWatchOwner()
 	if owner == nil || owner.owningDelegateID == "" {
 		return false
+	}
+	// A repeating tick is dropped here when its timer has already been cleared
+	// (LIFE-01, #2340 review Low). The queue applies this check at delivery
+	// time; the durable row cannot, because its content is already frozen. The
+	// timer identity is recorded WITH the row so a clear that lands after this
+	// point still suppresses it (stableWatchTickAttentionWatchID).
+	if n.WatchID != "" && !n.Terminal && !owner.timerWatchIsLive(n.WatchID) {
+		// The timer was cleared before this tick was persisted: it is a tick
+		// nobody owes, exactly as the queue's own drop rules it.
+		return true
 	}
 	attentionID := stableWatchNoticeAttentionID(n)
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
@@ -106,17 +364,41 @@ func (jm *jobManager) persistStableWatchPending(n jobNotification) bool {
 	} else {
 		owner.jobStatusPolls.forget(n.JobID)
 	}
-	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		if controller != nil {
-			controller.attentionCauses.forget(attentionID)
-		}
+	// Persist, THEN arm. The order is the guarantee: a wake that pointed at an
+	// item nothing had written would be an attention record naming no row.
+	appended, err := owner.appendDelegateNotificationDurably(attentionID, content)
+	if err != nil {
 		// The append failed, so the notice is NOT durable. Queueing it would
-		// reopen the unleased path this ingress exists to close; dropping it
-		// silently would lose a failure report. Surface it as an operator
-		// diagnostic and report the notice handled, so the caller does not fall
-		// back to the queue.
+		// reopen the unleased path this ingress exists to close, and dropping
+		// it (what this branch used to do) loses the failure report the
+		// diagnostic exists to carry -- the source pending send is already
+		// removed, so nothing else will retry it. Retain it and re-attempt the
+		// SAME identity through the session's existing notification retry
+		// wake; a retry reproduces stableWatchNoticeAttentionID, so the second
+		// attempt is a replay rather than a second item.
+		owner.retainStableWatchPending(n, attentionID, content)
 		owner.emit(warningDataFromError("persist stable watch attention", err))
 		return true
+	}
+	if appended {
+		// A newer long-running-jobs reminder replaces an older undelivered one
+		// rather than queueing behind a stale listing, exactly as the queue's
+		// fold rule does (appendOrFoldJobNotificationLocked). The durable rows
+		// are immutable, so replacement is expressed as retirement of the
+		// superseded identities.
+		owner.retireSupersededStableWatchPending(n, attentionID)
+		// Remember which timer watch produced this tick, so a clear landing
+		// after this point can still suppress it (LIFE-01, #2340 review Low).
+		// A one-shot is excluded: its fire is terminal, so a later clear must
+		// not retract it.
+		if n.WatchID != "" && !n.Terminal {
+			owner.pendingJobNotifsMu.Lock()
+			if owner.stableWatchTickWatch == nil {
+				owner.stableWatchTickWatch = make(map[string]string)
+			}
+			owner.stableWatchTickWatch[attentionID] = n.WatchID
+			owner.pendingJobNotifsMu.Unlock()
+		}
 	}
 	if err := owner.armDelegateAttention(attentionID); err != nil {
 		// The row IS durable; only its wake failed. armDelegateAttention

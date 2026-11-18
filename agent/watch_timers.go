@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -218,6 +219,13 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
 		if cfg.timer {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
+			// A repeating timer fires the same watch, job and reason every
+			// interval, so this tick's identity is the instant it fired at:
+			// lastClockFire is stamped immediately above for exactly this fire
+			// and for no other (LIFE-01, #2340 review M1).
+			if !cfg.oneShot {
+				n.Occurrence = "tick:" + cfg.watchID + ":" + strconv.FormatInt(cfg.lastClockFire.UnixNano(), 10)
+			}
 		}
 		notifications = append(notifications, n)
 		// A periodic tick is a clock, not a condition fire.
