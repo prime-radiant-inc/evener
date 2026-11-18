@@ -422,6 +422,12 @@ it("folds a pre-response frame from the retired source without letting it reclai
   // retired source never becomes the recorded owner.
   expect(after?.history?.bootGeneration).toBe("1@other");
   expect(after?.history?.holdOwner).not.toBe("5@root");
+  // RoboRev 53764 (Medium 2): a blanked token would itself be a boot change -
+  // the reducer reads "" as a different generation, invalidates the fresh
+  // snapshot and records an empty awaited boot. The accepted snapshot must
+  // therefore stay VALID and settleable, and the source it installed must still
+  // be able to merge its own next frame.
+  expect(after?.history?.invalidatedAtGeneration).toBeUndefined();
 });
 
 it("persists the page observation snapshot rather than the latest completeness watermark", async () => {

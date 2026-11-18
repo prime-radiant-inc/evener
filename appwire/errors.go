@@ -915,6 +915,13 @@ func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
 // duration, while preserving one that really ended is corrected by the next
 // successful read.
 //
+// The token is read from whichever shape the error's data arrived in. A
+// FORWARDED error reached this process over the wire, so its Data is almost
+// always the generic map the JSON decoder produced rather than the typed
+// struct - asserting only to HistoryReadErrorData would miss the real payload
+// and leave the browser with the legacy stamp. The map is rewritten in place
+// with every other field preserved.
+//
 // An error that carries no history identity, or carries any other token, is
 // returned unchanged.
 func NormalizeForwardedHistoryError(err error) error {
@@ -925,16 +932,29 @@ func NormalizeForwardedHistoryError(err error) error {
 	if !errors.As(err, &wire) {
 		return err
 	}
-	data, ok := wire.Data.(HistoryReadErrorData)
-	if !ok || data.BootGeneration != DaemonlessBootGeneration {
+	switch data := wire.Data.(type) {
+	case HistoryReadErrorData:
+		if data.BootGeneration != DaemonlessBootGeneration {
+			return err
+		}
+		wire.Data = HistoryReadErrorData{
+			ErrorData:      data.ErrorData,
+			BootGeneration: UnknownOwnerBootGeneration,
+			Epoch:          data.Epoch,
+		}
+		return wire
+	case map[string]any:
+		token, _ := data["bootGeneration"].(string)
+		if token != DaemonlessBootGeneration {
+			return err
+		}
+		updated := maps.Clone(data)
+		updated["bootGeneration"] = UnknownOwnerBootGeneration
+		wire.Data = updated
+		return wire
+	default:
 		return err
 	}
-	wire.Data = HistoryReadErrorData{
-		ErrorData:      data.ErrorData,
-		BootGeneration: UnknownOwnerBootGeneration,
-		Epoch:          data.Epoch,
-	}
-	return wire
 }
 
 func withReadIdentity(err WireError, bootGeneration string, epoch *uint64) WireError {

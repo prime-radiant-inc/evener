@@ -2425,7 +2425,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// base taken from currentConv alone would drop it and let a
 						// later fallback re-add a row this page omitted.
 						const mergedModel = withSyncedHistoryTurns(
-							{ ...currentConv, history: versionedMerge.history ?? currentConv.history, turns: strippedPageTurns },
+							{
+								...currentConv,
+								history: versionedMerge.history ?? currentConv.history,
+								// The page's merge can also confirm a hold hand-off, and a
+								// history adopted without its delegates records the INCOMING
+								// owner beside the OUTGOING sequence: the retired daemon's
+								// larger hold then outranks the replacement's first samples.
+								// `versionedMerge` carries both halves of that hand-off, so
+								// take its delegates whenever it took its history.
+								delegates: versionedMerge.history === undefined ? currentConv.delegates : versionedMerge.delegates,
+								turns: strippedPageTurns,
+							},
 							strippedPageTurns,
 						);
 						// The page merge projects at the user's display config, exactly

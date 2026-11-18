@@ -6477,7 +6477,21 @@ function replayHydrationNotifications(
         // and reducing both to `root` would treat the outgoing boot's own frame
         // as naming the incoming one.
         if (boot !== undefined && boot !== "" && boot === retiredBy) incomingNamed = true;
+      } else if (notification.method === "evener/delegate/updated") {
+        // A delegate sample is published by whichever controller owns the
+        // sequence. It marks the incoming source as present, so an overlay
+        // after it is kept.
+        incomingNamed = true;
       } else if (!incomingNamed && notification.method.startsWith("overlay/")) {
+        // An overlay upsert carries NO source identity
+        // (`OverlayUpsertedParams` is threadId, ref, item), so position is the
+        // only evidence there is - and it is used only in the direction it can
+        // support. An overlay arriving before the replacement has spoken at all
+        // was produced while the retired source was the only writer on this
+        // buffer. Once the incoming source names itself, later overlays are
+        // its own and are kept - including a replacement that upserts a stream
+        // BEFORE its first history/updated, which must not lose it to a failure
+        // landing under its own boot.
         continue;
       }
     }

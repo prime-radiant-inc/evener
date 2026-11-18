@@ -175,6 +175,37 @@ func TestNormalizeForwardedHistoryErrorDemotesLegacyDaemonless(t *testing.T) {
 	if data.Epoch == nil || *data.Epoch != 7 {
 		t.Fatalf("epoch = %v, want 7 preserved", data.Epoch)
 	}
+	// The shape a FORWARDED error actually arrives in: its data went through
+	// JSON, so it is the generic map rather than the typed struct. Asserting
+	// only to HistoryReadErrorData missed this entirely and left the browser
+	// with the legacy stamp.
+	forwarded := WireError{Code: CodeInternalError, Message: "thread history failed"}
+	if err := json.Unmarshal(
+		[]byte(`{"code":-32603,"message":"thread history failed","data":{"evenerErrorInfo":"transcriptHistoryFailed","bootGeneration":"daemonless","epoch":9}}`),
+		&forwarded,
+	); err != nil {
+		t.Fatal(err)
+	}
+	normalizedMap := NormalizeForwardedHistoryError(forwarded)
+	var mapWire WireError
+	if !errors.As(normalizedMap, &mapWire) {
+		t.Fatalf("normalized map error = %T, want WireError", normalizedMap)
+	}
+	fields, ok := mapWire.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data = %T, want map[string]any", mapWire.Data)
+	}
+	if fields["bootGeneration"] != UnknownOwnerBootGeneration {
+		t.Fatalf("decoded boot generation = %v, want %q", fields["bootGeneration"], UnknownOwnerBootGeneration)
+	}
+	// Every other field of the forwarded payload survives the rewrite.
+	if fields["evenerErrorInfo"] != string(ErrorTranscriptHistoryFailed) {
+		t.Fatalf("evenerErrorInfo = %v, want it preserved", fields["evenerErrorInfo"])
+	}
+	if epoch, ok := fields["epoch"].(float64); !ok || epoch != 9 {
+		t.Fatalf("epoch = %v, want 9 preserved", fields["epoch"])
+	}
+
 	// A peer that already names an owner is left exactly as it is.
 	live := WithHistoryReadIdentity(
 		WireError{
