@@ -245,9 +245,18 @@ func newFixtureCheckoutNamed(t *testing.T, tmp, name string) fixtureCheckout {
 	if err := syscall.Mkfifo(filepath.Join(root, "cmd", "evener-dev", "bin", "hold.go"), 0o600); err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	// 0700, and the chain up to the test's own temp root with it. `t.TempDir()`
+	// inherits the runner's umask, and under umask 0002 it is 0775 --
+	// group-writable, which the launcher's chain check rejects. The launcher would
+	// then move scratch to $XDG_RUNTIME_DIR and every marker-based assertion in
+	// this file would name a path nothing uses: a correct launcher would time out,
+	// and a leaked FIFO-blocked build would sit outside every sweep. Both of those
+	// happened while this round was being written. A fixture TMPDIR has to be one
+	// the launcher accepts.
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
 		t.Fatalf("mkdir fixture TMPDIR: %v", err)
 	}
+	requirePrivateChain(t, filepath.Dir(tmp), tmp)
 	// Both paths are resolved once, after they exist, and every later comparison
 	// uses the resolved form. The launcher canonicalizes TMPDIR itself with
 	// `pwd -P` (scripts/lib/scratch-lib.sh, written for macOS's
