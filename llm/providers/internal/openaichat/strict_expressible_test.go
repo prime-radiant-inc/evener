@@ -3,6 +3,7 @@ package openaichat
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -3012,9 +3013,7 @@ func TestFullyRequiredSchemaIsCertifiedInEitherPropertyMapSpelling(t *testing.T)
 	} {
 		name, props := tc.name, tc.props
 		schema := make(map[string]any, len(declared)+1)
-		for k, v := range declared {
-			schema[k] = v
-		}
+		maps.Copy(schema, declared)
 		schema["properties"] = props
 		if !StrictExpressible(schema) {
 			t.Fatalf("%s spelling: StrictExpressible = false, want true: every property is declared and required, so the projection is lossless", name)

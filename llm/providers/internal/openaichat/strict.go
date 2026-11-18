@@ -1241,11 +1241,7 @@ func schemaBranches(raw any) ([]map[string]any, bool) {
 		}
 		return out, true
 	case []map[string]any:
-		out := make([]map[string]any, 0, len(list))
-		for _, branch := range list {
-			out = append(out, branch)
-		}
-		return out, true
+		return append([]map[string]any{}, list...), true
 	default:
 		return nil, false
 	}
