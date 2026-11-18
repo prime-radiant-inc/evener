@@ -82,7 +82,8 @@ func TestRecordReportsOrdinalSeqAndRecordedLength(t *testing.T) {
 		turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 			ID: "call", Name: "write_file", Arguments: json.RawMessage(args),
 		}}}
-		if _, err := writer.AppendBatch([]schema.Turn{steeringTurn("before the call"), turn}); err != nil {
+		before := steeringTurn("batch-entry")
+		if _, err := writer.AppendBatch([]schema.Turn{before, turn}); err != nil {
 			t.Fatal(err)
 		}
 		length := writer.RecordedLength()
@@ -99,7 +100,7 @@ func TestRecordReportsOrdinalSeqAndRecordedLength(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = cold.Close() })
-		if len(entries) != 2 || entries[0].Turn.Message.Text() != "before the call" || len(entries[1].Turn.Message.Content) != 1 {
+		if len(entries) != 2 || entries[0].Turn.Kind != before.Kind || entries[0].Turn.Message.Text() != before.Message.Text() || len(entries[1].Turn.Message.Content) != 1 {
 			t.Fatalf("restored %d entries, want the earlier input and assistant tool call", len(entries))
 		}
 		if got := entries[1].Turn.Message.Content[0].ToolCall.SentArguments(); got != args {
