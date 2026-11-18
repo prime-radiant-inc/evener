@@ -14,7 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"primeradiant.com/evener/agent/internal/tool/wirenames"
+	"primeradiant.com/evener/agent/wirenames"
 )
 
 // Finding is the atomic output of a doctor audit, per

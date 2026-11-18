@@ -38,6 +38,21 @@ func Canonical(name string) string {
 	return name
 }
 
+// Same reports whether two recorded tool names denote the same tool once each
+// is read in its own vocabulary.
+//
+// A call and its result can record DIFFERENT spellings of one tool: the
+// assistant turn persists the provider's wire name (appendAssistantTurn keeps
+// the response message, and the dispatch-time canonicalization rewrites only
+// the copies ToolCalls() returned), while the result turn records the canonical
+// name the registry dispatched. exec_command/shell is the everyday OpenAI
+// case. Two names that canonicalize to the same tool are the same tool; two
+// that do not are genuinely different tools sharing a call id, which is the
+// case the settlement guard exists to keep apart (#1166 review).
+func Same(a, b string) bool {
+	return Canonical(a) == Canonical(b)
+}
+
 // ForSurface returns the canonical→wire renames for surface, or nil when the
 // surface uses canonical names. The map is the caller's to keep.
 func ForSurface(surface string) map[string]string {

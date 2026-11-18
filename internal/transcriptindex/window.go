@@ -1045,6 +1045,27 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 			if err != nil {
 				return appwire.ThreadItem{}, err
 			}
+			// A result for a DIFFERENT tool that reuses the id is not this
+			// call's result: the builder kept it as its own row, and folding it
+			// here would overwrite the reserved call's name and output while the
+			// other tool also keeps its row. The fold asks the same question the
+			// builder asked — does this result belong to this call — through the
+			// one settlement guard (#1166 review).
+			//
+			// Stamped only. A format-0 entry has no reservation to compare
+			// against: its rule is last-name-wins and this fold IS that rule, so
+			// the guard here would drop the result a legacy id resolves to.
+			if reserved := apptranscript.ReservedCallToolName(opener, callID); identity && reserved != "" {
+				kept := items[:0]
+				for _, projected := range items {
+					if apptranscript.MergesByCallID(projected) &&
+						!apptranscript.ResultSettlesReservedCall(reserved, projected.ToolName) {
+						continue
+					}
+					kept = append(kept, projected)
+				}
+				items = kept
+			}
 			item = foldCall(item, items, callID)
 		}
 		if len(echoes) > 0 {
@@ -1156,6 +1177,31 @@ func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire
 		}
 		apptranscript.ProjectEntryParts(string(turnIDBytes), int(ce.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
 	}
+	// An inherited batch can hold the unnamed result for a reserved command AND
+	// the named result for a deferred communicate under one id. The builder
+	// resolved each part against the turn's AWAITING entry: the reservation
+	// answered an unnamed part first, and the pending communicate only named it
+	// when nothing was reserved. Replay that same answer from the summary the
+	// builder wrote, rather than re-deriving one from Context — Context holds
+	// the announcing entry, which is not necessarily the entry the builder was
+	// awaiting by the time this result arrived. Without it the unnamed part
+	// consumes the delivery's arguments and the recorded delivery part projects
+	// nothing, which reads as a corrupt page and rebuilds to the same record
+	// (#1166 review).
+	if record.Opener.Name.Len == 0 {
+		summary, err := r.x.turns.read(uint64(record.Turn), 1)
+		if err != nil {
+			return nil, nil, err
+		}
+		stored := decodeTurn(summary)
+		if awaiting, err := r.entry(stored.AwaitingOffset, stored.AwaitingLength); err == nil && awaiting.Format == schema.TurnFormatIdentity {
+			for id := range apptranscript.ReservedCalls(awaiting) {
+				if name := apptranscript.ReservedCallToolName(awaiting, id); name != "" {
+					reg.ResolvedNames[id] = name
+				}
+			}
+		}
+	}
 	// Context is the entries whose registry state a deferred communicate result
 	// needs — the announcing entry and the last assistant text — not every entry
 	// that moved the turn's awaiting batch between them. Replaying it therefore
@@ -1167,6 +1213,25 @@ func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire
 	// replay's awaiting batch and let the pending state Context DOES reconstruct
 	// name it.
 	reg.ForgetAwaitingBatch()
+	// The builder resolved this item's call when it built the record: an entry
+	// can hold the unnamed result for a reserved command AND the named result
+	// for a deferred communicate under one id, and the builder recorded which
+	// was which. Replay that answer rather than re-deriving it from the pending
+	// state — an unnamed part that fell through to it would consume the
+	// delivery's arguments and leave the recorded delivery part projecting
+	// nothing, which reads as a corrupt page and rebuilds to the same record
+	// (#1166 review).
+	if record.Opener.Name.Len > 0 && record.Call.Len > 0 {
+		name, err := r.x.strings.get(record.Opener.Name)
+		if err != nil {
+			return nil, nil, err
+		}
+		call, err := r.x.strings.get(record.Call)
+		if err != nil {
+			return nil, nil, err
+		}
+		reg.ResolvedNames[string(call)] = string(name)
+	}
 	entry, err := r.entry(record.Opener.Offset, record.Opener.Length)
 	if err != nil {
 		return nil, nil, err

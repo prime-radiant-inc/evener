@@ -6,6 +6,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -982,6 +983,24 @@ func partProjectsItem(entries map[int]schema.Turn, entry, part int) bool {
 	return content.ToolCall.Name != "communicate"
 }
 
+// ReservedCallToolName returns the tool name entry recorded for the part it
+// reserved for callID, or "" when the entry does not record that id.
+//
+// It is derived from ReservedCalls so a reader asking "which tool did this
+// entry reserve for this id" cannot answer differently from the reader asking
+// "which part". The transcript index's read-back uses it to fold a contributor
+// result only into the call it belongs to (#1166 review).
+func ReservedCallToolName(entry *schema.Turn, callID string) string {
+	if entry == nil {
+		return ""
+	}
+	part, ok := ReservedCalls(entry)[callID]
+	if !ok {
+		return ""
+	}
+	return reservedToolName(map[int]schema.Turn{0: *entry}, 0, part)
+}
+
 // reservedToolName is the tool name the entry recorded for the part it reserved
 // for a call id, or "" when the entry does not record that id.
 func reservedToolName(entries map[int]schema.Turn, entry, part int) string {
@@ -1025,6 +1044,13 @@ func ReservedCalls(entry *schema.Turn) map[string]int {
 // row in the index and overwrites the command's name and status in replay
 // (#1166 review).
 //
+// The names are compared as TOOL IDENTITY, not as spellings: a call records the
+// provider's wire name and its result records the canonical name dispatch used,
+// so an OpenAI exec_command announcement and its shell result name one tool.
+// Comparing raw strings would leave every renamed tool's result unmatched, which
+// renders a second row and lets a later completion mark the successful call
+// interrupted. wirenames.Same is that one alias table (#1166 review).
+//
 // A result with no name of its own carries no claim, so it settles the
 // reservation: that is the case the reservation exists for. When it does name a
 // tool, the claim must match the reserved call's name.
@@ -1032,7 +1058,7 @@ func ResultSettlesReservedCall(reservedTool, resultTool string) bool {
 	if resultTool == "" {
 		return true
 	}
-	return reservedTool == resultTool
+	return wirenames.Same(reservedTool, resultTool)
 }
 
 // ExecutionStatusFromCompletion maps a recorded completion's status to the turn

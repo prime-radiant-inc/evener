@@ -103,7 +103,7 @@ func (reg *ToolCallRegistry) setAwaitingBatch(turnID string, batch map[string]st
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
 func NewToolCallRegistry() *ToolCallRegistry {
-	return &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
+	return &ToolCallRegistry{Names: map[string]string{}, ResolvedNames: map[string]string{}, CommRawArgs: map[string]string{}, CommAuthorship: map[string]*schema.TranscriptAuthorship{}}
 }
 
 // EntryProjector converts one already-decoded transcript turn into AppWire

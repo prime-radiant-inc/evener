@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/tool"
-	"primeradiant.com/evener/agent/internal/tool/wirenames"
+	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )

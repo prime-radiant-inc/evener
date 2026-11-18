@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/evener/agent/internal/tool/wirenames"
+	"primeradiant.com/evener/agent/wirenames"
 )
 
 // maxAvailableListed caps the available-tools list so an unknown-tool error

@@ -510,3 +510,202 @@ func itemShapes(items []appwire.ThreadItem) []string {
 	}
 	return out
 }
+
+// TestAProviderAliasCallSettlesItsCanonicalResult covers the alias half of the
+// settlement seam, and it is the everyday shape rather than a corner: an
+// OpenAI surface announces exec_command and the result records shell.
+//
+// The writer records the two names from different places on purpose. The
+// assistant turn persists the response message, so it keeps the name the
+// provider made the model say; dispatch canonicalizes a COPY (ToolCalls
+// returns copies), and the result turn records that canonical name. Settlement
+// therefore cannot compare spellings: exec_command and shell are one tool, and
+// a guard that says otherwise emits a second row for a single call and lets a
+// later completion mark the successful announcement interrupted — a failure
+// the user never had (#1166 review).
+func TestAProviderAliasCallSettlesItsCanonicalResult(t *testing.T) {
+	fx := fixture{
+		name:   "provider alias settles its canonical result",
+		header: transcript.Header{SessionID: "alias_settles", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_alias", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_alias", assistant(
+				call("call_alias", "exec_command", `{"cmd":"ls"}`),
+			))),
+			entryLine(inTurn("turn_alias", results(result("call_alias", "shell", "a.txt")))),
+			entryLine(completion("turn_alias", schema.TurnCompleted, 99, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_alias")
+	replayed := replayedTurnOf(t, path, "turn_alias")
+
+	for _, reader := range []struct {
+		name  string
+		items []appwire.ThreadItem
+	}{{"index", indexed}, {"replay", replayed.Items}} {
+		rows, settled, interrupted := 0, "", false
+		for _, item := range reader.items {
+			if item.CallID != "call_alias" {
+				continue
+			}
+			rows++
+			if item.Type == "commandExecution" && item.Status == appwire.TurnStatusCompleted {
+				settled = item.ToolName
+			}
+			if item.Status == appwire.TurnStatusInterrupted {
+				interrupted = true
+			}
+		}
+		// One call, one row: the announcement the client already saw, settled
+		// where it stands. A second row is the standalone result.
+		if rows != 1 {
+			t.Errorf("%s: rows for one aliased call = %d, want 1: exec_command and shell are the same tool, not two calls (items %s)",
+				reader.name, rows, itemShapes(reader.items))
+		}
+		if settled == "" {
+			t.Errorf("%s: no completed command for the call: the result did not settle the announcement (items %s)",
+				reader.name, itemShapes(reader.items))
+		}
+		if interrupted {
+			t.Errorf("%s: the settled call reads interrupted: settlement never matched, so the completion closed it as unanswered (items %s)",
+				reader.name, itemShapes(reader.items))
+		}
+	}
+}
+
+// TestAReadBackFoldKeepsTheReservedCommandOwnOutput covers read-back's half of
+// the shared-id fold. Two VISIBLE tools reuse one id in an inherited batch, and
+// their named results arrive in one TURN_TOOL_RESULTS entry. The builder
+// settles the reservation's own part (the first recorded call) and keeps the
+// other result as its own row.
+//
+// Read-back reprojects that whole contributor entry, and a fold that merges
+// every result carrying the id overwrites the reserved command's name and
+// output with the other tool's — while the other tool ALSO keeps its own row.
+// The user sees one command reporting another tool's output. The fold has to ask
+// the question the builder asked: does this result belong to this call, not
+// merely does it carry this id (#1166 review).
+func TestAReadBackFoldKeepsTheReservedCommandOwnOutput(t *testing.T) {
+	fx := fixture{
+		name:   "read back fold keeps the reserved output",
+		header: transcript.Header{SessionID: "fold_reserved", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_fold", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_fold", inheritedAuthorship(assistant(
+				call("call_twice", "read_file", `{"path":"a"}`),
+				call("call_twice", "shell", `{"cmd":"ls"}`),
+			)))),
+			// Both results in ONE entry, each naming its own tool.
+			entryLine(inTurn("turn_fold", results(
+				result("call_twice", "read_file", "the bytes"),
+				result("call_twice", "shell", "a.txt"),
+			))),
+			entryLine(completion("turn_fold", schema.TurnCompleted, 99, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_fold")
+	replayed := replayedTurnOf(t, path, "turn_fold")
+
+	for _, reader := range []struct {
+		name  string
+		items []appwire.ThreadItem
+	}{{"index", indexed}, {"replay", replayed.Items}} {
+		reserved, other := "", ""
+		for _, item := range reader.items {
+			if item.CallID != "call_twice" || item.Type != "commandExecution" {
+				continue
+			}
+			switch item.ToolName {
+			case "read_file":
+				reserved = item.Output
+			case "shell":
+				other = item.Output
+			}
+		}
+		if reserved != "the bytes" {
+			t.Errorf("%s: reserved call output = %q, want %q: the other tool's result must not overwrite it (items %s)",
+				reader.name, reserved, "the bytes", itemShapes(reader.items))
+		}
+		if other != "a.txt" {
+			t.Errorf("%s: the other tool's own row is missing its output: got %q (items %s)",
+				reader.name, other, itemShapes(reader.items))
+		}
+	}
+}
+
+// TestAReadBackKeepsTheRecordedDeliveryPart covers read-back when ONE results
+// entry carries both halves of a reused id: the unnamed result for the
+// reserved command, then the named result for the deferred communicate.
+//
+// The builder resolves each part in transcript order. The unnamed part settles
+// the reserved read_file and leaves the pending delivery alone; the second,
+// named part is the delivery, and the builder records it at its own part. That
+// record is what read-back must reproduce.
+//
+// Read-back reprojects the entry with a registry rebuilt from the persisted
+// contributor name alone, so it cannot see the reservation the builder had. An
+// unnamed first part then falls through to the pending-communicate state, takes
+// the delivery's arguments, and the recorded delivery part projects nothing —
+// leaving the page claiming a part that is not there, which reads as corruption
+// and rebuilds to the same record. The test therefore asserts on the record's
+// own answer: the page returns BOTH items, before and after a rebuild.
+func TestAReadBackKeepsTheRecordedDeliveryPart(t *testing.T) {
+	fx := fixture{
+		name:   "read back keeps the recorded delivery part",
+		header: transcript.Header{SessionID: "readback_delivery", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_both", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_both", inheritedAuthorship(assistant(
+				call("call_both", "read_file", `{"path":"a"}`),
+				call("call_both", "communicate", `{"message":"the delivery"}`),
+			)))),
+			// One entry, two parts: the command's unnamed result, then the
+			// delivery's named one.
+			entryLine(inTurn("turn_both", results(
+				result("call_both", "", "the bytes"),
+				result("call_both", "communicate", "the delivery"),
+			))),
+			entryLine(completion("turn_both", schema.TurnCompleted, 99, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	dir := t.TempDir()
+
+	assertBoth := func(t *testing.T, label string, items []appwire.ThreadItem) {
+		t.Helper()
+		command, delivered := "", false
+		for _, item := range items {
+			switch item.Type {
+			case "commandExecution":
+				if item.ToolName == "read_file" && item.Status == appwire.TurnStatusCompleted {
+					command = item.ToolName
+				}
+			case "agentMessage":
+				if strings.Contains(item.Text, "the delivery") {
+					delivered = true
+				}
+			}
+		}
+		if command == "" {
+			t.Errorf("%s: the reserved command is missing or unsettled (items %s)",
+				label, itemShapes(items))
+		}
+		if !delivered {
+			t.Errorf("%s: the recorded delivery part did not render: the unnamed result consumed state that belonged to it (items %s)",
+				label, itemShapes(items))
+		}
+	}
+
+	first := openIndex(t, path, dir)
+	assertBoth(t, "first read", turnItemsOf(t, allCandidates(t, first), "turn_both"))
+
+	// The record itself is what is wrong, so a rebuild must not "fix" it: the
+	// same shape comes back.
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := openIndex(t, path, dir)
+	assertBoth(t, "after rebuild", turnItemsOf(t, allCandidates(t, rebuilt), "turn_both"))
+}
