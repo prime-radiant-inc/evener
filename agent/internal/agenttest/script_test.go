@@ -112,23 +112,39 @@ func TestScriptResistsConcurrentDriveAndReplacement(t *testing.T) {
 // scripted answer it is about to wrap and still expect that answer to be served.
 func TestScriptAtReadsWithoutMovingTheCursor(t *testing.T) {
 	var s Script[func(req llm.Request) llm.Response]
-	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
-	step, ok := s.At(1)
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two"), stepAt("three"), stepAt("four")})
+	// Consume a step first: with the cursor at zero, "did not move" and
+	// "rewound to zero" are the same observation, so the assertion could not
+	// tell the contract from its opposite.
+	if _, ok := s.Next(); !ok {
+		t.Fatal("first Next() not ok")
+	}
+	step, ok := s.At(2)
 	if !ok {
-		t.Fatal("At(1) ok = false, want true")
+		t.Fatal("At(2) ok = false, want true")
 	}
-	if got := step(llm.Request{}).Message.Text(); got != "two" {
-		t.Errorf("At(1) answered %q, want %q", got, "two")
+	if got := step(llm.Request{}).Message.Text(); got != "three" {
+		t.Errorf("At(2) answered %q, want %q", got, "three")
 	}
-	if s.Cursor() != 0 {
-		t.Errorf("Cursor() after At = %d, want 0", s.Cursor())
+	if got := s.Cursor(); got != 1 {
+		t.Errorf("Cursor() after At = %d, want the surviving 1", got)
 	}
-	first, ok := s.Next()
+	// The pending step is what Next serves: a rewind to zero would answer
+	// "one" here, re-running a step the drive already consumed.
+	pending, ok := s.Next()
 	if !ok {
-		t.Fatal("Next() ok = false, want the first step")
+		t.Fatal("Next() ok = false, want the pending second step")
 	}
-	if got := first(llm.Request{}).Message.Text(); got != "one" {
-		t.Errorf("Next() after At answered %q, want the first step %q", got, "one")
+	if got := pending(llm.Request{}).Message.Text(); got != "two" {
+		t.Errorf("Next() after At answered %q, want the pending step %q", got, "two")
+	}
+	// And the step At read is still served in its own turn.
+	read, ok := s.Next()
+	if !ok {
+		t.Fatal("Next() ok = false, want the step At read")
+	}
+	if got := read(llm.Request{}).Message.Text(); got != "three" {
+		t.Errorf("Next() answered %q, want the step At read %q", got, "three")
 	}
 }
 
@@ -146,19 +162,42 @@ func TestScriptAtRejectsOutOfRangeIndexes(t *testing.T) {
 // lets a test wrap the answer at a position it has already read with At.
 func TestScriptSetAtReplacesWithoutMovingTheCursor(t *testing.T) {
 	var s Script[func(req llm.Request) llm.Response]
-	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
-	if !s.SetAt(0, stepAt("replaced")) {
-		t.Fatal("SetAt(0) ok = false, want true")
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two"), stepAt("three"), stepAt("four")})
+	// Advance past the middle before replacing: at cursor zero, "left the
+	// cursor alone" and "rewound it to zero" read identically, and only the
+	// second would silently re-run steps the drive already consumed.
+	if _, ok := s.Next(); !ok {
+		t.Fatal("first Next() not ok")
 	}
-	if s.Cursor() != 0 {
-		t.Errorf("Cursor() after SetAt = %d, want 0", s.Cursor())
+	if !s.SetAt(2, stepAt("replaced")) {
+		t.Fatal("SetAt(2) ok = false, want true")
 	}
-	step, ok := s.Next()
+	if got := s.Cursor(); got != 1 {
+		t.Errorf("Cursor() after SetAt = %d, want the surviving 1", got)
+	}
+	// The pending step still comes next, in order.
+	pending, ok := s.Next()
+	if !ok {
+		t.Fatal("Next() ok = false, want the pending second step")
+	}
+	if got := pending(llm.Request{}).Message.Text(); got != "two" {
+		t.Errorf("Next() after SetAt answered %q, want the pending step %q", got, "two")
+	}
+	// Then the replacement, at the position it was written to.
+	replaced, ok := s.Next()
 	if !ok {
 		t.Fatal("Next() ok = false, want the replaced step")
 	}
-	if got := step(llm.Request{}).Message.Text(); got != "replaced" {
-		t.Errorf("Next() after SetAt answered %q, want %q", got, "replaced")
+	if got := replaced(llm.Request{}).Message.Text(); got != "replaced" {
+		t.Errorf("Next() answered %q, want the replacement %q", got, "replaced")
+	}
+	// Nothing past the replacement moved either.
+	last, ok := s.Next()
+	if !ok {
+		t.Fatal("Next() ok = false, want the final step")
+	}
+	if got := last(llm.Request{}).Message.Text(); got != "four" {
+		t.Errorf("Next() answered %q, want the untouched final step %q", got, "four")
 	}
 }
 

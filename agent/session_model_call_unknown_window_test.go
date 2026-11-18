@@ -27,21 +27,30 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	doneStep := func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }
-	c.Register(newFakeAdapter("gw", append([]func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
-		return llm.Response{
-			Usage: llm.Usage{InputTokens: 150_000},
-			Message: llm.Message{
-				Role: llm.RoleAssistant,
-				Content: []llm.ContentPart{
-					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-						ID:        "c1",
-						Name:      "read_file",
-						Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-					}},
+	steps := []func(llm.Request) llm.Response{
+		// First round: a tool call whose reported usage already fills the
+		// assumed window, the way a real gateway reports input tokens.
+		func(req llm.Request) llm.Response {
+			return llm.Response{
+				Usage: llm.Usage{InputTokens: 150_000},
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID:        "c1",
+							Name:      "read_file",
+							Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+						}},
+					},
 				},
-			},
-		}
-	}}, agenttest.RepeatSteps(doneStep, 5)...)...))
+			}
+		},
+	}
+	// A real fold launches auxiliary calls (session naming rides the cheap
+	// caller) and then the closing round; every remaining step ends the turn
+	// cleanly.
+	steps = append(steps, agenttest.RepeatSteps(doneStep, 5)...)
+	c.Register(newFakeAdapter("gw", steps...))
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", strings.Repeat("line of content\n", 200)); err != nil {
 		t.Fatalf("WriteFile: %v", err)
