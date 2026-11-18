@@ -97,6 +97,11 @@ export interface ControlsSession {
 	/** Records one setting's outcome, or clears it once a publication catches up.
 	 * `null` clears that setting and leaves the other alone. */
 	record(setting: Setting, outcome: UnreadValue | null): void;
+	/** Retires every outcome an authoritative publication has established, and
+	 * only those: an outcome recorded while a read was already out survives that
+	 * read's answer, because the read may have sampled the session before the
+	 * write it cannot confirm. */
+	retirePublished(): void;
 	/** Notifies when the record changes. A set can settle after the controls
 	 * that dispatched it were replaced, so the record has to reach a binding
 	 * that already exists and not only one built afterwards. */
@@ -119,9 +124,19 @@ function detachedSession(): ControlsSession {
  * mounted views of the same session read one projection, so a per-view record
  * would let one dismiss a correction the other knew was outstanding.
  */
-export function sessionFacts(published: () => boolean): ControlsSession {
+export function sessionFacts(published: () => boolean, readsStarted: () => number = () => 0): ControlsSession {
 	let unread: Unread = { model: null, vision: null };
+	// The read count each setting's outcome was recorded at. An outcome says the
+	// projection cannot answer for that setting; only a read begun after it was
+	// recorded can have observed the write it cannot confirm. Retiring on any
+	// publication instead would let a read that was already out - one that may
+	// have sampled the session before the write - clear the uncertainty, which
+	// is the same stale-match bug one layer up.
+	let recordedAt: Record<Setting, number> = { model: 0, vision: 0 };
 	const listeners = new Set<() => void>();
+	const changed = () => {
+		for (const listener of listeners) listener();
+	};
 	return {
 		published,
 		unread: () => unread,
@@ -135,7 +150,23 @@ export function sessionFacts(published: () => boolean): ControlsSession {
 						(current.state === "unknown" || (outcome.state === "acknowledged" && current.value === outcome.value));
 			if (same) return;
 			unread = { ...unread, [setting]: outcome };
-			for (const listener of Array.from(listeners)) listener();
+			recordedAt = { ...recordedAt, [setting]: readsStarted() };
+			changed();
+		},
+		retirePublished: () => {
+			const started = readsStarted();
+			const kept: Setting[] = [];
+			let retired = false;
+			for (const setting of ["model", "vision"] as const) {
+				if (unread[setting] !== null && recordedAt[setting] < started) retired = true;
+				else if (unread[setting] !== null) kept.push(setting);
+			}
+			if (!retired) return;
+			unread = {
+				model: kept.includes("model") ? unread.model : null,
+				vision: kept.includes("vision") ? unread.vision : null,
+			};
+			changed();
 		},
 		watch: (listener) => {
 			listeners.add(listener);
@@ -245,7 +276,7 @@ export class SessionControls {
 	 * because the binding is still that session's and the reply still belongs
 	 * to it. A failure keeps its report for the reader who comes back, and
 	 * returns before a notice would overwrite it. */
-	private ends(error: string | null = null): boolean {
+	private ends(error: string | null = null, kind: Operation | null = null): boolean {
 		if (this.disposed) {
 			// A disposed controller has no listeners, so nothing is told. Its own
 			// record still has to say what the hub answered: the step that asked
@@ -256,9 +287,21 @@ export class SessionControls {
 			return true;
 		}
 		if (this.isCurrent()) return false;
-		if (!this.isCurrent("session")) return true;
 		if (error === null) return false;
-		this.publish({ pending: null, error });
+		if (this.isCurrent("session")) {
+			this.publish({ pending: null, error });
+			return true;
+		}
+		// A binding that moved to another conversation tells nobody: its
+		// listeners belong to the session it now shows. A stop is the exception,
+		// because the restart step reads the outcome back off the object that
+		// sent it rather than off a screen, and a refusal kept out of that record
+		// reads as an acknowledged stop - which is how a refused stop came to be
+		// followed by a resume. Every other action's outcome belongs to the
+		// screen, and a screen that has moved on is not owed it.
+		if (kind === "shutdown" || kind === "forceStop") {
+			this.state = { ...this.state, pending: null, error };
+		}
 		return true;
 	}
 	dispose() {
@@ -613,7 +656,7 @@ export class SessionControls {
 				this.session.record(kind === "changeModel" ? "model" : "vision", { state: "unknown" });
 				if (!this.disposed) this.publish({ unread: this.session.unread() });
 			}
-			if (this.ends(failure)) return false;
+			if (this.ends(failure, kind)) return false;
 			this.publish({
 				pending: null,
 				notice: null,

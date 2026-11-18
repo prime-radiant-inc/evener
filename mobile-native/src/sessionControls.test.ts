@@ -1378,6 +1378,47 @@ describe("conversation-owned session controls", () => {
 		// two are recorded apart rather than one overwriting the other.
 		expect(session.unread()).toEqual({ model: { state: "unknown" }, vision: { state: "unknown" } });
 	});
+	// The unknown is a doubt, not a fact, so the read that settles the doubt has
+	// to retire it. Without that, the doubt outlives every read: a vision write
+	// loses its reply, a reconnect establishes that vision is still Off, and the
+	// Off row the projection already draws as selected still sends a setter -
+	// which on a stopped session starts the daemon to reapply what it has.
+	it("retires an unknown outcome once a later read establishes the setting", async () => {
+		let reads = 0;
+		let published = false;
+		const session = sessionFacts(
+			() => published,
+			() => reads,
+		);
+		session.record("vision", { state: "unknown" });
+		// The read that establishes the setting starts after the write was
+		// recorded, and its publication is what answers the doubt.
+		reads += 1;
+		published = true;
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: null });
+		// What the reader then sees: the Off row matches the projection, so a tap
+		// on it is a verified no-op and the picker closes without writing.
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(true);
+	});
+	// The other direction, and the reason the record counts reads rather than
+	// trusting the next publication: a read already out when the write was
+	// recorded may have sampled the session before that write, so its answer
+	// cannot clear the doubt. Retiring on any publication would put the stale
+	// Off row back and reproduce the silent dismissal the record exists to stop.
+	it("keeps an unknown outcome that a read already out cannot answer", async () => {
+		let reads = 1;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+		);
+		// The write is recorded while that read is in flight.
+		session.record("vision", { state: "unknown" });
+		// Its publication lands without a newer read having started.
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+	});
 	// The hub's acknowledgement, not the read that follows it, is the record
 	// that the pick applied. A phone that reconnects while that read is still
 	// out has not left the session it is looking at, so the pick still reports

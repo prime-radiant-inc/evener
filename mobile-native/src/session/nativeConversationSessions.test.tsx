@@ -205,6 +205,29 @@ describe("two attachments", () => {
 		await settle();
 	});
 
+	// An unknown outcome is a doubt about the setting, and the session's own
+	// authoritative read is what answers it. If nothing retires it, the doubt
+	// outlives every read that follows: the Off row the projection now draws as
+	// selected still sends a setter, and on a stopped session that starts the
+	// daemon to reapply the value it already has.
+	it("retires an unknown outcome when the session's own read publishes", async () => {
+		const client = hub("ref-1");
+		connected(client);
+		const a = sessions.attach("hub-1", "ref-1");
+		await vi.waitFor(() => expect(a.entry.store.getState().status).toBe("open"));
+
+		// The write loses its reply, so the setting is doubted rather than known.
+		a.entry.sessionFacts.record("vision", { state: "unknown" });
+		expect(a.entry.sessionFacts.unread().vision).toEqual({ state: "unknown" });
+
+		// A later authoritative read establishes what the session actually holds.
+		await a.entry.store.getState().ensureLatest();
+		await a.entry.readSettled();
+		await settle();
+
+		expect(a.entry.sessionFacts.unread()).toEqual({ model: null, vision: null });
+	});
+
 	it("release one during a held authoritative read, and the survivor sees its publication", async () => {
 		const held = deferred<ThreadReadResponse>();
 		const client = hub("ref-1", () => held.promise);

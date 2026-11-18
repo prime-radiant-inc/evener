@@ -136,6 +136,76 @@ describe("one step of a restart", () => {
 		expect(await step).toBe("failed");
 	});
 
+	// The stop went out while this binding was the session's, and the screen let
+	// go of it in layout cleanup before the hub answered. The answer is a
+	// refusal, so nothing was stopped: a record that stays silent here reads as
+	// an acknowledged stop, and the restart owes a resume the hub already
+	// refused to earn.
+	it("fails a stop the hub refused after its binding stopped being the session's", async () => {
+		let refuse!: (cause: Error) => void;
+		const released = controls({
+			forceStop: () =>
+				new Promise<void>((_, reject) => {
+					refuse = reject;
+				}),
+		});
+		const step = attemptControl(released.made, "forceStop");
+		// Released, not disposed: the component is gone from this pane but its
+		// passive cleanup has not run yet.
+		released.state.current = false;
+		refuse(new Error("The hub refused to stop the runtime."));
+		expect(await step).toBe("failed");
+		expect(released.made.getSnapshot().error).not.toBeNull();
+	});
+
+	// The refusal is recorded nowhere when the guard returns early, so the
+	// obligation a stop is supposed to earn on its acknowledgement is recorded
+	// anyway. The reader then returns to a rebuilt pane, whose fresh hook finds
+	// the obligation and resumes a runtime the hub refused to stop - the
+	// attached resume that follows a rejected stop.
+	it("owes no resume for a stop the hub refused after its binding was released", async () => {
+		let sent = 0;
+		let refuse!: (cause: Error) => void;
+		const state = { current: true };
+		const made = new SessionControls(
+			{
+				forceStop: () =>
+					new Promise<void>((_, reject) => {
+						refuse = reject;
+					}),
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => state.current,
+			() => null,
+			() => true,
+		);
+		const hook = renderHook(() => useSessionRestart("hub-b", "ref-b", made, "open"));
+		await act(async () => {
+			const restarting = hook.result.current.restart();
+			await settle();
+			state.current = false;
+			refuse(new Error("The hub refused to stop the runtime."));
+			await restarting;
+		});
+		await settle();
+		// The pane is rebuilt on the same session and finds nothing owed.
+		const rebuilt = controls({
+			resume: async () => {
+				sent += 1;
+			},
+		});
+		const returning = renderHook(() => useSessionRestart("hub-b", "ref-b", rebuilt.made, "open"));
+		await settle();
+		expect(sent).toBe(0);
+		expect(returning.result.current.busy).toBe(false);
+		// The reader is told the stop was refused, not that it went through.
+		expect(hook.result.current.error).not.toBeNull();
+	});
+
 	it("sends no resume for a stop the hub refused after its controls were gone", async () => {
 		let sent = 0;
 		let refuse!: (cause: Error) => void;

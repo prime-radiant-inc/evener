@@ -139,6 +139,14 @@ class SessionEntry implements NativeConversationSession {
 	#bindingGeneration = 0;
 	#retryAttemptBinding: number | null = null;
 	#readListeners = new Set<() => void>();
+	// How many reads this store has started, watched rather than sampled: the
+	// unread record retires an outcome only once a read begun after it was
+	// recorded publishes, since an earlier read may have sampled the session
+	// before that write. Counted from the transition into "reading" rather than
+	// from every state the store announces while a read is open, or one attempt
+	// would look like several and the fence would admit a stale read's answer.
+	#readsStarted = 0;
+	#lastReadState: ReturnType<NativeConversationSession["store"]["getState"]>["latestReadState"] | null = null;
 
 	constructor(options: {
 		hubId: string;
@@ -167,7 +175,10 @@ class SessionEntry implements NativeConversationSession {
 		// A read the store discarded returns normally, so "the refresh resolved"
 		// is not the same fact as "the projection is the one that read
 		// published". The store says which it is.
-		this.sessionFacts = sessionFacts(() => this.store.getState().latestReadState === "ready");
+		this.sessionFacts = sessionFacts(
+			() => this.store.getState().latestReadState === "ready",
+			() => this.#readsStarted,
+		);
 		const entry = this;
 		this.readActor = {
 			get failures() {
@@ -419,6 +430,17 @@ class SessionEntry implements NativeConversationSession {
 	#observeRead(): void {
 		if (this.#retired) return;
 		const state = this.store.getState();
+		// A read starts by marking "reading", and the store announces every
+		// change - rows arriving, mutations binding - so only the entry into that
+		// state is an attempt.
+		if (state.latestReadState === "reading" && this.#lastReadState !== "reading") {
+			this.#readsStarted += 1;
+		} else if (state.latestReadState === "ready") {
+			// The projection has caught up with every write a read begun after it
+			// can have observed, so nothing is outstanding for a picker to doubt.
+			this.sessionFacts.retirePublished();
+		}
+		this.#lastReadState = state.latestReadState;
 		// A rehydrate failure keeps the retained display model readable and only
 		// moves latestReadState to "error"; following status alone would never
 		// arm the retry. Both the status failure and the read-state failure are
