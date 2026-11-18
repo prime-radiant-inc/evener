@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -157,11 +158,12 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal(middleResult.Err)
 	}
 	<-middleRun.entered
-	// TRIPWIRE: the middle's namer is launched from its in-process input accept
-	// and reaches a scripted adapter with no real I/O, so this normally returns
-	// in well under a second. 10s only fires when no namer was started at all.
-	awaitWithin(t, 10*time.Second, "the middle child's prompt namer reaching its provider call", func() {
-		<-namerEntered
+	// Await the namer's own entry rather than arming a helper goroutine on it: a
+	// helper that timed out here would leave its goroutine blocked on this
+	// channel for the rest of the process, and the failure would come from the
+	// helper instead of from the condition.
+	testwait.Until(t, "the middle child's prompt namer reaching its provider call", func() bool {
+		return channelClosed(namerEntered)
 	})
 	middleSub := root.getSub(middleResult.ChildSessionID)
 	middle := middleSub.sess
@@ -181,6 +183,11 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	middle.mu.Lock()
 	middle.cfg.testOnly.childClientFactory = func() *llm.Client {
 		c := llm.NewClient()
+		// The leaf inherits the test namer as its naming provider, so its own
+		// client must answer that provider: without this its naming request
+		// fails provider resolution, and the two scripted OpenAI replies below
+		// stay reserved for the leaf's turns.
+		registerTestSessionNamer(c)
 		c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-second-answer") }}})
 		return c
 	}
@@ -299,8 +306,11 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	middleSub.mu.Lock()
 	settledBeforeClose := channelClosed(middleSub.done) && !middleSub.running
 	middleSub.mu.Unlock()
-	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
+	// The budget is spent before the close begins, with no clock involved: a
+	// context cancelled up front is already done, so every join in the cascade
+	// gives up on its first select.
+	expired, cancelExpired := context.WithCancel(context.Background())
+	cancelExpired()
 	// TRIPWIRE: with the budget already spent this close returns in milliseconds
 	// over in-memory state. 30s only fires if a join stopped honoring the budget.
 	awaitWithin(t, 30*time.Second, "the expired-budget close to return", func() {
@@ -322,10 +332,13 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal("the close reached the middle child's event stream with its namer already done, so this test never crossed the window it exists to prove")
 	}
 	releaseNamer()
-	// The join itself is unbudgeted; this ceiling only turns a broken completion
-	// signal into a named failure instead of the test binary's timeout.
-	awaitWithin(t, 30*time.Second, "the middle child's namer to finish", func() { middle.namerWG.Wait() })
-	awaitWithin(t, 30*time.Second, "the leaf child's namer to finish", func() { leaf.namerWG.Wait() })
+	// The namer's own completion signal is what proves the parked goroutine is
+	// gone, and nothing here bounds it: a budget is exactly what this join
+	// exists to be independent of. Waiting on the group directly is that join.
+	// A signal that never fires hangs here rather than failing by name, which is
+	// the honest report: the stack shows the namer still on it.
+	middle.namerWG.Wait()
+	leaf.namerWG.Wait()
 	middle.mu.Lock()
 	stillNaming := middle.naming.pending
 	middle.mu.Unlock()
@@ -595,7 +608,7 @@ type authorshipGatedAdapter struct {
 	name    string
 	entered chan struct{}
 	gate    chan struct{}
-	// closeOnce guards the gate against a second release from a cleanup.
+	// gateOnce guards the gate against a second release from a cleanup.
 	gateOnce sync.Once
 }
 
