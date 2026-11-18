@@ -123,6 +123,12 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const secondItemAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"g"}}`
 	const secondItemFinal = `{"type":"response.function_call_arguments.done","item_id":"fc_2","name":"g","arguments":"{ \"k\": 2 }"}`
 	const secondLinked = `{"type":"function_call","id":"fc_2","call_id":"call_2"}`
+	const contestedFinal = `{"type":"response.function_call_arguments.done","item_id":"fc_1","call_id":"call_2","arguments":"{ \"k\": 2 }"}`
+	const contestedDelta = `{"type":"response.function_call_arguments.delta","item_id":"fc_1","call_id":"call_2","delta":"{ \"k\": "}`
+	const secondDelta = `{"type":"response.function_call_arguments.delta","call_id":"call_2","delta":"2 }"}`
+	const firstMessageRef = `{"type":"message","id":"msg_2"}`
+	const secondMessageRef = `{"type":"message","id":"msg_3"}`
+	const secondMessageDelta = `{"type":"response.output_text.delta","item_id":"msg_3","delta":" \tm3\n"}`
 	const firstShared = `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","arguments":"{}"}`
 	const secondShared = `{"type":"function_call","id":"fc_1","call_id":"call_2","name":"g","arguments":"{ \"k\": 2 }"}`
 	bindSharedID := done(strings.Replace(secondLinked, "fc_2", "call_1", 1))
@@ -175,6 +181,9 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	streamNamedTool := finalTool
 	streamNamedTool.Name = "preview"
 	secondTool := replayItem{Type: "function_call", CallID: "call_2", Name: "g", Arguments: `{ "k": 2 }`}
+	fallbackTool := tool
+	fallbackTool.Arguments = secondTool.Arguments
+	secondMessage := replayItem{Type: "message", Content: []replayText{{"output_text", " \tm3\n"}}}
 	updatedSecond := secondTool
 	updatedSecond.Arguments = finalTool.Arguments
 	extendedFirst := tool
@@ -264,6 +273,10 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"issued call gains its item ID at another index", []string{indexedCalls[0], at(1, done(linkedCall)), finalArguments}, nil, []replayItem{finalTool}},
 		{"issued call links a provisional named item at another index", []string{indexedCalls[0], at(1, toolItemAdded), at(1, namedFinalArguments)}, nil, []replayItem{finalTool}},
 		{"issued call repeated at another call's index keeps the other call", []string{indexedCalls[0], at(1, done(secondLinked)), secondItemFinal, at(1, namedFinalArguments)}, nil, []replayItem{finalTool, secondTool}},
+		{"conflicting arguments final belongs to its later issued call", []string{toolAdded, finalArguments, contestedFinal, secondItemAdded, done(secondLinked)}, []string{firstCall, secondCall}, []replayItem{finalTool, secondTool}},
+		{"conflicting arguments final belongs to its terminal issued call", []string{toolAdded, finalArguments, contestedFinal}, []string{firstCall, `{"type":"function_call","id":"fc_2","call_id":"call_2","name":"g"}`}, []replayItem{finalTool, secondTool}},
+		{"unconfirmed conflicting final falls back to the known item", []string{toolAdded, finalArguments, contestedFinal}, []string{firstCall}, []replayItem{fallbackTool}},
+		{"conflicting delta joins the later issued call's deltas", []string{toolAdded, itemArguments, contestedDelta, secondDelta, secondItemAdded, done(secondLinked)}, []string{firstCall, secondCall}, []replayItem{tool, secondTool}},
 		{"issued call with two item IDs stays a single call", []string{at(0, toolAdded), finalArguments, at(1, done(strings.Replace(linkedFinalCall, "fc_1", "fc_2", 1)))}, nil, []replayItem{finalTool}},
 		{"terminal renames an issued item and omits finalized arguments", []string{toolAdded, finalArguments}, []string{`{"type":"function_call","id":"fc_renamed","call_id":"call_1"}`}, []replayItem{finalTool}},
 		{"terminal supplies its own arguments after renaming an issued item", []string{toolAdded, finalArguments}, []string{`{"type":"function_call","id":"fc_renamed","call_id":"call_1","arguments":"{}"}`}, []replayItem{tool}},
@@ -380,6 +393,8 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"substantive terminal replaces anonymous text and sparse siblings", []string{messageAdded, answerDelta, toolDelta}, []string{secondAnswer}, []replayItem{multipart}},
 		{"standalone empty native answer", nil, []string{emptyAnswer}, []replayItem{{Type: "message", Content: []replayText{{"output_text", ""}}}}},
 		{"empty native answer with a matching streamed answer", []string{otherAnswerDelta}, []string{emptyAnswer}, []replayItem{otherAnswer}},
+		{"sparse terminal orders selected unindexed messages", []string{otherAnswerDelta, secondMessageDelta}, []string{secondMessageRef, firstMessageRef}, []replayItem{secondMessage, otherAnswer}},
+		{"sparse terminal reorders selected messages around an omitted call", []string{otherAnswerDelta, done(toolItem), secondMessageDelta}, []string{secondMessageRef, firstMessageRef}, []replayItem{secondMessage, tool, otherAnswer}},
 		{"distinct native messages sharing a phase", nil, []string{answerItem, secondAnswer}, []replayItem{answer, multipart}},
 		{"substantive native message owns its phase", []string{messageAdded}, []string{secondAnswer}, []replayItem{multipart}},
 		{"out of order completed messages sharing a phase", []string{at(1, done(secondAnswer)), at(0, done(answerItem))}, nil, []replayItem{answer, multipart}},

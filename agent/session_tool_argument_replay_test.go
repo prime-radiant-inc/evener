@@ -55,6 +55,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const summary = " \tΣ<&>\r\n"
 	const answer = " \tanswer<&>\r\n"
 	const finalAnswer = " \tfinal λ\n"
+	const earlyDraft, lateDraft = " \tearly\n", " \tlate\r\n"
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	const serial = "9007199254740993"
 	const scale = "6.250e+3"
@@ -94,7 +95,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"type":"reasoning","id":"r1"},
 			{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text"},{"type":"output_text"}]},
 			{"type":"function_call","call_id":"c1","id":"fc_renamed"},
-			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
+			{"type":"function_call","call_id":"c2","name":"f"}
 		]}`, []string{first, second}},
 		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat(unsigned, encrypted), []string{first + second}},
 		{&chatcompletions.Protocol{}, "messages", "reasoning_details", chat(unsigned), []string{first, "", second}},
@@ -119,6 +120,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","call_id":"c1","name":"write_file"}}`,
 					`{"type":"response.function_call_arguments.delta","item_id":"fc_first","delta":"{"}`,
 					`{"type":"response.function_call_arguments.done","id":"c1","output_index":4,"arguments":` + good + `}`,
+					`{"type":"response.function_call_arguments.done","item_id":"fc_first","call_id":"c2","arguments":` + bad + `}`,
+					`{"type":"response.output_item.added","output_index":3,"item":{"type":"function_call","id":"fc_second","call_id":"c2","name":"f"}}`,
 					mustJSON(t, map[string]any{"type": "response.completed", "response": json.RawMessage(tc.response)}),
 				}, "\n\ndata: ") + "\n\n"
 			}
@@ -281,6 +284,18 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				assistant := turns[1]
 				assistant.Message = assistantHistoryMessage(final.Message)
 				turns = append(turns, assistant)
+
+				orderedStream := "data: " + strings.Join([]string{
+					`{"type":"response.output_text.delta","item_id":"early","delta":` + mustJSON(t, earlyDraft) + `}`,
+					`{"type":"response.output_text.delta","item_id":"late","delta":` + mustJSON(t, lateDraft) + `}`,
+					`{"type":"response.completed","response":{"output":[{"type":"message","id":"late"},{"type":"message","id":"early"}]}}`,
+				}, "\n\ndata: ") + "\n\n"
+				ordered, err := responses.ExtractRecordedResponse([]byte(orderedStream), row.ModelID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assistant.Message = assistantHistoryMessage(ordered.Message)
+				turns = append(turns, assistant)
 			}
 			scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol}
 			scope.setDestination(provider.FromResolved(row, nil))
@@ -357,7 +372,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 							answers = append(answers, item.Content...)
 						}
 					}
-					if _, withdrawn := got["dropped"]; withdrawn || !slices.Equal(answers, []part{{"output_text", answer}, {"output_text", finalAnswer}}) {
+					wantAnswers := []part{{"output_text", answer}, {"output_text", finalAnswer}, {"output_text", lateDraft}, {"output_text", earlyDraft}}
+					if _, withdrawn := got["dropped"]; withdrawn || !slices.Equal(answers, wantAnswers) {
 						t.Errorf("outbound selected answer parts = %q, withdrawn call present = %t", answers, withdrawn)
 					}
 				}

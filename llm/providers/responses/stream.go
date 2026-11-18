@@ -24,6 +24,17 @@ type responsesToolState struct {
 	args                 responsesOutputText
 }
 
+func (st *responsesToolState) mergeArguments(other *responsesToolState) {
+	st.name = cmp.Or(st.name, other.name)
+	st.hasOutput = st.hasOutput || other.hasOutput
+	st.args.merge(&other.args)
+}
+
+type responsesContestedArguments struct {
+	callID, itemID, itemCallID string
+	state                      responsesToolState
+}
+
 type responsesMessagePhase struct {
 	value     string
 	order     int
@@ -285,6 +296,7 @@ type responsesOutputAccumulator struct {
 	anonymousDisplay *responsesOutputItem
 	reasoningStarted bool
 	unlinkedMessage  bool
+	contestedArgs    []responsesContestedArguments
 }
 
 func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[string]any) string {
@@ -430,10 +442,8 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		}
 		a.callID = cmp.Or(a.callID, b.callID)
 		a.itemID = cmp.Or(a.itemID, b.itemID)
-		a.name = cmp.Or(a.name, b.name)
 		a.started = a.started || b.started
-		a.hasOutput = a.hasOutput || b.hasOutput
-		a.args.merge(&b.args)
+		a.mergeArguments(b)
 	} else if item.tool == nil {
 		item.tool = other.tool
 	}
@@ -819,6 +829,7 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 	st.itemID = item.id
 	if st.callID != "" {
 		acc.byCallID[st.callID] = item
+		acc.resolveContestedCall(st)
 	}
 	if alias != "" && item.id == "" && acc.byID[alias] == nil {
 		acc.byID[alias] = item // A later event can identify the bare ID as an item_id or call_id.
@@ -862,7 +873,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	acc.functionItemOutput(payload, item)
 }
 
-func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *responsesOutputItem {
+func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *responsesToolState {
 	callID, _ := payload["call_id"].(string)
 	itemID, _ := payload["item_id"].(string)
 	var alias string
@@ -870,7 +881,61 @@ func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *r
 		alias, _ = payload["id"].(string)
 	}
 	name, _ := payload["name"].(string)
-	return acc.toolOutput(payload, callID, itemID, name, alias)
+	owner := acc.byID[itemID]
+	if callID != "" && acc.byCallID[callID] == nil && owner != nil && !owner.acceptsCallID(callID) {
+		// A gateway can repeat another call ID for this item. If a later
+		// frame issues that ID, these observations belong to the new call.
+		for i := range acc.contestedArgs {
+			pending := &acc.contestedArgs[i]
+			if pending.callID == callID && pending.itemID == itemID {
+				pending.state.name = cmp.Or(pending.state.name, name)
+				return &pending.state
+			}
+		}
+		acc.contestedArgs = append(acc.contestedArgs, responsesContestedArguments{
+			callID: callID, itemID: itemID, itemCallID: owner.tool.callID,
+			state: responsesToolState{name: name},
+		})
+		return &acc.contestedArgs[len(acc.contestedArgs)-1].state
+	}
+	if output := acc.toolOutput(payload, callID, itemID, name, alias); output != nil {
+		return output.tool
+	}
+	return nil
+}
+
+func (acc *responsesOutputAccumulator) resolveContestedCall(issued *responsesToolState) {
+	acc.contestedArgs = slices.DeleteFunc(acc.contestedArgs, func(pending responsesContestedArguments) bool {
+		if pending.callID != issued.callID {
+			return false
+		}
+		issued.mergeArguments(&pending.state)
+		return true
+	})
+}
+
+func (acc *responsesOutputAccumulator) settleContestedArguments(out []any) {
+	if len(acc.contestedArgs) == 0 {
+		return
+	}
+	for _, entry := range out {
+		item, _ := entry.(map[string]any)
+		if item["type"] != "function_call" {
+			continue
+		}
+		_, callID := functionItemIDs(item)
+		if slices.ContainsFunc(acc.contestedArgs, func(pending responsesContestedArguments) bool {
+			return pending.callID == callID
+		}) {
+			acc.toolOutput(nil, callID, "", "", "")
+		}
+	}
+	for _, pending := range acc.contestedArgs {
+		if owner := acc.byID[pending.itemID]; owner != nil && owner.tool != nil && owner.tool.callID == pending.itemCallID {
+			owner.tool.mergeArguments(&pending.state)
+		}
+	}
+	acc.contestedArgs = nil
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -890,11 +955,10 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if delta == "" && name == "" {
 		return nil, "", false
 	}
-	output := acc.argumentOutput(payload)
-	if output == nil {
+	st := acc.argumentOutput(payload)
+	if st == nil {
 		return nil, "", false
 	}
-	st := output.tool
 	st.hasOutput = true
 	if delta != "" {
 		fragment := []byte(delta)
@@ -919,11 +983,10 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 // string. A known item can retain its arguments before the provider issues a call ID.
 func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
-	output := acc.argumentOutput(payload)
-	if output == nil {
+	st := acc.argumentOutput(payload)
+	if st == nil {
 		return nil, false
 	}
-	st := output.tool
 	if argsStr != "" {
 		st.hasOutput = true
 		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {

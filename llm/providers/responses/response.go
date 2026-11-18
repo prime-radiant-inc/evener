@@ -333,12 +333,16 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 // stream positions. A named reasoning placeholder admits only its own reasoning.
 func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTerminalItem, terminalReasoning bool) []llm.ContentPart {
 	matched := make(map[*responsesOutputItem][]llm.ContentPart, len(terminal))
+	var selectedMessages []*responsesOutputItem
 	var content []llm.ContentPart
 	var previous *responsesOutputItem
 	for _, item := range terminal {
 		if item.observed != nil {
 			previous = item.observed
 			previous.displayOnly = false // The terminal supplies a native item at this position.
+			if _, selected := matched[previous]; previous.kind == "message" && !selected {
+				selectedMessages = append(selectedMessages, previous)
+			}
 			matched[previous] = item.parts
 		} else if previous != nil {
 			matched[previous] = append(matched[previous], item.parts...)
@@ -362,6 +366,11 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	}
 	acc.orderOutput()
 	for _, item := range acc.output {
+		// Keep the slots of omitted stream items. The terminal controls the
+		// relative order of the message slots it explicitly selected.
+		if _, selected := matched[item]; item.kind == "message" && selected {
+			item, selectedMessages = selectedMessages[0], selectedMessages[1:]
+		}
 		content = item.appendDisplay(content)
 		if parts, ok := matched[item]; ok {
 			content = append(content, parts...)
@@ -676,6 +685,7 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 // An empty output array uses the stream's completed items and pending output.
 func settleResponsesTerminalOutput(raw map[string]any, requestedModel string, body []byte, acc *responsesOutputAccumulator) llm.Response {
 	out, _ := raw["output"].([]any)
+	acc.settleContestedArguments(out)
 	r := responseWithContent(raw, requestedModel, responseContentFromOutputItems(out, body, nil, acc))
 	// The adapter has already filled recoverable placeholders. An explicit
 	// selection can yield zero represented parts (for example, file_search_call)

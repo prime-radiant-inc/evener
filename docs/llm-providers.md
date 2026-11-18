@@ -634,6 +634,8 @@ call keeps its literal path and file contents, including XML.
   A message reference with omitted or null `content` inherits its completed
   answer or refusal, including an explicitly empty `output_text` slot. A
   reference with only provisional text still allows recovery of an issued call.
+  Selected messages follow their relative terminal order. Recovered items
+  omitted from the terminal keep their stream positions.
   An explicitly selected content array keeps only its own slots. An empty
   array clears earlier text and refusal, including when the final output is
   empty. A reselected slot can inherit only text received
@@ -678,7 +680,12 @@ call keeps its literal path and file contents, including XML.
   before or after its call ID appears when the item has one owner across
   the response. An event naming an issued call
   delivers its arguments to that call even if its item ID or output index
-  points to another tool. The `id` on an argument event can identify an
+  points to another tool. When an argument event pairs an unknown call ID
+  with an item that already belongs to a different call, Evener holds the
+  bytes until the stream or terminal independently issues the new call.
+  If the stream settles without issuing it, the item can still supply the
+  original call's arguments when it identifies one owner.
+  The `id` on an argument event can identify an
   issued call or a provisional item. When it names two different records,
   Evener applies the arguments only if the output index identifies exactly
   one of them. Explicit terminal names and arguments take precedence
