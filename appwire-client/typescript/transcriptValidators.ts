@@ -902,6 +902,7 @@ export function validCurrentHistory(value: unknown): value is CurrentTranscriptS
     "issuedGeneration",
     "invalidatedAtGeneration",
     "awaited",
+    "holdOwner",
     "pendingIncarnation",
     "deferredPages",
     "replacementScopes",
@@ -940,6 +941,11 @@ export function validCurrentHistory(value: unknown): value is CurrentTranscriptS
       (isRecord(value.awaited) &&
         hasOnlyKeys(value.awaited, ["bootGeneration", "epoch"]) &&
         typeof value.awaited.bootGeneration === "string" &&
-        isNonNegativeInteger(value.awaited.epoch)))
+        isNonNegativeInteger(value.awaited.epoch))) &&
+    // The recorded owner of the current hold samples: the boot/generation
+    // identity a replacement wrote. Unknown keys above are rejected wholesale,
+    // so leaving this out discarded the ENTIRE checkpoint — a restored
+    // session came back with no current transcript state at all.
+    (value.holdOwner === undefined || typeof value.holdOwner === "string")
   );
 }
