@@ -476,6 +476,20 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 		} else {
 			lifetimeDone = s.sessionContext().Done()
 		}
+		// A delegate close drain caps every send made while it publishes,
+		// including the Notification hook's own lifecycle events and output.
+		// Those run on the hook runner's goroutines and carry no caller
+		// context, so the cap has to travel through the session to reach them.
+		//
+		// This arm only bites because the close budget above COMBINES with the
+		// caller's bound instead of replacing it. While a close budget
+		// superseded the caller outright, a hook publishing on
+		// context.Background() had no deadline for a caller to shorten and any
+		// stop-scoped cap was discarded before this line -- the send then
+		// parked until the close cascade's own deadline.
+		if drainCtx := s.closeDrainSendCtx.Load(); drainCtx != nil && *drainCtx != nil {
+			ctx = earlierDeadlineContext(ctx, *drainCtx)
+		}
 		select {
 		case s.events <- ev:
 			delivered = true
@@ -603,6 +617,21 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 	if s == nil || s.events == nil {
 		return
 	}
+	// Cap every send this publication causes, not just the warning itself. The
+	// warning runs the Notification hook, and the hook's own start and end events
+	// and output are published by the runner's goroutines, which carry no caller
+	// context. A warning that fills the authoritative stream's last slot parks
+	// its hook on that stream; capping only the warning would leave the hook
+	// waiting out the full close cascade with the stop deadline already gone.
+	capped := ctx
+	previous := s.closeDrainSendCtx.Swap(&capped)
+	defer func() {
+		if previous != nil {
+			s.closeDrainSendCtx.Store(previous)
+			return
+		}
+		s.closeDrainSendCtx.Store(nil)
+	}()
 	for _, warning := range warnings {
 		data, ev, _ := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
 		if s.jobManager != nil {

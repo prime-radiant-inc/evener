@@ -419,7 +419,17 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			RequestSeq: stop.requestSeq,
 		},
 	}); err != nil {
-		return delegateMutationPlans{}, err
+		// The plans are returned WITH the error, not instead of it. A lost result
+		// is discovered by removing the receipt that can no longer be answered,
+		// so the warning that records it exists only in this pass: the receipt is
+		// gone from memory and no later pass can settle it again. Returning empty
+		// plans here would make the one fact worth reporting depend on a journal
+		// append that just failed.
+		//
+		// Callers that execute plans return on error and discard them, so nothing
+		// here is delivered twice; the close drain publishes the warnings before
+		// it returns this error.
+		return plans, err
 	}
 	close(stop.done)
 	c.stop = nil
