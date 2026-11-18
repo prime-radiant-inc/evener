@@ -485,3 +485,46 @@ func TestWorktreeSpawnDoesNotInvalidateTheSharedRosterCaches(t *testing.T) {
 		t.Fatalf("deriving a worktree lane's ceiling moved the shared decision version from %d to %d, so the next request rebuilds both roster caches for an unchanged shared roster", settled, got)
 	}
 }
+
+// TestPluginMCPSourceKeepsCLINamesEligible pins the plugin half of the exclusion
+// soundness rule.
+//
+// A spawned child clears the CLI layers and reloads every plugin directory from
+// disk, so a plugin source can supply a name this session believes only a CLI
+// server provides. The freshness evidence fingerprints the global and project
+// layers, and that is all it can: plugin MCP configs arrive already merged, with
+// no path or digest to compare. A plugin directory that gains a matching server
+// after startup therefore makes a CLI-only name reachable with nothing able to
+// notice, so the CLI half is not applied and its names stay eligible.
+//
+// The MANAGER half is unaffected: no spawn path composes the hub, whatever the
+// plugins declare.
+func TestPluginMCPSourceKeepsCLINamesEligible(t *testing.T) {
+	t.Parallel()
+	const cliTool = "svc__echo"
+
+	// No plugin MCP sources: the evidence describes every layer the child reads,
+	// so a fresh verdict applies the exclusion.
+	plain := &Session{}
+	plain.setCLIMCPToolNames(map[string]bool{cliTool: true})
+	plain.setManagerOnlyTools(map[string]bool{"session_control": true})
+	plain.publishFreshnessForRevision(true, plain.cliMCPEnvRevision)
+	if got := plain.removeChildUnreachableTools([]string{cliTool}, ""); slices.Contains(got, cliTool) {
+		t.Fatalf("with no plugin source the CLI-only name survived: %v", got)
+	}
+
+	// A plugin source the child reloads but the evidence cannot verify: the CLI
+	// half is inapplicable, so the name stays eligible while the Manager half
+	// still excludes.
+	withPlugin := &Session{pluginMCPConfigs: []mcpconfig.ServerConfig{{Name: "plugin_svc"}}}
+	withPlugin.setCLIMCPToolNames(map[string]bool{cliTool: true})
+	withPlugin.setManagerOnlyTools(map[string]bool{"session_control": true})
+	withPlugin.publishFreshnessForRevision(true, withPlugin.cliMCPEnvRevision)
+	got := withPlugin.removeChildUnreachableTools([]string{cliTool, "session_control"}, "")
+	if !slices.Contains(got, cliTool) {
+		t.Errorf("an unverifiable plugin source did not keep the CLI-only name eligible: %v", got)
+	}
+	if slices.Contains(got, "session_control") {
+		t.Errorf("the Manager-only name survived a plugin source: %v", got)
+	}
+}

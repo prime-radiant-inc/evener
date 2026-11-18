@@ -85,3 +85,35 @@ func TestCeilingDerivationWaitsOnTheCallersContext(t *testing.T) {
 		t.Error("a joined check that could not finish recorded a verdict; unknown must not be cached as a negative")
 	}
 }
+
+// TestWorktreeSpawnDoesNotWaitOnTheParentProbe pins that a fresh lane does not
+// pay for an answer its ceiling ignores.
+//
+// A worktree ceiling never applies the CLI-MCP half (removeChildUnreachableTools),
+// so probing for it made every spawn wait on a check whose result it would
+// discard. Against a config that had been readable and then stalled, that wait
+// ends only when the mount answers or the user presses Stop.
+func TestWorktreeSpawnDoesNotWaitOnTheParentProbe(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	s := &Session{}
+	s.cliMCPToolNames = map[string]bool{"svc__echo": true}
+	// The single-flight is already occupied by a check that will never finish, so
+	// any probe would join it and block until this test's tripwire.
+	occupied := make(chan struct{})
+	s.freshnessCheckMu.Lock()
+	s.freshnessCheck = &exclusionFreshnessCheck{done: occupied}
+	s.freshnessCheckMu.Unlock()
+	t.Cleanup(func() { close(occupied) })
+
+	returned := make(chan struct{})
+	go func() {
+		s.resolveFreshnessForSpawn(context.Background(), "worktree")
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second): // TRIPWIRE: a worktree spawn joined the parent's probe
+		t.Fatal("a worktree spawn waited on the parent's freshness probe, whose answer its ceiling ignores")
+	}
+}

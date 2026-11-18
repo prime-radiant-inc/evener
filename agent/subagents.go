@@ -532,7 +532,7 @@ func (s *Session) subagentToolNameCeilingFromRegistered(registered map[string]bo
 // So the caller records both, and resume re-admits the reachability half when
 // the configuration it was derived from no longer holds.
 func (s *Session) subagentToolNameCeilingAndExcluded(ctx context.Context, agent *plugin.Agent, canDelegate bool, isolationName string) (ceiling, excluded []string) {
-	s.refreshCLIEvidenceFreshnessContext(ctx)
+	s.resolveFreshnessForSpawn(ctx, isolationName)
 	var registered map[string]bool
 	if s.reg != nil {
 		registered = s.reg.RegisteredNames()
@@ -541,6 +541,29 @@ func (s *Session) subagentToolNameCeilingAndExcluded(ctx context.Context, agent 
 	ceiling = delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
 	kept := s.removeChildUnreachableTools(ceiling, isolationName)
 	return kept, diffToolNames(ceiling, kept)
+}
+
+// resolveFreshnessForSpawn resolves the CLI-MCP freshness verdict the spawn
+// path's ceiling build reads.
+//
+// A fresh worktree lane does not need it: its ceiling ignores the MCP half
+// whatever the verdict says (removeChildUnreachableTools). Probing anyway made
+// every spawn wait on a check whose answer it would discard, so a config that
+// had once been readable and then stalled held the spawn open until the mount
+// answered or the user pressed Stop.
+//
+// A shared-workspace spawn does need it, and the wait is bounded. The turn's
+// context may carry no deadline at all, which is the ordinary case for an
+// interactive session, so the budget is derived from it here: twelve seconds of
+// a stalled mount, and the spawn proceeds with reachability unknown rather than
+// blocked indefinitely.
+func (s *Session) resolveFreshnessForSpawn(ctx context.Context, isolationName string) {
+	if isolationName == "worktree" {
+		return
+	}
+	bounded, cancel := context.WithTimeout(ctx, exclusionFreshnessRequestBudget)
+	defer cancel()
+	s.refreshCLIEvidenceFreshnessContext(bounded)
 }
 
 // diffToolNames returns the names in before that are absent from after, in
@@ -721,9 +744,37 @@ func (s *Session) childExclusionDecision(isolationName string) (managerOnly, cli
 	cliMCP = s.cliMCPToolNames
 	fresh := s.cliMCPEvidenceFreshKnown && s.cliMCPEvidenceFresh
 	s.delegateExclusionsMu.RUnlock()
-	shared := len(cliMCP) > 0 && fresh
+	shared := len(cliMCP) > 0 && fresh && !s.pluginMCPSourcesUnverified()
 	s.noteExclusionDecision(shared)
 	return managerOnly, cliMCP, shared && isolationName != "worktree"
+}
+
+// pluginMCPSourcesUnverified reports whether this session loads MCP servers from
+// plugin directories whose contents the freshness evidence cannot verify.
+//
+// A spawned child clears the CLI layers and reloads every plugin directory from
+// disk, so a plugin source can supply a name this session believes only a CLI
+// server provides. ConfigEvidence fingerprints the global and project layers,
+// and that is all it can do: plugin MCP configs arrive here already merged, with
+// no file path or digest to compare. A plugin directory that gains a matching
+// server after startup therefore makes a CLI-only name reachable with nothing
+// able to notice.
+//
+// Reachability that cannot be established is not an exclusion, so with any such
+// source present the CLI half is not applied and its names stay eligible. The
+// MANAGER half is unaffected: no spawn path composes the hub whatever the
+// plugins declare.
+//
+// pluginMCPConfigs is read without s.mu, which is this file's rule for anything
+// reached from the ceiling build: the prompt-render path calls it holding s.mu,
+// so taking that lock here would deadlock. The field is written only while
+// plugins load during session initialization, before any request renders, so the
+// read cannot race a write.
+func (s *Session) pluginMCPSourcesUnverified() bool {
+	if s == nil {
+		return true
+	}
+	return len(s.pluginMCPConfigs) > 0
 }
 
 // exclusionFreshnessRequestBudget bounds how long one model request waits for the
@@ -819,7 +870,7 @@ func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 	if names == 0 && !applied {
 		return
 	}
-	fresh, settled := s.sampleExclusionFreshness(ctx, evidence, env, revision)
+	fresh, settled, answerRevision := s.sampleExclusionFreshness(ctx, evidence, env, revision)
 	if !settled {
 		// Unknown, not stale: nothing was established about the layers, so the
 		// verdict is forgotten rather than recorded as a negative. The next
@@ -828,6 +879,21 @@ func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 		s.delegateExclusionsMu.Lock()
 		s.forgetCLIEvidenceFreshnessLocked()
 		s.delegateExclusionsMu.Unlock()
+		return
+	}
+	// A JOINED answer belongs to the revision its WORKER checked, which is not
+	// necessarily this caller's. A check outlives a cancelled delegate call, and
+	// the session can switch worktrees in between: publishing this answer would
+	// record a verdict about the workspace the session just left, and in the
+	// permissive direction a fresh answer for the OLD workspace would strip a
+	// tool the new one provides from the next child's durable ceiling.
+	//
+	// Nothing is written when the two differ. The caller's own workspace was
+	// never established, so its names stay eligible, and a verdict that a newer
+	// revision already recorded is left standing rather than cleared by a stale
+	// answer. The next request starts a fresh check against the installed
+	// environment.
+	if answerRevision != revision {
 		return
 	}
 	s.publishFreshnessForRevision(fresh, revision)
@@ -885,7 +951,11 @@ type exclusionFreshnessCheck struct {
 //
 // settled is false when ctx ended before the check answered. That is UNKNOWN
 // reachability, never "stale": nothing was established about the layers.
-func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment, revision uint64) (fresh, settled bool) {
+//
+// answerRevision is the environment install the returned answer describes, which
+// for a JOINED check is the one its worker started in. The caller must compare it
+// against its own revision before publishing: see refreshCLIEvidenceFreshnessContext.
+func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment, revision uint64) (fresh, settled bool, answerRevision uint64) {
 	s.freshnessCheckMu.Lock()
 	check := s.freshnessCheck
 	if check == nil {
@@ -912,9 +982,9 @@ func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPC
 	select {
 	case <-check.done:
 	case <-ctx.Done():
-		return false, false
+		return false, false, 0
 	}
-	return check.fresh, check.settled
+	return check.fresh, check.settled, check.revision
 }
 
 // forgetCLIEvidenceFreshness drops the stored verdict. A verdict is an answer
@@ -1032,7 +1102,14 @@ func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	// verdict is resolved HERE, without s.mu, and stored; the ceiling build below
 	// reads the stored answer, so no filesystem read or git fork happens inside
 	// the session lock.
-	s.refreshCLIEvidenceFreshnessContext(ctx)
+	//
+	// The turn's context is bounded by the request budget here. It often carries
+	// no deadline at all, and the check reads files and forks git, so an
+	// interactive session whose config had been readable and then stopped
+	// answering would otherwise wedge every request on the mount.
+	bounded, cancel := context.WithTimeout(ctx, exclusionFreshnessRequestBudget)
+	s.refreshCLIEvidenceFreshnessContext(bounded)
+	cancel()
 	s.childExclusionDecision("")
 	version := s.exclusionVersion()
 	s.mu.Lock()

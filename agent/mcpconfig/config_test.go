@@ -522,19 +522,35 @@ func TestProjectLayerLoadRefusesCommandExpressions(t *testing.T) {
 	}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadLayerEvidence(path, expandEnvVarsUntrusted); err == nil || !strings.Contains(err.Error(), "command expressions") {
-		t.Fatalf("loadLayerEvidence err = %v; want the command-expression refusal", err)
-	}
 
+	// The spy is installed BEFORE either load, so the untrusted half can assert
+	// that the command was never run rather than only that something failed. The
+	// security property is that a model-writable config cannot execute a command;
+	// the error's wording is not the property and a reworded refusal that ran the
+	// command would pass a phrasing check.
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
-	valueexpr.RunCommand = func(string, []string) (string, error) { return "minted", nil }
+	var ran []string
+	valueexpr.RunCommand = func(name string, _ []string) (string, error) {
+		ran = append(ran, name)
+		return "minted", nil
+	}
+	if _, _, err := loadLayerEvidence(path, expandEnvVarsUntrusted); err == nil {
+		t.Fatal("loadLayerEvidence accepted a command expression in an untrusted layer")
+	}
+	if len(ran) != 0 {
+		t.Fatalf("the untrusted layer ran %v; a model-writable config must never execute a command", ran)
+	}
+
 	configs, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("LoadFile (trusted): %v", err)
 	}
+	if len(ran) != 1 || ran[0] != "mint-token" {
+		t.Fatalf("trusted loading ran %v; want exactly the mint-token command it expands", ran)
+	}
 	if configs[0].Env["K"] != "minted" {
-		t.Fatalf("trusted expansion = %q; want minted", configs[0].Env["K"])
+		t.Fatalf("trusted expansion = %q; want the spy's result minted", configs[0].Env["K"])
 	}
 }
 

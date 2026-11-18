@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 )
 
@@ -70,5 +71,56 @@ func TestFreshnessVerdictIsPublishedForItsOwnRevision(t *testing.T) {
 	s.delegateExclusionsMu.RUnlock()
 	if !known || !fresh {
 		t.Errorf("a verdict for the installed environment was discarded: known=%v fresh=%v", known, fresh)
+	}
+}
+
+// TestJoinedFreshnessAnswerIsNotPublishedUnderAnotherRevision pins the JOINER's
+// half of the same rule.
+//
+// A joiner reads the answer to a check it did not start, and that answer
+// describes the environment its WORKER began in. A check can outlive a cancelled
+// delegate call, and the session can switch worktrees before the next
+// shared-workspace spawn: if the joiner published the answer under its own
+// revision, a fresh verdict for the workspace the session left would strip a tool
+// the new workspace provides from the next child's durable ceiling. That is the
+// wrong direction — uncertainty must leave a name eligible, never remove it.
+func TestJoinedFreshnessAnswerIsNotPublishedUnderAnotherRevision(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	s.cliMCPToolNames = map[string]bool{"svc__echo": true}
+
+	// A check for the OLD workspace is still in flight. Its revision is the one
+	// the session had before the swap below.
+	workerRevision := s.cliMCPEnvRevision
+	done := make(chan struct{})
+	s.freshnessCheckMu.Lock()
+	s.freshnessCheck = &exclusionFreshnessCheck{done: done, revision: workerRevision, fresh: true, settled: true}
+	s.freshnessCheckMu.Unlock()
+
+	// The session switches worktrees: a new revision, and the old verdict dropped.
+	s.invalidateCLIMCPClassification()
+	callerRevision := s.cliMCPEnvRevision
+	if callerRevision == workerRevision {
+		t.Fatal("fixture is wrong: the swap did not move the revision, so there is no mismatch to discard")
+	}
+
+	// A NEWER verdict the installed workspace recorded, which the stale answer
+	// must leave standing rather than overwrite.
+	s.publishFreshnessForRevision(false, callerRevision)
+
+	// Let the old check finish, then JOIN it from the new revision. This is the
+	// caller-side path: the answer is the worker's, not this caller's.
+	close(done)
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
+
+	s.delegateExclusionsMu.RLock()
+	known := s.cliMCPEvidenceFreshKnown
+	fresh := s.cliMCPEvidenceFresh
+	s.delegateExclusionsMu.RUnlock()
+	if !known {
+		t.Error("the joined answer from the old workspace cleared the newer verdict the installed workspace had recorded")
+	}
+	if fresh {
+		t.Error("the joined answer from the old workspace replaced the newer verdict: it was published under the caller's revision")
 	}
 }

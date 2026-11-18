@@ -620,6 +620,27 @@ fully built registry and this ceiling before caching the provider-facing tool
 surface. The ceiling is never widened by intrinsic child tools and always
 contains Config's effective result tool.
 
+The ceiling records its reachability exclusions separately, in
+CeilingReachabilityExcluded. A name leaves the ceiling for one of two reasons,
+and only one of them is permanent. A name the role forbids is authorization: it
+is absent from the ceiling because the grant withholds it, and it stays out
+through live construction, every resume, and cold restoration alike. A name the
+child could not register in the workspace the ceiling was computed in is
+reachability: a Manager-composition-only tool, or one served by an MCP server
+only the CLI layers declared at startup. The second kind is a fact about one
+workspace's configuration at one moment, so it is recorded rather than merely
+dropped.
+
+Cold restoration re-admits a recorded reachability exclusion when the child's
+own registry already registers that name at construction time, because
+registration is the test: a name in the registry exists, so the child can call
+it. An operator who adds the CLI-only server to the project or global config
+therefore gets the tool back on the next resume instead of a delegate that
+registered it and was still denied it. A role-forbidden name is never in the
+registry, so this path cannot widen authorization, and the frozen role policy
+continues to bound the ceiling exactly as before. A descriptor written before
+this field existed records no exclusions, and nothing is re-admitted for it.
+
 When Config.ShareTasksWithChildren is enabled, the descriptor also records
 SharedTaskStoreOwnerSessionID. Live construction may attach the current shared
 TaskStore pointer only when that owner identity matches. Cold restoration must
