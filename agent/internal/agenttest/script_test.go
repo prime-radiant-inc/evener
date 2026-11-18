@@ -13,6 +13,35 @@ func stepAt(marker string) func(req llm.Request) llm.Response {
 	return func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(marker)} }
 }
 
+// TryState is the reader a diagnostic that must never block calls while a
+// replacement may hold the script. It reports the cursor and the step count
+// together and answers "busy" instead of waiting: a blocking implementation
+// here never returns from the second call below, so this test distinguishes
+// the nonblocking accessor by construction rather than by any elapsed time.
+func TestScriptTryStateReportsBothCountsOrBusy(t *testing.T) {
+	t.Parallel()
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
+	if _, ok := s.Next(); !ok {
+		t.Fatal("first Next() not ok")
+	}
+	cursor, steps, ok := s.TryState()
+	if !ok || cursor != 1 || steps != 2 {
+		t.Fatalf("TryState() = %d, %d, %t, want 1, 2, true", cursor, steps, ok)
+	}
+	// Stand for a step replacement holding the script. A reader that blocks
+	// would never return from the call below; the answer is the signal.
+	s.mu.Lock()
+	if cursor, steps, ok := s.TryState(); ok {
+		s.mu.Unlock()
+		t.Fatalf("TryState() = %d, %d, true while a writer held the script, want busy", cursor, steps)
+	}
+	s.mu.Unlock()
+	if cursor, steps, ok := s.TryState(); !ok || cursor != 1 || steps != 2 {
+		t.Fatalf("TryState() after release = %d, %d, %t, want the surviving 1, 2, true", cursor, steps, ok)
+	}
+}
+
 func TestScriptNextReturnsStepsInOrderThenExhausts(t *testing.T) {
 	var s Script[func(req llm.Request) llm.Response]
 	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})

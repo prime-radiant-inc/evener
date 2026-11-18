@@ -675,15 +675,56 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 	var snapAfterNotifTurn goalCounters
 	var snapAfterCaptured bool
 
-	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
-	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") }, func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
-	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("cont 1 done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack reminder") }, func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(writeFileCall("c2", "c2.txt", "resumed work"))
-	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("resumed work done") }, func(req llm.Request) llm.Response {
-		return agenttest.ToolCallResponse(updateGoalCall("g1", "complete"))
-	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("goal achieved") })
+	// One step per argument line, in script order. The three boundaries below
+	// are what the test turns on, and the step indexes the wrappers use are
+	// positions in this list: inserting a step moves them.
+	adapter := newFakeAdapter(
+		"openai",
+
+		// --- Turn 1: the user's "begin" turn ---
+		// Turn 1 (user "begin"), round 0: mutate (progress).
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+		},
+		// Turn 1, round 1: end. The gate resumes the goal and defers
+		// continuation #1.
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("user turn done") },
+
+		// --- Turn 2: continuation #1, which runs inline ---
+		// Turn 2 (continuation #1), round 0: mutate (progress).
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+		},
+		// Turn 2, round 1: end, and the LAST step of continuation #1. Wrapped
+		// below to enqueue a notification first, so the tail folds continuation
+		// #1 and only then interleaves the notification turn.
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("cont 1 done") },
+
+		// --- Turn 3: the NOTIFICATION TURN. It sits between continuation #1
+		// above and the deferred continuation #2 below. ---
+		// Turn 3 (notification), round 0: the reminder reaches the model here.
+		// Wrapped below to snapshot the goal counters. End the turn.
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ack reminder") },
+
+		// --- continuation #2 BEGINS here: deferred, then run inline ---
+		// Deferred continuation #2, round 0: mutate (progress). Wrapped below to
+		// snapshot the counters right after the notification turn ended.
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(writeFileCall("c2", "c2.txt", "resumed work"))
+		},
+		// Continuation #2, round 1: end. The gate folds this turn (Iterations
+		// bumps) and defers continuation #3 within the same call.
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("resumed work done") },
+
+		// --- continuation #3: declares the goal complete ---
+		// Continuation #3, round 0: declare the goal complete.
+		func(req llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(updateGoalCall("g1", "complete"))
+		},
+		// Continuation #3, round 1: end. The gate sees the terminal status and
+		// stops the loop, emitting EventGoalEnded{complete}.
+		func(req llm.Request) llm.Response { return agenttest.FinalResponse("goal achieved") },
+	)
 	c.Register(adapter)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
