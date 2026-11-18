@@ -2,20 +2,24 @@ package llm
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"strconv"
+	"unicode/utf8"
 )
 
 type toolCallFields ToolCallData
 
-// MarshalJSON keeps arguments available as structured JSON. If embedding
-// that JSON changes the bytes the model supplied, keep those bytes too so a
-// restored conversation can replay the same tool-call argument string.
+// MarshalJSON keeps arguments available as structured JSON. A spelling
+// companion recovers the exact provider input when embedding changes its bytes.
 func (tc ToolCallData) MarshalJSON() ([]byte, error) {
 	record := struct {
 		toolCallFields
-		ArgumentBytes []byte `json:"arguments_bytes,omitempty"`
+		ArgumentBytes    []byte          `json:"arguments_bytes,omitempty"`
+		ArgumentSpelling json.RawMessage `json:"arguments_spelling,omitempty"`
 	}{toolCallFields: toolCallFields(tc)}
 	if len(tc.Arguments) != 0 && tc.RawArguments == "" {
 		stored, err := json.Marshal(tc.Arguments)
@@ -23,10 +27,96 @@ func (tc ToolCallData) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 		if !bytes.Equal(stored, tc.Arguments) {
-			record.ArgumentBytes = tc.Arguments
+			record.ArgumentSpelling = compactArgumentSpelling(stored, tc.Arguments)
+			if len(record.ArgumentSpelling) == 0 {
+				record.ArgumentBytes = tc.Arguments
+			}
 		}
 	}
 	return json.Marshal(record)
+}
+
+// argumentEdit restores a run of original whitespace or string escaping at a
+// byte offset in the structured JSON. Unchanged argument values are stored once.
+type argumentEdit struct {
+	At    int    `json:"at"`
+	Drop  int    `json:"drop,omitempty"`
+	Bytes []byte `json:"bytes"`
+}
+
+type argumentSpelling struct {
+	Digest []byte         `json:"sha256"`
+	Edits  []argumentEdit `json:"edits"`
+}
+
+func compactArgumentSpelling(stored, original []byte) json.RawMessage {
+	fullSize := base64.StdEncoding.EncodedLen(len(original))
+	minSize := base64.StdEncoding.EncodedLen(sha256.Size)
+	if fullSize <= minSize {
+		return nil
+	}
+	var edits []argumentEdit
+	i, j := 0, 0
+	for j < len(original) {
+		if i < len(stored) && stored[i] == original[j] {
+			i++
+			j++
+			continue
+		}
+		start, from := i, j
+		for j < len(original) && (i == len(stored) || stored[i] != original[j]) {
+			switch original[j] {
+			case ' ', '\t', '\r', '\n':
+				j++
+			default:
+				// Embedding raw JSON can spell a literal character as a Unicode escape.
+				if len(stored)-i < 6 || stored[i] != '\\' || stored[i+1] != 'u' {
+					return nil
+				}
+				code, err := strconv.ParseInt(string(stored[i+2:i+6]), 16, 32)
+				r, size := utf8.DecodeRune(original[j:])
+				if err != nil || code != int64(r) {
+					return nil
+				}
+				i += 6
+				j += size
+			}
+		}
+		// Stop collecting dense edits once their smallest encoding already
+		// costs as much as the complete original.
+		minSize += len(`{"at":0,"bytes":""}`) + base64.StdEncoding.EncodedLen(j-from)
+		if minSize >= fullSize {
+			return nil
+		}
+		edits = append(edits, argumentEdit{At: start, Drop: i - start, Bytes: original[from:j]})
+	}
+	if i != len(stored) {
+		return nil
+	}
+	digest := sha256.Sum256(stored)
+	encoded, err := json.Marshal(argumentSpelling{Digest: digest[:], Edits: edits})
+	if err != nil || len(encoded)+len("arguments_spelling") >= fullSize+2+len("arguments_bytes") {
+		return nil
+	}
+	return encoded
+}
+
+func (format *argumentSpelling) restore(stored []byte) []byte {
+	digest := sha256.Sum256(stored)
+	if len(format.Edits) == 0 || !bytes.Equal(digest[:], format.Digest) {
+		return nil
+	}
+	original := make([]byte, 0, len(stored))
+	pos := 0
+	for _, edit := range format.Edits {
+		if edit.At < pos || edit.At > len(stored) || edit.Drop < 0 || edit.Drop > len(stored)-edit.At {
+			return nil
+		}
+		original = append(original, stored[pos:edit.At]...)
+		original = append(original, edit.Bytes...)
+		pos = edit.At + edit.Drop
+	}
+	return append(original, stored[pos:]...)
 }
 
 // UnmarshalJSONFrom restores the original spelling only for the same structured
@@ -34,12 +124,13 @@ func (tc ToolCallData) MarshalJSON() ([]byte, error) {
 func (tc *ToolCallData) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	record := struct {
 		*toolCallFields
-		ArgumentBytes json.RawMessage `json:"arguments_bytes"`
+		ArgumentBytes    json.RawMessage   `json:"arguments_bytes"`
+		ArgumentSpelling *argumentSpelling `json:"arguments_spelling"`
 	}{toolCallFields: (*toolCallFields)(tc)}
 	if err := jsonv2.UnmarshalDecode(dec, &record); err != nil {
 		return err
 	}
-	if len(record.ArgumentBytes) == 0 || len(tc.Arguments) == 0 || tc.RawArguments != "" {
+	if (len(record.ArgumentBytes) == 0 && record.ArgumentSpelling == nil) || len(tc.Arguments) == 0 || tc.RawArguments != "" {
 		return nil
 	}
 	stored, err := json.Marshal(tc.Arguments)
@@ -47,7 +138,12 @@ func (tc *ToolCallData) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 		return err
 	}
 	var original []byte
-	if json.Unmarshal(record.ArgumentBytes, &original) == nil && len(original) != 0 {
+	if record.ArgumentSpelling != nil {
+		original = record.ArgumentSpelling.restore(stored)
+	} else if err := json.Unmarshal(record.ArgumentBytes, &original); err != nil {
+		return nil
+	}
+	if len(original) != 0 {
 		encoded, err := json.Marshal(json.RawMessage(original))
 		if err == nil && bytes.Equal(encoded, stored) {
 			tc.Arguments = original

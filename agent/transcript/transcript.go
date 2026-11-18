@@ -441,10 +441,11 @@ func readLine(reader *bufio.Reader, maxLineBytes int, scratch []byte) (line []by
 
 // Writer appends turns to an immutable JSONL transcript file.
 type Writer struct {
-	fs   afero.Fs
-	file afero.File
-	mu   sync.Mutex
-	tail *appendTail
+	fs           afero.Fs
+	file         afero.File
+	maxLineBytes int
+	mu           sync.Mutex
+	tail         *appendTail
 	// tailMove is the tail's move this writer's handle position reflects:
 	// the file's end as of this writer's own last append or open.
 	tailMove uint64
@@ -635,7 +636,7 @@ func writeTranscriptHeader(fs afero.Fs, f afero.File, tail *appendTail, header H
 // newWriterOnTail builds a writer on its shared tail whose handle position
 // reflects the tail's move tailMove. The caller holds tail.mu.
 func newWriterOnTail(fs afero.Fs, f afero.File, tail *appendTail, header Header, tailMove uint64) *Writer {
-	w := &Writer{fs: fs, file: f, tail: tail, tailMove: tailMove, lastSync: time.Now(), header: header}
+	w := &Writer{fs: fs, file: f, maxLineBytes: DefaultMaxLineBytes, tail: tail, tailMove: tailMove, lastSync: time.Now(), header: header}
 	w.releaseTail = runtime.AddCleanup(w, (*appendTail).release, tail)
 	return w
 }
@@ -830,6 +831,11 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollbac
 
 	firstSeq := w.tail.nextSeq
 	w.entryBuf.Reset()
+	defer func() {
+		if w.entryBuf.Cap() >= maxRetainedEntryBuf {
+			w.entryBuf = bytes.Buffer{}
+		}
+	}()
 	enc := json.NewEncoder(&w.entryBuf) // Encode writes the trailing newline per entry
 	batch := make([]Record, len(turns))
 	for i, turn := range turns {
@@ -837,14 +843,13 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollbac
 		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
 			return nil, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
-		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(w.entryBuf.Len() - start), Turn: turn}
+		length := w.entryBuf.Len() - start
+		if length-1 > w.maxLineBytes {
+			return nil, nil, fmt.Errorf("%w: transcript entry of %d bytes exceeds %d", ErrLineTooLong, length-1, w.maxLineBytes)
+		}
+		batch[i] = Record{Recorded: true, Seq: firstSeq + i, Length: int64(length), Turn: turn}
 	}
 	data := w.entryBuf.Bytes()
-	if w.entryBuf.Cap() >= maxRetainedEntryBuf {
-		// One entry this large would pin its buffer for the writer's life.
-		// data keeps the bytes alive until the write below returns.
-		w.entryBuf = bytes.Buffer{}
-	}
 	// The batch's sequence numbers are spent from here on, whatever becomes of
 	// its lines. A rolled-back line was in the file for a moment, and a reader
 	// in another process may have seen it; reusing its Seq would give that

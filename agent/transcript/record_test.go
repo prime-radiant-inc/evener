@@ -31,7 +31,22 @@ func TestRecordReportsOrdinalSeqAndRecordedLength(t *testing.T) {
 	if err != nil || !first.Recorded || first.Ordinal != 0 || first.Seq != 0 || first.Offset != headerLen || first.Length <= 0 {
 		t.Fatalf("first = %+v, %v", first, err)
 	}
-	second, err := w.Record(steeringTurn("two"), RecordOptions{Door: DoorBuffered})
+	// Exercise the record boundary with a four-byte input one byte over it.
+	// All fields except the text match the recorded three-byte input.
+	w.maxLineBytes = int(first.Length - 1) // the newline is framing
+	over := first.Turn
+	over.Message = llm.User("four")
+	for _, door := range []Door{DoorDeferred, DoorSynced} {
+		if rec, err := w.Record(over, RecordOptions{Door: door}); !errors.Is(err, ErrLineTooLong) || rec.Recorded {
+			t.Fatalf("over-limit record through door %v: recorded %t, err %v", door, rec.Recorded, err)
+		}
+	}
+	if _, err := w.AppendBatch([]schema.Turn{first.Turn, over}); !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("batch with an over-limit record: %v", err)
+	}
+	atLimit := first.Turn
+	atLimit.Message = llm.User("two")
+	second, err := w.Record(atLimit, RecordOptions{Door: DoorBuffered})
 	if err != nil || !second.Recorded || second.Ordinal != 1 || second.Seq != 1 || second.Offset != first.Offset+first.Length {
 		t.Fatalf("second = %+v, %v", second, err)
 	}

@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +20,21 @@ import (
 
 func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	t.Parallel()
-	const valid = " \t" + `{ "z": 1.0, "a": "<&>λ\u0061", "q": "a\"b" }` + "\r\n"
+	body := make([]byte, 3<<10)
+	if _, err := rand.NewChaCha8([32]byte{1}).Read(body); err != nil {
+		t.Fatal(err)
+	}
+	valid := " \t" + `{ "z": 1.0, "a": "<&>λ\u0061", "q": "a\"b", "body": "` + base64.StdEncoding.EncodeToString(body) + `" }` + "\r\n"
+	structured, err := json.Marshal(json.RawMessage(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("structured argument", func(t *testing.T) { testToolCallHistoryAtRecordLimit(t, string(structured)) })
+	t.Run("original spelling", func(t *testing.T) { testToolCallHistoryAtRecordLimit(t, valid) })
+}
+
+func testToolCallHistoryAtRecordLimit(t *testing.T, valid string) {
+	t.Helper()
 	const malformed = `{"x":broken}`
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	for _, tc := range []struct {
@@ -71,11 +87,13 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			_, warm := send(expandHistory(turns, scope))
 			dir := t.TempDir()
 			writeFindTranscript(t, dir, "argument-replay", time.Unix(1, 0), turns...)
-			_, entries, skipped, err := readTranscript(t.Context(), transcriptPath(dir, "argument-replay"), "")
-			if err != nil || skipped != 0 {
-				t.Fatalf("read transcript: skipped %d, err %v", skipped, err)
+			// Leave room for the original arguments and turn metadata in one
+			// record. A second full copy of the 4 KiB tool input would exceed it.
+			data, err := readSemanticTranscript(t.Context(), transcriptPath(dir, "argument-replay"), "", 6<<10, true, false, nil)
+			if err != nil || data.Skipped != 0 {
+				t.Fatalf("read transcript: skipped %d, err %v", data.Skipped, err)
 			}
-			resumed := ResumeHistory(entries)
+			resumed := ResumeHistory(data.Entries)
 			if rejected, ok := findToolCallInHistory(resumed, "c2"); !ok || rejected.RawArguments != malformed {
 				t.Fatalf("restored rejected call = %+v", rejected)
 			}

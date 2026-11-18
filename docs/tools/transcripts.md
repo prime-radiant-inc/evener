@@ -310,6 +310,10 @@ entries. It contains neither the system prompt nor provider request/response rec
 This is rarely what you want: reserve it for debugging transcript structure. For
 comprehension, use markdown; for provider forensics, use `evener doctor apilog <selector>`.
 
+Each stored semantic entry can occupy up to 128 MiB before its terminating
+newline. If an entry exceeds that limit, the append reports an error and the
+previously recorded transcript remains readable on resume.
+
 ```
 { "transcript_ref"?, "format":"jsonl", "content_type":"application/x-ndjson",
   "content": "<raw lines>",

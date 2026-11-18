@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -88,6 +89,29 @@ func TestToolCallDataArgumentBytesRoundTrip(t *testing.T) {
 
 func TestToolCallDataKeepsStructuredArgumentsWithoutMatchingBytes(t *testing.T) {
 	t.Parallel()
+	t.Run("changed structured value with the same length", func(t *testing.T) {
+		original := "{ \"path\": \"" + strings.Repeat("a", 1024) + "\" }\n"
+		data, err := json.Marshal(ToolCallData{Arguments: json.RawMessage(original)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		fields["arguments"] = bytes.Replace(fields["arguments"], []byte("aaa"), []byte("bbb"), 1)
+		updated, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var call ToolCallData
+		if err := json.Unmarshal(updated, &call); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(call.Arguments, fields["arguments"]) {
+			t.Error("restoring the edited argument applied a spelling from another value")
+		}
+	})
 	for _, tc := range []struct {
 		name, original, diagnostic string
 	}{
