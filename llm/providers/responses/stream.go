@@ -611,7 +611,7 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 					}
 				}
 				acc.order++
-				item.pendingMessage = append(item.pendingMessage, responsesMessageUpdate{responsesFragment: responsesFragment{acc.order, []byte(delta)}, index: index})
+				item.pendingMessage = append(item.pendingMessage, responsesMessageUpdate{order: acc.order, data: []byte(delta), index: index})
 			} else if p := item.textPart(index, true); p != nil && p.finalType == "" {
 				acc.write(&p.deltas, delta)
 			}
@@ -639,7 +639,7 @@ func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any
 	if ok {
 		if item := acc.textOutput(payload); item != nil {
 			acc.order++
-			acc.observeMessage(item, responsesMessageUpdate{responsesFragment: responsesFragment{order: acc.order}, index: index, kind: kind, text: text})
+			acc.observeMessage(item, responsesMessageUpdate{order: acc.order, index: index, kind: kind, text: text})
 		}
 	}
 	return typ != "response.content_part.done" || text != ""
@@ -674,7 +674,7 @@ func (acc *responsesOutputAccumulator) observeMessage(item *responsesOutputItem,
 func (acc *responsesOutputAccumulator) settleMessage(item *responsesOutputItem, message map[string]any) {
 	item.phase.observe(message, acc.order, true)
 	if parts, ok := message["content"].([]any); ok {
-		acc.observeMessage(item, responsesMessageUpdate{responsesFragment: responsesFragment{order: acc.order}, parts: parts})
+		acc.observeMessage(item, responsesMessageUpdate{order: acc.order, parts: parts})
 	}
 }
 
