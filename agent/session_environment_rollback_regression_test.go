@@ -823,11 +823,17 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 	// Three: the turn that emits the environment, the turn whose own record
 	// poisons the writer, and the notification turn that must never run.
 	steps := countingFinalResponses(&requests, 3)
+	// The poisoning body needs the environment failure fs the session attaches,
+	// so its slot holds a dispatcher the test fills in once fs exists: the
+	// script owns its slots, and a write to steps[1] after construction would
+	// never reach it.
+	var poison func(llm.Request) llm.Response
+	steps[1] = func(req llm.Request) llm.Response { return poison(req) }
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first")
 
 	fs := attachEnvironmentFailureFS(t, sess)
-	steps[1] = func(llm.Request) llm.Response {
+	poison = func(llm.Request) llm.Response {
 		requests.Add(1)
 		// The assistant record this response produces is durable and would abort
 		// the turn, and the COMMUNICATE record goes through the synced door,
@@ -868,11 +874,17 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	steps := countingFinalResponses(&requests, 3)
+	// The poisoning body needs the fs attached below, which exists only after
+	// the session is built — so the slot holds a dispatcher and the body
+	// arrives through this variable. With the script owning its slots, an
+	// assignment to steps[1] after construction would not reach the adapter.
+	var poison func(llm.Request) llm.Response
+	steps[1] = func(req llm.Request) llm.Response { return poison(req) }
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first")
 
 	fs := attachEnvironmentFailureFS(t, sess)
-	steps[1] = func(llm.Request) llm.Response {
+	poison = func(llm.Request) llm.Response {
 		requests.Add(1)
 		// Past the durable assistant record and the synced COMMUNICATE one,
 		// onto the buffered tool-results one, so this turn finishes with the
@@ -1221,6 +1233,12 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
 	steps := countingFinalResponses(&requests, 3)
+	// The poisoning body closes over the interrupt the test creates below,
+	// after the session exists, so the slot dispatches through this variable
+	// instead. The script owns its slots: writing steps[1] after construction
+	// would not reach the adapter.
+	var poison func(llm.Request) llm.Response
+	steps[1] = func(req llm.Request) llm.Response { return poison(req) }
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first")
 
@@ -1228,7 +1246,7 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	// The input must be admitted before the model turn poisons the writer; the
 	// interrupt then ends that reachable turn with the bare cancellation the
 	// drain keys on.
-	steps[1] = func(llm.Request) llm.Response {
+	poison = func(llm.Request) llm.Response {
 		requests.Add(1)
 		// Poison the transcript during the scripted response, before the
 		// interrupt lets the drain claim its queued message.
@@ -1493,11 +1511,17 @@ func TestPoisonedToolResultStopsTheInputBeforeTheNextRound(t *testing.T) {
 	steps := make([]func(llm.Request) llm.Response, 3)
 	steps[0] = func(llm.Request) llm.Response { requests.Add(1); return agenttest.FinalResponse("ok") }
 	steps[2] = func(llm.Request) llm.Response { requests.Add(1); return agenttest.FinalResponse("must never run") }
+	// The middle step arms the failure on the fs attached below, which exists
+	// only once the session is built: the slot dispatches through this
+	// variable, because the script owns its slots and a later write to steps[1]
+	// would not reach it.
+	var poisoningToolCall func(llm.Request) llm.Response
+	steps[1] = func(req llm.Request) llm.Response { return poisoningToolCall(req) }
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
 	sendOneUserInput(t, sess, "first") // settles the environment block
 
 	fs := attachEnvironmentFailureFS(t, sess)
-	steps[1] = func(llm.Request) llm.Response {
+	poisoningToolCall = func(llm.Request) llm.Response {
 		requests.Add(1)
 		// Past the durable assistant record, onto the buffered tool-results
 		// one: that write stops partway and poisons the writer.
