@@ -221,6 +221,19 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"issued call links a provisional named item at another index", []string{indexedCalls[0], at(1, toolItemAdded), at(1, namedFinalArguments)}, nil, []replayItem{finalTool}},
 		{"issued call repeated at another call's index keeps the other call", []string{indexedCalls[0], at(1, done(secondLinked)), secondItemFinal, at(1, namedFinalArguments)}, nil, []replayItem{finalTool, secondTool}},
 		{"issued call with two item IDs stays a single call", []string{at(0, toolAdded), finalArguments, at(1, done(strings.Replace(linkedFinalCall, "fc_1", "fc_2", 1)))}, nil, []replayItem{finalTool}},
+		{"terminal renames an issued item and omits finalized arguments", []string{toolAdded, finalArguments}, []string{`{"type":"function_call","id":"fc_renamed","call_id":"call_1"}`}, []replayItem{finalTool}},
+		{"terminal supplies its own arguments after renaming an issued item", []string{toolAdded, finalArguments}, []string{`{"type":"function_call","id":"fc_renamed","call_id":"call_1","arguments":"{}"}`}, []replayItem{tool}},
+		{"later explicit terminal arguments supersede stream recovery for the same call", []string{toolAdded, finalArguments}, []string{
+			emptyToolByCall, `{"type":"function_call","id":"fc_renamed","call_id":"call_1","arguments":"{}"}`,
+		}, []replayItem{tool}},
+		{"terminal binds the first item ID before an item-only completion", []string{indexedCalls[0]}, []string{
+			`{"type":"function_call","id":"fc_late","call_id":"call_1"}`, `{"type":"function_call","id":"fc_late","arguments":"{}"}`,
+		}, []replayItem{tool}},
+		{"terminal names another issued item but selects calls by call ID", []string{at(0, toolAdded), finalArguments, at(0, done(secondLinked)), secondItemFinal},
+			[]string{`{"type":"function_call","id":"fc_2","call_id":"call_1"}`, secondCall}, []replayItem{finalTool, secondTool}},
+		{"repeated terminal call completes its fields under a different item ID", nil, []string{
+			`{"type":"function_call","id":"fc_1","call_id":"call_1"}`, `{"type":"function_call","id":"fc_2","call_id":"call_1","name":"f","arguments":"{}"}`,
+		}, []replayItem{tool}},
 		{"issued call selected twice by the terminal", []string{toolAdded, finalArguments}, []string{emptyToolByItem, firstCall}, []replayItem{finalTool}},
 		{"issued call completed after a terminal reference", nil, []string{firstCall, toolItem}, []replayItem{tool}},
 		{"issued call in a terminal link to a provisional item at another index", []string{indexedCalls[0], at(1, toolItemAdded)}, []string{linkedCall}, []replayItem{finalTool}},
@@ -308,7 +321,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"terminal native whitespace wins over earlier text", []string{done(reasoningItem)}, []string{blankReasoning, answerItem}, []replayItem{blank, answer}},
 		{"terminal empty summary clears completed summary", []string{done(earlierSummary)}, []string{emptyReasoning, answerItem}, []replayItem{raw, answer}},
 		{"reasoning only", []string{done(reasoningItem)}, []string{emptyReasoning}, []replayItem{raw}},
-		{"display-only terminal part with streamed answer", []string{done(reasoningItem), answerDelta}, []string{displayItem}, []replayItem{raw, answer}},
+		{"display-only terminal part withdraws completed reasoning and preserves the answer", []string{done(reasoningItem), answerDelta}, []string{displayItem}, []replayItem{answer}},
 		{"reasoning with streamed answer and tool", []string{done(reasoningItem), answerDelta, toolDelta}, []string{emptyReasoning}, []replayItem{raw, answer, tool}},
 		{"reasoning with completed siblings", []string{answerDelta, done(answerItem), done(reasoningItem), toolDelta, done(toolItem)}, []string{emptyReasoning}, []replayItem{answer, raw, tool}},
 		{"distinct streamed message and completed arguments", []string{done(answerItem), done(reasoningItem), otherAnswerDelta, toolAdded, argumentsDone}, []string{emptyReasoning}, []replayItem{answer, raw, otherAnswer, tool}},
@@ -374,6 +387,11 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				t.Errorf("recorded input = %#v, want %#v", got, tc.want)
 			}
 			for _, resp := range []*llm.Response{acc.Response(), &recorded} {
+				if slices.Contains(tc.output, displayItem) && !slices.ContainsFunc(resp.Message.Content, func(p llm.ContentPart) bool {
+					return p.Thinking != nil && p.Thinking.Text == "s1" && len(p.Thinking.ResponsesTextParts) == 1 && p.Thinking.ResponsesTextParts[0].Type == "summary_text"
+				}) {
+					t.Error("selected display text and its native type did not survive settlement")
+				}
 				calls := resp.ToolCalls()
 				var count int
 				for _, want := range tc.want {

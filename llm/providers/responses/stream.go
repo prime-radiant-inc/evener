@@ -720,25 +720,28 @@ func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputI
 	return nil
 }
 
-// A provider can identify the same call and provisional item at different
-// positions. Their explicit link keeps the issued call's position and bytes.
-func (acc *responsesOutputAccumulator) bindCallItem(issued *responsesOutputItem, itemID string) bool {
+// The issued call owns its first item ID across stream and terminal frames.
+// A provisional item can supply that ID and its bytes, even at another index.
+func (acc *responsesOutputAccumulator) bindCallItem(issued *responsesOutputItem, itemID string) string {
 	if !issued.accepts("function_call", itemID, -1) {
-		return false
+		return issued.id
 	}
 	named := acc.byID[itemID]
-	if named == nil || named == issued {
-		return true
+	if named != nil && named != issued {
+		if !named.accepts("function_call", itemID, -1) || !named.acceptsCallID(issued.tool.callID) {
+			return issued.id
+		}
+		if issued.index >= 0 && named.index >= 0 && issued.index != named.index {
+			delete(acc.byIndex, named.index)
+			named.index = -1
+		}
+		acc.join(issued, named)
 	}
-	if !named.accepts("function_call", itemID, -1) || !named.acceptsCallID(issued.tool.callID) {
-		return false
+	if itemID != "" {
+		issued.id, issued.tool.itemID = itemID, itemID
+		acc.byID[itemID] = issued
 	}
-	if issued.index >= 0 && named.index >= 0 && issued.index != named.index {
-		delete(acc.byIndex, named.index)
-		named.index = -1
-	}
-	acc.join(issued, named)
-	return true
+	return issued.id
 }
 
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
@@ -755,17 +758,8 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 			index = -1 // Only the explicit identities can select a call at this position.
 		}
 	}
-	// An issued call ID owns the dispatchable record, so it decides identity
-	// before any positional metadata. A disagreeing item ID cannot reject the
-	// frame: it is dropped, and the bytes this frame carries still settle the
-	// call it names.
 	if issued := acc.byCallID[callID]; issued != nil {
-		if !issued.accepts("function_call", itemID, -1) {
-			itemID = "" // Conflicting positional metadata: drop it, keep the bytes.
-		}
-		if !acc.bindCallItem(issued, itemID) {
-			return nil
-		}
+		itemID = acc.bindCallItem(issued, itemID)
 		if issued.index >= 0 && index != issued.index {
 			index = -1
 		}

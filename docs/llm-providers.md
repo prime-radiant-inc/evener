@@ -589,8 +589,9 @@ recover an encoded object, array or XML parameter. A string field such as
   item can inherit its announced ID. Repeated completions update only the
   reasoning fields they supply. A replacement content or summary array
   selects its own parts and can inherit omitted text at a matching type and
-  index. When an item omits its content, a native
-  part announcement and the finalized text for that part establish its
+  index. If the replacement contains only display parts, the transcript keeps
+  those parts and the next request omits the withdrawn reasoning. When an
+  item omits its content, a native part announcement and the finalized text establish its
   type, index and exact bytes. A single `reasoning_text` placeholder with
   `text` set to `""` can recover all finalized native slots of that item in
   index order. An empty terminal output keeps these parts at the item's
@@ -611,7 +612,10 @@ recover an encoded object, array or XML parameter. A string field such as
   arrives later. The provider must supply a `call_id` before Evener can
   dispatch the tool and return its result under that ID. A response can
   repeat the same call at another index or in its final output. Evener
-  executes it once. Reasoning shown only as deltas remains
+  executes it once. If a later frame changes the item ID of that call,
+  Evener keeps the first confirmed item ID. Explicit terminal arguments take
+  precedence, and a terminal that omits them inherits the call's exact streamed
+  arguments. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
   answer. A streamed summary that differs from the item's settled text stays
   visible in the transcript. Only native reasoning parts supply replay text.

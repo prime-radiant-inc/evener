@@ -18,6 +18,11 @@ type responsesTerminalItem struct {
 	parts    []llm.ContentPart
 }
 
+type responsesTerminalCall struct {
+	llm.ToolCallData
+	terminalArguments bool
+}
+
 // responseContentFromOutputItems converts a Responses API output-item array
 // into message content parts. It walks the same wire shape whether the items
 // come from a terminal response.completed payload or output_item.done events.
@@ -25,7 +30,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
-	var calls map[string]*llm.ToolCallData
+	var calls map[string]*responsesTerminalCall
 	sparse := stream != nil
 	var placeholders []responsesTerminalItem
 	var terminalReasoning bool
@@ -83,7 +88,11 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 					args = string(content)
 				}
 			}
+			terminalArguments := args != ""
 			if stream != nil {
+				if issued := stream.byCallID[callID]; issued != nil {
+					itemID = stream.bindCallItem(issued, itemID)
+				}
 				if observed := stream.terminalItem("function_call", itemID, callID, itemIdx, out); observed != nil && observed.tool != nil {
 					prior := observed.tool
 					callID = cmp.Or(callID, prior.callID)
@@ -99,21 +108,23 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 			}
 			if prior := calls[callID]; prior != nil {
 				// Repeated references may complete one issued call at its first position.
-				if prior.ItemID == "" || itemID == "" || prior.ItemID == itemID {
-					prior.ItemID = cmp.Or(prior.ItemID, itemID)
-					prior.Name = cmp.Or(prior.Name, name)
-					if len(prior.Arguments) == 0 {
-						prior.Arguments = json.RawMessage(args)
-					}
+				prior.ItemID = cmp.Or(prior.ItemID, itemID)
+				prior.Name = cmp.Or(prior.Name, name)
+				if len(prior.Arguments) == 0 || (terminalArguments && !prior.terminalArguments) {
+					prior.Arguments = json.RawMessage(args)
+					prior.terminalArguments = terminalArguments
 				}
 				continue
 			}
-			call := &llm.ToolCallData{ID: callID, ItemID: itemID, Name: name, Arguments: json.RawMessage(args), Type: "function"}
+			call := &responsesTerminalCall{
+				ToolCallData:      llm.ToolCallData{ID: callID, ItemID: itemID, Name: name, Arguments: json.RawMessage(args), Type: "function"},
+				terminalArguments: terminalArguments,
+			}
 			if calls == nil {
-				calls = make(map[string]*llm.ToolCallData)
+				calls = make(map[string]*responsesTerminalCall)
 			}
 			calls[callID] = call
-			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: call})
+			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &call.ToolCallData})
 		case "web_search_call":
 			query := ""
 			if action, _ := item["action"].(map[string]any); action != nil {
@@ -207,9 +218,6 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 	compatible := func(item *responsesOutputItem) bool {
 		return item.accepts(kind, id, -1) && item.acceptsCallID(callID)
 	}
-	if issued := acc.byCallID[callID]; issued != nil && !acc.bindCallItem(issued, id) {
-		return nil
-	}
 	named := acc.namedItem(kind, id)
 	if !compatible(named) {
 		named = nil
@@ -253,13 +261,12 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 		terminal = &llm.ThinkingData{ID: item.reasoningID(terminalItem), Summary: item.reasoningSummary(terminalItem["summary"])}
 	}
 	parts, supplied := terminalItem["content"].([]any)
-	cleared := supplied && len(parts) == 0
 	var placeholder bool
 	if terminalNative == reasoningEmpty && len(parts) == 1 {
 		part, _ := parts[0].(map[string]any)
 		placeholder = part["text"] == ""
 	}
-	if !cleared && (terminalNative == reasoningAbsent || placeholder) {
+	if !supplied || placeholder {
 		// The stream can supply several native slots even when their item
 		// repeats only the types and their text arrived in indexed finals.
 		prior, _ := responsesThinking(item.done, item)

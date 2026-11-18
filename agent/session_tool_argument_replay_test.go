@@ -71,7 +71,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 		{&responses.Protocol{}, "input", "", `{"output":[
 			{"type":"reasoning","id":"r1"},
 			{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text"},{"type":"output_text"}]},
-			{"type":"function_call","call_id":"c1","name":"write_file","arguments":` + good + `},
+			{"type":"function_call","call_id":"c1","id":"fc_renamed"},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
 		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat(unsigned, encrypted), []string{first + second}},
@@ -94,6 +94,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					`{"type":"response.output_text.delta","output_index":1,"item_id":"m1","content_index":0,"delta":` + mustJSON(t, answer) + `}`,
 					`{"type":"response.output_text.delta","output_index":1,"item_id":"m1","content_index":1,"delta":"withdrawn"}`,
 					`{"type":"response.output_item.done","output_index":1,"item":{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}}`,
+					`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","call_id":"c1","name":"write_file"}}`,
+					`{"type":"response.function_call_arguments.done","item_id":"fc_first","arguments":` + good + `}`,
 					mustJSON(t, map[string]any{"type": "response.completed", "response": json.RawMessage(tc.response)}),
 				}, "\n\ndata: ") + "\n\n"
 			}
@@ -222,7 +224,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"dropped","call_id":"dropped","name":"f"}}`,
 					`{"type":"response.function_call_arguments.delta","item_id":"dropped","delta":"{}"}`,
 					`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"final","role":"assistant","content":[{"type":"output_text","text":` + mustJSON(t, finalAnswer) + `}]}}`,
-					`{"type":"response.completed","response":{"output":[{"type":"message","id":"final","role":"assistant"}]}}`,
+					`{"type":"response.output_item.done","output_index":2,"item":{"type":"reasoning","id":"r2","content":[{"type":"reasoning_text","text":"withdrawn reasoning"}]}}`,
+					`{"type":"response.completed","response":{"output":[{"type":"message","id":"final","role":"assistant"},{"type":"reasoning","id":"r2","content":[{"type":"summary_text","text":"selected display"}]}]}}`,
 				}, "\n\ndata: ") + "\n\n"
 				final, err := responses.ExtractRecordedResponse([]byte(stream), row.ModelID)
 				if err != nil {
@@ -244,6 +247,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			resumed := ResumeHistory(entries)
 			if call, ok := findToolCallInHistory(resumed, "c1"); !ok || call.SentArguments() != valid {
 				t.Error("the transcript changed the provider's file contents or argument spelling")
+			} else if tc.field == "input" && call.ItemID != "fc_first" {
+				t.Errorf("restored call carries item ID %q, want its original item ID", call.ItemID)
 			}
 			if rejected, ok := findToolCallInHistory(resumed, "c2"); !ok || rejected.RawArguments != malformed {
 				t.Fatalf("restored rejected call = %+v", rejected)
