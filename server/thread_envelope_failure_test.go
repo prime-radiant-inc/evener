@@ -182,3 +182,29 @@ func TestDescendantReadDropsAQuotaWaitWhenItsExecutionEnds(t *testing.T) {
 		t.Fatalf("after the execution ends the delegate's read still carries the wait %+v", got)
 	}
 }
+
+// A stopped root wait's summary can still sit in the envelope when the next
+// turn publishes: SetProcessingTurn moves the running turn synchronously,
+// while the failure facet refreshes through the queued bridge. The publish
+// must retire the cached summary, or a read in that window pairs the old
+// deadline with the new turn and the pane installs a canceled wait over it.
+func TestNewTurnPublishRetiresAStaleEnvelopeQuotaWait(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Status: 429}, ResumesAt: 1_800_000_000_000}
+	src := publishEnvelope(srv, &stubThreadEnvelopeSource{failure: waiting})
+	srv.SetState(appwire.ThreadStatusActive)
+	BridgeEvent(srv, events.SessionEvent{Kind: events.EventModelRetry, SessionID: "root", Data: events.ModelRetryData{Attempt: 1, DelayMS: 7_200_000, ErrorClass: "quota_exceeded"}}, nil)
+
+	// The wait ended on another client's Stop, and the next turn starts
+	// before the bridge re-samples the (now empty) failure facet.
+	src.failure = nil
+	srv.SetProcessingTurn("turn_2")
+	read := readThreadOverWire(t, srv, "local:root")
+	if got := read.Evener.Failure; got != nil {
+		t.Fatalf("a new turn's read carries the stopped wait's summary %+v", got)
+	}
+	if got := read.Evener.ActiveTurnID; got != "turn_2" {
+		t.Fatalf("a new turn's read names turn %q, want turn_2", got)
+	}
+}

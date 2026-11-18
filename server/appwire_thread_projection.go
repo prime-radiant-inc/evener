@@ -529,6 +529,13 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		SkillInput:   s.skillInputSupportedLocked(),
 		CommandInput: s.skillInputSupportedLocked(),
 		WindowRead:   true,
+		// QuotaWaitSnapshot: this server's read snapshot reports the quota
+		// wait authoritatively (the projection samples the session's live
+		// wait for the root, and the delegate projection stores the wait the
+		// announcement recorded). An older daemon omits the bit AND the
+		// field, so a client keeps a live-announced wait through reads from
+		// such a source instead of treating the absent field as "no wait".
+		QuotaWaitSnapshot: true,
 	}
 }
 

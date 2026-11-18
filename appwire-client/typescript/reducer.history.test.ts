@@ -51,6 +51,7 @@ const CAPABILITIES: ThreadCapabilities = {
   goal: true,
   sharedNotes: true,
   rename: true,
+  quotaWaitSnapshot: true,
 };
 
 function thread(turns: Turn[], activeTurnId?: string, quotaWaitResumesAt?: number): Thread {
@@ -297,6 +298,69 @@ test("a read that moves the deadline within the same turn retires the earlier ca
   // clears, so the new wait's line does not render the first call's
   // elapsed time.
   expect(next.quotaResumesAt).toBe(secondWaitResumesAt);
+  expect(next.modelRetry).toBeUndefined();
+});
+
+// An older daemon announces a quota wait live but cannot report it in the
+// read snapshot (no quotaWaitSnapshot capability): the absent field is by
+// design, not a statement that the wait ended. A refresh or reconnect during
+// the same multi-hour wait must keep the countdown - erasing it would report
+// a stall for a wait the daemon announced and never ended.
+test("a read from a source that cannot report the wait keeps a known live wait", () => {
+  const resumesAt = 4_102_400_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  // Reconnect mid-wait: the source's read carries no failure field and no
+  // quotaWaitSnapshot capability - an older daemon by design.
+  const fresh = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
+  fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
+  const next = applyReadModel(model, fresh);
+  expect(next.quotaResumesAt).toBe(resumesAt);
+  expect(next.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+// The same read from a source whose snapshot CAN report the wait clears it:
+// there the absent field is authoritative that the wait ended.
+test("a read from a quota-snapshot source clears a wait it reports ended", () => {
+  const resumesAt = 4_102_400_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  const fresh = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
+  expect(fresh.capabilities.quotaWaitSnapshot).toBe(true);
+  const next = applyReadModel(model, fresh);
+  expect(next.quotaResumesAt).toBeUndefined();
   expect(next.modelRetry).toBeUndefined();
 });
 

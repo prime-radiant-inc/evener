@@ -4676,6 +4676,7 @@ Underlying Go kind: `string` (no struct fields).
 | `pageBefore` | bool | yes |  |
 | `voiceArm` | bool | yes |  |
 | `windowRead` | bool | yes |  |
+| `quotaWaitSnapshot` | bool | yes |  |
 
 
 ### `ThreadClearParams`

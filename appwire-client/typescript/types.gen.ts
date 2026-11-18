@@ -4713,6 +4713,17 @@ export interface ThreadCapabilities {
    * their strict decoder rejects.
    */
   windowRead?: boolean;
+  /**
+   * QuotaWaitSnapshot advertises that this source's read snapshot reports
+   * the quota-wait summary (ThreadFailure.ResumesAt) authoritatively:
+   * present means the thread waits, absent means it does not. An older
+   * daemon omits the capability AND omits the field, and its live
+   * quota announcements are the only wait evidence a client has - so a
+   * read from such a source never clears a wait the announcements
+   * recorded (a refresh or reconnect during a multi-hour wait would
+   * otherwise erase the countdown and report a stall).
+   */
+  quotaWaitSnapshot?: boolean;
 }
 
 export interface ThreadClearParams {

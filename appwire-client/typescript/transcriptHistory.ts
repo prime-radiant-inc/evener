@@ -1007,7 +1007,14 @@ export function applyReadResponse<M extends ThreadModel>(
   // one, or link actions stay aimed at a directory the hub no longer serves.
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
-  const clearedQuotaWait = fields.quotaResumesAt === undefined ? { quotaResumesAt: undefined } : {};
+  // A snapshot from a source that cannot report the quota wait (an older
+  // daemon: no quotaWaitSnapshot capability, so evener.failure is absent by
+  // design, not authoritatively empty) never clears a known wait - the live
+  // announcement is the only wait evidence there is, and a refresh during a
+  // multi-hour wait would otherwise erase the countdown and report a stall.
+  const quotaSnapshotAuthoritative = fields.capabilities?.quotaWaitSnapshot === true;
+  const clearedQuotaWait =
+    fields.quotaResumesAt === undefined && quotaSnapshotAuthoritative ? { quotaResumesAt: undefined } : {};
   // A read that shows no wait is authoritative that the wait ended: the chip
   // goes with the deadline, or the canceled turn's "waiting for quota" reads
   // over whatever runs next. The wake's own zero-delay announcement already
@@ -1023,14 +1030,17 @@ export function applyReadResponse<M extends ThreadModel>(
   // can wait twice (the first wait ended by a steer, the retry hit the limit
   // again), and matching turn ids are not evidence the two waits share a
   // call - the moved deadline names a new wait whose elapsed time the
-  // retained metadata does not carry.
+  // retained metadata does not carry. Both apply only where the snapshot
+  // can speak for the wait at all.
   const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
   const quotaRetryFromAnotherCall =
+    quotaSnapshotAuthoritative &&
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
     ((readRunningTurnId !== undefined && readRunningTurnId !== base.modelRetry.turnId) ||
       fields.quotaResumesAt !== model.quotaResumesAt);
   const clearedQuotaRetry =
+    quotaSnapshotAuthoritative &&
     (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     base.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
@@ -1212,18 +1222,27 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.artifactsDir === undefined && model.artifactsDir !== undefined ? { artifactsDir: undefined } : {};
   const clearedScratch =
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
+  // Same snapshot-support rule as applyReadResponse: a source without
+  // quotaWaitSnapshot cannot speak for the wait, so its read never clears
+  // one the live announcements recorded.
+  const quotaSnapshotAuthoritative = fresh.capabilities?.quotaWaitSnapshot === true;
   const clearedQuotaWait =
-    fresh.quotaResumesAt === undefined && model.quotaResumesAt !== undefined ? { quotaResumesAt: undefined } : {};
+    fresh.quotaResumesAt === undefined && quotaSnapshotAuthoritative && model.quotaResumesAt !== undefined
+      ? { quotaResumesAt: undefined }
+      : {};
   // Same cross-turn and moved-deadline rules as applyReadResponse: a read
   // naming a different running turn, or moving the deadline within the same
   // turn, retires the retained retry metadata - the new deadline renders
-  // alone until a matching live announcement arrives.
+  // alone until a matching live announcement arrives. Both apply only where
+  // the snapshot can speak for the wait at all.
   const quotaRetryFromAnotherCall =
+    quotaSnapshotAuthoritative &&
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
     ((freshRunningTurnId !== undefined && freshRunningTurnId !== base.modelRetry.turnId) ||
       fresh.quotaResumesAt !== model.quotaResumesAt);
   const clearedQuotaRetry =
+    quotaSnapshotAuthoritative &&
     (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     model.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }

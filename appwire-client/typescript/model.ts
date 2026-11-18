@@ -460,9 +460,9 @@ export interface ThreadModel {
   // evener/thread/modelRetry announcement). Unlike modelRetry this is state,
   // not liveness state: a reload or reconnect that re-hydrates from a read
   // still knows the wait, so the transcript pane can keep saying it. Cleared
-  // by the wait's own retry-start announcement (a quota retry with no
-  // delay), by the completion of the model's own output item (the retry
-  // succeeded), and by a read whose thread carries no quota failure.
+  // by the wait's own wake (a quota retry announcement with no delay), by a
+  // turn boundary, and by an authoritative read whose thread no longer
+  // waits (a source whose snapshot cannot report the wait never clears it).
   quotaResumesAt?: number;
   // The turn a boundary ended a quota wait on, held only so a retry event
   // queued for that turn cannot restamp the wait after the boundary. Cleared

@@ -811,6 +811,19 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		// A rest held while the input was being taken settled before this
 		// turn started (Session.restMu), and the turn's end restates it.
 		s.appHeldSettledEffect = nil
+		// The envelope's failure facet belongs to the turn that earned it.
+		// This publish moves the running turn synchronously, while the facet
+		// refreshes through the queued bridge - so a quota wait the PREVIOUS
+		// turn held (stopped, then this turn started) could pair its resume
+		// deadline with this turn's id until the bridge catches up, and a
+		// read in that window would install the canceled wait over the new
+		// turn. The daemon's own wait state is already gone (a Stop cancels
+		// it, session_quota_wait.go's end()), so clearing the cached sample
+		// here is the whole fix: no later refresh can restore it. The
+		// resting-turn summary clears the same way and to the same effect -
+		// the next turn's status is not systemError, and this turn's own
+		// TURN_ENDED re-samples every facet if it fails.
+		s.appEnvelope.Failure = nil
 		// Until the execution's own EXECUTION_STARTED is projected, a
 		// terminal status still queued from the input before it must not be
 		// published over this one (RecordAppEvent defers it).
