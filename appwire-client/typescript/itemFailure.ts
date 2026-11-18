@@ -43,6 +43,40 @@ export function isTurnError(error: unknown): error is TurnError {
   return error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string";
 }
 
+// The turn-failure facts both clients read, so a turn whose status says failed
+// renders and revalidates the same way whether or not it carries an error
+// object. `error` is the wire TurnError's own prose, present only when the
+// attempt that ended recorded a diagnostic.
+export interface TurnFailureFacts {
+  readonly status?: string;
+  readonly error?: unknown;
+}
+
+// Whether a turn's own status says the attempt ended failed. This is the
+// CANONICAL record of a failure: the readers stamp `status: "failed"` from the
+// stamped completion that ended the attempt, and they deliberately leave
+// `error` unset when that attempt recorded no diagnostic of its own (see
+// internal/transcriptindex/window.go and internal/apptranscript's
+// StampTurnFailure — a retry whose buffered diagnostic write failed must not
+// borrow the recovered attempt's message). A client that keys Retry or the
+// failure row off the error object alone therefore loses the action on exactly
+// the reload the status is there to describe, which is why both clients ask
+// this instead (#1166 review).
+export function turnFailed(turn: TurnFailureFacts): boolean {
+  return turn.status === "failed";
+}
+
+// Whether a turn is a failure the client may act on: the canonical status says
+// the attempt ended failed, or the turn carries a diagnostic. Either alone is
+// enough — the readers always stamp the failed status, and a turn replayed
+// from an older build can carry the diagnostic with a status this build has
+// not rewritten. Both clients pass this as retryEligibility's
+// clickedTurnFailed, so Retry survives a reload of a failed attempt whose
+// diagnostic never reached the transcript.
+export function turnFailurePresent(turn: TurnFailureFacts): boolean {
+  return turnFailed(turn) || isTurnError(turn.error);
+}
+
 // The item's own status settled as a failure. The wire projects status
 // "completed" even for an errored tool call, so this is one signal of two,
 // never the whole answer.

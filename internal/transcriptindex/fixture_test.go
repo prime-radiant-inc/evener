@@ -454,6 +454,13 @@ func completion(turnID string, status schema.TurnCompletionStatus, second int, d
 	return inTurn(turnID, turn)
 }
 
+// bareCompletion is a stamped TURN_COMPLETION the writer and decoder accept
+// with NO payload. It must fold exactly as a zero-valued one does, so a reader
+// that skipped it would leave the turn open while the index closes it.
+func bareCompletion(turnID string, second int) schema.Turn {
+	return inTurn(turnID, at(transcriptOnly(schema.TurnCompletion), second))
+}
+
 func reopen(turnID string) schema.Turn { return inTurn(turnID, transcriptOnly(schema.TurnReopen)) }
 
 func communicated(turnID, callID, message string) schema.Turn {
@@ -576,6 +583,15 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		entryLine(completion("turn_m18", schema.TurnCompleted, 50, 10)),
 	}
 
+	// A stamped TURN_COMPLETION with no payload: the writer and decoder accept
+	// it, so both readers must fold it as zero-valued info rather than skipping
+	// the status update (#1166 review).
+	bareCompletionTurn := []fixtureLine{
+		entryLine(opens("turn_m25", execution, user("run it"))),
+		entryLine(inTurn("turn_m25", assistant(text("working")))),
+		entryLine(bareCompletion("turn_m25", 98)),
+	}
+
 	question := inTurn("turn_m19", user("fold me"))
 	answer := inTurn("turn_m19", withUsage(assistant(text("original answer"), call("fc1", "read_file", `{}`)), 2, 2, 0, 4))
 	answered := inTurn("turn_m19", results(result("fc1", "read_file", "original result")))
@@ -637,6 +653,7 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		{name: "failed execution and retry", header: header, lines: failedRetry},
 		{name: "open and reclaimed", header: header, lines: reclaimed},
 		{name: "failed retry without its own diagnostic", header: header, lines: failedRetryAgain},
+		{name: "completion without a payload", header: header, lines: bareCompletionTurn},
 		{name: "legacy prefix", header: header, lines: legacyPrefix},
 		{name: "fold copies", header: header, lines: folds},
 		{name: "communicate echoes", header: header, lines: echoes},

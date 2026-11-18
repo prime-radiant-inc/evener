@@ -1156,6 +1156,17 @@ func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire
 		}
 		apptranscript.ProjectEntryParts(string(turnIDBytes), int(ce.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
 	}
+	// Context is the entries whose registry state a deferred communicate result
+	// needs — the announcing entry and the last assistant text — not every entry
+	// that moved the turn's awaiting batch between them. Replaying it therefore
+	// re-derives an awaiting batch the builder never had: a later assistant
+	// entry that took the batch over is absent here, so an id the announcing
+	// entry reused would resolve to the announcing entry's FIRST part instead of
+	// the communicate the builder recorded (#1166 review). This item's name was
+	// settled when it was built and is not up for re-derivation, so drop the
+	// replay's awaiting batch and let the pending state Context DOES reconstruct
+	// name it.
+	reg.ForgetAwaitingBatch()
 	entry, err := r.entry(record.Opener.Offset, record.Opener.Length)
 	if err != nil {
 		return nil, nil, err

@@ -73,6 +73,7 @@ import {
 	toolFamily,
 	toolExitCode,
 	toolStepWords,
+	turnFailurePresent,
 	warningWords,
 } from "@evener/appwire-client";
 import type {
@@ -1138,7 +1139,16 @@ function rowsForProjectedTurn(
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
 	const keyed = new Set<string>();
-	const turnError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
+	// The failure row is the turn's failure, not the error object's: a failed
+	// attempt whose diagnostic never reached the transcript still gets its row
+	// and its Retry, which is what the canonical status says. With no
+	// diagnostic the row speaks the same words a wordless one renders, so the
+	// phone names the failure as the browser does.
+	const turnError = turn.error
+		? (turn.error as NonNullable<Turn["error"]>)
+		: turnFailurePresent(turn)
+			? { message: FAILED_TURN_FALLBACK }
+			: undefined;
 	for (const entry of projected.entries) {
 		// A failed turn's error shows once, as the failure row at its end, which
 		// carries the one action (spec 8.2 "Error"). A reload also carries the
@@ -1348,6 +1358,11 @@ function failureItem(
 		...(turnID ? { turnId: turnID } : {}),
 	};
 }
+
+// FAILED_TURN_FALLBACK is the text a failed turn with no diagnostic of its own
+// renders, matching apptranscript.FailedTurnFallbackText (what a diagnostic
+// that recorded no message already renders).
+const FAILED_TURN_FALLBACK = "The turn failed.";
 
 // The identity a turn's failure row carries — the turn id under the
 // failure: prefix. Exported because the store's page-ownership checks read the

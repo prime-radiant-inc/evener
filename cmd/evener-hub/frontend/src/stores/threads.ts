@@ -1,9 +1,9 @@
 import {
   type ComposerMention,
   canWriteSharedNotes,
-  isTurnError,
   retryEligibility,
   TURN_CONTINUATION_TEXT,
+  turnFailurePresent,
 } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
@@ -8956,7 +8956,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const decision = retryEligibility({
       clickedTurnId: expectedTurnId,
       thread: model,
-      clickedTurnFailed: currentTurn !== undefined && isTurnError(currentTurn.error),
+      // The canonical failed status counts on its own: a failed attempt whose
+      // diagnostic never reached the transcript still offers Retry, and the
+      // activation must agree with the end-cap that offered it.
+      clickedTurnFailed: currentTurn !== undefined && turnFailurePresent(currentTurn),
       pendingMutations: pending.pendingMutations,
       pendingMutationsReady: pending.pendingMutationsReady,
       // Browser Retry is durably routed: the enqueue funnel owns the live

@@ -847,9 +847,16 @@ func stampExecutionControls(turn *appwire.Turn, controls []indexedTurn) {
 			turn.CompletedAt = nil
 			turn.DurationMS = nil
 		case schema.TurnCompletion:
-			info := control.turn.Completion
-			if info == nil {
-				continue
+			// An omitted payload folds as zero-valued info, which is what the
+			// index does (stampFold's TurnCompletion case takes the empty
+			// CompletionInfo when the record carries none). Skipping the fold
+			// instead left the run at its previous status while the index read
+			// a completed turn with zero duration, and the interrupt pass below
+			// still marked unanswered calls — an in-progress turn on one side
+			// of the comparison and a completed one on the other (#1166 review).
+			info := schema.TurnCompletionInfo{}
+			if control.turn.Completion != nil {
+				info = *control.turn.Completion
 			}
 			// The mapping is shared with the index (ExecutionStatusFromCompletion):
 			// one completion must not read completed in one reader and

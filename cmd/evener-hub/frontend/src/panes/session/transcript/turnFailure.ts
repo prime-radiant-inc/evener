@@ -6,7 +6,7 @@
 // "Retry turn" and a "Reconnect & retry" action; this reproduces that decision
 // purely from the TurnError the reducer already maps onto TurnModel.error
 // (reducer.ts:216, wireToTurnScalars).
-import { isTurnError, type TurnError } from "@evener/appwire-client";
+import { isTurnError, type TurnError, turnFailed } from "@evener/appwire-client";
 
 // The reconnect-class message substrings the legacy hub-recovery button keyed
 // off (renderer.js:4463-4471) - a daemon/session that went away, where the
@@ -51,6 +51,27 @@ export interface TurnFailureInfo {
 export function asTurnError(error: unknown): TurnError | undefined {
   return isTurnError(error) ? error : undefined;
 }
+
+// failureOf narrows a turn's failure the way a rendered failure row needs it:
+// the wire diagnostic when the attempt recorded one, and otherwise the
+// canonical status's own answer. A failed turn whose current attempt recorded
+// no diagnostic carries status "failed" and no error on purpose (the readers
+// refuse to borrow the recovered attempt's message), and both clients still
+// owe the person the failure row and its Retry. Returning a TurnError here
+// keeps one contract for both: a failure always arrives as one, its message
+// falling back to the shared text a diagnostic-less failure renders.
+export function failureOf(turn: { status?: string; error?: unknown }): TurnError | undefined {
+  const error = asTurnError(turn.error);
+  if (error !== undefined) return error;
+  if (!turnFailed(turn)) return undefined;
+  return { message: FAILED_TURN_FALLBACK };
+}
+
+// FAILED_TURN_FALLBACK is the text a failed turn with no diagnostic of its own
+// renders. It matches apptranscript.FailedTurnFallbackText, which is what a
+// diagnostic that recorded no message already renders, so a status-only
+// failure reads the same as a wordless one.
+const FAILED_TURN_FALLBACK = "The turn failed.";
 
 export function classifyTurnError(error: TurnError): TurnFailureInfo {
   const message = error.message.trim() || "Session error";

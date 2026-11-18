@@ -344,7 +344,7 @@ export {
   INITIAL_HUB_UPDATE_STATE,
   RESTART_REQUEST_TIMEOUT_MS,
 } from "./hubUpdate";
-export type { ItemFailureSignals } from "./itemFailure";
+export type { ItemFailureSignals, TurnFailureFacts } from "./itemFailure";
 export {
   displayTurnStatus,
   hasErrorText,
@@ -355,6 +355,8 @@ export {
   isInProgressStatus,
   isNonZeroExit,
   isTurnError,
+  turnFailed,
+  turnFailurePresent,
 } from "./itemFailure";
 export type { DecodedJobOutputPage } from "./jobOutput";
 export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";

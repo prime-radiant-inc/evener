@@ -41,9 +41,11 @@ export function TurnFailureEndCap({
   // An empty ref simply has no projected entries.
   const pending = useRetryPendingProjection(sessionRef ?? "");
   // The one shared eligibility decision, rendered as-is. The end-cap mounts
-  // only for a turn whose projected error is a real TurnError (TurnBlock's
-  // asTurnError), so the displayed failure is the clicked-turn fact; the
-  // activation rechecks the canonical turn through the same input.
+  // only for a turn that is a failure (TurnBlock's failureOf), so the displayed
+  // failure is the clicked-turn fact; the activation rechecks the canonical
+  // turn through the same input. `error` here is already the narrowed failure,
+  // so this states the failure the component was given rather than re-testing
+  // it against the turn's raw error.
   const decision =
     model === undefined
       ? null

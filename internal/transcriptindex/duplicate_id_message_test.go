@@ -10,6 +10,37 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 )
 
+// TestACompletionWithoutAPayloadClosesTheTurn covers a stamped TURN_COMPLETION
+// the writer and decoder accept with no payload at all. The index folds the
+// absent payload as zero-valued info, so the turn is complete with a zero
+// duration. Whole-file replay skipped the fold entirely, which left the run at
+// its previous status — and because the interrupt pass still ran, an
+// unanswered call in that turn read interrupted while the index reported a
+// completed turn (#1166 review).
+func TestACompletionWithoutAPayloadClosesTheTurn(t *testing.T) {
+	path := writeFixture(t, newFormatFixture(t, "completion without a payload"))
+	indexed := turnOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_m25")
+	replayed := replayedTurnOf(t, path, "turn_m25")
+
+	if indexed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("index status = %q, want completed: the payload folds as zero-valued info", indexed.Status)
+	}
+	if indexed.DurationMS == nil || *indexed.DurationMS != 0 {
+		t.Errorf("index duration = %v, want 0: a completion without a payload states zero", indexed.DurationMS)
+	}
+	if replayed.Status != indexed.Status {
+		t.Errorf("replay status = %q, index = %q: an omitted payload is not a skipped fold",
+			replayed.Status, indexed.Status)
+	}
+	if (replayed.DurationMS == nil) != (indexed.DurationMS == nil) {
+		t.Fatalf("replay duration = %v, index = %v: the readers disagree on whether a duration exists",
+			replayed.DurationMS, indexed.DurationMS)
+	}
+	if replayed.DurationMS != nil && *replayed.DurationMS != *indexed.DurationMS {
+		t.Errorf("replay duration = %d, index = %d", *replayed.DurationMS, *indexed.DurationMS)
+	}
+}
+
 // TestAReplacedAwaitingEntryAgreesOnTheResultItem covers the seam a duplicate
 // provider call id opens between the two readers. An inherited assistant entry
 // records a command and then a communicate under ONE id. A later assistant
@@ -23,20 +54,13 @@ import (
 // Whichever answer is right, both readers must give it: "what does a duplicate
 // id mean here" cannot have one answer for the index and another for replay.
 func TestAReplacedAwaitingEntryAgreesOnTheResultItem(t *testing.T) {
-	inherited := func(turn schema.Turn) schema.Turn {
-		turn.Authorship = &schema.TranscriptAuthorship{
-			Author:    schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"},
-			Inherited: true,
-		}
-		return turn
-	}
 	fx := fixture{
 		name:   "duplicate id replaced awaiting",
 		header: transcript.Header{SessionID: "dup_replaced", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
 		lines: []fixtureLine{
 			entryLine(opens("turn_dup", schema.TurnSpanExecution, user("go"))),
 			// The announcing entry: a command, then a communicate, one id.
-			entryLine(inTurn("turn_dup", inherited(assistant(
+			entryLine(inTurn("turn_dup", inheritedAuthorship(assistant(
 				call("call_dup", "read_file", `{"path":"a"}`),
 				call("call_dup", "communicate", `{"message":"hi"}`),
 			)))),
@@ -62,6 +86,105 @@ func TestAReplacedAwaitingEntryAgreesOnTheResultItem(t *testing.T) {
 			t.Fatalf("item %d differs: index %s, replay %s", i, indexedItems[i], replayedItems[i])
 		}
 	}
+	// Agreement alone is not the assertion: the readers could agree on the
+	// wrong answer, and did. By the time the result arrives the announcing
+	// entry is no longer the turn's awaiting entry, so the result settles the
+	// deferred communicate and the earlier command stays unanswered.
+	assertSettledOutcome(t, "index", indexed)
+	assertSettledOutcome(t, "replay", replayed.Items)
+}
+
+// assertSettledOutcome states the one answer both readers must give for the
+// duplicate-id fixture: an inherited MESSAGE carries the result, and the
+// command the same id announced first is left in progress.
+func assertSettledOutcome(t *testing.T, reader string, items []appwire.ThreadItem) {
+	t.Helper()
+	message := ""
+	command := ""
+	for _, item := range items {
+		if item.CallID != "call_dup" {
+			continue
+		}
+		switch item.Type {
+		case "agentMessage":
+			if item.Text != "" {
+				message = item.Text
+			}
+			if item.Status != appwire.TurnStatusCompleted {
+				t.Errorf("%s: inherited message status = %q, want completed", reader, item.Status)
+			}
+		case "commandExecution":
+			command = item.Status
+		}
+	}
+	if message == "" {
+		t.Errorf("%s: no inherited message carries the result: %v", reader, itemShapes(items))
+	}
+	if command != appwire.TurnStatusInProgress {
+		t.Errorf("%s: the earlier command reads %q, want inProgress: a result for a reused id settles only the awaiting call",
+			reader, command)
+	}
+}
+
+// TestAnUnrelatedResultDoesNotConsumeTheDeferredDelivery covers the other side
+// of a reused provider call id: consumption. An inherited entry defers a
+// communicate under an id a command already used, and a result for that id
+// arrives naming the command. That result is not the delivery's own, so it must
+// leave the deferred state alone — consuming it there drops the message from
+// both readers, which read the pending state the same way.
+func TestAnUnrelatedResultDoesNotConsumeTheDeferredDelivery(t *testing.T) {
+	fx := fixture{
+		name:   "unrelated result keeps the delivery",
+		header: transcript.Header{SessionID: "kept_delivery", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_m26", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_m26", inheritedAuthorship(assistant(
+				call("call_shared", "read_file", `{"path":"a"}`),
+				call("call_shared", "communicate", `{"message":"kept"}`),
+			)))),
+			// The command's own result, naming itself: it is not the delivery's.
+			entryLine(inTurn("turn_m26", results(result("call_shared", "read_file", "read it")))),
+			// The delivery's own result follows it.
+			entryLine(inTurn("turn_m26", results(result("call_shared", "communicate", "ok")))),
+			entryLine(completion("turn_m26", schema.TurnCompleted, 97, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_m26")
+	replayed := replayedTurnOf(t, path, "turn_m26")
+
+	indexedItems := itemShapes(indexed)
+	replayedItems := itemShapes(replayed.Items)
+	if len(indexedItems) != len(replayedItems) {
+		t.Fatalf("item counts differ: index %v, replay %v", indexedItems, replayedItems)
+	}
+	for i := range indexedItems {
+		if indexedItems[i] != replayedItems[i] {
+			t.Fatalf("item %d differs: index %s, replay %s", i, indexedItems[i], replayedItems[i])
+		}
+	}
+	// The delivery is the point of the fixture: if either reader consumed it
+	// with the unrelated command result, neither has a message to show.
+	delivered := false
+	for _, item := range indexed {
+		if item.Type == "agentMessage" && item.CallID == "call_shared" {
+			delivered = true
+		}
+	}
+	if !delivered {
+		t.Fatalf("the delivered message is missing from %v: a command result consumed a delivery that was not its own", indexedItems)
+	}
+}
+
+// inheritedAuthorship marks turn as an inherited entry: an agent turn carried
+// into this session from the session it names, which is the shape that makes a
+// communicate call deferred rather than live.
+func inheritedAuthorship(turn schema.Turn) schema.Turn {
+	turn.Authorship = &schema.TranscriptAuthorship{
+		Author:    schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"},
+		Inherited: true,
+	}
+	return turn
 }
 
 // turnItemsOf gathers one turn's items in page order. A candidate carries the

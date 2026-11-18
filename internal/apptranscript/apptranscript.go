@@ -41,6 +41,15 @@ type ToolCallRegistry struct {
 	// later unnamed result. An earlier name kept across entries made replay
 	// settle a call the index left unanswered (#1166 review).
 	knownThisEntry map[string]struct{}
+	// awaitingNames is the reservation of the turn's CURRENT awaiting entry:
+	// the call id to name mapping of the most recent assistant entry that
+	// recorded a call, which is the entry the index makes awaiting
+	// (stampFold's AwaitingOffset). A later entry that records different calls
+	// replaces it wholesale, so an id that entry does not mention is no longer
+	// awaiting — the same rule the index applies when it resolves an unnamed
+	// result, and the reason resolveUnnamedResult consults this before the
+	// pending-communicate state.
+	awaitingNames map[string]string
 	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
 	// set LastAssistantText. The healed-communicate echo check scopes by turn
 	// to mirror the live projector's matchesLastAssistantMessage: an echo
@@ -49,6 +58,17 @@ type ToolCallRegistry struct {
 	// round-8 StartsGroup snapshot the same way.
 	LastAssistantTurnID string
 }
+
+// ForgetAwaitingBatch drops the awaiting-entry reservation. A caller that
+// replays only PART of a turn's entries cannot reconstruct that reservation:
+// stampFold advances it on every assistant entry that records a call, so a
+// partial replay installs whichever batch its fragment happened to end on.
+// The transcript index's read-back replays a communicate result's context that
+// way — the announcing entry and the last assistant text, not every entry
+// between them — so it drops the batch and names the result from the name the
+// index recorded when it built the item. A full file-order replay never calls
+// this: its batch is the real one.
+func (reg *ToolCallRegistry) ForgetAwaitingBatch() { reg.awaitingNames = nil }
 
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
@@ -375,6 +395,77 @@ func UserFacingText(msg llm.Message) string {
 		return msg.Text()
 	}
 	return b.String()
+}
+
+// announce records one tool call an assistant entry makes, under the one rule
+// both assistant paths apply.
+//
+// WITHIN an entry the first part wins: a provider that reuses one id must not
+// rename the call the entry reserved, and ReservedCalls — the reservation both
+// readers resolve a result from — keeps the first part carrying an id. ACROSS
+// entries the later entry's name wins, because the index makes the most recent
+// assistant entry that recorded a call the turn's awaiting entry
+// (transcriptindex build.go's stampFold), so a later entry's batch is the one
+// that settles a later unnamed result.
+//
+// stamped says which of the two name registries the caller keeps. A stamped
+// entry's names are scoped to itself through knownThisEntry and replayed into
+// awaiting, because a stamped entry is one the index makes the turn's awaiting
+// entry. A legacy entry records only its cumulative name table: it has no
+// identity of its own to be awaiting, and a batch snapshotted from it would
+// not see the deletes that table's later results perform, so an id a result
+// removed would still resolve.
+func (reg *ToolCallRegistry) announce(callID, name string, stamped bool, awaiting *map[string]string) {
+	if !stamped {
+		reg.Names[callID] = name
+		return
+	}
+	if _, known := reg.knownThisEntry[callID]; known {
+		return
+	}
+	if reg.knownThisEntry == nil {
+		reg.knownThisEntry = map[string]struct{}{}
+	}
+	reg.knownThisEntry[callID] = struct{}{}
+	reg.Names[callID] = name
+	*awaiting = appendAwaiting(*awaiting, callID, name)
+}
+
+// appendAwaiting adds a call to an entry's awaiting batch when that id is not
+// already there: ReservedCalls keeps the first part carrying an id, so the
+// batch keeps the first name too.
+func appendAwaiting(batch map[string]string, callID, name string) map[string]string {
+	if batch == nil {
+		batch = map[string]string{}
+	}
+	if _, seen := batch[callID]; !seen {
+		batch[callID] = name
+	}
+	return batch
+}
+
+// resolveUnnamedResult names a tool result that carries no name of its own, in
+// the order the index uses (build.go's applyResults): the turn's CURRENT
+// awaiting batch, then a pending inherited communicate, then the recorded name.
+//
+// Both findings behind this function are that ordering seen from two sides. A
+// result resolved from the wrong table renders as a command where the index
+// recorded a message; and a result whose resolved call is not the pending
+// communicate's own must not consume the delivery's state.
+//
+// "Awaiting batch" is not the whole name history: stampFold advances a turn's
+// awaiting entry on EVERY assistant entry that records a call, so a later
+// entry's silence about an id is decisive — the id is no longer awaiting, and a
+// result for it resolves through the pending communicate instead. awaitingNames
+// holds exactly the ids the latest such entry announced.
+func resolveUnnamedResult(reg *ToolCallRegistry, callID string) string {
+	if name, ok := reg.awaitingNames[callID]; ok {
+		return name
+	}
+	if _, pending := reg.CommRawArgs[callID]; pending {
+		return "communicate"
+	}
+	return reg.Names[callID]
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
@@ -726,6 +817,10 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		// last-name-wins behaviour, which older lookups depend on.
 		stamped := turn.Format == schema.TurnFormatIdentity
 		reg.knownThisEntry = nil
+		// The awaiting batch this entry announces, installed below. Both
+		// assistant paths keep it, so an unnamed result resolves the same way
+		// whichever projector a caller uses (#1166 review).
+		var awaiting map[string]string
 		for i, part := range turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentText:
@@ -770,15 +865,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				if part.ToolCall == nil {
 					continue
 				}
-				if !stamped {
-					reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-				} else if _, known := reg.knownThisEntry[part.ToolCall.ID]; !known {
-					if reg.knownThisEntry == nil {
-						reg.knownThisEntry = map[string]struct{}{}
-					}
-					reg.knownThisEntry[part.ToolCall.ID] = struct{}{}
-					reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-				}
+				reg.announce(part.ToolCall.ID, part.ToolCall.Name, stamped, &awaiting)
 				if part.ToolCall.Name == "communicate" {
 					// Defer ALL communicate messages to the paired tool result.
 					// The assistant turn alone cannot disambiguate: a valid-JSON
@@ -812,6 +899,9 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			reg.LastAssistantText = lastAssistantText
 			reg.LastAssistantTurnID = turnID
 		}
+		if len(awaiting) > 0 {
+			reg.awaitingNames = awaiting
+		}
 		return items
 	case schema.TurnTool, schema.TurnToolResults:
 		var items []appwire.ThreadItem
@@ -821,7 +911,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			}
 			name := part.ToolResult.Name
 			if name == "" {
-				name = reg.Names[part.ToolResult.ToolCallID]
+				name = resolveUnnamedResult(reg, part.ToolResult.ToolCallID)
 			}
 			if name == "communicate" {
 				first := len(items)
@@ -943,14 +1033,6 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			}
 			items = append(items, item)
 			recordPart(parts, i)
-			// A result for a call id also settles any pending communicate that
-			// entry deferred under the same id. Without this the id stays in
-			// CommRawArgs and FlushUnpairedCommunicates renders it a second
-			// time as an unpaired message, while the index — which consumes
-			// the pending state when the result arrives — shows only the
-			// settled command. One result, one item, in both readers.
-			delete(reg.CommRawArgs, part.ToolResult.ToolCallID)
-			delete(reg.CommAuthorship, part.ToolResult.ToolCallID)
 		}
 		return items
 	default:
@@ -985,6 +1067,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 	// ids this entry has already announced starts empty.
 	reg.knownThisEntry = nil
 	reasoningPart, reasoningText := identityReasoning(turn.Message.Content)
+	// This entry, if it records a call, is the turn's awaiting entry: its
+	// reserved parts replace the previous batch's wholesale.
+	var awaiting map[string]string
 	var run strings.Builder
 	runStart := -1
 	flushRun := func() {
@@ -1039,18 +1124,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			if part.ToolCall == nil {
 				continue
 			}
-			// First recorded part wins WITHIN this entry, like the reservation
-			// itself: a provider that reuses one id in a later part must not
-			// rename the call the entry RESERVED. Across entries the later
-			// entry's name wins, because that entry is the one the index makes
-			// awaiting — see knownThisEntry.
-			if _, known := reg.knownThisEntry[part.ToolCall.ID]; !known {
-				if reg.knownThisEntry == nil {
-					reg.knownThisEntry = map[string]struct{}{}
-				}
-				reg.knownThisEntry[part.ToolCall.ID] = struct{}{}
-				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
-			}
+			reg.announce(part.ToolCall.ID, part.ToolCall.Name, true, &awaiting)
 			if part.ToolCall.Name == "communicate" {
 				if turn.Authorship != nil && turn.Authorship.Inherited {
 					if reg.CommRawArgs == nil {
@@ -1069,6 +1143,9 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 		}
 	}
 	flushRun()
+	if len(awaiting) > 0 {
+		reg.awaitingNames = awaiting
+	}
 	if lastAssistantText != "" {
 		reg.LastAssistantText, reg.LastAssistantTurnID = lastAssistantText, turnID
 	}

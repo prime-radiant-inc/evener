@@ -32,7 +32,7 @@ import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { toolRendererFor } from "./toolRenderers";
 import { foldTurnEntries, type ToolRun } from "./toolRuns";
 import styles from "./turnblock.module.css";
-import { asTurnError } from "./turnFailure";
+import { asTurnError, failureOf } from "./turnFailure";
 import { itemRendererFor, threadFingerprintForItem } from "./types";
 
 export interface TurnBlockProps {
@@ -297,7 +297,7 @@ export function TurnBlock({
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
   // end-cap, corroborated by the honest status "failed" the wire stamps.
-  const failure = asTurnError(sourceTurn.error);
+  const failure = failureOf(sourceTurn);
   // Spec "Turn status": running state lives in the overlay, never the wire's
   // own status - an open turn the thread does not name as its running turn
   // displays as interrupted (a crash-left-open turn, or one whose execution

@@ -28,7 +28,7 @@ import { readingEntryPoint } from "./flow/viewAnchor";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
 import type { TranscriptReadView } from "./transcriptReadView";
-import { asTurnError } from "./turnFailure";
+import { failureOf } from "./turnFailure";
 import { useEntityView } from "./useEntityView";
 import "./messages";
 import "./tools";
@@ -168,7 +168,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
     for (let cursor = flatIndex; cursor < end; cursor += 1) {
       const candidate = flat[cursor];
       const sourceTurn = candidate === undefined ? undefined : projection.turns[candidate.turnIndex]?.source;
-      if (sourceTurn && asTurnError(sourceTurn.error)) {
+      if (sourceTurn && failureOf(sourceTurn)) {
         registerIntentRun(cleanStart, cursor);
         cleanStart = cursor + 1;
       }
