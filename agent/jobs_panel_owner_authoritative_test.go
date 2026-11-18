@@ -1791,6 +1791,64 @@ func TestLoadSessionJobOutputPageFencesTheSessionItsPathLandsIn(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobOutputPageUsesOwnerPathWhenAncestorSuppliesTheStatus: the
+// owner's journal holds a valid start with an explicit output path, then a torn
+// finish. Its running prefix cannot establish the job's state, so the ancestor's
+// forwarded terminal observation wins the STATUS — and that observation says
+// nothing about where the log was written.
+//
+// The path is therefore resolved independently of status precedence. Reading it
+// from the selected record alone falls back to the default filename, which is not
+// where the owner wrote its log, and the pane shows an unavailable error for a
+// log that is right there.
+func TestLoadSessionJobOutputPageUsesOwnerPathWhenAncestorSuppliesTheStatus(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// The owner wrote its log somewhere the launcher chose, not under the
+	// default name this read would otherwise reconstruct.
+	ownerLogPath := filepath.Join(t.TempDir(), "owner-chosen.log")
+	if err := os.WriteFile(ownerLogPath, []byte("owner bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+ownerSession+
+			`","visible_to_session_id":"`+rootSession+`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+ownerLogPath+`"}`+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
+	)
+	// The ancestor observed the finish — forwarded from the owner, so it carries
+	// the owner's byte count — but it has no start, so it states no path.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_finished","seq":1,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"completed","output_bytes":`+strconv.Itoa(len("owner bytes"))+
+			`,"terminal_generation":"gen_forwarded"}`+"\n",
+	)
+	// The default log does not exist: only the owner's chosen path carries bytes.
+	if err := os.MkdirAll(jobsDir(stateDir, ownerSession), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v: the owner's start names the file these bytes are in, "+
+			"and that record losing on status does not make it lose on location", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's log at the path its own start recorded")
+	}
+	if page.Data != "owner bytes" {
+		t.Fatalf("data = %q, want %q read from the owner's recorded path", page.Data, "owner bytes")
+	}
+}
+
 // TestLoadSessionJobOutputPageReadsOwnerLogWithoutContradictoryCounts pins the
 // validation INPUT, not its strictness. The selected record's path was discarded
 // because its owner claim contradicts the job ID, so the bytes come from the
@@ -1841,6 +1899,21 @@ func TestLoadSessionJobOutputPageReadsOwnerLogWithoutContradictoryCounts(t *test
 	if !found || page.Data != "owner log" {
 		t.Fatalf("found = %v, data = %q: the owner's default log is readable on its own checks",
 			found, page.Data)
+	}
+	// The same rule on the METADATA read: 999 is a count of the file the page
+	// reader discards, so the row must not vouch for it. A client comparing the
+	// count against the page it receives otherwise sees two different artifacts
+	// and refuses bytes that are exactly right.
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the flagged fallback row")
+	}
+	if job.OutputBytes != 0 {
+		t.Fatalf("outputBytes = %d, want no count: %d describes the discarded path's file, and this read "+
+			"serves the owner's default log", job.OutputBytes, job.OutputBytes)
 	}
 }
 
@@ -2922,6 +2995,53 @@ func TestLoadSessionJobGetStopsRechecksWhenBothJournalsArePermanentlyDamaged(t *
 	if job.StatusRecheckable {
 		t.Fatalf("StatusRecheckable = true (diagnostics %v): every consulted journal stopped at durable "+
 			"corruption, so no later read gets behind either bad line", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetStopsRechecksWhenTheOnlyOtherSourceIsDamaged: the
+// requested session holds a forwarded start and then durable corruption, and the
+// owner's journal holds durable corruption BEFORE it ever names this job. Both
+// sources were consulted and neither can grow, so a slow recheck would re-scan
+// the same two damaged files at fifteen-second intervals forever and reach the
+// same answer every time.
+//
+// The distinction this pins is the one the wire cannot show: an owner that was
+// READ and stopped at classified damage is exhausted, while an owner that could
+// not be OPENED is merely unreachable this time. Both arrive as
+// forwarded_fallback plus owner_unavailable.
+func TestLoadSessionJobGetStopsRechecksWhenTheOnlyOtherSourceIsDamaged(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 16, 0, 0, 0, time.UTC)
+
+	// The requested ancestor: a forwarded start, then damage its scan cannot pass.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+	// The owner's journal: damaged before the job is named at all, so the read
+	// never gets a record of its own from that journal.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		"{not a job event}\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's forwarded start")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): the forwarded copy stands in for a damaged owner",
+			job.Diagnostics)
+	}
+	if job.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = true (diagnostics %v): the owner was READ and stopped at durable "+
+			"damage, so neither journal can produce a state no later read would change", job.Diagnostics)
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -240,6 +241,29 @@ type sessionJobRecordRead struct {
 	// owner's directory even when that owner's journal is absent, so the fence
 	// has to cover the hinted session even though routing never names it.
 	hintedSessionID string
+	// artifactOutputPath is the explicit output path a CORROBORATED owner's own
+	// record carries, kept separately from the selected record's OutputPath
+	// because the two can come from different journals. The record that says what
+	// happened and the record that says where the bytes are are different
+	// questions, and neither outranks the other: an owner start followed by a
+	// torn finish cannot establish the job's state, so a forwarded terminal
+	// observation wins the STATUS — while that start is still the only record
+	// that says where the log was written.
+	//
+	// Only a corroborated owner is ever named here, for the same reason
+	// artifactSessionID is: a claim nothing corroborated states where some other
+	// job's bytes are.
+	artifactOutputPath string
+	// noGrowableOwner is set when EVERY source that could still answer has been
+	// consulted and none of them can grow: the owner branch stopped at classified
+	// damage, or there is no owner to consult at all and the selected journal
+	// stopped there. It is not set when an owner merely could not be opened — that
+	// is a state of this read, and the next lookup may answer.
+	//
+	// It exists so statusRecheckableOnWire can tell "no owner could be consulted
+	// yet" from "the owner has been consulted and has nothing further to say".
+	// Both arrive on the wire as the same ForwardedFallback/OwnerUnavailable pair.
+	noGrowableOwner bool
 	found           bool
 	diagnostics     sessionJobRecordDiagnostics
 	// scanErr is the durable-corruption error THIS branch's own scan produced,
@@ -445,6 +469,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 			local.diagnostics.mergeIntegrity(corroborated.diagnostics)
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
+			// Same distinction the encoded branch draws: a hint journal that was
+			// READ and stopped at classified damage has nothing further to say,
+			// while a hint that could not be opened may answer on the next read.
+			local.noGrowableOwner = corroborated.diagnostics.ScanIncomplete
 			// A hint that cannot be read is a fact about the HINT, not a failure
 			// of this read: the caller asked about the scoped session, whose
 			// record is intact and is what this returns.
@@ -472,6 +500,8 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		// failed claim. The owner still owns the directory its log was written to,
 		// so carry that separately from the journal that supplied the status.
 		local.artifactSessionID = hint
+		local.artifactOutputPath = corroboratedOwnerOutputPath(corroborated.record)
+		local.noGrowableOwner = corroborated.diagnostics.ScanIncomplete
 		return local, nil
 	}
 	if owner == sessionID {
@@ -506,6 +536,11 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		if !existingIsOwner {
 			local.diagnostics.ForwardedFallback = true
 		}
+		// The scoped copy won on evidence, not on ownership: the owner's journal
+		// is the one that ran the job, so its own record may still say where the
+		// log was written even though it could not say how the job ended.
+		local.artifactOutputPath = corroboratedOwnerOutputPath(owned.record)
+		local.noGrowableOwner = owned.diagnostics.ScanIncomplete
 		return local, nil
 	}
 	// The owner branch is unreadable or holds nothing. Its absence must not erase
@@ -519,6 +554,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 	if !retainedJobAuthority(jobID, local.sourceSessionID, local.record) {
 		local.diagnostics.ForwardedFallback = true
 	}
+	// ScanIncomplete is set only where the scan CLASSIFIED damage, so an owner
+	// journal that could not even be opened does not set this: that is a state
+	// of this read, and the next lookup may answer.
+	local.noGrowableOwner = owned.diagnostics.ScanIncomplete
 	return local, nil
 }
 
@@ -747,29 +786,8 @@ func statusRecheckableOnWire(read sessionJobRecordRead) bool {
 	if read.record == nil {
 		return false
 	}
-	// A forwarded copy stands in for an owner that could not be consulted, and an
-	// unreadable owner is a state of THIS READ, not of the owner's journal: the
-	// session may be mid-write, the store may be briefly locked, the directory may
-	// appear on the next lookup. The owner's own finish is the authoritative
-	// answer, so the row stays provisional while that source is merely unreachable
-	// now.
-	if read.diagnostics.ForwardedFallback || read.diagnostics.OwnerUnavailable {
-		return true
-	}
-	// A clean scan means the journal that supplied this row was readable to its
-	// end, so a later read can still extend it.
-	if read.scanErr == nil {
-		return true
-	}
-	// This record's own scan stopped at durable corruption. That is a permanent
-	// answer only when this record is the ONLY source the read consulted: with no
-	// owner to consult and nothing else readable, no later read gets behind the
-	// bad line. It is not permanent when another consulted journal is still
-	// holding an append in flight, because completing that append can produce a
-	// terminal observation that OUTRANKS this unconfirmed row on the next read.
-	//
-	// There are TWO ways another journal can still answer, and both are carried on
-	// the merged diagnostics:
+	// There are TWO ways a consulted source can still answer, and both are facts
+	// about a JOURNAL rather than about the record this read selected:
 	//
 	//   - TornTail: an append landed without its newline and can complete.
 	//   - CleanBoundary: the scan reached the end of that journal at a record
@@ -778,21 +796,38 @@ func statusRecheckableOnWire(read sessionJobRecordRead) bool {
 	//     without stating its status, and a finish appended behind it outranks
 	//     this row.
 	//
-	// The load-bearing fact is that both flags are mutually exclusive with a scan
-	// ERROR for one journal: ScanEventsWithDiagnostics sets TornTail only on the
-	// unterminated-final-line break, which returns a nil error, and returns an
-	// error only from the durable-corruption path, which stops before any
-	// boundary. So while THIS branch's scan error is non-nil, this branch's own
-	// TornTail and CleanBoundary are both false, and either flag in the merged
-	// aggregate can only have come from the other journal the read consulted.
-	// Reading the aggregate here is therefore reading a fact about the OTHER
-	// source — the opposite of the mistake this predicate was fixed for, where an
+	// Both flags are merged across every consulted journal, and neither can have
+	// come from a scan that stopped at durable corruption: ScanEventsWithDiagnostics
+	// sets TornTail only on the unterminated-final-line break, which returns a nil
+	// error, and CleanBoundary is "that scan had no error at all". Reading the
+	// aggregate here therefore reads a fact about SOME source the read consulted,
+	// which is the opposite of the mistake this predicate was fixed for, where an
 	// ancestor's damage was taken as evidence against an intact owner record.
+	if read.diagnostics.TornTail || read.diagnostics.CleanBoundary {
+		return true
+	}
+	// No journal reached a growable boundary. Whether that is permanent turns on
+	// the OWNER, because the owner is the source whose later write outranks this
+	// row.
+	if !read.diagnostics.ForwardedFallback && !read.diagnostics.OwnerUnavailable {
+		// No owner stands behind this record: it is the owner's own row, or a
+		// legacy copy whose row names nobody else. Its own scan is the only source
+		// there is, and that scan stopped at damage, so no later read gets further.
+		return false
+	}
+	// An owner stands behind this row and could not supply it. An owner that could
+	// not be OPENED is a state of THIS READ, not of its journal: the session may be
+	// mid-write, the store may be briefly locked, the directory may appear on the
+	// next lookup. Its finish is the authoritative answer, so the row stays
+	// provisional while that source is merely unreachable.
 	//
-	// ScanIncomplete is deliberately NOT consulted: it says some journal had
-	// durable corruption, but not which one, so it can neither confirm nor deny
-	// that another source is still growable.
-	return read.diagnostics.TornTail || read.diagnostics.CleanBoundary
+	// An owner that WAS consulted and whose scan stopped at classified damage has
+	// nothing further to say: no append behind that damage is reachable on a later
+	// read. That is the difference noGrowableOwner carries, and it is why this
+	// predicate cannot ask merely whether the row is a forwarded fallback. Both
+	// states arrive on the wire as the same ForwardedFallback/OwnerUnavailable
+	// pair, and only the read knows which one happened.
+	return !read.noGrowableOwner
 }
 
 // mergeIntegrity folds another read's damage report into d. Diagnostics are not
@@ -950,11 +985,19 @@ func ownerClaimContradicts(rec *jobstore.JobRecord) bool {
 // that guard keeps it out of another record, this keeps it off the wire. Both
 // consult ownerClaimContradicts rather than a second predicate.
 //
-// StartedAt, OutputPath and the byte counts are deliberately KEPT. They are
-// facts about this job's run and its bytes, not about which command produced
-// them: the output reader ignores a contradictory path anyway, HasOutput is
-// true either way, and blanking StartedAt would tell the pane the job has no
-// start time when its own event carries one.
+// StartedAt and OutputPath are deliberately KEPT. They are facts about this
+// job's run and its bytes, not about which command produced them: the output
+// reader ignores a contradictory path anyway, and blanking StartedAt would tell
+// the pane the job has no start time when its own event carries one.
+//
+// OutputBytes is NOT kept. A terminal count is a statement about one specific
+// log, and this record's log is the one the page reader discards as
+// contradictory: its path reaches another job's bytes, and the read serves the
+// default log under the validated owner instead. Projecting the discarded
+// count would describe a file this read never opens, and a client comparing it
+// against the page it receives sees two different artifacts. Zero is the wire's
+// "no count is vouched for"; HasOutput stays true, because a log may well exist
+// at the path the reader resolves, and the page read is the authority on that.
 func jobRecordForProjection(rec *jobstore.JobRecord) *jobstore.JobRecord {
 	if rec == nil || !ownerClaimContradicts(rec) {
 		return rec
@@ -964,6 +1007,7 @@ func jobRecordForProjection(rec *jobstore.JobRecord) *jobstore.JobRecord {
 	withheld.Command = ""
 	withheld.Task = ""
 	withheld.Description = ""
+	withheld.OutputBytes = 0
 	return withheld
 }
 
@@ -993,6 +1037,28 @@ func routingJobSession(jobID string, read sessionJobRecordRead) string {
 		return read.artifactSessionID
 	}
 	return read.sourceSessionID
+}
+
+// corroboratedOwnerOutputPath returns the explicit output path an owner's own
+// record carries, or "" when that record states none this read may honor.
+//
+// It is the path half of the ownership question, asked separately from the
+// status half on purpose. The owner's record is the one that ran the job, so it
+// is where the explicit path lives even when that record lost on EVIDENCE: a
+// start followed by a torn finish cannot say how the job ended, and a forwarded
+// terminal observation answers that instead — but the terminal observation never
+// names a file. Resolving the path from the status winner alone is how the
+// pane's reader falls back to the default name and misses a readable log.
+//
+// The owner claim guard applies here exactly as it does at the selection site:
+// an owner record that names some other session described that session's
+// launch, so its path is not this job's, and the default under the validated
+// owner answers instead.
+func corroboratedOwnerOutputPath(rec *jobstore.JobRecord) string {
+	if rec == nil || ownerClaimContradicts(rec) {
+		return ""
+	}
+	return rec.OutputPath
 }
 
 // hintIsSessionID reports whether a stored owner hint is a session id. It is a
@@ -1151,6 +1217,18 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	contradicts := ownerClaimContradicts(rec)
 	outPath := rec.OutputPath
 	if outPath == "" || contradicts {
+		// The record that says what HAPPENED and the record that says where the
+		// BYTES are can come from different journals, and neither outranks the
+		// other. A finish-only journal states no path at all — an end says nothing
+		// about where the log was written — and a contradictory start's path is
+		// another job's. The corroborated owner's own record is the remaining
+		// source: it is where the bytes its session ran were written, even when
+		// that record LOST on status, because an owner start followed by a torn
+		// finish cannot establish the job's state while it is still the only
+		// record that ever named the file.
+		outPath = read.artifactOutputPath
+	}
+	if outPath == "" {
 		outPath = defaultOutPath
 	}
 	// The path is resolved BEFORE the fence is consulted, because the fence has
@@ -1200,7 +1278,32 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	} else if fenced {
 		return JobOutputPage{}, false, nil
 	}
-	return jobOutputPageResult(page, true, err)
+	result, found, resultErr := jobOutputPageResult(page, true, err)
+	// The identity travels only with bytes, and only for the file this read
+	// actually selected: a client that keeps byte windows across a switch from the
+	// scoped session's log to the owner's would compare two different files at
+	// overlapping offsets and reject the authoritative one.
+	if found && resultErr == nil {
+		result.LogId = jobOutputLogID(outPath)
+	}
+	return result, found, resultErr
+}
+
+// jobOutputLogID names one log file stably, for clients that must tell "the same
+// artifact, one byte range later" from "a different file at the same offsets".
+//
+// The resolved path IS the identity here: a saved job's log can move between the
+// scoped session's directory and the owner's, and those are different files that
+// happen to answer the same ref and job ID. Hashing keeps the wire free of
+// machine-specific absolute paths while staying stable across reads, and it needs
+// no filesystem access — the file may not exist yet, and an identity that
+// depended on stat would appear and vanish with it.
+func jobOutputLogID(outPath string) string {
+	if outPath == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(outPath)))
+	return fmt.Sprintf("%x", sum[:8])
 }
 
 // JobGet resolves one job's record — the running record when the job is live,

@@ -740,6 +740,15 @@ valid UTF-8 pages use `utf8`. The shared `parseJobOutputPage` validates bounds
 and counts and supplies raw bytes; `decodeJobOutputText` handles display.
 Contiguous pages must be joined as bytes before decoding their shared boundary.
 
+A saved job's bytes can move between logs: while the owner's journal is
+unconsultable the read serves the scoped session's copy, and once that journal
+answers it serves the owner's. `logId`, when present, names the file the bytes
+came from, so a client can tell "one more range of the same artifact" from "a
+different file at the same offsets". A response naming a different log replaces
+the cached window rather than failing the overlap check against bytes from the
+file it superseded; an omitted `logId` claims nothing and must not be read as a
+switch.
+
 A selector below the current storage floor returns structured
 `jobOutputPruned` with `retainedStartBytes` and `totalBytes`. A missing file or
 changed output generation remains an ordinary read failure. The owning live or

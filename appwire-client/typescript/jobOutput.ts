@@ -72,9 +72,23 @@ export function parseJobOutputPage(data: unknown): DecodedJobOutputPage | null {
     return null;
   if (typeof raw.data !== "string") return null;
   if (encoding !== "utf8" && encoding !== "base64") return null;
+  // An omitted identity makes no claim about which file these bytes belong to,
+  // and a client must not read a change in it as a switch. A present one must be
+  // a string, so a malformed value cannot silently disable the comparison.
+  const logId = raw.logId;
+  if (logId !== undefined && logId !== null && typeof logId !== "string") return null;
   const bytes = encoding === "utf8" ? encodeUTF8(raw.data, bytesReturned) : decodeBase64(raw.data, bytesReturned);
   if (!bytes) return null;
-  return { offsetBytes, bytesReturned, totalBytes, retainedStartBytes, encoding, data: raw.data, bytes };
+  return {
+    offsetBytes,
+    bytesReturned,
+    totalBytes,
+    retainedStartBytes,
+    encoding,
+    data: raw.data,
+    bytes,
+    ...(typeof logId === "string" && logId !== "" ? { logId } : {}),
+  };
 }
 
 // Replacement characters retain the source spans they consumed. A later

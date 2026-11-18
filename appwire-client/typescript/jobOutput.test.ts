@@ -12,6 +12,15 @@ const page = {
 };
 
 describe("job output raw pages", () => {
+  it("carries a named log identity and refuses a malformed one", () => {
+    expect(parseJobOutputPage({ ...page, logId: "a1b2c3d4" })).toMatchObject({ logId: "a1b2c3d4" });
+    // An omitted or empty identity makes no claim, so a client must not read it
+    // as naming some other log.
+    expect(parseJobOutputPage(page)).not.toHaveProperty("logId");
+    expect(parseJobOutputPage({ ...page, logId: "" })).not.toHaveProperty("logId");
+    expect(parseJobOutputPage({ ...page, logId: 7 })).toBeNull();
+  });
+
   it("preserves source offsets and explicit zero bounds", () => {
     expect(parseJobOutputPage(page)).toEqual({
       ...page,

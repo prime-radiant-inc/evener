@@ -2389,6 +2389,17 @@ export interface JobOutputPage {
   retainedStartBytes: number;
   encoding: string;
   data: string;
+  /**
+   * LogId names the specific log these bytes came from, when the server can
+   * say. A saved job's log can move between the scoped session's directory and
+   * the owner's when the owner's journal becomes consultable, and two responses
+   * under the same ref and job ID then describe DIFFERENT files at overlapping
+   * offsets. A client that keeps byte windows across that switch compares the
+   * authoritative page against bytes from the log it replaced and rejects it.
+   * Omitted means the server makes no claim about which file these bytes
+   * belong to, and a client must not treat a change in it as a switch.
+   */
+  logId?: string;
 }
 
 export interface JobsGetParams {

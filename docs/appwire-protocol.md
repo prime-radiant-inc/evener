@@ -2497,6 +2497,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `retainedStartBytes` | int64 |  |  |
 | `encoding` | string |  |  |
 | `data` | string |  |  |
+| `logId` | string | yes |  |
 
 
 ### `JobOutputPrunedErrorData`

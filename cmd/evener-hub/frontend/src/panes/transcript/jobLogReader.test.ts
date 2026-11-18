@@ -27,6 +27,16 @@ function page(offsetBytes = 100, data = "TAIL\n", totalBytes = 105, retainedStar
   return { offsetBytes, bytesReturned: data.length, totalBytes, retainedStartBytes, encoding: "utf8", data };
 }
 
+function identifiedPage(
+  logId: string,
+  offsetBytes = 100,
+  data = "TAIL\n",
+  totalBytes = 105,
+  retainedStartBytes = 0,
+): JobOutputPage {
+  return { ...page(offsetBytes, data, totalBytes, retainedStartBytes), logId };
+}
+
 function metadata(terminal = false) {
   return jobOutputMetadata({
     jobId: JOB,
@@ -174,6 +184,31 @@ test("a failing tail does not starve the history page queued behind it", async (
   peer.reply(retriedHistory, page(90, "OLDER_ROW\n"));
   const recovered = await observed((snapshot) => snapshot.windows.older !== null);
   expect(recovered.windows.older?.rows[0]?.line[0]?.text).toBe("OLDER_ROW");
+});
+
+test("a response naming a different log replaces the cached bytes instead of failing the overlap check", async () => {
+  await initial(identifiedPage("scoped"));
+  // A refresh re-reads the job after the owner's journal became consultable, so
+  // the server now answers with the OWNER's log. It overlaps the cached range and
+  // holds different bytes there, which is exactly what the overlap check rejects.
+  reader.refresh();
+  await vi.advanceTimersByTimeAsync(1000);
+  const authoritative = await peer.request(OUTPUT, 1);
+  // Same lifetime total, overlapping range, different bytes: the only thing that
+  // distinguishes this file from the cached one is the identity it carries.
+  peer.reply(authoritative, identifiedPage("owner", 90, "AUTHORITATIVE\n", 105));
+  const settled = await observed(
+    (snapshot) => snapshot.outputError !== null || snapshot.windows.live?.bytes.length === "AUTHORITATIVE\n".length,
+  );
+  // A rejection here is the defect: the page is the authoritative log, and the
+  // only reason it can be refused is that it was compared against bytes from the
+  // file it replaced.
+  expect(settled.outputError).toBeNull();
+  const switched = settled;
+  // The pane shows the authoritative log's bytes, not the fallback's, and it is
+  // not stuck reporting a mismatch with a log that is no longer being read.
+  expect(switched.windows.live?.rows.map((row) => row.line[0]?.text)).toContain("AUTHORITATIVE");
+  expect(switched.windows.live?.bytes.length).toBe(14);
 });
 
 test("a failing history page does not starve the tail a refresh asked for", async () => {

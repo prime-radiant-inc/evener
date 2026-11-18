@@ -106,6 +106,15 @@ export class JobLogReader {
   private outputInFlightKind: "live" | "older" | null = null;
   private metadataInFlight = false;
   private historyServedSinceLive = false;
+  /** The log the cached windows belong to, from the last page that named one.
+   * A saved job's bytes can move from the scoped session's directory to the
+   * owner's once the owner's journal becomes consultable, and the new page then
+   * overlaps cached bytes from a DIFFERENT file — the overlap check rejects it
+   * and every retry keeps comparing against the stale window, so the pane is
+   * stuck on the fallback output. A page that names a different log starts a new
+   * artifact: the windows and any paging demand measured against the old one are
+   * discarded. An unnamed log makes no claim, and nothing is reset for it. */
+  private logId: string | null = null;
   private nextReadAt = 0;
   private liveDueAt = 0;
   private metadataDueAt = 0;
@@ -504,8 +513,19 @@ export class JobLogReader {
             (page.bytesReturned === 0 && selection.beforeBytes > page.retainedStartBytes))
         )
           throw new Error("output page does not match the requested boundary");
-        const windows = applyJobLogPage(this.snapshot.windows, page, kind, keep);
-        let pendingDemand = this.snapshot.pendingDemand;
+        // A page that names a DIFFERENT log than the cached bytes came from is a
+        // statement about a different file: the saved job's log can move from the
+        // scoped session's directory to the owner's once that owner becomes
+        // consultable. Merging it into the old window would compare two artifacts
+        // at overlapping offsets and reject the authoritative page, and every
+        // retry would reject it the same way. Start a new artifact instead — the
+        // cached bytes, the scroll capture and any paging demand measured against
+        // the old file are all stale, and the total/retained bounds come from the
+        // page itself.
+        const switched = page.logId !== undefined && this.logId !== null && page.logId !== this.logId;
+        if (page.logId !== undefined) this.logId = page.logId;
+        const windows = applyJobLogPage(switched ? emptyJobLogWindows() : this.snapshot.windows, page, kind, keep);
+        let pendingDemand = switched ? null : this.snapshot.pendingDemand;
         let drainPending = this.snapshot.drainPending;
         if (kind === "live") {
           // The bytes arrived: the range a previous attempt failed to deliver has
@@ -541,7 +561,13 @@ export class JobLogReader {
                   };
           }
         }
-        this.publish({ windows, pendingDemand, drainPending, outputError: null });
+        this.publish({
+          windows,
+          pendingDemand,
+          drainPending,
+          outputError: null,
+          ...(switched ? { scrollCapture: null } : {}),
+        });
       })
       .catch((error: unknown) => {
         if (!current()) return;

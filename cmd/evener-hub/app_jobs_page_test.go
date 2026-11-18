@@ -73,12 +73,21 @@ func TestJobsOutputPageLocalAndRemoteWire(t *testing.T) {
 			floor = 2
 		}
 		want := appwire.JobOutputPage{OffsetBytes: 3, BytesReturned: 3, TotalBytes: 6, RetainedStartBytes: floor, Encoding: "base64", Data: "qWNk"}
-		if err != nil || page.Data != want {
+		if err != nil || !sameJobOutputPageExceptLogID(page.Data, want) {
 			t.Fatalf("%s latest = %+v, %v, want %+v", owner, page, err, want)
+		}
+		// The log's identity is a fact each source states for itself: the local
+		// daemon read names the file it opened, and the scripted remote hub makes no
+		// claim at all. A pass-through must not invent one for either.
+		if owner == "local" && page.Data.LogId == "" {
+			t.Fatalf("local latest = %+v, want a log identity: this hub served the bytes from a real daemon read", page)
+		}
+		if owner == "remote" && page.Data.LogId != "" {
+			t.Fatalf("remote latest = %+v, want no log identity: the remote answer claimed none", page)
 		}
 		zero := int64(0)
 		page, err = client.JobOutput(ctx, appwire.JobsOutputParams{Ref: ref, JobID: "job_page", BeforeBytes: &zero, MaxBytes: 3})
-		if err != nil || page.Data != (appwire.JobOutputPage{TotalBytes: 6, Encoding: "utf8"}) {
+		if err != nil || !sameJobOutputPageExceptLogID(page.Data, appwire.JobOutputPage{TotalBytes: 6, Encoding: "utf8"}) {
 			t.Fatalf("%s explicit zero = %+v, %v", owner, page, err)
 		}
 	}
@@ -162,10 +171,21 @@ func TestJobsOutputPageProtocolV6OwnerPreserved(t *testing.T) {
 		t.Fatalf("old owner is no longer running: %v", err)
 	}
 	page, err := client.JobOutput(t.Context(), appwire.JobsOutputParams{Ref: "local:" + healthyID, JobID: "job_page"})
-	if err != nil || page.Data != (appwire.JobOutputPage{BytesReturned: 7, TotalBytes: 7, Encoding: "utf8", Data: "healthy"}) {
+	if err != nil || !sameJobOutputPageExceptLogID(page.Data, appwire.JobOutputPage{BytesReturned: 7, TotalBytes: 7, Encoding: "utf8", Data: "healthy"}) {
 		t.Fatalf("independent live v7 owner = %+v, %v", page, err)
 	}
 	if healthyReads.Load() != 1 {
 		t.Fatalf("compatible owner received %d output reads, want one live dispatch", healthyReads.Load())
 	}
+}
+
+// sameJobOutputPageExceptLogID compares the page fields a pass-through must not
+// change: the bounds, the encoding and the bytes. The log identity is excluded
+// because it describes WHICH FILE was read, which each source states for itself —
+// a scripted remote peer that makes no claim must not be given one by the hub,
+// and a real daemon read must keep the one it made. Both halves are asserted at
+// the call sites.
+func sameJobOutputPageExceptLogID(got, want appwire.JobOutputPage) bool {
+	got.LogId = ""
+	return got == want
 }
