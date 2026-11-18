@@ -216,6 +216,13 @@ func TestDroppedBranchesNameThisPRsMergeGroupRun(t *testing.T) {
 			if out.Run.Group.DatabaseID != 123456789 || out.Run.Group.URL != runURL {
 				t.Fatalf("drop named run %d (%s), want %d (%s)", out.Run.Group.DatabaseID, out.Run.Group.URL, 123456789, runURL)
 			}
+			// The operator reads Reason, not Run: a drop line without the run in
+			// it sends them hunting through the Actions API, and asserting only
+			// the structured field would pass while the printed line lost it
+			// (the deleted shell suite checked those lines carried the URL).
+			if !strings.Contains(out.Reason, runURL) {
+				t.Fatalf("drop reason = %q, want it to name the run at %s", out.Reason, runURL)
+			}
 		})
 	}
 }

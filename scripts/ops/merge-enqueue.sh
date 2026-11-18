@@ -83,7 +83,24 @@ case "$repo" in
   *) echo "--repo takes OWNER/NAME, got: $repo" >&2; usage ;;
 esac
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The checkout root. CDPATH is cleared for the same reason build-runtime-pair.sh
+# clears it: a CDPATH entry that matches makes cd print the directory it moved
+# to, and this substitution would capture that line as part of the root. A root
+# with a newline in it is not a path, and the failure it used to cause -- the
+# scratch library not loading before the exit trap exists -- reported exit 1,
+# which means the queue ended the attempt. It is a launcher failure instead.
+root="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || root=""
+case "$root" in
+  /*) ;;
+  *) root="" ;;
+esac
+case "$root" in
+  *$'\n'*) root="" ;;
+esac
+if [ -z "$root" ] || [ ! -d "$root/scripts/lib" ]; then
+  echo "merge-enqueue: cannot resolve the checkout root from ${BASH_SOURCE[0]}" >&2
+  exit 2
+fi
 # The caller's directory, resolved before anything changes it: an
 # EVENER_DEV_BIN relative to the caller must mean the file the caller named,
 # not something under the checkout root.
@@ -118,16 +135,57 @@ export TMPDIR
 # reports 130: the helper's own interrupt exit. Reaping here rather than leaving
 # it to the EXIT trap is what guarantees the child is gone before scratch is
 # reclaimed.
+#
+# The helper is signalled on its own PID first, and only its own: it handles
+# TERM by cancelling the context it started `gh` under, so the cancelled context
+# is what stops the GitHub call. `stop_command` on a helper that shares this
+# script's process group walks the tree and signals the descendants first, which
+# TERMs `gh` behind the helper's back: the helper then sees a failed removal-event
+# read with a still-live context and reports a drop verdict and re-enqueue advice
+# for a wait the operator cancelled. The build is the opposite case -- it is a
+# process tree with no graceful stop of its own -- so it keeps `stop_command`.
+#
+# A helper that ignores TERM would otherwise hold the caller's pipes open, so it
+# gets a short grace and then the tree stopper. Two seconds is longer than the
+# helper needs to cancel a `gh` call and return 130 (measured under 0.7s) and
+# short enough that an operator does not notice it.
 child=""
+child_is_helper=false
 helper_started=false
+helper_term_grace_seconds=2
+# child_running reports whether pid is still running. A child this script has
+# not reaped yet is a zombie, and kill -0 still succeeds for one: counting that
+# as running would spend the whole grace on every interrupt and then hand a
+# corpse to the tree stopper. poll_gone in gatebounded_test.go uses the same
+# zombie-aware form for the same reason.
+child_running() {
+  local state
+  state=$(ps -o stat= -p "$1" 2>/dev/null) || return 1
+  case "$state" in
+    '' | Z*) return 1 ;;
+  esac
+  return 0
+}
 reap_child() {
   [ -n "$child" ] || return 0
-  # The whole tree, not the PID: `go build` forks a compiler and a linker, and
-  # signalling only the shell that started it leaves those children holding the
-  # caller's output pipes after this script has exited. stop_command sends one
-  # TERM then one KILL to the group when the child leads its own, and walks the
-  # tree when it does not; it never waits past its grace.
-  stop_command "$child"
+  if [ "$child_is_helper" = true ] && kill -TERM "$child" 2>/dev/null; then
+    local deadline=$((SECONDS + helper_term_grace_seconds))
+    while [ "$SECONDS" -lt "$deadline" ] && child_running "$child"; do
+      sleep 0.1
+    done
+    # Still there after the grace: it did not act on TERM, so stop its whole
+    # tree and never wait past that stopper's own grace.
+    if child_running "$child"; then
+      stop_command "$child"
+    fi
+  else
+    # The whole tree, not the PID: `go build` forks a compiler and a linker, and
+    # signalling only the shell that started it leaves those children holding the
+    # caller's output pipes after this script has exited. stop_command sends one
+    # TERM then one KILL to the group when the child leads its own, and walks the
+    # tree when it does not; it never waits past its grace.
+    stop_command "$child"
+  fi
   wait "$child" 2>/dev/null || true
 }
 interrupted() {
@@ -165,10 +223,12 @@ start_helper() {
   env GOFLAGS= "$1" dev merge-enqueue \
     --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} &
   child=$!
+  child_is_helper=true
   helper_started=true
   local status=0
   wait "$child" || status=$?
   child=""
+  child_is_helper=false
   # 126 and 127 are the shell's "found but could not execute" and "not found".
   # A noexec mount produces the first after a successful build, and neither is
   # a decision the helper made: the helper's own codes are 0, 1, 2 and 130.
@@ -199,6 +259,7 @@ build_helper() {
     "${runner[@]+"${runner[@]}"}" env GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
   ) &
   child=$!
+  child_is_helper=false
   local status=0
   wait "$child" || status=$?
   child=""
@@ -213,6 +274,24 @@ launcher_failed() {
   echo "merge-enqueue: $1" >&2
   exit 2
 }
+
+# The libraries are loaded and the handlers installed before either launch
+# path: the prebuilt path starts the helper too, and a handler installed after
+# that start leaves a SIGTERM at this script's PID on its default action, which
+# kills the launcher with 143 while the helper keeps polling and holding the
+# caller's pipes. Installing a trap replaces the default action, so a handler
+# that could not run would turn a TERM into a silent hang; every function it
+# can call is therefore defined above this point, and the libraries are sourced
+# before the traps so nothing in the handler is undefined. Sourcing has no side
+# effects (scratch-lib.sh's own comment pins that), so the prebuilt path does no
+# scratch setup and reclaims nothing.
+. "$root/scripts/lib/scratch-lib.sh"
+. "$root/scripts/lib/gate-scratch-root.sh"
+. "$root/scripts/lib/gate-bounded.sh"
+trap 'interrupted TERM' TERM
+trap 'interrupted INT' INT
+trap 'interrupted HUP' HUP
+trap 'finish' EXIT
 
 if [ -n "${EVENER_DEV_BIN:-}" ]; then
   # A relative override belongs to the caller's directory. Absolute paths are
@@ -242,17 +321,6 @@ fi
 # reports every child status as 1, which would erase both the drop/timeout 1
 # and the refusal 2. GOFLAGS= keeps an inherited GOFLAGS from changing how it
 # builds, the same reason timing-tsv-lib.sh pins it.
-. "$root/scripts/lib/scratch-lib.sh"
-. "$root/scripts/lib/gate-scratch-root.sh"
-. "$root/scripts/lib/gate-bounded.sh"
-# The handlers are installed here, after the libraries they call are loaded: a
-# signal during argument parsing or sourcing must not reach an undefined
-# function, and installing a trap replaces the default action, so a handler
-# that cannot run would turn a TERM into a silent hang.
-trap 'interrupted TERM' TERM
-trap 'interrupted INT' INT
-trap 'interrupted HUP' HUP
-trap 'finish' EXIT
 scratch_dir work merge-enqueue
 gate_scratch_root_executes "$work" ||
   launcher_failed "scratch $work cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory"
