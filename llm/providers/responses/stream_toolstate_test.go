@@ -98,7 +98,9 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 			{"type":"function_call","id":"fc_first","name":"omitted","arguments":"{ \"n\": 1 }"},
 			{"type":"function_call","id":"fc_first","call_id":"call_b","name":"other","arguments":"{}"},
 			{"type":"function_call","id":"fc_first","call_id":"","name":"empty","arguments":"{ \"n\": 2 }"},
+			{"type":"function_call","call_id":"call_c","name":"with_arguments","arguments":"{ \"keep\" : 3 }"},
 			{"type":"function_call","id":"fc_repeat","call_id":"call_a","name":"chosen","arguments":"{ \"a\" : 1 }"},
+			{"type":"function_call","id":"fc_c","call_id":"call_c","arguments":"{ \"ignore\": 4 }"},
 			{"type":"function_call","id":"fc_later","call_id":"call_a","name":"ignored","arguments":"{}"}
 		]}}`
 		// An SSE data field is one line on the wire.
@@ -108,6 +110,7 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 			{"", "fc_first", "omitted", `{ "n": 1 }`},
 			{"call_b", "fc_first", "other", "{}"},
 			{"", "fc_first", "empty", `{ "n": 2 }`},
+			{"call_c", "fc_c", "with_arguments", `{ "keep" : 3 }`},
 		})
 	})
 
