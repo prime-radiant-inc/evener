@@ -920,6 +920,39 @@ func TestWorktreeUnmanagedSummaryCappedOverTen(t *testing.T) {
 		[]string{"/wt-11", "/wt-13"})
 }
 
+// TestWorktreeListPagedDigestCapsAtFive covers the paged digest's own cap
+// through the tool, where it is tighter than the unpaged digest's ten: a page
+// names five lanes and elides the rest, so a full page of fifteen stays
+// readable. Seven managed fixtures plus one stray make the first page hold all
+// seven lanes and still truncate, which is what puts the digest on its paged
+// branch; the cap then binds because that page holds more than five.
+func TestWorktreeListPagedDigestCapsAtFive(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	lanes := make([]string, 7)
+	for i := range lanes {
+		lanes[i] = fmt.Sprintf("cap-lane-%02d", i+1)
+		r.addManagedWorktreeFixture(t, lanes[i])
+	}
+	r.addUnmanagedWorktreeFixture(t, "cap-stray", "cap-stray")
+
+	out, err := r.listOpArgs(t, map[string]any{"limit": len(lanes), "offset": 0})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := out["truncated"]; got != true {
+		t.Fatalf("truncated = %v, want true so the digest takes its paged branch", got)
+	}
+	if got := listEntries(t, out); len(got) != len(lanes) {
+		t.Fatalf("page holds %d managed lanes, want %d", len(got), len(lanes))
+	}
+	msg, ok := out["message"].(string)
+	if !ok {
+		t.Fatalf("message is %T, want string", out["message"])
+	}
+	assertDigestSelects(t, msg, lanes[:5], lanes[5:])
+}
+
 // pageFixtureNames lists the fixtures a list page returned — managed entries by
 // name, unmanaged entries by their directory name — in the tool's own order.
 func pageFixtureNames(t *testing.T, out map[string]any) []string {
