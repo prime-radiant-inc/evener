@@ -468,7 +468,7 @@ func noexecFixtureProbeDir(t *testing.T, noexecRoot, marker string) (dir, reason
 	// is replaceable makes every one of those a write into somebody else's
 	// directory, and the probe in particular would run their file.
 	if !launcherTrustsPath(t, base) {
-		return "", fmt.Sprintf("%s does not pass the chain rule on this host, so a fixture under it would be about trust and not execution", base)
+		return "", base + " does not pass the chain rule on this host, so a fixture under it would be about trust and not execution"
 	}
 	dir, err = os.MkdirTemp(base, "merge-enqueue-noexec.")
 	if err != nil {
@@ -492,7 +492,7 @@ func noexecFixtureProbeDir(t *testing.T, noexecRoot, marker string) (dir, reason
 	writeTestFile(t, probe, []byte(body), 0o700)
 	if err := exec.Command(probe).Run(); err == nil {
 		_ = os.RemoveAll(dir)
-		return "", fmt.Sprintf("%s executes after all: this host cannot supply the noexec condition", dir)
+		return "", dir + " executes after all: this host cannot supply the noexec condition"
 	}
 	return dir, ""
 }
