@@ -589,6 +589,15 @@ export class JobLogReader {
           this.liveRetryOwed = !unconfirmed;
           if (unconfirmed) this.liveDueAt = Number.POSITIVE_INFINITY;
           else this.liveDueAt = Date.now();
+          // A failed tail ATTEMPT is still an attempt: it used the slot, so a
+          // queued history page takes the next paced one. Without this the
+          // tail's retry stays due (liveDueAt is now) while
+          // historyServedSinceLive says history already had its turn, and a
+          // tail that keeps failing starves the page forever — the same
+          // starvation the history-failure arm below fixes in the other
+          // direction. The retry is not dropped: it lives in liveRetryOwed,
+          // which no deadline reset can cancel.
+          this.historyServedSinceLive = false;
         } else if (this.tailOwed()) {
           // A FAILED history attempt still used the slot. Until it is recorded
           // as having had its turn, the next pump selects it again: the demand

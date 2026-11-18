@@ -153,6 +153,29 @@ test("retries unresolved history after one second without losing cache", async (
   await observed((snapshot) => snapshot.windows.older !== null && snapshot.outputError === null);
 });
 
+test("a failing tail does not starve the history page queued behind it", async () => {
+  await initial();
+  // A page is queued, then the person presses Refresh while it is in flight.
+  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
+  const history = await peer.request(OUTPUT, 1);
+  reader.refresh();
+  // The page fails first, which gives the owed tail the next slot.
+  peer.fail(history, "temporary output failure");
+  await observed((snapshot) => snapshot.outputError !== null);
+  await vi.advanceTimersByTimeAsync(1000);
+  const tail = await peer.request(OUTPUT, 2);
+  expect(tail.params.beforeBytes).toBeUndefined();
+  // The tail fails too. A failed attempt is still an attempt, so the queued page
+  // takes the next paced slot rather than the tail retrying forever.
+  peer.fail(tail, "tail unavailable");
+  await vi.advanceTimersByTimeAsync(1000);
+  const retriedHistory = await peer.request(OUTPUT, 3);
+  expect(retriedHistory.params.beforeBytes).toBe(100);
+  peer.reply(retriedHistory, page(90, "OLDER_ROW\n"));
+  const recovered = await observed((snapshot) => snapshot.windows.older !== null);
+  expect(recovered.windows.older?.rows[0]?.line[0]?.text).toBe("OLDER_ROW");
+});
+
 test("a failing history page does not starve the tail a refresh asked for", async () => {
   await initial();
   // A page is queued and takes the one output slot.

@@ -1289,7 +1289,7 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromLegacyOwner(t *testing.T) {
 		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
 		Status: jobstore.StatusRunning, OwnerSessionID: hintedSession, VisibleToSession: scopedSession,
 		Command: "make legacy-build", WorkingDir: "/tmp/legacy", OutputPath: outputPath,
-		StartedAt: &started,
+		Background: true, StartedAt: &started,
 	})
 	closeJobJournal(t, scopedStore)
 
@@ -1320,6 +1320,13 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromLegacyOwner(t *testing.T) {
 	}
 	if job.StartedAt == "" {
 		t.Fatal("startedAt is empty, want the scoped start's time")
+	}
+	// Background is the fourth launch fact the same start declares, and it is
+	// durable: the finish does not restate it. Dropping it reports a background
+	// job as foreground, which changes how the pane presents it.
+	if !job.Background {
+		t.Fatal("background = false, want true from the scoped start: the finish does not restate it, " +
+			"and a launch fact a trusted source established must not be dropped because the journal that answered lacked it")
 	}
 	// The wire type carries no working directory or output path, so those two are
 	// checked on the record the read selected.
@@ -1399,6 +1406,20 @@ func TestLoadSessionJobGetIgnoresLaunchFieldsFromContradictoryStart(t *testing.T
 	if job.Command != "" {
 		t.Fatalf("command = %q, want it unset: the start that carried it names an owner the job ID contradicts",
 			job.Command)
+	}
+	// The owner the JOB ID encodes is established whatever the record says, and
+	// the selected record here is a finish-only owner journal, so the folded
+	// record's own owner field is empty. Projecting that field would report no
+	// owner at all for a job whose owner the validated identifier names.
+	wantOwner := ownerSession
+	if job.OwnerSessionID != wantOwner {
+		t.Fatalf("ownerSessionId = %q, want %q: the validated job ID establishes the owner, "+
+			"and a finish-only owner journal states none of its own", job.OwnerSessionID, wantOwner)
+	}
+	wantRef := (appwire.Ref{SourceID: "local", ThreadID: rootSession}).String()
+	if job.OwnerRef != wantRef {
+		t.Fatalf("ownerRef = %q, want %q: the ref a client requested is what it matches replies against",
+			job.OwnerRef, wantRef)
 	}
 	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
 	if err != nil {

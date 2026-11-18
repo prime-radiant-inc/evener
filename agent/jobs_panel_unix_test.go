@@ -92,8 +92,21 @@ func TestLoadSessionJobOutputPageFencesAliasedStateHomePath(t *testing.T) {
 		t.Fatalf("create state-home alias: %v", err)
 	}
 	aliasBucket := filepath.Join(aliasHome, "evener", "projects", "bucket")
-	if resolved, err := filepath.EvalSymlinks(aliasBucket); err != nil || resolved != bucket {
-		t.Fatalf("fixture invalid: alias resolves to %q (err %v), want %q", resolved, err, bucket)
+	// Identity, not spelling: TMPDIR may itself sit behind a symlink (macOS's
+	// /var -> /private/var), so the alias's RESOLVED spelling and the bucket
+	// t.TempDir() returned need not be byte-identical even when they name the
+	// same directory. Comparing strings here aborts the fixture before it ever
+	// reaches the fence this test exists to exercise.
+	bucketInfo, err := os.Stat(bucket)
+	if err != nil {
+		t.Fatalf("stat bucket: %v", err)
+	}
+	aliasInfo, err := os.Stat(aliasBucket)
+	if err != nil {
+		t.Fatalf("stat aliased bucket: %v", err)
+	}
+	if !os.SameFile(bucketInfo, aliasInfo) {
+		t.Fatalf("fixture invalid: %q and %q are not the same directory", aliasBucket, bucket)
 	}
 
 	requestedSession := identifier.MustNewSessionID()

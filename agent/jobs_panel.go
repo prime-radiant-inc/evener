@@ -578,6 +578,16 @@ func preserveLaunchFields(rec, scoped *jobstore.JobRecord) {
 	if rec.WorkingDir == "" {
 		rec.WorkingDir = scoped.WorkingDir
 	}
+	// Background is a LAUNCH fact for the same reason and from the same source:
+	// the start event carries it, a finish never restates it, and a record whose
+	// Background came out false would report a background job as foreground. It
+	// cannot be "unset by the owner" the way an empty string can, so the empty
+	// test below is `!rec.Background` rather than an ownership question: a
+	// finish-only record has nothing to preserve, and a record that already says
+	// background keeps saying it.
+	if !rec.Background {
+		rec.Background = scoped.Background
+	}
 }
 
 // retainedJobReadOutranks reports whether the incoming read replaces the
@@ -1212,6 +1222,37 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 	return projectActivityJob(rec, ownerRef), true, nil
 }
 
+// retainedJobOwnerSession names the owner a retained read reports on the wire.
+//
+// It answers with the job ID's own validated owner, not with the folded record's
+// owner field, because the two disagree in exactly the cases this read exists
+// for. A journal holding only a finish states no owner at all, and a
+// contradictory fallback start states the WRONG one — while the identifier
+// establishes the owner in both. Projecting the record's field reported an empty
+// owner for a finished job, or a foreign one for a job served from the scoped
+// session.
+//
+// A legacy job ID encodes no owner, so the identifier establishes nothing and
+// the corroborated owner is the next best answer: the hinted session whose
+// journal agreed when it supplied the status (artifactSessionID), else the
+// session whose journal supplied the record at all. That is where the bytes
+// live, which is the honest answer when no identifier outranks it.
+//
+// This is the same authority rule routingJobSession applies, asked about
+// identity instead of about a directory: the validated identifier first, the
+// corroborated owner for an ID that encodes none. It deliberately does NOT fall
+// back to the record's own claim, because that claim is precisely what a
+// contradiction makes untrustworthy.
+func retainedJobOwnerSession(jobID string, read sessionJobRecordRead) string {
+	if owner := encodedJobOwner(jobID); owner != "" {
+		return owner
+	}
+	if read.artifactSessionID != "" {
+		return read.artifactSessionID
+	}
+	return read.sourceSessionID
+}
+
 // LoadSessionJobGet reads one local session's durable job history and projects
 // one job's record, for the hub's past-session fallback. It is read-only.
 // found=false means no job with that id exists.
@@ -1252,6 +1293,10 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFen
 	}
 	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
 	job := projectActivityJob(jobRecordForProjection(read.record), ownerRef)
+	// The fold states no owner for a finish-only journal and a contradictory one
+	// for a fallback start; the validated identifier states the truth. See
+	// retainedJobOwnerSession.
+	job.OwnerSessionID = retainedJobOwnerSession(jobID, read)
 	job.Diagnostics = jobRecordDiagnosticCodes(read.diagnostics)
 	job.StatusUnconfirmed = statusUnconfirmedOnWire(read)
 	job.StatusRecheckable = statusRecheckableOnWire(read)
