@@ -488,26 +488,32 @@ func testCompactedGitObservation(t *testing.T) {
 }
 
 func testCompactedLaunchBranch(t *testing.T) {
-	const branch = "launch-branch-19"
+	const branch, recovered = "launch-branch-19", "recovered-branch-41"
 	type notification struct {
-		restore, leaveRepo bool
-		wantBranch         string
-		wantTurns          int
+		restore, leaveRepo, reopen bool
+		wantBranch                 string
+		wantTurns                  int
 	}
 	coldOutside := notification{restore: true, wantTurns: 1}
 	for _, tc := range []struct {
-		name               string
-		unborn, unrecorded bool
-		notifications      []notification
+		name, checkout string
+		unrecorded     bool
+		notifications  []notification
 	}{
-		{"warm", false, false, []notification{{wantTurns: 1}, coldOutside}},
-		{"cold", false, false, []notification{coldOutside, coldOutside}},
-		{"cold unrecorded", false, true, []notification{coldOutside, coldOutside}},
-		{"cold unborn", true, false, []notification{{restore: true, leaveRepo: true, wantTurns: 1}, coldOutside}},
-		{"cold unrecorded unborn", true, true, []notification{
+		{"warm", "outside", false, []notification{{wantTurns: 1}, coldOutside}},
+		{"cold", "outside", false, []notification{coldOutside, coldOutside}},
+		{"cold unrecorded", "outside", true, []notification{coldOutside, coldOutside}},
+		{"cold unborn", "unborn", false, []notification{{restore: true, leaveRepo: true, wantTurns: 1}, coldOutside}},
+		{"cold unrecorded unborn", "unborn", true, []notification{
 			{restore: true, wantBranch: branch, wantTurns: 1},
 			{wantBranch: branch, wantTurns: 1},
 			{leaveRepo: true, wantTurns: 2},
+		}},
+		{"cold unavailable checkout", "unavailable", false, []notification{
+			{restore: true, wantBranch: branch, wantTurns: 1},
+			{restore: true, wantBranch: branch, wantTurns: 1},
+			{reopen: true, wantBranch: recovered, wantTurns: 2},
+			{wantBranch: recovered, wantTurns: 2},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -538,9 +544,17 @@ func testCompactedLaunchBranch(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if tc.unborn {
+			var parked string
+			switch tc.checkout {
+			case "unavailable":
+				parked = filepath.Join(t.TempDir(), "checkout")
+				if err := os.Rename(cwd, parked); err != nil {
+					t.Fatal(err)
+				}
+				gittest.Run(t, parked, "checkout", "-b", recovered)
+			case "unborn":
 				gittest.Run(t, cwd, "checkout", "--orphan", "unborn")
-			} else {
+			case "outside":
 				leaveRepo()
 			}
 			adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
@@ -564,6 +578,11 @@ func testCompactedLaunchBranch(t *testing.T) {
 				}
 				if wake.leaveRepo {
 					leaveRepo()
+				}
+				if wake.reopen {
+					if err := os.Rename(parked, cwd); err != nil {
+						t.Fatal(err)
+					}
 				}
 				enqueueCompletedJobNotification(t, s, fmt.Sprintf("job_launch_branch_%d", round))
 				if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {

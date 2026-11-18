@@ -215,12 +215,11 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 }
 
 // HasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
-// known says whether the walk actually established that: only ErrNotExist means
-// "there is nothing here". A stat that failed for any other reason — the
-// directory unreadable, the filesystem erroring — leaves the question open, and
-// the caller must not memoize an absence it never observed.
+// An absence is known only for an accessible working directory whose .git
+// lookups all returned ErrNotExist. An unavailable directory leaves it unknown.
 func HasGitEntryAncestor(cwd string) (present, known bool) {
-	dir := filepath.Clean(cwd)
+	cwd = filepath.Clean(cwd)
+	dir := cwd
 	for {
 		_, err := os.Stat(filepath.Join(dir, ".git"))
 		if err == nil {
@@ -231,7 +230,9 @@ func HasGitEntryAncestor(cwd string) (present, known bool) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return false, true
+			// A missing cwd also returns ErrNotExist for every .git lookup.
+			info, err := os.Stat(cwd)
+			return false, err == nil && info.IsDir()
 		}
 		dir = parent
 	}

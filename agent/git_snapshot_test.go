@@ -351,9 +351,34 @@ func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
-	inRepo, _, _, _, _, _, _ := snapshotGit(context.Background(), env, dir)
-	if inRepo {
-		t.Fatal("expected inRepo=false for non-git directory")
+	file := filepath.Join(dir, "regular")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unsearchable := filepath.Join(dir, "unsearchable")
+	if err := os.Mkdir(unsearchable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unsearchable, 0o700) })
+	for _, tc := range []struct {
+		name, cwd string
+		known     bool
+	}{
+		{"accessible directory", dir, true},
+		{"missing directory", filepath.Join(dir, "missing"), false},
+		{"regular file", file, false},
+		{"unsearchable directory", unsearchable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.cwd == unsearchable && os.Geteuid() == 0 {
+				t.Skip("root can search a directory without search permissions")
+			}
+			inRepo, _, _, _, _, _, failed := snapshotGit(t.Context(), env, tc.cwd)
+			branch, known := snapshotGitBranch(env, tc.cwd)
+			if inRepo || failed == tc.known || branch != "" || known != tc.known {
+				t.Errorf("launch repo %t, probe failed %t; request branch %q, known %t; want known %t", inRepo, failed, branch, known, tc.known)
+			}
+		})
 	}
 }
 

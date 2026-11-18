@@ -201,10 +201,10 @@ If the launch branch is unknown and a Git probe is available, the first request
 samples it even when an idle goal starts before any user input. Branch updates
 name their working directory so a retained update still identifies its checkout
 after a fold.
-An unborn HEAD or a checkout Git refuses to inspect leaves the branch
-unconfirmed at launch. If a later probe fails, the request keeps the last
-confirmed branch for this checkout, including one observed during restore or
-when entering or leaving a worktree.
+An unborn HEAD, an unavailable working directory, or a checkout Git refuses
+to inspect leaves the branch unconfirmed at launch. If a later probe fails,
+the request keeps the last confirmed branch for this checkout, including one
+observed during restore or when entering or leaving a worktree.
 A delegate created with `fork_context` can use the last branch its copied
 environment turns confirm for this checkout. A confirmed observation at the
 delegate's own launch or first request supersedes the parent's.
@@ -216,11 +216,11 @@ Evener recovers each checkout’s
 last observation from the launch facts and transcript, including a confirmed
 return to the launch branch after compaction. The next request retries an
 inconclusive probe, including when a tool round or job notification starts it.
-When Git confirms the directory is outside a worktree, the
-next request clears that branch even if
-compaction removed every prior environment update. A catalog
-correction to the current model’s knowledge cutoff also appears there on
-resume. A fork receives its own session ID and commit attribution there.
+When the working directory is accessible and outside any worktree, the
+next request clears that branch even if compaction removed every prior
+environment update. A catalog correction to the current model’s knowledge
+cutoff also appears there on resume. A fork receives its own session ID and
+commit attribution there.
 An aside’s reporting update names the currently registered result tool, including
 when its caller configured a different name from the one in the inherited prompt.
 Each request supplies the tools currently available. If `ask_user` availability

@@ -76,13 +76,13 @@ func TestRenderDiffWorkspaceChangeReportsCheckout(t *testing.T) {
 	}
 }
 
-func TestRenderDiffGitBranchGoneRendersPlaceholder(t *testing.T) {
+func TestRenderDiffClearsBranchAfterFullSnapshot(t *testing.T) {
 	tr := NewTracker(State{Last: fullSnap(), HasSent: true})
+	model := NewTracker(tr.State())
 	cur := fullSnap()
 	cur.GitBranch = ""
-	got := tr.RenderDiff(cur)
-	if !strings.Contains(got, "git branch: (not in a git repository)") {
-		t.Fatalf("branch->empty must render placeholder, got %q", got)
+	if !model.ReplayBlock(tr.RenderDiff(cur)) || model.State().Last != cur || model.State().GitBranchUnknown {
+		t.Fatalf("model state after the checkout left Git = %+v", model.State())
 	}
 }
 
@@ -135,14 +135,11 @@ func TestRenderDiffInconclusiveProbeKeepsTheSavedBranchForTheSameCheckout(t *tes
 
 	t.Run("confirmed outside clears the saved branch", func(t *testing.T) {
 		tr := NewTracker(State{Last: saved})
+		model := NewTracker(tr.State())
 		outside := saved
 		outside.GitBranch = ""
-		got := tr.RenderDiff(outside)
-		if !strings.Contains(got, "git branch: (not in a git repository)") {
-			t.Fatalf("a confirmed absence must clear the saved branch explicitly, got %q", got)
-		}
-		if branch := tr.State().Last.GitBranch; branch != "" {
-			t.Errorf("tracker kept branch %q after a confirmed absence, want cleared", branch)
+		if !model.ReplayBlock(tr.RenderDiff(outside)) || model.State().Last.GitBranch != "" || model.State().GitBranchUnknown {
+			t.Fatalf("confirmed branch absence left the model with %+v", model.State())
 		}
 	})
 }
