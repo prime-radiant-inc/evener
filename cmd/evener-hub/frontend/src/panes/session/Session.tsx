@@ -37,7 +37,15 @@ export interface SessionPaneParams {
 const EMPTY_THREADS = new Map<string, ThreadModel>();
 export const RECOVERY_HINT_DELAY_MS = import.meta.env.MODE === "test" ? 50 : 8_000;
 
-function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairing: boolean }) {
+function SessionLoading({
+  sessionRef,
+  repairing,
+  historyFailed,
+}: {
+  sessionRef: string;
+  repairing: boolean;
+  historyFailed: boolean;
+}) {
   const [showRecovery, setShowRecovery] = useState(false);
   const local = sessionRef.startsWith("local:");
   useEffect(() => {
@@ -47,7 +55,11 @@ function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairi
   }, [local]);
   return (
     <div className={styles.loading}>
-      <Loader label={repairing ? "Repairing session history" : "Loading transcript"} />
+      <Loader
+        label={
+          repairing ? "Repairing session history" : historyFailed ? "Session history unavailable" : "Loading transcript"
+        }
+      />
       <div className={styles.loadingSkeleton} data-testid="session-loading-skeleton" aria-hidden="true">
         <Skeleton lines={4} />
       </div>
@@ -112,6 +124,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // loading face says so. Follows the ref's reads — cleared by the next read
   // that does not fail with the code — so it never outlives the repair.
   const repairingRef = useThreadsStore((state) => state.repairingRefs.has(ref));
+  // The same read-scoped face for the hub's other diagnostic: a ref whose
+  // latest read answered the history error has no model to carry it, so the
+  // loading surface says so instead of spinning. Cleared when a read publishes.
+  const historyFailedRef = useThreadsStore((state) => state.historyFailedRefs.has(ref));
   const navigation = useNavigationStore();
 
   // Same fallback chain, and same shared resolver, as DockHost's dockview
@@ -227,7 +243,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               title={title}
               edgeFooter={edgeFooter}
             >
-              <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />
+              <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} historyFailed={historyFailedRef} />
             </PaneScaffold>
           );
         }

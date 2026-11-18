@@ -387,6 +387,13 @@ export interface ThreadsStoreState {
    * ref's model state on release. Unlike `deletedRefs` this is not terminal:
    * it follows the ref's reads. */
   repairingRefs: Set<string>;
+  /** Refs whose latest read answered the hub's history diagnostic
+   * (ErrorTranscriptHistoryFailed) and have no model carrying it yet. The
+   * spec's answer is one visible error and no automatic re-read, so a ref with
+   * no model has nowhere to show it: the pane would present an ordinary
+   * Loading face for a history the hub has refused. This is that face's flag,
+   * set with the verdict and cleared when a read publishes. */
+  historyFailedRefs: Set<string>;
   /** Cache state follows the owned model through its final release, including
    * mutation pins. A sibling deletion can create a suppression-only record
    * before a claim captures its lease; that record must not block a cold read.
@@ -1457,43 +1464,66 @@ const clearReplacementWaits = new KeyedWaiters<string, () => void>();
 // composer stayed busy and the press never wrote. The terminal answer travels
 // with the read so the handoff can reject on it while every other failure stays
 // with the refresh's own paced retry.
-// The outcome is a value, not a one-shot: every acquisition whose read the Clear
-// retired is owed this answer, and a late one arriving after the first consumer
-// took it must not read the absence as "Clear owed nothing" and issue yet
-// another read for a history the hub has already refused. The verdict describes
-// the attempt that produced it, so a later attempt for the same ref replaces it
-// (see terminalHydrationErrors for the same lifetime rule).
+// A terminal history verdict belongs to the ATTEMPT that produced it, not to
+// the ref. Tracking it per ref was the bug in three directions at once: a late
+// claimant read its absence as "Clear owed nothing" and re-read a history the
+// hub had answered; a successful pre-Clear read erased a newer verdict it had
+// never seen; and a claimant that joined an already-consumed verdict spun on
+// settled promises, because nothing was left to consume and nothing could
+// change. So the verdict lives on the attempt, and each claimant takes it once.
 type ClearReplacementOutcome = { model: ThreadModel | null; terminalError?: unknown };
 type ClearReplacementRead = Promise<ClearReplacementOutcome>;
-const clearReplacementReads = new Map<string, ClearReplacementRead>();
-// The settled outcome of the current replacement attempt, kept beside the
-// promise so a claim that joins after it resolved still receives the terminal
-// verdict instead of re-reading. Cleared when a newer attempt registers.
-const clearReplacementOutcomes = new Map<string, ClearReplacementOutcome>();
+// The attempt that owns the read, its joinable promise, and its settled
+// outcome. One record per Clear-replacement attempt; a newer attempt for the
+// same ref replaces the whole record, which is what retires the older verdict.
+interface ClearReplacementAttempt {
+  read: ClearReplacementRead;
+  settled?: ClearReplacementOutcome;
+  // Claimants that have already received this attempt's terminal verdict. Each
+  // acquisition is owed the answer exactly once; a second join from the same
+  // acquisition would rethrow into the same catch that asked, which is the
+  // loop this set exists to stop.
+  readonly terminalClaimants: Set<object>;
+}
+const clearReplacementAttempts = new Map<string, ClearReplacementAttempt>();
 // The last terminal history verdict a tracked read ended on, per ref, waiting to
 // be claimed by whoever is owed that answer. A refresh reports failures through
 // the lifecycle rather than by rejecting, so this is the one place the terminal
 // end survives to be read.
 //
-// A verdict describes the read that produced it and nothing later: a successful
-// tracked read clears it, and a later attempt that ends the same way replaces
-// it. Without the clear the map outlives its answer, and a Clear's replacement
-// resolving after a successful read hands its handoff an error the hub has since
-// answered. The claim's caller re-arms on that throw rather than failing, so the
-// cost is a read the destination does not need, not a lost press.
+// A verdict describes the read that produced it and nothing later: a tracked
+// read that actually PUBLISHES clears it, and a later attempt that ends the same
+// way replaces it. Clearing it on any successful read was too eager - a
+// pre-Clear read can succeed after Clear's replacement already recorded the
+// verdict, and erasing it there left the waiting resend with no answer.
 const terminalHydrationErrors = new Map<string, unknown>();
 function takeTerminalHydrationError(ref: string): unknown {
   const error = terminalHydrationErrors.get(ref);
   terminalHydrationErrors.delete(ref);
   return error;
 }
+
 /** Waits out a Clear replacement and hands back its model. A replacement that
  * ended on the hub's history diagnostic throws it here, so every claim that
- * joined this handoff releases instead of reading a history the hub refused. */
-async function adoptClearReplacement(read: ClearReplacementRead): Promise<ThreadModel | null> {
-  const outcome = await read;
-  if (outcome.terminalError !== undefined) throw outcome.terminalError;
-  return outcome.model;
+ * joined this handoff releases instead of reading a history the hub refused.
+ *
+ * `claimant` identifies the acquisition asking, so a terminal verdict is handed
+ * to each acquisition once: the catch that calls this rejoins whatever the
+ * handoff answers, and a verdict it cannot consume again must fail the press
+ * rather than send it back around the loop. */
+async function adoptClearReplacement(attempt: ClearReplacementAttempt, claimant: object): Promise<ThreadModel | null> {
+  const outcome = await attempt.read;
+  if (outcome.terminalError === undefined) return outcome.model;
+  attempt.terminalClaimants.add(claimant);
+  throw outcome.terminalError;
+}
+
+/** True when this acquisition has already been handed this attempt's terminal
+ * verdict. The caller asks before joining, so a verdict already spent on this
+ * acquisition ends its press instead of parking it on a promise that can only
+ * answer the same way again. */
+function terminalVerdictSpent(attempt: ClearReplacementAttempt, claimant: object): boolean {
+  return attempt.terminalClaimants.has(claimant);
 }
 
 function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: () => void } {
@@ -1523,19 +1553,21 @@ function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: 
 async function awaitClearReplacement(
   ref: string,
 ): Promise<
-  { kind: "read"; read: ClearReplacementRead } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
+  { kind: "read"; attempt: ClearReplacementAttempt } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
 > {
-  const issued = clearReplacementReads.get(ref);
-  if (issued) return { kind: "read", read: issued };
-  // The replacement already ran. Its terminal verdict is still this ref's
-  // answer, and an acquisition whose read the Clear retired can reach here
-  // after the first consumer took it; handing that one `none` is what made it
-  // issue a fresh read for a history the hub had already refused. Only a
-  // terminal outcome is kept - see clearReplacementOutcomes for why a settled
-  // miss is not: re-joining one would loop, because a miss resolves to the same
-  // absence the caller is trying to escape.
-  const spent = clearReplacementOutcomes.get(ref);
-  if (spent?.terminalError !== undefined) return { kind: "read", read: Promise.resolve(spent) };
+  const registered = clearReplacementAttempts.get(ref);
+  // An attempt is joinable while it is running, and after it settles only if it
+  // settled on a terminal verdict: that verdict is still this ref's answer, and
+  // an acquisition whose read the Clear retired can legitimately reach here
+  // after an earlier claimant took it. A settled MISS is not joinable - it
+  // answers the same absence the caller is trying to escape, so re-joining one
+  // would loop.
+  if (registered && (registered.settled === undefined || registered.settled.terminalError !== undefined)) {
+    return { kind: "read", attempt: registered };
+  }
+  // The replacement already ran as a miss. Handing that caller `none` is what
+  // lets it start the read it still owes; re-joining the miss would loop,
+  // because a miss resolves to the same absence the caller is escaping.
   if (clearHydrationDemands.get("thread")?.has(ref) !== true) return { kind: "none" };
   const parked = parkForClearReplacement(ref);
   try {
@@ -1544,8 +1576,8 @@ async function awaitClearReplacement(
     parked.cancel();
   }
   if (threadsStore.getState().deletedRefs.has(ref)) return { kind: "deleted" };
-  const replacement = clearReplacementReads.get(ref);
-  if (replacement) return { kind: "read", read: replacement };
+  const replacement = clearReplacementAttempts.get(ref);
+  if (replacement) return { kind: "read", attempt: replacement };
   // A reconnecting client owns this ref's convergence: the demand was not
   // dropped, only deferred until something is ready to issue it. That is not
   // the same answer as "this ref never had a demand", and a caller that
@@ -4538,6 +4570,20 @@ function setThreadRepairing(ref: string, repairing: boolean): void {
   });
 }
 
+// setThreadHistoryFailed is the same per-read flag for the other diagnostic: a
+// ref whose latest read answered the hub's history error and has no model
+// carrying it. The loading face reads it so a refused history is not shown as
+// an ordinary load, and a read that publishes clears it with the verdict.
+function setThreadHistoryFailed(ref: string, failed: boolean): void {
+  threadsStore.setState((s) => {
+    if (s.historyFailedRefs.has(ref) === failed) return s;
+    const next = new Set(s.historyFailedRefs);
+    if (failed) next.add(ref);
+    else next.delete(ref);
+    return { historyFailedRefs: next };
+  });
+}
+
 // publishThreadRepairing is setThreadRepairing behind the same ownership fence
 // publishThreadHydration and scheduleOwnedHydrationRetry use, plus what that
 // fence cannot see across kinds: only the ref's CURRENT pending hydration,
@@ -4698,7 +4744,13 @@ async function readThreadHydration(
       // than on the lifecycle: a Clear replacement's refresh swallows the
       // diagnostic, so without this the handoff reads its null as a miss and
       // reads the ref again for a history the hub has already refused.
+      //
+      // The verdict is recorded per ref because the handoff asks it by ref, and
+      // it is retired at the publish point rather than here - see
+      // publishAndReconcileThreadHydration for why a successful read cannot
+      // retire it on its own.
       terminalHydrationErrors.set(ref, err);
+      setThreadHistoryFailed(ref, true);
       settleHydrationReadEnd(read.kind, ref, { kind: "historyFailed", error: err });
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
@@ -4709,18 +4761,14 @@ async function readThreadHydration(
     if (lease !== ownerLease) lease.release();
   }
   if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
-  // The hub answered this ref's history: whatever terminal verdict an earlier
-  // attempt recorded is spent, and leaving it here would let a later Clear's
-  // replacement throw it at a press the successful read has since answered.
-  // Tracked only: a lean watched read asks no history, so its success says
-  // nothing about the index a tracked verdict was about.
-  if (read.kind !== "watched") {
-    terminalHydrationErrors.delete(ref);
-    // The retained Clear verdict describes the same attempt's read, so a
-    // successful one retires it for the same reason: it must not outlive the
-    // answer the hub has since given.
-    clearReplacementOutcomes.delete(ref);
-  }
+  // A successful read does not retire an earlier attempt's terminal verdict by
+  // itself. This response may be one the publication fence is about to discard -
+  // a pre-Clear read can land after Clear's replacement already answered for the
+  // destination - and erasing the newer verdict here left the waiting claim with
+  // no answer at all, so it read a history the hub had already refused. The
+  // verdict is retired where the answer is actually published, which is the only
+  // place that knows this response became the ref's state. See
+  // publishAndReconcileThreadHydration.
   // The read succeeded: any repairing status from this attempt's earlier
   // read is over — a superseded attempt leaves the newer one's say standing.
   // Only a history-requesting read observed the index: a lean watch the hub
@@ -6521,6 +6569,18 @@ async function publishAndReconcileThreadHydration(
   const adoptedEntryRead = (await acceptEntryTranscriptHydration(ref, pending, hydration)) === true;
   const published = publishThreadHydration(ref, pending, hydration.model, adoptedEntryRead);
   if (!published) return null;
+  // The hub answered this ref's history with a model that became its state:
+  // whatever terminal verdict an earlier attempt recorded is spent, and a later
+  // Clear must not throw it at a press this read has since answered. Cleared
+  // HERE, not on the read's own success, because a response the fence above
+  // discarded says nothing about the ref - and clearing on it left the waiting
+  // claim with no verdict to read.
+  terminalHydrationErrors.delete(ref);
+  setThreadHistoryFailed(ref, false);
+  // The retained replacement outcome describes the attempt whose read this one
+  // superseded, so the same rule retires it: it must not outlive the answer the
+  // hub has given.
+  clearReplacementAttempts.delete(ref);
   pruneConsumedQueueRows(ref, published);
   const snapshotCurrent =
     mutationStateGeneration === undefined || (mutationStateGenerations.get(ref) ?? 0) === mutationStateGeneration;
@@ -8705,6 +8765,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   watchedThreads: ShardedMap.empty(),
   deletedRefs: new Set(),
   repairingRefs: new Set(),
+  historyFailedRefs: new Set(),
   cacheLifetimes: new Map(),
   clearInFlight: undefined,
 
@@ -8760,6 +8821,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // replacement pane's restore. The handle names one hold, so standing means
     // this acquisition is still the live one, whatever else holds the ref.
     const claimStanding = (): boolean => ensureGenerations.get(ref) === generation && foregroundHoldStanding(hold);
+    // This acquisition's identity for anything handed to it exactly once. A
+    // Clear replacement's terminal verdict is owed to each acquisition that
+    // joined it, and this token is how that attempt tells them apart: the same
+    // verdict is delivered here once, and asking for it again ends this press
+    // instead of re-entering the loop that produced it.
+    const claimant = {};
     // Handed out here, not when the hydration settles: a caller that unmounts
     // or gives up before then still owns this handle, and releasing a ref later
     // would name whichever hold is newest by that point instead of this one.
@@ -8958,7 +9025,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
               const handoff = await awaitClearReplacement(ref);
               if (handoff.kind === "deleted") return endDeletedDestination();
               if (handoff.kind === "read") {
-                inflight = adoptClearReplacement(handoff.read);
+                inflight = adoptClearReplacement(handoff.attempt, claimant);
                 continue;
               }
               // A Clear that deferred its replacement owns this ref's next
@@ -9071,10 +9138,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // failure. Clear removes the owned record it cancels, so the
             // absence of one is exactly the handoff's state rather than a
             // reason to fail the press.
+            //
+            // The verdict is spent once per acquisition. A Clear replacement
+            // that ended on the hub's history diagnostic answers this press,
+            // and re-joining it here would put the same rejected promise back
+            // in front of this same catch: the loop would run on already
+            // settled promises, never yielding to the event loop, leaving Send
+            // pending forever. The second ask is the answer, so the press ends
+            // and this acquisition's rollback releases its hold.
             const handoff = await awaitClearReplacement(ref);
             if (handoff.kind === "deleted") return endDeletedDestination();
             if (handoff.kind === "read") {
-              inflight = adoptClearReplacement(handoff.read);
+              if (terminalVerdictSpent(handoff.attempt, claimant)) throw err;
+              inflight = adoptClearReplacement(handoff.attempt, claimant);
               continue;
             }
             // Deferred means Clear still owes this ref a read and the
@@ -9209,7 +9285,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           const handoff = await awaitClearReplacement(ref);
           if (handoff.kind === "deleted") return endDeletedDestination();
           if (handoff.kind === "read") {
-            inflight = adoptClearReplacement(handoff.read);
+            if (terminalVerdictSpent(handoff.attempt, claimant)) {
+              throw lastReadError ?? new Error("routing state is unverified after the read settled");
+            }
+            inflight = adoptClearReplacement(handoff.attempt, claimant);
             continue;
           }
           if (!claimStanding()) return;
@@ -9236,7 +9315,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         const unopenedHandoff = await awaitClearReplacement(ref);
         if (unopenedHandoff.kind === "deleted") return endDeletedDestination();
         if (unopenedHandoff.kind === "read") {
-          inflight = adoptClearReplacement(unopenedHandoff.read);
+          if (terminalVerdictSpent(unopenedHandoff.attempt, claimant)) {
+            throw lastReadError ?? new Error("routing state is unverified after the read settled");
+          }
+          inflight = adoptClearReplacement(unopenedHandoff.attempt, claimant);
           continue;
         }
         if (unopenedHandoff.kind === "deferred") {
@@ -10495,28 +10577,40 @@ function reconcileClearInput(): void {
         // ordinary miss. `terminalHydrationErrors` is where that end is already
         // recorded for the ref, so the handoff asks it once the read is over.
         //
-        // It is asked once per attempt, and the attempt is this registration:
-        // the outcome is recorded as well as the promise, because a claim whose
-        // read Clear retired can arrive after the first consumer resolved and
-        // must receive the same verdict rather than starting a fresh read. A
-        // later attempt for the ref overwrites both, so a stale verdict cannot
-        // fail a press the hub has since answered.
-        const registered = issued.then(() => {
-          const outcome: ClearReplacementOutcome = {
-            model: null,
-            terminalError: takeTerminalHydrationError(ref),
-          };
-          if (clearReplacementReads.get(ref) === registered) clearReplacementOutcomes.set(ref, outcome);
-          return outcome;
-        });
-        clearReplacementReads.set(ref, registered);
-        clearReplacementOutcomes.delete(ref);
-        // The promise stops being joinable when it settles — a miss must fall
-        // through to the handoff's deferred/none answers exactly as before. What
-        // outlives it is the terminal verdict, in clearReplacementOutcomes.
-        void registered.finally(() => {
-          if (clearReplacementReads.get(ref) === registered) clearReplacementReads.delete(ref);
-        });
+        // The outcome is recorded on the attempt rather than beside it: a claim
+        // whose read Clear retired can arrive after an earlier claimant
+        // resolved, and it must receive the same verdict rather than starting a
+        // fresh read. A later attempt for the ref replaces the whole record, so
+        // a stale verdict cannot outlive the answer that superseded it.
+        const attempt: ClearReplacementAttempt = {
+          read: issued.then(
+            () => {
+              const outcome: ClearReplacementOutcome = {
+                model: null,
+                terminalError: takeTerminalHydrationError(ref),
+              };
+              if (clearReplacementAttempts.get(ref) === attempt) attempt.settled = outcome;
+              return outcome;
+            },
+            (error: unknown) => {
+              // The replacement's own read failed in transport. That is not a
+              // verdict this ref is owed - the refresh's paced retry owns
+              // convergence - so the attempt stops being joinable exactly as a
+              // settled miss does. Leaving it joinable would put the same
+              // rejected promise back in front of the acquisition that just
+              // saw it, which is the settled-promise loop this record exists to
+              // prevent, on the transport path instead of the terminal one.
+              if (clearReplacementAttempts.get(ref) === attempt) attempt.settled = { model: null };
+              throw error;
+            },
+          ),
+          terminalClaimants: new Set(),
+        };
+        clearReplacementAttempts.set(ref, attempt);
+        // Registered, not joined: no acquisition may ever ask for this attempt,
+        // and an unobserved rejection here would surface as an unhandled one on
+        // top of the failure the refresh already reported.
+        void attempt.read.catch(() => {});
       }
       // A claim that was waiting on this demand when the retired read settled
       // now has something to join, so wake it rather than leaving it to judge
@@ -10863,8 +10957,7 @@ export function resetThreadsStoreForTests(): void {
     });
   };
   retireAllOwnedHydrations();
-  clearReplacementReads.clear();
-  clearReplacementOutcomes.clear();
+  clearReplacementAttempts.clear();
   terminalHydrationErrors.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();
@@ -10940,6 +11033,7 @@ export function resetThreadsStoreForTests(): void {
       watchedThreads: ShardedMap.empty(),
       deletedRefs: new Set(),
       repairingRefs: new Set(),
+      historyFailedRefs: new Set(),
       cacheLifetimes: new Map(),
       clearInFlight: undefined,
     },

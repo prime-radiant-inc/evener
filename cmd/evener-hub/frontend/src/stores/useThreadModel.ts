@@ -45,6 +45,19 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
           // another reader's ref-keyed hold and retire its lifecycle. A
           // pending or settled claim still belongs to this mount.
           rejected = true;
+          // One rejection is not final for a mounted pane: the hub's history
+          // diagnostic is answered by waiting for a later read, and the store
+          // leaves the demand standing for one. This mount has no claim left to
+          // wait with, and `started` would otherwise make the ready
+          // subscription below a no-op, so the pane would sit on Loading after
+          // the hub repaired the transcript and the connection returned. Only
+          // this end re-arms; every other rejection keeps the pinned behavior
+          // above (the claim is gone and this mount must not ask again).
+          if (threadsStore.getState().historyFailedRefs.has(ref)) {
+            started = false;
+            rejected = false;
+            hold = undefined;
+          }
           unregister?.();
         });
       if (readView) unregister = registerConversationClaim(ref, readView);

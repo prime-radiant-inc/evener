@@ -276,6 +276,48 @@ test("a repairing ref's loading status differs from a plain in-flight read's", a
   });
 });
 
+// A pane's very first read can answer the hub's history diagnostic, before any
+// model exists to carry the diagnostic. The spec's answer is one visible error
+// and no automatic re-read - so with no model the loading face is the surface
+// that has to say something, and the pane's demand has to survive: the person
+// can do nothing about a refused history except wait for the hub to repair it,
+// which means the pane must still load when a later read succeeds. Ending the
+// wait there instead rolled the pane's hold back and left it on an ordinary
+// Loading face with no claim left to recover with.
+test("a first read answered by the history diagnostic shows the failure and still recovers", async () => {
+  const fake = connectReadyFakeClient();
+  let failing = true;
+  fake.on("thread/read", () => {
+    if (failing) {
+      throw new WireError("thread history failed at entry 7", -32603, { evenerErrorInfo: "transcriptHistoryFailed" });
+    }
+    return versionedReadResponse("ref_history_failed");
+  });
+  const view = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_history_failed" }} paneId="p_history_failed" focused={true} />
+    </ClientProvider>,
+  );
+  // The face answers the diagnostic rather than presenting an ordinary load.
+  await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_history_failed")).toBe(true));
+  await waitFor(() => {
+    const label = screen.getByTestId("loader-label").textContent;
+    expect(label).toBeTruthy();
+    expect(label, "a refused history must not be presented as an ordinary load").not.toBe("Loading transcript");
+  });
+  // The hub repairs the history, and a later read is what converges the pane.
+  failing = false;
+  await act(async () => {
+    await threadsStore.getState().refreshThread("ref_history_failed");
+  });
+  await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_history_failed")).toBe(false));
+  expect(
+    threadsStore.getState().threads.get("ref_history_failed"),
+    "the pane's demand must survive the diagnostic, so a later read still loads it",
+  ).toBeDefined();
+  view.unmount();
+});
+
 // The daemon fences every request against a target it has actually deleted
 // with a WireError carrying data.mutationOutcome === "targetDeleted"
 // (cmd/evener-hub/app_sources.go's deletionFenceError, surfaced to thread/read

@@ -10399,6 +10399,172 @@ it("a Clear's replacement carries the press the retired read could not", async (
   }
 }, 20_000);
 
+// A pre-Clear read that succeeds AFTER Clear's replacement already answered
+// with the history diagnostic must not erase that answer. Its success is
+// fenced - the read's claim on publication was retired with the Clear - so it
+// says nothing about the ref; treating it as the hub's answer dropped the
+// verdict the waiting press was owed, and the press then bought a third read
+// for a history the hub had already refused. The read count and the outbox row
+// are what a person pays for that.
+it("a successful pre-Clear read does not erase the replacement's terminal verdict", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // Read 1 is the press's own verification, parked so the Clear can retire it.
+  // Every read after it answers with the history diagnostic, because that is
+  // what the hub has said about this history: the spec answers it by waiting
+  // for a LATER read, not by re-asking on the ref's behalf.
+  const claimRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return claimRead.promise;
+    throw new WireError("thread history failed at entry 7", -32603, { evenerErrorInfo: ErrorTranscriptHistoryFailed });
+  });
+  const realClear = SessionEntryCache.prototype.clear;
+  const clearGate = deferred<void>();
+  const clearSpy = vi.spyOn(SessionEntryCache.prototype, "clear").mockImplementation(async function (
+    this: SessionEntryCache,
+  ) {
+    await clearGate.promise;
+    return realClear.call(this);
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    const outcome = resent.then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    await vi.waitFor(() => expect(reads, "the press must spend its verification read").toBe(1));
+    const clearing = clearCachedSessions();
+    clearGate.resolve();
+    await clearing;
+    // The replacement has answered by now. Only then does the retired read
+    // return - successfully, and too late to speak for the ref: its claim on
+    // publication died with the Clear.
+    expect(reads, "the Clear's replacement is the second read").toBe(2);
+    claimRead.resolve({ ...response(), requestGeneration: 0 });
+    const settled = await Promise.race([
+      outcome,
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 3_000)),
+    ]);
+    // The count is the finding's own claim: erasing the verdict made the press
+    // buy another read for a history the hub had already refused.
+    expect(reads, "a refused history must not be read again for the same press").toBe(2);
+    expect(settled, "the press is owed the replacement's verdict, not another read").toBe("rejected");
+    expect(
+      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      "the press never verified its destination, so it must not reach the outbox",
+    ).not.toContain(row.clientMutationId);
+  } finally {
+    clearSpy.mockRestore();
+    background.release();
+  }
+}, 20_000);
+
+// A Clear replacement that ends on the hub's history diagnostic answers the
+// press that joined it. The acquisition is owed that verdict once: asking the
+// handoff a second time must end the press rather than put the same settled
+// rejection back in front of the same catch, which is a loop on already
+// settled promises - it never yields, so Send stays pending forever and the
+// recovery draft with it.
+//
+// Bounded deliberately: the assertion is that the press SETTLES inside the
+// bound, so a regression shows up as a failed expectation rather than as a test
+// that hangs until the runner kills it. A hang is not evidence.
+it("a Clear replacement's history diagnostic settles the press instead of spinning", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The claim's own verification read is parked so the Clear has something to
+  // retire; every read after it answers with the terminal history diagnostic.
+  const claimRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) return claimRead.promise;
+    throw new WireError("thread history failed at entry 7", -32603, { evenerErrorInfo: ErrorTranscriptHistoryFailed });
+  });
+  const realClear = SessionEntryCache.prototype.clear;
+  const clearGate = deferred<void>();
+  const clearSpy = vi.spyOn(SessionEntryCache.prototype, "clear").mockImplementation(async function (
+    this: SessionEntryCache,
+  ) {
+    await clearGate.promise;
+    return realClear.call(this);
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    const outcome = resent.then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    await vi.waitFor(() => expect(reads, "the claim must spend its verification read").toBe(1));
+    const clearing = clearCachedSessions();
+    // Clear retires the parked read before its first await, so the claim is
+    // now waiting on the replacement the transaction owes it.
+    claimRead.resolve({ ...response(), requestGeneration: 0 });
+    clearGate.resolve();
+    await clearing;
+    // The replacement's read has answered by now: the press must have ended,
+    // and it must end by rejecting so the recovery draft survives.
+    const settled = await Promise.race([
+      outcome,
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 2_000)),
+    ]);
+    expect(settled, "a Clear replacement's history diagnostic must end the press, not park it").toBe("rejected");
+    expect(
+      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      "a press that could not verify its destination must not reach the outbox",
+    ).not.toContain(row.clientMutationId);
+  } finally {
+    clearSpy.mockRestore();
+    background.release();
+  }
+}, 20_000);
+
 // A hold is released by the holder that took it, not by whoever closes first.
 // Two panes over one ref each own a handle; pane A's unmount releases A's, so it
 // cannot remove B's, and A's own rollback then finds its handle already spent.

@@ -309,6 +309,43 @@ describe("useThreadsStore.ensureThread", () => {
       expect(scheduledHydrationRetries.length).toBe(1);
     });
 
+    // A first open answered by the history diagnostic has no model, so the
+    // diagnostic has nowhere to live and the loading face is the surface that
+    // has to carry it. The ref's flag is that surface's input; a read that
+    // publishes is what clears it.
+    test("a first open answered by the history diagnostic flags the pane's face and clears it when a read publishes", async () => {
+      const fake = connectFakeClient();
+      let reads = 0;
+      fake.on("thread/read", () => {
+        reads += 1;
+        if (reads === 1) {
+          throw new WireError("thread history failed at entry 7", -32603, {
+            evenerErrorInfo: "transcriptHistoryFailed",
+          });
+        }
+        return readResponse("ref_a", { name: "Repaired" });
+      });
+
+      await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toBeDefined();
+      expect(
+        threadsStore.getState().threads.has("ref_a"),
+        "no model exists to carry the diagnostic on a first open",
+      ).toBe(false);
+      expect(
+        threadsStore.getState().historyFailedRefs.has("ref_a"),
+        "the loading face must be able to say the history was refused",
+      ).toBe(true);
+
+      // A mounted pane's recovery is another acquisition: the rejected claim
+      // rolled its own hold back, so no owner is left for a refresh to serve.
+      await threadsStore.getState().ensureThread("ref_a");
+      expect(
+        threadsStore.getState().historyFailedRefs.has("ref_a"),
+        "a read that publishes retires the diagnostic's face with the verdict",
+      ).toBe(false);
+      expect(threadsStore.getState().threads.get("ref_a")?.name).toBe("Repaired");
+    });
+
     test("a superseded read's late success does not clear the repair status the newer read owns", async () => {
       const fake = connectFakeClient();
       fake.on("thread/read", () => readResponse("ref_a", { name: "Open" }));
