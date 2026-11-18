@@ -405,6 +405,13 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	skills.PinnedNoteGen = s.pinnedNoteGen
 	contextWindow, contextWindowSource := budgetingWindow(s.profile)
 	inputTokens, inputHistoryLength, inputTarget := s.contextMgr.InputMeasurement()
+	var measuredEntries uint64
+	if inputTokens > 0 {
+		measuredEntries = s.measuredTranscriptEntries
+		if measuredEntries == 0 && s.stateDir != "" {
+			inputTokens, inputHistoryLength, inputTarget = 0, 0, ""
+		}
+	}
 	return schema.SessionMeta{
 		ID:                       s.id,
 		ProfileID:                s.profile.ID(),
@@ -423,6 +430,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		LastInputTokens:          inputTokens,
 		LastInputHistoryLength:   inputHistoryLength,
 		LastInputTarget:          inputTarget,
+		LastInputEntryCount:      measuredEntries,
 		ContextWindow:            contextWindow,
 		ContextWindowSource:      contextWindowSource,
 		Name:                     s.naming.value,

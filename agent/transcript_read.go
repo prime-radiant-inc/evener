@@ -220,6 +220,29 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	return turns
 }
 
+// A saved provider count describes the reconstructed history at dispatch.
+// Transcript entries can move its start (a checkpoint) or change an earlier
+// row (a reopened attention item) before the next metadata save.
+func matchesMeasuredTranscriptPrefix(meta *schema.SessionMeta, entries []transcript.Entry, history []schema.Turn) bool {
+	count, turns := meta.LastInputEntryCount, meta.LastInputHistoryLength
+	if meta.LastInputTokens <= 0 || meta.LastInputTarget == "" || count == 0 || count > uint64(len(entries)) || turns < 0 || turns > len(history) {
+		return false
+	}
+	if count == uint64(len(entries)) {
+		return true
+	}
+	prefix, repairs := resumeHistoryIndexed(entries[:count])
+	for _, index := range repairs {
+		if index >= turns {
+			break
+		}
+		// Repair timestamps name the reconstruction time. The tool call,
+		// its error result and its position are the enduring request data.
+		prefix[index].Timestamp = history[index].Timestamp
+	}
+	return sameHistoryPrefix(prefix, history, turns)
+}
+
 // mapDivergenceThroughResumedHistory maps an immutable full-transcript
 // divergence index (the fork boundary, first child-owned turn) into
 // resumed-history coordinates: the resumed history starts at the

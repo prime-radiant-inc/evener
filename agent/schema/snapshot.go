@@ -171,6 +171,9 @@ type SessionMeta struct {
 	// The count covers this many history turns for this estimator target.
 	LastInputHistoryLength int    `json:"last_input_history_length,omitempty"`
 	LastInputTarget        string `json:"last_input_target,omitempty"`
+	// LastInputEntryCount is the recorded transcript prefix from which the measured
+	// history can be reconstructed, even if later entries committed a fold.
+	LastInputEntryCount uint64 `json:"last_input_entry_count,omitempty"`
 	// ContextWindow is the window the session budgets against, and
 	// ContextWindowSource where it came from ("live", "overlay", "config",
 	// "snapshot", or "assumed"). They are rewritten on every save, so a resumed

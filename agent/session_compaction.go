@@ -518,6 +518,14 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		// the order their entries were written.
 		writer.ReleaseCommitBoundary()
 	}
+	// A measurement of a live-only fold remains usable in this process.
+	// A complete replacement marker makes the live prefix resumable again.
+	if markerLanded {
+		s.unrecordedFold = false
+	}
+	if commit.stagedTailWriteFailed || commit.stagedHistoryWriteFailed {
+		s.unrecordedFold = true
+	}
 	// Every path ends the publication hold here and publishes the one settled
 	// boundary: the published-length handoff is monotone, so a fold that
 	// stands publishes its full commit, a withheld one publishes a length the
@@ -839,6 +847,8 @@ type foldCommit struct {
 	// no rewrite copies. Set and read only under the publication
 	// transaction's attentionMu, in the committing goroutine.
 	stagedTailWriteFailed bool
+	// A marker or steering line present in resident history failed to record.
+	stagedHistoryWriteFailed bool
 	// markerWithheld records that the publisher took this fold's transcript
 	// commit back out: no marker, copy or steering line of this fold's is in
 	// the file, and the next resume replays the transcript from before the
@@ -1143,6 +1153,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if !commit.stagedTailWriteFailed {
 			steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 		}
+		commit.stagedHistoryWriteFailed = errors.Join(compactionTurnWriteErrs...) != nil || errors.Join(steeringWriteErrs...) != nil
 		return markerLanded
 	}
 	commit.resetEnvContextTrackerLocked = func(removed bool) {

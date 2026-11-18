@@ -1152,6 +1152,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
 	}
+	// Compare both transcript views before escaping either for the model.
+	restoreMeasurement := restoreCfg.resumeHistory == nil && matchesMeasuredTranscriptPrefix(&meta, transcriptEntries, resumeHistory)
 	// The durable transcript keeps the raw notes block for display, so model
 	// context must receive the escaped copy: rewrite those turns before the
 	// history becomes model context. The projection record is read first, because
@@ -1458,8 +1460,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	if s.contextMgr != nil && meta.LastInputHistoryLength >= 0 && meta.LastInputHistoryLength <= len(s.history) {
+	if s.contextMgr != nil && restoreMeasurement {
 		s.contextMgr.RestoreInputMeasurement(meta.LastInputTokens, meta.LastInputHistoryLength, meta.LastInputTarget)
+		s.measuredTranscriptEntries = meta.LastInputEntryCount
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can

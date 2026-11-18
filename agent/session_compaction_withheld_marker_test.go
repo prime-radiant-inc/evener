@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -248,9 +249,14 @@ func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
 	s := newScriptedSummaryCompactSession(t, "withhold-coverage-cheap", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-withhold-coverage-summary\n[END SUMMARY]")}
 	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
-	response := func(llm.Request) llm.Response {
+	const afterFold = "opaque-withhold-coverage-after"
+	response := func(req llm.Request) llm.Response {
 		call := communicateCall("withheld-fold-result", "result")
-		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+		resp := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+		if requestCarriesText(req, afterFold) {
+			resp.Usage.InputTokens = 90_000
+		}
+		return resp
 	}
 	steps := make([]func(llm.Request) llm.Response, 0, 12)
 	for range 12 {
@@ -304,7 +310,7 @@ func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
 	// A full round after the withheld fold: its model request stages the
 	// folded conversation, and its reply is the output voice eligibility
 	// judges.
-	if _, err := s.ProcessInput(context.Background(), "opaque-withhold-coverage-after", nil); err != nil {
+	if _, err := s.ProcessInput(context.Background(), afterFold, nil); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
@@ -327,6 +333,23 @@ func TestWithheldFoldKeepsTheConversationCovered(t *testing.T) {
 	}
 	if !appwire.ConversationOutputEligible(state, output) {
 		t.Fatalf("the reply after the withheld fold is not eligible for voice output: state=%+v output=%+v", state, output)
+	}
+	if got := s.contextMgr.LastInputTokens(); got != 90_000 {
+		t.Fatalf("the provider measured the live compacted history at 90000 tokens, got %d", got)
+	}
+	s.Close()
+	meta, err := schema.LoadSessionMeta(dir, s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta,
+		RestoreSessionConfig{StateDir: dir, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	if got := restored.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("restored %d measured tokens on a transcript without the measured fold", got)
 	}
 }
 
@@ -421,6 +444,21 @@ func TestWithheldFoldSnapshotKeepsCoverageAfterAnotherFold(t *testing.T) {
 	}
 	if state := s.ConversationProvenance(); !state.Authoritative {
 		t.Fatalf("history snapshot made conversation coverage unknown: state=%+v", state)
+	}
+	updateSessionTestConfig(s, func(cfg *testConfig) { cfg.afterModelHistorySnapshot = nil })
+	answer := agenttest.FinalResponse("answer-recovered-91")
+	answer.Usage.InputTokens = 36_000
+	s.client.Register(newFakeAdapter("openai", fixedStep(answer)))
+	if _, err := s.ProcessInput(t.Context(), "after-durable-fold-24", nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	meta, err := schema.LoadSessionMeta(dir, s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.LastInputTokens != 36_000 || meta.LastInputEntryCount == 0 {
+		t.Fatalf("a committed replacement fold must restore measurement persistence: tokens=%d entries=%d", meta.LastInputTokens, meta.LastInputEntryCount)
 	}
 }
 

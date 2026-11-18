@@ -105,8 +105,11 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			want                 int
 		}{
 			{"same", "wire-a", original, true, true, 90_000},
+			{"measured after committed fold", "wire-a", original, true, true, 90_000},
+			{"measured after repaired tool result", "wire-a", original, true, true, 90_000},
 			{"compacted during dispatch", "wire-a", original, true, true, 0},
 			{"unknown measurement owner", "wire-a", original, true, true, 0},
+			{"unknown measured prefix", "wire-a", original, true, true, 0},
 			{"replay disabled", "wire-a", original, true, false, 0},
 			{"redirected model", "wire-b", original, true, true, 0},
 			{"same endpoint without replay", "wire-a", original, false, false, 90_000},
@@ -127,14 +130,22 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 					return resp
 				})
 				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))
+				ctx := tripwireCtx(t)
 				fold := tc.name == "compacted during dispatch"
-				if fold {
+				if fold || tc.name == "measured after committed fold" {
 					for range 12 {
 						s.appendTurn(schema.TurnUserInput, llm.User("old-15"))
 						s.appendTurn(schema.TurnAssistant, llm.Assistant("earlier-34"))
 					}
 				}
-				ctx := tripwireCtx(t)
+				if tc.name == "measured after committed fold" {
+					if err := s.Compact(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.name == "measured after repaired tool result" {
+					s.appendTurn(schema.TurnAssistant, agenttest.ToolCallResponse(communicateCall("orphan-31", "result")).Message)
+				}
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
@@ -163,6 +174,9 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				}
 				if tc.name == "unknown measurement owner" {
 					meta.LastInputTarget = ""
+				}
+				if tc.name == "unknown measured prefix" {
+					meta.LastInputEntryCount = 0
 				}
 				client = clientFor(tc.wire, tc.endpoint, tc.after)
 				restored, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "gw/reasoner"),
@@ -241,6 +255,13 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			if tokens != 90_000 || measured == 0 {
 				t.Errorf("measurement before publication = %d covering %d turns", tokens, measured)
 			}
+			if err := s.saveMeta(); err != nil {
+				t.Error(err)
+			}
+			beforeFold, err := schema.LoadSessionMeta(state, s.id)
+			if err != nil || beforeFold.LastInputTokens != 90_000 {
+				t.Errorf("pre-fold snapshot measured %d tokens, load error %v", beforeFold.LastInputTokens, err)
+			}
 			close(release)
 			waitForTestSignal(t, done, "fold publication")
 			s.Close()
@@ -248,18 +269,25 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			restored, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
-				StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer restored.Close()
-			if len(restored.history) == 0 || len(restored.history) < measured || (restored.history[0].Kind != schema.TurnSummary && restored.history[0].Kind != schema.TurnCheckpoint) {
-				t.Fatal("the restored fold must replace the measured prefix while retaining at least as many turns")
-			}
-			if got := restored.Meta().LastInputTokens; got != 0 {
-				t.Errorf("restored the old prefix's %d tokens on the new fold", got)
+			for _, tc := range []struct {
+				name string
+				meta schema.SessionMeta
+			}{{"committed metadata", meta}, {"process exited before metadata save", beforeFold}} {
+				t.Run(tc.name, func(t *testing.T) {
+					restored, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), tc.meta, RestoreSessionConfig{
+						StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer restored.Close()
+					if len(restored.history) == 0 || len(restored.history) < measured || (restored.history[0].Kind != schema.TurnSummary && restored.history[0].Kind != schema.TurnCheckpoint) {
+						t.Fatal("the restored fold must replace the measured prefix while retaining at least as many turns")
+					}
+					if got := restored.Meta().LastInputTokens; got != 0 {
+						t.Errorf("restored the old prefix's %d tokens on the new fold", got)
+					}
+				})
 			}
 		})
 	})

@@ -219,6 +219,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	historyRevision := s.historyRevision
+	transcriptEntries := s.measurementEntryCountLocked()
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
@@ -284,6 +285,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// below it loses the replay exemption that keeps its thinking.
 		projection := s.delegateModelHistorySnapshotWithCoverage()
 		snapshot := projection.turns
+		transcriptEntries = projection.transcriptEntries
 		historyCoverage = projection.coverage
 		scope.InFlightFrom = projection.inFlightFrom
 		inFlightFrom = projection.inFlightFrom
@@ -364,6 +366,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// final-dispatch delivery reload path and the compacted-skill reload path.
 	// It reports whether any turn had actually been appended.
 	rebuildForAppendedSkillTurns := func() (bool, error) {
+		s.attentionMu.Lock()
 		s.mu.Lock()
 		var appended []schema.Turn
 		// Measure against the snapshot this request projected (presentedTurns),
@@ -373,9 +376,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if len(s.history) > presentedBoundary {
 			appended = append(appended, s.history[presentedBoundary:]...)
 			presentedBoundary = len(s.history)
+			transcriptEntries = s.measurementEntryCountLocked()
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
+		s.attentionMu.Unlock()
 		if len(appended) == 0 {
 			return false, nil
 		}
@@ -445,7 +450,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns, deltaTurns)
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
 	s.setRoundFallbackSource(roundFallbackSource{
-		system: sys, scope: scope, turns: presentedTurns, revision: historyRevision,
+		system: sys, scope: scope, turns: presentedTurns, revision: historyRevision, transcriptEntries: transcriptEntries,
 	})
 	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
@@ -1082,8 +1087,19 @@ type roundFallbackSource struct {
 // modelHistorySnapshot is the full history behind a dispatched request,
 // including the full-history shadow of a continuation delta.
 type modelHistorySnapshot struct {
-	turns    []schema.Turn
-	revision int
+	turns             []schema.Turn
+	revision          int
+	transcriptEntries uint64
+}
+
+// measurementEntryCountLocked names the durable prefix behind this snapshot.
+// The caller holds attentionMu and mu across the transcript and history reads.
+func (s *Session) measurementEntryCountLocked() uint64 {
+	if s.unrecordedFold {
+		return 0
+	}
+	_, entries := s.transcript.RecordedBoundary()
+	return entries
 }
 
 func (h modelHistorySnapshot) matchesPrefix(history []schema.Turn, revision int) bool {
@@ -1311,15 +1327,17 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		measured := modelResp.history
 		if !measured.matchesPrefix(s.history, s.historyRevision) {
 			// A count for a different projection cannot price resident history.
 			s.contextMgr.RecordInputTokensFor(answeringProfile, 0, 0)
 			return
 		}
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, len(measured.turns))
+		if s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, len(measured.turns)) {
+			s.measuredTranscriptEntries = measured.transcriptEntries
+		}
 	}
 }
 

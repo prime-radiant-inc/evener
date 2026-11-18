@@ -106,12 +106,19 @@ func (w *Writer) recordSynced(turn schema.Turn, place Placement) (Record, error)
 // RecordedLength is the length of the file's recorded prefix: the header and
 // every recorded entry line. It never includes a rolled-back line. Nil-safe.
 func (w *Writer) RecordedLength() int64 {
+	length, _ := w.RecordedBoundary()
+	return length
+}
+
+// RecordedBoundary returns the byte length and number of entries in the same
+// recorded file prefix. The header contributes bytes and no entry.
+func (w *Writer) RecordedBoundary() (int64, uint64) {
 	if w == nil || w.tail == nil {
-		return 0
+		return 0, 0
 	}
 	w.tail.mu.Lock()
 	defer w.tail.mu.Unlock()
-	return w.tail.recordedLength
+	return w.tail.recordedLength, w.tail.nextOrdinal
 }
 
 // CommitBoundary is the append point a caller captured before writing, so it

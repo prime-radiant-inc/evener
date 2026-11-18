@@ -423,9 +423,10 @@ func (s *Session) delegateModelHistorySnapshot() []schema.Turn {
 // delegateModelProjection is a leased request's transcript, its coverage, and
 // the in-flight boundary, all read from one history.
 type delegateModelProjection struct {
-	turns        []schema.Turn
-	coverage     map[string][]string
-	inFlightFrom int
+	turns             []schema.Turn
+	coverage          map[string][]string
+	inFlightFrom      int
+	transcriptEntries uint64
 }
 
 // delegateModelHistorySnapshotWithCoverage copies the transcript a leased
@@ -441,9 +442,10 @@ func (s *Session) delegateModelHistorySnapshotWithCoverage() delegateModelProjec
 	defer s.mu.Unlock()
 	turns := append([]schema.Turn(nil), s.history...)
 	return delegateModelProjection{
-		turns:        turns,
-		coverage:     s.snapshotConversationCoverageLocked(turns),
-		inFlightFrom: s.turnHistoryBaseline,
+		turns:             turns,
+		coverage:          s.snapshotConversationCoverageLocked(turns),
+		inFlightFrom:      s.turnHistoryBaseline,
+		transcriptEntries: s.measurementEntryCountLocked(),
 	}
 }
 
