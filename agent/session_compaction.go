@@ -686,6 +686,23 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 
 		compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &histCopy, trigger, instructions)
 		commit.captured = captured
+		// Install the SAME live admission the per-request fold installs
+		// (foldHistoryBeforeRequest), so recovery compaction asks the lease and
+		// stop-fence question at its own dispatch boundary rather than trusting
+		// a verdict taken before it started (#2340 review M5).
+		//
+		// Both triggers need it. A local context-budget failure and a provider
+		// context-length rejection each reach this path on their own initiative,
+		// and the deterministic checkpoint plus PreCompact hook they run first
+		// can durably record a subtree stop. summarizeAllowed consults this
+		// predicate inside compact.go, immediately before the summarizer
+		// dispatches, so a stop recorded during that work is visible to it.
+		// Root sessions and non-delegate runtimes keep their behavior: the
+		// predicate admits them unconditionally, exactly as it does on the
+		// per-request path.
+		compactionCtx = contextmgr.WithSummarizeAdmission(compactionCtx, func() bool {
+			return s.admitCompactionProviderCall(ctx)
+		})
 		if automatic {
 			s.contextMgr.ForceCompactAutomatic(compactionCtx, &histCopy, instructions, emitFn)
 		} else {

@@ -16,6 +16,8 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -90,6 +92,77 @@ func TestDelegateUpdatePendingAcrossCompactionIsPresentedAndConsumedOnce(t *test
 	}
 	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
 		t.Fatalf("pending after the drain turn = %v (err %v), want it consumed", pending, err)
+	}
+}
+
+// TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow pins the drain
+// spin LIFE-01 leaves behind (#2340 review M3).
+//
+// The drain opens a leased EntryDelegateAttention turn to present a pending
+// watch row. A delegate that ALREADY reported answers that turn with plain
+// text, and recordAttentionNoAction refuses the no-action outcome once the
+// completion requirement is report-required -- so before this fix the turn
+// retried toward a report it must not overwrite, ended in error, resolved no
+// coverage, and keepingReport swallowed the failure. The row stayed pending and
+// the drain opened another turn for it, forever.
+//
+// The fixture is the reviewer's own shape: the REAL turn runs against a
+// scripted acknowledgment, and the assertion is made only after the drain
+// RETURNS. A test that checked the row while the drain was still spinning would
+// pass with the defect in place, which is exactly the trap here.
+//
+// The bound is what makes the wait meaningful: the process func counts turns
+// and cancels the drain on the third, so a drain that keeps re-opening turns
+// fails loudly instead of hanging, and one that does not return at all fails on
+// the context deadline.
+func TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow(t *testing.T) {
+	t.Parallel()
+	sess, main := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_coordinator", "")
+	controller.mu.Lock()
+	controller.live["dlg_coordinator"].binding.runtime = sess
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_coordinator"
+	// The report was already accepted: this delegate owes nothing but the watch
+	// acknowledgment, which is what makes the no-action outcome the right
+	// answer and its refusal the defect.
+	sess.mu.Lock()
+	sess.terminalCommunicateAccepted = true
+	sess.latestReport = communicateResult{called: true, reply: "already reported"}
+	sess.mu.Unlock()
+
+	// A pending WATCH row, appended through the production durable append.
+	attentionID := stableWatchAttentionIDPrefix + "watch:life-01-m3:job_m3:0f0f0f0f0f0f0f0f"
+	if _, err := sess.appendDelegateNotificationDurably(attentionID, "Timer fired, 1 times since your last turn."); err != nil {
+		t.Fatalf("append watch attention: %v", err)
+	}
+	if err := sess.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm watch attention: %v", err)
+	}
+
+	turns := 0
+	process := func(ctx context.Context, text string, images []ImageAttachment, kind EntryKind) (string, error) {
+		turns++
+		if turns > 2 {
+			t.Error("the drain keeps opening turns for a watch row the acknowledged turn already presented: the row is never consumed")
+			return "", context.Canceled
+		}
+		return sess.ProcessInputKind(ctx, text, images, kind)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_coordinator", generation: 1})
+	if _, err := sess.drainJobTreeWith(ctx, make(chan time.Time), func(context.Context) error { return nil }, process); err != nil {
+		t.Fatalf("drainJobTreeWith: %v", err)
+	}
+
+	if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after the drain returned = %v (err %v), want the acknowledged watch row consumed", pending, err)
+	}
+	if len(main.requests) == 0 {
+		t.Fatal("the drain made no model request: the acknowledgment was never elicited, so this fixture proves nothing")
 	}
 }
 
@@ -1490,6 +1563,73 @@ func TestStableChildCompactionFencesTheSummarizerAtItsDispatchBoundary(t *testin
 			sess.foldHistoryBeforeRequest(fencedCompactionLeaseCtx(), 0, fencedCompactionSysPrompt)
 			if arm.fence && elicited.Load() != 0 {
 				t.Fatalf("the elicitor made %d provider request(s), want 0: this arm is about the summarizer, not the elicitor", elicited.Load())
+			}
+			assertFencedCompactionArms(t, arm.wantSu, summarized.Load())
+		})
+	}
+}
+
+// TestStableChildRecoveryCompactionFencesTheSummarizer is review M5's other
+// window: automatic RECOVERY compaction (a local context-budget failure or a
+// provider context-length rejection) reaches the same summarize layer through
+// forceCompactForModelRecovery, which passed no live admission at all.
+//
+// So a subtree stop recorded during that fold's deterministic checkpoint was
+// invisible to the summarize layer, and the summarizer dispatched on a
+// generation the user had already stopped. The per-request fold installed the
+// predicate; this path did not.
+//
+// WHERE THE STOP IS RECORDED MATTERS. The first version of this test decorated
+// s.strategy, whose ManageContext the ForceCompact path never calls -- so the
+// stop was never recorded and the fenced arm passed for the wrong reason, which
+// is the trap the reviewer named. The seam here is the fold's own compaction-turn
+// callback: the deterministic checkpoint reports its turn through it INSIDE the
+// fold, before the summarize layer dispatches, so the stop lands in the window
+// this finding is about and nowhere earlier.
+//
+// Both arms run the same fixture and the same recovery fold; only the stop
+// differs. The control arm is what makes the fenced arm's zero evidence.
+func TestStableChildRecoveryCompactionFencesTheSummarizer(t *testing.T) {
+	t.Parallel()
+	for _, arm := range []struct {
+		name   string
+		fence  bool
+		wantSu bool
+	}{
+		{name: "control_no_stop", wantSu: true},
+		{name: "fenced_during_checkpoint", fence: true},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			sess, controller, _, summarized := fencedCompactionRig(t)
+			muteNoteElicitation(sess)
+			if arm.fence {
+				// Record the stop INSIDE the window under test: after the
+				// deterministic checkpoint has run and before the summarize layer
+				// dispatches. That window is the PreCompact hook, and the runner
+				// reports its start before it executes. OnCompactionTurn cannot
+				// serve here: production installs a per-call context callback, and
+				// handleCompactionTurn prefers it over the Manager field, so a
+				// test-set field never fires.
+				runner := hooks.NewRunner(nil, "")
+				var once sync.Once
+				runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+					start, ok := data.(events.HookStartData)
+					if !ok || start.Event != string(plugin.HookPreCompact) {
+						return
+					}
+					once.Do(func() { recordSubtreeStop(t, controller, fencedCompactionDelegateName) })
+				})
+				runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "compact"})
+				sess.hookRunner = runner
+			}
+			sess.forceCompactForModelRecovery(fencedCompactionLeaseCtx())
+			if arm.fence {
+				// Non-vacuity of the FENCE arm itself: the stop must really be
+				// recorded, or a zero suffices for the wrong reason.
+				if admitted := sess.delegateController.admitModelRequestLease(delegateLease{delegateID: fencedCompactionDelegateName, generation: 1}); admitted == nil {
+					t.Fatal("setup: the stop fence was never recorded, so the fenced arm proves nothing")
+				}
 			}
 			assertFencedCompactionArms(t, arm.wantSu, summarized.Load())
 		})
