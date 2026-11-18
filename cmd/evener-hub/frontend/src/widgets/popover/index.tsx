@@ -65,21 +65,21 @@ export interface PopoverProps {
  * outside click or Escape closes it - as with Menu. Built on FocusScope with
  * trap so Tab/Shift+Tab cycle within the panel while open, also as with Menu.
  *
- * Its own dismissal rules, which Menu does not share: ANY scroll
- * (capture-phase, so a scrollable ancestor's own scroll counts too) closes it,
- * and so does a viewport resize. Menu instead closes only on a scroll that can
- * actually move its trigger, and re-anchors rather than closing when the
- * viewport resizes - opening Menu can itself dismiss the software keyboard,
- * and that resize is not the reader dismissing anything. A caller that needs a
- * panel to survive those passes `closeOnScroll={false}`. See "Menu" in the
- * widget reference.
+ * What both share: an outside press, Escape, and a re-measure on every open.
+ * Where they differ is what a scroll and a resize mean. Popover treats ANY
+ * scroll (capture-phase, so a scrollable ancestor's own counts too) and any
+ * window resize as the reader dismissing it, so both close it. Menu instead
+ * closes only on a scroll that can actually move its trigger, and re-anchors
+ * rather than closing when the viewport resizes - opening Menu can itself
+ * dismiss the software keyboard, and that resize is not the reader dismissing
+ * anything. See "Menu" in the widget reference. A caller that needs a panel to
+ * survive the scroll and resize above passes `closeOnScroll={false}`.
  *
- * It does re-place itself after opening, in one case: when the PANEL's own box
- * changes, an observed resize re-runs the placement, so asynchronously-arriving
- * content (the model picker's catalog) cannot leave a grown panel hanging off
- * the viewport edge. That is a panel-content change, not a scroll or a
- * viewport change, and it is why the dismissal rules above do not say "never
- * repositions".
+ * Dismissal on a scroll or a resize is therefore not the same claim as "never
+ * moves after opening": when the PANEL's own box changes, an observed resize
+ * re-runs the placement, so asynchronously-arriving content (the model
+ * picker's catalog) cannot leave a grown panel hanging off the viewport edge.
+ * That is a panel-content change, not a scroll or a viewport change.
  */
 export function Popover({
   open,
@@ -189,12 +189,15 @@ export function Popover({
     onDismiss: onClose,
   });
 
-  // A scroll anywhere (capture-phase) or a viewport resize closes the popover.
-  // Popover never repositions after opening, so a scroll it cannot follow is a
-  // popover detached from its trigger - closing is the honest answer. Menu
-  // decides this differently: it closes only on a scroll that can move its own
-  // trigger, and re-anchors on a resize (see "Menu" in the widget reference).
-  // Consumers whose panel content scrolls opt out with closeOnScroll={false}.
+  // Popover's own rule, with closeOnScroll enabled: ANY scroll (capture-phase,
+  // so a scrollable ancestor's counts too) or a window resize CLOSES it. It
+  // does not follow either one - there is no listener here that re-places it
+  // for a scroll or a resize - and closing beats showing a panel detached from
+  // its anchor. The one case where it does re-place is a change to the panel's
+  // OWN size, which the ResizeObserver in the effect above answers (a
+  // catalog that finishes loading). Consumers whose panel content scrolls opt
+  // out with closeOnScroll={false}; Menu handles all of this differently - see
+  // "Menu" in the widget reference.
   useEffect(() => {
     if (!open || !closeOnScroll) return;
     if (!panelWindow) return;

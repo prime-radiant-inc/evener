@@ -111,6 +111,29 @@ const CLASS = {
   separator: requireClass(styles.separator, "menu.module.css", "separator"),
 };
 
+// The nearest ancestor that scrolls the trigger itself, if any: a rail list, a
+// pane's scroller. That box is where content can be inserted above the trigger
+// and slide it down without changing any box's size.
+function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLElement | null {
+  const view = ownerWindow;
+  for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+    const overflowY = view.getComputedStyle(ancestor).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return ancestor;
+  }
+  return null;
+}
+
+// The outermost ancestor inside the body: everything in normal flow that could
+// push the trigger down, and nothing in the body beside it (a portaled sibling
+// subtree is not laid out against this trigger).
+function topLevelWrapperOf(element: HTMLElement, ownerDocument: Document): HTMLElement {
+  let wrapper = element;
+  while (wrapper.parentElement !== null && wrapper.parentElement !== ownerDocument.body) {
+    wrapper = wrapper.parentElement;
+  }
+  return wrapper;
+}
+
 function firstEnabledIndex(items: MenuEntry[]): number {
   return items.findIndex(isActionable);
 }
@@ -258,12 +281,44 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // rect: this runs in the commit that mounts it, while the entrance still
     // holds it at its scaled-down `from` keyframe, and a rect would place a
     // popup that is about to be larger than the box it was measured as.
+    //
+    // The visible region is the VISUAL viewport, not the layout viewport: a
+    // pinch zoom (or any visual-viewport shrink) leaves innerHeight describing
+    // an area the reader cannot see, so flipping and clamping against it puts
+    // actions offscreen. Rect and offsets are both in layout-viewport CSS
+    // pixels, so translating the trigger into the visual viewport's own
+    // coordinates, placing there, and translating back keeps the shared
+    // flip-then-clamp math unchanged. Without a visual viewport the two are
+    // the same region and the translation is zero.
+    const visualViewport = ownerWindow.visualViewport;
+    const visible = visualViewport
+      ? {
+          left: visualViewport.offsetLeft,
+          top: visualViewport.offsetTop,
+          width: visualViewport.width,
+          height: visualViewport.height,
+        }
+      : { left: 0, top: 0, width: ownerWindow.innerWidth, height: ownerWindow.innerHeight };
+    const localTriggerRect = {
+      ...triggerRect,
+      left: triggerRect.left - visible.left,
+      right: triggerRect.right - visible.left,
+      top: triggerRect.top - visible.top,
+      bottom: triggerRect.bottom - visible.top,
+    } as DOMRect;
     const placed = computeMenuPosition(
-      triggerRect,
+      localTriggerRect,
       { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
-      { width: ownerWindow.innerWidth, height: ownerWindow.innerHeight },
+      { width: visible.width, height: visible.height },
     );
-    setPosition(placed);
+    // Only write when it actually moved: the observers below can report a
+    // mutation that changes nothing about placement (a text node elsewhere in
+    // the same scroller), and a state write per notification would re-render
+    // the open popup on every one of them.
+    const next = { left: placed.left + visible.left, top: placed.top + visible.top };
+    setPosition((current) =>
+      current !== null && current.left === next.left && current.top === next.top ? current : next,
+    );
     setOrigin(transformOriginFor(triggerRect, placed));
   }, [ownerDocument]);
 
@@ -286,7 +341,18 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       placeMenu();
     });
   }, [ownerDocument, placeMenu]);
-  // A menu that leaves mid-frame must not place itself afterwards.
+  // A menu that leaves mid-frame must not place itself afterwards, and this
+  // document may no longer be the one it is leaving in. Closing cancels the
+  // frame HERE rather than in the cleanup below, because the cleanup for a
+  // document change is not a close: without this the frame a resize queued
+  // would run while the popup plays its exit (it stays mounted through that -
+  // usePresence) and re-place it away from where the reader last saw it.
+  useEffect(() => {
+    if (isOpen || frameRef.current === null) return;
+    (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  }, [isOpen, ownerDocument]);
+  // Unmount, and a move to another document, have no close to cancel the frame.
   useEffect(() => {
     return () => {
       if (frameRef.current === null) return;
@@ -604,10 +670,37 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         ancestor = ancestor.parentElement;
       }
     }
+    // A box observer answers "something changed size". The remaining way the
+    // trigger moves with every box unchanged is content arriving ABOVE it: a
+    // session entering the rail's Live section pushes the pinned section - and
+    // the trigger in it - down, while the fixed-height scroller, the sections,
+    // the trigger and the popup all keep their sizes. That insertion is not a
+    // resize and no event names it, so it is watched as what it is: a mutation
+    // in the box that lays the trigger out.
+    //
+    // The scope is the trigger's scroll container when it has one - the only
+    // box whose own content can slide the trigger without resizing anything -
+    // and otherwise the trigger's top-level wrapper, which is everything in
+    // normal flow that could push it. Not the whole document: a document-wide
+    // subtree watch on a streaming transcript would re-measure on every token.
+    const Mutations = ownerWindow.MutationObserver;
+    const mutations: MutationObserver | null =
+      typeof Mutations === "undefined" || triggerEl === null
+        ? null
+        : new Mutations(() => {
+            placeAfterLayout();
+          });
+    if (mutations !== null && triggerEl !== null) {
+      mutations.observe(scrollContainerOf(triggerEl, ownerWindow) ?? topLevelWrapperOf(triggerEl, ownerDocument), {
+        childList: true,
+        subtree: true,
+      });
+    }
     return () => {
       visualViewport?.removeEventListener("resize", placeAfterLayout);
       visualViewport?.removeEventListener("scroll", placeAfterLayout);
       observer?.disconnect();
+      mutations?.disconnect();
     };
   }, [isOpen, ownerDocument, placeAfterLayout]);
 

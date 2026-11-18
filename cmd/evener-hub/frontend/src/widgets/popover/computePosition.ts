@@ -33,17 +33,34 @@ export function clampIntoViewport(preferred: number, size: number, viewportSize:
   return Math.max(EDGE_MARGIN, Math.min(preferred, viewportSize - size - EDGE_MARGIN));
 }
 
+// A candidate is usable only when both of its edges are inside the viewport:
+// its near edge clears EDGE_MARGIN, and its far edge does not pass the edge
+// itself. The near margin is required because there is clear space reserved
+// there; the far edge is only required to be on-screen because this module's
+// own policy (see clampIntoViewport above) prefers an overhang into reserved
+// clear space over pushing the box's leading edge offscreen.
+//
+// Testing the far edge of `primary` but only the near edge of `flipped` was
+// the bug: it accepted a flip at y=576 in a 500px-tall viewport, because the
+// flip's TOP cleared the margin while the whole popup - and the keyboard focus
+// inside it - sat below the window. Such a trigger is ordinary, not
+// pathological: a rail row keeps its own y while the window shrinks over it,
+// with no scroll to move it.
+function clearsViewport(position: number, size: number, viewportSize: number): boolean {
+  return position >= EDGE_MARGIN && position + size <= viewportSize;
+}
+
 // One axis (horizontal or vertical) of the flip-then-clamp placement: try
 // `primary` (the popup's default, unflipped offset - left-aligned to the
-// trigger, or opening below it); if the popup would overflow the far edge
-// there, try `flipped` instead (the other side - right-aligned to the
-// trigger, or opening above it); if NEITHER fits, clamp `primary` into
-// [0, viewportSize] so the popup stays as fully within the viewport as the
-// available space allows, rather than settling for whichever of the two
+// trigger, or opening below it); if the popup crosses either edge there, try
+// `flipped` instead (the other side - right-aligned to the trigger, or opening
+// above it); if NEITHER fits, clamp `primary` into [EDGE_MARGIN,
+// viewportSize - EDGE_MARGIN] so the popup stays as fully within the viewport
+// as the available space allows, rather than settling for whichever of the two
 // overflows less.
 export function resolveAxis(primary: number, flipped: number, size: number, viewportSize: number): number {
-  if (primary + size <= viewportSize - EDGE_MARGIN) return primary;
-  if (flipped >= EDGE_MARGIN) return flipped;
+  if (clearsViewport(primary, size, viewportSize)) return primary;
+  if (clearsViewport(flipped, size, viewportSize)) return flipped;
   return clampIntoViewport(primary, size, viewportSize);
 }
 

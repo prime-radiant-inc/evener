@@ -421,19 +421,144 @@ test("an outside press still closes the menu after a keyboard-dismissal resize",
 // the frame: rAF is captured rather than awaited so the test drives the exact
 // moment the widget re-measures, instead of racing a timer.
 function captureFrames(): { flush: () => void } {
-  const pending: FrameRequestCallback[] = [];
+  const pending = new Map<number, FrameRequestCallback>();
+  let nextHandle = 0;
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-    pending.push(callback);
-    return pending.length;
+    nextHandle += 1;
+    pending.set(nextHandle, callback);
+    return nextHandle;
+  });
+  // A frame the widget cancels must never run, or a test could not tell
+  // "cancelled" from "ran and happened to agree".
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+    pending.delete(handle);
   });
   return {
     flush: () => {
       act(() => {
-        for (const callback of pending.splice(0)) callback(0);
+        const callbacks = [...pending.values()];
+        pending.clear();
+        for (const callback of callbacks) callback(0);
       });
     },
   };
 }
+
+// A visual viewport can shrink while the LAYOUT viewport does not - desktop
+// pinch zoom is the everyday case, and the keyboard inset is the same shape.
+// Placement that flips and clamps against innerHeight then uses an area the
+// reader cannot see: an 800px layout viewport with a 400px visible one put a
+// 120px popup from a trigger ending at 328 down to 452, off the visible area,
+// when it fits above the trigger. innerHeight is deliberately NOT changed
+// here; only the visual viewport is.
+test("a visual viewport smaller than the layout viewport is what the popup flips against", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    // The trigger ends at 328: below it a 120px popup would reach 452.
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    // Only the visible viewport is 400 tall, so 452 is offscreen and the popup
+    // flips above: 300 - 4 - 120 = 176. Clamping against innerHeight's 800
+    // would have left it at 332 and put the bottom of the popup out of sight.
+    expect(screen.getByRole("menu").style.top).toBe("176px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// Placement is in layout-viewport coordinates, but the visible region can be
+// OFFSET inside it (a visual viewport scrolled or zoomed into a corner). Both
+// rect and offsets share the layout-viewport pixel space, so the popup has to
+// come back out translated, or it lands somewhere the reader is not looking.
+test("a scrolled visual viewport places the popup in the reader's visible region", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 600;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    // The trigger sits NEAR THE BOTTOM of the scrolled-in region (600..1000):
+    // below it a 120px popup overflows the visible area, though it would fit
+    // in the taller layout viewport.
+    if (this.tagName === "BUTTON") return box(100, 950, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 500);
+    return box(0, 0, 0, 0);
+  });
+  // A menu TALLER than the visible region: pinch-zoomed, a long menu cannot
+  // fit either side, so placement clamps. That is the only case where the
+  // translation does not cancel out - a flip is symmetric, but a clamp pins to
+  // the visible edge, and pinning to the layout edge puts it offscreen.
+  stubPopupLayoutBox(window, 160, 500);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    // Local: trigger top 350, bottom 378. Neither side fits a 500px popup in a
+    // 400px region, so it clamps to the visible top edge (local 8) = 608.
+    // Against the layout viewport, flipping "fits" at 446 - 162px too high, in
+    // a region the reader is not looking at.
+    expect(screen.getByRole("menu").style.top).toBe("608px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
 
 // --- iOS resizes only the VISUAL viewport ----------------------------------
 // The mobile shell spends a visual-viewport shrink as `--keyboard-inset`
@@ -443,8 +568,16 @@ function captureFrames(): { flush: () => void } {
 test("a visual-viewport resize re-anchors the menu to the trigger it moved", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  const fakeViewport = new EventTarget() as EventTarget & { height: number };
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 400;
   fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
   vi.stubGlobal("visualViewport", fakeViewport);
   const { flush } = captureFrames();
   let triggerTop = 300;
@@ -497,8 +630,15 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
 test("a visual-viewport scroll with no resize re-anchors the menu", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  const fakeViewport = new EventTarget() as EventTarget & { height: number; offsetTop: number };
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 400;
   fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 0;
   vi.stubGlobal("visualViewport", fakeViewport);
   const { flush } = captureFrames();
@@ -561,17 +701,18 @@ test("a visual-viewport scroll with no resize re-anchors the menu", async () => 
   }
 });
 
-// --- the trigger moves after the resize event ------------------------------
-// Dockview lays out from an observed box, a frame after the window's own
-// resize. Measuring in the resize handler therefore reads the trigger's OLD
-// rect, and the footer then moves with no further window event. The
-// ResizeObserver notification is the second chance to measure - it arrives
-// after layout, which is the only moment the trigger's final rect exists.
-test("a desktop resize that lands before the layout settles still ends on the trigger's final position", async () => {
+// A trigger does not have to be near the visible area to be an honest trigger.
+// A desktop rail row sits at its own y inside the rail's scroller, and shrinking
+// the window over it moves nothing: the row keeps y=700 with no scroll. There a
+// popup 120 tall has no side that fits in a 500px-tall window, and the only
+// answer that leaves the reader's keyboard focus onscreen is the clamp. Deciding
+// "it fits above" from the near edge alone put the whole popup at y=576 - below
+// the window - because its TOP cleared the margin.
+test("a trigger the window shrinks past still gets a popup inside the visible region", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   let triggerTop = 300;
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
   const box = (left: number, top: number, width: number, height: number) =>
     ({
       left,
@@ -590,8 +731,69 @@ test("a desktop resize that lands before the layout settles still ends on the tr
     return box(0, 0, 0, 0);
   });
   stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // fits below at 800px tall
+
+    // The window shrinks and the rail row stays where it is. No scroll follows:
+    // scrolling the rail is not something a window resize does.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 500 });
+    triggerTop = 700;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // Neither side fits a 120px popup (below is 732, above is 576 and would end
+    // at 696 in a 500px window), so the clamp wins: 500 - 120 - 8 = 372, on
+    // screen and under the keyboard focus.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("372px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// --- the trigger moves after the resize event ------------------------------
+// Dockview lays out from an observed box, a frame after the window's own
+// resize. Measuring in the resize handler therefore reads the trigger's OLD
+// rect, and the footer then moves with no further window event. The
+// ResizeObserver notification is the second chance to measure - it arrives
+// after layout, which is the only moment the trigger's final rect exists.
+test("a desktop resize that lands before the layout settles still ends on the trigger's final position", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  let triggerTop = 300;
+  // Dockview's settle is a box CHANGE on the trigger here, so this case speaks
+  // through the trigger's own notification and nothing else: the popup's height
+  // below is read from the trigger's bottom, which moves with it.
+  let triggerHeight = 28;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, triggerHeight);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
   // A ResizeObserver the test fires by hand, the way a browser fires it when
-  // the observed trigger's box changes.
+  // the observed trigger's box changes. Keyed by the observed element, so this
+  // test can fire the TRIGGER's own notification and no other: firing every
+  // callback would also fire the ancestors', and then a widget that never
+  // observed the trigger at all would still pass.
   const callbacks = new Map<Element, () => void>();
   class HandDrivenResizeObserver {
     constructor(private readonly callback: () => void) {}
@@ -621,15 +823,25 @@ test("a desktop resize that lands before the layout settles still ends on the tr
     fireEvent(window, new Event("resize"));
     expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
 
-    // Dockview finishes: the trigger is at its final position, and the
-    // observed box is what says so.
+    // The frame the resize scheduled drains FIRST, still on the stale rect. If
+    // it were left pending it could run after the trigger moved and place the
+    // popup correctly all by itself, and this test would then pass with the
+    // trigger never observed at all.
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("332px");
+
+    // Dockview finishes: the trigger is at its final position and taller, and
+    // its own observed box is what says so. Only the trigger's callback runs
+    // here - no window event, and no ancestor notification.
     triggerTop = 500;
+    triggerHeight = 60;
+    const trigger = screen.getByRole("button", { name: "Actions" });
     act(() => {
-      for (const callback of callbacks.values()) callback();
+      callbacks.get(trigger)?.();
     });
     flush();
 
-    expect(screen.getByRole("menu").style.top).toBe("532px"); // 500 + 28 + 4
+    expect(screen.getByRole("menu").style.top).toBe("564px"); // 500 + 60 + 4
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -792,6 +1004,188 @@ test("a change to the popup's own height re-anchors an upward-opening menu", asy
     // 300 - 4 - 200: the grown popup now clears its trigger instead of
     // keeping the 176px top its old height had earned.
     expect(screen.getByRole("menu").style.top).toBe("96px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A frame queued by a resize measures once more after layout. If the menu
+// closes before that frame runs, the frame must not run at all: the popup
+// stays mounted while it leaves (usePresence), so it would re-place itself
+// mid-exit and visibly jump away from the position it was last seen at.
+// Closing cancels the frame, the exit keeps the last open position, and
+// reopening re-measures.
+test("a placement frame queued by a resize cannot re-place the popup during its exit", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const originalGetAnimations = Object.getOwnPropertyDescriptor(Element.prototype, "getAnimations");
+  let triggerTop = 300;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // jsdom runs no animations, so without this the popup unmounts in the same
+  // commit it closes and there is nothing left for a stray frame to move. This
+  // stands in a running exit and finishes it by hand.
+  let resolveExit: () => void = () => {};
+  const exit = {
+    playState: "running",
+    effect: { getComputedTiming: () => ({ endTime: 80 }) },
+    finished: new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    }),
+  } as unknown as Animation;
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value(this: Element) {
+      return this.getAttribute("data-motion") === "closing" ? [exit] : [];
+    },
+  });
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
+
+    // A resize places the popup at the rect it can measure right now, and
+    // queues a frame to measure again once layout has settled.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    await user.keyboard("{Escape}");
+    const exiting = document.querySelector('[role="menu"]');
+    expect(exiting).not.toBeNull();
+    expect(exiting?.getAttribute("data-motion")).toBe("closing");
+
+    // The pane settles after the close: the trigger is now exactly where that
+    // queued frame would measure it, so a frame that survives would move the
+    // leaving popup to 532.
+    triggerTop = 500;
+    flush();
+
+    // Still mounted, and still where the reader last saw it.
+    expect(document.querySelector('[role="menu"]')).toBe(exiting);
+    expect((exiting as HTMLElement).style.top).toBe("332px");
+
+    await act(async () => {
+      resolveExit();
+    });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+
+    // Reopening measures fresh instead of trusting the exit's stale position.
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("532px"); // 500 + 28 + 4
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+    if (originalGetAnimations) Object.defineProperty(Element.prototype, "getAnimations", originalGetAnimations);
+    else Reflect.deleteProperty(Element.prototype, "getAnimations");
+  }
+});
+
+// --- a layout change above the trigger moves it without resizing anything ---
+// The rail's Live section grows when a session appears inside it, and the pinned
+// section below it - the trigger's own section - slides down. Nothing changes
+// size: the rail scroller is fixed-height, the pinned section keeps its height,
+// the trigger keeps its 40x28 box, and the popup keeps its own. A ResizeObserver
+// on any of them stays silent, there is no window resize, and no scroll, so the
+// popup used to sit at the coordinates it opened with while its trigger left it
+// behind.
+// A session arriving in Live is not a press anywhere: it comes from the
+// session list, so this grows through a rerender rather than a click. A click
+// would be an outside press and close the menu for a reason that has nothing
+// to do with placement.
+const LIVE_ROWS = [{ id: "live-1", label: "live-1" }];
+
+function PinnedSectionUnderLive({ liveRows }: { liveRows: typeof LIVE_ROWS }) {
+  return (
+    <div>
+      <div data-testid="live">
+        {liveRows.map((row) => (
+          <div key={row.id} style={{ height: 40 }}>
+            {row.label}
+          </div>
+        ))}
+      </div>
+      <Menu trigger="Pinned actions" items={items()} />
+    </div>
+  );
+}
+
+test("a row inserted above the trigger moves the open popup with it", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The pinned section's own top in the rail scroller; the trigger keeps a
+  // fixed 28px height and a fixed 40px width wherever the section puts it.
+  let pinnedTop = 300;
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON" && this.textContent === "Pinned actions") return box(100, pinnedTop, 40, 28);
+    if (this.tagName === "BUTTON") return box(0, 0, 80, 24);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 100, 40);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // Every observer this widget registers stays silent: that is the case. Firing
+  // one here would be the fix arranging its own notification, not a pane
+  // reflow reporting itself.
+  class SilentResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    const { rerender } = render(<PinnedSectionUnderLive liveRows={[]} />);
+    // Open and place FIRST. A test that adds the row before opening passes
+    // against the unfixed code, because placement then measures the moved
+    // trigger at open time.
+    await user.click(screen.getByRole("button", { name: "Pinned actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // A session enters Live above it, and the pinned section slides down. No
+    // window resize, no scroll, and every observed box keeps its size.
+    pinnedTop = 380;
+    rerender(<PinnedSectionUnderLive liveRows={LIVE_ROWS} />);
+    // An observer's records are delivered before the next frame, not inside the
+    // render that caused them; drain that delivery, then the frame it queues.
+    await act(async () => {});
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("412px"); // 380 + 28 + 4
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -1280,16 +1674,20 @@ test("places the popup from its untransformed layout box, not its mid-animation 
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const box = (left: number, width: number) =>
       ({ left, right: left + width, top: 20, bottom: 40, width, height: 20 }) as DOMRect;
-    if (this.tagName === "BUTTON") return box(window.innerWidth - 40, 40);
+    // Its far edge exactly EDGE_MARGIN inside the viewport: close enough that
+    // left-aligning the popup overflows, so the flip is still the answer, and
+    // far enough that the right-aligned popup keeps its own margin.
+    if (this.tagName === "BUTTON") return box(window.innerWidth - 48, 40);
     if (this.tagName === "UL") return box(0, ANIMATING_WIDTH);
     return box(0, 0);
   });
   stubPopupLayoutBox(window, SETTLED_WIDTH, 100);
   render(<Menu trigger="Actions" items={items()} />);
   fireEvent.click(screen.getByRole("button", { name: "Actions" }));
-  // Hard against the right edge the popup right-aligns to the trigger, so its
-  // own width lands in the arithmetic.
-  expect(screen.getByRole("menu").style.left).toBe(`${window.innerWidth - SETTLED_WIDTH}px`);
+  // Near the right edge the popup right-aligns to the trigger, so its own width
+  // lands in the arithmetic: the settled 200 gives 816, the animating 192 would
+  // give 824.
+  expect(screen.getByRole("menu").style.left).toBe(`${window.innerWidth - 8 - SETTLED_WIDTH}px`);
 });
 
 // Menu placement has always flipped and clamped against a viewport. In a
