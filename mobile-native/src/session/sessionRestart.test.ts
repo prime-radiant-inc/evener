@@ -137,10 +137,18 @@ describe("one step of a restart", () => {
 	it("sends the resume the covering screen took the controls away from", async () => {
 		let sent = 0;
 		let forceStops = 0;
+		let acknowledge!: () => void;
 		const made = new SessionControls(
 			{
-				forceStop: async () => {
+				// Held open, so the controls go away while the stop is still on
+				// its way: an acknowledgement that resolves at once would let the
+				// resume go out before the covering route ever removed them, and
+				// the count of one would pass without exercising the retry.
+				forceStop: () => {
 					forceStops += 1;
+					return new Promise<void>((resolve) => {
+						acknowledge = resolve;
+					});
 				},
 				resume: async () => {
 					sent += 1;
@@ -156,17 +164,29 @@ describe("one step of a restart", () => {
 		// it had, which is what a covering route does.
 		let live: SessionControls | null = made;
 		const hook = renderHook(() => useSessionRestart(live, "open"));
-		await act(async () => {
-			await hook.result.current.restart();
+		let restarting!: Promise<void>;
+		act(() => {
+			restarting = hook.result.current.restart();
 		});
 		await settle();
 		expect(forceStops).toBe(1);
-		// Covered before the resume could go out. Coming back brings fresh
-		// controls; the resume is still owed, and the daemon is stopped until it
-		// goes.
+		// Covered while the stop is still out, so no resume can have gone yet.
 		live = null;
 		hook.rerender();
 		await settle();
+		expect(sent).toBe(0);
+		// The hub now takes the stop. With the controls gone there is nothing to
+		// send the resume with, so it stays owed rather than going out against a
+		// binding this screen no longer holds. (The retry that carries it once
+		// the same controls are refused again is the read test's subject: what
+		// this one fixes is the ordering, that no resume can precede the
+		// acknowledgement.)
+		act(() => acknowledge());
+		await restarting;
+		await settle();
+		expect(sent).toBe(0);
+		// Coming back brings fresh controls; the resume is still owed, and the
+		// daemon is stopped until it goes.
 		live = made;
 		hook.rerender();
 		await settle();

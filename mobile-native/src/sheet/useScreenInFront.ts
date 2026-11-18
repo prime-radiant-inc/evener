@@ -3,6 +3,7 @@
 // screen keeps following its session, and its actions stay allowed, while its
 // sheets are open.
 import { useNavigationState } from "@react-navigation/native";
+import { useEffect, useReducer } from "react";
 import { inFront, isSheetRoute, type StackState } from "./sheetRoutes";
 
 /** A navigator's state as these rules read it when it is not the screen's
@@ -17,6 +18,7 @@ interface NestedState {
 interface OwningStack {
 	getState(): unknown;
 	getParent?(): OwningStack | undefined;
+	addListener?(type: "state", callback: () => void): () => void;
 }
 
 /** A screen's navigation: its own stack's state, and the stacks it is nested
@@ -64,17 +66,45 @@ export function useScreenInFront(routeKey: string): boolean {
 	return useNavigationState((state) => inFront(state, routeKey));
 }
 
-/** The same answer at the moment of a call, for a guard inside a callback.
- * A stack that still holds a screen and a reader still looking at it are two
- * questions: a screen pushed on the stack that owns this one leaves this
- * stack's routes untouched, so every stack above has to be showing it too. */
-export function screenInFront(navigation: ScreenNavigation, routeKey: string): boolean {
-	if (!inFront(navigation.getState(), routeKey)) return false;
+/** The ancestors' half of {@link screenInFront}, as a value that updates. The
+ * stack this screen belongs to cannot see a screen pushed on the stack above
+ * it, so a reactive answer needs the stacks above too. Answered from state on
+ * every render, and the subscription only exists to make a covering push
+ * render: a navigator that cannot be listened to still reads correctly, it
+ * just relies on the render that opened or closed the covering screen. */
+export function useScreenInAncestors(navigation: ScreenNavigation, routeKey: string): boolean {
+	const showing = screenInAncestors(navigation, routeKey);
+	const [, recheck] = useReducer((count: number) => count + 1, 0);
+	useEffect(() => {
+		const stops: (() => void)[] = [];
+		for (let holder = navigation.getParent?.(); holder; holder = holder.getParent?.()) {
+			const stop = holder.addListener?.("state", recheck);
+			if (stop) stops.push(stop);
+		}
+		return () => {
+			for (const stop of stops) stop();
+		};
+	}, [navigation]);
+	return showing;
+}
+
+/** Whether every stack this screen is nested in is still showing it. A stack
+ * that still holds a screen and a reader still looking at it are two questions:
+ * a screen pushed on the stack that owns this one leaves this stack's routes
+ * untouched, so the nested state alone answers only the first. */
+export function screenInAncestors(navigation: ScreenNavigation, routeKey: string): boolean {
 	for (let holder = navigation.getParent?.(); holder; holder = holder.getParent?.()) {
 		const state = nestedState(holder.getState());
 		if (!state || !holds(state, routeKey)) return false;
 	}
 	return true;
+}
+
+/** The same answer at the moment of a call, for a guard inside a callback.
+ * Both halves are needed: this screen's own stack, and every stack above it,
+ * since either can cover the pane. */
+export function screenInFront(navigation: ScreenNavigation, routeKey: string): boolean {
+	return inFront(navigation.getState(), routeKey) && screenInAncestors(navigation, routeKey);
 }
 
 /** Leaves the screen along with every route over it. A covered screen's own

@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { renderHook } from "../renderNative.testkit";
-import { leaveScreen, screenInFront, useScreenInFront } from "./useScreenInFront";
+import { leaveScreen, screenInAncestors, screenInFront, useScreenInFront } from "./useScreenInFront";
 
 const navigationState = vi.hoisted(() => ({
 	state: { index: 0, routes: [] as { key: string; name: string }[] },
@@ -30,6 +30,25 @@ it("answers the same at the moment of a call", () => {
 	const pushed = { getState: () => ({ index: 1, routes: [session, reader] }) };
 	expect(screenInFront(pushed, "session")).toBe(false);
 	expect(screenInFront({ getState: () => ({ index: 0, routes: [session] }) }, "session")).toBe(true);
+});
+
+// A pane can be in front of its own stack while an alert holds another
+// conversation over the stack that owns it. Reading a covered pane keeps
+// working, but telling the hub the reader saw the reply must not: the answer
+// has to include every stack above, not just this one.
+it("counts the stacks above, so a covered pane is not the reader's view", () => {
+	const covered = {
+		getState: () => ({ index: 0, routes: [session] }),
+		getParent: () => ({
+			getState: () => ({ index: 1, routes: [{ key: "sessions", name: "Sessions" }, reader] }),
+		}),
+	};
+	expect(screenInAncestors(covered, "session")).toBe(false);
+	expect(screenInFront(covered, "session")).toBe(false);
+	// The covering screen closes: the same pane is the reader's view again.
+	const revealed = { ...covered, getParent: () => ({ getState: () => ({ index: 0, routes: [session] }) }) };
+	expect(screenInAncestors(revealed, "session")).toBe(true);
+	expect(screenInFront(revealed, "session")).toBe(true);
 });
 
 it("leaves with the sheets over the screen, since a covered screen's goBack pops only its top sheet", () => {

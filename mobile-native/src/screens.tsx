@@ -199,7 +199,7 @@ import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { useActivityPoll } from "./board/useActivityPoll";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
-import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
+import { screenInFront, useScreenInAncestors, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
 import type { ActivityKind } from "./subagents/activityList";
@@ -424,6 +424,13 @@ function ConversationScreenView({
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const voiceClient = useVoiceClient();
 	const focused = useScreenInFront(route.key);
+	// Marking a session seen is about the reader's eyes, which is the wider
+	// question: this pane can be in front of its own stack while an alert holds
+	// another conversation over the stack that owns it. Reading a covered pane
+	// keeps working and is right; telling the hub the reader saw the reply is
+	// not, so the seen hook asks this one.
+	const ancestorsShowing = useScreenInAncestors(navigation, route.key);
+	const readerLooking = focused && ancestorsShowing;
 	const topmost = useNavigationState((state) => {
 		const position = state.routes.findIndex((entry) => entry.key === route.key);
 		return position !== -1 && position === state.index;
@@ -606,7 +613,7 @@ function ConversationScreenView({
 	const sessionActivity = activityOf(route.params.ref);
 	useMarkSeenInFront(
 		route.params,
-		focused,
+		readerLooking,
 		connected ? client : null,
 		snapshot.status === "open" ? snapshot.conversation : null,
 		fleetRow,
@@ -987,9 +994,13 @@ function ConversationScreenView({
 		document,
 	]);
 	useEffect(() => () => controls?.dispose(), [controls]);
+	// Same reason as the picker's controls: a covering push takes the reader
+	// away, not the session. A decision already sent settles on this binding and
+	// reads back through it; a decision not yet sent is still refused by the
+	// route fence below, which is admission's question.
 	const approvalControls = useMemo(
 		() =>
-			client && service && connected && focused
+			client && service && connected
 				? new ApprovalControls(
 						client,
 						route.params.ref,
@@ -1005,7 +1016,12 @@ function ConversationScreenView({
 							store.getState().conversationGeneration === bindingGeneration &&
 							store.getState().conversation?.instanceId === bindingInstance,
 						async () => {
-							await store.getState().rehydrate(service);
+							// A reply can outlive the service this controller was
+							// built with, so the read resolves the session's current
+							// one rather than reinstalling a retired binding.
+							const live = entry.service;
+							if (live === null) throw new Error("Could not read the session.");
+							await store.getState().rehydrate(live);
 							if (store.getState().error) throw new Error("Could not read the session.");
 						},
 						// Admitting a decision is the reader's question, and it is a
@@ -1015,7 +1031,7 @@ function ConversationScreenView({
 						() => screenInFront(navigation, route.key),
 					)
 				: null,
-		[client, service, connected, focused, route.params.ref, store, navigation, bindingGeneration, bindingInstance],
+		[client, service, connected, entry, route.params.ref, store, navigation, bindingGeneration, bindingInstance],
 	);
 	useEffect(() => () => approvalControls?.dispose(), [approvalControls]);
 

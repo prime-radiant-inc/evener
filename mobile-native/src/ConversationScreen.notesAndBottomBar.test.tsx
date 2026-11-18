@@ -1905,6 +1905,67 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		// the covered decision would leave this press out of reach.
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
 	});
+
+	// A push on this screen's own stack is the other way a pane loses the
+	// reader, and it used to dispose the approval controller outright. The push
+	// lands while the receipt is still out, so the acknowledgement arrives with
+	// no controller to settle it: the decision reached the hub and nothing read
+	// the session back. The dock then keeps offering an approval the hub has
+	// already settled until the reader happens to return and ask again.
+	it("settles a decision taken while its own stack covers the pane", async () => {
+		const ref = "ref-approval-own-stack";
+		const served = withApproval(ref);
+		const evener = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener;
+		evener.pendingEscalations.push({
+			...evener.pendingEscalations[0],
+			escalationId: "esc-2",
+			tool: "read_file",
+			mode: "restricted",
+			deniedPath: "/Users/jesse/notes/todo.md",
+		});
+		const { tree, hub, route } = await mount(served);
+		let receipt!: () => void;
+		const answer = hub.client.request;
+		hub.client.request = ((method: string, params: Record<string, unknown>) => {
+			if (method !== "evener/sandbox/escalation/resolve") return answer(method, params);
+			hub.requests.push({ method, params });
+			return new Promise<Record<string, unknown>>((resolve) => {
+				receipt = () => {
+					evener.pendingEscalations = evener.pendingEscalations.filter(
+						(entry) => entry.escalationId !== params.escalationId,
+					);
+					resolve({});
+				};
+			});
+		}) as typeof hub.client.request;
+		// Pressed by hand: `press` waits for the hub, and this case holds the
+		// receipt it would be waiting for.
+		const allow = pressable(tree, "Allow this file only");
+		if (!allow) throw new Error("no Allow to press");
+		act(() => allow.props.onPress());
+		await Promise.resolve();
+		// Activity opens over the conversation on its own stack while the hub's
+		// reply is still out.
+		navigationState.state = {
+			index: 1,
+			routes: [route as unknown as { key: string; name: string }, { key: "activity-elsewhere", name: "Activity" }],
+		};
+		await act(async () => {
+			tree.update(<SessionScreen route={route} navigation={navigation} />);
+		});
+		await settle();
+		const readsBefore = hub.requests.filter((request) => request.method === "thread/read").length;
+		await act(async () => {
+			receipt();
+		});
+		await settle();
+		await settle();
+		expect(hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve")).toHaveLength(1);
+		// Still covered: the acknowledgement itself read the session back. A
+		// controller the push disposed has nothing to settle with, so it returns
+		// without a read and the count stays put.
+		expect(hub.requests.filter((request) => request.method === "thread/read").length).toBeGreaterThan(readsBefore);
+	});
 });
 
 it("offers no Retry that couldn't send: a question still waits on the failed turn", async () => {
