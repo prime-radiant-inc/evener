@@ -3,6 +3,8 @@ package openaichat
 import (
 	"encoding/json"
 	"testing"
+
+	"primeradiant.com/evener/llm"
 )
 
 // FuzzToolArgumentsString drives the real ToolArgumentsString seam, which
@@ -14,6 +16,7 @@ import (
 //     rejects anything else when replaying tool-call history, so a leak of a
 //     non-object (array, scalar, malformed) past this helper is a real bug.
 //   - Determinism: the same bytes must map to the same string every time.
+//   - A valid object keeps its exact spelling on first replay and after storage.
 func FuzzToolArgumentsString(f *testing.F) {
 	seeds := []string{
 		`{"status":"in_progress"}`,
@@ -23,6 +26,7 @@ func FuzzToolArgumentsString(f *testing.F) {
 		`{"status": in_progress"}`,
 		`  {"a":1}  `,
 		`{"n":1e400}`,
+		" \t" + `{ "z": "<&>λ\u0061", "a": -0.00e+2, "a": 8 }` + "\r\n",
 		`123`,
 		`"a string"`,
 		`{}`,
@@ -35,6 +39,20 @@ func FuzzToolArgumentsString(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		got := ToolArgumentsString(json.RawMessage(raw))
+		var original map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &original); err == nil && original != nil {
+			saved, err := json.Marshal(llm.ToolCallData{Arguments: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var restored llm.ToolCallData
+			if err := json.Unmarshal(saved, &restored); err != nil {
+				t.Fatal(err)
+			}
+			if cold := ToolArgumentsString(restored.Arguments); cold != string(raw) || got != string(raw) {
+				t.Fatalf("argument bytes changed: source %q, warm %q, cold %q", raw, got, cold)
+			}
+		}
 
 		if again := ToolArgumentsString(json.RawMessage(raw)); again != got {
 			t.Fatalf("ToolArgumentsString not deterministic: %q vs %q (input %q)", got, again, raw)
