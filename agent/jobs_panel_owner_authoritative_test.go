@@ -1595,6 +1595,118 @@ func TestLoadSessionJobOutputPageHonorsClaimlessRecordsOutputPath(t *testing.T) 
 	}
 }
 
+// TestLoadSessionJobOutputPageFencesTheSessionItsPathLandsIn pins the fence
+// against the session the BYTES come from, not only the ones a record NAMES. A
+// forwarded legacy row has a job ID encoding no owner and an empty owner field,
+// so nothing in it states which session's deletion governs it — but its explicit
+// output path sits inside the work directory of the session that originally ran
+// the job. That session's deletion is durable, and its log has not been removed
+// yet, so a fence built only from the claims hands back bytes the hub has
+// already committed to deleting.
+func TestLoadSessionJobOutputPageFencesTheSessionItsPathLandsIn(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	requestedSession := identifier.MustNewSessionID()
+	originSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_fence_ab12"
+	started := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+
+	// The log the row points at, still on disk under the origin session.
+	originLogPath := filepath.Join(jobsDir(stateDir, originSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(originLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(originLogPath, []byte("origin bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The forwarded row: no owner field at all, explicit path into origin's dir.
+	writeJobJournalLines(t, jobsDir(stateDir, requestedSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","visible_to_session_id":"`+requestedSession+
+			`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+originLogPath+`"}`+"\n",
+	)
+	writeJobJournalLines(t, jobsDir(stateDir, originSession), "")
+
+	// The origin session's deletion is durable; its log has not been cleaned up.
+	fence := func(sessionID string) (bool, error) { return sessionID == originSession, nil }
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, requestedSession, jobID, nil, 64, fence)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if found || page.Data != "" {
+		t.Fatalf("found = %v, data = %q: the path lands in a session whose deletion is durable",
+			found, page.Data)
+	}
+
+	// An abandoned deletion clears the record, and the read resumes rather than
+	// locking the job out. The row states no owner, so its explicit path stands.
+	page, found, err = LoadSessionJobOutputPage(stateDir, requestedSession, jobID, nil, 64,
+		func(string) (bool, error) { return false, nil })
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage after abandonment: %v", err)
+	}
+	if !found || page.Data != "origin bytes" {
+		t.Fatalf("found = %v, data = %q: an abandoned deletion must not make the job unreadable",
+			found, page.Data)
+	}
+}
+
+// TestLoadSessionJobOutputPageReadsOwnerLogWithoutContradictoryCounts pins the
+// validation INPUT, not its strictness. The selected record's path was discarded
+// because its owner claim contradicts the job ID, so the bytes come from the
+// encoded owner's default log — and that record's terminal OutputBytes describe
+// the file it named, not this one. Enforcing them against a log they never
+// described rejects a perfectly readable page and shows the pane an unavailable
+// error for a job that finished. The counts are dropped BECAUSE they are about a
+// different file, not because the check is inconvenient.
+func TestLoadSessionJobOutputPageReadsOwnerLogWithoutContradictoryCounts(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	claimingSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 0
+
+	// The ancestor's journal is durably corrupt after a start AND a finish that
+	// claim another session. That prefix is terminal, so it wins as fallback.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+claimingSession+
+			`","visible_to_session_id":"`+rootSession+`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+filepath.Join(t.TempDir(), "gone.log")+`"}`+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"completed","exit_code":`+strconv.Itoa(exit)+
+			`,"output_bytes":999,"terminal_generation":"gen_other"}`+"\n",
+		"{this is not json}\n",
+	)
+
+	// The encoded owner's journal is empty, so the flag fallback stands; its own
+	// default log is readable and much smaller than the contradictory count.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession), "")
+	ownerLogPath := filepath.Join(jobsDir(stateDir, ownerSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(ownerLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerLogPath, []byte("owner log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v: the counts describe the discarded path, not this log", err)
+	}
+	if !found || page.Data != "owner log" {
+		t.Fatalf("found = %v, data = %q: the owner's default log is readable on its own checks",
+			found, page.Data)
+	}
+}
+
 // TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage: an encoded owner
 // journal that hits a malformed line before decoding any record for this job
 // must still hand its damage report back, so the caller serving the forwarded

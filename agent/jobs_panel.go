@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
@@ -976,6 +977,46 @@ func fencedSessions(jobID string, read sessionJobRecordRead, requested string) [
 	return sessions
 }
 
+// jobOutputPathSession names the session whose work directory CONTAINS a
+// resolved output path, or "" when the path is somewhere else entirely.
+//
+// The fence has to know whose bytes a page carries, and the selected path is one
+// of the ways a session becomes reachable — the claims in the record are not the
+// only one. A forwarded legacy row with no owner field states nothing to
+// contradict, yet its explicit path can point into the work directory of the
+// session that originally ran the job. Nothing in the claim-derived fence names
+// that session, so the path is asked directly, by directory.
+//
+// The decision is made on the DIRECTORY SHAPE under the state root, and the
+// session name is validated before it is returned: a path whose second component
+// is not a session id names no session, and handing such a name to the fence
+// would consult a deletion record for something that cannot have one. A
+// launcher-chosen path outside every session work directory names none either,
+// which is the honest answer — no session's deletion governs those bytes.
+func jobOutputPathSession(stateDir, path string) string {
+	if path == "" {
+		return ""
+	}
+	// The root is the PARENT of the work directories, so it has to be derived
+	// the same way schema.SessionWorkDir derives them — including its
+	// blank-state-dir branch, which keeps a flat temp layout rather than
+	// "sessions/". Anything else would compare against a directory the paths
+	// were never built from.
+	sessionsRoot := schema.SessionsDir(stateDir)
+	if strings.TrimSpace(stateDir) == "" {
+		sessionsRoot = filepath.Join(os.TempDir(), "evener-jobs")
+	}
+	rel, err := filepath.Rel(sessionsRoot, filepath.Clean(path))
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	sessionID, _, _ := strings.Cut(rel, string(filepath.Separator))
+	if sessionID == "" || !hintIsSessionID(sessionID) {
+		return ""
+	}
+	return sessionID
+}
+
 // jobReadError translates the reader's structural sentinels into the wire
 // errors a caller can act on. A scope that a torn append left unresolved is
 // UNAVAILABLE, not not-found: the scan could not establish absence, and the
@@ -1002,18 +1043,6 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	if !read.found {
 		return JobOutputPage{}, false, nil
 	}
-	// The fence above was consulted before either journal was scanned. A deletion
-	// recorded DURING that scan is therefore invisible to it, and this read would
-	// open a log the hub has already committed to removing. Re-consult the same
-	// record now, at the boundary where the bytes are opened, for both sessions
-	// whose data this page can carry: the one that was asked about and the one
-	// that owns the bytes. A standing fence discards the page, and an abandoned
-	// deletion clears the record, so a later read resumes by itself.
-	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedSessions(jobID, read, sessionID)...); fenceErr != nil {
-		return JobOutputPage{}, false, fenceErr
-	} else if fenced {
-		return JobOutputPage{}, false, nil
-	}
 	rec := read.record
 	// The log lands beside the journal of the session that ran the job, which
 	// after owner-authoritative resolution need not be the session that was
@@ -1036,17 +1065,54 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	// guard stops a contradiction from being COPIED into another record, and
 	// this one stops a contradictory record's own stored path from being
 	// HONORED. A record that never entered the merge needs both.
+	contradicts := ownerClaimContradicts(rec)
 	outPath := rec.OutputPath
-	if outPath == "" || ownerClaimContradicts(rec) {
+	if outPath == "" || contradicts {
 		outPath = defaultOutPath
 	}
-	page, err := readJobOutputPageForRecord(outPath, rec, beforeBytes, clampJobPageBytes(maxBytes))
+	// The path is resolved BEFORE the fence is consulted, because the fence has
+	// to name every session whose bytes this page can carry and the selected
+	// path is one of the places a session becomes reachable. A forwarded legacy
+	// row can point into the ORIGINAL owner's work directory while naming no
+	// owner at all: its claim contradicts nothing, so nothing else in this read
+	// names that session, and a fence built from the claim would check only the
+	// session that was asked and hand back bytes whose owner's deletion is
+	// already durable.
+	fencedNames := fencedSessions(jobID, read, sessionID)
+	if pathSession := jobOutputPathSession(stateDir, outPath); pathSession != "" {
+		fencedNames = append(fencedNames, pathSession)
+	}
+	// The fence above was consulted before either journal was scanned. A deletion
+	// recorded DURING that scan is therefore invisible to it, and this read would
+	// open a log the hub has already committed to removing. Re-consult the same
+	// record now, at the boundary where the bytes are opened. A standing fence
+	// discards the page, and an abandoned deletion clears the record, so a later
+	// read resumes by itself.
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedNames...); fenceErr != nil {
+		return JobOutputPage{}, false, fenceErr
+	} else if fenced {
+		return JobOutputPage{}, false, nil
+	}
+	// Terminal byte counts are evidence about a LOG, so they are enforced only
+	// from a record that describes the log this read selected. A contradictory
+	// record's own path was just discarded, which means its counts describe a
+	// different file: checking the encoded owner's readable default log against
+	// them rejects a page that is fine and shows the pane an unavailable error.
+	// That log is read on its own snapshot checks instead. This is not a
+	// leniency — the checks stay exactly as strict for the records that DO
+	// describe the selected artifact, which is the only case where they mean
+	// anything.
+	validationRecord := rec
+	if contradicts {
+		validationRecord = nil
+	}
+	page, err := readJobOutputPageForRecord(outPath, validationRecord, beforeBytes, clampJobPageBytes(maxBytes))
 	// Recheck AFTER the read: a deletion can become durable between the check
 	// above and the bytes landing in this process, and the page would otherwise
 	// leave with data the hub has already committed to removing. A standing
 	// fence discards it; an abandoned deletion clears the record, so the next
 	// request serves the page normally.
-	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedSessions(jobID, read, sessionID)...); fenceErr != nil {
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, fencedNames...); fenceErr != nil {
 		return JobOutputPage{}, false, fenceErr
 	} else if fenced {
 		return JobOutputPage{}, false, nil
