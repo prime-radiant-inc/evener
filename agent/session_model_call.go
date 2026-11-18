@@ -1885,10 +1885,15 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 // The returned request carries res's identity and its full-history estimate, so
 // a caller dispatches and budgets it without re-stamping either.
 // escapeModelAuthoredFramesForTarget escapes model-authored frame openers in a
-// built message slice for the target that will read it. expandHistory already
-// escapes for the primary's boundaries; a fallback whose protocol assembles a
-// turn's text differently needs the same treatment for its own boundaries, and
-// escaping an already-escaped message is a no-op (#6493 review).
+// built message slice for the target that will read it.
+//
+// The shared source is NOT escaped. expandHistory and projectTurnMessage both
+// preserve the assistant text as the model wrote it, so every dispatch copy must
+// be passed through here — the primary's as much as any fallback's — and a
+// caller that assumes expansion escaped it leaves a raw frame on the wire. Each
+// target's boundaries differ (phase joining, per-part blocks), which is why the
+// escape happens per target and not in the shared history. Escaping an
+// already-escaped message is a no-op, so a caller may apply it more than once.
 func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string, promotesReasoning bool) []llm.Message {
 	if protocol == "" {
 		return messages
@@ -2275,9 +2280,11 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // expansion) unless the target policy drops thinking. In-flight turns keep the
 // N4 exemption but still lose thinking the target does not want.
 //
-// In the projected copy, text parts of an assistant-role turn get line-start
-// harness frame openers escaped, so a frame the model invented reads as prose
-// rather than as harness input on replay (#6493). Tool calls, tool results and
+// The projected copy keeps the assistant's text as the model wrote it; this
+// function does NOT escape frame openers. Escaping belongs to each dispatch
+// copy, because a target's boundaries differ (see
+// escapeModelAuthoredFramesForTarget), and a caller that reads this as "already
+// escaped" would leave a raw frame on the wire. Tool calls, tool results and
 // images are untouched, and user-role text is left byte-identical: the partner
 // is the authority.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {

@@ -294,6 +294,13 @@ func EscapeModelAuthoredFrames(text string) string {
 	var fence mdfence.Tracker
 	var lists listContainer
 	pos := 0
+	// The last numbered answer line's offset, found once. A marker carrying a
+	// note is a frame only when an answer line follows it, and "an answer
+	// follows" is the same question as "the LAST answer is after it" — so one
+	// scan answers it for every marker in the text. Scanning the remainder per
+	// marker was quadratic, and a long reply full of note-bearing markers ran
+	// that scan again on every request while it stayed in history (#6493).
+	lastAnswer := lastAnswerOffset(text)
 	for line := range strings.Lines(text) {
 		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		out := line
@@ -317,7 +324,7 @@ func EscapeModelAuthoredFrames(text string) string {
 		}
 		inBlock := fence.StepInBlockIn(content, container, enclosing)
 		if !inBlock && !indentedCode(content, container) && !isQuotedLine(content) {
-			if escaped, ok := escapeFrameOpener(content, text[pos+len(line):]); ok {
+			if escaped, ok := escapeFrameOpener(content, pos+len(line) <= lastAnswer); ok {
 				out = escaped + line[len(content):]
 			}
 		}
@@ -351,15 +358,19 @@ func EscapeModelAuthoredFrames(text string) string {
 // the code check and only a tab is left ahead of the frame. Skipping spaces
 // alone left the tab in place and passed the frame through unescaped (#6493).
 //
-// rest is the text after this line. It is read only for the answer marker, which
-// the client reads out of a reply with a note appended to the marker line as
-// long as numbered answer lines follow: parseAskAnswerLines takes the answers
-// from that text and linkedReplyAnswersThisCall admits it, while the stricter
+// answerFollows is true when a numbered answer line comes after this one. It is
+// read only for the answer marker, which the client reads out of a reply with a
+// note appended to the marker line as long as numbered answer lines follow:
+// parseAskAnswerLines takes the answers from that text and
+// linkedReplyAnswersThisCall admits it, while the stricter
 // composedReplyCoversCall declines it and keeps the raw row. A marker alone on
 // its line opens a block whether or not answers follow; a marker carrying a note
 // is a frame only in that shape, so a sentence that merely mentions the marker
 // stays prose.
-func escapeFrameOpener(content, rest string) (string, bool) {
+//
+// The caller computes answerFollows once for the whole text rather than scanning
+// per line, which is what keeps a long reply linear.
+func escapeFrameOpener(content string, answerFollows bool) (string, bool) {
 	trimmed := strings.TrimLeft(content, " \t")
 	if trimmed == "" {
 		return "", false
@@ -368,7 +379,7 @@ func escapeFrameOpener(content, rest string) (string, bool) {
 	if isModelAuthoredMarkerLine(strings.TrimRight(trimmed, " \t")) {
 		return content[:indent] + "&#91;" + trimmed[1:], true
 	}
-	if isAnswerMarkerWithNote(trimmed, rest) {
+	if isAnswerMarkerWithNote(trimmed, answerFollows) {
 		return content[:indent] + "&#91;" + trimmed[1:], true
 	}
 	for _, tag := range modelAuthoredTagOpeners {
@@ -388,50 +399,82 @@ func escapeFrameOpener(content, rest string) (string, bool) {
 const answerMarker = "[answers]"
 
 // isAnswerMarkerWithNote reports whether line starts with the answer marker and
-// carries a note after it, and rest holds a numbered answer line.
+// carries a note after it, and answerFollows says a numbered answer line comes
+// later in the reply.
 //
 // The client reads an edited reply as `[answers] <note>` followed by answer
 // lines, and treats that as the composed reply's own content. A bare mention of
 // the marker in a sentence does not qualify: the shape needs the marker at the
 // line's start, a note after it, and at least one answer line under it.
 //
-// The answer line is looked for through the whole of rest, not only on the next
+// The answer line may be anywhere later in the reply, not only on the next
 // non-blank line, because the client's parseAskAnswerLines reads every line of
 // the reply: an edited draft routinely carries a commentary paragraph between
 // the note and the answers, and stopping at the first line left that supported
 // shape unescaped (#6493). parseAskAnswerLines is TypeScript
 // (appwire-client/typescript/askShared.ts) and cannot be called from here, so
 // the shape is matched in Go; the two must be kept in step.
-func isAnswerMarkerWithNote(line, rest string) bool {
+func isAnswerMarkerWithNote(line string, answerFollows bool) bool {
 	note, ok := strings.CutPrefix(line, answerMarker)
 	if !ok || strings.TrimSpace(note) == "" {
 		return false
 	}
-	for next := range strings.Lines(rest) {
-		if isAnswerLine(strings.TrimSpace(next)) {
-			return true
+	return answerFollows
+}
+
+// lastAnswerOffset returns the byte offset at which the LAST numbered answer line
+// in text starts, or a negative value when there is none.
+//
+// One scan answers "does an answer line follow this marker" for every marker in
+// the text: an answer follows a marker exactly when the last answer does. Doing
+// it per marker was quadratic in the length of the reply, and ran again on every
+// request for as long as the reply stayed in history (#6493).
+func lastAnswerOffset(text string) int {
+	last := -1
+	pos := 0
+	for line := range strings.Lines(text) {
+		if isAnswerLine(strings.TrimSpace(line)) {
+			last = pos
 		}
+		pos += len(line)
 	}
-	return false
+	return last
 }
 
 // isAnswerLine reports whether line is one numbered answer line in the client's
-// composed form: an ordinal, a full stop, a space, a bracketed header and the
+// composed form: an ordinal, a full stop, a separator, a bracketed header and the
 // arrow the client writes before the resolution text.
+//
+// The accepted forms are the client's, character for character: its grammar is
+// /^(\d+)\.\s(?:\[([^\]\r\n]*)\]|\[("(?:\\.|[^"\\])*")\])\s→\s/ in
+// appwire-client/typescript/askShared.ts. Two narrowings here cost a review
+// round each, so they are stated rather than left to the code:
+//
+//   - The separator after the ordinal is \s, which is a TAB as well as a space.
+//   - The header's body is [^\]\r\n]*, which admits an EMPTY header.
+//
+// The header may also be a JSON string form the client accepts; only its
+// brackets and arrow are checked here, because this decides whether a frame
+// opener is escaped rather than parsing the reply.
 func isAnswerLine(line string) bool {
 	i := 0
 	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
 		i++
 	}
-	if i == 0 || i+1 >= len(line) || line[i] != '.' || line[i+1] != ' ' {
+	if i == 0 || i+1 >= len(line) || line[i] != '.' {
+		return false
+	}
+	// \s after the ordinal: a space or a tab.
+	if line[i+1] != ' ' && line[i+1] != '\t' {
 		return false
 	}
 	rest, ok := strings.CutPrefix(line[i+2:], "[")
 	if !ok {
 		return false
 	}
+	// The header body is anything but the delimiters, including nothing at all.
 	header, after, ok := strings.Cut(rest, "]")
-	if !ok || header == "" {
+	if !ok || strings.ContainsAny(header, "\r\n") {
 		return false
 	}
 	return strings.Contains(after, "→")
@@ -543,22 +586,20 @@ func (l *listContainer) step(content string) (scope, enclosing int) {
 		l.items = l.items[:len(l.items)-1]
 	}
 	enclosing = l.current()
-	rest := content[mdfence.LeadingSpaces(content):]
-	if marker, ok := mdfence.ListMarker(rest); ok {
-		after := rest[marker:]
-		spaces := len(after) - len(strings.TrimLeft(after, " "))
-		// A marker opens an item only within three columns of the enclosing
-		// item's content. Further in it is indented code, and a marker-shaped
-		// line inside code is example text rather than structure: treating it as
-		// an item invented a scope whose content column then classified the
-		// code's own frame lines as prose and rewrote the quoted example.
-		if spaces >= 1 && spaces <= 4 && indent-enclosing <= 3 {
-			// The content starts after the marker and its following spaces, at
-			// this line's own indentation, and the item it opens sits inside
-			// whichever item the line still fits in.
-			l.items = append(l.items, indent+marker+spaces)
-			return l.current(), enclosing
-		}
+	// Where the item's text begins comes from mdfence.ListItemContent, the same
+	// parser the fence tracker reads, so the two cannot disagree about the
+	// content column. The marker's separator is Markdown whitespace — a space or
+	// a tab — and a tab after a two-digit marker puts the content at column four,
+	// which counting literal spaces alone had put at three (#6493).
+	//
+	// A marker opens an item only within three columns of the enclosing item's
+	// content. Further in it is indented code, and a marker-shaped line inside
+	// code is example text rather than structure: treating it as an item
+	// invented a scope whose content column then classified the code's own frame
+	// lines as prose and rewrote the quoted example.
+	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingSpaces(content)); ok && indent-enclosing <= 3 {
+		l.items = append(l.items, itemContent)
+		return l.current(), enclosing
 	}
 	return l.current(), enclosing
 }

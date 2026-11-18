@@ -235,16 +235,14 @@ func runInList(line string, base int) (char byte, n, container int) {
 	if indent > 3 || indent == len(line) {
 		return 0, 0, 0
 	}
-	marker, ok := ListMarker(line[indent:])
+	// The item's content column comes from the one parser that says where an
+	// item's text begins, so this agrees with the scope walker by construction.
+	content, ok := ListItemContent(line, indent)
 	if !ok {
 		return 0, 0, 0
 	}
-	after := line[indent+marker:]
-	spaces := len(after) - len(strings.TrimLeft(after, " "))
-	if spaces < 1 || spaces > 4 {
-		return 0, 0, 0
-	}
-	char, n, _ = runAt(after[spaces:], 0)
+	marker, _ := ListMarker(line[indent:])
+	char, n, _ = runAt(line[indent+marker:], content-indent-marker)
 	if n == 0 {
 		return 0, 0, 0
 	}
@@ -256,7 +254,7 @@ func runInList(line string, base int) (char byte, n, container int) {
 	// against: leavesItem and the escape's four-column code threshold both
 	// measure the line in columns, and a tab in the prefix would put the two
 	// measures asunder.
-	return char, n, baseColumns + indent + marker + spaces
+	return char, n, baseColumns + content
 }
 
 // LeadingSpaces returns the ASCII spaces line starts with. Fence indentation is
@@ -281,6 +279,49 @@ func ListMarker(line string) (int, bool) {
 		return 0, false
 	}
 	return i + 1, true
+}
+
+// ListItemContent returns the column a list item's content starts at, for a line
+// whose marker begins at line[at:], and whether the line is a list item at all.
+//
+// It is the one place that says where an item's text begins, so the scope walker
+// and the fence tracker cannot disagree about it. The separator after the marker
+// is Markdown whitespace, which is a space OR a tab, and it is measured in
+// columns because a tab reaches the next four-column stop: one tab after a
+// two-digit marker starts the content at column four, and counting only literal
+// spaces put it at three, so the item's own four-column continuation prose read
+// as indented code and a frame in it survived (#6493).
+//
+// The column is absolute (counted from the page), so a caller that knows the
+// enclosing item's content column can compare directly.
+func ListItemContent(line string, at int) (content int, ok bool) {
+	if at < 0 || at >= len(line) {
+		return 0, false
+	}
+	marker, ok := ListMarker(line[at:])
+	if !ok {
+		return 0, false
+	}
+	// Columns are counted from the page, so the marker's own width is added to
+	// the column the marker starts at. A leading marker is one byte wide but a
+	// ten-plus one is three, and only the ordered case has width to worry about.
+	column := LeadingColumns(line[:at]) + marker
+	start := column
+	for i := at + marker; i < len(line); i++ {
+		switch line[i] {
+		case ' ':
+			column++
+		case '\t':
+			column += 4 - column%4
+		default:
+			// One to four columns of separation, as CommonMark allows.
+			if sep := column - start; sep < 1 || sep > 4 {
+				return 0, false
+			}
+			return column, true
+		}
+	}
+	return 0, false
 }
 
 // LeadingColumns returns the columns of whitespace a line starts with, a tab
