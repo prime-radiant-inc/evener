@@ -49,8 +49,8 @@ func TestOmitResolvedAskCallsSkipsMeasurementAtZeroLimit(t *testing.T) {
 	if got, want := observation.AnswerToTurnIDs, []string{"turn"}; len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("turn links = %v, want %v", got, want)
 	}
-	if omitted.Text != "kept" {
-		t.Fatalf("omission changed the body: %q", omitted.Text)
+	if omitted.Text != item.Text {
+		t.Fatalf("omission changed the body: %q, want the supplied %q", omitted.Text, item.Text)
 	}
 	// The input item keeps its list: bounding a read must not rewrite the
 	// canonical item another read serves.

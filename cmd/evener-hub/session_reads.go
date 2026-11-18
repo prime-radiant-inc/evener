@@ -635,33 +635,51 @@ func managerReadFitUnderCap(response appwire.SessionOperationResponse) (appwire.
 // untouched. The turns and items are copied so the caller's canonical items
 // keep their full stamps.
 func stripResolvedAskCallsFromThread(thread appwire.Thread) appwire.Thread {
-	turns := make([]appwire.Turn, len(thread.Turns))
-	copy(turns, thread.Turns)
-	for i := range turns {
-		if len(turns[i].Items) == 0 {
+	// Copy once, and only for a turn that actually carries a list: a page can
+	// exceed the cap because of one reply, and copying every other turn's items
+	// would do work the strip cannot change.
+	copied := false
+	var turns []appwire.Turn
+	for i := range thread.Turns {
+		if !turnCarriesResolvedAskCalls(thread.Turns[i]) {
 			continue
 		}
-		items := make([]appwire.ThreadItem, len(turns[i].Items))
-		copy(items, turns[i].Items)
+		if !copied {
+			copied = true
+			turns = make([]appwire.Turn, len(thread.Turns))
+			copy(turns, thread.Turns)
+		}
+		items := make([]appwire.ThreadItem, len(thread.Turns[i].Items))
+		copy(items, thread.Turns[i].Items)
 		for j := range items {
 			items[j] = boundTranscriptItemStamp(items[j], 0)
 		}
 		turns[i].Items = items
 	}
+	if !copied {
+		return thread
+	}
 	thread.Turns = turns
 	return thread
 }
 
-func responseCarriesResolvedAskCalls(response appwire.SessionOperationResponse) bool {
-	if response.Read != nil {
-		for _, turn := range response.Read.Thread.Turns {
-			for _, item := range turn.Items {
-				if item.Observation != nil && len(item.Observation.ResolvedAskCalls) > 0 {
-					return true
-				}
-			}
+// turnCarriesResolvedAskCalls reports whether any item in turn has a call list
+// the strip would remove.
+func turnCarriesResolvedAskCalls(turn appwire.Turn) bool {
+	for i := range turn.Items {
+		observation := turn.Items[i].Observation
+		if observation != nil && len(observation.ResolvedAskCalls) > 0 {
+			return true
 		}
 	}
+	return false
+}
+
+func responseCarriesResolvedAskCalls(response appwire.SessionOperationResponse) bool {
+	// Only the turns route is examined, because it is the only route the fitter
+	// strips: Validate refuses Read.IncludeTurns, so a status read carries no
+	// items and a transcript read arrives as Turns. Checking a route the strip
+	// cannot touch would accept a retry that cannot change the page.
 	if response.Turns != nil {
 		for _, turn := range response.Turns.Data {
 			for _, item := range turn.Items {
