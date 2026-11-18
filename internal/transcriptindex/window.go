@@ -1065,7 +1065,7 @@ func (r *reader) item(record itemRecord, turnID string) (appwire.ThreadItem, err
 				kept := make([]appwire.ThreadItem, 0, len(items))
 				for _, projected := range items {
 					if apptranscript.MergesByCallID(projected) &&
-						!apptranscript.ResultSettlesReservedCall(reserved, projected.ToolName) {
+						!apptranscript.ResultSettlesReservedCall(opener.ResponseProvider, reserved, projected.ToolName) {
 						continue
 					}
 					kept = append(kept, projected)
@@ -1210,7 +1210,16 @@ func (r *reader) projectWithContext(record itemRecord, turnID string) ([]appwire
 			if err != nil {
 				return nil, nil, err
 			}
+			// Both tables, because the two opener formats read different ones.
+			// A stamped opener resolves an unnamed result through
+			// ResolvedNames; a format-0 opener has no identity to be awaiting
+			// and reads the cumulative name table (Names), so restoring only
+			// ResolvedNames left a legacy page re-deriving the name from the
+			// entry's later announcement. The builder's answer governs on
+			// both, and here it is the same answer: the reservation this record
+			// was built for (#1166 review).
 			reg.ResolvedNames[string(call)] = string(name)
+			reg.Names[string(call)] = string(name)
 		}
 	}
 	// Context is the entries whose registry state a deferred communicate result

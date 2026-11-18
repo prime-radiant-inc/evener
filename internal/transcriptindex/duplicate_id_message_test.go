@@ -870,3 +870,130 @@ func TestAWhitespacePaddedAnnouncementSettles(t *testing.T) {
 		}
 	}
 }
+
+// TestALegacyPageKeepsTheSavedNameForBothResults covers the one place the seed
+// record was not enough: a LEGACY opener whose first announcement DEFERS a
+// communicate, with a LATER entry reusing that id for a command.
+//
+// A format-0 entry projects nameless results through its cumulative name table
+// (reg.Names, apptranscript.go's last-name-wins branch), not through the
+// caller's resolved names. Replay restored the builder's seed into ResolvedNames
+// only, so on a legacy opener the restored name was never read and the unnamed
+// result was re-derived instead — from an announcement list that no longer
+// describes which call the builder reserved (#1166 review).
+func TestALegacyPageKeepsTheSavedNameForBothResults(t *testing.T) {
+	fx := fixture{
+		name:   "legacy page keeps the saved name",
+		header: transcript.Header{SessionID: "legacy_seed", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(user("go")),
+			// The deferred delivery: the id's first claim.
+			entryLine(assistant(call("call_legacy_seed", "communicate", `{"message":"deferred"}`))),
+			// A later entry reuses the id for a command the result belongs to.
+			entryLine(assistant(call("call_legacy_seed", "read_file", `{"path":"a"}`))),
+			entryLine(results(
+				result("call_legacy_seed", "", "the bytes"),
+				result("call_legacy_seed", "communicate", "delivered"),
+			)),
+		},
+	}
+	path := writeFixture(t, fx)
+
+	candidates := allCandidates(t, openIndex(t, path, t.TempDir()))
+	callTurn := ""
+	for _, c := range candidates {
+		if c.Item.CallID == "call_legacy_seed" {
+			callTurn = c.TurnID
+			break
+		}
+	}
+	if callTurn == "" {
+		t.Fatalf("no turn carries the call: %s", dump(candidates))
+	}
+	indexed := turnItemsOf(t, candidates, callTurn)
+
+	var command, message *appwire.ThreadItem
+	for i := range indexed {
+		switch {
+		case indexed[i].Type == "commandExecution" && indexed[i].CallID == "call_legacy_seed":
+			command = &indexed[i]
+		case indexed[i].Type == "agentMessage" && indexed[i].CallID == "call_legacy_seed":
+			message = &indexed[i]
+		}
+	}
+	if command == nil {
+		t.Fatalf("the reserved command is missing from the indexed page %s: the restored name never reached the legacy name table",
+			itemShapes(indexed))
+	}
+	if command.ToolName != "read_file" {
+		t.Errorf("index: reserved command tool = %q, want read_file: the builder resolved the reservation when it built the record",
+			command.ToolName)
+	}
+	if command.Status != appwire.TurnStatusCompleted {
+		t.Errorf("index: reserved command status = %q, want completed: its result settled it (items %s)",
+			command.Status, itemShapes(indexed))
+	}
+	if message == nil {
+		t.Errorf("index: the deferred communicate's message is missing from %s: restoring the saved name must not swallow the delivery",
+			itemShapes(indexed))
+	}
+}
+
+// TestARealExecCommandOnAnthropicIsNotTheShellCall covers the other direction of
+// the alias rule, and it is the one a symmetric alias check gets wrong.
+//
+// exec_command is the name an OPENAI surface gives shell. On a surface that does
+// not apply that rename, a session can hold a genuine tool called exec_command —
+// the result tool under --result-tool-name exec_command is admitted, because
+// surfaceConventions returns no name map for Anthropic and nothing reserves the
+// spelling. Settlement must resolve the ANNOUNCEMENT through the announcing
+// surface's own aliases and compare that with the recorded result name, which is
+// the name dispatch ran.
+//
+// Comparing both names through the union of every surface's aliases makes the
+// two spellings one tool everywhere, so this result settles the shell
+// reservation: the shell announcement takes exec_command's output and the
+// configured tool loses its own row. The index records the shell call's real
+// answer, which is that no result arrived for it (#1166 review).
+func TestARealExecCommandOnAnthropicIsNotTheShellCall(t *testing.T) {
+	announce := inTurn("turn_anth", assistant(
+		call("call_anth", "shell", `{"cmd":"ls"}`),
+		call("call_anth", "exec_command", `{"message":"report"}`),
+	))
+	announce.ResponseProvider = "anthropic"
+	fx := fixture{
+		name:   "a real exec_command is not the shell call",
+		header: transcript.Header{SessionID: "anth_exec", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_anth", schema.TurnSpanExecution, user("go"))),
+			entryLine(announce),
+			// The configured result tool's own result, under the reused id.
+			entryLine(inTurn("turn_anth", results(result("call_anth", "exec_command", "report sent")))),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_anth")
+
+	var announcement, configured *appwire.ThreadItem
+	for i := range indexed {
+		if indexed[i].CallID != "call_anth" {
+			continue
+		}
+		switch indexed[i].ToolName {
+		case "shell":
+			announcement = &indexed[i]
+		case "exec_command":
+			configured = &indexed[i]
+		}
+	}
+	if announcement == nil {
+		t.Fatalf("the shell announcement is missing from %s", itemShapes(indexed))
+	}
+	if announcement.Status == appwire.TurnStatusCompleted {
+		t.Errorf("index: the shell call reads completed from another tool's result: on Anthropic exec_command is not the shell alias (items %s)",
+			itemShapes(indexed))
+	}
+	if configured == nil {
+		t.Errorf("index: the configured exec_command result lost its own row: %s", itemShapes(indexed))
+	}
+}

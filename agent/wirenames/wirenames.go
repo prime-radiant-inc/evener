@@ -1,7 +1,3 @@
-// Package wirenames owns the tool names each provider surface trains models
-// on, where they differ from Evener's canonical names. Provider profiles
-// apply them to the registry; unknown-tool diagnosis uses them to suggest the
-// name a surface actually exposes.
 package wirenames
 
 import (
@@ -15,6 +11,19 @@ var (
 	openAI      = map[string]string{"shell": "exec_command", "grep": "grep_files", "glob": "find_files"}
 	google      = map[string]string{"shell": "run_shell_command", "grep": "grep_search", "list_dir": "list_directory"}
 	toCanonical = buildCanonicalMap(openAI, google)
+
+	// Per-surface inverse tables. A rename belongs to the surface that applies
+	// it: exec_command names shell on OpenAI and is an ordinary tool name
+	// everywhere else, so identity read through the union of every surface is
+	// not identity at all (#1166 review).
+	surfaceCanonical = map[string]map[string]string{
+		registry.SurfaceOpenAI: buildCanonicalMap(openAI),
+		registry.SurfaceGoogle: buildCanonicalMap(google),
+		// Anthropic renames nothing. It must be listed explicitly: an absent
+		// key falls back to the union, which would read Anthropic's own
+		// exec_command as shell.
+		registry.SurfaceAnthropic: {},
+	}
 )
 
 func buildCanonicalMap(surfaces ...map[string]string) map[string]string {
@@ -59,6 +68,24 @@ func Same(a, b string) bool {
 	return Canonical(strings.TrimSpace(a)) == Canonical(strings.TrimSpace(b))
 }
 
+// CanonicalFor returns the canonical name a SURFACE gives name, reading the
+// rename table of that surface alone.
+//
+// An empty or unknown surface — a transcript written before the surface was
+// recorded — falls back to Canonical, the union, because there is no narrower
+// vocabulary to read the name in.
+func CanonicalFor(surface, name string) string {
+	renames, ok := surfaceCanonical[surface]
+	if !ok {
+		return Canonical(strings.TrimSpace(name))
+	}
+	name = strings.TrimSpace(name)
+	if canonical, ok := renames[name]; ok {
+		return canonical
+	}
+	return name
+}
+
 // ForSurface returns the canonical→wire renames for surface, or nil when the
 // surface uses canonical names. The map is the caller's to keep.
 func ForSurface(surface string) map[string]string {
@@ -88,3 +115,21 @@ func cloneMap(m map[string]string) map[string]string {
 	maps.Copy(out, m)
 	return out
 }
+
+// SameFor reports whether two recorded names denote the same tool when the
+// ANNOUNCING SURFACE decides what its own names mean.
+//
+// Same reads both names through the union of every surface's aliases, which is
+// right only when no surface's vocabulary can make a name mean something else.
+// It can: exec_command is shell on OpenAI and an ordinary name on Anthropic, so
+// a symmetric union check turns two different tools into one and lets a result
+// settle a call it never answered (#1166 review). Identity belongs to the
+// surface that announced the call.
+func SameFor(surface, a, b string) bool {
+	return CanonicalFor(surface, a) == CanonicalFor(surface, b)
+}
+
+// Package wirenames owns the tool names each provider surface trains models
+// on, where they differ from Evener's canonical names. Provider profiles
+// apply them to the registry; unknown-tool diagnosis uses them to suggest the
+// name a surface actually exposes.

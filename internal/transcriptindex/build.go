@@ -612,11 +612,16 @@ type awaitedCall struct {
 // that call's item; any other result projects as its own item.
 func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Turn, c contributor) error {
 	calls := map[string]awaitedCall{}
+	// The surface the awaiting entry was written on, which decides what its own
+	// recorded names mean. Empty on a transcript that predates the field; the
+	// guard then falls back to the union of surfaces.
+	awaitingSurface := ""
 	if summary.AwaitingLength > 0 {
 		awaiting, err := b.awaitingEntry(summary)
 		if err != nil {
 			return err
 		}
+		awaitingSurface = awaiting.ResponseProvider
 		// The reservation rule is shared with whole-file replay
 		// (apptranscript.ReservedCalls): a result settles the FIRST recorded
 		// part carrying its call id, in both readers.
@@ -646,7 +651,7 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		// reservation: a prevalidation-rejected communicate is a row of its
 		// own, and absorbing it here omits that row. Replay guards the same
 		// case with the same predicate (#1166 review).
-		if !apptranscript.ResultSettlesReservedCall(call.name, item.ToolName) {
+		if !apptranscript.ResultSettlesReservedCall(awaitingSurface, call.name, item.ToolName) {
 			return false, nil
 		}
 		// A communicate call projects no item, so its result has none to
